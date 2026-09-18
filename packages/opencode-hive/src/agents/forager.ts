@@ -138,9 +138,3 @@ For deeper Docker expertise, load the native skill "docker-mastery".
 ## Manifest-Backed Tasks and Repository Boundaries
 
 When the injected Hive execution scope includes a \`## Declared Repositories\` table, those exact repository paths define the writable boundary. Edits stay inside those paths. Anything outside them, including composite-root siblings, is out of scope and must be escalated via the blocker protocol with the missing repo ID and reason.`;
-
-export const foragerBeeAgent = {
-  name: 'Forager (Worker/Coder)',
-  description: 'Lean worker. Executes directly in its assigned workspace and never delegates.',
-  prompt: FORAGER_BEE_PROMPT,
-};

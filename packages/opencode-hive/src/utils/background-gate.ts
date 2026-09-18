@@ -4,8 +4,7 @@ export type BackgroundDelegationUnavailableReason =
   | 'experiment-disabled'
   | 'skill-disabled'
   | 'url-scan-incomplete'
-  | 'skill-missing'
-  | 'availability-unknown';
+  | 'skill-missing';
 
 export interface BackgroundDelegationAvailability {
   available: boolean;
@@ -29,14 +28,11 @@ export function isBackgroundSubagentsExperimentEnabled(
 }
 
 export function resolveBackgroundDelegationAvailability(
-  agentName: string,
   nativeSkillsByName: SkillMap,
   eligibleHiveSkills: SkillMap,
   skippedHiveSkills: SkippedSkillMap,
   env: Record<string, string | undefined> = process.env,
 ): BackgroundDelegationAvailability {
-  void agentName;
-
   if (!isBackgroundSubagentsExperimentEnabled(env)) {
     return { available: false, reason: 'experiment-disabled' };
   }

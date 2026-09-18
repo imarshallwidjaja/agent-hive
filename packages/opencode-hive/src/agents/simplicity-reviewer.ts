@@ -120,9 +120,3 @@ If evidence is incomplete, label the item NEEDS_DISCUSSION and state what would 
 \`\`\`
 
 Do not include mandatory praise. Findings come first.`;
-
-export const simplicityReviewerAgent = {
-  name: 'Simplicity Reviewer',
-  description: 'Read-only final post-implementation simplicity reviewer. Reviews diffs for YAGNI, dead code, duplicated logic, unnecessary abstractions, redundant defensive code, and safe deletion-biased cleanup.',
-  prompt: SIMPLICITY_REVIEWER_PROMPT,
-};

@@ -1,39 +1,17 @@
 import { describe, it, expect } from 'bun:test';
-import { normalizeVariant, createVariantHook, classifySession } from './variant-hook.js';
-describe('normalizeVariant', () => {
-  it('returns trimmed string for valid variant', () => {
-    expect(normalizeVariant('high')).toBe('high');
-    expect(normalizeVariant('  medium  ')).toBe('medium');
-    expect(normalizeVariant('\tlow\n')).toBe('low');
-  });
+import { createVariantHook, classifySession } from './variant-hook.js';
 
-  it('returns undefined for empty string', () => {
-    expect(normalizeVariant('')).toBeUndefined();
-    expect(normalizeVariant('   ')).toBeUndefined();
-    expect(normalizeVariant('\t\n')).toBeUndefined();
-  });
-
-  it('returns undefined for undefined input', () => {
-    expect(normalizeVariant(undefined)).toBeUndefined();
-  });
+const createMockConfigService = (
+  agentVariants: Record<string, string | undefined>,
+  configuredAgents: string[] = Object.keys(agentVariants),
+) => ({
+  hasConfiguredAgent: (agent: string) => configuredAgents.includes(agent),
+  getAgentConfig: (agent: string) => ({ variant: agentVariants[agent] }),
 });
 
+const createOutput = (variant?: string) => ({ message: { variant }, parts: [] });
+
 describe('createVariantHook', () => {
-  const createMockConfigService = (
-    agentVariants: Record<string, string | undefined>,
-    configuredAgents: string[] = Object.keys(agentVariants),
-  ) => ({
-    hasConfiguredAgent: (agent: string) => configuredAgents.includes(agent),
-    getAgentConfig: (agent: string) => ({
-      variant: agentVariants[agent],
-    }),
-  });
-
-  const createOutput = (variant?: string) => ({
-    message: { variant },
-    parts: [],
-  });
-
   describe('applies variant to configured agents', () => {
     it('sets variant when message has no variant and agent has configured variant', async () => {
       const configService = createMockConfigService({
@@ -57,69 +35,25 @@ describe('createVariantHook', () => {
       expect(output.message.variant).toBe('high');
     });
 
-    it('applies variant to each configured built-in agent', async () => {
-      const agentVariants = {
-        'hive-master': 'max',
-        'architect-planner': 'high',
-        'swarm-orchestrator': 'medium',
-        'scout-researcher': 'low',
-        'forager-worker': 'high',
-        'hive-helper': 'medium',
-        'plan-reviewer': 'medium',
-        'code-reviewer': 'medium',
-        'approach-advisor': 'medium',
-      };
-
-      const hook = createVariantHook(createMockConfigService(agentVariants) as any);
-
-      for (const agentName of Object.keys(agentVariants)) {
-        const output = createOutput(undefined);
-
-        await hook(
-          { sessionID: 'session-123', agent: agentName },
-          output,
-        );
-
-        expect(output.message.variant).toBeDefined();
-      }
-    });
-
-    it('applies variant to accepted custom forager-derived agent', async () => {
-      const configService = createMockConfigService(
-        {
-          'forager-ui': 'high',
-        },
-        ['forager-ui'],
-      );
-
-      const hook = createVariantHook(configService as any);
+    it.each([
+      ['hive-master', 'max'],
+      ['architect-planner', 'high'],
+      ['swarm-orchestrator', 'medium'],
+      ['scout-researcher', 'low'],
+      ['forager-worker', 'high'],
+      ['hive-helper', 'medium'],
+      ['plan-reviewer', 'medium'],
+      ['code-reviewer', 'medium'],
+      ['approach-advisor', 'medium'],
+      ['forager-ui', 'high'],
+      ['reviewer-security', 'medium'],
+    ])('applies variant %s = %s', async (agent, variant) => {
+      const hook = createVariantHook(createMockConfigService({ [agent]: variant }) as any);
       const output = createOutput(undefined);
 
-      await hook(
-        { sessionID: 'session-123', agent: 'forager-ui' },
-        output,
-      );
+      await hook({ sessionID: 'session-123', agent }, output);
 
-      expect(output.message.variant).toBe('high');
-    });
-
-    it('applies variant to accepted custom reviewer-derived agent', async () => {
-      const configService = createMockConfigService(
-        {
-          'reviewer-security': 'medium',
-        },
-        ['reviewer-security'],
-      );
-
-      const hook = createVariantHook(configService as any);
-      const output = createOutput(undefined);
-
-      await hook(
-        { sessionID: 'session-123', agent: 'reviewer-security' },
-        output,
-      );
-
-      expect(output.message.variant).toBe('medium');
+      expect(output.message.variant).toBe(variant);
     });
   });
 
@@ -160,25 +94,17 @@ describe('createVariantHook', () => {
       expect(output.message.variant).toBeUndefined();
     });
 
-    it('does not set variant for built-in OpenCode agents', async () => {
+    it.each(['build', 'plan', 'code'])('does not set variant for built-in OpenCode agent %s', async (agent) => {
       const configService = createMockConfigService({
         'forager-worker': 'high',
       });
 
       const hook = createVariantHook(configService as any);
+      const output = createOutput(undefined);
 
-      const builtinAgents = ['build', 'plan', 'code'];
+      await hook({ sessionID: 'session-123', agent }, output);
 
-      for (const agentName of builtinAgents) {
-        const output = createOutput(undefined);
-
-        await hook(
-          { sessionID: 'session-123', agent: agentName },
-          output,
-        );
-
-        expect(output.message.variant).toBeUndefined();
-      }
+      expect(output.message.variant).toBeUndefined();
     });
   });
 
@@ -240,70 +166,20 @@ describe('classifySession', () => {
   const NO_CUSTOM_AGENTS: Record<string, { baseAgent: string }> = {};
 
   describe('built-in agent classification', () => {
-    it('classifies hive-master as primary', () => {
-      const result = classifySession('hive-master', NO_CUSTOM_AGENTS);
-      expect(result.sessionKind).toBe('primary');
-      expect(result.baseAgent).toBe('hive-master');
-    });
-
-    it('classifies architect-planner as primary', () => {
-      const result = classifySession('architect-planner', NO_CUSTOM_AGENTS);
-      expect(result.sessionKind).toBe('primary');
-      expect(result.baseAgent).toBe('architect-planner');
-    });
-
-    it('classifies swarm-orchestrator as primary', () => {
-      const result = classifySession('swarm-orchestrator', NO_CUSTOM_AGENTS);
-      expect(result.sessionKind).toBe('primary');
-      expect(result.baseAgent).toBe('swarm-orchestrator');
-    });
-
-    it('classifies forager-worker as task-worker', () => {
-      const result = classifySession('forager-worker', NO_CUSTOM_AGENTS);
-      expect(result.sessionKind).toBe('task-worker');
-      expect(result.baseAgent).toBe('forager-worker');
-    });
-
-    it('classifies scout-researcher as subagent', () => {
-      const result = classifySession('scout-researcher', NO_CUSTOM_AGENTS);
-      expect(result.sessionKind).toBe('subagent');
-      expect(result.baseAgent).toBe('scout-researcher');
-    });
-
-    it('classifies plan-reviewer as subagent', () => {
-      const result = classifySession('plan-reviewer', NO_CUSTOM_AGENTS);
-      expect(result.sessionKind).toBe('subagent');
-      expect(result.baseAgent).toBe('plan-reviewer');
-    });
-
-    it('classifies code-reviewer as subagent', () => {
-      const result = classifySession('code-reviewer', NO_CUSTOM_AGENTS);
-      expect(result.sessionKind).toBe('subagent');
-      expect(result.baseAgent).toBe('code-reviewer');
-    });
-
-    it('classifies approach-advisor as subagent', () => {
-      const result = classifySession('approach-advisor', NO_CUSTOM_AGENTS);
-      expect(result.sessionKind).toBe('subagent');
-      expect(result.baseAgent).toBe('approach-advisor');
-    });
-
-    it('classifies vulnerability-reviewer as subagent', () => {
-      const result = classifySession('vulnerability-reviewer', NO_CUSTOM_AGENTS);
-      expect(result.sessionKind).toBe('subagent');
-      expect(result.baseAgent).toBe('vulnerability-reviewer');
-    });
-
-    it('classifies simplicity-reviewer as subagent', () => {
-      const result = classifySession('simplicity-reviewer', NO_CUSTOM_AGENTS);
-      expect(result.sessionKind).toBe('subagent');
-      expect(result.baseAgent).toBe('simplicity-reviewer');
-    });
-
-    it('classifies hive-helper as subagent', () => {
-      const result = classifySession('hive-helper', NO_CUSTOM_AGENTS);
-      expect(result.sessionKind).toBe('subagent');
-      expect(result.baseAgent).toBe('hive-helper');
+    it.each([
+      ['hive-master', 'primary'],
+      ['architect-planner', 'primary'],
+      ['swarm-orchestrator', 'primary'],
+      ['forager-worker', 'task-worker'],
+      ['scout-researcher', 'subagent'],
+      ['plan-reviewer', 'subagent'],
+      ['code-reviewer', 'subagent'],
+      ['approach-advisor', 'subagent'],
+      ['vulnerability-reviewer', 'subagent'],
+      ['simplicity-reviewer', 'subagent'],
+      ['hive-helper', 'subagent'],
+    ] as const)('classifies %s as %s', (agent, sessionKind) => {
+      expect(classifySession(agent, NO_CUSTOM_AGENTS)).toEqual({ sessionKind, baseAgent: agent });
     });
   });
 
@@ -316,34 +192,14 @@ describe('classifySession', () => {
       'reviewer-vulnerability': { baseAgent: 'vulnerability-reviewer' },
     };
 
-    it('classifies custom forager-derived agent as task-worker', () => {
-      const result = classifySession('forager-ui', customAgents);
-      expect(result.sessionKind).toBe('task-worker');
-      expect(result.baseAgent).toBe('forager-worker');
-    });
-
-    it('classifies custom reviewer-derived agent as subagent', () => {
-      const result = classifySession('reviewer-security', customAgents);
-      expect(result.sessionKind).toBe('subagent');
-      expect(result.baseAgent).toBe('code-reviewer');
-    });
-
-    it('classifies custom simplicity-reviewer-derived agent as subagent', () => {
-      const result = classifySession('reviewer-minimalist', customAgents);
-      expect(result.sessionKind).toBe('subagent');
-      expect(result.baseAgent).toBe('simplicity-reviewer');
-    });
-
-    it('classifies custom vulnerability-reviewer-derived agent as subagent', () => {
-      const result = classifySession('reviewer-vulnerability', customAgents);
-      expect(result.sessionKind).toBe('subagent');
-      expect(result.baseAgent).toBe('vulnerability-reviewer');
-    });
-
-    it('classifies custom scout-derived agent as subagent', () => {
-      const result = classifySession('scout-custom', customAgents);
-      expect(result.sessionKind).toBe('subagent');
-      expect(result.baseAgent).toBe('scout-researcher');
+    it.each([
+      ['forager-ui', 'task-worker', 'forager-worker'],
+      ['reviewer-security', 'subagent', 'code-reviewer'],
+      ['reviewer-minimalist', 'subagent', 'simplicity-reviewer'],
+      ['reviewer-vulnerability', 'subagent', 'vulnerability-reviewer'],
+      ['scout-custom', 'subagent', 'scout-researcher'],
+    ] as const)('classifies %s as %s based on %s', (agent, sessionKind, baseAgent) => {
+      expect(classifySession(agent, customAgents)).toEqual({ sessionKind, baseAgent });
     });
   });
 
@@ -363,21 +219,6 @@ describe('classifySession', () => {
 });
 
 describe('createVariantHook with session tracking', () => {
-  const createMockConfigService = (
-    agentVariants: Record<string, string | undefined>,
-    configuredAgents: string[] = Object.keys(agentVariants),
-  ) => ({
-    hasConfiguredAgent: (agent: string) => configuredAgents.includes(agent),
-    getAgentConfig: (agent: string) => ({
-      variant: agentVariants[agent],
-    }),
-  });
-
-  const createOutput = (variant?: string) => ({
-    message: { variant },
-    parts: [],
-  });
-
   it('records global session with baseAgent and sessionKind on first message', async () => {
     const tracked: Array<{ sessionId: string; patch: Record<string, unknown> }> = [];
     const mockSessionService = {

@@ -298,10 +298,4 @@ describe('CUSTOM_AGENT_RESERVED_NAMES', () => {
     expect(CUSTOM_AGENT_RESERVED_NAMES).toContain('hive-builder');
     expect(CUSTOM_AGENT_RESERVED_NAMES).toContain('builder');
   });
-
-  it('hive-builder and builder would be filtered by reserved-name check', () => {
-    const reservedSet = new Set<string>(CUSTOM_AGENT_RESERVED_NAMES as readonly string[]);
-    expect(reservedSet.has('hive-builder')).toBe(true);
-    expect(reservedSet.has('builder')).toBe(true);
-  });
 });

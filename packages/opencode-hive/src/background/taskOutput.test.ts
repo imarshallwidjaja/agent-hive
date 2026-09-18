@@ -1,11 +1,9 @@
 import { describe, expect, it } from 'bun:test';
 import {
-  createTaskLifecycleHook,
   parseTaskLifecycleEvent,
   parseTaskLaunchOutput,
   parseTaskCompletionNotification,
   parseTaskStatusOutput,
-  type ParsedTaskLifecycleEvent,
 } from './taskOutput.js';
 
 describe('background task output parsing', () => {
@@ -221,40 +219,4 @@ Commit: \`24d154c\` (\`test: add background smoke A marker\`)
     });
   });
 
-  it('routes parsed lifecycle events to a hook handler with captured args', async () => {
-    const observed: ParsedTaskLifecycleEvent[] = [];
-    const capturedArgs = new Map<string, Record<string, unknown>>();
-    const hook = createTaskLifecycleHook((event) => {
-      observed.push(event);
-    }, (input) => {
-      const record = input as { sessionID: string; callID: string };
-      return {
-        args: capturedArgs.get(`${record.sessionID}:${record.callID}`),
-        agentName: 'hive',
-      };
-    });
-
-    capturedArgs.set('sess_parent:call_task_1', { description: 'Run worker', background: true, subagent_type: 'scout-researcher' });
-    await hook({
-      tool: 'task',
-      sessionID: 'sess_parent',
-      callID: 'call_task_1',
-    }, {
-      output: 'task_id: task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2',
-    });
-
-    expect(observed).toHaveLength(1);
-    expect(observed[0]).toMatchObject({
-      tool: 'task',
-      taskId: 'task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2',
-      args: {
-        background: true,
-        description: 'Run worker',
-        subagent_type: 'scout-researcher',
-      },
-      parentSessionId: 'sess_parent',
-      agentName: 'hive',
-      callId: 'call_task_1',
-    });
-  });
 });

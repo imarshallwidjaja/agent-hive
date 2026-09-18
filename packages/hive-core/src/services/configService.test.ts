@@ -1125,6 +1125,40 @@ describe("ConfigService disabled skills/mcps", () => {
   });
 });
 
+describe('ConfigService hook cadence', () => {
+  it('defaults to cadence 1 when hook_cadence is not configured', () => {
+    expect(new ConfigService().getHookCadence('chat.message')).toBe(1);
+  });
+
+  it('returns a configured cadence', () => {
+    const service = new ConfigService();
+    fs.mkdirSync(path.dirname(service.getPath()), { recursive: true });
+    fs.writeFileSync(service.getPath(), JSON.stringify({ hook_cadence: { 'chat.message': 5 } }));
+
+    expect(service.getHookCadence('chat.message')).toBe(5);
+    expect(service.getLastFallbackWarning()).toBeNull();
+  });
+
+  it('defaults missing hooks to cadence 1 when other hooks are configured', () => {
+    const service = new ConfigService();
+    fs.mkdirSync(path.dirname(service.getPath()), { recursive: true });
+    fs.writeFileSync(service.getPath(), JSON.stringify({ hook_cadence: { 'chat.message': 3 } }));
+
+    expect(service.getHookCadence('experimental.chat.messages.transform')).toBe(1);
+  });
+
+  it('forces safety-critical hooks to cadence 1 and warns about the ignored value', () => {
+    const service = new ConfigService();
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    fs.mkdirSync(path.dirname(service.getPath()), { recursive: true });
+    fs.writeFileSync(service.getPath(), JSON.stringify({ hook_cadence: { 'tool.execute.before': 5 } }));
+
+    expect(service.getHookCadence('tool.execute.before', { safetyCritical: true })).toBe(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('safety-critical hook: tool.execute.before'));
+    warn.mockRestore();
+  });
+});
+
 describe("ConfigService sandbox config", () => {
   it("getSandboxConfig() returns { mode: 'none' } when not configured", () => {
     const service = new ConfigService();

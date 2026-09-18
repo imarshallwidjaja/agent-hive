@@ -34,26 +34,11 @@ export interface ParsedTaskLifecycleEvent {
   status?: ParsedTaskStatusOutput;
 }
 
-export type TaskLifecycleEventHandler = (event: ParsedTaskLifecycleEvent) => void | Promise<void>;
-export type TaskLifecycleContextResolver = (input: unknown) => TaskLifecycleContext | undefined;
-
 export interface TaskLifecycleContext {
   args?: Record<string, unknown>;
   agentName?: string;
   featureLabel?: string;
   messageId?: string;
-}
-
-export function createTaskLifecycleHook(
-  handleEvent: TaskLifecycleEventHandler,
-  resolveContext?: TaskLifecycleContextResolver,
-): (input: unknown, output: unknown) => Promise<void> {
-  return async (input, output) => {
-    const event = parseTaskLifecycleEvent(input, output, resolveContext?.(input));
-    if (event) {
-      await handleEvent(event);
-    }
-  };
 }
 
 const TASK_ID_PATTERN = /\btask[_-]id\b\s*[":=]?\s*["']?([A-Za-z0-9_-]+)/i;

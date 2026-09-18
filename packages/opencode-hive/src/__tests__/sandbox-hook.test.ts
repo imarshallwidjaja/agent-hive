@@ -1,381 +1,101 @@
-import { describe, test, expect } from 'bun:test';
-import * as path from 'path';
-import { DockerSandboxService } from 'hive-core';
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import plugin from '../index.js';
 
-/**
- * Tests for tool.execute.before hook bash interception with Docker sandboxing
- * 
- * The hook should:
- * - Only intercept bash tool calls
- * - Only wrap commands with explicit workdir inside .hive/.worktrees/
- * - Respect sandbox config mode ('none' = no wrapping, 'docker' = wrap)
- * - Support HOST: prefix escape hatch
- * - Clear workdir after wrapping (docker runs on host)
- * 
- * Note: These tests simulate the hook logic. The actual hook is in index.ts
- */
+let originalHome: string | undefined;
+let root: string;
+let home: string;
 
-describe('tool.execute.before bash interception hook logic', () => {
-  const mockDirectory = '/mock/project';
-  const hiveWorktreeBase = path.join(mockDirectory, '.hive', '.worktrees');
-  const worktreePath = path.join(hiveWorktreeBase, 'feature-x', 'task-1');
+beforeEach(() => {
+  originalHome = process.env.HOME;
+  root = fs.mkdtempSync(`/tmp/hive-sandbox-runtime-${process.pid}-`);
+  home = fs.mkdtempSync(`/tmp/hive-sandbox-home-${process.pid}-`);
+  process.env.HOME = home;
+  fs.mkdirSync(path.join(root, '.hive'), { recursive: true });
+});
 
-  /**
-   * Simulates the hook logic from index.ts
-   */
-  const executeHook = (
-    input: { tool: string; sessionID: string; callID: string },
-    output: { args: any },
-    sandboxConfig: { mode: 'none' | 'docker'; image?: string },
-    directory: string
-  ) => {
-    if (input.tool !== "bash") return;
-    
-    if (sandboxConfig.mode === 'none') return;
-    
-    const command = output.args?.command?.trim();
-    if (!command) return;
-    
-    // Escape hatch: HOST: prefix (case-insensitive)
-    if (/^HOST:\s*/i.test(command)) {
-      const strippedCommand = command.replace(/^HOST:\s*/i, '');
-      console.warn(`[hive:sandbox] HOST bypass: ${strippedCommand.slice(0, 80)}${strippedCommand.length > 80 ? '...' : ''}`);
-      output.args.command = strippedCommand;
-      return;
-    }
-    
-    // Only wrap commands with explicit workdir inside hive worktrees
-    const workdir = output.args?.workdir;
-    if (!workdir) return;
-    
-    const hiveWorktreeBase = path.join(directory, '.hive', '.worktrees');
-    if (!workdir.startsWith(hiveWorktreeBase)) return;
-    
-    // Wrap command using static method
-    const wrapped = DockerSandboxService.wrapCommand(workdir, command, sandboxConfig);
-    output.args.command = wrapped;
-    output.args.workdir = undefined; // docker command runs on host
-  };
+afterEach(() => {
+  if (originalHome === undefined) delete process.env.HOME;
+  else process.env.HOME = originalHome;
+  fs.rmSync(root, { recursive: true, force: true });
+  fs.rmSync(home, { recursive: true, force: true });
+});
 
-  describe('sandbox mode: docker', () => {
-    test('wraps bash command with explicit workdir inside .hive/.worktrees/', () => {
-      const sandboxConfig = { mode: 'docker' as const, image: 'node:22-slim' };
-      
-      const input = {
-        tool: 'bash',
-        sessionID: 'test-session',
-        callID: 'test-call',
-      };
-      const output = {
-        args: {
-          command: 'bun test',
-          workdir: worktreePath,
-        },
-      };
+async function createHook(sandbox: 'none' | 'docker' = 'docker') {
+  const configPath = path.join(home, '.config', 'opencode', 'agent_hive.json');
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  fs.writeFileSync(configPath, JSON.stringify({
+    sandbox,
+    dockerImage: sandbox === 'docker' ? 'node:22-slim' : undefined,
+    persistentContainers: false,
+  }));
+  const hooks = await plugin({
+    directory: root,
+    worktree: root,
+    project: { id: 'sandbox-hook', worktree: root },
+    client: { session: { get: async () => ({ data: undefined }), abort: async () => ({ data: true }) } },
+  } as any);
+  return hooks['tool.execute.before']!;
+}
 
-      executeHook(input, output, sandboxConfig, mockDirectory);
+describe('tool.execute.before sandbox boundary', () => {
+  it('wraps bash commands in Hive worktrees and clears the host workdir', async () => {
+    const hook = await createHook();
+    const workdir = path.join(root, '.hive', '.worktrees', 'feature-x', 'task-1');
+    const output = { args: { command: 'bun test', workdir } };
 
-      // Command should be wrapped with docker run
-      expect(output.args.command).toContain('docker run');
-      expect(output.args.command).toContain('node:22-slim');
-      expect(output.args.command).toContain('bun test');
-      // Workdir should be cleared (docker runs on host)
-      expect(output.args.workdir).toBeUndefined();
-    });
+    await hook({ tool: 'bash', sessionID: 'session', callID: 'call' } as any, output);
 
-    test('passes through bash command without workdir', () => {
-      const sandboxConfig = { mode: 'docker' as const, image: 'node:22-slim' };
-      
-      const input = {
-        tool: 'bash',
-        sessionID: 'test-session',
-        callID: 'test-call',
-      };
-      const output = {
-        args: {
-          command: 'git status',
-        },
-      };
-
-      const originalCommand = output.args.command;
-      executeHook(input, output, sandboxConfig, mockDirectory);
-
-      // Command should be unchanged
-      expect(output.args.command).toBe(originalCommand);
-      expect(output.args.command).not.toContain('docker run');
-    });
-
-    test('passes through bash command with workdir outside .hive/.worktrees/', () => {
-      const sandboxConfig = { mode: 'docker' as const, image: 'node:22-slim' };
-      
-      const input = {
-        tool: 'bash',
-        sessionID: 'test-session',
-        callID: 'test-call',
-      };
-      const output = {
-        args: {
-          command: 'npm install',
-          workdir: '/mock/project/packages/hive-core',
-        },
-      };
-
-      const originalCommand = output.args.command;
-      const originalWorkdir = output.args.workdir;
-      executeHook(input, output, sandboxConfig, mockDirectory);
-
-      // Command and workdir should be unchanged
-      expect(output.args.command).toBe(originalCommand);
-      expect(output.args.workdir).toBe(originalWorkdir);
-      expect(output.args.command).not.toContain('docker run');
-    });
-
-    test('strips HOST: prefix and bypasses wrapping', () => {
-      const sandboxConfig = { mode: 'docker' as const, image: 'node:22-slim' };
-      
-      const input = {
-        tool: 'bash',
-        sessionID: 'test-session',
-        callID: 'test-call',
-      };
-      const output = {
-        args: {
-          command: 'HOST: git status',
-          workdir: worktreePath,
-        },
-      };
-
-      executeHook(input, output, sandboxConfig, mockDirectory);
-
-      // HOST: should be stripped, no docker wrapping
-      expect(output.args.command).toBe('git status');
-      expect(output.args.command).not.toContain('docker run');
-      expect(output.args.command).not.toContain('HOST:');
-      // Workdir should remain (not wrapped)
-      expect(output.args.workdir).toBe(worktreePath);
-    });
-
-    test('strips HOST: prefix with case insensitivity', () => {
-      const sandboxConfig = { mode: 'docker' as const, image: 'node:22-slim' };
-      
-      const input = {
-        tool: 'bash',
-        sessionID: 'test-session',
-        callID: 'test-call',
-      };
-      const output = {
-        args: {
-          command: 'host: git log',
-          workdir: worktreePath,
-        },
-      };
-
-      executeHook(input, output, sandboxConfig, mockDirectory);
-
-      expect(output.args.command).toBe('git log');
-      expect(output.args.command).not.toContain('docker run');
-    });
-
-    test('logs console.warn with [hive:sandbox] prefix when HOST: is used', () => {
-      const sandboxConfig = { mode: 'docker' as const, image: 'node:22-slim' };
-      
-      const input = {
-        tool: 'bash',
-        sessionID: 'test-session',
-        callID: 'test-call',
-      };
-      const output = {
-        args: {
-          command: 'HOST: bun test',
-          workdir: worktreePath,
-        },
-      };
-
-      const originalWarn = console.warn;
-      const warnings: string[] = [];
-      console.warn = (...args: any[]) => {
-        warnings.push(args.join(' '));
-      };
-
-      executeHook(input, output, sandboxConfig, mockDirectory);
-
-      console.warn = originalWarn;
-
-      expect(warnings.length).toBe(1);
-      expect(warnings[0]).toContain('[hive:sandbox]');
-      expect(warnings[0]).toContain('HOST bypass:');
-      expect(warnings[0]).toContain('bun test');
-    });
-
-    test('truncates long commands in HOST: audit log', () => {
-      const sandboxConfig = { mode: 'docker' as const, image: 'node:22-slim' };
-      const longCommand = 'HOST: echo ' + 'a'.repeat(100); // 106 chars after "HOST: "
-      
-      const input = {
-        tool: 'bash',
-        sessionID: 'test-session',
-        callID: 'test-call',
-      };
-      const output = {
-        args: {
-          command: longCommand,
-          workdir: worktreePath,
-        },
-      };
-
-      const originalWarn = console.warn;
-      const warnings: string[] = [];
-      console.warn = (...args: any[]) => {
-        warnings.push(args.join(' '));
-      };
-
-      executeHook(input, output, sandboxConfig, mockDirectory);
-
-      console.warn = originalWarn;
-
-      expect(warnings.length).toBe(1);
-      const logMessage = warnings[0];
-      expect(logMessage).toContain('[hive:sandbox]');
-      expect(logMessage).toContain('...');
-      // Verify it's truncated (should be ~80 chars + "..." after the prefix)
-      const commandPart = logMessage.split('HOST bypass: ')[1];
-      expect(commandPart.length).toBeLessThan(90); // 80 + "..." + some margin
-    });
+    expect(output.args.command).toContain('docker run');
+    expect(output.args.command).toContain('node:22-slim');
+    expect(output.args.command).toContain('bun test');
+    expect(output.args.workdir).toBeUndefined();
   });
 
-  describe('sandbox mode: none', () => {
-    test('passes through bash command unchanged', () => {
-      const sandboxConfig = { mode: 'none' as const };
-      
-      const input = {
-        tool: 'bash',
-        sessionID: 'test-session',
-        callID: 'test-call',
-      };
-      const output = {
-        args: {
-          command: 'bun test',
-          workdir: worktreePath,
-        },
-      };
+  it.each([
+    ['without a workdir', undefined],
+    ['outside a Hive worktree', '/tmp/outside'],
+  ])('passes through bash commands %s', async (_name, workdir) => {
+    const hook = await createHook();
+    const output = { args: { command: 'git status', workdir } };
 
-      const originalCommand = output.args.command;
-      const originalWorkdir = output.args.workdir;
-      executeHook(input, output, sandboxConfig, mockDirectory);
+    await hook({ tool: 'bash', sessionID: 'session', callID: 'call' } as any, output);
 
-      // Nothing should change
-      expect(output.args.command).toBe(originalCommand);
-      expect(output.args.workdir).toBe(originalWorkdir);
-      expect(output.args.command).not.toContain('docker run');
-    });
+    expect(output.args).toEqual({ command: 'git status', workdir });
   });
 
-  describe('non-bash tools', () => {
-    test('ignores read tool', () => {
-      const sandboxConfig = { mode: 'docker' as const, image: 'node:22-slim' };
-      
-      const input = {
-        tool: 'read',
-        sessionID: 'test-session',
-        callID: 'test-call',
-      };
-      const output = {
-        args: {
-          filePath: '/some/file.ts',
-        },
-      };
+  it.each(['HOST: git status', 'host: git log'])('strips the HOST prefix without wrapping %s', async (command) => {
+    const hook = await createHook();
+    const workdir = path.join(root, '.hive', '.worktrees', 'feature-x', 'task-1');
+    const output = { args: { command, workdir } };
 
-      executeHook(input, output, sandboxConfig, mockDirectory);
+    await hook({ tool: 'bash', sessionID: 'session', callID: 'call' } as any, output);
 
-      // Nothing should change (no workdir or command to modify)
-      expect(output.args.filePath).toBe('/some/file.ts');
-    });
-
-    test('ignores write tool', () => {
-      const sandboxConfig = { mode: 'docker' as const, image: 'node:22-slim' };
-      
-      const input = {
-        tool: 'write',
-        sessionID: 'test-session',
-        callID: 'test-call',
-      };
-      const output = {
-        args: {
-          filePath: '/some/file.ts',
-          content: 'test',
-        },
-      };
-
-      executeHook(input, output, sandboxConfig, mockDirectory);
-
-      // Nothing should change
-      expect(output.args.filePath).toBe('/some/file.ts');
-      expect(output.args.content).toBe('test');
-    });
+    expect(output.args.command).toBe(command.replace(/^HOST:\s*/i, ''));
+    expect(output.args.workdir).toBe(workdir);
   });
 
-  describe('edge cases', () => {
-    test('handles empty command', () => {
-      const sandboxConfig = { mode: 'docker' as const, image: 'node:22-slim' };
-      
-      const input = {
-        tool: 'bash',
-        sessionID: 'test-session',
-        callID: 'test-call',
-      };
-      const output = {
-        args: {
-          command: '   ',
-          workdir: worktreePath,
-        },
-      };
+  it('passes through bash commands when sandboxing is disabled', async () => {
+    const hook = await createHook('none');
+    const output = { args: { command: 'bun test', workdir: path.join(root, '.hive', '.worktrees', 'task') } };
 
-      const originalWorkdir = output.args.workdir;
-      executeHook(input, output, sandboxConfig, mockDirectory);
+    await hook({ tool: 'bash', sessionID: 'session', callID: 'call' } as any, output);
 
-      // Empty command should not be wrapped
-      expect(output.args.command).toBe('   ');
-      expect(output.args.workdir).toBe(originalWorkdir);
-      expect(output.args.command).not.toContain('docker run');
-    });
+    expect(output.args.command).toBe('bun test');
+    expect(output.args.workdir).toBe(path.join(root, '.hive', '.worktrees', 'task'));
+  });
 
-    test('handles missing args', () => {
-      const sandboxConfig = { mode: 'docker' as const, image: 'node:22-slim' };
-      
-      const input = {
-        tool: 'bash',
-        sessionID: 'test-session',
-        callID: 'test-call',
-      };
-      const output = {
-        args: undefined,
-      };
+  it('passes through empty commands and non-bash tools', async () => {
+    const hook = await createHook();
+    const empty = { args: { command: '   ', workdir: path.join(root, '.hive', '.worktrees', 'task') } };
+    const read = { args: { filePath: '/tmp/file' } };
 
-      // Should not throw, just return early
-      expect(() => executeHook(input, output, sandboxConfig, mockDirectory)).not.toThrow();
-    });
+    await hook({ tool: 'bash', sessionID: 'session', callID: 'empty' } as any, empty);
+    await hook({ tool: 'read', sessionID: 'session', callID: 'read' } as any, read);
 
-    test('handles command with special characters', () => {
-      const sandboxConfig = { mode: 'docker' as const, image: 'node:22-slim' };
-      
-      const input = {
-        tool: 'bash',
-        sessionID: 'test-session',
-        callID: 'test-call',
-      };
-      const output = {
-        args: {
-          command: 'echo "hello world" && ls -la',
-          workdir: worktreePath,
-        },
-      };
-
-      executeHook(input, output, sandboxConfig, mockDirectory);
-
-      // Command should be wrapped with proper escaping
-      expect(output.args.command).toContain('docker run');
-      expect(output.args.command).toContain('echo "hello world" && ls -la');
-      expect(output.args.workdir).toBeUndefined();
-    });
+    expect(empty.args.command).toBe('   ');
+    expect(empty.args.workdir).toBe(path.join(root, '.hive', '.worktrees', 'task'));
+    expect(read.args).toEqual({ filePath: '/tmp/file' });
   });
 });

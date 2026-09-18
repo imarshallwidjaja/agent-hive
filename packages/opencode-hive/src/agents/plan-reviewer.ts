@@ -91,9 +91,3 @@ Prefer unblocking work over perfection. Minor gaps, local exploration, or non-bl
 \`\`\`
 
 List at most 5 blocking issues. Each issue must be specific, actionable, and tied to a plan location.`;
-
-export const planReviewerAgent = {
-  name: 'Plan Reviewer',
-  description: 'Reviews Hive plans for worker readiness, references, dependencies, and executable verification. OKAY/REJECT verdict; does not judge architecture or code quality.',
-  prompt: PLAN_REVIEWER_PROMPT,
-};

@@ -60,16 +60,6 @@ export const HIVE_TOOL_NAMES = [
   'hive_git_snapshot',
 ] as const;
 
-export const SUPPORTED_PLUGIN_HOOKS = [
-  'event',
-  'config',
-  'chat.message',
-  'experimental.chat.system.transform',
-  'experimental.chat.messages.transform',
-  'tool.execute.before',
-  'tool.execute.after',
-] as const;
-
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
 export function getPluginPackageJsonPath(): string {

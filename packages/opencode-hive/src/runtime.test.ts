@@ -61,6 +61,7 @@ describe('coordinated runtime hard cut', () => {
     expect(output.args.prompt).toContain('Feature constraints for "feature-a" (revision 1)');
     expect(output.args.prompt).toContain('Keep session behavior.');
     expect(output.args.prompt).toContain('Keep feature behavior.');
+    expect(output.args).not.toHaveProperty('hive_launch_id');
 
     await loaded.tool!.hive_feature_select.execute({ feature: 'feature-b' }, parent);
     sessions.set('child-a', { id: 'child-a', parentID: 'parent' });

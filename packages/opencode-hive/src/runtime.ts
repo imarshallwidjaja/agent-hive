@@ -53,7 +53,7 @@ import { createBackgroundJobAdapter } from './background/backgroundJobAdapter.js
 import { createBackgroundTools } from './background/backgroundTools.js';
 import { isBackgroundSubagentsExperimentEnabled, resolveBackgroundDelegationAvailability } from './utils/background-gate.js';
 import { GitSnapshotError, inspectGitSnapshot, isExactGitTopLevel } from './utils/git-snapshot.js';
-import { HIVE_SYSTEM_PROMPT, SUBAGENT_CLARIFICATION_PROMPT, shouldExecuteHook } from './hooks/system-hook.js';
+import { HIVE_SYSTEM_PROMPT, SUBAGENT_CLARIFICATION_PROMPT } from './hooks/system-hook.js';
 import { createVariantHook } from './hooks/variant-hook.js';
 import { HIVE_TOOL_NAMES } from './utils/plugin-manifest.js';
 import { buildHiveCommandMap } from './commands/runtime.js';
@@ -108,7 +108,7 @@ function buildBackgroundDelegationPromptAppendix(
   eligibleHiveSkills: Map<string, PreparedHiveSkill>,
   skippedHiveSkills: Map<string, PreparedNativeHiveSkills['skipped'][number]>,
 ): string {
-  const availability = resolveBackgroundDelegationAvailability(agentName, nativeSkillsByName, eligibleHiveSkills, skippedHiveSkills);
+  const availability = resolveBackgroundDelegationAvailability(nativeSkillsByName, eligibleHiveSkills, skippedHiveSkills);
   if (availability.available) {
     return '\n\n## Background-First Orchestration\nOpenCode background subagents are enabled for this session. Delegation-first orchestration is the baseline; this appendix only opens background wait mode and the Hive board protocol. When this heading is present, background-delegation governs scheduling and wait mode; other loaded skills govern domain workflow and safety. Before launching or managing background lanes, load/use skill({ name: "background-delegation" }). Background mode is available only when useful unrelated foreground work can continue; otherwise use blocking. Detailed safety overrides and board protocol live in that skill. Gate-closed sessions keep normal blocking task() wait mode and must launch returned blocking task calls rather than working directly in delegated worktrees.';
   }
@@ -749,7 +749,9 @@ const plugin: Plugin = async (ctx) => {
         output.args.prompt = `${prompt}${prompt ? '\n\n' : ''}${routeFooter(snapshot)}`;
       }
       await backgroundAdapter['tool.execute.before'](input, output);
-      if (!shouldExecuteHook('tool.execute.before', configService, {}, { safetyCritical: true }) || input.tool !== 'bash') return;
+      // Retain the safety-critical cadence warning even though generic cadence gating is gone.
+      configService.getHookCadence('tool.execute.before', { safetyCritical: true });
+      if (input.tool !== 'bash') return;
       const sandbox = configService.getSandboxConfig();
       const command = output.args?.command?.trim();
       if (sandbox.mode === 'none' || !command) return;

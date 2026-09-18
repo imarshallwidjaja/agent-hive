@@ -71,9 +71,3 @@ Apply Engineering Judgment to implementation route selection, keeping the recomm
 \`\`\`
 
 Drop optional sections when the answer is simple. Be concise and specific. Do not return \`OKAY\` or \`REJECT\`; this is not a review gate.`;
-
-export const approachAdvisorAgent = {
-  name: 'Approach Advisor',
-  description: 'Read-only strategic technical advisor for architecture, tradeoffs, hard debugging direction, and implementation route selection; not a plan, code, or verification gate.',
-  prompt: APPROACH_ADVISOR_PROMPT,
-};

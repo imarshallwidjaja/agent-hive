@@ -92,9 +92,3 @@ Prefer the smallest coherent implementation by total cognitive burden and owners
 \`\`\`
 
 Do not include mandatory praise. Findings come first.`;
-
-export const codeReviewerAgent = {
-  name: 'Code Reviewer',
-  description: 'Read-only implementation reviewer. Reviews diffs against a task or plan for correctness, missing requirements, tests, risk, scope creep, YAGNI, and dead code.',
-  prompt: CODE_REVIEWER_PROMPT,
-};

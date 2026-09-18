@@ -66,7 +66,6 @@ bun run build             # Build vscode-arkive VS Code extension
 - Place tests next to source files or in `__tests__/` directories
 - Use descriptive test names
 - Some `packages/opencode-hive` suites mutate the process cwd and temporary Git state. If a concurrent run fails in a worktree or lifecycle test, rerun the owning file and then `bun test --max-concurrency=1`; report the concurrent failure separately, and change production code only if isolated or serialized execution also fails.
-- Run `packages/opencode-hive/src/e2e/opencode-runtime-smoke.test.ts` in only one process at a time across worktrees. Some fixtures use fixed `/tmp` paths, so separate Bun processes can delete each other’s fixtures; `--max-concurrency=1` does not coordinate separate processes.
 
 ## Commit Messages
 

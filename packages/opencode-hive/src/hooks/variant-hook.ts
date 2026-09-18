@@ -1,11 +1,5 @@
 import type { ConfigService, SessionService, SessionKind } from 'hive-core';
 
-export function normalizeVariant(variant: string | undefined): string | undefined {
-  if (variant === undefined) return undefined;
-  const trimmed = variant.trim();
-  return trimmed.length > 0 ? trimmed : undefined;
-}
-
 const BUILT_IN_AGENTS: Record<string, { sessionKind: SessionKind; baseAgent: string }> = {
   'hive-master': { sessionKind: 'primary', baseAgent: 'hive-master' },
   'architect-planner': { sessionKind: 'primary', baseAgent: 'architect-planner' },
@@ -86,7 +80,7 @@ export function createVariantHook(
     if (output.message.variant !== undefined) return;
 
     const agentConfig = configService.getAgentConfig(agent);
-    const configuredVariant = normalizeVariant(agentConfig.variant);
+    const configuredVariant = agentConfig.variant?.trim() || undefined;
 
     if (configuredVariant !== undefined) {
       output.message.variant = configuredVariant;

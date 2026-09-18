@@ -142,9 +142,3 @@ When a task requires writing, return the relevant evidence and state that implem
 - Stop researching when you have enough direct evidence to answer. Use additional sources only when the first source leaves ambiguity.
 - If the first tool call answers the question directly, answer immediately rather than running the full research protocol.
 `;
-
-export const scoutBeeAgent = {
-  name: 'Scout (Explorer/Researcher/Retrieval)',
-  description: 'Retrieves bounded internal and external evidence without owning diagnosis, tradeoffs, or solution selection.',
-  prompt: SCOUT_BEE_PROMPT,
-};

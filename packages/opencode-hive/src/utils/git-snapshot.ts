@@ -18,7 +18,7 @@ const MAX_UNTRACKED_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_UNTRACKED_TOTAL_BYTES = 8 * 1024 * 1024;
 const MAX_UNTRACKED_PREVIEW_BYTES = 128 * 1024;
 const UNTRACKED_CAPTURE_TIMEOUT_MS = 5_000;
-const UNTRACKED_BOUNDS_HINT = 'narrow paths, excludePaths, or the scoped path set';
+const UNTRACKED_BOUNDS_HINT = 'narrow paths or the scoped path set';
 const SAFE_GIT_CONFIG = [
   '-c', 'core.fsmonitor=false',
   '-c', 'diff.external=',
@@ -35,8 +35,6 @@ export type GitSnapshotInput = {
   targetRef?: string;
   range?: string;
   paths?: string[];
-  /** Internal fixed review-workspace paths excluded from live untracked capture. */
-  excludePaths?: string[];
   maxFiles?: number;
   maxPatchBytes?: number;
 };
@@ -361,13 +359,6 @@ function untrackedCaptureDeadline(operation: SnapshotOperation): CaptureDeadline
   };
 }
 
-function standaloneUntrackedCaptureDeadline(): CaptureDeadline {
-  return {
-    at: snapshotNow() + UNTRACKED_CAPTURE_TIMEOUT_MS,
-    error: () => incompleteUntrackedCaptureError(),
-  };
-}
-
 export interface GitSnapshot {
   repository: { root: string; currentHead: string };
   scope: {
@@ -398,19 +389,6 @@ export type OmittedSectionReport = {
   omittedBytes: number;
   reason: 'section-preview-limit' | 'aggregate-limit' | null;
 };
-
-export interface ReviewMaterializationEntry {
-  path: string;
-  kind: 'delete' | 'regular' | 'symlink';
-  content?: Buffer;
-  mode?: number;
-}
-
-export interface ReviewMaterialization {
-  snapshot: GitSnapshot;
-  entries: ReviewMaterializationEntry[];
-  fingerprint: string;
-}
 
 type BoundedPaths = {
   values: string[];
@@ -1184,7 +1162,6 @@ type WorkingTreeProbeInput = {
   comparisonBase: string;
   comparisonTarget: string;
   pathArgs: string[];
-  isExcludedPath: (relativePath: string) => boolean;
   /** Preview bytes to retain per stream; the digest always covers full content. */
   previewLimit: number;
 };
@@ -1215,8 +1192,7 @@ async function probeWorkingTree(input: WorkingTreeProbeInput): Promise<string> {
   const comparisonPaths = parseNullSeparatedPaths(await runSnapshotGit(repository, ['diff', ...IGNORE_SUBMODULES, '--no-ext-diff', '--no-textconv', '--name-only', '-z', input.comparisonBase, input.comparisonTarget, ...pathArgs], operation));
   const stagedPaths = parseNullSeparatedPaths(await runSnapshotGit(repository, ['diff', ...IGNORE_SUBMODULES, '--no-ext-diff', '--no-textconv', '--name-only', '-z', '--cached', ...pathArgs], operation));
   const unstagedPaths = parseNullSeparatedPaths(await runSnapshotGit(repository, ['diff', ...IGNORE_SUBMODULES, '--no-ext-diff', '--no-textconv', '--name-only', '-z', ...pathArgs], operation));
-  const untrackedPaths = parseNullSeparatedPaths(await runSnapshotGit(repository, ['ls-files', '--others', '--exclude-standard', '-z', ...pathArgs], operation))
-    .filter((relativePath) => !input.isExcludedPath(relativePath));
+  const untrackedPaths = parseNullSeparatedPaths(await runSnapshotGit(repository, ['ls-files', '--others', '--exclude-standard', '-z', ...pathArgs], operation));
   if (untrackedPaths.length > MAX_UNTRACKED_FILES) {
     throw new GitSnapshotError('INCOMPLETE_UNTRACKED_CAPTURE', {}, {
       detail: { kind: 'untracked-count', limit: MAX_UNTRACKED_FILES },
@@ -1270,49 +1246,21 @@ function capturedWorkingTreeProbe(input: {
 }
 
 
-type SnapshotCaptureResult = {
-  snapshot: GitSnapshot;
-  entries?: ReviewMaterializationEntry[];
-};
-
-type MaterializationCaptureResult = {
-  snapshot: GitSnapshot;
-  entries: ReviewMaterializationEntry[];
-};
-
 /**
  * One capture pass. Every step runs under one operation deadline, and the
  * snapshot is published only after the generation is revalidated, so a caller
  * can never observe a hybrid assembled across repository generations.
- *
- * `withMaterialization` additionally derives review entries from the same
- * validated generation rather than re-running path discovery afterwards.
  */
 async function captureSnapshot(
   repositoryDirectory: string,
   input: GitSnapshotInput,
-  withMaterialization: true,
-): Promise<MaterializationCaptureResult>;
-async function captureSnapshot(
-  repositoryDirectory: string,
-  input: GitSnapshotInput,
-  withMaterialization: false,
-): Promise<SnapshotCaptureResult>;
-async function captureSnapshot(
-  repositoryDirectory: string,
-  input: GitSnapshotInput,
-  withMaterialization: boolean,
-): Promise<SnapshotCaptureResult> {
+): Promise<GitSnapshot> {
   const operation = createSnapshotOperation();
   if (input.range && (input.baseRef || input.targetRef)) {
     throw new GitSnapshotError('INVALID_REQUEST', {}, { detail: { kind: 'range-with-refs' } });
   }
 
   const paths = normalizeScopedPaths(input.paths);
-  const excludePaths = normalizeScopedPaths(input.excludePaths);
-  const isExcludedPath = (relativePath: string): boolean => excludePaths.some(
-    (excludedPath) => relativePath === excludedPath || relativePath.startsWith(`${excludedPath}/`),
-  );
   const maxFiles = resolveLimit(input.maxFiles, 100, MAX_FILES, 'maxFiles');
   const maxPatchBytes = resolveLimit(input.maxPatchBytes, 64 * 1024, MAX_PATCH_BYTES, 'maxPatchBytes');
 
@@ -1379,7 +1327,6 @@ async function captureSnapshot(
       comparisonBase,
       comparisonTarget,
       pathArgs,
-      isExcludedPath,
       previewLimit: untrackedPreviewLimit,
     });
 
@@ -1407,7 +1354,7 @@ async function captureSnapshot(
   const untrackedPaths = (committed
     ? []
     : parseNullSeparatedPaths(await runSnapshotGit(repository, ['ls-files', '--others', '--exclude-standard', '-z', ...pathArgs], operation))
-  ).filter((relativePath) => !isExcludedPath(relativePath));
+  );
   await notifyCaptureBoundary('untracked-listed');
   if (untrackedPaths.length > MAX_UNTRACKED_FILES) {
     throw new GitSnapshotError('INCOMPLETE_UNTRACKED_CAPTURE', {}, {
@@ -1450,47 +1397,9 @@ async function captureSnapshot(
     Object.entries(changedPathSources).map(([kind, sourcePaths]) => [kind, boundPaths(sourcePaths, maxFiles).omitted]),
   ) as Record<ChangedPathGroup, number>;
 
-  let entries: ReviewMaterializationEntry[] | undefined;
-  if (withMaterialization) {
-    if (Object.values(changedPathOmissions).some((count) => count > 0)) {
-      throw new Error('Review snapshot has a partial materialization path set.');
-    }
-    if (committed) {
-      entries = [];
-    } else {
-      // Path discovery and entry reads run inside the capture so the entries,
-      // the snapshot, and the fingerprint all describe one generation.
-      operation.phase = 'capture';
-      const pathGroups = await Promise.all([
-        runSnapshotGit(repository, ['diff', ...IGNORE_SUBMODULES, '--no-ext-diff', '--no-textconv', '--name-status', '-z', comparisonBase, comparisonTarget, ...pathArgs], operation),
-        runSnapshotGit(repository, ['diff', ...IGNORE_SUBMODULES, '--no-ext-diff', '--no-textconv', '--name-status', '-z', '--cached', ...pathArgs], operation),
-        runSnapshotGit(repository, ['diff', ...IGNORE_SUBMODULES, '--no-ext-diff', '--no-textconv', '--name-status', '-z', ...pathArgs], operation),
-        runSnapshotGit(repository, ['ls-files', '--others', '--exclude-standard', '-z', ...pathArgs], operation),
-      ]);
-      const materializationPaths = new Set([
-        ...parseNameStatusPaths(pathGroups[0]!),
-        ...parseNameStatusPaths(pathGroups[1]!),
-        ...parseNameStatusPaths(pathGroups[2]!),
-        ...parseNullSeparatedPaths(pathGroups[3]!),
-      ].filter((relativePath) => !isExcludedPath(relativePath)));
-      if (materializationPaths.size > MAX_FILES) {
-        throw new Error('Review snapshot has a partial materialization path set.');
-      }
-      operation.phase = 'untracked-capture';
-      entries = [];
-      const entryDeadline = untrackedCaptureDeadline(operation);
-      let entryRemainingBytes = MAX_UNTRACKED_TOTAL_BYTES;
-      for (const relativePath of [...materializationPaths].sort(compareUnicodeCodePoints)) {
-        const entry = await captureMaterializationEntry(repository, relativePath, entryDeadline, entryRemainingBytes);
-        if (entry.content) entryRemainingBytes -= entry.content.byteLength;
-        entries.push(entry);
-      }
-    }
-  }
-
   // Revalidation compares the generation identity and the working-tree probe
   // against the pre-capture values. Any difference means the snapshot and the
-  // entries would mix two repository generations.
+  // diff sections would mix two repository generations.
   operation.phase = 'revalidation';
   await notifyCaptureBoundary('before-revalidation');
   const capturedSections: MaterialSection[] = [
@@ -1521,7 +1430,6 @@ async function captureSnapshot(
       comparisonBase,
       comparisonTarget,
       pathArgs,
-      isExcludedPath,
       previewLimit: untrackedPreviewLimit,
     });
     if (capturedWorkingTreeProbe({
@@ -1544,7 +1452,6 @@ async function captureSnapshot(
     targetRef,
     range: input.range,
     paths,
-    excludePaths,
     currentHead,
     comparisonBase,
     comparisonTarget,
@@ -1564,7 +1471,7 @@ async function captureSnapshot(
   const patch = truncateUtf8(material, maxPatchBytes);
   const patchOmittedBytes = previewOmittedBytes + Math.max(0, Buffer.byteLength(material) - Buffer.byteLength(patch));
 
-  const snapshot: GitSnapshot = {
+  return {
     repository: { root: repository, currentHead },
     scope: {
       ...(baseRef ? { baseRef } : {}),
@@ -1589,218 +1496,8 @@ async function captureSnapshot(
       sections: reportSectionOmissions(capturedSections, patch),
     },
   };
-  return entries === undefined ? { snapshot } : { snapshot, entries };
 }
 
 export async function inspectGitSnapshot(repositoryDirectory: string, input: GitSnapshotInput): Promise<GitSnapshot> {
-  return (await captureSnapshot(repositoryDirectory, input, false)).snapshot;
-}
-
-export function parseNameStatusPaths(content: Buffer): string[] {
-  const tokens = parseNullSeparatedTokens(content);
-  const paths: string[] = [];
-  for (let index = 0; index < tokens.length;) {
-    const status = tokens[index++];
-    if (!status) continue;
-    if (status.startsWith('R') || status.startsWith('C')) {
-      const before = tokens[index++];
-      const after = tokens[index++];
-      if (before) paths.push(before);
-      if (after) paths.push(after);
-      continue;
-    }
-    const changedPath = tokens[index++];
-    if (changedPath) paths.push(changedPath);
-  }
-  return [...new Set(paths)].sort(compareUnicodeCodePoints);
-}
-
-export type ReviewSourceScopeFingerprintInput = {
-  manifestRepositoryIds: string[];
-  selectedRepositoryIds: string[];
-  snapshots: Array<{ repositoryId: string; sourceRoot: string; fingerprint: string }>;
-};
-
-export type ReviewMaterializationEntryDescriptor = {
-  path: string;
-  kind: ReviewMaterializationEntry['kind'];
-};
-
-export function serializeReviewSourceScopeFingerprint(input: ReviewSourceScopeFingerprintInput): string {
-  return JSON.stringify({
-    manifestRepositoryIds: input.manifestRepositoryIds,
-    selectedRepositoryIds: input.selectedRepositoryIds,
-    snapshots: [...input.snapshots]
-      .sort((left, right) => compareUnicodeCodePoints(left.repositoryId, right.repositoryId))
-      .map(({ repositoryId, sourceRoot, fingerprint }) => ({ repositoryId, sourceRoot, fingerprint })),
-  });
-}
-
-export function fingerprintReviewSourceScope(input: ReviewSourceScopeFingerprintInput): string {
-  return createHash('sha256').update(serializeReviewSourceScopeFingerprint(input)).digest('hex');
-}
-
-export function fingerprintLegacyReviewSourceScope(input: ReviewSourceScopeFingerprintInput): string {
-  return createHash('sha256').update(JSON.stringify({
-    manifestRepositoryIds: input.manifestRepositoryIds,
-    selectedRepositoryIds: input.selectedRepositoryIds,
-    snapshots: [...input.snapshots]
-      .sort((left, right) => compareUnicodeCodePoints(left.repositoryId, right.repositoryId))
-      .map(({ repositoryId, fingerprint }) => ({ repositoryId, fingerprint })),
-  })).digest('hex');
-}
-
-export function compactMaterializationDescriptors(
-  entries: readonly ReviewMaterializationEntry[],
-): ReviewMaterializationEntryDescriptor[] {
-  return [...entries]
-    .sort((left, right) => compareUnicodeCodePoints(left.path, right.path))
-    .map(({ path, kind }) => ({ path, kind }));
-}
-
-export function fingerprintReviewRepositoryMaterializations(
-  captures: Array<{ repositoryId: string; fingerprint: string }>,
-): string {
-  return createHash('sha256').update(JSON.stringify(
-    [...captures].sort((left, right) => compareUnicodeCodePoints(left.repositoryId, right.repositoryId)),
-  )).digest('hex');
-}
-
-function materializationFingerprint(entries: readonly ReviewMaterializationEntry[]): string {
-  const hash = createHash('sha256');
-  hash.update('hive-review-materialization-v1\0');
-  for (const entry of [...entries].sort((left, right) => compareUnicodeCodePoints(left.path, right.path))) {
-    hash.update(entry.path);
-    hash.update('\0');
-    hash.update(entry.kind);
-    hash.update('\0');
-    hash.update(entry.mode === undefined ? '' : String(entry.mode));
-    hash.update('\0');
-    if (entry.content) hash.update(entry.content);
-    hash.update('\0');
-  }
-  return hash.digest('hex');
-}
-
-async function captureMaterializationEntry(
-  repository: string,
-  relativePath: string,
-  deadline: CaptureDeadline,
-  remainingBytes: number,
-): Promise<ReviewMaterializationEntry> {
-  const target = repoPath(repository, relativePath);
-  try {
-    await fs.lstat(target);
-  } catch (error) {
-    // A path that is absent in the final dirty tree is a deletion entry; only
-    // absence is tolerated here, so a vanished-then-recreated path still fails.
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      return { path: relativePath, kind: 'delete' };
-    }
-    throw error;
-  }
-  const content = await captureBeforeDeadline(
-    captureFile(target, MAX_UNTRACKED_FILE_BYTES, deadline, remainingBytes),
-    deadline,
-  );
-  return {
-    path: relativePath,
-    kind: content.fileType === 'symlink' ? 'symlink' : 'regular',
-    content: content.content,
-    mode: content.mode,
-  };
-}
-
-async function assertWorkspaceParents(root: string, relativePath: string): Promise<void> {
-  const segments = path.dirname(relativePath).split(path.sep).filter((segment) => segment && segment !== '.');
-  let current = root;
-  for (const segment of segments) {
-    current = path.join(current, segment);
-    try {
-      const stat = await fs.lstat(current);
-      if (stat.isSymbolicLink()) {
-        throw new Error(`Review materialization path escapes through symlink: ${relativePath}`);
-      }
-      if (!stat.isDirectory()) {
-        throw new Error(`Review materialization parent is not a directory: ${relativePath}`);
-      }
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-      await fs.mkdir(current);
-    }
-  }
-}
-
-async function captureWorkspaceEntry(
-  workspace: string,
-  entry: ReviewMaterializationEntryDescriptor,
-  deadline: CaptureDeadline,
-  remainingBytes: number,
-): Promise<ReviewMaterializationEntry> {
-  const target = repoPath(workspace, entry.path);
-  if (entry.kind === 'delete') {
-    try {
-      await fs.lstat(target);
-      return { path: entry.path, kind: 'regular' };
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { path: entry.path, kind: 'delete' };
-      throw error;
-    }
-  }
-  const content = await captureBeforeDeadline(captureFile(target, MAX_UNTRACKED_FILE_BYTES, deadline, remainingBytes), deadline);
-  return {
-    path: entry.path,
-    kind: content.fileType === 'symlink' ? 'symlink' : 'regular',
-    content: content.content,
-    mode: content.mode,
-  };
-}
-
-export async function captureReviewMaterialization(
-  repositoryDirectory: string,
-  input: GitSnapshotInput,
-): Promise<ReviewMaterialization> {
-  const { snapshot, entries } = await captureSnapshot(repositoryDirectory, input, true);
-  return { snapshot, entries, fingerprint: materializationFingerprint(entries) };
-}
-
-export async function fingerprintReviewWorkspace(
-  workspace: string,
-  expectedEntries: readonly ReviewMaterializationEntryDescriptor[],
-): Promise<string> {
-  const deadline = standaloneUntrackedCaptureDeadline();
-  let remainingBytes = MAX_UNTRACKED_TOTAL_BYTES;
-  const entries: ReviewMaterializationEntry[] = [];
-  for (const expected of [...expectedEntries].sort((left, right) => compareUnicodeCodePoints(left.path, right.path))) {
-    const entry = await captureWorkspaceEntry(workspace, expected, deadline, remainingBytes);
-    if (entry.content) remainingBytes -= entry.content.byteLength;
-    entries.push(entry);
-  }
-  return materializationFingerprint(entries);
-}
-
-export async function materializeReviewWorkspace(
-  workspace: string,
-  materialization: ReviewMaterialization,
-): Promise<void> {
-  for (const entry of materialization.entries.filter((entry) => entry.kind === 'delete')) {
-    const target = repoPath(workspace, entry.path);
-    await assertWorkspaceParents(workspace, entry.path);
-    await fs.rm(target, { recursive: true, force: true });
-  }
-  for (const entry of materialization.entries.filter((entry) => entry.kind !== 'delete')) {
-    const target = repoPath(workspace, entry.path);
-    await assertWorkspaceParents(workspace, entry.path);
-    await fs.rm(target, { recursive: true, force: true });
-    if (entry.kind === 'symlink') {
-      await fs.symlink(entry.content!.toString('utf8'), target);
-    } else {
-      await fs.writeFile(target, entry.content!);
-      if (entry.mode !== undefined) await fs.chmod(target, entry.mode & 0o7777);
-    }
-  }
-  const fingerprint = await fingerprintReviewWorkspace(workspace, materialization.entries);
-  if (fingerprint !== materialization.fingerprint) {
-    throw new Error('Review workspace materialization fingerprint mismatch.');
-  }
+  return captureSnapshot(repositoryDirectory, input);
 }
