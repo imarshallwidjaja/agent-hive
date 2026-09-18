@@ -18,7 +18,7 @@ import { VULNERABILITY_REVIEW_PRIMARY_PROMPT } from './vulnerability-review-prim
 import { VULNERABILITY_REVIEWER_PROMPT } from './vulnerability-reviewer';
 import { HIVE_SYSTEM_PROMPT } from '../hooks/system-hook';
 import { ENGINEERING_JUDGMENT_PROMPT } from './engineering-judgment';
-import { PROCESS_JUDGMENT_PROMPT } from './process-judgment';
+import { PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT } from './process-judgment';
 
 const STANDING_CONSTRAINTS_HEADING = '## Standing Constraints (operator, session-wide)';
 
@@ -828,9 +828,24 @@ describe('Hive (Hybrid) prompt', () => {
       expect(QUEEN_BEE_PROMPT).not.toContain('continueFromBlocked');
     });
 
-    it('describes both managed placements without claiming in-place isolation', () => {
-      expect(SWARM_BEE_PROMPT).toContain('Use a worktree when isolation or Git integration helps');
-      expect(SWARM_BEE_PROMPT).toContain('current checkout, a non-Git directory, or report-only');
+    it('directs executor primaries to repository-backed worktree placement', () => {
+      for (const [name, prompt] of [
+        ['Hive', QUEEN_BEE_PROMPT],
+        ['Swarm', SWARM_BEE_PROMPT],
+        ['Hive Builder', HIVE_BUILDER_PROMPT],
+      ] as const) {
+        expect(countOccurrences(prompt, REPOSITORY_WORKTREE_POLICY_PROMPT), name).toBe(1);
+      }
+
+      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('Pass only the returned repository IDs owned by the current lane');
+      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('use all returned IDs only for genuinely cross-repository work');
+      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('A single-repository worker returns the exact `sourceCommit` SHA');
+      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('a composite worker returns the complete `sourceCommits` map keyed by repository ID');
+      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('Pass the returned scalar or map unchanged to the matching merge tool');
+      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain("either set `status: 'blocked'` with a structured blocker");
+      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain("keep `status: 'in_progress'` with pending-integration detail in `summary` or `report` and no blocker");
+      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('explicit operator request to continue specific existing uncommitted changes');
+      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('A dirty checkout alone does not justify direct checkout');
     });
 
     it('treats terminal tool responses as non-retriable for same parameters', () => {
@@ -932,8 +947,12 @@ describe('Hive (Hybrid) prompt', () => {
 describe('Multi-repo planning guidance', () => {
   it('teaches hive hybrid planners to prefer per-repo task boundaries on manifest-backed projects', () => {
     expect(QUEEN_BEE_PROMPT).toContain('**Repos**:');
+    expect(QUEEN_BEE_PROMPT).toContain('each task with tracked writes MUST declare');
+    expect(QUEEN_BEE_PROMPT).toContain('before task sync or worktree creation');
     expect(QUEEN_BEE_PROMPT).toContain('per-repo task');
     expect(QUEEN_BEE_PROMPT).toContain('coupled multi-repo');
+    expect(QUEEN_BEE_PROMPT).toContain("automatically replace and cancel it only when no work has started and no existing task depends on it; the replacement mirrors incoming `dependsOn` and supplies corrected `repos` via `hive_task_create(...)`");
+    expect(QUEEN_BEE_PROMPT).toContain('If work started or reverse dependents exist, retain the incorrect task as blocked with a structured blocker and escalate; do not rewrite dependencies');
   });
 
   it('teaches hive hybrid planners to discover and update repository manifests before writing repo-scoped tasks', () => {
@@ -1127,8 +1146,12 @@ describe('Architect (Planner) prompt', () => {
 
   it('instructs planners to prefer per-repo task boundaries and use the `**Repos**:` annotation on manifest-backed projects', () => {
     expect(ARCHITECT_BEE_PROMPT).toContain('**Repos**:');
+    expect(ARCHITECT_BEE_PROMPT).toContain('each task with tracked writes MUST declare');
+    expect(ARCHITECT_BEE_PROMPT).toContain('before task sync or worktree creation');
     expect(ARCHITECT_BEE_PROMPT).toContain('Prefer one repo per task');
     expect(ARCHITECT_BEE_PROMPT).toContain('coupled multi-repo');
+    expect(ARCHITECT_BEE_PROMPT).toContain("require the orchestrator to automatically replace and cancel it only when no work has started and no existing task depends on it; the replacement must mirror incoming `dependsOn` and supply corrected `repos` via `hive_task_create(...)`");
+    expect(ARCHITECT_BEE_PROMPT).toContain('If work started or reverse dependents exist, require the orchestrator to retain the incorrect task as blocked with a structured blocker and escalate; do not rewrite dependencies');
   });
 
   it('instructs planners to inspect, discover, and update repository manifests before repo-scoped planning', () => {
@@ -1154,6 +1177,9 @@ describe('Swarm (Orchestrator) prompt', () => {
       expect(SWARM_BEE_PROMPT).toContain('hive_repositories_discover');
       expect(SWARM_BEE_PROMPT).toContain('hive_repositories_update');
       expect(SWARM_BEE_PROMPT).toContain('before hive_tasks_sync, hive_task_create, or hive_worktree_create');
+      expect(SWARM_BEE_PROMPT).toContain('every task MUST declare its **Repos** metadata before task sync or worktree creation');
+      expect(SWARM_BEE_PROMPT).toContain("automatically replace and cancel it only when no work has started and no existing task depends on it; the replacement mirrors incoming `dependsOn` and supplies corrected `repos` via `hive_task_create(...)`");
+      expect(SWARM_BEE_PROMPT).toContain('If work started or reverse dependents exist, retain the incorrect task as blocked with a structured blocker and escalate; do not rewrite dependencies');
     });
 
     it('conditions context consolidation and stale-state checks on observable pressure and task state', () => {
@@ -1282,7 +1308,7 @@ describe('Swarm (Orchestrator) prompt', () => {
 
     it('delegates batch merges to hive-helper and keeps post-batch verification with Swarm', () => {
       expect(SWARM_BEE_PROMPT).toContain("task({ subagent_type: 'hive-helper'");
-      expect(SWARM_BEE_PROMPT).toContain('delegate the merge batch');
+      expect(SWARM_BEE_PROMPT).toContain('returned sourceCommit or complete sourceCommits values unchanged');
       expect(SWARM_BEE_PROMPT).toContain('After the helper returns');
       expect(SWARM_BEE_PROMPT).toContain('bun run build');
       expect(SWARM_BEE_PROMPT).toContain('bun run test');
@@ -1404,10 +1430,13 @@ describe('Forager (Worker/Coder) prompt', () => {
     expect(FORAGER_BEE_PROMPT).toContain('When implementation is authorized and a feature/task worker prompt identifies a Hive feature');
   });
 
-  it('requires one meaningful managed-task commit with a subject and body when changes exist', () => {
+  it('gives commit authority only to worktree implementation assignments', () => {
     expect(FORAGER_BEE_PROMPT).toContain('Hive git helpers do not auto-commit source');
-    expect(FORAGER_BEE_PROMPT).toContain('An assignment may authorize an ordinary source Git commit');
-    expect(FORAGER_BEE_PROMPT).toContain('proposed Conventional Commit subject and body');
+    expect(FORAGER_BEE_PROMPT).toContain('A worktree implementation assignment explicitly authorizes committing the assigned changes');
+    expect(FORAGER_BEE_PROMPT).toContain('return the exact `sourceCommit` SHA');
+    expect(FORAGER_BEE_PROMPT).toContain('return the complete `sourceCommits` map keyed by repository ID');
+    expect(FORAGER_BEE_PROMPT).toContain('In-place and diagnosis-only missions do not authorize commits');
+    expect(FORAGER_BEE_PROMPT).not.toContain('proposed Conventional Commit subject and body');
   });
 
   it('contains resolve before blocking', () => {
@@ -1482,7 +1511,7 @@ describe('Hive Helper prompt', () => {
 
   it('uses hive_worktree_merge first only for merge recovery and resolves preserved conflicts locally', () => {
     expect(HIVE_HELPER_PROMPT).toContain('hive_worktree_merge');
-    expect(HIVE_HELPER_PROMPT).toContain('Merge recovery / merge batch: call `hive_worktree_merge` first');
+    expect(HIVE_HELPER_PROMPT).toContain('Merge recovery / merge batch: pass the caller\'s returned scalar or map unchanged to `hive_worktree_merge`');
     expect(HIVE_HELPER_PROMPT).not.toContain('- use `hive_merge` first');
     expect(HIVE_HELPER_PROMPT).not.toContain('1. Call `hive_merge` first for the requested task branch.');
     expect(HIVE_HELPER_PROMPT).toContain("conflictState: 'preserved'");
@@ -1781,6 +1810,12 @@ describe('README.md documentation', () => {
       expect(hiveToolsContent).toContain('cleanup');
       expect(hiveToolsContent).toContain('hive_worktree_merge');
       expect(hiveToolsContent).toContain('message');
+      expect(hiveToolsContent).toContain('optional `repoIds`, optional absolute `sourceDirectory`');
+      expect(hiveToolsContent).toContain('Use `sourceCommit` for a single-repository workspace');
+      expect(hiveToolsContent).toContain('Use `sourceCommits` for a composite workspace');
+      expect(hiveToolsContent).toContain('On creation, `repoIds` selects the repositories owned by the lane');
+      expect(hiveToolsContent).toContain('later ad-hoc lifecycle calls use `runId` to locate the persisted placement');
+      expect(hiveToolsContent).toContain('cannot be combined with `repoIds`');
     });
   });
 

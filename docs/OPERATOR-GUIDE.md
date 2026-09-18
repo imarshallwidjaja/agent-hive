@@ -9,7 +9,7 @@ Agent Hive separates decisions from execution:
 - **You** set direction, review the plan, answer blockers, and approve risk.
 - The **primary agent** turns the request into a plan and orchestrates the work.
 - **Researchers and reviewers** inspect code, plans, or review evidence.
-- **Workers** implement approved tasks in a worktree, the current checkout, a non-Git directory, or report-only.
+- **Workers** implement approved tracked Git tasks in matching worktrees; non-Git or report-only work follows the direct-work exceptions.
 - **`.hive/`** stores durable plans, task state, reports, and comments.
 
 A plan does not authorize implementation until you approve it. `/dash-review` and `/vuln-review` bind to separate review primaries so the agent that wrote the change is not the one judging it.
@@ -28,9 +28,9 @@ OpenCode shows these public seats. Dedicated mode (the default) registers `archi
 
 MO: classify the request, clear requirements one gap at a time, then write a worker-executable plan. It stops at an approved plan. Switch to `swarm-orchestrator` (or keep talking to `hive-master` in unified mode) for execution.
 
-**`swarm-orchestrator`** exists so approved feature work can run without owning plan authorship. Dedicated-mode execution seat. It delegates plan changes to `architect-planner`, syncs tasks, starts workers, inspects handoffs, merges, and tracks `.hive/` status.
+**`swarm-orchestrator`** exists so approved feature work can run without owning plan authorship. Dedicated-mode execution seat. It delegates plan changes to `architect-planner`, syncs tasks, starts workers in matching task worktrees, inspects handoffs, merges, and tracks `.hive/` status.
 
-MO: delegate by default. Choose direct work, delegation, or a worktree from the situation. One numbered task is one implementation assignment. Worker output is evidence to inspect, not proof that the batch is done.
+MO: delegate by default. Choose direct work or delegation according to the repository-backed placement policy. One numbered task is one implementation assignment. Worker output is evidence to inspect, not proof that the batch is done.
 
 **`hive-master`** exists for operators who want one feature seat across planning and execution. Unified-mode default. It is phase-aware: no feature or unapproved plan means delegating plan authorship to `architect-planner`; approved tasks mean orchestration.
 
@@ -38,7 +38,7 @@ MO: same situational direct-vs-delegate choice as the split seats. It still wait
 
 **`hive-builder`** exists for bounded work that should not become a feature, plan, or task DAG. It is the dedicated-mode ad-hoc orchestrator and remains available in unified mode. If accepted escalation needs a feature plan, Builder delegates plan authorship to `architect-planner`.
 
-MO: inspect, classify or decompose into coherent lanes, place ready writing lanes in separate ad-hoc worktrees when isolation helps, delegate non-trivial work, verify, inspect status/diff, merge, cleanup. It does not create feature or task records. Decomposition does not add a blanket approval step. If unresolved contracts, inexpressible handoffs, migration or irreversible risk, or audit/governance needs make the feature workflow materially safer, it recommends escalation. If you reject escalation, it continues ad-hoc only when material scope, contracts, and risks are otherwise resolved; otherwise it asks the concrete blocking question before creating workers.
+MO: coordinate coherent ad-hoc lanes under the repository-backed placement policy. It does not create feature or task records. Decomposition does not add a blanket approval step. If unresolved contracts, inexpressible handoffs, migration or irreversible risk, or audit/governance needs make the feature workflow materially safer, it recommends escalation. If you reject escalation, it continues ad-hoc only when material scope, contracts, and risks are otherwise resolved; otherwise it asks the concrete blocking question before creating workers.
 
 ### Subagents you will see
 
@@ -46,7 +46,7 @@ Primaries launch these. Ask the primary for a named seat when you want that lens
 
 **`scout-researcher`** retrieves bounded evidence from local code, docs, and external sources. It can summarize facts, trace calls and references, preserve contradictory evidence, and report attributed source recommendations. It does not diagnose observed failures, judge system correctness, decide applicability or tradeoffs, select solutions, edit, implement, or launch other agents. Primaries route by the requested output rather than read-only status: they own synthesis and decisions, check decisive provenance and plausible alternatives, and use Scouts when a real evidence gap makes delegation useful.
 
-**`forager-worker`** implements in isolation against a written assignment without inventing extra scope. Implementation missions code and run best-effort checks, then return one terminal handoff. The primary records status and reports with `hive_task_update`. Diagnosis-only missions report evidence, tested and untested hypotheses, a supported conclusion or unresolved status, and requested options without fixing, editing, committing, or using destructive reproduction. It never delegates. An assignment may authorize an ordinary source Git commit. Hive git helpers do not auto-commit.
+**`forager-worker`** implements in the assigned Hive worktree against a written assignment without inventing extra scope. Implementation missions code, run best-effort checks, create the authorized local source commit, and return `sourceCommit` for a single repository or the complete `sourceCommits` map for a composite workspace. The primary records status and reports with `hive_task_update`. Diagnosis-only missions report evidence, tested and untested hypotheses, a supported conclusion or unresolved status, and requested options without fixing, editing, committing, or using destructive reproduction. It never delegates. Hive git helpers do not auto-commit; worktree execution grants no push, PR, publish, or release authority.
 
 **`plan-reviewer`** exists to catch plans that a worker cannot execute. Core question: can a capable worker run this without getting stuck? It checks work content, references, scope, dependencies, executable verification, and written assumptions. It samples representative task handoffs and path ownership: missing dependencies and unsafe shared-write overlap are blockers. It may report nonblocking coordination observations, but a low parallel task count does not justify rejection. Verdict is OKAY or REJECT based on execution blockers. It does not judge whether the architecture is optimal.
 
@@ -109,9 +109,15 @@ Read with `hive_context_read` before replace, append, or archive, then pass revi
 
 `hive_worktree_create` / `inspect` / `merge` / `cleanup` cover feature-task Git workspaces. `hive_adhoc_worktree_create` / `inspect` / `merge` / `cleanup` cover ad-hoc Git workspaces. Ad-hoc worktrees are temporary workspace metadata only.
 
-Git helpers do not change task status, auto-commit source, or assign workers. An assignment may authorize an ordinary source Git commit. Orchestration merge via `hive-helper` owns integration. Canonical workspace names are metadata; existing slotted or composite workspaces are selectable. Merge wants a clean source and dest pinned SHA, squash default, and an explicit message. Locks are operation-local. Dirty, untracked, ignored, and unmerged data is protected; there is no force or rm fallback. Same-call squash cleanup may use observed identity; later ambiguous branches stay unless `discard: true` is explicit. `deleteBranch` alone does not discard an unmerged branch. Composite partial outcomes are not rolled back.
+Git helpers do not change task status, auto-commit source, or assign workers. A worktree implementation assignment explicitly authorizes committing assigned changes. A single-repository worker returns the exact `sourceCommit` SHA; a composite worker returns the complete `sourceCommits` map keyed by repository ID. The primary or helper passes that pin unchanged to merge. In-place and diagnosis-only missions do not authorize commits. Orchestration merge via `hive-helper` owns integration. Canonical workspace names are metadata; existing slotted or composite workspaces are selectable. Merge wants a clean source and destination, squash default, and an explicit message. Locks are operation-local. Dirty, untracked, ignored, and unmerged data is protected; there is no force or rm fallback. Same-call squash cleanup may use observed identity; later ambiguous branches stay unless `discard: true` is explicit. `deleteBranch` alone does not discard an unmerged branch. Composite partial outcomes are not rolled back.
 
-Parent chooses direct work, delegation, or a worktree from the situation. Feature work is location-neutral.
+Parent chooses direct work or delegation according to the repository-backed placement policy. Feature work uses a matching task worktree for tracked Git writes.
+
+### Repository-backed placement
+
+Before a non-trivial writing lane, resolve repository ownership. In ad-hoc work, call `hive_repositories_status` once per execution batch unless repository scope is already explicit, then pass only the returned repository IDs owned by the current lane; use all returned IDs only for genuinely cross-repository work. Feature-task execution may reuse declared task repositories.
+
+Use the matching Hive worktree for tracked Git writes: feature-task worktree when a task exists, ad-hoc otherwise. If creation fails, correct the invocation or report the blocker; never fall back to the canonical checkout. Require the worker's exact scalar or complete composite pin and pass it unchanged to merge. Complete verification, status/diff inspection, squash merge by default, and cleanup after successful integration. Mark feature tasks done only after merge. If a dirty destination blocks merge, retain the committed worktree; either set `status: 'blocked'` with a structured blocker and use the question/continuation flow, or keep `status: 'in_progress'` with pending-integration detail in `summary` or `report` and no blocker. Ad-hoc work reports integration pending and retains the run. Direct checkout is limited to an explicit operator request to continue specific existing uncommitted changes plus confirmation that the scoped edit will not overwrite unrelated changes, small mechanical edits on a clean checkout without delegated writers or overlap, non-Git/report-only/external-only work, or work already inside the matching Hive worktree. A dirty checkout alone does not justify direct checkout.
 
 ## Tasks and reports
 
@@ -119,15 +125,17 @@ Parent chooses direct work, delegation, or a worktree from the situation. Featur
 
 Plans, approval, and dependencies guide work and status visibility. They are not dispatch or status admission gates. Structural missing refs and cycles remain invalid.
 
+For a plan-backed task with missing or incorrect repository metadata, amend the plan and run `hive_tasks_sync({ refreshPending: true })` before worktree creation. For an incorrectly scoped manual task, automatically replace and cancel it only when no work has started and no existing task depends on it; the replacement mirrors incoming `dependsOn` and supplies corrected `repos` via `hive_task_create(...)`. If work started or reverse dependents exist, retain the incorrect task as blocked with a structured blocker and escalate; do not rewrite dependencies.
+
 When a worker is blocked: record blocked status and blocker, ask via `question()`, then update with an explicit status leaving blocked. Put the decision in the next worker prompt. Do not reconstruct blocker details from worker prose.
 
 ## Ad-hoc work
 
 For ad-hoc work with multiple independently verifiable outcomes, dependency waves, shared write/runtime resources, possible background execution, or an expected need for more than one worker attempt or turn, load `orchestrating-ad-hoc-work` before worktree create or delegated dispatch.
 
-1. **Inspect and classify.** Stay ad-hoc unless the feature workflow is materially safer.
-2. **Delegate and track.** Scouts research. Foragers implement. Reviewers check settled results.
-3. **Integrate and clean up.** For worktree placement, `hive_adhoc_worktree_merge` then `hive_adhoc_worktree_cleanup`. Default Git integration is squash with a polished message.
+1. **Inspect and classify.** Stay ad-hoc unless the feature workflow is materially safer; resolve repository ownership before non-trivial writing lanes.
+2. **Place and delegate.** Use `hive_adhoc_worktree_create` for tracked Git writes, then dispatch Foragers with the required `sourceCommit` or complete `sourceCommits` return contract. Scouts research. Reviewers check settled results.
+3. **Verify, integrate, and clean up.** Inspect the committed worktree, pass its returned pin unchanged to `hive_adhoc_worktree_merge`, use squash by default, then call `hive_adhoc_worktree_cleanup`. Keep a committed worktree when a dirty destination leaves integration pending.
 
 give any fix instruction to the active ad-hoc primary: `hive-builder` in dedicated mode or `hive-master` in unified mode.
 

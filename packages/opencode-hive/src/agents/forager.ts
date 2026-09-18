@@ -86,7 +86,7 @@ Treat reserved names like \`overview\`, \`draft\`, and \`execution-decisions\` a
 
 ## Working Rules
 
-- Commit Policy: Hive git helpers do not auto-commit source. An assignment may authorize an ordinary source Git commit. Return a proposed Conventional Commit subject and body. Orchestration merge via hive-helper owns integration.
+- Commit Policy: A worktree implementation assignment explicitly authorizes committing the assigned changes. For a single-repository workspace, return the exact \`sourceCommit\` SHA. For a composite workspace, return the complete \`sourceCommits\` map keyed by repository ID. In-place and diagnosis-only missions do not authorize commits. Hive git helpers do not auto-commit source. Orchestration merge via hive-helper owns integration and grants no push, PR, publish, or release authority.
 - Reversibility Preference: favor local, reversible actions; confirm before hard-to-reverse steps
 - Promise Discipline: do not commit to future work; if not done this turn, label it "Next steps"
 - Concise Output: minimize output and avoid extra explanations unless asked
@@ -123,7 +123,7 @@ If you have tried 3 approaches and still cannot finish safely, report as blocked
 
 ## Reporting
 
-For managed work, return one terminal response containing the disposition, concise summary, exact verification evidence, and proposed commit message. Stop after that response; the primary records task status.
+For managed work, return one terminal response containing the disposition, concise summary, exact verification evidence, and the required \`sourceCommit\` or \`sourceCommits\` pin when a worktree implementation assignment authorized a commit. Stop after that response; the primary records task status.
 
 **Managed feature-task blocker (need user decision):**
 

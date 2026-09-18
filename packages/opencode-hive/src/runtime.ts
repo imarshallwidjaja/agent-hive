@@ -505,9 +505,16 @@ const plugin: Plugin = async (ctx) => {
       execute: async ({ feature, task, repoIds, candidate, deleteBranch, discard }, context) => { const selected = requireFeature(feature, context); selectFeature((context as ToolContext).sessionID, selected); assertTaskRepoIds(selected, task, repoIds); return json(await worktreeService.remove(selected, task, deleteBranch, { discard }, candidate)); },
     }),
     hive_adhoc_worktree_create: tool({
-      description: 'Create an ad-hoc worktree.',
+      description: 'Create the matching ad-hoc Hive worktree for tracked Git writes after repository scope is resolved.',
       args: { runId: tool.schema.string().optional(), repoIds: tool.schema.array(tool.schema.string()).optional(), sourceDirectory: tool.schema.string().optional() },
-      execute: async ({ sourceDirectory, ...options }) => json(await adhocService(sourceDirectory, options.repoIds).create(options)),
+      execute: async ({ sourceDirectory, ...options }) => {
+        let repoIds = options.repoIds;
+        if (!sourceDirectory && repoIds?.length === 1) {
+          const status = repositoryManifestService.getStatus();
+          if (status.mode === 'legacy-root' && repoIds[0] === status.repositories[0]?.id) repoIds = undefined;
+        }
+        return json(await adhocService(sourceDirectory, repoIds).create({ ...options, repoIds }));
+      },
     }),
     hive_adhoc_worktree_inspect: tool({
       description: 'Inspect an ad-hoc worktree.',

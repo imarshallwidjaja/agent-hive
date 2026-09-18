@@ -147,10 +147,12 @@ Each task MUST declare dependencies with **Depends on**:
 - **Depends on**: none for no dependencies / parallel starts
 - **Depends on**: 1, 3 for explicit task-number dependencies
 
-For manifest-backed projects (where \`.hive/repositories.json\` defines project repositories), each task SHOULD declare which repos it touches with **Repos**:
+For manifest-backed projects (where \`.hive/repositories.json\` defines project repositories), each task with tracked writes MUST declare which repos it touches with **Repos** before task sync or worktree creation:
 - **Repos**: api for single-repo tasks
 - **Repos**: api, web for coupled multi-repo tasks
 - Prefer one repo per task where practical; use coupled multi-repo tasks only when the change intrinsically spans repos (shared contracts, coordinated schema changes, cross-repo refactors). Do not co-locate independent changes.
+
+For a plan-backed task with missing or incorrect repository metadata, amend the plan and require the orchestrator to run \`hive_tasks_sync({ refreshPending: true })\` before worktree creation. For an incorrectly scoped manual task, require the orchestrator to automatically replace and cancel it only when no work has started and no existing task depends on it; the replacement must mirror incoming \`dependsOn\` and supply corrected \`repos\` via \`hive_task_create(...)\`. If work started or reverse dependents exist, require the orchestrator to retain the incorrect task as blocked with a structured blocker and escalate; do not rewrite dependencies.
 
 Before planning multi-repo or non-git-root work, inspect repository scope with \`hive_repositories_status\`. If the needed repo is not declared, run \`hive_repositories_discover\`, then \`hive_repositories_update\` to add the discovered repo without asking the operator when the scope is clear. Add only repositories the feature or task will touch; do not bulk-register every discovered repo.
 

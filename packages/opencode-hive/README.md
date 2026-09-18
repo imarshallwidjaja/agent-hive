@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/oc-arkive)](https://www.npmjs.com/package/oc-arkive)
 [![License: MIT with Commons Clause](https://img.shields.io/badge/License-MIT%20with%20Commons%20Clause-blue.svg)](../../LICENSE)
 
-OpenCode workflow plugin for plan-first development: feature plans, approval gates, managed Git worktrees or explicit in-place directories, durable `.hive/` state, and optional review commands.
+OpenCode workflow plugin for plan-first development: feature plans, approval gates, managed Git worktrees, durable `.hive/` state, and optional review commands.
 
 Requires **OpenCode >= 1.18.30** for native task attachment hooks. Open your project and ask Hive to work.
 
@@ -48,7 +48,7 @@ Default mode is dedicated (`architect-planner` + `swarm-orchestrator`). Set `"ag
 2. **Write plan** - `hive_plan_write` / `hive_plan_patch`
 3. **Human review** - comments and chat
 4. **Approve + sync** - `hive_plan_approve`, then `hive_tasks_sync`
-5. **Execute** - optional `hive_worktree_create`, then one ordinary native Forager call
+5. **Execute** - create the matching `hive_worktree_create` workspace for tracked Git writes, then issue one ordinary native Forager call
 6. **Record** - the primary calls `hive_task_update` for status, summary, blocker, or report
 7. **Merge** - `hive_worktree_merge` integrates completed task branches
 8. **Complete feature** - `hive_feature_complete` when done
@@ -276,7 +276,7 @@ The ad-hoc orchestrator calls `hive_adhoc_worktree_create`, then an ordinary nat
 
 Feature escalation is advisory. If the operator rejects it, continue ad-hoc only when material scope, contracts, and risks are otherwise resolved. Ask any remaining concrete blocking question before creating workers.
 
-Forager is an execution role. Optionally create a worktree, or work in the current checkout. Direct foreground OpenCode work may still modify the current checkout; that work is unmanaged OpenCode work, not a Hive worktree.
+Forager is an execution role. Use a matching worktree for tracked Git writes; non-Git or report-only work follows the direct-work exceptions. Direct foreground OpenCode work is unmanaged OpenCode work, not a Hive worktree.
 
 Native `general` is an ordinary unmanaged delegation. General has ordinary tools only and cannot delegate or ask questions. Native helpers retain bounded operational permissions.
 

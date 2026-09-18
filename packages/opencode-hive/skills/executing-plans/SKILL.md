@@ -36,16 +36,16 @@ When the operator gives an explicit direction (parallel, sequential, or a subset
 ### Step 3: Execute Batch
 
 For each task in the batch:
-1. Optionally call `hive_worktree_create` for the task, then issue the next native Forager `task()` call. Put the complete Forager context packet in that native `task.prompt`. The runtime appends concise project, feature, and session constraints. Independent worktrees may be created and dispatched under one parent. In gate-closed sessions use a blocking native `task()` call. In gate-open sessions add `background: true` only when independent foreground work can continue. Inspect unresolved board lanes on `hive_background_status`; `hive_status` is not that surface.
+1. For tracked Git writes, call `hive_worktree_create` for the task, then issue the next native Forager `task()` call with authority to commit assigned changes. Require `sourceCommit` for a single-repository workspace or a complete `sourceCommits` map keyed by repository ID for a composite workspace. Non-Git or report-only work follows the direct-work exceptions. Put the complete Forager context packet in that native `task.prompt`. The runtime appends concise project, feature, and session constraints. Independent worktrees may be created and dispatched under one parent. In gate-closed sessions use a blocking native `task()` call. In gate-open sessions add `background: true` only when independent foreground work can continue. Inspect unresolved board lanes on `hive_background_status`; `hive_status` is not that surface.
 2. Follow each step exactly (plan has bite-sized steps)
 3. Run verifications as specified
-4. After the worker returns, call `hive_task_update` for status, summary, blocker, or report.
+4. After the worker returns, inspect the result and pass its `sourceCommit` or `sourceCommits` pin unchanged to `hive_worktree_merge`. Merge tracked Git work before marking the task done. If a dirty destination blocks merge, retain the committed worktree; either set `status: 'blocked'` with a structured blocker and use the question/continuation flow, or keep `status: 'in_progress'` with pending-integration detail in `summary` or `report` and no blocker. Record non-Git or report-only results after target verification.
 
 One implementation assignment normally maps to one numbered task. Its primary goal may include tightly coupled code, tests, docs, and multiple files; do not split it by file or step. Native `task_id` resume is allowed when continuing the same child. Use a fresh session for an independent unrelated goal. Blocked continuation: `hive_task_update` with blocked status and blocker, operator decision, then `hive_task_update` with an explicit status leaving blocked. Never reconstruct blocker details from worker prose or task traces. Compaction may re-anchor a currently running worker; it is not re-delegation.
 
 A rare native `general` exception is an ordinary `task()` call with ordinary tools only: no Hive authority, recursion, or questions. Native helpers keep only their bounded operational permissions.
 
-For delegated execution, use Forager-derived workers or the explicitly admitted native general/helper exceptions above. Other mutation-capable or unknown task targets are denied. Architect retains its bounded planning lane. Direct checkout work is unmanaged OpenCode work, not a Hive worktree.
+For delegated execution, use Forager-derived workers or the explicitly admitted native general/helper exceptions above. Other mutation-capable or unknown task targets are denied. Architect retains its bounded planning lane. Direct checkout work is unmanaged OpenCode work, not the feature tracked-write path.
 
 ### Step 4: Report
 When batch complete:
@@ -88,7 +88,7 @@ After all tasks complete:
 - **REQUIRED SUB-SKILL:** Use `skill({ name: "verification" })`
 - Verify with evidence from that skill
 - For worktree placement, integrate through Hive merge (`hive_worktree_merge`, typically via `hive-helper` squash batch); do not use raw `git merge` / `git worktree remove` as the Hive finish path
-- For in-place placement, run verification against the live target and skip Hive merge and cleanup because no managed Git placement exists
+- For non-Git or report-only placement, verify the target and skip Hive merge and cleanup because no managed Git placement exists
 - Do not present a generic merge/PR/keep/discard menu
 
 ## When to Stop and Ask for Help

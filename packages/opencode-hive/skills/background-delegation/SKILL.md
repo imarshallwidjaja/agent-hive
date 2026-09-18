@@ -80,7 +80,7 @@ Before any dependent decision, merge, cleanup, final report, or new overlapping 
 
 1. Consume the owning workflow's ready lanes, delegation kinds, ownership boundaries, and safe independent foreground work.
 2. Build the context packet for each supplied lane without changing its boundary.
-3. Every Forager lane, including report-only diagnosis, needs a native `task()` call with a Forager or Forager-derived agent. Optionally create a worktree first. The primary authors that prompt. The runtime appends concise project, feature, and session constraints. After the worker returns, call `hive_task_update` as needed. Ordinary Scout, advisor, and reviewer calls do not need a worktree.
+3. Every Forager lane, including report-only diagnosis, needs a native `task()` call with a Forager or Forager-derived agent. The owning workflow determines placement; create the matching worktree before dispatch for tracked Git writes. The primary authors that prompt. The runtime appends concise project, feature, and session constraints. After the worker returns, call `hive_task_update` as needed. Ordinary Scout, advisor, and reviewer calls do not need a worktree.
 4. Record returned `task_id` values and inspect the scoped board with `hive_background_status`.
 5. Follow `recommendedNextAction` from `hive_background_status` when present; use `nextActions` and `orchestrationBurden` as supporting detail for visible lanes and operator reporting. Treat `waitingForNativeCompletion` as wait-only state; an empty `jobs` list is not proof that no native background work exists.
 6. Continue only foreground work that does not depend on the background result.
@@ -94,22 +94,44 @@ Before any dependent decision, merge, cleanup, final report, or new overlapping 
 Gate-closed Forager launch (blocking wait mode):
 
 ```ts
-hive_adhoc_worktree_create({});
+const { repositories } = hive_repositories_status();
+const requestedRepoIds = lane.repoIds;
+const selectedRepoIds = repositories.filter(({ id }) => requestedRepoIds.includes(id)).map(({ id }) => id);
+if (
+  requestedRepoIds.length === 0 ||
+  new Set(requestedRepoIds).size !== requestedRepoIds.length ||
+  requestedRepoIds.some((id) => !selectedRepoIds.includes(id))
+) {
+  throw new Error('Placement blocker: lane.repoIds must exactly match repository status IDs');
+}
+const repoIds = selectedRepoIds;
+hive_adhoc_worktree_create({ repoIds });
 await task({
   subagent_type: 'forager-worker',
   description: 'Implement the ad-hoc change',
-  prompt: 'Concrete work with done criteria',
+  prompt: 'Concrete work with done criteria; commit changes; return sourceCommit or the complete sourceCommits map.',
 });
 ```
 
 Gate-open Forager launch (background wait mode):
 
 ```ts
-hive_adhoc_worktree_create({});
+const { repositories } = hive_repositories_status();
+const requestedRepoIds = lane.repoIds;
+const selectedRepoIds = repositories.filter(({ id }) => requestedRepoIds.includes(id)).map(({ id }) => id);
+if (
+  requestedRepoIds.length === 0 ||
+  new Set(requestedRepoIds).size !== requestedRepoIds.length ||
+  requestedRepoIds.some((id) => !selectedRepoIds.includes(id))
+) {
+  throw new Error('Placement blocker: lane.repoIds must exactly match repository status IDs');
+}
+const repoIds = selectedRepoIds;
+hive_adhoc_worktree_create({ repoIds });
 const { task_id } = task({
   subagent_type: 'forager-worker',
   description: 'Implement the independent ad-hoc change',
-  prompt: 'Concrete independent work with done criteria',
+  prompt: 'Concrete independent work with done criteria; commit changes; return sourceCommit or the complete sourceCommits map.',
   background: true,
 });
 hive_background_status({});

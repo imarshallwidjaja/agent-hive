@@ -1,6 +1,6 @@
 ---
 name: hive
-description: Plan-first AI development with managed worktree or in-place worker placement and human review. Use for any feature development.
+description: Plan-first AI development with managed worktree placement and human review. Use for any feature development.
 ---
 
 # Hive Workflow
@@ -256,8 +256,8 @@ hive_tasks_sync()
 
 Choose the placement before dispatch:
 
-- A Git worktree uses `hive_worktree_create`. After the worker returns, `hive_task_update` records status; `hive_worktree_merge` integrates the branch.
-- In-place work edits a live directory. It has no Hive filesystem exclusion, Git isolation, rollback, commit, merge, or cleanup.
+- Tracked Git writes use the matching task worktree from `hive_worktree_create`.
+- Non-Git or report-only work may use an explicit existing target and has no Hive Git lifecycle.
 
 Worktree flow:
 
@@ -269,31 +269,19 @@ task({
   prompt: "Primary-authored objective, evidence, constraints, and checks"
 })
   ↓
-[Worker implements in worktree and returns one terminal handoff]
+[Worker commits changes and returns sourceCommit for one repository or the complete sourceCommits map for a composite workspace]
+  ↓
+// Single-repository workspace:
+hive_worktree_merge({ task: "01-task-name", sourceCommit, strategy: "squash", message: "feat: implement task outcome\n\nDescribe the integrated behavior and why it changed." })
+// Composite workspace:
+hive_worktree_merge({ task: "01-task-name", sourceCommits, strategy: "squash", message: "feat: implement task outcome\n\nDescribe the integrated behavior and why it changed." })
   ↓
 hive_task_update({ task: "01-task-name", status: "done", summary, report })
   ↓
-hive_worktree_merge({ task: "01-task-name", strategy: "squash", message: "feat: implement task outcome\n\nDescribe the integrated behavior and why it changed." })
+hive_worktree_cleanup({ task: "01-task-name" })
 ```
 
-In-place flow:
-
-```
-task({
-  subagent_type: "forager-worker",
-  description: "Implement 01-task-name",
-  prompt: "Primary-authored objective, evidence, constraints, and checks"
-})
-  ↓
-[Worker edits the live directory and returns one terminal handoff]
-  ↓
-hive_task_update({ task: "01-task-name", status: "done", summary, report })
-  ↓
-[Primary verifies the live target; no Hive merge or cleanup]
-hive_status()
-```
-
-After the worker returns, call `hive_task_update` then `hive_status()`. Blocked continuation: `hive_task_update` with blocked status and blocker, operator decision, then `hive_task_update` with an explicit status leaving blocked. Never reconstruct blocker details from worker prose. Do not call `hive_worktree_merge` again while preserved conflict state is active. Git helpers do not change task status, auto-commit source, or assign workers.
+After a worktree worker returns, inspect the source and pass its `sourceCommit` or complete `sourceCommits` map unchanged to merge before marking the feature task done. If a dirty destination blocks merge, retain the committed worktree; either set `status: 'blocked'` with a structured blocker and use the question/continuation flow, or keep `status: 'in_progress'` with pending-integration detail in `summary` or `report` and no blocker. Ad-hoc work reports integration pending and retains its run. Non-Git or report-only work has no Hive merge step; verify its target before recording completion. Never reconstruct blocker details from worker prose. Do not call `hive_worktree_merge` again while preserved conflict state is active. Git helpers do not change task status, auto-commit source, or assign workers.
 
 ### Parallel Execution
 
@@ -346,7 +334,7 @@ If blocker suggests plan is incomplete:
 If "Revise Plan":
 1. Re-check `hive_status()`
 2. Worktree placement: `hive_worktree_cleanup({ task })` when the workspace is idle.
-3. In-place placement: `hive_task_update({ task, status: "pending" })`, then replan.
+3. Non-Git or report-only placement: `hive_task_update({ task, status: "pending" })`, then replan.
 4. `hive_context_write({ name: "learnings", content: "..." })`
 5. `hive_plan_write({ content: "..." })` (updated plan)
 6. Wait for re-approval
@@ -401,7 +389,7 @@ hive_status()  # Confirm current task state before retry.
 task({ subagent_type: "forager-worker", description: "Retry", prompt: "Self-contained retry with done criteria" })
 ```
 
-In-place retry has no Hive merge, cleanup, rollback, or commit step.
+Non-Git or report-only retry has no Hive merge, cleanup, rollback, or commit step.
 
 ### After 3 Failures
 1. Stop all workers

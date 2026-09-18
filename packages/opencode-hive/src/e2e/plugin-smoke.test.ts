@@ -75,6 +75,26 @@ describe('plugin hard-cut surface', () => {
     await expect(hooks.tool!.hive_adhoc_worktree_inspect.execute({ runId: 'foreign', sourceDirectory: '.' }, {})).rejects.toThrow(/must be absolute/);
   });
 
+  it('creates a native single-root worktree from the repository status selection', async () => {
+    const { root, hooks } = await fixture();
+    execFileSync('git', ['init'], { cwd: root });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: root });
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: root });
+    fs.writeFileSync(path.join(root, 'tracked.txt'), 'base\n');
+    execFileSync('git', ['add', '.'], { cwd: root });
+    execFileSync('git', ['commit', '-m', 'test: base'], { cwd: root });
+
+    const status = JSON.parse(await hooks.tool!.hive_repositories_status.execute({}, {}));
+    const created = JSON.parse(await hooks.tool!.hive_adhoc_worktree_create.execute({
+      runId: 'status-root',
+      repoIds: status.repositories.map(({ id }: { id: string }) => id),
+    }, {}));
+
+    expect(status.mode).toBe('legacy-root');
+    expect(created.mode).toBe('adhoc-single');
+    expect(created.path).toBe(path.join(root, '.hive', '.worktrees', 'adhoc', 'status-root'));
+  });
+
   it('captures an explicit foreign-directory snapshot without consuming project topology', async () => {
     const { hooks } = await fixture();
     const source = fs.mkdtempSync(`/tmp/hive-plugin-snapshot-${process.pid}-`);

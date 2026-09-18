@@ -537,7 +537,7 @@ describe('skill content', () => {
 
     expect(dispatch).toContain('In Hive Builder or unified Hive ad-hoc mode, load `orchestrating-ad-hoc-work`');
     expect(dispatch).toContain('In feature-task mode, use `hive_status()`');
-    expect(dispatch).toContain('In ad-hoc mode, return result state to `orchestrating-ad-hoc-work`');
+    expect(dispatch).toContain('In ad-hoc mode, return result state and its exact pin to `orchestrating-ad-hoc-work`');
     expect(dispatch).toContain('In feature-task mode, follow the feature workflow\'s review, merge, and final-verification gates');
     expect(dispatch).toContain('In ad-hoc mode, return result and resource state to `orchestrating-ad-hoc-work`');
     expect(exploration).toContain('Hive Builder or unified Hive ad-hoc mode loads `orchestrating-ad-hoc-work`');
@@ -598,7 +598,7 @@ describe('skill content', () => {
     expect(completeDevelopment).toContain('hive_worktree_merge');
     expect(completeDevelopment).toContain('hive-helper');
     expect(completeDevelopment).toContain('For worktree placement');
-    expect(completeDevelopment).toContain('For in-place placement');
+    expect(completeDevelopment).toContain('For non-Git or report-only placement');
     expect(completeDevelopment).toContain('skip Hive merge and cleanup');
     expect(completeDevelopment).toContain('Do not present a generic merge/PR/keep/discard menu');
     expect(completeDevelopment).toContain('do not use raw `git merge` / `git worktree remove` as the Hive finish path');
@@ -622,11 +622,16 @@ describe('skill content', () => {
     expect(hiveSkill).not.toContain('taskToolCall');
   });
 
-  it('documents both execution placements in the core hive skill', () => {
+  it('documents tracked worktree execution and non-Git/report-only exceptions in the core hive skill', () => {
     const hiveSkill = readRepoFile('packages/hive-core/templates/skills/hive.md');
 
     expect(hiveSkill).toContain('hive_worktree_create');
-    expect(hiveSkill).toContain('no Hive filesystem exclusion, Git isolation, rollback, commit, merge, or cleanup');
+    expect(hiveSkill).toContain('Non-Git or report-only work may use an explicit existing target');
+    expect(hiveSkill).toContain('returns sourceCommit for one repository or the complete sourceCommits map for a composite workspace');
+    expect(hiveSkill).toContain('hive_worktree_merge({ task: "01-task-name", sourceCommit,');
+    expect(hiveSkill).toContain('hive_worktree_merge({ task: "01-task-name", sourceCommits,');
+    expect(hiveSkill).toContain('pass its `sourceCommit` or complete `sourceCommits` map unchanged to merge');
+    expect(hiveSkill).toContain('marking the feature task done');
     expect(hiveSkill).toContain('hive_task_update');
     expect(hiveSkill).toContain('do not reconstruct them from worker prose');
     expect(hiveSkill).toContain('hive_task_update({ task, status: "pending" })');
@@ -643,8 +648,8 @@ describe('skill content', () => {
     expect(skill!.template).toContain('Gate-open only: use background: true');
     expect(skill!.template).toContain('hive_worktree_create');
     expect(skill!.template).not.toContain('hive_existing_workspace_start');
-    expect(skill!.template).toContain('In feature-task mode, follow the feature workflow\'s verification and `hive_worktree_merge` lifecycle');
-    expect(skill!.template).toContain('In ad-hoc mode, return result state to `orchestrating-ad-hoc-work`');
+    expect(skill!.template).toContain('In feature-task mode, pass each returned `sourceCommit` or complete `sourceCommits` map unchanged');
+    expect(skill!.template).toContain('In ad-hoc mode, return result state and its exact pin to `orchestrating-ad-hoc-work`');
     expect(skill!.template).toContain('hive_adhoc_worktree_merge');
     expect(skill!.template).toContain('Treat installs, builds, formatters, generators, and tests as mutations');
     expect(skill!.template).toContain('Blocking alternative, including every gate-closed session');
@@ -772,6 +777,7 @@ describe('skill content', () => {
     expect(skill!.template).toContain('Background is a wait mode, not the definition of parallelism');
     expect(skill!.template).toContain('Independent ordinary Scout, advisor, and reviewer tasks can run in parallel');
     expect(skill!.template).toContain('Every Forager lane, including report-only diagnosis');
+    expect(skill!.template).toContain('The owning workflow determines placement; create the matching worktree before dispatch for tracked Git writes');
     expect(skill!.template).not.toContain('hive_existing_workspace_start');
     expect(skill!.template).not.toContain('hive_execution_prepare');
     expect(skill!.template).toContain('Direct checkout work is unmanaged OpenCode work');
@@ -780,6 +786,7 @@ describe('skill content', () => {
     expect(skill!.template).toContain('Gate-closed Forager launch (blocking wait mode)');
     expect(skill!.template).toContain('Gate-open Forager launch (background wait mode)');
     expect(skill!.template).toContain('hive_adhoc_worktree_create');
+    expect(skill!.template).not.toContain('hive_adhoc_worktree_create({});');
     expect(skill!.template).toContain('Reconcile each board row exactly once');
     expect(skill!.template).toContain("subagent_type: 'forager-worker'");
     expect(skill!.template).toContain('Nested delegation from any subagent session');
@@ -824,10 +831,22 @@ describe('skill content', () => {
     expect(skill!.template).not.toContain('hive_background_output');
   });
 
-  it('keeps the gate-open background example self-contained and reconcile after native completion', () => {
+  it('keeps both Forager examples lane-scoped and the gate-open example reconciled after native completion', () => {
     const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'background-delegation')!;
+    const gateClosed = skill.template.match(/Gate-closed Forager launch \(blocking wait mode\):\n\n```ts\n([\s\S]*?)\n```/)?.[1];
     const example = skill.template.match(/Gate-open Forager launch \(background wait mode\):\n\n```ts\n([\s\S]*?)\n```/)?.[1];
+    expect(gateClosed).toBeDefined();
     expect(example).toBeDefined();
+    for (const launch of [gateClosed!, example!]) {
+      expect(launch).toContain('hive_repositories_status()');
+      expect(launch).toContain('const requestedRepoIds = lane.repoIds;');
+      expect(launch).toContain('requestedRepoIds.includes(id)');
+      expect(launch).toContain('new Set(requestedRepoIds).size !== requestedRepoIds.length');
+      expect(launch).toContain('requestedRepoIds.some((id) => !selectedRepoIds.includes(id))');
+      expect(launch).toContain('Placement blocker: lane.repoIds must exactly match repository status IDs');
+      expect(launch).toContain('const repoIds = selectedRepoIds;');
+      expect(launch).toContain('hive_adhoc_worktree_create({ repoIds })');
+    }
     expect(example!.indexOf('hive_adhoc_worktree_create')).toBeLessThan(example!.indexOf('hive_background_reconcile'));
     expect(example).toContain('background: true');
   });

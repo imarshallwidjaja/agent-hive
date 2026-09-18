@@ -227,7 +227,11 @@ Parent authors the native `task()` prompt. The runtime appends concise project, 
 
 `hive_task_update` takes optional `status`, `summary`, `blocker`, and `report` string. Omissions are preserved. Report is stored as numeric history plus latest. An explicit status leaving blocked clears the blocker. Partial writes: inspect before retry; there is no journal.
 
-Plans, approval, and dependencies guide work and status visibility. They are not dispatch or status admission gates. Structural missing refs and cycles remain invalid. Feature work is location-neutral: Git, non-Git, external, or report-only.
+Plans, approval, and dependencies guide work and status visibility. They are not dispatch or status admission gates. Structural missing refs and cycles remain invalid.
+
+For a plan-backed task with missing or incorrect repository metadata, amend the plan and run `hive_tasks_sync({ refreshPending: true })` before worktree creation. For an incorrectly scoped manual task, automatically replace and cancel it only when no work has started and no existing task depends on it; the replacement mirrors incoming `dependsOn` and supplies corrected `repos` via `hive_task_create(...)`. If work started or reverse dependents exist, retain the incorrect task as blocked with a structured blocker and escalate; do not rewrite dependencies.
+
+Repository-backed executor policy: Before a non-trivial writing lane, resolve repository ownership. In ad-hoc work, call `hive_repositories_status` once per execution batch unless repository scope is already explicit, then pass only the returned repository IDs owned by the current lane; use all returned IDs only for genuinely cross-repository work. Feature-task execution may reuse declared task repositories. For tracked Git writes, use the matching Hive worktree: feature-task worktree when a task exists, ad-hoc otherwise. A worktree implementation assignment authorizes the worker to commit assigned changes. A single-repository worker returns the exact `sourceCommit` SHA; a composite worker returns the complete `sourceCommits` map keyed by repository ID. Pass the returned scalar or map unchanged to merge. The lifecycle includes the local integration commit and grants no push, PR, publish, or release authority. Verify, inspect status/diff, squash-merge by default, and clean up after successful integration. For feature tasks, mark done only after merge succeeds. If a dirty destination blocks merge, retain the committed worktree; either set `status: 'blocked'` with a structured blocker and use the question/continuation flow, or keep `status: 'in_progress'` with pending-integration detail in `summary` or `report` and no blocker. Ad-hoc work reports integration pending and retains the run. Use direct checkout only for an explicit operator request to continue specific existing uncommitted changes plus confirmation that the scoped edit will not overwrite unrelated changes, a small mechanical edit on a clean checkout without delegated writers or overlap, non-Git/report-only/external-only work, or work already inside the matching Hive worktree. A dirty checkout alone does not justify direct checkout.
 
 Modern `hive_tasks_sync` reads numbered tasks only from `## Tasks`; pure suite or release checks belong in `## Final Verification` unless they write tracked artifacts. Feature-task worktrees appear in `hive_status`. Ad-hoc runs do not create feature/task records and do not appear there. Ad-hoc worktrees are temporary workspace metadata only: no run history, evidence ledgers, or reports.
 
@@ -258,20 +262,20 @@ Skills are loaded through OpenCode's native `skill` tool (via `skills.paths`, `s
 3. User adds comments in VSCode → `hive_plan_read` to see them
 4. Revise plan → User approves
 5. `hive_tasks_sync()` - Generate tasks from plan
-6. Optionally `hive_worktree_create` then native Forager `task()`; or work in place / report-only
-7. `hive_task_update` records status, summary, blocker, or report
-8. `hive_worktree_merge` then `hive_worktree_cleanup` when a Git worktree was used
+6. For tracked Git writes, create the matching `hive_worktree_create` worktree, then dispatch the native Forager `task()` with authority to return `sourceCommit` for one repository or the complete `sourceCommits` map for a composite workspace; use the direct-work exceptions above for non-Git or report-only work
+7. Pass the returned pin unchanged to merge before marking the feature task done; if merge is blocked, retain the worktree and use one of the valid task-state options above
+8. `hive_task_update` records the merged task status, summary, blocker, or report, then `hive_worktree_cleanup` removes the integrated worktree
 
 `summary` remains task/report context; `message` controls git commit/merge text and is required whenever the operation creates a commit.
 Every created commit message must contain a non-empty one-line subject, a blank line, and a non-empty descriptive body.
 Feature and ad-hoc integration default to squash with an explicit polished aggregate message. Use rebase or normal merge only for intentionally structured history where every preserved source commit is independently valuable and satisfies the same message contract; normal merge also requires a valid aggregate message. Do not rely on generic hive/task/run IDs in project history.
 Do not provide a non-blank `message` when using rebase.
 
-Git helpers do not change task status, auto-commit source, or assign workers. An assignment may authorize an ordinary source Git commit. Orchestration merge via `hive-helper` owns integration. Merge wants a clean source and dest pinned SHA. Locks are operation-local. Dirty, untracked, ignored, and unmerged data is protected; there is no force or rm fallback. Same-call squash cleanup may use observed identity; later ambiguous branches stay unless `discard: true` is explicit. `deleteBranch` alone does not discard an unmerged branch. Composite partial outcomes are not rolled back.
+Git helpers do not change task status, auto-commit source, or assign workers. A worktree implementation assignment authorizes the local source commit; in-place and diagnosis-only missions do not. Orchestration merge via `hive-helper` owns integration. Merge wants a clean source and destination plus the worker's unchanged `sourceCommit` or complete `sourceCommits` pin. Locks are operation-local. Dirty, untracked, ignored, and unmerged data is protected; there is no force or rm fallback. Same-call squash cleanup may use observed identity; later ambiguous branches stay unless `discard: true` is explicit. `deleteBranch` alone does not discard an unmerged branch. Composite partial outcomes are not rolled back.
 
 ### Delegated Execution
 
-Parent chooses direct work, delegation, or a worktree from the situation. There is no exact-one-read or exact-one-write quota and no blanket delegation quota.
+Parent chooses direct work or delegation according to the repository-backed executor policy. There is no exact-one-read or exact-one-write quota and no blanket delegation quota.
 
 Forager is the default execution role. Native `general` is an ordinary `task()` call with ordinary tools only. Helper calls retain bounded operational permissions.
 

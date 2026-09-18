@@ -117,18 +117,22 @@ Stable public inputs:
 
 | Tool | Inputs |
 |------|--------|
-| `hive_worktree_create` | `task`, optional `feature` |
-| `hive_worktree_inspect` | `task`, optional `feature` |
-| `hive_worktree_merge` | `task`, optional `feature`, `strategy`, `message`, `cleanup` |
-| `hive_worktree_cleanup` | `task`, optional `feature`, `deleteBranch`, `discard` |
-| `hive_adhoc_worktree_create` | optional `runId` |
-| `hive_adhoc_worktree_inspect` | `runId` |
-| `hive_adhoc_worktree_merge` | `runId`, `strategy`, `message`, `cleanup` |
-| `hive_adhoc_worktree_cleanup` | `runId`, `deleteBranch`, `discard` |
+| `hive_worktree_create` | `task`; optional `feature`, `baseRef`, `repoIds`, `candidate` |
+| `hive_worktree_inspect` | `task`; optional `feature`, `repoIds`, `candidate` |
+| `hive_worktree_merge` | `task`; optional `feature`, `repoIds`, `candidate`, `strategy`, `message`, `cleanup`, `sourceCommit`, `sourceCommits` |
+| `hive_worktree_cleanup` | `task`; optional `feature`, `repoIds`, `candidate`, `deleteBranch`, `discard` |
+| `hive_adhoc_worktree_create` | optional `runId`, optional `repoIds`, optional absolute `sourceDirectory` |
+| `hive_adhoc_worktree_inspect` | `runId`, optional `repoIds`, optional absolute `sourceDirectory` |
+| `hive_adhoc_worktree_merge` | `runId`; optional `repoIds`, absolute `sourceDirectory`, `strategy`, `message`, `cleanup`, `sourceCommit`, `sourceCommits` |
+| `hive_adhoc_worktree_cleanup` | `runId`, optional `repoIds`, optional absolute `sourceDirectory`, plus `deleteBranch`, `discard` |
 
 `cleanup` is `'none' | 'worktree' | 'worktree+branch'`. `preserveConflicts` defaults to `false`. Do not provide a non-blank `message` with `strategy: 'rebase'`. Failed integrations restore the target unless an actual conflict is explicitly preserved. A preserved conflict leaves an active Git operation in the destination checkout; do not call merge again while that state is active.
 
 Ad-hoc worktrees are temporary workspace metadata only: no run history, evidence ledgers, or reports.
+
+On creation, `repoIds` selects the repositories owned by the lane. Later feature-task lifecycle calls validate `repoIds` against the task's persisted repository selection; later ad-hoc lifecycle calls use `runId` to locate the persisted placement. `sourceDirectory` selects a foreign checkout and cannot be combined with `repoIds`.
+
+Use `sourceCommit` for a single-repository workspace. Use `sourceCommits` for a composite workspace; it must be a complete map keyed by persisted repository ID. Pass the worker's returned scalar or map unchanged. The merge tool rejects a scalar for a composite workspace, a map for a single-repository workspace, and any supplied pin that differs from the inspected candidate.
 
 ## Background Orchestration (4 tools)
 

@@ -14,7 +14,7 @@ https://github.com/user-attachments/assets/6290b435-1566-46b4-ac98-0420ed321204
 
 ## Requirements
 
-Feature work is location-neutral: a Git worktree, the current checkout, a non-Git directory, or report-only. Worktree tools provide optional Git isolation and integration; they do not assign workers or change task status. See the [Operator Guide](docs/OPERATOR-GUIDE.md).
+Tracked feature writes use matching Git worktrees; non-Git or report-only work follows the documented direct-work exceptions. Worktree tools do not assign workers or change task status. See the [Operator Guide](docs/OPERATOR-GUIDE.md).
 
 - [OpenCode](https://opencode.ai) `>= 1.18.30` (peer dependency of `oc-arkive`; required for native `tool.definition` and task attachment hooks)
 - Worktree workflows require a project whose work resolves to one or more git repositories. Single-repo projects need no manifest; multi-repo topology is optional. When a multi-repo root needs explicit topology, ask Hive to inspect, discover, and update it; do not hand-create `<project>/.hive/repositories.json`.
@@ -46,11 +46,11 @@ For a brand-new config, a plugin array containing only `"oc-arkive@latest"` is s
    VS Code, add comments, and request changes until the plan is clear.
 3. Approve the plan with `/approve-sync-plan` or ask the agent to approve and
    sync it. Hive creates the executable task records.
-4. Start execution with `/start-execution`. The primary chooses direct work,
-   delegation, or a worktree from the situation, then tracks dependencies and progress.
+4. Start execution with `/start-execution`. The primary resolves repository-backed
+   placement, delegates work, and tracks dependencies and progress.
 5. Each worker runs task-level, best-effort checks. The primary
    records status and reports with `hive_task_update`.
-6. Merge completed worktree task branches with `hive_worktree_merge`. In-place
+6. Merge completed worktree task branches with `hive_worktree_merge`. Non-Git
    or report-only work has no Hive Git merge step.
 7. Run fresh build/test verification against the merged result or the live target.
 8. Mark the feature complete only after that target verification passes.

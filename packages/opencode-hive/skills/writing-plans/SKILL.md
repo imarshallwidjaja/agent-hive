@@ -62,7 +62,7 @@ Every plan uses this shape:
 ## Tasks
 ### 1. [Outcome-oriented title]
 **Depends on**: none
-**Repos**: [manifest repository IDs when applicable]
+**Repos**: [manifest repository IDs; MUST be present for manifest-backed tracked writes]
 **Files**:
 - Modify: `exact/path/file.ts:lines`
 - Test: `exact/path/file.test.ts`
@@ -82,7 +82,7 @@ Every plan uses this shape:
 - Run: `[non-branching integrated check]` -> [expected result]
 ```
 
-Always include **Depends on**. Use `none` for parallel starts or task numbers for explicit dependencies. For manifest-backed projects, include **Repos** and prefer one repository per task unless a shared contract or coordinated change makes a multi-repository task coherent.
+Always include **Depends on**. Use `none` for parallel starts or task numbers for explicit dependencies. For manifest-backed tracked writes, include **Repos** before task sync or worktree creation and prefer one repository per task unless a shared contract or coordinated change makes a multi-repository task coherent. For a plan-backed task with missing or incorrect repository metadata, amend the plan and require `hive_tasks_sync({ refreshPending: true })` before worktree creation. For an incorrectly scoped manual task, require the orchestrator to automatically replace and cancel it only when no work has started and no existing task depends on it; the replacement must mirror incoming `dependsOn` and supply corrected `repos` via `hive_task_create(...)`. If work started or reverse dependents exist, require the orchestrator to retain the incorrect task as blocked with a structured blocker and escalate; do not rewrite dependencies.
 
 Keep pure checks under `## Final Verification`; numbered tasks should write tracked implementation, test, documentation, or generated artifacts. Verification must be agent-executable unless a manual step is an unavoidable product requirement and its owner and signal are explicit.
 

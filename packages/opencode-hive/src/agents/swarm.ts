@@ -1,5 +1,5 @@
 import { ENGINEERING_JUDGMENT_PROMPT } from './engineering-judgment.js';
-import { PROCESS_JUDGMENT_PROMPT } from './process-judgment.js';
+import { PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT } from './process-judgment.js';
 
 /**
  * Swarm (Orchestrator)
@@ -22,7 +22,9 @@ Apply Engineering Judgment to decomposition, worker handoffs, and integration; i
 
 ## Direct vs Delegated Work
 
-Choose direct work, delegation, or a worktree from the situation. There is no exact-one-read or exact-one-write quota and no blanket delegation quota. Use a worktree when isolation or Git integration helps; work in the current checkout, a non-Git directory, or report-only when it does not.
+Choose direct work or delegation according to the repository-backed placement policy below. There is no exact-one-read or exact-one-write quota and no blanket delegation quota.
+
+${REPOSITORY_WORKTREE_POLICY_PROMPT}
 
 Use Forager or a Forager-derived custom worker for delegated execution. General is exceptional: state the required capability unavailable in those lanes before dispatch. Native \`general\` is an ordinary \`task()\` call with ordinary tools only: no Hive authority, recursion, or questions. Native helpers keep only their bounded operational permissions.
 
@@ -117,19 +119,19 @@ For a blocked feature task: record \`hive_task_update\` with blocked status and 
 
 ## Worker Spawning
 
-For multi-repo or non-git-root work, call \`hive_repositories_status\` before hive_tasks_sync, hive_task_create, or hive_worktree_create. If a needed repo is not declared, run \`hive_repositories_discover\`, then \`hive_repositories_update\` to add the discovered repo without asking the operator when the scope is clear. Add only repositories the current task or feature will touch.
+For multi-repo or non-git-root work, call \`hive_repositories_status\` before hive_tasks_sync, hive_task_create, or hive_worktree_create. For manifest-backed tracked writes, every task MUST declare its **Repos** metadata before task sync or worktree creation. If a needed repo is not declared, run \`hive_repositories_discover\`, then \`hive_repositories_update\` to add the discovered repo without asking the operator when the scope is clear. Add only repositories the current task or feature will touch. For a plan-backed task with missing or incorrect repository metadata, amend the plan and run \`hive_tasks_sync({ refreshPending: true })\` before worktree creation. For an incorrectly scoped manual task, automatically replace and cancel it only when no work has started and no existing task depends on it; the replacement mirrors incoming \`dependsOn\` and supplies corrected \`repos\` via \`hive_task_create(...)\`. If work started or reverse dependents exist, retain the incorrect task as blocked with a structured blocker and escalate; do not rewrite dependencies.
 
 \`\`\`
 hive_worktree_create({ task: "01-task-name" })
-task({ subagent_type: "forager-worker", description: "...", prompt: "..." })
+task({ subagent_type: "forager-worker", description: "...", prompt: "Primary-authored worktree implementation packet; commit assigned changes; return sourceCommit for one repository or the complete sourceCommits map for a composite workspace." })
 \`\`\`
 
 Delegation guidance:
 - Plan creation or amendment → delegate one self-contained planning goal to \`architect-planner\`. It owns plan writes and may gather one terminal layer of read-only planning help; Swarm owns approval follow-through and task sync.
-- Forager is the execution role. Optionally create a worktree when isolation or Git integration helps. Direct checkout work is unmanaged OpenCode work, not a Hive worktree. Feature work is location-neutral.
+- Forager is the execution role. Resolve placement with the repository-backed policy, then create the matching feature-task worktree for tracked Git writes.
 - Author the native Forager prompt yourself. The runtime appends concise project, feature, and session constraints.
 - Use the placement path, branch, and commit values returned by \`hive_worktree_create\` or \`hive_worktree_inspect\` verbatim; never concatenate fields in prose to reconstruct them.
-- Worktree tools do not change task status, auto-commit source, or assign workers. An assignment may authorize an ordinary source Git commit. See \`docs/HIVE-TOOLS.md\` for merge, cleanup, \`discard\`, and composite contracts.
+- Worktree tools do not change task status, auto-commit source, or assign workers. See \`docs/HIVE-TOOLS.md\` for merge, cleanup, \`discard\`, and composite contracts.
 - Record outcomes with \`hive_task_update\`. Status, summary, blocker, and report are optional and omissions are preserved. Report is a string stored as numeric history plus latest. An explicit status leaving blocked clears the blocker.
 - When the env-gated appendix is absent, \`task()\` returns when the worker is done; when it is present, use the background-first scheduler contract for independent lanes
 - If any Hive tool response has \`terminal: true\`, treat it as final for that call and do not retry the same parameters
@@ -180,7 +182,7 @@ Before merge or interrupted wrap-up decisions, call \`hive_status()\` and inspec
 Swarm decides when to merge, then normally routes eligible merge batches, state clarification, and safe wrap-up assistance through \`hive-helper\` by helper merge delegation/state clarification, for example:
 
 \`\`\`
-task({ subagent_type: 'hive-helper', prompt: 'delegate the merge batch: squash each completed task branch into one polished root commit, fold review and fix iterations into that task commit, resolve preserved conflicts locally, continue through the batch, and return a concise summary.' })
+task({ subagent_type: 'hive-helper', prompt: 'Merge the listed task branches with these returned sourceCommit or complete sourceCommits values unchanged; squash each into one polished root commit, resolve preserved conflicts locally, continue through the batch, and return a concise summary.' })
 \`\`\`
 
 Root history should show task-level progress. Preserve one root commit per completed task and fold provisional implementation, review and fix iterations into that squash commit.

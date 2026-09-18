@@ -40,7 +40,7 @@ packages/
 
 Tool availability plus instructions govern action. Each tool validates its own operation. Task status and reports are the execution record. There is no attempt ledger. Old attempt and lease files are unread.
 
-Parent chooses direct work, delegation, or a worktree from the situation. Feature work is location-neutral. Git helpers do not change task status, auto-commit source, or assign workers. Merge wants a clean source and dest pinned SHA. Locks are operation-local. Dirty, untracked, ignored, and unmerged data is protected; there is no force or rm fallback. Same-call squash cleanup may use observed identity; later ambiguous branches stay unless discard is explicit. Composite partial outcomes are not rolled back.
+Parent applies the repository-backed placement policy. Tracked feature writes use matching task worktrees; non-Git or report-only work follows the direct-work exceptions. Git helpers do not change task status, auto-commit source, or assign workers. A single-repository worker returns `sourceCommit`; a composite worker returns the complete `sourceCommits` map keyed by repository ID. The primary passes that pin unchanged to merge. Locks are operation-local. Dirty, untracked, ignored, and unmerged data is protected; there is no force or rm fallback. Same-call squash cleanup may use observed identity; later ambiguous branches stay unless discard is explicit. Composite partial outcomes are not rolled back.
 
 The background board is observational bookkeeping of the originating native parent and call. Stale and unknown observations stay visible. It does not couple to execution, worktree, or task status. Cancel acknowledgement does not prove the worker stopped.
 
@@ -53,9 +53,9 @@ Cross-process process supervision, exactly-once execution across independent Ope
 3. User reviews `plan.md` and adds comments there
 4. User approves via `hive_plan_approve`
 5. Tasks synced via `hive_tasks_sync` (generates spec.md for each)
-6. Each task executes via an optional `hive_worktree_create` and a native Forager `task()`
+6. Each tracked Git task executes via `hive_worktree_create` and a native Forager `task()`
 7. The primary records status and reports with `hive_task_update`
-8. A worktree can be integrated with `hive_worktree_merge`; in-place or report-only work has no Hive merge step
+8. The primary merges the worktree before marking the task done; non-Git or report-only work has no Hive merge step
 
 ## Prompt Management
 
@@ -186,13 +186,13 @@ Blocked task status preserves blocker JSON and exposes it through `hive_status.t
 
 ## Execution Placement
 
-Worktree placement executes a task in an isolated workspace under `.hive/.worktrees/{feature}/{task}/`. In legacy mode that path is a single Git worktree. In manifest-backed mode it is a composite workspace, with one Git worktree per declared repo under `repos/<repoId>/`. In-place placement uses the exact existing directory supplied by the caller and provides no filesystem isolation.
+Worktree placement executes a tracked Git task in an isolated workspace under `.hive/.worktrees/{feature}/{task}/`. In legacy mode that path is a single Git worktree. In manifest-backed mode it is a composite workspace, with one Git worktree per declared repo under `repos/<repoId>/`. Non-Git or report-only work may use an explicit existing target and provides no filesystem isolation.
 
-Agents edit the selected workspace. `hive_worktree_merge` integrates a clean pinned SHA. Live-directory work records task status only and has no Hive Git step. `hive_worktree_cleanup` removes a worktree. Git helpers do not change task status, auto-commit source, or assign workers. Unmerged branch delete requires explicit `discard: true`.
+Agents edit the selected workspace and commit assigned changes in a worktree implementation lane. `hive_worktree_merge` integrates the worker's exact scalar or complete composite pin before the task is marked done. Non-Git or report-only work records task status only and has no Hive Git step. `hive_worktree_cleanup` removes a worktree. Git helpers do not change task status, auto-commit source, or assign workers. Unmerged branch delete requires explicit `discard: true`.
 
 ### Multi-Repo Composite Workspaces
 
-When `.hive/repositories.json` defines project repositories, tasks with a `Repos:` annotation use composite workspaces. Each declared repo gets its own git worktree under the composite root.
+When `.hive/repositories.json` defines project repositories, every task with tracked writes MUST declare a `Repos:` annotation before task sync or worktree creation. Such tasks use composite workspaces, and each declared repo gets its own git worktree under the composite root.
 
 **Project-local manifest shape:**
 
@@ -216,7 +216,7 @@ When `.hive/repositories.json` defines project repositories, tasks with a `Repos
 - Repository manifests are read from `<canonical-project-root>/.hive/repositories.json`
 - Repository paths are relative to the project root and must stay inside it
 - Matching legacy `repositoryRoot`/`repositories` global data is migration-only and is copied on explicit update, never during status or startup
-- A non-git project root without a matching manifest fails worktree create and merge with a manifest-required error. Live-directory work still requires an explicit existing directory and never invents Git semantics.
+- A non-git project root without a matching manifest fails worktree create and merge with a manifest-required error. Non-Git or report-only work still requires an explicit existing directory and never invents Git semantics.
 
 **Manifest management tools:**
 - `hive_repositories_status` reports whether the project is using a manifest, legacy single-root mode, or is missing a required manifest
@@ -239,7 +239,9 @@ When `.hive/repositories.json` defines project repositories, tasks with a `Repos
 - OpenCode/VS Code expose `worktreePath` from `WorktreeInfo.path`; workers start from the composite root and use the repo map for git operations
 
 **Task Repos annotation:**
-- Plan tasks on manifest-backed projects declare `**Repos**: api` or `**Repos**: api, web`
+- Plan tasks with tracked writes on manifest-backed projects MUST declare `**Repos**: api` or `**Repos**: api, web` before task sync or worktree creation
+- For a plan-backed task with missing or incorrect metadata, amend the plan and run `hive_tasks_sync({ refreshPending: true })` before worktree creation
+- For an incorrectly scoped manual task, automatically replace and cancel it only when no work has started and no existing task depends on it; the replacement mirrors incoming `dependsOn` and supplies corrected `repos` via `hive_task_create(...)`. If work started or reverse dependents exist, retain the incorrect task as blocked with a structured blocker and escalate; do not rewrite dependencies
 - Missing, empty, or unknown repo IDs fail before worktree creation
 - Legacy single-root tasks omit `Repos:` and keep implicit root behavior
 
@@ -265,7 +267,7 @@ Top-level `filesChanged` and `conflicts` flatten per-repo paths as `repoId:path`
 
 - **No global selection state** — Feature tools use explicit, path, session, or sole-live resolution
 - **Detection-first** — Task-worktree paths override session and repository fallback
-- **Placement-specific execution** — Worktree tasks are isolated Git workspaces; live-directory work is cooperative and has no Hive rollback, merge, or cleanup
+- **Placement-specific execution** — Tracked Git tasks use isolated workspaces; non-Git or report-only work is cooperative and has no Hive rollback, merge, or cleanup
 - **Audit trail** — Every action logged to `.hive/`
 - **Agent-friendly** — Minimal overhead during execution
 

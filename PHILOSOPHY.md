@@ -6,7 +6,7 @@ Agent Hive is a plan-first workflow plugin for OpenCode. It coordinates independ
 
 Chat memory is ephemeral. Multi-step agent work fails when plans stay implicit, workers share one dirty tree, and "done" means a confident sentence instead of checked output.
 
-Hive keeps the durable pieces on disk under `.hive/`, requires human approval before feature execution, and records managed implementation in either isolated Git worktrees or explicit in-place directories. Isolation and deliberate Git integration apply only to worktree placement.
+Hive keeps the durable pieces on disk under `.hive/`, requires human approval before feature execution, and records tracked feature implementation in isolated Git worktrees. Non-Git or report-only work follows explicit direct-work exceptions.
 
 ## Core principles
 
@@ -30,7 +30,7 @@ Aligned with the project agent guidelines:
 | Operator | Approves plans, answers blockers, accepts merges and risk |
 | Planner / hybrid primary | Discovers requirements, writes `plan.md`, does not silently skip approval |
 | Orchestrator / hybrid primary | Syncs tasks, launches workers, merges, tracks status |
-| Worker | Implements one task in its assigned worktree or explicit in-place directory against `spec.md` and the primary-authored native prompt |
+| Worker | Implements one task in its assigned worktree against `spec.md` and the primary-authored native prompt |
 | Researchers and reviewers | Read-only or bounded review seats; they do not own the feature lifecycle |
 | `.hive/` | Shared durable state: plans, tasks, reports, session recovery metadata |
 
