@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Tool availability plus instructions govern action. Each tool validates its own operation. Task status and reports replace the attempt ledger. Public worktree families are `hive_worktree_create` / `inspect` / `merge` / `cleanup` and `hive_adhoc_worktree_*`. `hive_feature_select` routes context and constraints. Constraints accept `scope: session|feature`. Native `task_id` resume is allowed; use a fresh session for an independent unrelated goal.
 
+### Removed
+
+- oc-arkive no longer bundles its own web-search MCP; agents select the best available web search and direct URL retrieval tools when those capabilities are available.
+
 ### Upgrade
 
 - Restart OpenCode after upgrade. Finish or abandon old live workers first. Remove stale copied user-authored workflow instructions yourself; Hive does not silently overwrite global settings. Old attempt and lease files are left unread.

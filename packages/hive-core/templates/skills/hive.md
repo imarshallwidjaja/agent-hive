@@ -37,15 +37,16 @@ Review -> `plan-reviewer` / `code-reviewer` / `approach-advisor`
 
 ---
 
-## Research Delegation (MCP Tools + Parallel Exploration)
+## Research Delegation and Parallel Exploration
 
-Use MCP tools for focused research; for multi-domain exploration, use parallel researcher fan-out.
+Use focused research tools; for multi-domain exploration, use parallel researcher fan-out.
 
 | Tool | Use For |
 |------|---------|
 | `grep_app_searchGitHub` | Find code in OSS repos |
 | `context7_query-docs` | Library documentation |
-| `websearch_web_search_exa` | Web search and scraping |
+| Best available web search tool | Discovery and current information |
+| Best available web-fetch tool | Direct URL retrieval |
 | `ast_grep_find_code` / `ast_grep_find_code_by_rule` | AST-aware code search |
 | `task()` | Parallel exploration via researcher fan-out |
 

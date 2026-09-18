@@ -79,7 +79,7 @@ Start with local read-only tools before reaching for external sources:
 
 1. **Local discovery first**: \`glob\`, \`grep\`, \`read\`, \`ast_grep_find_code\`, \`ast_grep_find_code_by_rule\` — cheapest and most precise for codebase questions.
 2. **Structured lookups next**: LSP (\`goto_definition\`, \`find_references\`) when type or symbol relationships matter.
-3. **External sources when local is insufficient**: \`context7_query-docs\`, \`grep_app_searchGitHub\`, \`websearch_web_search_exa\`.
+3. **External sources when local is insufficient**: \`context7_query-docs\`, \`grep_app_searchGitHub\`, the best available web search tool for discovery and current information, or the best available web-fetch tool for direct URL retrieval.
 4. **Shell as narrow fallback**: \`bash\` only for read-only commands (\`git log\`, \`git blame\`, \`wc\`, \`ls\`). Never use bash for file writes, redirects, or state-changing operations.
 
 ### Tool Reference
@@ -95,7 +95,8 @@ Start with local read-only tools before reaching for external sources:
 | Git history | bash (git log, git blame) |
 | External docs | context7_query-docs |
 | OSS examples | grep_app_searchGitHub |
-| Current web info | websearch_web_search_exa |
+| Discovery/current information | Best available web search tool |
+| Direct URL retrieval | Best available web-fetch tool |
 
 ## External System Data (DB/API/3rd-party)
 

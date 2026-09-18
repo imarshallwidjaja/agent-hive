@@ -14,14 +14,6 @@
       "command": "npx",
       "args": ["-y", "@upstash/context7-mcp"],
       "description": "Library documentation lookup"
-    },
-    "websearch_exa": {
-      "command": "npx",
-      "args": ["-y", "exa-mcp-server"],
-      "env": {
-        "EXA_API_KEY": "${EXA_API_KEY}"
-      },
-      "description": "Exa AI web search (requires API key)"
     }
   }
 }

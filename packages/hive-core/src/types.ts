@@ -480,7 +480,7 @@ export interface HiveConfig {
   enableToolsFor?: string[];
   /** Globally disable specific Hive bundled skills (excluded from materialization and autoload). Does not block user or native skills with the same name. */
   disableSkills?: string[];
-  /** Globally disable specific MCP servers. Available: websearch, context7, grep_app, ast_grep */
+  /** Globally disable specific MCP servers. Available: context7, grep_app, ast_grep */
   disableMcps?: string[];
   /** Choose between unified or dedicated agent modes */
   agentMode?: 'unified' | 'dedicated';

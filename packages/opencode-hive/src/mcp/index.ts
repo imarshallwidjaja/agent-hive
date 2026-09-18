@@ -2,14 +2,6 @@ import type { McpConfig } from './types.js';
 import { astGrepMcp } from './ast-grep.js';
 
 const allBuiltinMcps: Record<string, McpConfig> = {
-  websearch: {
-    type: 'remote',
-    url: 'https://mcp.exa.ai/mcp?tools=web_search_exa',
-    headers: process.env.EXA_API_KEY
-      ? { 'x-api-key': process.env.EXA_API_KEY }
-      : undefined,
-    oauth: false,
-  },
   context7: {
     type: 'remote',
     url: 'https://mcp.context7.com/mcp',

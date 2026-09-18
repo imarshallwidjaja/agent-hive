@@ -402,7 +402,6 @@ describe(`release ${releaseVersion} artifact contract on main`, () => {
         'effect',
         'simple-git',
         '@upstash/context7-mcp',
-        'exa-mcp-server',
         'grep-mcp',
       ];
       for (const dependencyType of ['dependencies', 'optionalDependencies', 'peerDependencies']) {

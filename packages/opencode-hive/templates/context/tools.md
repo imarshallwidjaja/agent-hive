@@ -38,16 +38,9 @@ ast_grep_find_code_by_rule({ project_folder: "/repo", yaml: "id: async-with-awai
 2. Get libraryId from result (e.g., `/facebook/react`)
 3. `context7_query-docs({ libraryId: "/facebook/react", query: "useEffect cleanup" })`
 
-## Web Search
+## Web Search and Fetching
 
-| Tool | Purpose | When to Use |
-|------|---------|-------------|
-| `websearch_web_search_exa` | Exa AI search | Current info, recent developments |
-
-### websearch Examples
-```
-websearch_web_search_exa({ query: "Next.js 15 new features 2026", numResults: 5 })
-```
+Use the best available web search tool for discovery and current information. Use the best available web-fetch tool for direct URL retrieval.
 
 ## Delegation
 
@@ -99,7 +92,8 @@ When scheduler guidance reports `wait_for_native_completion_notification`, wait 
 | Find code in THIS repo | `grep`, `glob`, `ast_grep_find_code`, `ast_grep_find_code_by_rule` |
 | Find code in OTHER repos | `grep_app_searchGitHub` |
 | Understand a library | `context7_query-docs` |
-| Current events/info | `websearch_web_search_exa` |
+| Discovery/current information | Best available web search tool |
+| Direct URL retrieval | Best available web-fetch tool |
 | Inspect AST structure | `ast_grep_dump_syntax_tree` |
 | Validate a YAML rule | `ast_grep_test_match_code_rule` |
 | Multi-domain exploration | `parallel-exploration` skill + `task()` |

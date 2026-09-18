@@ -1117,11 +1117,11 @@ describe("ConfigService disabled skills/mcps", () => {
     fs.writeFileSync(
       configPath,
       JSON.stringify({
-        disableMcps: ["websearch", "ast_grep"],
+        disableMcps: ["context7", "ast_grep"],
       }),
     );
 
-    expect(service.getDisabledMcps()).toEqual(["websearch", "ast_grep"]);
+    expect(service.getDisabledMcps()).toEqual(["context7", "ast_grep"]);
   });
 });
 

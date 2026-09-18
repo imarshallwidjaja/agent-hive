@@ -508,7 +508,7 @@ Generated/managed shape (for inspection) at `<project>/.hive/repositories.json`:
 {
   "$schema": "https://raw.githubusercontent.com/imarshallwidjaja/agent-hive/main/packages/opencode-hive/schema/agent_hive.schema.json",
   "disableSkills": ["brainstorming", "writing-plans"],
-  "disableMcps": ["websearch", "ast_grep"]
+  "disableMcps": ["ast_grep"]
 }
 ```
 
@@ -539,10 +539,11 @@ Generated/managed shape (for inspection) at `<project>/.hive/repositories.json`:
 
 | ID | Description | Requirements |
 |----|-------------|--------------|
-| `websearch` | Web search via [Exa AI](https://exa.ai). Real-time web searches and content scraping. | Set `EXA_API_KEY` env var |
 | `context7` | Library documentation lookup via [Context7](https://context7.com). Query up-to-date docs for any programming library. | None |
 | `grep_app` | GitHub code search via [grep.app](https://grep.app). Find real-world code examples from public repositories. | None |
 | `ast_grep` | Structural search and AST inspection via [ast-grep](https://ast-grep.github.io). Pattern matching across 25+ languages. | None (runs via npx) |
+
+Agents use the best available web search and direct URL retrieval tools when those capabilities are available.
 
 ### Per-Agent Skills
 
