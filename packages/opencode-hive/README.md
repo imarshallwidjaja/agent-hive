@@ -73,6 +73,13 @@ Use the feature flow when work needs plan review, a task DAG, and a durable audi
 | `/vuln-review [intent] [flags]` | Resolve a conversational scope, then run a findings-first static vulnerability review. |
 | `/compact-summary` | Produce a compact recovery summary for the current session. |
 
+### Native Skill Commands
+
+`complexity-review` and `complexity-audit` are explicit native skill requests, not plugin-registered slash commands. Ask the current agent to load the named skill with OpenCode's native `skill` tool; the request or current context supplies the scope. Both are one-shot, read-only, complexity-only passes that stay in the invoking agent and do not create workflow state or delegate work.
+
+- `complexity-review` reviews an explicit diff or bounded named scope, or current staged, unstaged, and relevant nonignored untracked changes when no scope is supplied. An empty review stops without becoming an audit.
+- `complexity-audit` audits explicit roots or a set of codebases, or the current worktree when no roots are supplied. It does not substitute the canonical checkout or the skill installation directory.
+
 `/hive` has been removed. Feature creation now belongs to the planning flow and the Hive tools, usually `hive_feature_create` followed by `hive_plan_write`, review, approval, task sync, execution, and merge.
 
 `/council` accepts `/council --group <group> <directive>`. If `--group` is omitted, Hive uses `council.defaultGroup`. Free-text tokens are directive text, not implicit group selectors.

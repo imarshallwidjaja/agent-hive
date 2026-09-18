@@ -936,6 +936,63 @@ describe('skill content', () => {
     expect(existsSync(path.join(writingSkillDir, 'UPSTREAM.md'))).toBe(true);
   });
 
+  it('discovers both complexity skills with distinct scopes and read-only contracts', () => {
+    const cases = [
+      {
+        name: 'complexity-review',
+        scope: 'explicit diff or bounded named scope',
+        fallback: 'current staged, unstaged, and relevant nonignored untracked changes',
+        boundary: 'never widen it into an audit',
+        noFindings: 'report the inspected scope and meaningful limitations before ending with exactly',
+      },
+      {
+        name: 'complexity-audit',
+        scope: 'explicit roots or set of codebases',
+        fallback: 'use the current worktree',
+        boundary: 'Do not substitute the canonical checkout or the skill installation directory',
+        noFindings: 'report the inspected roots and meaningful limitations before ending with exactly',
+      },
+    ];
+
+    for (const { name, scope, fallback, boundary, noFindings } of cases) {
+      const parsed = matter(readRepoFile(`packages/opencode-hive/skills/${name}/SKILL.md`));
+      const skill = {
+        name: parsed.data.name,
+        description: parsed.data.description,
+        template: parsed.content.trim(),
+      };
+
+      expect(skill.description).toMatch(/^Use when the operator explicitly asks/);
+      expect(skill.template).toContain('one read-only complexity pass');
+      expect(skill.template).toContain('same agent');
+      expect(skill.template).toContain('Do not call `task`, delegate, fan out, or switch agents');
+      expect(skill.template).toContain('Do not edit files');
+      expect(skill.template).toContain('write state');
+      expect(skill.template).toContain(scope);
+      expect(skill.template).toContain(fallback);
+      expect(skill.template).toContain(boundary);
+      expect(skill.template).toContain(noFindings);
+      expect(skill.template).toContain('first-party source, tests, configuration, and manifests');
+      expect(skill.template).toContain('generated files');
+      expect(skill.template).toContain('meaningful contracts, boundary validation, and tests');
+      expect(skill.template).toContain('A single caller is not enough');
+      expect(skill.template).toContain('safe equivalence rationale');
+      expect(skill.template).toContain('Do not guess line, dependency, or savings totals');
+      expect(skill.template).toContain('Ship or readiness claims');
+      expect(skill.template).toContain('No evidence-backed complexity findings in the inspected scope.');
+    }
+
+    for (const content of [
+      readRepoFile('README.md'),
+      readRepoFile('packages/opencode-hive/README.md'),
+      readRepoFile('docs/OPERATOR-GUIDE.md'),
+    ]) {
+      expect(content).toContain('complexity-review');
+      expect(content).toContain('complexity-audit');
+      expect(content).not.toContain('$ARGUMENTS');
+    }
+  });
+
   it('keeps generated registry entries equal to parsed bundled skill sources', () => {
     const skillsDir = resolvePackagedSkillsDir();
     const entries = readdirSync(skillsDir, { withFileTypes: true });

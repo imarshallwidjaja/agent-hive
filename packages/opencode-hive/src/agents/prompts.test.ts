@@ -179,6 +179,22 @@ describe('Process judgment prompt reach', () => {
     expect(PROCESS_JUDGMENT_PROMPT).toContain('never waive those boundaries');
   });
 
+  it('keeps explicit complexity passes local and read-only', () => {
+    expect(PROCESS_JUDGMENT_PROMPT).toContain('pass-local exception');
+    expect(PROCESS_JUDGMENT_PROMPT).toContain('complexity-review');
+    expect(PROCESS_JUDGMENT_PROMPT).toContain('complexity-audit');
+    expect(PROCESS_JUDGMENT_PROMPT).toContain('default procedural delegation');
+    expect(PROCESS_JUDGMENT_PROMPT).toContain('reviewer-selection/routing');
+    expect(PROCESS_JUDGMENT_PROMPT).toContain('state-creation procedure');
+    expect(PROCESS_JUDGMENT_PROMPT).toContain('operator requirements, safety gates, role, tool, and output boundaries');
+    expect(PROCESS_JUDGMENT_PROMPT).toContain('resume normal procedure afterward');
+    expect(PROCESS_JUDGMENT_PROMPT).toContain('no new authority or tools');
+    expect(DASH_REVIEWER_PROMPT).toContain('default procedural delegation');
+    expect(DASH_REVIEWER_PROMPT).toContain('state-creation procedure');
+    expect(DASH_REVIEWER_PROMPT).toContain('preserve operator requirements, safety, role, tool, and output boundaries');
+    expect(DASH_REVIEWER_PROMPT).toContain('restore normal dash-review behavior afterward');
+  });
+
   it('anchors role-specific planning and review decisions', () => {
     expect(ARCHITECT_BEE_PROMPT).toContain('Advice, comparison, explanation, and retrieval requests remain conversation-scoped');
     expect(ARCHITECT_BEE_PROMPT).toContain('For implementation requests, "Do X" means "create plan for X"');
@@ -1308,6 +1324,15 @@ describe('Swarm (Orchestrator) prompt', () => {
 
   it('contains turn termination', () => {
     expect(SWARM_BEE_PROMPT).toContain('Turn Termination');
+  });
+
+  it('allows only explicit complexity passes to end with bounded same-agent reports', () => {
+    expect(SWARM_BEE_PROMPT).toContain(
+      'For an explicit `complexity-review` or `complexity-audit` pass only, the same agent may end with a report',
+    );
+    expect(SWARM_BEE_PROMPT).toContain('inspected scope/roots and meaningful limitations');
+    expect(SWARM_BEE_PROMPT).toContain('preserve the operator, safety, role, tool, and output boundaries');
+    expect(SWARM_BEE_PROMPT).not.toContain('default agent-chosen delegation');
   });
 
   it('contains verification checklist', () => {

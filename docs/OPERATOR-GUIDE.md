@@ -98,6 +98,8 @@ Read with `hive_context_read` before replace, append, or archive, then pass revi
 | Ad-hoc (`hive-builder`) | The work is bounded, is not a feature, and should not create feature or task records | Talk to `hive-builder` (dedicated) or `hive-master` (unified) |
 | `/dash-review` | You want a read-only review of a folder, inline text, or the current checkout | `/dash-review [intent]` |
 | `/vuln-review` | You are authorized to assess the source and want a bounded static security review | `/vuln-review [intent] [flags]` |
+| `complexity-review` | You explicitly want a one-shot complexity review | Ask the current agent to load the native skill |
+| `complexity-audit` | You explicitly want a one-shot complexity audit | Ask the current agent to load the native skill |
 
 `/council` is a lighter read-only advice run. It does not replace dash-review or vuln-review.
 
@@ -136,6 +138,10 @@ The board observes the originating native parent and call, not the current featu
 ## Reviews
 
 `/dash-review` and `/vuln-review` are ordinary orchestrators over natural folders, inline text, or the current checkout. Optional `hive_git_snapshot({ directory })` and an ad-hoc worktree cover a foreign PR or ref. Lanes are adaptive from configured reviewer descriptions. Methods and prior-finding comparison remain. Configured reviewer descriptions guide selection. Explicit operator-required review targets must be honored.
+
+### Complexity passes
+
+`complexity-review` and `complexity-audit` are explicit native skill requests that stay with the invoking agent. A review uses an explicit diff or bounded named scope, or current staged, unstaged, and relevant nonignored untracked changes when scope is absent; an empty review stops and never widens to an audit. An audit uses named roots or codebases, or the current worktree when roots are absent; it does not use the canonical checkout or skill installation directory. Both inspect relevant first-party source, tests, configuration, and manifests, report inspected scope/roots and limitations, exclude generated/vendor/dependency/cache/build/VCS material unless requested, and produce complexity findings without delegation, workflow state, or implementation changes. For these passes only, the named skill supersedes normal delegation, reviewer selection/routing, and state-creation procedure; normal behavior resumes afterward without added authority or tools.
 
 ## Upgrade
 
