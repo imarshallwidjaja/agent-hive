@@ -52,6 +52,19 @@ describe('plugin hard-cut surface', () => {
     await expect(hooks.tool!.hive_plan_read.execute({}, context)).rejects.toThrow(/Feature is required/);
   });
 
+  it('returns a success response when approving the selected plan', async () => {
+    const { hooks, context } = await fixture();
+    await hooks.tool!.hive_feature_create.execute({ name: 'approval-response' }, context);
+    await hooks.tool!.hive_plan_write.execute({ content: '# Plan\n' }, context);
+
+    const approval = await hooks.tool!.hive_plan_approve.execute({}, context);
+    expect(approval).not.toBeUndefined();
+    expect(JSON.parse(approval)).toEqual({ success: true, feature: 'approval-response' });
+
+    const plan = JSON.parse(await hooks.tool!.hive_plan_read.execute({}, context));
+    expect(plan.status).toBe('approved');
+  });
+
   it('uses sourceDirectory on every foreign ad-hoc call and rejects mixed repository selection', async () => {
     const { root, hooks } = await fixture();
     const source = fs.mkdtempSync(`/tmp/hive-plugin-foreign-${process.pid}-`);

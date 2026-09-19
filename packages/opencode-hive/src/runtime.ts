@@ -466,7 +466,11 @@ const plugin: Plugin = async (ctx) => {
     hive_plan_approve: tool({
       description: 'Approve the plan.',
       args: { feature: tool.schema.string().optional() },
-      execute: async ({ feature }, context) => json(planService.approve(requireFeature(feature, context))),
+      execute: async ({ feature }, context) => {
+        const selected = requireFeature(feature, context);
+        planService.approve(selected);
+        return json({ success: true, feature: selected });
+      },
     }),
     hive_tasks_sync: tool({
       description: 'Sync tasks from the approved plan.',
