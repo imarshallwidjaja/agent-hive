@@ -86,11 +86,13 @@ describe('coordinated runtime hard cut', () => {
     const { root, sessions, hooks } = createRuntime();
     const loaded = await hooks;
     const parent = context('parent');
+    const routeStartMarker = '<!-- hive-route-snapshot:start -->';
+    const routeEndMarker = '<!-- hive-route-snapshot:end -->';
     await loaded.tool!.hive_feature_create.execute({ name: 'feature-a' }, parent);
     await loaded.tool!.hive_feature_create.execute({ name: 'feature-b' }, parent);
     await loaded.tool!.hive_feature_select.execute({ feature: 'feature-a' }, parent);
-    await loaded.tool!.hive_constraints_add.execute({ scope: 'session', constraints: 'Keep session behavior.' }, parent);
-    await loaded.tool!.hive_constraints_add.execute({ scope: 'feature', feature: 'feature-a', constraints: 'Keep feature behavior.' }, parent);
+    await loaded.tool!.hive_constraints_add.execute({ scope: 'session', constraints: `Keep session behavior. Quoted marker: ${routeStartMarker}` }, parent);
+    await loaded.tool!.hive_constraints_add.execute({ scope: 'feature', feature: 'feature-a', constraints: `Keep feature behavior. Quoted marker: ${routeEndMarker}` }, parent);
 
     const output = { args: { subagent_type: 'forager-worker', prompt: 'AUTHORED PREFIX', background: false } };
     await loaded['tool.execute.before']!({ tool: 'task', sessionID: 'parent', callID: 'call-a' } as any, output);
@@ -101,13 +103,121 @@ describe('coordinated runtime hard cut', () => {
     expect(output.args.prompt).toContain('Feature constraints for "feature-a" (revision 1)');
     expect(output.args.prompt).toContain('Keep session behavior.');
     expect(output.args.prompt).toContain('Keep feature behavior.');
+    expect(output.args.prompt.match(/<!-- hive-route-snapshot:start -->/g)).toHaveLength(1);
+    expect(output.args.prompt.match(/<!-- hive-route-snapshot:end -->/g)).toHaveLength(1);
+    expect(output.args.prompt).toContain(`&lt;!-- hive-route-snapshot:start -->`);
+    expect(output.args.prompt).toContain(`&lt;!-- hive-route-snapshot:end -->`);
     expect(output.args).not.toHaveProperty('hive_launch_id');
 
     await loaded.tool!.hive_feature_select.execute({ feature: 'feature-b' }, parent);
     sessions.set('child-a', { id: 'child-a', parentID: 'parent' });
     await loaded.event!({ event: { type: 'message.part.updated', properties: { part: { type: 'tool', tool: 'task', sessionID: 'parent', callID: 'call-a', metadata: { sessionId: 'child-a' }, state: { input: output.args } } } } } as any);
     expect(new SessionService(root).getGlobal('child-a')?.featureName).toBe('feature-a');
+    expect(new SessionService(root).getGlobal('child-a')?.standingConstraints).toBe(`Keep session behavior. Quoted marker: ${routeStartMarker}`);
     expect(new SessionService(root).getGlobal('parent')?.featureName).toBe('feature-b');
+  });
+
+  it('replaces stale route snapshots idempotently while preserving authored comments', async () => {
+    const { hooks } = createRuntime();
+    const loaded = await hooks;
+    const parent = context('parent-idempotent');
+    await loaded.tool!.hive_feature_create.execute({ name: 'feature-a' }, parent);
+    await loaded.tool!.hive_feature_create.execute({ name: 'feature-b' }, parent);
+    await loaded.tool!.hive_feature_select.execute({ feature: 'feature-a' }, parent);
+
+    const staleSnapshot = [
+      '<!-- hive-route-snapshot:start -->',
+      'stale route snapshot',
+      '<!-- hive-route-snapshot:end -->',
+    ].join('\n');
+    const output = {
+      args: {
+        subagent_type: 'forager-worker',
+        prompt: `AUTHORED PREFIX\n<!-- ordinary HTML comment -->\n${staleSnapshot}\n\n${staleSnapshot}\n\nAUTHORED SUFFIX`,
+      },
+    };
+
+    await loaded['tool.execute.before']!({ tool: 'task', sessionID: 'parent-idempotent', callID: 'call-a' } as any, output);
+    expect(output.args.prompt.match(/<!-- hive-route-snapshot:start -->/g)).toHaveLength(1);
+    expect(output.args.prompt).toContain('AUTHORED PREFIX');
+    expect(output.args.prompt).toContain('AUTHORED SUFFIX');
+    expect(output.args.prompt).toContain('"featureRoute":{"selected":true,"feature":"feature-a"}');
+    expect(output.args.prompt).toContain('<!-- ordinary HTML comment -->');
+
+    const firstPrompt = output.args.prompt;
+    await loaded['tool.execute.before']!({ tool: 'task', sessionID: 'parent-idempotent', callID: 'call-a' } as any, output);
+    expect(output.args.prompt).toBe(firstPrompt);
+    expect(output.args.prompt.match(/<!-- hive-route-snapshot:start -->/g)).toHaveLength(1);
+
+    await loaded.tool!.hive_feature_select.execute({ feature: 'feature-b' }, parent);
+    await loaded['tool.execute.before']!({ tool: 'task', sessionID: 'parent-idempotent', callID: 'call-b' } as any, output);
+    expect(output.args.prompt.match(/<!-- hive-route-snapshot:start -->/g)).toHaveLength(1);
+    expect(output.args.prompt).toContain('"featureRoute":{"selected":true,"feature":"feature-b"}');
+    expect(output.args.prompt).not.toContain('"featureRoute":{"selected":true,"feature":"feature-a"}');
+  });
+
+  it('preserves authored text around malformed route snapshots', async () => {
+    const { hooks } = createRuntime();
+    const loaded = await hooks;
+    const staleSnapshot = [
+      '<!-- hive-route-snapshot:start -->',
+      'stale route snapshot',
+      '<!-- hive-route-snapshot:end -->',
+    ].join('\n');
+    const malformedPrefix = [
+      'AUTHORED BEFORE',
+      '<!-- hive-route-snapshot:start -->',
+      'MALFORMED MARKER-LIKE AUTHORED TEXT',
+      'AUTHORED BETWEEN',
+    ].join('\n');
+    const malformedSuffix = 'AUTHORED AFTER';
+    const authoredBase = `${malformedPrefix}\n\n${malformedSuffix}`;
+    const malformedOutput = {
+      args: {
+        subagent_type: 'forager-worker',
+        prompt: `${malformedPrefix}\n${staleSnapshot}\n${malformedSuffix}`,
+      },
+    };
+    await loaded['tool.execute.before']!({ tool: 'task', sessionID: 'parent-idempotent', callID: 'call-malformed' } as any, malformedOutput);
+    const generatedStart = malformedOutput.args.prompt.lastIndexOf('<!-- hive-route-snapshot:start -->');
+    expect(malformedOutput.args.prompt.slice(0, generatedStart - 2)).toBe(authoredBase);
+    expect(malformedOutput.args.prompt).not.toContain('stale route snapshot');
+
+    const firstPrompt = malformedOutput.args.prompt;
+    await loaded['tool.execute.before']!({ tool: 'task', sessionID: 'parent-idempotent', callID: 'call-malformed' } as any, malformedOutput);
+    expect(malformedOutput.args.prompt).toBe(firstPrompt);
+  });
+
+  it('keeps empty and block-only prompts separator-free and stable', async () => {
+    const { hooks } = createRuntime();
+    const loaded = await hooks;
+    const staleSnapshot = [
+      '<!-- hive-route-snapshot:start -->',
+      'stale route snapshot',
+      '<!-- hive-route-snapshot:end -->',
+    ].join('\n');
+    const emptyOutput = { args: { subagent_type: 'forager-worker', prompt: '' } };
+    await loaded['tool.execute.before']!({ tool: 'task', sessionID: 'empty-prompt', callID: 'empty' } as any, emptyOutput);
+    expect(emptyOutput.args.prompt.startsWith('<!-- hive-route-snapshot:start -->')).toBe(true);
+    expect(emptyOutput.args.prompt.match(/<!-- hive-route-snapshot:start -->/g)).toHaveLength(1);
+    expect(emptyOutput.args.prompt.match(/<!-- hive-route-snapshot:end -->/g)).toHaveLength(1);
+    const firstEmptyPrompt = emptyOutput.args.prompt;
+    await loaded['tool.execute.before']!({ tool: 'task', sessionID: 'empty-prompt', callID: 'empty' } as any, emptyOutput);
+    expect(emptyOutput.args.prompt).toBe(firstEmptyPrompt);
+
+    const blockOnlyOutput = {
+      args: {
+        subagent_type: 'forager-worker',
+        prompt: staleSnapshot,
+      },
+    };
+    await loaded['tool.execute.before']!({ tool: 'task', sessionID: 'empty-prompt', callID: 'block-only' } as any, blockOnlyOutput);
+    expect(blockOnlyOutput.args.prompt.startsWith('<!-- hive-route-snapshot:start -->')).toBe(true);
+    expect(blockOnlyOutput.args.prompt.match(/<!-- hive-route-snapshot:start -->/g)).toHaveLength(1);
+    expect(blockOnlyOutput.args.prompt.match(/<!-- hive-route-snapshot:end -->/g)).toHaveLength(1);
+    const firstBlockOnlyPrompt = blockOnlyOutput.args.prompt;
+    await loaded['tool.execute.before']!({ tool: 'task', sessionID: 'empty-prompt', callID: 'block-only' } as any, blockOnlyOutput);
+    expect(blockOnlyOutput.args.prompt).toBe(firstBlockOnlyPrompt);
   });
 
   it('dispatches a stored indexed directory alias with feature constraints', async () => {

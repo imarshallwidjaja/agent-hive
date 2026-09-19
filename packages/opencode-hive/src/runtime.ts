@@ -186,7 +186,15 @@ function taskChildBinding(event: unknown): { parent: string; call: string; child
   };
 }
 
-function routeFooter(snapshot: RouteSnapshot): string {
+const ROUTE_SNAPSHOT_BLOCK = /(?:\n\n)?<!-- hive-route-snapshot:start -->(?:(?!<!-- hive-route-snapshot:(?:start|end) -->)[\s\S])*?<!-- hive-route-snapshot:end -->/g;
+
+function escapeRouteSnapshotMarkers(text: string): string {
+  return text
+    .replaceAll('<!-- hive-route-snapshot:start -->', '&lt;!-- hive-route-snapshot:start -->')
+    .replaceAll('<!-- hive-route-snapshot:end -->', '&lt;!-- hive-route-snapshot:end -->');
+}
+
+function routeFooter(snapshot: RouteSnapshot, separated: boolean): string {
   const payload = {
     projectRoot: snapshot.projectRoot,
     featureRoute: snapshot.hasFeatureRoute
@@ -194,13 +202,13 @@ function routeFooter(snapshot: RouteSnapshot): string {
       : { selected: false },
   };
   const constraints = [
-    `Session constraints (revision ${snapshot.sessionConstraints.revision}):\n${snapshot.sessionConstraints.constraints || '(none)'}`,
+    `Session constraints (revision ${snapshot.sessionConstraints.revision}):\n${escapeRouteSnapshotMarkers(snapshot.sessionConstraints.constraints || '(none)')}`,
     snapshot.featureConstraints
-      ? `Feature constraints for ${JSON.stringify(snapshot.featureName)} (revision ${snapshot.featureConstraints.revision}):\n${snapshot.featureConstraints.constraints || '(none)'}`
+      ? `Feature constraints for ${JSON.stringify(snapshot.featureName)} (revision ${snapshot.featureConstraints.revision}):\n${escapeRouteSnapshotMarkers(snapshot.featureConstraints.constraints || '(none)')}`
       : 'Feature constraints: (none)',
   ].join('\n\n');
   return [
-    '<!-- hive-route-snapshot:start -->',
+    `${separated ? '\n\n' : ''}<!-- hive-route-snapshot:start -->`,
     '## Hive route snapshot',
     `Route snapshot (JSON): ${JSON.stringify(payload)}`,
     '',
@@ -775,8 +783,10 @@ const plugin: Plugin = async (ctx) => {
       if (input.tool === 'task' && input.sessionID && input.callID) {
         const snapshot = captureRoute(input.sessionID);
         dispatchSnapshots.set(`${input.sessionID}\0${input.callID}`, snapshot);
-        const prompt = typeof output.args?.prompt === 'string' ? output.args.prompt : '';
-        output.args.prompt = `${prompt}${prompt ? '\n\n' : ''}${routeFooter(snapshot)}`;
+        const prompt = typeof output.args?.prompt === 'string'
+          ? output.args.prompt.replace(ROUTE_SNAPSHOT_BLOCK, '')
+          : '';
+        output.args.prompt = `${prompt}${routeFooter(snapshot, prompt.length > 0)}`;
       }
       await backgroundAdapter['tool.execute.before'](input, output);
       // Retain the safety-critical cadence warning even though generic cadence gating is gone.
