@@ -152,7 +152,7 @@ This feature does not introduce a new upstream OpenCode todo API. The source of 
 
 ```
 pending -> in_progress -> done
-                      \-> blocked -> (resume) -> done
+                      \-> blocked -> (fresh worker) -> done
                       \-> failed
                       \-> partial
                       \-> cancelled

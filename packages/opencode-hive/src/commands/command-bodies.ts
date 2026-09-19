@@ -11,7 +11,7 @@ export const COMMAND_BEHAVIOR: Record<HiveCommandKey, string> = {
 
   'approve-sync-plan': `Read the current plan and comments, approve only when review issues are resolved, sync tasks, then read back status. Report exact blockers instead of continuing on partial state.`,
 
-  'start-execution': `Execute the approved plan through explicit tasks and ordinary native subagents. Create or inspect a task worktree when isolation is needed, put its returned path and source identity in the authored task prompt, and persist outcomes with hive_task_update. Verify before hive_worktree_merge and clean up explicitly. Native same-child resume is allowed; every invocation receives the current route snapshot.`,
+  'start-execution': `Execute the approved plan through explicit tasks and ordinary native subagents. Create or inspect a task worktree when isolation is needed, put its returned path and source identity in the authored task prompt, and persist outcomes with hive_task_update. Verify before hive_worktree_merge and clean up explicitly. After every returned native task result, launch a fresh child session for follow-up and reuse the same Hive task/worktree where appropriate. Pass task_id only when an explicit operator instruction or runtime-owned interruption-recovery mechanism authorizes continuation. Every invocation receives the current route snapshot.`,
 
   'council-directive': `Shape rough input into a reusable read-only council directive with objective, context, constraints, assumptions to validate, requested perspectives, and desired output. Do not launch councillors.`,
 

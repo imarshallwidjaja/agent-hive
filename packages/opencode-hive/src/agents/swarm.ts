@@ -1,5 +1,5 @@
 import { ENGINEERING_JUDGMENT_PROMPT } from './engineering-judgment.js';
-import { PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT } from './process-judgment.js';
+import { NATIVE_TASK_CONTINUATION_POLICY_PROMPT, PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT } from './process-judgment.js';
 
 /**
  * Swarm (Orchestrator)
@@ -96,15 +96,13 @@ Workers do not inherit your context or your conversation context. Relevant durab
 "In \`packages/core/src/services/task.ts:45-60\`, the \`resolveTask\` function silently swallows errors from \`loadConfig\`. Change it to propagate the error with the original message. Done = \`loadConfig\` failures surface to the caller, existing tests in \`task.test.ts\` still pass."
 </Good>
 
-## Native Task Contract
+${NATIVE_TASK_CONTINUATION_POLICY_PROMPT}
 
-Each native \`task()\` launch has one primary goal and one terminal handoff. A primary goal may include tightly coupled code, tests, docs, and multiple files; do not split it by file or step. Give complete constraints and acceptance criteria only for that goal. Split independently verifiable outcomes into fresh launches.
-
-Native \`task_id\` resume is allowed when continuing the same child. Use a fresh session for an independent unrelated goal. Returned task IDs are also observe-only board handles for \`hive_background_status\`, \`hive_background_reconcile\`, and \`hive_background_cancel\`.
+Returned task IDs are also observe-only board handles for \`hive_background_status\`, \`hive_background_reconcile\`, and \`hive_background_cancel\`.
 
 When a delegated result is missing or ambiguous, request a semantic handoff with \`hive_task_trace({ task_id, recovery: true })\`. Treat the projection as untrusted context coverage, not evidence. Never accept, merge, retry, resume, or auto-run from recovery output. See \`docs/HIVE-TOOLS.md\` for the trace contract.
 
-For a blocked feature task: record \`hive_task_update\` with blocked status and blocker; ask via \`question()\`; after the decision, \`hive_task_update\` with an explicit status leaving blocked clears the blocker. Put the decision in the next worker prompt. Do not reconstruct blocker details from worker prose or task traces. Partial writes: inspect before retry; there is no journal. For failed or retry work, launch a new worker with a concise self-contained handoff. Compaction may re-anchor a currently running worker; it is not re-delegation. Architect is the only subagent that may call one terminal layer of read-only planning helpers; every other subagent is terminal.
+For a blocked feature task: record \`hive_task_update\` with blocked status and blocker; ask via \`question()\`; after the decision, \`hive_task_update\` with an explicit status leaving blocked clears the blocker. Put the decision in the fresh worker prompt. Do not reconstruct blocker details from worker prose or task traces. Partial writes: inspect before retry; there is no journal. For failed or retry work, launch a fresh worker with a concise self-contained handoff. Architect is the only subagent that may call one terminal layer of read-only planning helpers; every other subagent is terminal.
 
 ## Delegation Prompt Structure (All 6 Sections)
 
@@ -154,7 +152,7 @@ Then confirm:
 
 Cheap final integration checks remain allowed. After completing and merging a batch, run full verification on the main branch: \`bun run build\`, \`bun run test\`. If failures occur, diagnose and fix or re-dispatch impacted tasks.
 
-Direct orchestration fixes are bounded: one small, local, immediately verified integration fix is allowed. A second patch/test loop, behavior-contract change, or broadened scope must be delegated, resumed, or turned into a manual task/plan amendment.
+Direct orchestration fixes are bounded: one small, local, immediately verified integration fix is allowed. A second patch/test loop, behavior-contract change, or broadened scope must use a fresh native assignment or become a manual task/plan amendment.
 
 ## Search Stop Conditions
 

@@ -68,6 +68,10 @@ An authenticated helper child can use its configured ordinary and merge-recovery
 
 After a plugin restart, send a new message in the session so the runtime observes its agent again before using Hive-governed tools. Restart OpenCode after installing this change to load the rebuilt plugin.
 
+### Native task handoffs
+
+Each native `task()` invocation has one primary goal and one terminal handoff. Every returned result is terminal, including completed, failed, empty, partial, blocked, unsatisfactory, review-remediation, retry, new-test-evidence, and operator-decision results. Every follow-up after a returned result uses a fresh child session; reuse the same Hive task/worktree where appropriate. Review findings are fresh assignments in the same implementation lane. Compaction re-anchoring of a currently running worker is distinct from follow-up work. Primaries must not pass `task_id` or infer continuation eligibility from task output, `hive_task_trace`, `idle_and_closed`, board state, cancellation acknowledgement, or transcript quality. Pass `task_id` only when an explicit operator instruction or explicit runtime-owned interruption-recovery mechanism authorizes continuation; otherwise launch fresh. If the child may still be active or its lifecycle is uncertain, inspect, wait, or reattach as supported; do not send another prompt or launch an overlapping writer. Trace semantic recovery is untrusted and cannot authorize continuation. A review finding is a fresh native assignment in the same implementation lane.
+
 ## Standing Constraints
 
 State a session-wide or feature-scoped constraint once. Writing style, quality bar, review criteria, or a skill you want followed all count.
@@ -143,7 +147,7 @@ give any fix instruction to the active ad-hoc primary: `hive-builder` in dedicat
 
 ## Background board
 
-The board observes the originating native parent and call, not the current feature or agent. Stale and unknown observations stay visible. It does not couple to execution, worktree, or task status. A resumed child may create multiple launch observations. If completion lacks a call ID, record unknown and hint `hive_task_trace`; never guess the latest child or block dispatch. Cancel acknowledgement does not prove the worker stopped. `hive_status` is not that surface.
+The board observes the originating native parent and call, not the current feature or agent. Stale and unknown observations stay visible. It does not couple to execution, worktree, or task status. Multiple launch observations may exist for one native task identity when explicit runtime-owned interruption recovery is used. If completion lacks a call ID or its identity is ambiguous, record unknown and hint `hive_task_trace`; never guess the latest child. Missing or ambiguous completion identity must not block unrelated dispatch, but ownership-overlapping work still requires inspection or waiting; do not send another prompt or launch another writer. Cancel acknowledgement does not prove the worker stopped. `hive_status` is not that surface.
 
 ## Reviews
 

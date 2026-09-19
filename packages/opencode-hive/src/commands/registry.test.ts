@@ -3,6 +3,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { HIVE_COMMANDS } from './registry.js';
 import { buildPluginManifest } from '../utils/plugin-manifest.js';
+import { hiveCommandRenderers } from './renderers.js';
+import { buildHiveCommandMap } from './runtime.js';
 
 const EXPECTED_COMMANDS = [
   {
@@ -97,5 +99,23 @@ describe('HIVE_COMMANDS', () => {
 
     expect(manifestSource).not.toContain('../commands/runtime');
     expect(manifestSource).not.toContain('./commands/runtime');
+  });
+
+  it('assembles start-execution without broad native-task resume guidance', () => {
+    const commands = buildHiveCommandMap(hiveCommandRenderers, () => ({
+      agentMode: 'unified',
+      backgroundGuidance: { available: false },
+      council: {} as never,
+      agents: {},
+      dashReviewLanes: [],
+      vulnerabilityReviewLanes: [],
+    }));
+    const output = commands['start-execution'].run('');
+
+    expect(output).toContain('After any returned native task result, launch a fresh child session for follow-up');
+    expect(output).toContain('explicit operator/runtime-owned interruption recovery');
+    expect(output).not.toContain('Retry or resume native workers directly');
+    expect(output).not.toContain('After any usable terminal handoff');
+    expect(output).not.toContain('confirmed-stopped interruption recovery');
   });
 });

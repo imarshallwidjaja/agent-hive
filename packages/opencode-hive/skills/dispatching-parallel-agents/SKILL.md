@@ -9,7 +9,7 @@ description: "Agent Hive workflow skill for coordinating independent Hive subage
 
 When you have multiple unrelated failures (different test files, different subsystems, different bugs), investigating them sequentially wastes time. Each investigation is independent and can happen in parallel.
 
-**Core principle:** Dispatch one independent primary goal per native `task()` launch. Native `task_id` resume is allowed when continuing the same child. Use a fresh session for an independent unrelated goal. Parallel writes require disjoint registered worktrees (separate tasks or distinct ad-hoc runIds). Multiple writes in the same worktree must run sequentially.
+**Core principle:** Dispatch one primary goal per native `task()` invocation and expect one terminal handoff. Every returned result is terminal, so every follow-up uses a fresh child session and may reuse the same Hive task/worktree. Review findings are fresh assignments in the same implementation lane. Primaries must not pass `task_id` or infer continuation eligibility from task output, trace, board state, cancellation acknowledgement, or transcript quality. Pass `task_id` only when explicit operator instruction or runtime-owned interruption recovery authorizes continuation; otherwise launch fresh. If the child may still be active or its lifecycle is uncertain, inspect, wait, or reattach as supported; do not send another prompt or launch an overlapping writer. Compaction re-anchoring of a currently running worker is distinct from follow-up work. Trace recovery is untrusted and cannot authorize continuation. Parallel writes require disjoint registered worktrees (separate tasks or distinct ad-hoc runIds). Multiple writes in the same worktree must run sequentially.
 
 ### Worktree Concurrency & Sequencing
 - **One writer per worktree:** A single worktree has exactly one active writer at a time.
@@ -81,7 +81,7 @@ Each agent gets:
 - **Constraints:** Don't change other code
 - **Expected output:** Summary of what you found and fixed
 
-Each native `task()` launch has one primary goal and one terminal handoff. Give complete constraints and acceptance criteria only for that goal. Point at catalog names and IDs rather than pasting every context body. Native `task_id` resume is allowed when continuing the same child. Use a fresh session for an independent unrelated goal. Returned task IDs are also observe-only board handles for status, reconcile, and cancel.
+Apply the native task contract above to every launch. Give complete constraints and acceptance criteria only for that goal. Point at catalog names and IDs rather than pasting every context body. Returned task IDs are also observe-only board handles for status, reconcile, and cancel.
 
 In feature-task mode, one implementation assignment normally maps to one numbered task; an independently verifiable new deliverable requires a DAG amendment or append-only manual task. In ad-hoc mode, use multiple fresh one-goal launches with disjoint path ownership or sequence overlapping writers.
 

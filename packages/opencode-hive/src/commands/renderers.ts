@@ -260,7 +260,7 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
         'Use todos to track task progress and transitions.',
         'Create or inspect the explicit task worktree when isolation is needed, then issue the native Forager task() call with that path in its authored prompt.',
         'Persist worker outcomes with hive_task_update, including blocker and report when present.',
-        'Retry or resume native workers directly with concise failure context; routing is snapshotted per invocation.',
+        'After any returned native task result, launch a fresh child session for follow-up; preserve task_id pass-through only for explicit operator/runtime-owned interruption recovery.',
       ],
       doNotItems: [
         'Do not start execution without an approved and synced plan.',

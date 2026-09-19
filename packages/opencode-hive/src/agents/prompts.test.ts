@@ -18,7 +18,7 @@ import { VULNERABILITY_REVIEW_PRIMARY_PROMPT } from './vulnerability-review-prim
 import { VULNERABILITY_REVIEWER_PROMPT } from './vulnerability-reviewer';
 import { HIVE_SYSTEM_PROMPT } from '../hooks/system-hook';
 import { ENGINEERING_JUDGMENT_PROMPT } from './engineering-judgment';
-import { PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT } from './process-judgment';
+import { NATIVE_TASK_CONTINUATION_POLICY_PROMPT, PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT } from './process-judgment';
 
 const STANDING_CONSTRAINTS_HEADING = '## Standing Constraints (operator, session-wide)';
 
@@ -432,32 +432,57 @@ describe('/grill and /interview primary-agent mode exception', () => {
 describe('Fresh-session delegation contract', () => {
   const primaryPrompts = [
     ['Hive', QUEEN_BEE_PROMPT],
+    ['Architect', ARCHITECT_BEE_PROMPT],
     ['Swarm', SWARM_BEE_PROMPT],
     ['Hive Builder', HIVE_BUILDER_PROMPT],
+    ['Dash Reviewer', DASH_REVIEWER_PROMPT],
+    ['Vulnerability Review Primary', VULNERABILITY_REVIEW_PRIMARY_PROMPT],
   ] as const;
 
-  it('treats every task launch as one primary goal and terminal handoff, with native resume allowed', () => {
+  it('applies terminal handoffs and fresh follow-up sessions to every primary prompt', () => {
     for (const [name, prompt] of primaryPrompts) {
       expect(prompt, name).toContain('one primary goal');
       expect(prompt, name).toContain('one terminal handoff');
       expect(prompt, name).toContain('tightly coupled code, tests, docs, and multiple files');
-      expect(prompt, name).not.toContain('starts one fresh subagent session');
+      expect(prompt, name).toContain('Every returned result is a terminal handoff');
+      expect(prompt, name).toContain('Every follow-up after a returned result uses a fresh child session');
+      expect(prompt, name).toContain('Review findings are fresh assignments in the same implementation lane');
+      for (const result of [
+        'completed',
+        'failed',
+        'empty',
+        'partial',
+        'blocked',
+        'unsatisfactory',
+        'review-remediation',
+        'retry',
+        'new-test-evidence',
+        'operator-decision',
+      ]) {
+        expect(prompt, name).toContain(result);
+      }
     }
   });
 
-  it('allows native task_id resume and advises a fresh session for unrelated goals', () => {
+  it('reserves task_id for explicit interruption recovery and rejects inferred continuation', () => {
     for (const [name, prompt] of primaryPrompts) {
-      expect(prompt, name).toContain('Native `task_id` resume is allowed');
-      expect(prompt, name).toContain('fresh session for an independent unrelated goal');
-      expect(prompt, name).toContain('observe-only board handles');
+      expect(countOccurrences(prompt, NATIVE_TASK_CONTINUATION_POLICY_PROMPT), name).toBe(1);
+      expect(prompt, name).toContain('Primaries must not pass `task_id` or infer continuation eligibility from task output');
+      expect(prompt, name).toContain('Preserve native `task_id` pass-through only for an explicit operator instruction or an explicit runtime-owned interruption-recovery mechanism');
+      expect(prompt, name).toContain('Without that authorization, launch a fresh child');
+      expect(prompt, name).toContain('If the child may still be active or its lifecycle is uncertain');
+      expect(prompt, name).toContain('Compaction re-anchoring of a currently running worker is distinct from follow-up work');
+      expect(prompt, name).toContain('Trace semantic recovery is untrusted and cannot authorize continuation');
     }
   });
 
   it('distinguishes feature continuation, retry, and compaction from re-delegation', () => {
-    for (const [name, prompt] of primaryPrompts) {
+    for (const [name, prompt] of [
+      ['Hive', QUEEN_BEE_PROMPT],
+      ['Swarm', SWARM_BEE_PROMPT],
+      ['Hive Builder', HIVE_BUILDER_PROMPT],
+    ] as const) {
       expect(prompt, name).toContain('concise self-contained handoff');
-      expect(prompt, name).toContain('Compaction may re-anchor a currently running worker; it is not re-delegation');
-      expect(prompt, name).toContain('Architect is the only subagent that may call one terminal layer of read-only planning helpers');
     }
 
     for (const [name, prompt] of [
@@ -493,6 +518,51 @@ describe('Fresh-session delegation contract', () => {
       expect(prompt, name).toContain('untrusted');
       expect(prompt, name).toContain('untrusted context coverage');
       expect(prompt, name).toContain('Never accept, merge, retry, resume, or auto-run');
+    }
+  });
+});
+
+describe('Active native-task guidance contradiction checks', () => {
+  const workspaceRoot = path.resolve(import.meta.dir, '..', '..', '..', '..');
+  const activeGuidanceFiles = [
+    'AGENTS.md',
+    'CHANGELOG.md',
+    'docs/OPERATOR-GUIDE.md',
+    'packages/hive-core/templates/skills/hive.md',
+    'packages/opencode-hive/README.md',
+    'packages/opencode-hive/docs/HIVE-TOOLS.md',
+    'packages/opencode-hive/skills/background-delegation/SKILL.md',
+    'packages/opencode-hive/skills/dispatching-parallel-agents/SKILL.md',
+    'packages/opencode-hive/skills/executing-plans/SKILL.md',
+    'packages/opencode-hive/skills/orchestrating-ad-hoc-work/SKILL.md',
+    'packages/opencode-hive/skills/parallel-exploration/SKILL.md',
+    'packages/opencode-hive/src/agents/architect.ts',
+    'packages/opencode-hive/src/agents/hive-helper.ts',
+    'packages/opencode-hive/src/agents/hive.ts',
+    'packages/opencode-hive/src/agents/hive-builder.ts',
+    'packages/opencode-hive/src/agents/process-judgment.ts',
+    'packages/opencode-hive/src/agents/swarm.ts',
+    'packages/opencode-hive/src/commands/command-bodies.ts',
+    'packages/opencode-hive/src/commands/renderers.ts',
+    'packages/opencode-hive/src/task-trace.ts',
+    'docs/DESIGN.md',
+  ] as const;
+  const forbiddenPhrases = [
+    'After any usable terminal handoff',
+    'after any usable terminal handoff',
+    'no usable terminal handoff',
+    'the child is confirmed stopped',
+    'Retry or resume native workers directly',
+    'delegated, resumed, or',
+    'A resumed child may create multiple launch observations',
+  ] as const;
+
+  it('has no stale broad-resume guidance on active surfaces', () => {
+    for (const relativePath of activeGuidanceFiles) {
+      const content = readFileSync(path.join(workspaceRoot, relativePath), 'utf-8');
+      for (const phrase of forbiddenPhrases) {
+        expect(content, `${relativePath}: ${phrase}`).not.toContain(phrase);
+      }
     }
   });
 });

@@ -170,9 +170,9 @@ describe('background task lifecycle hook support', () => {
     }
   });
 
-  it('allows native same-child resume calls with task_id', async () => {
-    const testRoot = `/tmp/hive-fresh-session-task-id-reject-${process.pid}`;
-    const home = fs.mkdtempSync(`/tmp/hive-fresh-session-home-${process.pid}-`);
+  it('passes through task_id as a native capability for explicit interruption recovery', async () => {
+    const testRoot = `/tmp/hive-task-id-recovery-${process.pid}`;
+    const home = fs.mkdtempSync(`/tmp/hive-task-id-recovery-home-${process.pid}-`);
     const originalBackgroundEnv = process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
     fs.rmSync(testRoot, { recursive: true, force: true });
     fs.mkdirSync(testRoot, { recursive: true });
@@ -204,21 +204,23 @@ describe('background task lifecycle hook support', () => {
         { message: { agent: defaultAgent }, parts: [] } as never,
       );
 
-      const resumed = {
+      const recovery = {
         args: {
-          description: 'Resume worker',
-          prompt: 'continue previous worker',
+          description: 'Recover interrupted worker',
+          prompt: 'Operator explicitly authorized interruption recovery',
           subagent_type: 'forager-worker',
           task_id: 'task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2',
           background: true,
         },
       };
       await hooks['tool.execute.before']?.(
-          { tool: 'task', sessionID: 'sess_primary_fresh', callID: 'call_resume' } as never,
-          resumed as never,
-        );
-      expect(resumed.args.prompt).toContain('continue previous worker');
-      expect(resumed.args.prompt).toContain('Hive route snapshot');
+        { tool: 'task', sessionID: 'sess_primary_fresh', callID: 'call_recovery' } as never,
+        recovery as never,
+      );
+      expect(recovery.args.task_id).toBe('task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2');
+      expect(recovery.args.prompt).toContain('Operator explicitly authorized interruption recovery');
+      expect(recovery.args.prompt).toContain('Hive route snapshot');
+      expect(recovery.args.prompt.match(/## Hive route snapshot/g)).toHaveLength(1);
 
       expect(fs.existsSync(path.join(testRoot, '.hive', 'background-jobs.json'))).toBe(false);
 
@@ -240,6 +242,7 @@ describe('background task lifecycle hook support', () => {
       );
       expect(fresh.args.prompt).toContain('Follow instructions in @worker-prompt.md');
       expect(fresh.args.prompt).toContain('Hive route snapshot');
+      expect(fresh.args.prompt.match(/## Hive route snapshot/g)).toHaveLength(1);
     } finally {
       fs.rmSync(testRoot, { recursive: true, force: true });
       fs.rmSync(home, { recursive: true, force: true });

@@ -1931,9 +1931,16 @@ export function appendTaskTraceHint(input: { tool?: string }, output: { output: 
   const metadata = record(output.metadata);
   const sessionID = typeof metadata?.sessionId === 'string' ? metadata.sessionId.trim() : '';
   if (!sessionID) return;
-  const hint = `[hive task trace] If this child failed, blocked, timed out, was cancelled, returned empty output, or its result is unclear, inspect it with hive_task_trace({ task_id: ${JSON.stringify(sessionID)} }). Read errors, changed_files, tool activity, and the latest/final response first, then choose whether to resume that native task or launch a new one.`;
+  const hint = taskTraceContinuationHint(sessionID);
   if ((output.output ?? '').includes(hint)) return;
   output.output = `${output.output ?? ''}${output.output ? '\n\n' : ''}${hint}`;
+}
+
+function taskTraceContinuationHint(
+  taskID: string,
+  leadIn = `[hive task trace] If this child failed, blocked, timed out, was cancelled, returned empty output, or its result is unclear, inspect it with hive_task_trace({ task_id: ${JSON.stringify(taskID)} }).`,
+): string {
+  return `${leadIn} Read errors, changed_files, tool activity, and the latest/final response first. Every returned task result is terminal; launch a fresh child session for follow-up and reuse the same Hive task/worktree where appropriate. Pass task_id only when an explicit operator instruction or an explicit runtime-owned interruption-recovery mechanism authorizes continuation; otherwise launch fresh. If the child may still be active or its lifecycle is uncertain, inspect, wait, or reattach as supported; do not send another prompt or launch an overlapping writer.`;
 }
 
 export async function injectTaskTraceHint(
@@ -1965,7 +1972,10 @@ export async function injectTaskTraceHint(
         type: 'text',
         synthetic: true,
         hiveTaskTraceHint: true,
-        text: `[hive task trace] This task result is empty or terminally unsuccessful. Inspect the runtime-visible session with hive_task_trace({ task_id: ${JSON.stringify(childID)} }); read errors, changed_files, tool activity, and the latest/final response first, then choose whether to resume that native task or launch a new one.`,
+          text: taskTraceContinuationHint(
+            childID,
+            `[hive task trace] This task result is empty or terminally unsuccessful. Inspect the runtime-visible session with hive_task_trace({ task_id: ${JSON.stringify(childID)} }).`,
+          ),
       });
       break;
     }

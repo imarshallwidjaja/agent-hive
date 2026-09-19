@@ -339,9 +339,11 @@ describe('skill content', () => {
     expect(skill!.template).toContain('Blocking does not mean serial');
     expect(skill!.template).toContain('If the only reason for serializing is `task()` is blocking, that is incorrect');
     expect(skill!.template).toContain('one primary goal');
-    expect(skill!.template).toContain('Native `task_id` resume is allowed');
+    expect(skill!.template).toContain('Every returned result is terminal');
+    expect(skill!.template).toContain('Every returned result is terminal, so every follow-up uses a fresh child session');
     expect(skill!.template).toContain('one terminal handoff');
-    expect(skill!.template).not.toContain('starts one fresh subagent session');
+    expect(skill!.template).toContain('Pass `task_id` only when explicit operator instruction or runtime-owned interruption recovery authorizes continuation');
+    expect(skill!.template).toContain('If the child may still be active or its lifecycle is uncertain');
   });
 
   it('launches every admitted Scout question in one wave and makes later waves evidence-driven', () => {
@@ -801,9 +803,12 @@ describe('skill content', () => {
     expect(skill!.template).toContain('There is no exact-one-read or exact-one-write quota');
     expect(skill!.template).toContain('one independently answerable question or one primary goal');
     expect(skill!.template).toContain('one owner, one expected output, and one verification/return contract');
-    expect(skill!.template).toContain('Native `task_id` resume is allowed');
+    expect(skill!.template).toContain('Every returned result is terminal');
+    expect(skill!.template).toContain('Every follow-up after a returned result uses a fresh child session');
     expect(skill!.template).toContain('observe-only board handles');
-    expect(skill!.template).toContain('Compaction may re-anchor a currently running worker; it is not re-delegation');
+    expect(skill!.template).toContain('Pass `task_id` only when an explicit operator instruction or explicit runtime-owned interruption-recovery mechanism authorizes continuation');
+    expect(skill!.template).toContain('If the child may still be active or its lifecycle is uncertain');
+    expect(skill!.template).toContain('Compaction re-anchoring of a currently running worker is distinct from follow-up work');
     expect(skill!.template).toContain('Lane count never selects wait mode');
     expect(skill!.template).toContain(
       'Waiting, pending, terminal-unreconciled, stale, or ownership-overlapping lanes need a board action'

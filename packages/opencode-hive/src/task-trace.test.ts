@@ -1858,7 +1858,10 @@ describe('task trace lifecycle hints', () => {
     expect(output.output).toContain('hive_task_trace({ task_id: "child" })');
     expect(output.output).toContain('failed, blocked, timed out');
     expect(output.output).toContain('errors, changed_files, tool activity');
-    expect(output.output).toContain('choose whether to resume that native task or launch a new one');
+    expect(output.output).toContain('Every returned task result is terminal; launch a fresh child session for follow-up');
+    expect(output.output).toContain('Pass task_id only when an explicit operator instruction or an explicit runtime-owned interruption-recovery mechanism authorizes continuation');
+    expect(output.output).toContain('otherwise launch fresh');
+    expect(output.output).toContain('If the child may still be active or its lifecycle is uncertain');
     expect(output.output.match(/\[hive task trace\]/g)).toHaveLength(1);
 
     const longOutput = { title: 'task', output: 'x'.repeat(20_000), metadata: { sessionId: 'child' } };
@@ -1878,8 +1881,9 @@ describe('task trace lifecycle hints', () => {
     await injectTaskTraceHint(messages, authorize, seen);
     expect(messages[0].parts.filter((part: any) => part.type === 'text' && part.synthetic)).toHaveLength(1);
     expect(messages[0].parts.at(-1).text).toContain('hive_task_trace({ task_id: "child" })');
-    expect(messages[0].parts.at(-1).text).toContain('errors, changed_files, tool activity');
-    expect(messages[0].parts.at(-1).text).toContain('choose whether to resume that native task or launch a new one');
+    expect(messages[0].parts.at(-1).text).toContain('This task result is empty or terminally unsuccessful');
+    expect(messages[0].parts.at(-1).text).toContain('launch a fresh child session for follow-up');
+    expect(messages[0].parts.at(-1).text).toContain('otherwise launch fresh');
   });
 
   it('injects replay hints for hard terminal failures but not running work', async () => {

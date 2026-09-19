@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Tool availability plus instructions govern action. Each tool validates its own operation. Task status and reports replace the attempt ledger. Public worktree families are `hive_worktree_create` / `inspect` / `merge` / `cleanup` and `hive_adhoc_worktree_*`. `hive_feature_select` routes context and constraints. Constraints accept `scope: session|feature`. Native `task_id` resume is allowed; use a fresh session for an independent unrelated goal.
+- Tool availability plus instructions govern action. Each tool validates its own operation. Task status and reports replace the attempt ledger. Public worktree families are `hive_worktree_create` / `inspect` / `merge` / `cleanup` and `hive_adhoc_worktree_*`. `hive_feature_select` routes context and constraints. Constraints accept `scope: session|feature`. Every returned native task result is terminal; follow-ups use fresh child sessions, while `task_id` pass-through requires explicit operator or runtime-owned interruption-recovery authorization.
 - Research guidance now selects already-exposed capabilities by operation, source authority, freshness, scope, and permitted effects. Missing capabilities are reported as evidence gaps rather than recreated.
 
 ### Removed

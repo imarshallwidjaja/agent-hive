@@ -145,7 +145,7 @@ These tools are primary-agent-only and are available when the OpenCode backgroun
 | `hive_background_reconcile_batch` | Mark multiple terminal native background jobs reconciled or intentionally ignored in one scoped operation, then archive them from normal status output |
 | `hive_background_cancel` | Request cancellation for a visible background job and record runtime cancellation only after OpenCode confirms it |
 
-The board observes the originating native parent and call, not the current feature or agent. Stale and unknown observations stay visible. It does not couple to execution, worktree, or task status. A resumed child may create multiple launch observations. If completion lacks a call ID, record unknown and hint `hive_task_trace`; never guess the latest child or block dispatch.
+The board observes the originating native parent and call, not the current feature or agent. Stale and unknown observations stay visible. It does not couple to execution, worktree, or task status. Multiple launch observations may exist for one native task identity when explicit runtime-owned interruption recovery is used. If completion lacks a call ID or its identity is ambiguous, record unknown and hint `hive_task_trace`; never guess the latest child. Missing or ambiguous completion identity must not block unrelated dispatch, but ownership-overlapping work still requires inspection or waiting; do not send another prompt or launch another writer.
 
 With the env gate unset, the background management tools return `background_tools_disabled`. Primary agents keep normal blocking `task()` wait mode. With the env gate set, primary orchestrators receive delegate-first background scheduling guidance and the board tools are active.
 
@@ -170,7 +170,7 @@ Trace inspection never resumes, aborts, retries, polls, or mutates the inspected
 hive_task_trace({ task_id: "child" })
 ```
 
-If semantic recovery would help build a fresh handoff, call `hive_task_trace({ task_id: "child", recovery: true })`. Recovery remains untrusted. Native `task_id` resume is allowed when continuing the same child. Use a fresh session for an independent unrelated goal.
+If semantic recovery would help build a fresh handoff, call `hive_task_trace({ task_id: "child", recovery: true })`. Recovery remains untrusted and never authorizes continuation. Every returned task result is terminal, so follow-up work uses a fresh child session and may reuse the same Hive task/worktree. Primaries must not pass `task_id` or infer eligibility from task output, trace, `idle_and_closed`, board state, cancellation acknowledgement, or transcript quality. Pass `task_id` only when an explicit operator instruction or explicit runtime-owned interruption-recovery mechanism authorizes continuation; otherwise launch fresh. If the child may still be active or its lifecycle is uncertain, inspect, wait, or reattach as supported; do not send another prompt or launch an overlapping writer.
 
 Omitted or false `recovery` preserves the deterministic compact forensic v2 shape. Its 24 KiB soft target is advisory, not a cap. Irreducible larger reports stay `ok: true`; `render.actual_bytes` is exact.
 
