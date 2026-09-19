@@ -394,16 +394,9 @@ describe(`release ${releaseVersion} artifact contract on main`, () => {
         [...packedFiles].some((filePath) => filePath.startsWith('skills/')),
         'README-promised oc-arkive asset missing from npm pack: skills/'
       );
-      assertPackedFile(packedFiles, 'templates/mcp-servers.json', 'oc-arkive');
-      assertPackedFile(packedFiles, 'templates/context/tools.md', 'oc-arkive');
-
       const packedManifest = JSON.parse(fs.readFileSync(path.join(packageRoot, 'package.json'), 'utf8'));
-      const removedDirectDependencies = [
-        'effect',
-        'simple-git',
-        '@upstash/context7-mcp',
-        'grep-mcp',
-      ];
+      assert.deepEqual(packedManifest.dependencies, { 'gray-matter': '^4.0.3' });
+      const removedDirectDependencies = ['effect', 'simple-git'];
       for (const dependencyType of ['dependencies', 'optionalDependencies', 'peerDependencies']) {
         assert.equal(
           packedManifest[dependencyType]?.['hive-core'],

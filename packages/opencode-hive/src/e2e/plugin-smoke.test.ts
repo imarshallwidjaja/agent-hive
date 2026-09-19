@@ -4,19 +4,21 @@ import * as path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import plugin from '../index.js';
 import { HIVE_TOOL_NAMES } from '../utils/plugin-manifest.js';
+import { createPluginWithHome } from './plugin-test-home.js';
 
 const roots: string[] = [];
 
 async function fixture() {
   const root = fs.mkdtempSync(`/tmp/hive-plugin-smoke-${process.pid}-`);
-  roots.push(root);
+  const home = fs.mkdtempSync(`/tmp/hive-plugin-smoke-home-${process.pid}-`);
+  roots.push(root, home);
   fs.mkdirSync(path.join(root, '.hive'), { recursive: true });
-  const hooks = await plugin({
+  const hooks = await createPluginWithHome(home, () => plugin({
     directory: root,
     worktree: root,
     project: { id: 'plugin-smoke', worktree: root },
     client: { session: { get: async ({ path: inputPath }: any) => ({ data: { id: inputPath.id } }), abort: async () => ({ data: true }) } },
-  } as any);
+  } as any));
   return { root, hooks, context: { sessionID: 'primary', messageID: 'message', agent: 'hive-master', abort: new AbortController().signal } };
 }
 

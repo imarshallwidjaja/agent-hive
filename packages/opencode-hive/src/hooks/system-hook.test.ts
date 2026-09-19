@@ -14,4 +14,22 @@ describe('HIVE_SYSTEM_PROMPT', () => {
     expect(HIVE_SYSTEM_PROMPT).toContain('one layer of permitted read-only planning helpers');
     expect(HIVE_SYSTEM_PROMPT).toContain('every other subagent are terminal');
   });
+
+  it('defines the shared capability-based tool contract', () => {
+    expect(HIVE_SYSTEM_PROMPT).toContain('Inspect the descriptions and input schemas of tools exposed to this agent');
+    expect(HIVE_SYSTEM_PROMPT).toContain('Choose the narrowest existing tool');
+    expect(HIVE_SYSTEM_PROMPT).toContain('Local text or content search');
+    expect(HIVE_SYSTEM_PROMPT).toContain('Syntax-aware structural search or AST/pattern inspection');
+    expect(HIVE_SYSTEM_PROMPT).toContain('Official current or version-relevant library/API documentation');
+    expect(HIVE_SYSTEM_PROMPT).toContain('Public source-code examples from other repositories');
+    expect(HIVE_SYSTEM_PROMPT).toContain('General web discovery or current information');
+    expect(HIVE_SYSTEM_PROMPT).toContain('Direct retrieval of a known URL');
+    expect(HIVE_SYSTEM_PROMPT).toContain('Interactive rendered or stateful browser work');
+    expect(HIVE_SYSTEM_PROMPT).toContain('Establish repository behavior from local source and executed checks');
+    expect(HIVE_SYSTEM_PROMPT).toContain('public code examples as usage evidence, not API authority');
+    expect(HIVE_SYSTEM_PROMPT).toContain('A broader capability is not an automatic substitute');
+    expect(HIVE_SYSTEM_PROMPT).toContain('report the missing capability and what cannot be established or completed');
+    expect(HIVE_SYSTEM_PROMPT).toContain('Use only capabilities already exposed to this agent');
+    expect(HIVE_SYSTEM_PROMPT).toContain('Do not install, configure, or enable tools');
+  });
 });

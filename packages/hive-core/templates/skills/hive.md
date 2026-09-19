@@ -39,16 +39,7 @@ Review -> `plan-reviewer` / `code-reviewer` / `approach-advisor`
 
 ## Research Delegation and Parallel Exploration
 
-Use focused research tools; for multi-domain exploration, use parallel researcher fan-out.
-
-| Tool | Use For |
-|------|---------|
-| `grep_app_searchGitHub` | Find code in OSS repos |
-| `context7_query-docs` | Library documentation |
-| Best available web search tool | Discovery and current information |
-| Best available web-fetch tool | Direct URL retrieval |
-| `ast_grep_find_code` / `ast_grep_find_code_by_rule` | AST-aware code search |
-| `task()` | Parallel exploration via researcher fan-out |
+Delegate research by operation, required source authority and freshness, bounded scope, and expected evidence. The child selects among capabilities exposed in its own session, which may differ from the parent's; do not prescribe provider or tool IDs. Use parallel researcher fan-out for independent slices.
 
 For exploratory fan-out, load the `parallel-exploration` skill for the full playbook.
 
@@ -346,7 +337,7 @@ If "Revise Plan":
 
 | Phase | Tool | Purpose |
 |-------|------|---------|
-| Discovery | `grep_app_searchGitHub` / `context7_query-docs` / `task()` | Research delegation (parallel exploration) |
+| Discovery | `task()` | Capability-based research delegation and parallel exploration |
 | Plan | `hive_feature_create` | Start feature |
 | Plan | `hive_context_write` | Save research |
 | Plan | `hive_plan_write` | Write plan |

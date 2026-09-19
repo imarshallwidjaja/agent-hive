@@ -1087,11 +1087,10 @@ describe("ConfigService defaults", () => {
   });
 });
 
-describe("ConfigService disabled skills/mcps", () => {
+describe("ConfigService disabled skills", () => {
   it("returns empty arrays when not configured", () => {
     const service = new ConfigService();
     expect(service.getDisabledSkills()).toEqual([]);
-    expect(service.getDisabledMcps()).toEqual([]);
   });
 
   it("returns configured disabled skills", () => {
@@ -1107,21 +1106,6 @@ describe("ConfigService disabled skills/mcps", () => {
     );
 
     expect(service.getDisabledSkills()).toEqual(["brainstorming", "writing-plans"]);
-  });
-
-  it("returns configured disabled MCPs", () => {
-    const service = new ConfigService();
-    const configPath = service.getPath();
-
-    fs.mkdirSync(path.dirname(configPath), { recursive: true });
-    fs.writeFileSync(
-      configPath,
-      JSON.stringify({
-        disableMcps: ["context7", "ast_grep"],
-      }),
-    );
-
-    expect(service.getDisabledMcps()).toEqual(["context7", "ast_grep"]);
   });
 });
 
@@ -1655,15 +1639,15 @@ describe('ConfigService write validation and persistence', () => {
     fs.writeFileSync(configPath, JSON.stringify({ sandbox: 'none', disableSkills: ['existing'] }));
     staleService.get();
 
-    new ConfigService().set({ disableMcps: ['context7'] });
+    new ConfigService().set({ agentMode: 'unified' });
     const updated = staleService.set({ sandbox: 'docker' });
 
-    expect(updated.disableMcps).toEqual(['context7']);
+    expect(updated.agentMode).toBe('unified');
     expect(updated.disableSkills).toEqual(['existing']);
     expect(JSON.parse(fs.readFileSync(configPath, 'utf-8'))).toMatchObject({
       sandbox: 'docker',
       disableSkills: ['existing'],
-      disableMcps: ['context7'],
+      agentMode: 'unified',
     });
   });
 

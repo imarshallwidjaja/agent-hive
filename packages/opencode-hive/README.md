@@ -26,6 +26,8 @@ Restart OpenCode after changing plugins.
 
 If you already have an OpenCode config, append `oc-arkive@latest` to its existing `plugin` array. Keep your surrounding settings and existing plugin entries, and preserve unrelated settings in the source file. The plugin still intentionally mutates the OpenCode fields listed below. This section is the full compatibility reference; the root README points here instead of repeating these mutations.
 
+Before upgrading, remove `disableMcps` from `~/.config/opencode/agent_hive.json`. Strict validation rejects the removed key, and the whole Hive config is ignored until the key is removed.
+
 The config hook intentionally mutates these OpenCode fields:
 
 - `default_agent`: selects `hive-master` in unified mode or `architect-planner` in dedicated mode.
@@ -34,11 +36,10 @@ The config hook intentionally mutates these OpenCode fields:
 - `subagent_depth`: sets the OpenCode value to `2`.
 - `skills.paths`: when Hive skills are materialized, registers the generated Hive skill path first, followed by resolved user-configured paths.
 - `experimental.primary_tools`: removes `task` and existing `question` entries, then ensures one `question` entry while preserving other string entries.
-- `mcp`: Enabled built-in MCP IDs replace same-ID definitions; unrelated IDs remain. `disableMcps` prevents a selected built-in from being registered, so an existing same-name MCP definition can remain.
 
-### Built-in research MCPs
+### Research integrations
 
-The plugin supplies built-in research MCP definitions at startup. You do **not** need to copy `.opencode/mcp-servers.json`; see [Available MCPs](#available-mcps) for the inventory and disable controls.
+Configure research integrations and their permissions in OpenCode. oc-arkive does not install, register, configure, or alter them. Hive agents inspect the capabilities already exposed to their session, select the narrowest suitable interface from its description and schema, and report a missing capability when required evidence cannot be retrieved. They do not install tools or improvise shell or network substitutes.
 
 Default mode is dedicated (`architect-planner` + `swarm-orchestrator`). Set `"agentMode": "unified"` for a single hybrid `hive-master` seat; see [Agent mode](#agent-mode). Runtime config is **global only**: `~/.config/opencode/agent_hive.json`.
 
@@ -148,7 +149,7 @@ Current change is one possible canonical mode after inference and acceptance, no
 
 The workflow performs source review only: no active exploitation, no network scanning or probing, no credential use, no package installation, no shell commands, no scanner execution, no source edits, no external-state mutation, and no recursive delegation. It produces no automatic fix, remediation, plan, task, commit, merge, or patch. Remediation requires separate operator authorization after the review.
 
-External queries may contain only public dependency names and versions or public advisory identifiers such as CVE or GHSA IDs. They must not contain proprietary source, symbols, paths, configuration, logs, or stack traces. Optional MCP unavailability is a coverage gap, not permission to add another tool. The workflow adds zero new scanner dependencies and requires no scanner setup.
+External queries may contain only public dependency names and versions or public advisory identifiers such as CVE or GHSA IDs. They must not contain proprietary source, symbols, paths, configuration, logs, or stack traces. An unavailable research capability is a coverage gap, not permission to add another tool. The workflow adds zero new scanner dependencies and requires no scanner setup.
 
 Sensitive findings remain in OpenCode session history. No report file or SARIF is written. Operators must apply appropriate session retention and access controls, or manually export the report to an approved location under their own data-handling policy.
 
@@ -502,13 +503,12 @@ Generated/managed shape (for inspection) at `<project>/.hive/repositories.json`:
 }
 ```
 
-### Global-only: Disable Skills or MCPs
+### Global-only: Disable Skills
 
 ```json
 {
   "$schema": "https://raw.githubusercontent.com/imarshallwidjaja/agent-hive/main/packages/opencode-hive/schema/agent_hive.schema.json",
-  "disableSkills": ["brainstorming", "writing-plans"],
-  "disableMcps": ["ast_grep"]
+  "disableSkills": ["brainstorming", "writing-plans"]
 }
 ```
 
@@ -518,7 +518,6 @@ Generated/managed shape (for inspection) at `<project>/.hive/repositories.json`:
 |----|-------------|
 | `adversarial-review` | Explicit adversarial / red-team / multi-pass review posture |
 | `agents-md-mastery` | Bootstrap, review, or prune AGENTS.md by placing rules next to the code they govern |
-| `ast-grep` | Structural code search via the ast-grep MCP tools |
 | `background-delegation` | Env-gated background wait-mode and board protocol |
 | `brainstorming` | Explore intent and design before implementation |
 | `code-reviewer` | Deprecated compatibility wrapper; prefer the `code-reviewer` subagent |
@@ -534,16 +533,6 @@ Generated/managed shape (for inspection) at `<project>/.hive/repositories.json`:
 | `verification-reviewer` | Deprecated wrapper; use `verification` report mode |
 | `writing-for-agents` | Reference for authoring documents agents consume: skills, subagent prompts, instructions, and pointer architecture |
 | `writing-plans` | Turn requirements into an implementation plan |
-
-#### Available MCPs
-
-| ID | Description | Requirements |
-|----|-------------|--------------|
-| `context7` | Library documentation lookup via [Context7](https://context7.com). Query up-to-date docs for any programming library. | None |
-| `grep_app` | GitHub code search via [grep.app](https://grep.app). Find real-world code examples from public repositories. | None |
-| `ast_grep` | Structural search and AST inspection via [ast-grep](https://ast-grep.github.io). Pattern matching across 25+ languages. | None (runs via npx) |
-
-Agents use the best available web search and direct URL retrieval tools when those capabilities are available.
 
 ### Per-Agent Skills
 

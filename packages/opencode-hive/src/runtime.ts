@@ -42,7 +42,6 @@ import { VULNERABILITY_REVIEWER_PROMPT } from './agents/vulnerability-reviewer.j
 import { DASH_REVIEWER_PROMPT } from './agents/dash-reviewer.js';
 import { VULNERABILITY_REVIEW_PRIMARY_PROMPT } from './agents/vulnerability-review-primary.js';
 import { buildCustomSubagents } from './agents/custom-agents.js';
-import { createBuiltinMcps } from './mcp/index.js';
 import {
   prepareNativeHiveSkills,
   type PreparedHiveSkill,
@@ -738,7 +737,6 @@ const plugin: Plugin = async (ctx) => {
   });
 
   return {
-    mcp: createBuiltinMcps(configService.getDisabledMcps()),
     tool: tools,
     command: buildHiveCommandMap(hiveCommandRenderers, createCommandContext),
     event: async (input) => {
@@ -899,7 +897,6 @@ const plugin: Plugin = async (ctx) => {
       const commandConfig = Object.fromEntries(await Promise.all(HIVE_COMMANDS.map(async (command) => [command.key, { description: command.description, ...('agent' in command ? { agent: command.agent } : {}), template: await hiveCommandRenderers[command.key]('$ARGUMENTS', createCommandContext()) }])));
       mutableConfig.command = { ...(mutableConfig.command ?? {}), ...commandConfig };
       mutableConfig.default_agent = configService.get().agentMode === 'unified' ? 'hive-master' : 'architect-planner';
-      mutableConfig.mcp = { ...(mutableConfig.mcp ?? {}), ...createBuiltinMcps(configService.getDisabledMcps()) };
       const experimental = typeof mutableConfig.experimental === 'object' && mutableConfig.experimental ? mutableConfig.experimental : {};
       mutableConfig.experimental = { ...experimental, primary_tools: [...new Set([...(experimental.primary_tools ?? []), 'question'])] };
     },

@@ -114,18 +114,6 @@ describe('skill content', () => {
     expect(skill!.template).toContain('Do not let external tools mutate the artifact under review');
   });
 
-  it('bundles the ast-grep skill with the upstream tool surface', () => {
-    const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'ast-grep');
-
-    expect(skill).toBeDefined();
-    expect(skill!.template).toContain('ast_grep_dump_syntax_tree');
-    expect(skill!.template).toContain('ast_grep_test_match_code_rule');
-    expect(skill!.template).toContain('ast_grep_find_code');
-    expect(skill!.template).toContain('ast_grep_find_code_by_rule');
-    expect(skill!.template).not.toContain('ast_grep_search');
-    expect(skill!.template).not.toContain('ast_grep_replace');
-  });
-
   it('keeps brainstorming design in-session without mandatory tracked design documents', () => {
     const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'brainstorming');
 
@@ -619,6 +607,14 @@ describe('skill content', () => {
     expect(hiveSkill).toContain('Do not call `hive_worktree_merge` again while preserved conflict state is active');
     expect(hiveSkill).not.toContain('hive_worktree_start');
     expect(hiveSkill).not.toContain('taskToolCall');
+  });
+
+  it('delegates research by capability and evidence contract in the core hive skill', () => {
+    const hiveSkill = readRepoFile('packages/hive-core/templates/skills/hive.md');
+
+    expect(hiveSkill).toContain('Delegate research by operation, required source authority and freshness');
+    expect(hiveSkill).toContain('The child selects among capabilities exposed in its own session');
+    expect(hiveSkill).toContain('do not prescribe provider or tool IDs');
   });
 
   it('documents tracked worktree execution and non-Git/report-only exceptions in the core hive skill', () => {

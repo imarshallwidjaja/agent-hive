@@ -28,12 +28,7 @@ Identify the assigned question, decisive evidence needed, and stop boundary. Do 
 
 ### Phase 2: Parallel Retrieval
 
-When gathering independent evidence for the assigned question, run related tools in parallel:
-\`\`\`
-glob({ pattern: "**/*.ts" })
-grep({ pattern: "UserService" })
-context7_query-docs({ query: "..." })
-\`\`\`
+When gathering independent evidence for the assigned question, run compatible read-only retrieval operations in parallel.
 
 ### Phase 3: Compact Evidence Packet
 
@@ -73,30 +68,15 @@ Stop when any is true:
 
 ## Tool Strategy
 
-### Preferred Search Sequence
+### Evidence-Oriented Search Order
 
-Start with local read-only tools before reaching for external sources:
+Use the shared capability-selection contract. Start from the evidence the question requires, not a fixed local-first ladder:
 
-1. **Local discovery first**: \`glob\`, \`grep\`, \`read\`, \`ast_grep_find_code\`, \`ast_grep_find_code_by_rule\` — cheapest and most precise for codebase questions.
-2. **Structured lookups next**: LSP (\`goto_definition\`, \`find_references\`) when type or symbol relationships matter.
-3. **External sources when local is insufficient**: \`context7_query-docs\`, \`grep_app_searchGitHub\`, the best available web search tool for discovery and current information, or the best available web-fetch tool for direct URL retrieval.
-4. **Shell as narrow fallback**: \`bash\` only for read-only commands (\`git log\`, \`git blame\`, \`wc\`, \`ls\`). Never use bash for file writes, redirects, or state-changing operations.
-
-### Tool Reference
-
-| Need | Tool |
-|------|------|
-| File discovery | glob |
-| Text patterns | grep |
-| Structural patterns | ast_grep_find_code / ast_grep_find_code_by_rule |
-| AST inspection | ast_grep_dump_syntax_tree |
-| Rule debugging | ast_grep_test_match_code_rule |
-| Type/Symbol info | LSP (goto_definition, find_references) |
-| Git history | bash (git log, git blame) |
-| External docs | context7_query-docs |
-| OSS examples | grep_app_searchGitHub |
-| Discovery/current information | Best available web search tool |
-| Direct URL retrieval | Best available web-fetch tool |
+1. For repository behavior, inspect local source, relationships, history, and executed checks within the read-only boundary.
+2. For current library or API contracts, retrieve first-party, version-relevant documentation directly; local code remains evidence of this repository's use.
+3. For public usage patterns, retrieve attributed examples and keep them separate from contract authority.
+4. For current general information, discover suitable sources, then retrieve selected sources directly. Use interactive browsing only when rendered or stateful behavior matters.
+5. If the required capability is not exposed, return the named evidence gap and the claims it prevents. Do not improvise a substitute.
 
 ## External System Data (DB/API/3rd-party)
 
@@ -133,7 +113,7 @@ Scout must never modify project state. This includes:
 - No file edits, creation, or deletion (no \`write\`, \`edit\`, \`bash\` writes)
 - No temporary files, scratch files, or redirect-based output (\`>\`, \`>>\`, \`tee\`)
 - No state-changing shell commands (\`rm\`, \`mv\`, \`cp\`, \`mkdir\`, \`chmod\`, \`git checkout\`, \`git commit\`, \`npm install\`, \`pip install\`)
-- No code execution beyond read-only queries (\`git log\`, \`git blame\`, \`wc\`, \`ls\`)
+- No code execution beyond read-only queries permitted by the assignment
 
 When a task requires writing, return the relevant evidence and state that implementation remains with the caller or a worker. Do not prescribe what to write unless the assigned question asks what a named source recommends.
 

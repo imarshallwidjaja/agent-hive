@@ -552,12 +552,11 @@ describe('Scout operating contract', () => {
     expect(SCOUT_BEE_PROMPT).toContain('No state-changing shell commands');
   });
 
-  it('defines a preferred search sequence', () => {
-    expect(SCOUT_BEE_PROMPT).toContain('### Preferred Search Sequence');
-    expect(SCOUT_BEE_PROMPT).toContain('Local discovery first');
-    expect(SCOUT_BEE_PROMPT).toContain('Structured lookups next');
-    expect(SCOUT_BEE_PROMPT).toContain('External sources when local is insufficient');
-    expect(SCOUT_BEE_PROMPT).toContain('Shell as narrow fallback');
+  it('defines an evidence-oriented search order without a local-first ladder', () => {
+    expect(SCOUT_BEE_PROMPT).toContain('### Evidence-Oriented Search Order');
+    expect(SCOUT_BEE_PROMPT).toContain('Start from the evidence the question requires');
+    expect(SCOUT_BEE_PROMPT).toContain('first-party, version-relevant documentation');
+    expect(SCOUT_BEE_PROMPT).toContain('return the named evidence gap');
   });
 
   it('includes speed and efficiency rules', () => {
@@ -612,14 +611,11 @@ describe('Forager verification and tool-scope clarity', () => {
     expect(FORAGER_BEE_PROMPT).toContain('do not substitute explanation for execution');
   });
 
-  it('references the upstream ast-grep MCP tools without legacy names', () => {
-    expect(FORAGER_BEE_PROMPT).toContain('ast_grep_dump_syntax_tree');
-    expect(FORAGER_BEE_PROMPT).toContain('ast_grep_test_match_code_rule');
-    expect(FORAGER_BEE_PROMPT).toContain('ast_grep_find_code');
-    expect(FORAGER_BEE_PROMPT).toContain('ast_grep_find_code_by_rule');
-    expect(FORAGER_BEE_PROMPT).not.toContain('ast_grep_search');
-    expect(FORAGER_BEE_PROMPT).not.toContain('ast_grep_replace');
-    expect(FORAGER_BEE_PROMPT).not.toContain('ast_grep_scan-code');
+  it('uses exposed research capabilities and reports missing ones', () => {
+    expect(FORAGER_BEE_PROMPT).toContain('Use existing research capabilities');
+    expect(FORAGER_BEE_PROMPT).toContain('Select them through the shared capability contract');
+    expect(FORAGER_BEE_PROMPT).toContain('report the evidence gap and continue only independent work');
+    expect(FORAGER_BEE_PROMPT).toContain('structural or language-aware inspection');
   });
 });
 
@@ -678,15 +674,13 @@ describe('Primary retrieval and reasoning ownership', () => {
   });
 });
 
-describe('Scout ast-grep references', () => {
-  it('names the upstream ast-grep MCP tools in guidance', () => {
-    expect(SCOUT_BEE_PROMPT).toContain('ast_grep_dump_syntax_tree');
-    expect(SCOUT_BEE_PROMPT).toContain('ast_grep_test_match_code_rule');
-    expect(SCOUT_BEE_PROMPT).toContain('ast_grep_find_code');
-    expect(SCOUT_BEE_PROMPT).toContain('ast_grep_find_code_by_rule');
-    expect(SCOUT_BEE_PROMPT).not.toContain('ast_grep_search');
-    expect(SCOUT_BEE_PROMPT).not.toContain('ast_grep_replace');
-    expect(SCOUT_BEE_PROMPT).not.toContain('ast_grep_scan-code');
+describe('Role-specific capability guidance', () => {
+  it('keeps Scout and Swarm guidance capability-based', () => {
+    expect(SCOUT_BEE_PROMPT).toContain('Use the shared capability-selection contract');
+    expect(SCOUT_BEE_PROMPT).toContain('Do not improvise a substitute');
+    expect(SWARM_BEE_PROMPT).toContain('Describe each research assignment by operation, required source authority and freshness');
+    expect(SWARM_BEE_PROMPT).toContain('the child selects among capabilities exposed in its own session');
+    expect(SWARM_BEE_PROMPT).toContain('Do not prescribe provider or tool IDs');
   });
 });
 
@@ -1550,7 +1544,7 @@ describe('Scout (Explorer/Researcher) prompt', () => {
 
   it('covers the sharpened operating contract with structural anchors', () => {
     expect(SCOUT_BEE_PROMPT).toContain('### Read-Only Contract');
-    expect(SCOUT_BEE_PROMPT).toContain('### Preferred Search Sequence');
+    expect(SCOUT_BEE_PROMPT).toContain('### Evidence-Oriented Search Order');
     expect(SCOUT_BEE_PROMPT).toContain('### Speed and Efficiency');
   });
 

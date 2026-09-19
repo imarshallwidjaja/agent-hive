@@ -5,6 +5,7 @@ import type { PluginInput } from '@opencode-ai/plugin';
 import { createOpencodeClient } from '@opencode-ai/sdk';
 import plugin from '../index.js';
 import type { BackgroundJobsJson } from 'hive-core';
+import { createPluginWithHome } from '../e2e/plugin-test-home.js';
 
 const OPENCODE_CLIENT = createOpencodeClient({ baseUrl: 'http://localhost:1' }) as unknown as PluginInput['client'];
 (OPENCODE_CLIENT.session as any).update = async () => ({ data: {} });
@@ -53,27 +54,28 @@ function createStubShell(): PluginInput['$'] {
 describe('background task lifecycle hook support', () => {
   it('captures task args before execution and persists post-tool lifecycle events', async () => {
     const testRoot = `/tmp/hive-background-hook-test-${process.pid}`;
+    const home = fs.mkdtempSync(`/tmp/hive-background-hook-home-${process.pid}-`);
     const originalBackgroundEnv = process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
     fs.rmSync(testRoot, { recursive: true, force: true });
     fs.mkdirSync(testRoot, { recursive: true });
     process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
 
-    const hooks = await plugin({
-      directory: testRoot,
-      worktree: testRoot,
-      serverUrl: new URL('http://localhost:1'),
-      project: {
-        id: 'test',
-        worktree: testRoot,
-        time: { created: Date.now() },
-      },
-      client: OPENCODE_CLIENT,
-      $: createStubShell(),
-    });
-
-    expect(hooks['tool.execute.after']).toBeDefined();
-
     try {
+      const hooks = await createPluginWithHome(home, () => plugin({
+        directory: testRoot,
+        worktree: testRoot,
+        serverUrl: new URL('http://localhost:1'),
+        project: {
+          id: 'test',
+          worktree: testRoot,
+          time: { created: Date.now() },
+        },
+        client: OPENCODE_CLIENT,
+        $: createStubShell(),
+      }));
+
+      expect(hooks['tool.execute.after']).toBeDefined();
+
       await hooks['chat.message']?.(
         { sessionID: 'sess_parent', agent: 'hive-master' } as never,
         { message: {}, parts: [] } as never,
@@ -130,7 +132,7 @@ describe('background task lifecycle hook support', () => {
       expect(board.jobs.map((job) => job.taskId)).not.toContain('task_foreground');
 
       const abortCalls: unknown[] = [];
-      const cancelHooks = await plugin({
+      const cancelHooks = await createPluginWithHome(home, () => plugin({
         directory: testRoot,
         worktree: testRoot,
         serverUrl: new URL('http://localhost:1'),
@@ -148,7 +150,7 @@ describe('background task lifecycle hook support', () => {
           },
         } as unknown as PluginInput['client'],
         $: createStubShell(),
-      });
+      }));
 
       const cancelRaw = await cancelHooks.tool!.hive_background_cancel.execute(
         { identifier: 'task_01JZ8WQY8M7ZTV5MS9Y4Y8Q6A2', reason: 'No longer needed' },
@@ -159,6 +161,7 @@ describe('background task lifecycle hook support', () => {
       expect(abortCalls).toEqual([]);
     } finally {
       fs.rmSync(testRoot, { recursive: true, force: true });
+      fs.rmSync(home, { recursive: true, force: true });
       if (originalBackgroundEnv === undefined) {
         delete process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
       } else {
@@ -169,25 +172,26 @@ describe('background task lifecycle hook support', () => {
 
   it('allows native same-child resume calls with task_id', async () => {
     const testRoot = `/tmp/hive-fresh-session-task-id-reject-${process.pid}`;
+    const home = fs.mkdtempSync(`/tmp/hive-fresh-session-home-${process.pid}-`);
     const originalBackgroundEnv = process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
     fs.rmSync(testRoot, { recursive: true, force: true });
     fs.mkdirSync(testRoot, { recursive: true });
     process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
 
-    const hooks = await plugin({
-      directory: testRoot,
-      worktree: testRoot,
-      serverUrl: new URL('http://localhost:1'),
-      project: {
-        id: 'test',
-        worktree: testRoot,
-        time: { created: Date.now() },
-      },
-      client: OPENCODE_CLIENT,
-      $: createStubShell(),
-    });
-
     try {
+      const hooks = await createPluginWithHome(home, () => plugin({
+        directory: testRoot,
+        worktree: testRoot,
+        serverUrl: new URL('http://localhost:1'),
+        project: {
+          id: 'test',
+          worktree: testRoot,
+          time: { created: Date.now() },
+        },
+        client: OPENCODE_CLIENT,
+        $: createStubShell(),
+      }));
+
       const opencodeConfig: Record<string, unknown> = {};
       await hooks.config?.(opencodeConfig as never);
       const defaultAgent = opencodeConfig.default_agent;
@@ -238,6 +242,7 @@ describe('background task lifecycle hook support', () => {
       expect(fresh.args.prompt).toContain('Hive route snapshot');
     } finally {
       fs.rmSync(testRoot, { recursive: true, force: true });
+      fs.rmSync(home, { recursive: true, force: true });
       if (originalBackgroundEnv === undefined) {
         delete process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
       } else {

@@ -28,7 +28,6 @@ const STORED_CONFIG_KEYS = new Set([
   'repositories',
   'enableToolsFor',
   'disableSkills',
-  'disableMcps',
   'agentMode',
   'hook_cadence',
   'council',
@@ -417,14 +416,6 @@ export class ConfigService {
   }
 
   /**
-   * Get list of globally disabled MCPs.
-   */
-  getDisabledMcps(): string[] {
-    const config = this.get();
-    return config.disableMcps ?? [];
-  }
-
-  /**
    * Get sandbox configuration for worker isolation.
    * Returns { mode: 'none' | 'docker', image?: string, persistent?: boolean }
    */
@@ -590,10 +581,6 @@ export class ConfigService {
     }
 
     if (config.disableSkills !== undefined && !this.isStringArray(config.disableSkills)) {
-      return false;
-    }
-
-    if (config.disableMcps !== undefined && !this.isStringArray(config.disableMcps)) {
       return false;
     }
 

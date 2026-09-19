@@ -5,12 +5,14 @@ import * as path from 'node:path';
 import plugin from './index.js';
 import { SessionService } from 'hive-core';
 import { HIVE_TOOL_NAMES } from './utils/plugin-manifest.js';
+import { createPluginWithHome } from './e2e/plugin-test-home.js';
 
 const roots: string[] = [];
 
 function createRuntime() {
   const root = fs.mkdtempSync(`/tmp/hive-runtime-cutover-${process.pid}-`);
-  roots.push(root);
+  const home = fs.mkdtempSync(`/tmp/hive-runtime-cutover-home-${process.pid}-`);
+  roots.push(root, home);
   fs.mkdirSync(path.join(root, '.hive'), { recursive: true });
   const sessions = new Map<string, { id: string; parentID?: string }>();
   const client = {
@@ -22,7 +24,7 @@ function createRuntime() {
   return {
     root,
     sessions,
-    hooks: plugin({ directory: root, worktree: root, project: { id: 'test', worktree: root }, client } as any),
+    hooks: createPluginWithHome(home, () => plugin({ directory: root, worktree: root, project: { id: 'test', worktree: root }, client } as any)),
   };
 }
 
@@ -64,6 +66,20 @@ describe('coordinated runtime hard cut', () => {
     expect(Object.keys(loaded.tool ?? {}).sort()).toEqual([...HIVE_TOOL_NAMES].sort());
     expect(Object.keys(loaded.tool ?? {})).not.toContain('hive_execution_prepare');
     expect(Object.keys(loaded.tool ?? {})).not.toContain('hive_review_workspace_create');
+    expect(loaded).not.toHaveProperty('mcp');
+  });
+
+  it('leaves operator-owned MCP configuration unchanged', async () => {
+    const { hooks } = createRuntime();
+    const loaded = await hooks;
+    const absent: any = {};
+    await loaded.config!(absent);
+    expect(absent).not.toHaveProperty('mcp');
+
+    const operatorMcp = { operator_docs: { type: 'remote', url: 'https://example.test/mcp' } };
+    const configured: any = { mcp: operatorMcp };
+    await loaded.config!(configured);
+    expect(configured.mcp).toBe(operatorMcp);
   });
 
   it('snapshots feature routes and constraints at dispatch without requiring preparation', async () => {
@@ -430,7 +446,9 @@ describe('coordinated runtime hard cut', () => {
     const hiveOutput = { system: ['provider'] };
     await loaded['experimental.chat.system.transform']!({ sessionID: 'primary', agent: 'hive-master' } as any, hiveOutput);
     expect(hiveOutput.system[0].split('# Hive (Hybrid)').length - 1).toBe(1);
+    expect(hiveOutput.system[0]).toContain('## Capability-Based Tool Selection');
     expect(config.agent['scout-researcher'].prompt).toContain('# Scout');
+    expect(config.agent['scout-researcher'].prompt).toContain('## Capability-Based Tool Selection');
     const scoutOutput = { system: ['provider'] };
     await loaded['experimental.chat.system.transform']!({ sessionID: 'scout', agent: 'scout-researcher' } as any, scoutOutput);
     expect(scoutOutput.system[0]).toBe('provider');

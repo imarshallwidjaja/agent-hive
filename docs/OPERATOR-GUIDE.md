@@ -16,6 +16,8 @@ A plan does not authorize implementation until you approve it. `/dash-review` an
 
 Tool availability plus instructions govern action. Each Hive tool validates its own operation.
 
+OpenCode owns research integrations and permissions. oc-arkive does not install, register, configure, or alter them. Agents select among capabilities already exposed to their session by operation, source authority, freshness, scope, and permitted effects. If a required capability is absent, they report the evidence gap instead of installing a tool or recreating it through shell commands or ad hoc network requests.
+
 Engineering Judgment is included once in Hive, Architect, Swarm, Hive Builder, Forager, Plan Reviewer, Code Reviewer, Simplicity Reviewer, Approach Advisor, and Dash Reviewer. Hive and Architect apply it to planning; Swarm and Builder apply it to decomposition, handoffs, and integration without gaining implementation authority; Forager and the reviewers apply it within their existing contracts; Approach Advisor uses it for route selection; Dash Reviewer uses it for reviewer selection and synthesis. Scout, Hive Helper, both vulnerability roles, and trace/tool summarizers do not receive this shared block.
 
 ## Agents
@@ -154,5 +156,7 @@ The board observes the originating native parent and call, not the current featu
 Slash-command arguments are interpolated into the native skill template. `$$`, `$&`, `` $` ``, and `$'` are replacement sequences, and `` !`command` `` is expanded by the shell. For a literal snippet that contains those, use ordinary conversation and name the requested skill instead.
 
 ## Upgrade
+
+Before upgrading, remove `disableMcps` from `~/.config/opencode/agent_hive.json`. Strict validation rejects the removed key, and the whole Hive config is ignored until the key is removed.
 
 Restart OpenCode after upgrade. Finish or abandon old live workers first. Remove stale copied user-authored workflow instructions yourself; Hive does not silently overwrite global settings. Old attempt and lease files are left unread. Useful plans, tasks, context, reports, and workspace files remain readable.

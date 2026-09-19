@@ -56,13 +56,6 @@
       },
       "description": "Globally disable specific Hive bundled skills (e.g., ['brainstorming', 'writing-plans']). Disabled skills are excluded from Hive materialization and Hive bundled autoload. Does not block user or native skills with the same name."
     },
-    "disableMcps": {
-      "type": "array",
-      "items": {
-        "type": "string"
-      },
-      "description": "Globally disable specific MCP servers (e.g., ['ast_grep']). Available: context7, grep_app, ast_grep"
-    },
     "agentMode": {
       "type": "string",
       "enum": [

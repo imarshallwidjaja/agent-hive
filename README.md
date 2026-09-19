@@ -109,7 +109,7 @@ For existing-config compatibility, see the
 
 | Package | Distribution | Role |
 |---------|--------------|------|
-| [`oc-arkive`](https://www.npmjs.com/package/oc-arkive) | npm | OpenCode plugin: agents, tools, skills, MCPs, commands |
+| [`oc-arkive`](https://www.npmjs.com/package/oc-arkive) | npm | OpenCode plugin: agents, Hive tools, skills, commands |
 | `vscode-arkive` | GitHub Release VSIX | Sidebar, plan/overview review, background job viewer |
 
 ## Documentation
