@@ -265,6 +265,16 @@ describe('skill content', () => {
     expect(template).not.toContain('run `hive_tasks_sync({ refreshPending: true })` after review or approval');
   });
 
+  it('keeps each plan feature-scoped and treats overlap as an execution placement concern', () => {
+    const template = BUILTIN_SKILLS.find((entry) => entry.name === 'writing-plans')!.template;
+
+    expect(template).toContain('one feature per plan');
+    expect(template).toContain('Cross-feature overlap does not block plan approval');
+    expect(template).toContain('materially unresolved');
+    expect(template).toContain('Unresolved plan comments still block approval');
+    expect(template).toContain('Do not invent automatic cross-feature dependencies');
+  });
+
   it('scopes strict TDD mechanics to an explicitly selected testing strategy', () => {
     const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'test-driven-development');
     const template = skill!.template;
@@ -572,6 +582,10 @@ describe('skill content', () => {
     expect(skill!.template).not.toContain('Non-Hive mutation-capable or unknown task targets are denied');
     expect(skill!.template).toContain('execution-decisions');
     expect(skill!.template).toContain('Dependencies guide sequencing');
+    expect(skill!.template).toContain('immediately before native `task()` dispatch');
+    expect(skill!.template).toContain('one feature per worker assignment');
+    expect(skill!.template).toContain('Cross-feature prerequisites block affected execution tasks or lanes');
+    expect(skill!.template).toContain('Do not infer or create automatic cross-feature dependencies');
   });
 
   it('finishes executing-plans through verification and Hive merge instead of a generic finish menu', () => {
@@ -600,8 +614,9 @@ describe('skill content', () => {
   it('uses native Forager examples in the core hive skill', () => {
     const hiveSkill = readRepoFile('packages/hive-core/templates/skills/hive.md');
 
-    expect(hiveSkill).toContain('hive_worktree_create({ task: "01-task-name" })');
-    expect(hiveSkill).toContain('hive_worktree_create({ task: "02-task-a" })');
+    expect(hiveSkill).toContain('hive_worktree_create({ feature: "feature-name", task: "01-task-name" })');
+    expect(hiveSkill).toContain('hive_worktree_create({ feature: "feature-name", task: "02-task-a" })');
+    expect(hiveSkill).toContain('hive_feature_select({ feature: "feature-name" })');
     expect(hiveSkill).toContain('subagent_type: "forager-worker"');
     expect(hiveSkill).toContain('hive_task_update({ task: "01-task-name", status: "done", summary, report })');
     expect(hiveSkill).toContain('hive_task_update({ task, status: "blocked"');

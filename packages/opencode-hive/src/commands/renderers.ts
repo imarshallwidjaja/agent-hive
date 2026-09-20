@@ -218,7 +218,7 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
       details: [`Planning input: ${topicOrCurrent(args, 'the current spec or brief')}`],
       doItems: [
         'Perform active discovery before writing the plan; inspect relevant files, tests, docs, and constraints first.',
-        'Create or select the feature, write durable context from catalog selection with an explicit feature when useful, then write the plan using hive_feature_create, hive_context_write, and hive_plan_write as appropriate. Load context-engineering for hash-guarded reads and writes; do not mass-read every note.',
+        'Create the feature when needed, then target that feature explicitly in context and plan calls. Feature creation and explicit feature arguments do not change the selected session route. Load context-engineering for hash-guarded reads and writes; do not mass-read every note.',
         'Include documentation updates for non-ad-hoc work when user-facing behavior, setup, install flow, or operator workflow changes.',
       ],
       doNotItems: [
@@ -238,8 +238,8 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
     return renderHybridCommand('approve-sync-plan', context, {
       details: args.trim() ? [`Additional operator input: ${args.trim()}`] : undefined,
       doItems: [
-        'Read the active state with hive_status and hive_plan_read before approval.',
-        'Approve with hive_plan_approve, sync with hive_tasks_sync, then read back status and tasks.',
+        'Resolve the intended feature, then read it with explicit hive_status and hive_plan_read calls before approval.',
+        'Approve and sync that same explicit feature with hive_plan_approve and hive_tasks_sync, then read back its status and tasks.',
         'Stop with exact blockers if plan approval, task sync, or readback fails.',
       ],
       doNotItems: [
@@ -258,7 +258,7 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
       doItems: [
         'Confirm parallel vs sequential execution strategy with the operator before proceeding.',
         'Use todos to track task progress and transitions.',
-        'Create or inspect the explicit task worktree when isolation is needed, then issue the native Forager task() call with that path in its authored prompt.',
+        'Create or inspect the task worktree with an explicit feature target when isolation is needed, call hive_feature_select for that feature immediately before dispatch, then issue the native Forager task() call with that path in its authored prompt.',
         'Persist worker outcomes with hive_task_update, including blocker and report when present.',
         'After any returned native task result, launch a fresh child session for follow-up; preserve task_id pass-through only for explicit operator/runtime-owned interruption recovery.',
       ],

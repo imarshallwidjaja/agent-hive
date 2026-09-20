@@ -45,11 +45,11 @@ Default mode is dedicated (`architect-planner` + `swarm-orchestrator`). Set `"ag
 
 ## The Workflow
 
-1. **Create feature** - planning flow or `hive_feature_create`
-2. **Write plan** - `hive_plan_write` / `hive_plan_patch`
+1. **Create feature** - planning flow or `hive_feature_create`; creation does not change the selected session route
+2. **Write plan** - target one feature with explicit `hive_plan_write` / `hive_plan_patch` calls
 3. **Human review** - comments and chat
 4. **Approve + sync** - `hive_plan_approve`, then `hive_tasks_sync`
-5. **Execute** - create the matching `hive_worktree_create` workspace for tracked Git writes, then issue one ordinary native Forager call
+5. **Execute** - create the matching `hive_worktree_create` workspace with an explicit feature target, select that feature immediately before dispatch, then issue one ordinary native Forager call
 6. **Record** - the primary calls `hive_task_update` for status, summary, blocker, or report
 7. **Merge** - `hive_worktree_merge` integrates completed task branches
 8. **Complete feature** - `hive_feature_complete` when done
@@ -81,7 +81,7 @@ OpenCode exposes these packaged skills as native slash commands. They are not Hi
 - `/complexity-review <scope/philosophy prose>` reviews an explicit diff or bounded named scope, or current staged, unstaged, and relevant nonignored untracked changes when no scope is supplied. An empty review stops without becoming an audit.
 - `/complexity-audit <scope/philosophy prose>` audits named roots or codebases, or the current worktree when no roots are supplied.
 
-`/hive` has been removed. Feature creation now belongs to the planning flow and the Hive tools, usually `hive_feature_create` followed by `hive_plan_write`, review, approval, task sync, execution, and merge.
+`/hive` has been removed. Feature creation now belongs to the planning flow and the Hive tools, usually `hive_feature_create` followed by explicitly targeted plan writes, review, per-feature approval and task sync, execution, and merge.
 
 `/council` accepts `/council --group <group> <directive>`. If `--group` is omitted, Hive uses `council.defaultGroup`. Free-text tokens are directive text, not implicit group selectors.
 
@@ -229,9 +229,9 @@ For execution work, treat worker output as evidence to inspect, not proof to tru
 ### Feature Management
 | Tool | Description |
 |------|-------------|
-| `hive_feature_create` | Create a new feature |
+| `hive_feature_create` | Create a new feature without changing the selected session route |
 | `hive_feature_complete` | Mark feature as complete |
-| `hive_feature_select` | Set or clear the active feature that routes context and constraints |
+| `hive_feature_select` | Set or clear the session route used for omitted feature-scoped calls and child dispatch |
 
 ### Planning
 | Tool | Description |
@@ -259,7 +259,7 @@ For execution work, treat worker output as evidence to inspect, not proof to tru
 
 Git helpers do not change task status, auto-commit source, or assign workers. Merge wants a clean source and dest pinned SHA. Dirty, untracked, ignored, and unmerged data is protected; there is no force or rm fallback. Same-call squash cleanup may use observed identity; later ambiguous branches stay unless discard is explicit. Composite partial outcomes are not rolled back.
 
-After `hive_worktree_create`, issue one ordinary native Forager call. Blocking and background calls use the native task shape unchanged.
+Pass the feature explicitly to `hive_worktree_create`, select that feature immediately before dispatch, then issue one ordinary native Forager call. Blocking and background calls use the native task shape unchanged.
 
 ### Status
 

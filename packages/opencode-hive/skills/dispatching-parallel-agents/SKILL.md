@@ -92,17 +92,20 @@ The example below is feature-task mode. In ad-hoc mode, consume the ready wave f
 
 ```typescript
 // Gate-open only: use background: true when independent foreground work can continue.
-hive_worktree_create({ task: "01-fix-abort-tests" })
+hive_worktree_create({ feature: "feature-name", task: "01-fix-abort-tests" })
+hive_feature_select({ feature: "feature-name" })
 task({ subagent_type: "forager-worker", description: "Fix abort tests", prompt: "Implement and commit assigned changes; return sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present.", background: true })
-hive_worktree_create({ task: "02-fix-batch-tests" })
+hive_worktree_create({ feature: "feature-name", task: "02-fix-batch-tests" })
+hive_feature_select({ feature: "feature-name" })
 task({ subagent_type: "forager-worker", description: "Fix batch tests", prompt: "Implement and commit assigned changes; return sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present.", background: true })
 
 // Blocking alternative, including every gate-closed session:
-hive_worktree_create({ task: "03-fix-cleanup-tests" })
+hive_worktree_create({ feature: "feature-name", task: "03-fix-cleanup-tests" })
+hive_feature_select({ feature: "feature-name" })
 await task({ subagent_type: "forager-worker", description: "Fix cleanup tests", prompt: "Implement and commit assigned changes; return sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present." })
 ```
 
-Independent Forager worktrees may be created and dispatched under one parent. Call `hive_worktree_create` or `hive_adhoc_worktree_create`, then issue the next native `task()` call unchanged with a Forager or Forager-derived agent. Treat installs, builds, formatters, generators, and tests as mutations. Distinct worktrees do not isolate fixed-path fixtures, ports, databases, containers, generated outputs, or external mutable resources; consume the owning workflow's resource sequencing. Ordinary Scout, advisor, and reviewer launches remain eligible for same-message parallel dispatch.
+Independent Forager worktrees may be created and dispatched under one parent. In feature-task mode, pass the feature explicitly to `hive_worktree_create`, then select that feature immediately before its native `task()` call. For ad-hoc work, call `hive_adhoc_worktree_create`, then issue the next native `task()` call unchanged with a Forager or Forager-derived agent. Treat installs, builds, formatters, generators, and tests as mutations. Distinct worktrees do not isolate fixed-path fixtures, ports, databases, containers, generated outputs, or external mutable resources; consume the owning workflow's resource sequencing. Ordinary Scout, advisor, and reviewer launches remain eligible for same-message parallel dispatch.
 
 Use Forager-derived workers for delegated execution. A rare native `general` exception is an ordinary `task()` call with ordinary tools only: no Hive authority, recursion, or questions. Native helpers keep only their bounded operational permissions. Unknown targets remain denied. Hive's bounded Architect planning lane remains available. Direct checkout work is unmanaged OpenCode work, not a Hive worktree.
 

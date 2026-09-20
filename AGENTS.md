@@ -223,11 +223,11 @@ Tool availability plus instructions govern action. Each tool validates its own o
 
 Parent authors the native `task()` prompt. The runtime appends concise project, feature, and session constraints. Do not regenerate a native command payload.
 
-`hive_feature_select({ feature })` sets the active feature that routes context and constraints. `hive_feature_select({ feature: null })` clears it with no fallback. An explicit `feature` on a feature-scoped tool may select the current feature. Child capture is fixed at dispatch.
+Feature-scoped calls resolve in this order: explicit call target, selected session route (including explicit null), detected feature worktree/path, then the sole live feature. The same effective route is captured for child dispatch. Explicit targets are call-local. Only `hive_feature_select` changes the selected route; feature creation and feature-task worktree lifecycle calls do not. Explicit null suppresses detected-context and sole-live fallback. Select the child's feature immediately before native `task()` dispatch; unrelated explicit feature operations do not alter that route.
 
 `hive_task_update` takes optional `status`, `summary`, `blocker`, and `report` string. Omissions are preserved. Report is stored as numeric history plus latest. An explicit status leaving blocked clears the blocker. Partial writes: inspect before retry; there is no journal.
 
-Plans, approval, and dependencies guide work and status visibility. They are not dispatch or status admission gates. Structural missing refs and cycles remain invalid.
+Plans, approval, and dependencies guide work and status visibility. They are not dispatch or status admission gates. Approval and task sync are per-feature. Cross-feature overlap or activity does not block approval; concrete cross-feature prerequisites block only the affected execution tasks or lanes unless they leave the plan itself materially unresolved. Unresolved plan comments still block approval. Do not infer automatic cross-feature dependencies. Structural missing refs and cycles remain invalid.
 
 For a plan-backed task with missing or incorrect repository metadata, amend the plan and run `hive_tasks_sync({ refreshPending: true })` before worktree creation. For an incorrectly scoped manual task, automatically replace and cancel it only when no work has started and no existing task depends on it; the replacement mirrors incoming `dependsOn` and supplies corrected `repos` via `hive_task_create(...)`. If work started or reverse dependents exist, retain the incorrect task as blocked with a structured blocker and escalate; do not rewrite dependencies.
 
@@ -256,13 +256,13 @@ Skills are loaded through OpenCode's native `skill` tool (via `skills.paths`, `s
 
 ### Workflow
 
-1. `hive_feature_create(name)` - Create feature
+1. `hive_feature_create(name)` - Create a feature without changing the selected session route
 2. `hive_plan_write(content)` - Write the initial plan.md or replace it for a major rewrite
    Use `hive_plan_patch({ expectedRevision, operations })` for bounded review amendments from the current `hive_plan_read` revision. If task sequencing, dependencies, or scope changed, run `hive_tasks_sync({ refreshPending: true })` explicitly after review/approval; patching never syncs tasks automatically.
 3. User adds comments in VSCode → `hive_plan_read` to see them
 4. Revise plan → User approves
 5. `hive_tasks_sync()` - Generate tasks from plan
-6. For tracked Git writes, create the matching `hive_worktree_create` worktree, then dispatch the native Forager `task()` with authority to return `sourceCommit` for a legacy single-root workspace or the complete `sourceCommits` map when persisted `repos` are present; a singleton composite scalar is accepted as a merge convenience, while multiple repositories still require the complete map. Use the direct-work exceptions above for non-Git or report-only work
+6. For tracked Git writes, create the matching worktree with `hive_worktree_create({ feature: "feature-name", task: "01-task-name" })`, deliberately call `hive_feature_select` for that feature immediately before dispatch, then dispatch the native Forager `task()` with authority to return `sourceCommit` for a legacy single-root workspace or the complete `sourceCommits` map when persisted `repos` are present; a singleton composite scalar is accepted as a merge convenience, while multiple repositories still require the complete map. Use the direct-work exceptions above for non-Git or report-only work
 7. Pass the returned pin unchanged to merge before marking the feature task done; if merge is blocked, retain the worktree and use one of the valid task-state options above
 8. `hive_task_update` records the merged task status, summary, blocker, or report, then `hive_worktree_cleanup` removes the integrated worktree
 

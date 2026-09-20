@@ -258,7 +258,8 @@ Choose the placement before dispatch:
 Worktree flow:
 
 ```
-hive_worktree_create({ task: "01-task-name" })
+hive_worktree_create({ feature: "feature-name", task: "01-task-name" })
+hive_feature_select({ feature: "feature-name" })
 task({
   subagent_type: "forager-worker",
   description: "Implement 01-task-name",
@@ -289,9 +290,11 @@ Dependencies guide sequencing; they are not a dispatch admission gate. When the 
 Independent tasks may be created and dispatched under one parent.
 
 ```
-hive_worktree_create({ task: "02-task-a" })
+hive_worktree_create({ feature: "feature-name", task: "02-task-a" })
+hive_feature_select({ feature: "feature-name" })
 task({ subagent_type: "forager-worker", description: "Implement 02-task-a", prompt: "Primary-authored packet for 02-task-a" })
-hive_worktree_create({ task: "03-task-b" })
+hive_worktree_create({ feature: "feature-name", task: "03-task-b" })
+hive_feature_select({ feature: "feature-name" })
 task({ subagent_type: "forager-worker", description: "Implement 03-task-b", prompt: "Primary-authored packet for 03-task-b" })
 hive_status()  // Monitor all
 ```

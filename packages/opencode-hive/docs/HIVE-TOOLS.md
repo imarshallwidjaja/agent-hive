@@ -6,17 +6,17 @@ Tool availability plus instructions govern action. Each tool validates its own o
 
 | Tool | Purpose |
 |------|---------|
-| `hive_feature_create` | Create new feature, set as active |
+| `hive_feature_create` | Create a new feature without changing the selected session route |
 | `hive_feature_complete` | Mark feature completed (irreversible) |
-| `hive_feature_select` | Set `{ feature }` as the active selection, or `{ feature: null }` to clear with no fallback |
+| `hive_feature_select` | Set `{ feature }` as the selected session route, or `{ feature: null }` for a featureless route |
 
 | Call | Effect |
 |------|--------|
-| `hive_feature_select({ feature })` | Set the active feature that routes context and constraints |
-| `hive_feature_select({ feature: null })` | Clear it with no fallback |
-| explicit `feature` on a feature-scoped tool | May select the current feature for that call |
+| `hive_feature_select({ feature })` | Set the session route used for omitted feature-scoped calls and child dispatch |
+| `hive_feature_select({ feature: null })` | Make omitted calls and child dispatch explicitly featureless, suppressing detected and sole-live fallback |
+| explicit `feature` or `name` on a feature-scoped tool | Target only that tool call without changing the selected session route |
 
-Child capture is fixed at dispatch.
+Only `hive_feature_select` changes the selected route. Feature creation, explicit tool targets, and feature-task worktree lifecycle calls leave it unchanged. Create feature-task worktrees with an explicit feature target, then deliberately call `hive_feature_select` immediately before native `task()` dispatch when the child needs that route.
 
 ## Repository Manifest (3 tools)
 
@@ -39,7 +39,7 @@ Single-repo projects use the normal git-root path. Agents should add only reposi
 
 If task sequencing, dependencies, or scope changed after a patch, run `hive_tasks_sync({ refreshPending: true })` explicitly after review/approval.
 
-Plans, approval, and dependencies guide work and status visibility. They are not dispatch or status admission gates. Structural missing refs and cycles remain invalid.
+Plans, approval, and dependencies guide work and status visibility. They are not dispatch or status admission gates. Approval and task sync are per-feature. Cross-feature overlap or activity does not block approval; concrete prerequisites block affected execution tasks or lanes unless they leave the plan materially unresolved. Unresolved plan comments still block approval. Hive does not infer cross-feature dependencies. Structural missing refs and cycles remain invalid.
 
 ## Task Management (3 tools)
 
@@ -256,7 +256,7 @@ Skills are loaded via OpenCode's native `skill` tool. Hive bundles are materiali
 
 ## Feature Resolution
 
-Feature-scoped tools resolve an omitted feature in this order: current task worktree/path, current session binding, then the sole live feature. `hive_feature_select` and an explicit `feature` argument may select the current feature. If multiple live features remain, the tool returns their logical names without mutating any feature. Retry with the explicit `feature` or `name` argument. If no live feature exists, create one with `hive_feature_create`.
+Feature-scoped tools resolve in this order: explicit `feature` or `name`, selected session route (including null), detected feature worktree/path, then the sole live feature. The same effective route is captured for child dispatch. An explicit target wins only for that call and never changes the selected route. Explicit null suppresses detected-context and sole-live fallback. If multiple live features remain, the tool returns their logical names without mutating any feature. Retry with an explicit target. If no live feature exists, create one with `hive_feature_create`.
 
 ## Reserved Overview Convention
 

@@ -400,6 +400,32 @@ describe('Primary agent subagent concurrency guidance', () => {
   });
 });
 
+describe('Multi-plan feature routing guidance', () => {
+  it('uses one selected-before-detected route for omitted tools and child dispatch', () => {
+    for (const [name, prompt] of [
+      ['Hive', QUEEN_BEE_PROMPT],
+      ['Swarm', SWARM_BEE_PROMPT],
+    ] as const) {
+      expect(prompt, name).toContain('Selected session route governs omitted feature-scoped calls before detected context');
+      expect(prompt, name).toContain('Explicit feature arguments target only that tool call');
+      expect(prompt, name).toContain('immediately before native `task()` dispatch');
+      expect(prompt, name).toContain('one feature per worker assignment');
+      expect(prompt, name).toContain('hive_worktree_create({ feature: "feature-name", task: "01-task-name" })');
+    }
+  });
+
+  it('gates cross-feature prerequisites at execution rather than plan approval', () => {
+    for (const [name, prompt] of [
+      ['Hive', QUEEN_BEE_PROMPT],
+      ['Swarm', SWARM_BEE_PROMPT],
+    ] as const) {
+      expect(prompt, name).toContain('Cross-feature prerequisites block affected execution tasks or lanes, not plan approval');
+      expect(prompt, name).toContain('Unresolved plan comments still block approval');
+      expect(prompt, name).toContain('Do not infer or create automatic cross-feature dependencies');
+    }
+  });
+});
+
 describe('/grill and /interview primary-agent mode exception', () => {
   const routedPrimaryPrompts = [
     ['Hive', QUEEN_BEE_PROMPT],

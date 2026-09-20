@@ -55,6 +55,7 @@ describe('plugin hard-cut surface', () => {
   it('returns a success response when approving the selected plan', async () => {
     const { hooks, context } = await fixture();
     await hooks.tool!.hive_feature_create.execute({ name: 'approval-response' }, context);
+    await hooks.tool!.hive_feature_select.execute({ feature: 'approval-response' }, context);
     await hooks.tool!.hive_plan_write.execute({ content: '# Plan\n' }, context);
 
     const approval = await hooks.tool!.hive_plan_approve.execute({}, context);

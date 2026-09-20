@@ -204,9 +204,7 @@ function escapeRouteSnapshotMarkers(text: string): string {
 function routeFooter(snapshot: RouteSnapshot, separated: boolean): string {
   const payload = {
     projectRoot: snapshot.projectRoot,
-    featureRoute: snapshot.hasFeatureRoute
-      ? { selected: true, feature: snapshot.featureName ?? null }
-      : { selected: false },
+    featureRoute: { selected: snapshot.hasFeatureRoute, feature: snapshot.featureName ?? null },
   };
   const constraints = [
     `Session constraints (revision ${snapshot.sessionConstraints.revision}):\n${escapeRouteSnapshotMarkers(snapshot.sessionConstraints.constraints || '(none)')}`,
@@ -314,17 +312,11 @@ const plugin: Plugin = async (ctx) => {
     const status = featureService.get(name)?.status;
     return status === 'planning' || status === 'approved' || status === 'executing';
   });
-  const selectFeature = (sessionID: string | undefined, feature: string | null): void => {
-    if (feature !== null) assertValidFeatureName(feature);
-    if (sessionID) sessionService.setFeatureRoute(sessionID, feature);
-  };
   const resolveFeature = (explicit: string | undefined, toolContext?: unknown): string | null => {
     const sessionID = (toolContext as ToolContext | undefined)?.sessionID;
     if (explicit !== undefined) {
       const feature = explicit.trim();
-      if (!feature) return null;
       assertValidFeatureName(feature);
-      selectFeature(sessionID, feature);
       return feature;
     }
     const stored = sessionID ? sessionService.getGlobal(sessionID) : undefined;
@@ -356,12 +348,10 @@ const plugin: Plugin = async (ctx) => {
   const captureRoute = (sessionID: string): RouteSnapshot => {
     const session = sessionService.getGlobal(sessionID);
     const hasFeatureRoute = !!session && Object.prototype.hasOwnProperty.call(session, 'featureName');
-    const resolvedFeature = resolveFeature(undefined, { sessionID });
-    const featureName = hasFeatureRoute ? session!.featureName : resolvedFeature;
-    if (featureName !== null && featureName !== undefined) assertValidFeatureName(featureName);
+    const featureName = resolveFeature(undefined, { sessionID });
     const sessionConstraints = sessionService.readStandingConstraints(sessionID);
     const featureConstraints = typeof featureName === 'string' ? featureConstraintService.read(featureName) : undefined;
-    return { projectRoot, hasFeatureRoute: true, featureName, sessionConstraints, featureConstraints };
+    return { projectRoot, hasFeatureRoute, featureName, sessionConstraints, featureConstraints };
   };
   const constraintTarget = (input: { scope?: 'session' | 'feature'; feature?: string }, context: ToolContext) => {
     if ((input.scope ?? 'session') === 'session') {
@@ -416,11 +406,7 @@ const plugin: Plugin = async (ctx) => {
     hive_feature_create: tool({
       description: 'Create a new feature',
       args: { name: tool.schema.string(), ticket: tool.schema.string().optional() },
-      execute: async ({ name, ticket }, context) => {
-        const result = featureService.create(name, ticket);
-        selectFeature((context as ToolContext).sessionID, result.name);
-        return json(result);
-      },
+      execute: async ({ name, ticket }) => json(featureService.create(name, ticket)),
     }),
     hive_feature_select: tool({
       description: 'Select a feature for this session, or select null for an explicitly featureless route.',
@@ -515,12 +501,12 @@ const plugin: Plugin = async (ctx) => {
     hive_worktree_create: tool({
       description: 'Create a task worktree without changing task state.',
       args: { feature: tool.schema.string().optional(), task: tool.schema.string(), baseRef: tool.schema.string().optional(), repoIds: tool.schema.array(tool.schema.string()).optional(), candidate: tool.schema.string().optional() },
-      execute: async ({ feature, task, baseRef, repoIds, candidate }, context) => { const selected = requireFeature(feature, context); selectFeature((context as ToolContext).sessionID, selected); assertTaskRepoIds(selected, task, repoIds); return json(await worktreeService.create(selected, task, baseRef, candidate)); },
+      execute: async ({ feature, task, baseRef, repoIds, candidate }, context) => { const selected = requireFeature(feature, context); assertTaskRepoIds(selected, task, repoIds); return json(await worktreeService.create(selected, task, baseRef, candidate)); },
     }),
     hive_worktree_inspect: tool({
       description: 'Inspect a task worktree.',
       args: { feature: tool.schema.string().optional(), task: tool.schema.string(), repoIds: tool.schema.array(tool.schema.string()).optional(), candidate: tool.schema.string().optional() },
-      execute: async ({ feature, task, repoIds, candidate }, context) => { const selected = requireFeature(feature, context); selectFeature((context as ToolContext).sessionID, selected); assertTaskRepoIds(selected, task, repoIds); return json(await worktreeService.inspect(selected, task, candidate)); },
+      execute: async ({ feature, task, repoIds, candidate }, context) => { const selected = requireFeature(feature, context); assertTaskRepoIds(selected, task, repoIds); return json(await worktreeService.inspect(selected, task, candidate)); },
     }),
     hive_worktree_merge: tool({
       description: 'Merge an exact task worktree source into the current target.',
@@ -532,7 +518,6 @@ const plugin: Plugin = async (ctx) => {
       },
       execute: async ({ feature, task, repoIds, candidate, strategy = 'squash', message, ...options }, context) => {
         const selected = requireFeature(feature, context);
-        selectFeature((context as ToolContext).sessionID, selected);
         assertTaskRepoIds(selected, task, repoIds);
         const inspected = await worktreeService.inspect(selected, task, candidate);
         if (!inspected) throw new Error('Task worktree not found');
@@ -544,7 +529,7 @@ const plugin: Plugin = async (ctx) => {
     hive_worktree_cleanup: tool({
       description: 'Clean up a task worktree. Set discard to explicitly retire unintegrated work.',
       args: { feature: tool.schema.string().optional(), task: tool.schema.string(), repoIds: tool.schema.array(tool.schema.string()).optional(), candidate: tool.schema.string().optional(), deleteBranch: tool.schema.boolean().optional(), discard: tool.schema.boolean().optional() },
-      execute: async ({ feature, task, repoIds, candidate, deleteBranch, discard }, context) => { const selected = requireFeature(feature, context); selectFeature((context as ToolContext).sessionID, selected); assertTaskRepoIds(selected, task, repoIds); return json(await worktreeService.remove(selected, task, deleteBranch, { discard }, candidate)); },
+      execute: async ({ feature, task, repoIds, candidate, deleteBranch, discard }, context) => { const selected = requireFeature(feature, context); assertTaskRepoIds(selected, task, repoIds); return json(await worktreeService.remove(selected, task, deleteBranch, { discard }, candidate)); },
     }),
     hive_adhoc_worktree_create: tool({
       description: 'Create the matching ad-hoc Hive worktree for tracked Git writes after repository scope is resolved. An absolute sourceDirectory resolving to the active project root is treated as omitted; foreign sourceDirectory cannot be combined with repoIds.',

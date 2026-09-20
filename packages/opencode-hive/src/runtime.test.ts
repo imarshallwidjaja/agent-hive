@@ -9,11 +9,15 @@ import { createPluginWithHome } from './e2e/plugin-test-home.js';
 
 const roots: string[] = [];
 
-function createRuntime() {
+function createRuntime(options: { detectedFeature?: string } = {}) {
   const root = fs.mkdtempSync(`/tmp/hive-runtime-cutover-${process.pid}-`);
   const home = fs.mkdtempSync(`/tmp/hive-runtime-cutover-home-${process.pid}-`);
   roots.push(root, home);
   fs.mkdirSync(path.join(root, '.hive'), { recursive: true });
+  const workTarget = options.detectedFeature
+    ? path.join(root, '.hive', '.worktrees', options.detectedFeature, '01-task')
+    : root;
+  fs.mkdirSync(workTarget, { recursive: true });
   const sessions = new Map<string, { id: string; parentID?: string }>();
   const client = {
     session: {
@@ -24,7 +28,7 @@ function createRuntime() {
   return {
     root,
     sessions,
-    hooks: createPluginWithHome(home, () => plugin({ directory: root, worktree: root, project: { id: 'test', worktree: root }, client } as any)),
+    hooks: createPluginWithHome(home, () => plugin({ directory: workTarget, worktree: workTarget, project: { id: 'test', worktree: workTarget }, client } as any)),
   };
 }
 
@@ -115,6 +119,125 @@ describe('coordinated runtime hard cut', () => {
     expect(new SessionService(root).getGlobal('child-a')?.featureName).toBe('feature-a');
     expect(new SessionService(root).getGlobal('child-a')?.standingConstraints).toBe(`Keep session behavior. Quoted marker: ${routeStartMarker}`);
     expect(new SessionService(root).getGlobal('parent')?.featureName).toBe('feature-b');
+  });
+
+  it('keeps the selected session route unchanged across explicit feature operations', async () => {
+    const { root, hooks } = createRuntime();
+    git(root, ['init']);
+    git(root, ['config', 'user.email', 'test@example.com']);
+    git(root, ['config', 'user.name', 'Test']);
+    fs.writeFileSync(path.join(root, 'tracked.txt'), 'base\n');
+    git(root, ['add', '.']);
+    git(root, ['commit', '-m', 'test: base']);
+    const loaded = await hooks;
+    const caller = context('multi-plan');
+    await loaded.tool!.hive_feature_create.execute({ name: 'feature-a' }, caller);
+    await loaded.tool!.hive_feature_create.execute({ name: 'feature-b' }, caller);
+    await loaded.tool!.hive_feature_select.execute({ feature: 'feature-a' }, caller);
+    const selected = () => new SessionService(root).getGlobal('multi-plan')?.featureName;
+
+    await loaded.tool!.hive_plan_write.execute({ feature: 'feature-b', content: '# Feature B\n' }, caller);
+    expect(selected()).toBe('feature-a');
+    await loaded.tool!.hive_status.execute({ feature: 'feature-b' }, caller);
+    expect(selected()).toBe('feature-a');
+    await loaded.tool!.hive_context_write.execute({ feature: 'feature-b', name: 'overview', content: 'B notes' }, caller);
+    expect(selected()).toBe('feature-a');
+    const task = await loaded.tool!.hive_task_create.execute({ feature: 'feature-b', name: 'B task' }, caller);
+    expect(selected()).toBe('feature-a');
+    await loaded.tool!.hive_worktree_create.execute({ feature: 'feature-b', task }, caller);
+    expect(selected()).toBe('feature-a');
+    await loaded.tool!.hive_worktree_inspect.execute({ feature: 'feature-b', task }, caller);
+    expect(selected()).toBe('feature-a');
+    await loaded.tool!.hive_worktree_cleanup.execute({ feature: 'feature-b', task, discard: true }, caller);
+    expect(selected()).toBe('feature-a');
+
+    await loaded.tool!.hive_feature_create.execute({ name: 'feature-c' }, caller);
+    expect(selected()).toBe('feature-a');
+    await loaded.tool!.hive_plan_write.execute({ content: '# Feature A\n' }, caller);
+    expect(JSON.parse(await loaded.tool!.hive_plan_read.execute({}, caller)).content).toBe('# Feature A\n');
+    expect(JSON.parse(await loaded.tool!.hive_plan_read.execute({ feature: 'feature-b' }, caller)).content).toBe('# Feature B\n');
+  });
+
+  it('changes omitted resolution and child snapshots only through feature selection', async () => {
+    const { hooks } = createRuntime();
+    const loaded = await hooks;
+    const caller = context('select-route');
+    await loaded.tool!.hive_feature_create.execute({ name: 'feature-a' }, caller);
+    await loaded.tool!.hive_feature_create.execute({ name: 'feature-b' }, caller);
+    await loaded.tool!.hive_plan_write.execute({ feature: 'feature-a', content: '# A\n' }, caller);
+    await loaded.tool!.hive_plan_write.execute({ feature: 'feature-b', content: '# B\n' }, caller);
+
+    await loaded.tool!.hive_feature_select.execute({ feature: 'feature-b' }, caller);
+    expect(JSON.parse(await loaded.tool!.hive_plan_read.execute({}, caller)).content).toBe('# B\n');
+    const output = { args: { subagent_type: 'forager-worker', prompt: 'Run.' } };
+    await loaded['tool.execute.before']!({ tool: 'task', sessionID: 'select-route', callID: 'selected-b' } as any, output);
+    expect(output.args.prompt).toContain('"featureRoute":{"selected":true,"feature":"feature-b"}');
+  });
+
+  it('uses the selected route for omitted parent and bound-child calls before detected context', async () => {
+    const { root, hooks } = createRuntime({ detectedFeature: 'feature-b' });
+    const loaded = await hooks;
+    const caller = context('detected-route');
+    await loaded.tool!.hive_feature_create.execute({ name: 'feature-a' }, caller);
+    await loaded.tool!.hive_feature_create.execute({ name: 'feature-b' }, caller);
+    await loaded.tool!.hive_plan_write.execute({ feature: 'feature-a', content: '# Selected A\n' }, caller);
+    await loaded.tool!.hive_constraints_add.execute({ scope: 'feature', feature: 'feature-a', constraints: 'Use feature A.' }, caller);
+    await loaded.tool!.hive_constraints_add.execute({ scope: 'feature', feature: 'feature-b', constraints: 'Use feature B.' }, caller);
+    await loaded.tool!.hive_feature_select.execute({ feature: 'feature-a' }, caller);
+
+    expect(JSON.parse(await loaded.tool!.hive_plan_read.execute({}, caller)).content).toBe('# Selected A\n');
+    await loaded.tool!.hive_plan_write.execute({ feature: 'feature-b', content: '# Explicit B\n' }, caller);
+    expect(JSON.parse(await loaded.tool!.hive_plan_read.execute({ feature: 'feature-b' }, caller)).content).toBe('# Explicit B\n');
+    expect(new SessionService(root).getGlobal('detected-route')?.featureName).toBe('feature-a');
+    const output = { args: { subagent_type: 'forager-worker', prompt: 'Run.' } };
+    await loaded['tool.execute.before']!({ tool: 'task', sessionID: 'detected-route', callID: 'selected-a' } as any, output);
+    expect(output.args.prompt).toContain('"featureRoute":{"selected":true,"feature":"feature-a"}');
+    expect(output.args.prompt).toContain('Feature constraints for "feature-a" (revision 1)');
+    expect(output.args.prompt).toContain('Use feature A.');
+    expect(output.args.prompt).not.toContain('Use feature B.');
+    await loaded['tool.execute.after']!({ tool: 'task', sessionID: 'detected-route', callID: 'selected-a', args: output.args } as any, { metadata: { sessionId: 'child-selected-a' } } as any);
+    expect(new SessionService(root).getGlobal('child-selected-a')?.featureName).toBe('feature-a');
+    expect(JSON.parse(await loaded.tool!.hive_plan_read.execute({}, context('child-selected-a', 'forager-worker'))).content).toBe('# Selected A\n');
+  });
+
+  it('uses explicit null before detected context for parent and bound-child calls', async () => {
+    const { root, hooks } = createRuntime({ detectedFeature: 'feature-b' });
+    const loaded = await hooks;
+    const caller = context('detected-null-route');
+    await loaded.tool!.hive_feature_create.execute({ name: 'feature-b' }, caller);
+    await loaded.tool!.hive_constraints_add.execute({ scope: 'feature', feature: 'feature-b', constraints: 'Use feature B.' }, caller);
+    await loaded.tool!.hive_feature_select.execute({ feature: null }, caller);
+
+    await expect(loaded.tool!.hive_plan_read.execute({}, caller)).rejects.toThrow('Feature is required');
+    const output = { args: { subagent_type: 'forager-worker', prompt: 'Run.' } };
+    await loaded['tool.execute.before']!({ tool: 'task', sessionID: 'detected-null-route', callID: 'selected-null' } as any, output);
+    expect(output.args.prompt).toContain('"featureRoute":{"selected":true,"feature":null}');
+    expect(output.args.prompt).toContain('Feature constraints: (none)');
+    expect(output.args.prompt).not.toContain('Use feature B.');
+    await loaded['tool.execute.after']!({ tool: 'task', sessionID: 'detected-null-route', callID: 'selected-null', args: output.args } as any, { metadata: { sessionId: 'child-selected-null' } } as any);
+    const stored = new SessionService(root).getGlobal('child-selected-null')!;
+    expect(Object.prototype.hasOwnProperty.call(stored, 'featureName')).toBe(true);
+    expect(stored.featureName).toBeNull();
+    await expect(loaded.tool!.hive_plan_read.execute({}, context('child-selected-null', 'forager-worker'))).rejects.toThrow('Feature is required');
+  });
+
+  it('captures an unselected detected route without persisting it to the child', async () => {
+    const { root, hooks } = createRuntime({ detectedFeature: 'feature-b' });
+    const loaded = await hooks;
+    const caller = context('detected-unselected');
+    await loaded.tool!.hive_feature_create.execute({ name: 'feature-b' }, caller);
+    await loaded.tool!.hive_plan_write.execute({ content: '# Detected B\n' }, caller);
+    await loaded.tool!.hive_constraints_add.execute({ scope: 'feature', constraints: 'Use feature B.' }, caller);
+
+    expect(JSON.parse(await loaded.tool!.hive_plan_read.execute({}, caller)).content).toBe('# Detected B\n');
+    const output = { args: { subagent_type: 'forager-worker', prompt: 'Run.' } };
+    await loaded['tool.execute.before']!({ tool: 'task', sessionID: 'detected-unselected', callID: 'detected-b' } as any, output);
+    expect(output.args.prompt).toContain('"featureRoute":{"selected":false,"feature":"feature-b"}');
+    expect(output.args.prompt).toContain('Feature constraints for "feature-b" (revision 1)');
+    expect(output.args.prompt).toContain('Use feature B.');
+    await loaded['tool.execute.after']!({ tool: 'task', sessionID: 'detected-unselected', callID: 'detected-b', args: output.args } as any, { metadata: { sessionId: 'child-detected-b' } } as any);
+    expect(new SessionService(root).getGlobal('child-detected-b')).not.toHaveProperty('featureName');
+    expect(JSON.parse(await loaded.tool!.hive_plan_read.execute({}, context('child-detected-b', 'forager-worker'))).content).toBe('# Detected B\n');
   });
 
   it('replaces stale route snapshots idempotently while preserving authored comments', async () => {
@@ -254,15 +377,18 @@ describe('coordinated runtime hard cut', () => {
     expect(new SessionService(root).getGlobal('child-legacy')?.featureName).toBe(featureAlias);
   });
 
-  it('preserves an explicit null route for a dispatched child', async () => {
+  it('suppresses sole-live dispatch fallback for an explicit null route', async () => {
     const { root, sessions, hooks } = createRuntime();
     const loaded = await hooks;
     const parent = context('parent-null');
     await loaded.tool!.hive_feature_create.execute({ name: 'only-live' }, parent);
+    await loaded.tool!.hive_constraints_add.execute({ scope: 'feature', feature: 'only-live', constraints: 'Use only-live.' }, parent);
     await loaded.tool!.hive_feature_select.execute({ feature: null }, parent);
     const output = { args: { subagent_type: 'scout-researcher', prompt: 'Inspect.' } };
     await loaded['tool.execute.before']!({ tool: 'task', sessionID: 'parent-null', callID: 'call-null' } as any, output);
     expect(output.args.prompt).toContain('"featureRoute":{"selected":true,"feature":null}');
+    expect(output.args.prompt).toContain('Feature constraints: (none)');
+    expect(output.args.prompt).not.toContain('Use only-live.');
     sessions.set('child-null', { id: 'child-null', parentID: 'parent-null' });
     await loaded.event!({ event: { type: 'message.part.updated', properties: { part: { type: 'tool', tool: 'task', sessionID: 'parent-null', callID: 'call-null', metadata: { sessionId: 'child-null' }, state: { input: output.args } } } } } as any);
     const stored = new SessionService(root).getGlobal('child-null')!;
@@ -271,12 +397,18 @@ describe('coordinated runtime hard cut', () => {
   });
 
   it('captures the same sole-live fallback used by feature tools', async () => {
-    const { hooks } = createRuntime();
+    const { root, hooks } = createRuntime();
     const loaded = await hooks;
     await loaded.tool!.hive_feature_create.execute({ name: 'sole-live' }, context('creator'));
+    await loaded.tool!.hive_constraints_add.execute({ scope: 'feature', feature: 'sole-live', constraints: 'Use sole-live.' }, context('creator'));
+    expect(JSON.parse(await loaded.tool!.hive_status.execute({}, context('unbound'))).feature.name).toBe('sole-live');
     const output = { args: { subagent_type: 'scout-researcher', prompt: 'Inspect.' } };
     await loaded['tool.execute.before']!({ tool: 'task', sessionID: 'unbound', callID: 'sole-call' } as any, output);
-    expect(output.args.prompt).toContain('"featureRoute":{"selected":true,"feature":"sole-live"}');
+    expect(output.args.prompt).toContain('"featureRoute":{"selected":false,"feature":"sole-live"}');
+    expect(output.args.prompt).toContain('Feature constraints for "sole-live" (revision 1)');
+    expect(output.args.prompt).toContain('Use sole-live.');
+    await loaded['tool.execute.after']!({ tool: 'task', sessionID: 'unbound', callID: 'sole-call', args: output.args } as any, { metadata: { sessionId: 'child-sole-live' } } as any);
+    expect(new SessionService(root).getGlobal('child-sole-live')).not.toHaveProperty('featureName');
   });
 
   it('captures an effective null route when no feature fallback exists', async () => {
@@ -284,9 +416,9 @@ describe('coordinated runtime hard cut', () => {
     const loaded = await hooks;
     const output = { args: { subagent_type: 'scout-researcher', prompt: 'Inspect.' } };
     await loaded['tool.execute.before']!({ tool: 'task', sessionID: 'unbound', callID: 'no-feature' } as any, output);
-    expect(output.args.prompt).toContain('"featureRoute":{"selected":true,"feature":null}');
+    expect(output.args.prompt).toContain('"featureRoute":{"selected":false,"feature":null}');
     await loaded['tool.execute.after']!({ tool: 'task', sessionID: 'unbound', callID: 'no-feature', args: output.args } as any, { metadata: { sessionId: 'child-no-feature' } } as any);
-    expect(new SessionService(root).getGlobal('child-no-feature')).toMatchObject({ featureName: null });
+    expect(new SessionService(root).getGlobal('child-no-feature')).not.toHaveProperty('featureName');
   });
 
   it('accepts a matching scalar pin for a persisted singleton ad-hoc composite', async () => {
@@ -472,6 +604,7 @@ describe('coordinated runtime hard cut', () => {
     const loaded = await hooks;
     const parent = context('parent-after');
     await loaded.tool!.hive_feature_create.execute({ name: 'feature-after' }, parent);
+    await loaded.tool!.hive_feature_select.execute({ feature: 'feature-after' }, parent);
     await loaded.tool!.hive_constraints_add.execute({ constraints: 'Captured once.' }, parent);
     const output = { args: { subagent_type: 'forager-worker', prompt: 'Run.' } };
     await loaded['tool.execute.before']!({ tool: 'task', sessionID: 'parent-after', callID: 'call-after' } as any, output);

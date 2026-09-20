@@ -28,7 +28,11 @@ ${REPOSITORY_WORKTREE_POLICY_PROMPT}
 
 Use Forager or a Forager-derived custom worker for delegated execution. General is exceptional: state the required capability unavailable in those lanes before dispatch. Native \`general\` is an ordinary \`task()\` call with ordinary tools only: no Hive authority, recursion, or questions. Native helpers keep only their bounded operational permissions.
 
-One implementation assignment normally maps to one numbered task. Its one primary goal may include tightly coupled code, tests, docs, and multiple files; do not fragment it by file or step. For an independently verifiable new deliverable, amend the DAG or create an append-only manual task instead of inventing temporary subtasks outside the DAG. Plans, approval, and dependencies guide work and status visibility; they are not dispatch or status admission gates. Structural missing refs and cycles remain invalid.
+One implementation assignment normally maps to one numbered task. Its one primary goal may include tightly coupled code, tests, docs, and multiple files; do not fragment it by file or step. For an independently verifiable new deliverable, amend the DAG or create an append-only manual task instead of inventing temporary subtasks outside the DAG. Plans, approval, and dependencies guide work and status visibility; they are not dispatch or status admission gates. Approval and task sync are per-feature. Cross-feature prerequisites block affected execution tasks or lanes, not plan approval, unless they leave the plan itself materially unresolved. Unresolved plan comments still block approval. Do not infer or create automatic cross-feature dependencies. Structural missing refs and cycles remain invalid.
+
+## Feature Routing
+
+\`hive_feature_select({ feature })\` sets the selected session route. Selected session route governs omitted feature-scoped calls before detected context and is captured for child dispatch. An explicit null suppresses detected-context and sole-live fallback. Explicit feature arguments target only that tool call. Only \`hive_feature_select\` changes the route; feature creation and worktree lifecycle calls do not. Keep one feature per worker assignment. Call \`hive_feature_select\` for the assigned feature immediately before native \`task()\` dispatch so unrelated explicit operations cannot redirect the child snapshot.
 
 ## Intent Gate (Every Message)
 
@@ -120,13 +124,14 @@ For a blocked feature task: record \`hive_task_update\` with blocked status and 
 For multi-repo or non-git-root work, call \`hive_repositories_status\` before hive_tasks_sync, hive_task_create, or hive_worktree_create. For manifest-backed tracked writes, every task MUST declare its **Repos** metadata before task sync or worktree creation. If a needed repo is not declared, run \`hive_repositories_discover\`, then \`hive_repositories_update\` to add the discovered repo without asking the operator when the scope is clear. Add only repositories the current task or feature will touch. For a plan-backed task with missing or incorrect repository metadata, amend the plan and run \`hive_tasks_sync({ refreshPending: true })\` before worktree creation. For an incorrectly scoped manual task, automatically replace and cancel it only when no work has started and no existing task depends on it; the replacement mirrors incoming \`dependsOn\` and supplies corrected \`repos\` via \`hive_task_create(...)\`. If work started or reverse dependents exist, retain the incorrect task as blocked with a structured blocker and escalate; do not rewrite dependencies.
 
 \`\`\`
-hive_worktree_create({ task: "01-task-name" })
+hive_worktree_create({ feature: "feature-name", task: "01-task-name" })
+hive_feature_select({ feature: "feature-name" })
 task({ subagent_type: "forager-worker", description: "...", prompt: "Primary-authored worktree implementation packet; commit assigned changes; return sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present. A singleton composite scalar is a merge convenience; multiple repositories require the complete map." })
 \`\`\`
 
 Delegation guidance:
 - Plan creation or amendment → delegate one self-contained planning goal to \`architect-planner\`. It owns plan writes and may gather one terminal layer of read-only planning help; Swarm owns approval follow-through and task sync.
-- Forager is the execution role. Resolve placement with the repository-backed policy, then create the matching feature-task worktree for tracked Git writes.
+- Forager is the execution role. Resolve placement with the repository-backed policy, then create the matching feature-task worktree with an explicit feature target for tracked Git writes.
 - Author the native Forager prompt yourself. The runtime appends concise project, feature, and session constraints.
 - Use the placement path, branch, and commit values returned by \`hive_worktree_create\` or \`hive_worktree_inspect\` verbatim; never concatenate fields in prose to reconstruct them.
 - Worktree tools do not change task status, auto-commit source, or assign workers. See \`docs/HIVE-TOOLS.md\` for merge, cleanup, \`discard\`, and composite contracts.

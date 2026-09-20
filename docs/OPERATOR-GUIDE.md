@@ -82,11 +82,11 @@ The primary agent adds each durable directive verbatim with `hive_constraints_ad
 
 | Call | Effect |
 |------|--------|
-| `hive_feature_select({ feature })` | Set the active feature that routes context and constraints |
-| `hive_feature_select({ feature: null })` | Clear it with no fallback |
-| explicit `feature` on a feature-scoped tool | May select the current feature for that call |
+| `hive_feature_select({ feature })` | Set the session route used for omitted feature-scoped calls and child dispatch |
+| `hive_feature_select({ feature: null })` | Make omitted calls and child dispatch explicitly featureless, suppressing detected and sole-live fallback |
+| explicit `feature` or `name` on a feature-scoped tool | Target only that call without changing the selected session route |
 
-Child capture is fixed at dispatch.
+Feature-scoped calls resolve in this order: explicit call target, selected session route (including null), detected feature worktree/path, then the sole live feature. The same effective route is captured for child dispatch. Only `hive_feature_select` changes the selected route; feature creation, explicit targets, and feature-task worktree lifecycle calls do not. Create a task worktree with an explicit feature target, then select that feature immediately before native worker dispatch. One primary can manage multiple plans this way while each plan and worker assignment remains scoped to one feature.
 
 ## Managed context
 
@@ -133,7 +133,7 @@ Use the matching Hive worktree for tracked Git writes: feature-task worktree whe
 
 `hive_task_update` takes optional `status`, `summary`, `blocker`, and `report` string. Omissions are preserved. Report is stored as numeric history plus latest. An explicit status leaving blocked clears the blocker. Partial writes: inspect before retry; there is no journal.
 
-Plans, approval, and dependencies guide work and status visibility. They are not dispatch or status admission gates. Structural missing refs and cycles remain invalid.
+Plans, approval, and dependencies guide work and status visibility. They are not dispatch or status admission gates. Approval and task sync are per-feature. Cross-feature overlap or activity does not block approval; concrete prerequisites block the affected execution tasks or lanes unless they leave the plan materially unresolved. Unresolved plan comments still block approval. Hive does not infer cross-feature dependencies. Structural missing refs and cycles remain invalid.
 
 For a plan-backed task with missing or incorrect repository metadata, amend the plan and run `hive_tasks_sync({ refreshPending: true })` before worktree creation. For an incorrectly scoped manual task, automatically replace and cancel it only when no work has started and no existing task depends on it; the replacement mirrors incoming `dependsOn` and supplies corrected `repos` via `hive_task_create(...)`. If work started or reverse dependents exist, retain the incorrect task as blocked with a structured blocker and escalate; do not rewrite dependencies.
 

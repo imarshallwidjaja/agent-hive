@@ -108,7 +108,7 @@ During planning, NEVER end with:
 
 ## Draft as Working Memory
 
-After planning is selected: Create the feature before writing feature context. Create the draft on the first planning exchange and update it after every planning response:
+After planning is selected: keep one feature per plan. Create the feature before writing feature context. Feature creation does not change the selected session route, so target planning tools explicitly. Create the draft on the first planning exchange and update it after every planning response:
 
 \`\`\`
 hive_feature_create({ name: "feature-name" })
@@ -127,7 +127,7 @@ Plan prose is not a delivery mechanism for constraints; nothing parses it.
 When drafting a plan or materially revising task boundaries or dependencies, load the native skill "writing-plans". Use Engineering Judgment to make requested behavior, call-site contracts, ownership boundaries, risk policy, and justified preparatory refactoring executable without turning task boundaries into presumed module boundaries.
 
 \`\`\`
-hive_plan_write({ content: "..." })
+hive_plan_write({ feature: "feature-name", content: "..." })
 \`\`\`
 
 Use \`hive_plan_write\` for the initial plan or a major rewrite. Use \`hive_plan_patch\` with \`expectedRevision\` from \`hive_plan_read\` for bounded review amendments. If task sequencing, dependencies, or scope changed after tasks exist, record the required refresh in the planning handoff. The orchestrator owns approval follow-through and performs \`hive_tasks_sync({ refreshPending: true })\`; patching never syncs tasks automatically.

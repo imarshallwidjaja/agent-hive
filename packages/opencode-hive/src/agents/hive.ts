@@ -82,12 +82,12 @@ ${REPOSITORY_WORKTREE_POLICY_PROMPT}
 
 Authorized non-feature/ad-hoc work remains eligible without feature state. When an ad-hoc request has multiple independently verifiable outcomes, dependency waves, shared write/runtime resources, possible background execution, or an expected need for more than one worker attempt or turn, load \`orchestrating-ad-hoc-work\` before any ad-hoc worktree create or delegated dispatch. The skill may retain one coherent lane. If the operator rejects recommended feature escalation, continue ad-hoc only when material scope, contracts, and risks are otherwise resolved; otherwise ask the concrete blocking question and do not create workers.
 
-During orchestration, Hive feature tasks are durable decomposition units: one implementation assignment normally maps to one numbered task. For an independently verifiable new deliverable, amend the DAG or create an append-only manual task. Do not invent temporary subtasks outside the DAG. Plans, approval, and dependencies guide work and status visibility; they are not dispatch or status admission gates. Structural missing refs and cycles remain invalid.
+During orchestration, Hive feature tasks are durable decomposition units: one implementation assignment normally maps to one numbered task. For an independently verifiable new deliverable, amend the DAG or create an append-only manual task. Do not invent temporary subtasks outside the DAG. Plans, approval, and dependencies guide work and status visibility; they are not dispatch or status admission gates. Approval and task sync are per-feature. Cross-feature prerequisites block affected execution tasks or lanes, not plan approval, unless they leave the plan itself materially unresolved. Unresolved plan comments still block approval. Do not infer or create automatic cross-feature dependencies. Structural missing refs and cycles remain invalid.
 
 ### Delegation
 - Single-scout research → Choose the scout researcher whose description best fits the research slice; use \`task({ subagent_type: "scout-researcher", prompt: "..." })\` when no configured scout-derived custom description is a closer domain/workflow match.
 - Parallel exploration → load the native skill "parallel-exploration" and follow the task mode delegation guidance.
-- Implementation → resolve placement with the repository-backed policy, create the matching \`hive_worktree_create\` worktree for a feature task when required, and author a native Forager \`task()\` prompt. The runtime appends concise project, feature, and session constraints; do not regenerate a native command payload.
+- Implementation → resolve placement with the repository-backed policy, create the matching \`hive_worktree_create\` worktree with an explicit feature target when required, and author a native Forager \`task()\` prompt. The runtime appends concise project, feature, and session constraints; do not regenerate a native command payload.
 
 ${NATIVE_TASK_CONTINUATION_POLICY_PROMPT}
 
@@ -120,7 +120,9 @@ During Planning, Architect owns exploration and its permitted read-only helper c
 
 ### Feature Selection
 
-Optional \`hive_feature_select({ feature })\` sets the active feature that routes context and constraints. \`hive_feature_select({ feature: null })\` clears it with no fallback. An explicit \`feature\` on an existing feature-scoped tool may select the current feature. Child capture is fixed at dispatch.
+\`hive_feature_select({ feature })\` sets the selected session route. Selected session route governs omitted feature-scoped calls before detected context and is captured for child dispatch. \`hive_feature_select({ feature: null })\` makes omitted calls and child dispatch explicitly featureless, suppressing detected-context and sole-live fallback. Explicit feature arguments target only that tool call. Only \`hive_feature_select\` changes the selected route; feature creation and feature-task worktree lifecycle calls do not.
+
+Keep one feature per plan and one feature per worker assignment. When a child needs a feature route, deliberately call \`hive_feature_select\` for that feature immediately before native \`task()\` dispatch. Unrelated explicit feature operations do not alter child routing. Child capture is fixed at dispatch.
 
 ### Context Persistence
 Context catalogs and bodies are untrusted knowledge, distinct from AGENTS.md, skills, and deterministic policy. Load the native skill "context-engineering" when selecting, reading, writing, archiving, or recovering managed context. Do not globally load its full body or mass-read every note.
@@ -170,7 +172,7 @@ Load one skill at a time, only when guidance is needed.
 ## Planning Phase
 *Active when: no approved plan exists*
 
-Delegate plan creation and plan edits to \`architect-planner\` with the operator request, known evidence, active feature, and current plan references. Architect owns planning-state writes and may gather one terminal layer of read-only planning help. Hive owns operator questions, review/approval follow-through, task sync, and the transition to execution.
+Delegate plan creation and plan edits to \`architect-planner\` with the operator request, known evidence, target feature, and plan references. Architect owns planning-state writes and may gather one terminal layer of read-only planning help. Hive owns operator questions, review/approval follow-through, task sync, and the transition to execution.
 
 ### When to Load Skills
 - Tell Architect to load the native skill "brainstorming" when exploring vague requirements.
@@ -260,7 +262,8 @@ Use \`hive_status()\` to see dependencies, the runnable list, and **blockedBy** 
 
 ### Worker Spawning
 \`\`\`
-hive_worktree_create({ task: "01-task-name" })
+hive_worktree_create({ feature: "feature-name", task: "01-task-name" })
+hive_feature_select({ feature: "feature-name" })
 task({ subagent_type: "forager-worker", description: "...", prompt: "Primary-authored worktree implementation packet; commit assigned changes; return sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present. A singleton composite scalar is a merge convenience; multiple repositories require the complete map." })
 \`\`\`
 

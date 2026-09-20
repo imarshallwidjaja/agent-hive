@@ -72,24 +72,24 @@ Cross-process process supervision, exactly-once execution across independent Ope
 
 ## Feature Resolution
 
-Feature-scoped tools use logical feature names even when storage folders are indexed (`01_feature-name`). Omitted feature arguments resolve from local context without project-global selection state:
+Feature-scoped tools use logical feature names even when storage folders are indexed (`01_feature-name`). Explicit feature arguments target one call without changing the selected session route. Omitted feature arguments resolve from local context and session state:
 
 ```typescript
 function resolveFeature(explicit?: string, sessionId?: string): string | null {
-  if (explicit) return explicit
+  if (explicit !== undefined) return validate(explicit)
+
+  const selected = sessionId ? findSelectedRouteBySession(sessionId) : undefined
+  if (selected) return selected.feature
 
   const detected = detectContext(cwd)
   if (detected.feature) return detected.feature
-
-  const bound = sessionId ? findFeatureBySession(sessionId) : null
-  if (bound) return bound
 
   const liveFeatures = listLiveFeatures()
   return liveFeatures.length === 1 ? liveFeatures[0] : null
 }
 ```
 
-When multiple live features remain, the tool returns their logical names and makes no mutation. Retry with the explicit `feature` argument, or the explicit `name` argument for `hive_feature_complete`. When no live feature exists, the response tells the agent to create one with `hive_feature_create`.
+When multiple live features remain, the tool returns their logical names and makes no mutation. Retry with the explicit `feature` argument, or the explicit `name` argument for `hive_feature_complete`. Only `hive_feature_select` changes the selected session route. That route, including explicit null, governs omitted tool calls and child dispatch before detected context. Explicit null suppresses detected-context and sole-live fallback. When no live feature exists, the response tells the agent to create one with `hive_feature_create`.
 
 This keeps task-worktree and session ownership authoritative, supports parallel feature sessions, and prevents alphabetical feature selection from becoming hidden orchestration state.
 
