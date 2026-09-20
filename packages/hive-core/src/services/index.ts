@@ -51,6 +51,11 @@ export {
   WorktreeTopologyMismatchError,
 } from './worktreeOutcome.js';
 export type {
+  WorktreeTargetComparison,
+  WorktreeTargetIdentity,
+  WorktreeTargetInspection,
+} from './worktreeTarget.js';
+export type {
   CleanupStepOutcome,
   CleanupStepStatus,
   WorktreeCleanupOutcome,

@@ -24,6 +24,13 @@ import {
   toMergeCleanupBlock,
 } from './worktreeOutcome.js';
 import {
+  inspectWorktreeTarget,
+  readWorktreeTargetIdentity,
+  sameWorktreeTarget,
+  validateTargetExpectations,
+} from './worktreeTarget.js';
+import type { WorktreeTargetComparison, WorktreeTargetIdentity } from './worktreeTarget.js';
+import {
   integrateWorktreeRepository,
   integrationFailure,
   mergeSuccessClassification,
@@ -49,6 +56,8 @@ export interface WorktreeRepoInfo {
   branch: string;
   commit: string;
   clean?: boolean;
+  target?: WorktreeTargetIdentity | null;
+  comparison?: WorktreeTargetComparison;
 }
 
 export interface WorktreeInfo {
@@ -64,6 +73,8 @@ export interface WorktreeInfo {
   baseCommit?: string;
   clean?: boolean;
   candidate?: string;
+  target?: WorktreeTargetIdentity | null;
+  comparison?: WorktreeTargetComparison;
 }
 
 export interface DiffResult {
@@ -96,6 +107,8 @@ export interface MergeOptions {
   /** Exact source commits to integrate. A moved source is rejected before mutation. */
   sourceCommit?: string;
   sourceCommits?: Record<string, string>;
+  expectedTarget?: WorktreeTargetIdentity;
+  expectedTargets?: Record<string, WorktreeTargetIdentity>;
 }
 
 export interface MergeResult {
@@ -125,6 +138,8 @@ export interface MergeResult {
   mutation: WorktreeMutationState;
   retryable: boolean;
   action: WorktreeRecoveryAction;
+  expectedTarget?: WorktreeTargetIdentity;
+  observedTarget?: WorktreeTargetIdentity | null;
 }
 
 /** Merge-result cleanup block: per-step truth plus the legacy factual booleans. */
@@ -168,6 +183,8 @@ function mergeFailure(
     filesChanged?: string[];
     repos?: Record<string, RepoMergeResult>;
     partial?: boolean;
+    expectedTarget?: WorktreeTargetIdentity;
+    observedTarget?: WorktreeTargetIdentity | null;
   } = {},
 ): MergeResult {
   const classification = classifyWorktreeOutcome(reasonCode, options.mutation);
@@ -187,6 +204,8 @@ function mergeFailure(
     mutation: classification.mutation,
     retryable: classification.retryable,
     action: classification.action,
+    ...(options.expectedTarget !== undefined ? { expectedTarget: options.expectedTarget } : {}),
+    ...(options.observedTarget !== undefined ? { observedTarget: options.observedTarget } : {}),
   };
 }
 
@@ -805,10 +824,15 @@ export class WorktreeService {
       const info = await this.get(feature, step, attemptSlot);
       if (!info) return null;
       if (info.repos) {
-        for (const repo of Object.values(info.repos)) repo.clean = await this.isCompletelyClean(this.getGit(repo.path));
+        const trustedById = this.trustedRepositoriesForManifest(manifest!);
+        for (const [repoId, repo] of Object.entries(info.repos)) {
+          repo.clean = await this.isCompletelyClean(this.getGit(repo.path));
+          Object.assign(repo, await inspectWorktreeTarget(trustedById.get(repoId)!.path, repo.commit));
+        }
         info.clean = Object.values(info.repos).every((repo) => repo.clean === true);
       } else {
         info.clean = await this.isCompletelyClean(this.getGit(info.path));
+        Object.assign(info, await inspectWorktreeTarget(this.config.baseDir, info.commit));
       }
       return info;
     });
@@ -1426,6 +1450,14 @@ export class WorktreeService {
       return mergeFailure(strategy, 'MESSAGE_NOT_ALLOWED_FOR_REBASE', "Custom merge message is not supported for rebase strategy");
     }
 
+    const manifest = await this.readWorkspaceManifest(feature, step, attemptSlot);
+    let targets: ReturnType<typeof validateTargetExpectations>;
+    try {
+      targets = validateTargetExpectations(manifest ? Object.keys(manifest.repos) : null, options.expectedTarget, options.expectedTargets);
+    } catch (error) {
+      return mergeFailure(strategy, 'INVALID_ARGUMENTS', error instanceof Error ? error.message : String(error), { partial: false });
+    }
+
     let registered: WorktreeInfo | null;
     try {
       registered = await this.get(feature, step, attemptSlot);
@@ -1449,12 +1481,12 @@ export class WorktreeService {
         { partial: false },
       );
     }
-    const manifest = await this.readWorkspaceManifest(feature, step, attemptSlot);
     if (manifest) {
       return this.mergeComposite(feature, step, manifest, strategy, message, {
         cleanup: cleanupMode,
         preserveConflicts,
         sourceCommits: options.sourceCommits,
+        expectedTargets: targets.expectedTargets!,
       }, attemptSlot);
     }
 
@@ -1467,6 +1499,7 @@ export class WorktreeService {
       preserveConflicts,
       cleanupMode,
       sourceCommit: options.sourceCommit ?? registered.commit,
+      expectedTarget: targets.expectedTarget!,
       sourceWorktreePath: registered.path,
       cleanupFn: async (deleteBranch: boolean) => (await this.removeLegacy(feature, step, deleteBranch, {}, attemptSlot, options.sourceCommit ?? registered.commit)).cleanup,
     });
@@ -1489,6 +1522,8 @@ export class WorktreeService {
       mutation: repoResult.mutation,
       retryable: repoResult.retryable,
       action: repoResult.action,
+      ...(repoResult.expectedTarget !== undefined ? { expectedTarget: repoResult.expectedTarget } : {}),
+      ...(repoResult.observedTarget !== undefined ? { observedTarget: repoResult.observedTarget } : {}),
     };
   }
 
@@ -1502,16 +1537,23 @@ export class WorktreeService {
       cleanup: 'none' | 'worktree' | 'worktree+branch';
       preserveConflicts: boolean;
       sourceCommits?: Record<string, string>;
+      expectedTargets: Record<string, WorktreeTargetIdentity>;
     },
     attemptSlot?: string,
   ): Promise<MergeResult> {
     const repoIds = Object.keys(manifest.repos).sort();
     const trustedById = this.trustedRepositoriesForManifest(manifest);
     const pinnedSourceCommits: Record<string, string> = {};
-    const expectedTargetCommits: Record<string, string> = {};
 
-    const preflightFailure = (repoId: string, reason: string, reasonCode: WorktreeReasonCode): MergeResult =>
-      mergeFailure(strategy, reasonCode, `${repoId}: ${reason}`, { partial: false });
+    const preflightFailure = (
+      repoId: string,
+      reason: string,
+      reasonCode: WorktreeReasonCode,
+      observedTarget?: WorktreeTargetIdentity | null,
+    ): MergeResult => mergeFailure(strategy, reasonCode, `${repoId}: ${reason}`, {
+      partial: false,
+      ...(reasonCode === 'TARGET_MISMATCH' ? { expectedTarget: options.expectedTargets[repoId], observedTarget: observedTarget ?? null } : {}),
+    });
 
     // Preflight all repos before any mutation
     for (const repoId of repoIds) {
@@ -1519,6 +1561,16 @@ export class WorktreeService {
       const repoRoot = trustedById.get(repoId)!.path;
       const repoGit = this.getGit(repoRoot);
       const repoWtPath = path.join(this.getCompositeRoot(feature, step, attemptSlot), entry.path);
+      let observedTarget: WorktreeTargetIdentity | null = null;
+      try {
+        observedTarget = await readWorktreeTargetIdentity(repoRoot);
+      } catch (error) {
+        const cause = error instanceof Error ? error.message : String(error);
+        return preflightFailure(repoId, `unable to read target identity: ${cause}`, 'GIT_OPERATION_FAILED');
+      }
+      if (!sameWorktreeTarget(options.expectedTargets[repoId], observedTarget)) {
+        return preflightFailure(repoId, 'target identity no longer matches the caller expectation', 'TARGET_MISMATCH', observedTarget);
+      }
       const expectedBranch = this.getRepoBranchName(repoId, feature, step, attemptSlot);
       if (entry.branch !== expectedBranch) {
         return preflightFailure(repoId, 'manifest branch does not match the canonical task branch', 'WORKSPACE_TOPOLOGY_MISMATCH');
@@ -1617,6 +1669,7 @@ export class WorktreeService {
         preserveConflicts: options.preserveConflicts,
         cleanupMode: 'none', // defer cleanup until after all repos succeed
         sourceCommit: pinnedSourceCommits[repoId],
+        expectedTarget: options.expectedTargets[repoId],
         sourceWorktreePath: path.join(this.getCompositeRoot(feature, step, attemptSlot), entry.path),
         cleanupFn: async () => buildNotRequestedCleanupOutcome(),
       });
@@ -1635,8 +1688,6 @@ export class WorktreeService {
         lastConflictState = repoResult.conflictState;
         break;
       }
-
-      expectedTargetCommits[repoId] = (await repoGit.revparse(['HEAD'])).trim();
 
       if (!repoResult.merged) {
         if (repoResult.reasonCode === 'NO_TRACKED_CHANGES') {
@@ -1688,8 +1739,12 @@ export class WorktreeService {
         const repoGit = this.getGit(trustedById.get(repoId)!.path);
         try {
           const source = (await repoGit.revparse([manifest.repos[repoId].branch])).trim();
-          const target = (await repoGit.revparse(['HEAD'])).trim();
-          if (source !== pinnedSourceCommits[repoId] || target !== expectedTargetCommits[repoId]) {
+          const target = await readWorktreeTargetIdentity(trustedById.get(repoId)!.path);
+          const expectedTarget = {
+            ...options.expectedTargets[repoId],
+            commit: repos[repoId].sha ?? options.expectedTargets[repoId].commit,
+          };
+          if (source !== pinnedSourceCommits[repoId] || !sameWorktreeTarget(expectedTarget, target)) {
             identityFailure = { repoId, cause: `source or target moved before cleanup (source ${source}, target ${target})` };
             break;
           }
@@ -1876,6 +1931,7 @@ export class WorktreeService {
     preserveConflicts: boolean;
     cleanupMode: 'none' | 'worktree' | 'worktree+branch';
     sourceCommit: string;
+    expectedTarget: WorktreeTargetIdentity;
     sourceWorktreePath: string;
     cleanupFn: (deleteBranch: boolean) => Promise<WorktreeCleanupOutcome>;
   }): Promise<RepoMergeResult> {
@@ -1884,6 +1940,7 @@ export class WorktreeService {
       sourceGit: this.getGit(options.sourceWorktreePath),
       sourceBranch: options.branchName,
       sourceCommit: options.sourceCommit,
+      expectedTarget: options.expectedTarget,
       sourceDiagnosticPath: options.sourceWorktreePath,
       strategy: options.strategy,
       message: options.message,

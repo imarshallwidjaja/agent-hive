@@ -15,6 +15,11 @@ import type {
   WorktreeReasonCode,
   WorktreeRepositoryMergeResult,
 } from './worktreeOutcome.js';
+import {
+  readWorktreeTargetIdentity,
+  sameWorktreeTarget,
+} from './worktreeTarget.js';
+import type { WorktreeTargetIdentity } from './worktreeTarget.js';
 
 type IntegrationStrategy = 'merge' | 'squash' | 'rebase';
 type CleanupMode = WorktreeCleanupOutcome['requested'];
@@ -28,6 +33,8 @@ export function integrationFailure(
     mutation?: WorktreeMutationState;
     conflicts?: string[];
     conflictState?: 'none' | 'aborted' | 'preserved';
+    expectedTarget?: WorktreeTargetIdentity;
+    observedTarget?: WorktreeTargetIdentity | null;
   } = {},
 ): WorktreeIntegrationResult {
   const classification = classifyWorktreeOutcome(reasonCode, options.mutation);
@@ -44,6 +51,8 @@ export function integrationFailure(
     mutation: classification.mutation,
     retryable: classification.retryable,
     action: classification.action,
+    ...(options.expectedTarget !== undefined ? { expectedTarget: options.expectedTarget } : {}),
+    ...(options.observedTarget !== undefined ? { observedTarget: options.observedTarget } : {}),
   };
 }
 
@@ -107,6 +116,7 @@ export async function integrateWorktreeRepository(options: {
   sourceGit: SimpleGit;
   sourceBranch: string;
   sourceCommit: string;
+  expectedTarget: WorktreeTargetIdentity;
   sourceDiagnosticPath: string;
   strategy: IntegrationStrategy;
   message: string | undefined;
@@ -120,6 +130,7 @@ export async function integrateWorktreeRepository(options: {
     sourceGit,
     sourceBranch,
     sourceCommit,
+    expectedTarget,
     sourceDiagnosticPath,
     strategy,
     message,
@@ -129,27 +140,101 @@ export async function integrateWorktreeRepository(options: {
     readCommitMessage,
   } = options;
   let startingHead: string | undefined;
+  let targetRoot: string | undefined;
+  let operationTarget: WorktreeTargetIdentity | undefined;
   let cleanupFailureMutation: WorktreeMutationState | undefined;
   let verificationFailure = false;
 
-  const cleanupWithIdentityRecheck = async (expectedTarget: string): Promise<WorktreeCleanupOutcome> => {
+  const targetIdentityFailure = async (
+    expectedIdentity: WorktreeTargetIdentity,
+    mismatchCode: WorktreeReasonCode = 'TARGET_MISMATCH',
+    unreadableCode: WorktreeReasonCode = 'GIT_OPERATION_FAILED',
+    mutation?: WorktreeMutationState,
+  ): Promise<WorktreeIntegrationResult | null> => {
+    if (!targetRoot) {
+      return integrationFailure(unreadableCode, 'Trusted target repository root has not been resolved', {
+        mutation,
+        expectedTarget,
+        observedTarget: null,
+      });
+    }
+    let observedTarget: WorktreeTargetIdentity;
+    try {
+      observedTarget = await readWorktreeTargetIdentity(targetRoot);
+    } catch (error) {
+      const cause = error instanceof Error ? error.message : String(error);
+      return integrationFailure(unreadableCode, `Unable to read target identity from ${targetRoot}: ${cause}`, {
+        mutation,
+        expectedTarget,
+        observedTarget: null,
+      });
+    }
+    if (sameWorktreeTarget(expectedIdentity, observedTarget)) return null;
+    return integrationFailure(mismatchCode, 'Target identity no longer matches the verified operation checkpoint', {
+      mutation,
+      expectedTarget,
+      observedTarget,
+    });
+  };
+
+  const recordOperationCommit = async (previousTarget: WorktreeTargetIdentity, commit: string): Promise<WorktreeIntegrationResult | null> => {
+    const expectedOperationTarget = { ...previousTarget, commit };
+    const identityFailure = await targetIdentityFailure(
+      expectedOperationTarget,
+      'POST_INTEGRATION_VERIFICATION_FAILED',
+      'POST_INTEGRATION_VERIFICATION_FAILED',
+      'unknown',
+    );
+    if (identityFailure) return identityFailure;
+    let firstParent: string;
+    try {
+      firstParent = (await targetGit.revparse([`${commit}^1`])).trim();
+    } catch (error) {
+      return integrationFailure(
+        'POST_INTEGRATION_VERIFICATION_FAILED',
+        `Unable to verify the integrated commit parent: ${error instanceof Error ? error.message : String(error)}`,
+        { mutation: 'unknown', expectedTarget, observedTarget: expectedOperationTarget },
+      );
+    }
+    if (firstParent !== previousTarget.commit) {
+      return integrationFailure(
+        'POST_INTEGRATION_VERIFICATION_FAILED',
+        `Integrated commit ${commit} does not descend from the verified operation checkpoint ${previousTarget.commit}`,
+        { mutation: 'unknown', expectedTarget, observedTarget: expectedOperationTarget },
+      );
+    }
+    operationTarget = expectedOperationTarget;
+    return null;
+  };
+
+  const cleanupWithIdentityRecheck = async (expectedCleanupTarget: WorktreeTargetIdentity): Promise<WorktreeCleanupOutcome> => {
     if (cleanupMode === 'none') return buildNotRequestedCleanupOutcome();
     let identityMatches = false;
+    let identityError: string | undefined;
     try {
-      const currentTarget = (await targetGit.revparse(['HEAD'])).trim();
+      if (!targetRoot) throw new Error('Trusted target repository root has not been resolved');
+      const currentTarget = await readWorktreeTargetIdentity(targetRoot);
       const currentSource = (await targetGit.revparse([sourceBranch])).trim();
-      identityMatches = currentTarget === expectedTarget && currentSource === sourceCommit;
-    } catch {}
+      identityMatches = sameWorktreeTarget(expectedCleanupTarget, currentTarget) && currentSource === sourceCommit;
+    } catch (error) {
+      identityError = error instanceof Error ? error.message : String(error);
+    }
     if (identityMatches) return cleanup(cleanupMode === 'worktree+branch');
     return buildCleanupOutcome(cleanupMode, {
       worktreeRemoval: { status: 'not_attempted' },
       branchDeletion: { status: 'not_attempted' },
       prune: { status: 'not_attempted' },
-      failures: [{ step: 'identity-recheck', cause: 'Source or target moved or could not be read after integration; cleanup was skipped' }],
+      failures: [{
+        step: 'identity-recheck',
+        cause: identityError
+          ? `Source or target could not be read after integration; cleanup was skipped: ${identityError}`
+          : 'Source or target moved after integration; cleanup was skipped',
+      }],
     });
   };
 
   try {
+    targetRoot = await fs.realpath(path.resolve((await targetGit.raw(['rev-parse', '--show-toplevel'])).trim()));
     const branches = await targetGit.branch();
     if (!branches.all.includes(sourceBranch)) {
       return integrationFailure('SOURCE_BRANCH_MISSING', `Branch ${sourceBranch} not found`);
@@ -164,7 +249,6 @@ export async function integrateWorktreeRepository(options: {
       return integrationFailure('TARGET_DIRTY', `Source worktree ${sourceDiagnosticPath} has tracked or untracked changes`);
     }
 
-    const repoRoot = (await targetGit.raw(['rev-parse', '--show-toplevel'])).trim();
     const stateChecks = [
       { name: 'MERGE_HEAD', label: 'merge' },
       { name: 'REBASE_HEAD', label: 'rebase' },
@@ -173,7 +257,7 @@ export async function integrateWorktreeRepository(options: {
       { name: 'rebase-apply', label: 'rebase' },
     ];
     for (const { name, label } of stateChecks) {
-      const statePath = await resolveGitPath(targetGit, repoRoot, name);
+      const statePath = await resolveGitPath(targetGit, targetRoot, name);
       try {
         await fs.access(statePath);
         return integrationFailure('GIT_OPERATION_IN_PROGRESS', `active ${label} state in progress`);
@@ -184,12 +268,15 @@ export async function integrateWorktreeRepository(options: {
       return integrationFailure('TARGET_DIRTY', 'Target repo has uncommitted (dirty) changes');
     }
     startingHead = (await targetGit.revparse(['HEAD'])).trim();
+    const initialTargetFailure = await targetIdentityFailure(expectedTarget);
+    if (initialTargetFailure) return initialTargetFailure;
+    operationTarget = { ...expectedTarget, path: targetRoot };
     const candidateFiles = (await targetGit.diff([startingHead, sourceCommit, '--name-only']))
       .split('\n').map((line) => line.trim()).filter(Boolean);
 
     if (candidateFiles.length === 0) {
       cleanupFailureMutation = 'none';
-      const cleanupOutcome = await cleanupWithIdentityRecheck(startingHead);
+      const cleanupOutcome = await cleanupWithIdentityRecheck(expectedTarget);
       return {
         success: true,
         merged: false,
@@ -217,18 +304,39 @@ export async function integrateWorktreeRepository(options: {
       }
     }
     if (strategy !== 'squash') {
-      const sourceError = await validateSourceCommitMessages(targetGit, currentBranch, sourceCommit);
+      const sourceError = await validateSourceCommitMessages(targetGit, expectedTarget.commit, sourceCommit);
       if (sourceError) return integrationFailure('INVALID_COMMIT_MESSAGE', sourceError);
     }
 
     let finalHead: string;
     let conflicts: string[] = [];
     let createdCommitMessage: string | undefined;
+    const immediateTargetFailure = await targetIdentityFailure(operationTarget);
+    if (immediateTargetFailure) return immediateTargetFailure;
     if (strategy === 'squash') {
       await targetGit.raw(['merge', '--squash', sourceCommit]);
+      const stagedTargetFailure = await targetIdentityFailure(
+        operationTarget,
+        'POST_INTEGRATION_VERIFICATION_FAILED',
+        'POST_INTEGRATION_VERIFICATION_FAILED',
+        'unknown',
+      );
+      if (stagedTargetFailure) {
+        return integrationFailure(
+          'POST_INTEGRATION_VERIFICATION_FAILED',
+          `Target identity could not be verified after squash staging; staged operation state was retained for inspection: ${stagedTargetFailure.error}`,
+          {
+            mutation: 'unknown',
+            expectedTarget,
+            observedTarget: stagedTargetFailure.observedTarget,
+          },
+        );
+      }
       await targetGit.commit(commitMessage!);
       finalHead = (await targetGit.revparse(['HEAD'])).trim();
       if (finalHead === startingHead) throw new Error('Failed to create squash commit');
+      const commitFailure = await recordOperationCommit(operationTarget, finalHead);
+      if (commitFailure) return commitFailure;
       try {
         createdCommitMessage = await readCommitMessage(targetGit, finalHead);
       } catch (error) {
@@ -236,11 +344,21 @@ export async function integrateWorktreeRepository(options: {
         throw error;
       }
     } else if (strategy === 'rebase') {
-      const output = (await targetGit.raw(['rev-list', '--reverse', `${currentBranch}..${sourceCommit}`])).trim();
+      const output = (await targetGit.raw(['rev-list', '--reverse', `${startingHead}..${sourceCommit}`])).trim();
       for (const hash of output ? output.split('\n').filter(Boolean) : []) {
+        const beforePickFailure = await targetIdentityFailure(
+          operationTarget,
+          'POST_INTEGRATION_VERIFICATION_FAILED',
+          'POST_INTEGRATION_VERIFICATION_FAILED',
+          'unknown',
+        );
+        if (beforePickFailure) return beforePickFailure;
         await targetGit.raw(['cherry-pick', hash]);
+        const cherryPickHead = (await targetGit.revparse(['HEAD'])).trim();
+        const commitFailure = await recordOperationCommit(operationTarget, cherryPickHead);
+        if (commitFailure) return commitFailure;
         try {
-          await readCommitMessage(targetGit, (await targetGit.revparse(['HEAD'])).trim());
+          await readCommitMessage(targetGit, cherryPickHead);
         } catch (error) {
           verificationFailure = true;
           throw error;
@@ -251,6 +369,8 @@ export async function integrateWorktreeRepository(options: {
       const result = await targetGit.merge([sourceCommit, '--no-ff', '-m', commitMessage!]);
       finalHead = (await targetGit.revparse(['HEAD'])).trim();
       if (result.failed || finalHead === startingHead) throw new Error('Failed to create merge commit');
+      const commitFailure = await recordOperationCommit(operationTarget, finalHead);
+      if (commitFailure) return commitFailure;
       try {
         createdCommitMessage = await readCommitMessage(targetGit, finalHead);
       } catch (error) {
@@ -260,9 +380,17 @@ export async function integrateWorktreeRepository(options: {
       conflicts = result.conflicts?.map((conflict) => conflict.file || String(conflict)) || [];
     }
 
+    const finalTargetFailure = await targetIdentityFailure(
+      operationTarget,
+      'POST_INTEGRATION_VERIFICATION_FAILED',
+      'POST_INTEGRATION_VERIFICATION_FAILED',
+      'unknown',
+    );
+    if (finalTargetFailure) return finalTargetFailure;
+
     if (finalHead === startingHead) {
       cleanupFailureMutation = 'none';
-      const cleanupOutcome = await cleanupWithIdentityRecheck(startingHead);
+      const cleanupOutcome = await cleanupWithIdentityRecheck(expectedTarget);
       return {
         success: true,
         merged: false,
@@ -279,7 +407,7 @@ export async function integrateWorktreeRepository(options: {
 
     const filesChanged = await observedDeltaFiles(targetGit, startingHead, finalHead);
     cleanupFailureMutation = 'applied';
-    const cleanupOutcome = await cleanupWithIdentityRecheck(finalHead);
+    const cleanupOutcome = await cleanupWithIdentityRecheck({ ...expectedTarget, commit: finalHead });
     return {
       success: true,
       merged: true,
@@ -302,6 +430,30 @@ export async function integrateWorktreeRepository(options: {
     const preserveConflictState = isConflict && preserveConflicts;
     let rollbackError: string | undefined;
 
+    // Repository locks coordinate Hive operations, not arbitrary Git writers.
+    // Roll back only while HEAD still matches the last operation-owned checkpoint.
+    if (startingHead && operationTarget) {
+      const unsafeRollback = await targetIdentityFailure(
+        operationTarget,
+        'POST_INTEGRATION_VERIFICATION_FAILED',
+        'POST_INTEGRATION_VERIFICATION_FAILED',
+        'unknown',
+      );
+      if (unsafeRollback) {
+        return integrationFailure(
+          'POST_INTEGRATION_VERIFICATION_FAILED',
+          `${message || 'Merge failed'}; rollback was skipped because the target no longer matches the last verified operation checkpoint: ${unsafeRollback.error}`,
+          {
+            mutation: 'unknown',
+            conflicts,
+            conflictState: isConflict ? 'preserved' : 'none',
+            expectedTarget,
+            observedTarget: unsafeRollback.observedTarget,
+          },
+        );
+      }
+    }
+
     if (!preserveConflictState && startingHead && isConflict) {
       if (strategy === 'merge') await targetGit.raw(['merge', '--abort']).catch(() => {});
       else if (strategy === 'rebase') await targetGit.raw(['cherry-pick', '--abort']).catch(() => {});
@@ -318,10 +470,9 @@ export async function integrateWorktreeRepository(options: {
     }
 
     if (!preserveConflictState && startingHead && !rollbackError) {
-      const repoRoot = (await targetGit.raw(['rev-parse', '--show-toplevel']).catch(() => '')).trim();
       const activeStates: string[] = [];
       for (const name of ['MERGE_HEAD', 'REBASE_HEAD', 'CHERRY_PICK_HEAD', 'rebase-merge', 'rebase-apply']) {
-        const statePath = await resolveGitPath(targetGit, repoRoot, name);
+        const statePath = await resolveGitPath(targetGit, targetRoot ?? '', name);
         if (await fs.access(statePath).then(() => true).catch(() => false)) activeStates.push(name);
       }
       if (activeStates.length > 0 || (await activeConflictFiles(targetGit)).length > 0) {

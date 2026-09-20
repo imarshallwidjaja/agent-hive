@@ -308,6 +308,7 @@ describe('coordinated runtime hard cut', () => {
     const result = JSON.parse(await loaded.tool!.hive_adhoc_worktree_merge.execute({
       runId: 'singleton-adhoc',
       sourceCommit: inspected.repos.api.commit,
+      expectedTarget: inspected.repos.api.target,
       message: 'test: merge singleton source\n\nMerge the persisted singleton candidate.',
       cleanup: 'worktree+branch',
     }, {}));
@@ -336,6 +337,7 @@ describe('coordinated runtime hard cut', () => {
       feature: 'singleton-feature',
       task,
       sourceCommit: inspected.repos.api.commit,
+      expectedTarget: inspected.repos.api.target,
       message: 'test: merge feature singleton source\n\nMerge the persisted singleton feature candidate.',
       cleanup: 'worktree+branch',
     }, caller));
@@ -364,11 +366,13 @@ describe('coordinated runtime hard cut', () => {
       runId: 'pin-validation',
       sourceCommit: inspected.repos.api.commit,
       sourceCommits: { api: inspected.repos.api.commit },
+      expectedTargets: { api: inspected.repos.api.target },
     }, {})).rejects.toThrow(/both/);
 
     const result = JSON.parse(await loaded.tool!.hive_adhoc_worktree_merge.execute({
       runId: 'pin-validation',
       sourceCommits: { api: inspected.repos.api.commit },
+      expectedTargets: { api: inspected.repos.api.target },
       message: 'test: merge singleton map\n\nMerge the exact singleton map.',
       cleanup: 'worktree+branch',
     }, {}));
@@ -422,12 +426,45 @@ describe('coordinated runtime hard cut', () => {
     const result = JSON.parse(await loaded.tool!.hive_adhoc_worktree_merge.execute({
       runId: 'legacy-pin',
       sourceCommit: inspected.commit,
+      expectedTarget: inspected.target,
       message: 'test: merge legacy source\n\nMerge the exact legacy pin.',
       cleanup: 'worktree+branch',
     }, {}));
 
     expect(result.success).toBe(true);
     expect(fs.readFileSync(path.join(runtime.root, 'tracked.txt'), 'utf8')).toBe('legacy changed\n');
+  });
+
+  it('passes target expectations unchanged and rejects an omitted expectation', async () => {
+    const runtime = createRuntime();
+    git(runtime.root, ['init']);
+    git(runtime.root, ['config', 'user.email', 'test@example.com']);
+    git(runtime.root, ['config', 'user.name', 'Test']);
+    fs.writeFileSync(path.join(runtime.root, 'tracked.txt'), 'base\n');
+    git(runtime.root, ['add', '.']);
+    git(runtime.root, ['commit', '-m', 'test: target forwarding base']);
+    const loaded = await runtime.hooks;
+    const created = JSON.parse(await loaded.tool!.hive_adhoc_worktree_create.execute({ runId: 'target-forwarding' }, {}));
+    const inspected = JSON.parse(await loaded.tool!.hive_adhoc_worktree_inspect.execute({ runId: created.runId }, {}));
+
+    const missing = JSON.parse(await loaded.tool!.hive_adhoc_worktree_merge.execute({
+      runId: created.runId,
+      sourceCommit: inspected.commit,
+    }, {}));
+    expect(missing).toMatchObject({ success: false, reasonCode: 'INVALID_ARGUMENTS' });
+
+    const callerTarget = { ...inspected.target, ref: 'refs/heads/not-the-target' };
+    const mismatch = JSON.parse(await loaded.tool!.hive_adhoc_worktree_merge.execute({
+      runId: created.runId,
+      sourceCommit: inspected.commit,
+      expectedTarget: callerTarget,
+    }, {}));
+    expect(mismatch).toMatchObject({
+      success: false,
+      reasonCode: 'TARGET_MISMATCH',
+      expectedTarget: callerTarget,
+      observedTarget: inspected.target,
+    });
   });
 
   it('binds the same complete snapshot when the after hook arrives before the event hook', async () => {

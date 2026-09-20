@@ -4,9 +4,10 @@ import * as os from "os";
 import * as path from "path";
 import simpleGit, { type SimpleGit } from "simple-git";
 import type { ResolvedRepository } from "../types";
-import { AdhocWorktreeService } from "./adhocWorktreeService";
-import type { AdhocMergeResult } from "./adhocWorktreeService";
+import { AdhocWorktreeService as CoreAdhocWorktreeService } from "./adhocWorktreeService";
+import type { AdhocMergeOptions, AdhocMergeResult, AdhocMergeStrategy, AdhocWorktreeConfig } from "./adhocWorktreeService";
 import { WorktreeLinkageError } from "./worktreeOutcome";
+import { readWorktreeTargetIdentity } from './worktreeTarget.js';
 
 interface AdhocFixture {
   repoPath: string;
@@ -18,6 +19,41 @@ interface AdhocFixture {
 const tempDirs: string[] = [];
 const mergeMessage = 'feat: integrate ad-hoc work\n\nIntegrate the verified ad-hoc implementation into project history.';
 const testCommitMessage = (subject: string): string => `${subject}\n\nCreate test fixture history with a descriptive body.`;
+
+// Existing behavior tests supply the inspect result as an operator would. Tests
+// for the mandatory expectation contract instantiate CoreAdhocWorktreeService.
+class AdhocWorktreeService extends CoreAdhocWorktreeService {
+  private readonly testBaseDir: string;
+  private readonly testComposite: boolean;
+
+  constructor(config: AdhocWorktreeConfig) {
+    super(config);
+    this.testBaseDir = config.baseDir;
+    this.testComposite = config.repositoryResolver !== undefined;
+  }
+
+  override async merge(
+    runId: string,
+    strategy: AdhocMergeStrategy = 'squash',
+    message?: string,
+    options: AdhocMergeOptions = {},
+  ): Promise<AdhocMergeResult> {
+    if (options.expectedTarget === undefined && options.expectedTargets === undefined) {
+      if (this.testComposite) {
+        const inspected = await this.inspect(runId);
+        options = {
+          ...options,
+          ...(inspected?.repos ? {
+            expectedTargets: Object.fromEntries(Object.entries(inspected.repos).map(([id, repo]) => [id, repo.target!])),
+          } : {}),
+        };
+      } else {
+        options = { ...options, expectedTarget: await readWorktreeTargetIdentity(this.testBaseDir) };
+      }
+    }
+    return super.merge(runId, strategy, message, options);
+  }
+}
 
 afterEach(async () => {
   await Promise.all(
@@ -261,6 +297,126 @@ describe("AdhocWorktreeService.create", () => {
 });
 
 describe("AdhocWorktreeService.merge", () => {
+  it('requires an explicit target expectation in the core service', async () => {
+    const fixture = await createFixture();
+    const created = await fixture.service.create({ runId: 'missing-target-expectation' });
+    const rawService = new CoreAdhocWorktreeService({ baseDir: fixture.repoPath, hiveDir: fixture.hiveDir });
+
+    const result = await rawService.merge(created.runId, 'squash', mergeMessage, { sourceCommit: created.commit });
+
+    expect(result).toMatchObject({
+      success: false,
+      reasonCode: 'INVALID_ARGUMENTS',
+      phase: 'validation',
+      mutation: 'none',
+      retryable: false,
+      action: 'correct_arguments',
+    });
+  });
+
+  it('rejects target movement before no-op cleanup and retains the source', async () => {
+    const fixture = await createFixture();
+    const created = await fixture.service.create({ runId: 'target-moved-noop' });
+    const inspected = await fixture.service.inspect(created.runId);
+    await fs.writeFile(path.join(fixture.repoPath, 'target-only.txt'), 'moved\n');
+    await fixture.repoGit.add('target-only.txt');
+    await fixture.repoGit.commit('test: move target');
+    const movedHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
+
+    const result = await fixture.service.merge(created.runId, 'squash', mergeMessage, {
+      sourceCommit: created.commit,
+      expectedTarget: inspected!.target!,
+      cleanup: 'worktree+branch',
+    });
+
+    expect(result).toMatchObject({
+      success: false,
+      reasonCode: 'TARGET_MISMATCH',
+      mutation: 'none',
+      retryable: false,
+      action: 'inspect_state',
+      expectedTarget: inspected!.target,
+    });
+    expect(result.observedTarget?.commit).toBe(movedHead);
+    expect((await fixture.repoGit.revparse(['HEAD'])).trim()).toBe(movedHead);
+    expect(await pathExists(created.path)).toBe(true);
+    expect(await branchExists(fixture.repoGit, created.branch)).toBe(true);
+  });
+
+  it('rejects a caller path for another repository with the same ref and commit before no-op cleanup', async () => {
+    const fixture = await createFixture();
+    const created = await fixture.service.create({ runId: 'wrong-target-repository' });
+    const cloneParent = await fs.mkdtemp(path.join(os.tmpdir(), 'hive-target-clone-'));
+    tempDirs.push(cloneParent);
+    const clonePath = path.join(cloneParent, 'repo');
+    await simpleGit().clone(fixture.repoPath, clonePath);
+    const wrongTarget = await readWorktreeTargetIdentity(clonePath);
+    const actualTarget = await readWorktreeTargetIdentity(fixture.repoPath);
+    expect(wrongTarget).toMatchObject({ ref: actualTarget.ref, commit: actualTarget.commit });
+    expect(wrongTarget.path).not.toBe(actualTarget.path);
+
+    const result = await fixture.service.merge(created.runId, 'squash', mergeMessage, {
+      sourceCommit: created.commit,
+      expectedTarget: wrongTarget,
+      cleanup: 'worktree+branch',
+    });
+
+    expect(result).toMatchObject({
+      success: false,
+      reasonCode: 'TARGET_MISMATCH',
+      mutation: 'none',
+      expectedTarget: wrongTarget,
+      observedTarget: actualTarget,
+    });
+    expect((await fixture.repoGit.revparse(['HEAD'])).trim()).toBe(actualTarget.commit);
+    expect(await pathExists(created.path)).toBe(true);
+    expect(await branchExists(fixture.repoGit, created.branch)).toBe(true);
+  });
+
+  it('rejects a same-commit target branch switch', async () => {
+    const fixture = await createFixture();
+    const created = await fixture.service.create({ runId: 'target-branch-switch' });
+    const inspected = await fixture.service.inspect(created.runId);
+    await fixture.repoGit.raw(['branch', 'other-target', inspected!.target!.commit]);
+    await fixture.repoGit.checkout('other-target');
+
+    const result = await fixture.service.merge(created.runId, 'squash', mergeMessage, {
+      sourceCommit: created.commit,
+      expectedTarget: inspected!.target!,
+    });
+
+    expect(result.reasonCode).toBe('TARGET_MISMATCH');
+    expect(result.observedTarget).toEqual({ ...inspected!.target!, ref: 'refs/heads/other-target' });
+  });
+
+  it('reconciles a pinned target in the same worktree and squashes with fresh pins', async () => {
+    const fixture = await createFixture();
+    const created = await fixture.service.create({ runId: 'same-worktree-reconciliation' });
+    await fs.writeFile(path.join(created.path, 'source-change.txt'), 'source\n');
+    await commitAdhocChanges(fixture.service, created.runId, testCommitMessage('feat: source before reconciliation'));
+    const oldSource = (await simpleGit(created.path).revparse(['HEAD'])).trim();
+    await fs.writeFile(path.join(fixture.repoPath, 'target-change.txt'), 'target\n');
+    await fixture.repoGit.add('target-change.txt');
+    await fixture.repoGit.commit(testCommitMessage('feat: destination change'));
+    const pinnedTarget = (await fixture.repoGit.revparse(['HEAD'])).trim();
+
+    const sourceGit = simpleGit(created.path);
+    await sourceGit.merge([pinnedTarget, '--no-edit']);
+    const freshSource = (await sourceGit.revparse(['HEAD'])).trim();
+    await sourceGit.raw(['merge-base', '--is-ancestor', oldSource, freshSource]);
+    await sourceGit.raw(['merge-base', '--is-ancestor', pinnedTarget, freshSource]);
+    const reconciled = await fixture.service.inspect(created.runId);
+
+    const result = await fixture.service.merge(created.runId, 'squash', mergeMessage, {
+      sourceCommit: freshSource,
+      expectedTarget: reconciled!.target!,
+    });
+
+    expect(result).toMatchObject({ success: true, merged: true, mutation: 'applied' });
+    expect(await fs.readFile(path.join(fixture.repoPath, 'source-change.txt'), 'utf8')).toBe('source\n');
+    expect(await fs.readFile(path.join(fixture.repoPath, 'target-change.txt'), 'utf8')).toBe('target\n');
+  });
+
   it("defaults to squash merge and returns cleanup flags=false when cleanup is not requested", async () => {
     const fixture = await createFixture();
     const created = await fixture.service.create({ runId: "merge-run" });
@@ -822,6 +978,120 @@ describe("AdhocWorktreeService.merge", () => {
     expect((await fixture.repoGit.status()).isClean()).toBe(true);
   });
 
+  it('retains an externally moved target when the second cherry-pick conflicts', async () => {
+    const fixture = await createFixture();
+    const created = await fixture.service.create({ runId: 'second-cherry-pick-external-move' });
+    const worktreeGit = simpleGit(created.path);
+    await fs.writeFile(path.join(created.path, 'first.txt'), 'first\n', 'utf-8');
+    await commitAdhocChanges(fixture.service, created.runId, testCommitMessage('feat: first source commit'));
+    await fs.writeFile(path.join(created.path, 'tracked.txt'), 'task side\n', 'utf-8');
+    await commitAdhocChanges(fixture.service, created.runId, testCommitMessage('feat: conflicting second source commit'));
+    expect((await worktreeGit.log()).total).toBeGreaterThanOrEqual(3);
+
+    await fs.writeFile(path.join(fixture.repoPath, 'tracked.txt'), 'main side\n', 'utf-8');
+    await fixture.repoGit.add('-A');
+    await fixture.repoGit.commit(testCommitMessage('feat: conflicting target commit'));
+    await fixture.repoGit.checkoutLocalBranch('external-target');
+    await fs.writeFile(path.join(fixture.repoPath, 'external.txt'), 'external\n', 'utf-8');
+    await fixture.repoGit.add('-A');
+    await fixture.repoGit.commit(testCommitMessage('feat: external target move'));
+    const externalHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
+    await fixture.repoGit.checkout('main');
+
+    const originalGetGit = (fixture.service as any).getGit.bind(fixture.service);
+    let cherryPicks = 0;
+    const gitSpy = spyOn(fixture.service as any, 'getGit').mockImplementation((cwd?: string) => {
+      const git = originalGetGit(cwd);
+      if (cwd !== undefined) return git;
+      return new Proxy(git, {
+        get(target, key) {
+          if (key !== 'raw') return Reflect.get(target, key);
+          return async (args: string[]) => {
+            if (args[0] !== 'cherry-pick') return target.raw(args);
+            cherryPicks += 1;
+            try {
+              return await target.raw(args);
+            } catch (error) {
+              if (cherryPicks === 2) {
+                await target.raw(['update-ref', 'refs/heads/main', externalHead]);
+              }
+              throw error;
+            }
+          };
+        },
+      });
+    });
+
+    let result;
+    try {
+      result = await fixture.service.merge(created.runId, 'rebase');
+    } finally {
+      gitSpy.mockRestore();
+    }
+
+    expect(result).toMatchObject({
+      success: false,
+      reasonCode: 'POST_INTEGRATION_VERIFICATION_FAILED',
+      mutation: 'unknown',
+      conflictState: 'preserved',
+      observedTarget: { commit: externalHead },
+    });
+    expect((await fixture.repoGit.revparse(['HEAD'])).trim()).toBe(externalHead);
+    expect(await pathExists(created.path)).toBe(true);
+    expect(await branchExists(fixture.repoGit, created.branch)).toBe(true);
+  });
+
+  it('retains an externally moved target after a non-conflict cherry-pick error', async () => {
+    const fixture = await createFixture();
+    const created = await fixture.service.create({ runId: 'cherry-pick-error-external-move' });
+    await fs.writeFile(path.join(created.path, 'source.txt'), 'source\n', 'utf-8');
+    await commitAdhocChanges(fixture.service, created.runId, testCommitMessage('feat: source commit'));
+
+    await fixture.repoGit.checkoutLocalBranch('external-target');
+    await fs.writeFile(path.join(fixture.repoPath, 'external.txt'), 'external\n', 'utf-8');
+    await fixture.repoGit.add('-A');
+    await fixture.repoGit.commit(testCommitMessage('feat: external target move'));
+    const externalHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
+    await fixture.repoGit.checkout('main');
+
+    const originalGetGit = (fixture.service as any).getGit.bind(fixture.service);
+    const gitSpy = spyOn(fixture.service as any, 'getGit').mockImplementation((cwd?: string) => {
+      const git = originalGetGit(cwd);
+      if (cwd !== undefined) return git;
+      return new Proxy(git, {
+        get(target, key) {
+          if (key !== 'raw') return Reflect.get(target, key);
+          return async (args: string[]) => {
+            if (args[0] === 'cherry-pick') {
+              await target.raw(['update-ref', 'refs/heads/main', externalHead]);
+              throw new Error('simulated cherry-pick failure after external movement');
+            }
+            return target.raw(args);
+          };
+        },
+      });
+    });
+
+    let result;
+    try {
+      result = await fixture.service.merge(created.runId, 'rebase');
+    } finally {
+      gitSpy.mockRestore();
+    }
+
+    expect(result).toMatchObject({
+      success: false,
+      reasonCode: 'POST_INTEGRATION_VERIFICATION_FAILED',
+      mutation: 'unknown',
+      conflictState: 'none',
+      observedTarget: { commit: externalHead },
+    });
+    expect(result.error).toContain('simulated cherry-pick failure after external movement');
+    expect((await fixture.repoGit.revparse(['HEAD'])).trim()).toBe(externalHead);
+    expect(await pathExists(created.path)).toBe(true);
+    expect(await branchExists(fixture.repoGit, created.branch)).toBe(true);
+  });
+
   it('classifies rebase plus a non-blank message as MESSAGE_NOT_ALLOWED_FOR_REBASE', async () => {
     const fixture = await createFixture();
     const created = await fixture.service.create({ runId: 'rebase-message-classification' });
@@ -1030,6 +1300,58 @@ describe("AdhocWorktreeService.merge", () => {
     expect(result.error).toMatch(/subject.*blank line.*body/i);
     expect((await fixture.repoGit.revparse(['HEAD'])).trim()).toBe(beforeHead);
     expect((await fixture.repoGit.status()).isClean()).toBe(true);
+  });
+
+  it('retains staged state when the target moves after squash staging', async () => {
+    const fixture = await createFixture();
+    const created = await fixture.service.create({ runId: 'target-moves-after-staging' });
+    await fs.writeFile(path.join(created.path, 'staged-change.txt'), 'new\n');
+    await commitAdhocChanges(fixture.service, created.runId, testCommitMessage('feat: staged source change'));
+    const inspected = await fixture.service.inspect(created.runId);
+    await fixture.repoGit.raw(['branch', 'external-target', inspected!.target!.commit]);
+
+    const getGit = (fixture.service as any).getGit.bind(fixture.service);
+    const gitSpy = spyOn(fixture.service as any, 'getGit').mockImplementation((cwd?: string) => {
+      const git = getGit(cwd);
+      if (cwd !== undefined) return git;
+      return new Proxy(git, {
+        get(target, key) {
+          if (key !== 'raw') return Reflect.get(target, key);
+          return async (...args: unknown[]) => {
+            const result = await (target.raw as (...inner: unknown[]) => Promise<unknown>).apply(target, args);
+            const command = args[0];
+            if (Array.isArray(command) && command[0] === 'merge' && command[1] === '--squash') {
+              await fixture.repoGit.raw(['symbolic-ref', 'HEAD', 'refs/heads/external-target']);
+            }
+            return result;
+          };
+        },
+      });
+    });
+    let result;
+    try {
+      result = await fixture.service.merge(created.runId, 'squash', mergeMessage, {
+        sourceCommit: inspected!.commit,
+        expectedTarget: inspected!.target!,
+        cleanup: 'worktree+branch',
+      });
+    } finally {
+      gitSpy.mockRestore();
+    }
+
+    expect(result).toMatchObject({
+      success: false,
+      reasonCode: 'POST_INTEGRATION_VERIFICATION_FAILED',
+      mutation: 'unknown',
+      retryable: false,
+      action: 'inspect_state',
+      conflictState: 'none',
+    });
+    expect((await fixture.repoGit.raw(['symbolic-ref', 'HEAD'])).trim()).toBe('refs/heads/external-target');
+    expect((await fixture.repoGit.revparse(['HEAD'])).trim()).toBe(inspected!.target!.commit);
+    expect((await fixture.repoGit.status()).staged).toContain('staged-change.txt');
+    expect(await pathExists(created.path)).toBe(true);
+    expect(await branchExists(fixture.repoGit, created.branch)).toBe(true);
   });
 
   it('classifies a failed restore as ROLLBACK_FAILED with an unconfirmed target state', async () => {
@@ -1287,6 +1609,70 @@ describe("AdhocWorktreeService composite merge", () => {
     expect(reverted.committed).toBe(true);
   }
 
+  it('preflights every target before mutating the first repository', async () => {
+    const fixture = await createCompositeFixture();
+    const created = await fixture.service.create({ runId: 'composite-target-preflight', repoIds: ['api', 'web'] });
+    await fs.writeFile(path.join(created.repos!.api.path, 'api-change.txt'), 'api\n');
+    await fs.writeFile(path.join(created.repos!.web.path, 'web-change.txt'), 'web\n');
+    await commitAdhocChanges(fixture.service, created.runId, testCommitMessage('feat: composite source'));
+    const inspected = await fixture.service.inspect(created.runId);
+    const apiBefore = (await fixture.apiGit.revparse(['HEAD'])).trim();
+    await fs.writeFile(path.join(fixture.repos[1]!.path, 'target-move.txt'), 'move\n');
+    await fixture.webGit.add('target-move.txt');
+    await fixture.webGit.commit('test: move web target');
+    const webMoved = (await fixture.webGit.revparse(['HEAD'])).trim();
+
+    const result = await fixture.service.merge(created.runId, 'squash', mergeMessage, {
+      sourceCommits: Object.fromEntries(Object.entries(inspected!.repos!).map(([id, repo]) => [id, repo.commit])),
+      expectedTargets: Object.fromEntries(Object.entries(inspected!.repos!).map(([id, repo]) => [id, repo.target!])),
+    });
+
+    expect(result).toMatchObject({ success: false, reasonCode: 'TARGET_MISMATCH', partial: false, mutation: 'none' });
+    expect((await fixture.apiGit.revparse(['HEAD'])).trim()).toBe(apiBefore);
+    expect((await fixture.webGit.revparse(['HEAD'])).trim()).toBe(webMoved);
+    expect(await pathExists(created.repos!.api.path)).toBe(true);
+    expect(await pathExists(created.repos!.web.path)).toBe(true);
+  });
+
+  it('reports partial retention when a later target moves after preflight', async () => {
+    const fixture = await createCompositeFixture();
+    const created = await fixture.service.create({ runId: 'composite-boundary-move', repoIds: ['api', 'web'] });
+    await fs.writeFile(path.join(created.repos!.api.path, 'api-change.txt'), 'api\n');
+    await fs.writeFile(path.join(created.repos!.web.path, 'web-change.txt'), 'web\n');
+    await commitAdhocChanges(fixture.service, created.runId, testCommitMessage('feat: boundary source'));
+    const inspected = await fixture.service.inspect(created.runId);
+    const apiBefore = (await fixture.apiGit.revparse(['HEAD'])).trim();
+    const webBefore = (await fixture.webGit.revparse(['HEAD'])).trim();
+    await fixture.webGit.raw(['branch', 'other-web-target', webBefore]);
+    await installPrepareCommitMessageHook(
+      fixture.repos[0]!.path,
+      `git -C "${fixture.repos[1]!.path}" symbolic-ref HEAD refs/heads/other-web-target`,
+    );
+
+    const result = await fixture.service.merge(created.runId, 'squash', mergeMessage, {
+      sourceCommits: Object.fromEntries(Object.entries(inspected!.repos!).map(([id, repo]) => [id, repo.commit])),
+      expectedTargets: Object.fromEntries(Object.entries(inspected!.repos!).map(([id, repo]) => [id, repo.target!])),
+    });
+
+    expect(result).toMatchObject({
+      success: false,
+      reasonCode: 'COMPOSITE_PARTIAL',
+      partial: true,
+      mutation: 'partial',
+    });
+    expect(result.repos!.api).toMatchObject({ success: true, merged: true });
+    expect(result.repos!.web).toMatchObject({
+      success: false,
+      reasonCode: 'TARGET_MISMATCH',
+      mutation: 'none',
+      observedTarget: { ref: 'refs/heads/other-web-target', commit: webBefore },
+    });
+    expect((await fixture.apiGit.revparse(['HEAD'])).trim()).not.toBe(apiBefore);
+    expect((await fixture.webGit.revparse(['HEAD'])).trim()).toBe(webBefore);
+    expect(await pathExists(created.repos!.api.path)).toBe(true);
+    expect(await pathExists(created.repos!.web.path)).toBe(true);
+  });
+
   it("merges in stable repo ID order, returns per-repo results, and supports cleanup", async () => {
     const fixture = await createCompositeFixture();
     const created = await fixture.service.create({
@@ -1346,6 +1732,40 @@ describe("AdhocWorktreeService composite merge", () => {
     expect(result.repos!.web.cleanup.worktreeRemoval.status).toBe('not_attempted');
     expect(await pathExists(created.repos!.api.path)).toBe(true);
     expect(await pathExists(created.repos!.web.path)).toBe(true);
+  });
+
+  it('skips all deferred cleanup when a target switches branches at the same commit after integration', async () => {
+    const fixture = await createCompositeFixture();
+    const created = await fixture.service.create({ runId: 'composite-target-ref-switch', repoIds: ['api', 'web'] });
+    await fs.writeFile(path.join(created.repos!.api.path, 'api.txt'), 'api\n');
+    await fs.writeFile(path.join(created.repos!.web.path, 'web.txt'), 'web\n');
+    await commitAdhocChanges(fixture.service, created.runId, testCommitMessage('feat: composite source changes'));
+    const original = (fixture.service as any).mergeOneRepo.bind(fixture.service);
+    let calls = 0;
+    const mergeSpy = spyOn(fixture.service as any, 'mergeOneRepo').mockImplementation(async (...args: any[]) => {
+      const result = await original(...args);
+      calls += 1;
+      if (calls === 2) {
+        const integratedApiHead = (await fixture.apiGit.revparse(['HEAD'])).trim();
+        await fixture.apiGit.raw(['branch', 'same-target-commit', integratedApiHead]);
+        await fixture.apiGit.checkout('same-target-commit');
+      }
+      return result;
+    });
+    let result;
+    try {
+      result = await fixture.service.merge(created.runId, 'merge', mergeMessage, { cleanup: 'worktree+branch' });
+    } finally {
+      mergeSpy.mockRestore();
+    }
+
+    expect(result.cleanup.outcome).toBe('failed');
+    expect(result.repos!.api.cleanup.worktreeRemoval.status).toBe('not_attempted');
+    expect(result.repos!.web.cleanup.worktreeRemoval.status).toBe('not_attempted');
+    expect(await pathExists(created.repos!.api.path)).toBe(true);
+    expect(await pathExists(created.repos!.web.path)).toBe(true);
+    expect(await branchExists(fixture.apiGit, created.repos!.api.branch)).toBe(true);
+    expect(await branchExists(fixture.webGit, created.repos!.web.branch)).toBe(true);
   });
 
   it("returns an all-repo composite no-op when every ad-hoc repo has zero tracked diff", async () => {

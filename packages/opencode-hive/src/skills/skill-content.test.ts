@@ -625,10 +625,10 @@ describe('skill content', () => {
     expect(hiveSkill).toContain('hive_worktree_create');
     expect(hiveSkill).toContain('Non-Git or report-only work may use an explicit existing target');
     expect(hiveSkill).toContain('returns sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present');
-    expect(hiveSkill).toContain('hive_worktree_merge({ task: "01-task-name", sourceCommit,');
-    expect(hiveSkill).toContain('hive_worktree_merge({ task: "01-task-name", sourceCommits,');
-    expect(hiveSkill).toContain('pass its topology-aware pin unchanged to merge');
-    expect(hiveSkill).toContain('a singleton composite also accepts a matching scalar convenience');
+    expect(hiveSkill).toContain('hive_worktree_merge({ task: "01-task-name", sourceCommit, expectedTarget,');
+    expect(hiveSkill).toContain('hive_worktree_merge({ task: "01-task-name", sourceCommits, expectedTargets,');
+    expect(hiveSkill).toContain('Pass its topology-aware source pin plus the unchanged inspected `expectedTarget`');
+    expect(hiveSkill).toContain('singleton composites accept matching scalar conveniences');
     expect(hiveSkill).toContain('marking the feature task done');
     expect(hiveSkill).toContain('hive_task_update');
     expect(hiveSkill).toContain('do not reconstruct them from worker prose');

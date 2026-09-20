@@ -27,6 +27,7 @@ export type WorktreeReasonCode =
   | 'WORKSPACE_TOPOLOGY_MISMATCH'
   | 'WORKTREE_LOOKUP_FAILED'
   | 'SOURCE_BRANCH_MISSING'
+  | 'TARGET_MISMATCH'
   | 'TARGET_DIRTY'
   | 'GIT_OPERATION_IN_PROGRESS'
   | 'NO_TRACKED_CHANGES'
@@ -108,6 +109,8 @@ export interface WorktreeRepositoryMergeResult {
   mutation: WorktreeMutationState;
   retryable: boolean;
   action: WorktreeRecoveryAction;
+  expectedTarget?: import('./worktreeTarget.js').WorktreeTargetIdentity;
+  observedTarget?: import('./worktreeTarget.js').WorktreeTargetIdentity | null;
 }
 
 interface WorktreeOutcomeRule {
@@ -134,6 +137,7 @@ const WORKTREE_OUTCOME_TABLE: Record<WorktreeReasonCode, WorktreeOutcomeRule> = 
   WORKSPACE_TOPOLOGY_MISMATCH: { phase: 'preflight', mutation: 'none', retryable: false, action: 'start_fresh_run' },
   WORKTREE_LOOKUP_FAILED: { phase: 'preflight', mutation: 'none', retryable: true, action: 'inspect_state' },
   SOURCE_BRANCH_MISSING: { phase: 'preflight', mutation: 'none', retryable: false, action: 'inspect_state' },
+  TARGET_MISMATCH: { phase: 'preflight', mutation: 'none', retryable: false, action: 'inspect_state' },
   TARGET_DIRTY: { phase: 'preflight', mutation: 'none', retryable: true, action: 'clean_target' },
   GIT_OPERATION_IN_PROGRESS: { phase: 'preflight', mutation: 'none', retryable: false, action: 'inspect_state' },
   NO_TRACKED_CHANGES: { phase: 'integration', mutation: 'none', retryable: false, action: 'none' },

@@ -5,9 +5,10 @@ import * as os from "os";
 import * as path from "path";
 import simpleGit, { type SimpleGit } from "simple-git";
 import type { ResolvedRepository } from "../types";
-import { WorktreeService } from "./worktreeService";
-import type { MergeResult } from "./worktreeService";
+import { WorktreeService as CoreWorktreeService } from "./worktreeService";
+import type { MergeOptions, MergeResult, WorktreeConfig } from "./worktreeService";
 import { WorktreeLinkageError } from "./worktreeOutcome";
+import { readWorktreeTargetIdentity } from './worktreeTarget.js';
 
 interface TestFixture {
   repoPath: string;
@@ -21,6 +22,63 @@ interface TestFixture {
 const tempDirs: string[] = [];
 const mergeMessage = 'feat: integrate task work\n\nIntegrate the verified task implementation into project history.';
 const testCommitMessage = (subject: string): string => `${subject}\n\nCreate test fixture history with a descriptive body.`;
+
+// Existing behavior tests supply the inspect result as an operator would. Tests
+// for the mandatory expectation contract instantiate CoreWorktreeService.
+class WorktreeService extends CoreWorktreeService {
+  private readonly testConfig: WorktreeConfig;
+
+  constructor(config: WorktreeConfig) {
+    super(config);
+    this.testConfig = config;
+  }
+
+  override async merge(
+    feature: string,
+    step: string,
+    strategy: 'merge' | 'squash' | 'rebase' = 'squash',
+    message?: string,
+    options: MergeOptions = {},
+    attemptSlot?: string,
+  ): Promise<MergeResult> {
+    if (options.expectedTarget === undefined && options.expectedTargets === undefined) {
+      try {
+        const inspected = await this.inspect(feature, step, attemptSlot);
+        if (inspected?.repos) {
+          options = {
+            ...options,
+            expectedTargets: Object.fromEntries(Object.entries(inspected.repos).map(([id, repo]) => [id, repo.target!])),
+          };
+        } else if (inspected) {
+          options = { ...options, expectedTarget: inspected.target! };
+        } else {
+          options = { ...options, expectedTarget: await readWorktreeTargetIdentity(this.testConfig.baseDir) };
+        }
+      } catch {
+        const taskResolver = this.testConfig.taskRepoResolver;
+        const repoIds = typeof taskResolver === 'function'
+          ? taskResolver(feature, step)
+          : taskResolver?.resolveTaskRepoIds(feature, step);
+        const repositoryResolver = this.testConfig.repositoryResolver;
+        const repositories = typeof repositoryResolver === 'function'
+          ? repositoryResolver()
+          : repositoryResolver?.resolveRepositories();
+        if (repoIds?.length && repositories) {
+          options = {
+            ...options,
+            expectedTargets: Object.fromEntries(await Promise.all(repoIds.map(async (id) => {
+              const repository = repositories.find((entry) => entry.id === id)!;
+              return [id, await readWorktreeTargetIdentity(repository.path)];
+            }))),
+          };
+        } else {
+          options = { ...options, expectedTarget: await readWorktreeTargetIdentity(this.testConfig.baseDir) };
+        }
+      }
+    }
+    return super.merge(feature, step, strategy, message, options, attemptSlot);
+  }
+}
 
 afterEach(async () => {
   await Promise.all(
@@ -1936,6 +1994,41 @@ describe("WorktreeService composite merge aggregation", () => {
     expect(result.conflicts).toEqual([]);
   });
 
+  it('distinguishes an unreadable composite target from a confirmed target mismatch', async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api'] });
+    await fx.service.create(fx.feature, fx.task);
+    await commitChangeInRepo(fx, 'api', 'a.txt', 'a\n');
+    const inspected = await fx.service.inspect(fx.feature, fx.task);
+    const headPath = path.join(fx.repos.api.path, '.git', 'HEAD');
+    const originalHead = await fs.readFile(headPath, 'utf8');
+    const originalGet = (fx.service as any).get.bind(fx.service);
+    const getSpy = spyOn(fx.service as any, 'get').mockImplementation(async (...args: unknown[]) => {
+      const registered = await originalGet(...args);
+      await fs.writeFile(headPath, 'invalid-target-head\n');
+      return registered;
+    });
+
+    let result;
+    try {
+      result = await fx.service.merge(fx.feature, fx.task, 'merge', mergeMessage, {
+        sourceCommits: { api: inspected!.repos!.api.commit },
+        expectedTargets: { api: inspected!.repos!.api.target! },
+      });
+    } finally {
+      getSpy.mockRestore();
+      await fs.writeFile(headPath, originalHead);
+    }
+
+    expect(result).toMatchObject({
+      success: false,
+      reasonCode: 'GIT_OPERATION_FAILED',
+      mutation: 'none',
+      partial: false,
+    });
+    expect(result.error).toMatch(/api: unable to read target identity: Reading target commit failed/i);
+    expect(result.error).not.toMatch(/no longer matches/);
+  });
+
   it("uses a custom merge message verbatim in every composite repo", async () => {
     const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
     await fx.service.create(fx.feature, fx.task);
@@ -2347,6 +2440,41 @@ describe("WorktreeService composite merge aggregation", () => {
     expect(result.repos!['web-ui'].cleanup.worktreeRemoval.status).toBe('not_attempted');
     expect(await pathExists(created.repos!.api.path)).toBe(true);
     expect(await pathExists(created.repos!['web-ui'].path)).toBe(true);
+  });
+
+  it('skips all task-composite cleanup when a target switches branches at the same commit after integration', async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
+    const created = await fx.service.create(fx.feature, fx.task);
+    await commitChangeInRepo(fx, 'api', 'api.txt', 'api\n');
+    await commitChangeInRepo(fx, 'web-ui', 'web.txt', 'web\n');
+    const original = (fx.service as any).mergeOneRepo.bind(fx.service);
+    let calls = 0;
+    const mergeSpy = spyOn(fx.service as any, 'mergeOneRepo').mockImplementation(async (...args: any[]) => {
+      const result = await original(...args);
+      calls += 1;
+      if (calls === 2) {
+        const integratedApiHead = (await fx.repos.api.git.revparse(['HEAD'])).trim();
+        await fx.repos.api.git.raw(['branch', 'same-target-commit', integratedApiHead]);
+        await fx.repos.api.git.checkout('same-target-commit');
+      }
+      return result;
+    });
+    let result;
+    try {
+      result = await fx.service.merge(fx.feature, fx.task, 'merge', mergeMessage, {
+        cleanup: 'worktree+branch',
+      });
+    } finally {
+      mergeSpy.mockRestore();
+    }
+
+    expect(result.cleanup.outcome).toBe('failed');
+    expect(result.repos!.api.cleanup.worktreeRemoval.status).toBe('not_attempted');
+    expect(result.repos!['web-ui'].cleanup.worktreeRemoval.status).toBe('not_attempted');
+    expect(await pathExists(created.repos!.api.path)).toBe(true);
+    expect(await pathExists(created.repos!['web-ui'].path)).toBe(true);
+    expect(await branchExists(fx.repos.api.git, created.repos!.api.branch)).toBe(true);
+    expect(await branchExists(fx.repos['web-ui'].git, created.repos!['web-ui'].branch)).toBe(true);
   });
 
   it("populates per-repo cleanup fields when cleanup=worktree+branch and aggregates them at top level", async () => {

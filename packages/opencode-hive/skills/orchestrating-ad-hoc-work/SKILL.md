@@ -43,6 +43,8 @@ The ad-hoc primary owns merge and cleanup. Lane changes receive the reviews requ
 
 Use `hive_adhoc_worktree_create`, `hive_adhoc_worktree_inspect`, `hive_adhoc_worktree_merge`, and `hive_adhoc_worktree_cleanup`. A legacy single-root worker returns `sourceCommit`; a composite worker returns the complete `sourceCommits` map keyed by persisted repository ID. A singleton composite also accepts a matching scalar convenience; multiple repositories require the complete map. Pass that topology-aware pin unchanged to merge. Git helpers do not auto-commit source or assign workers.
 
+Capture the initial inspect target identity before dispatch and include it in the lane handoff. Reinspect after each writing handoff, before reviews and remediation, after sibling integration or known destination movement, and before integration. Pass the unchanged identity as `expectedTarget` or the complete `expectedTargets` map. Relevant, overlapping, or uncertain drift stops the lane for same-worktree reconciliation by a fresh worker after the previous writer is terminal. Merge the pinned target commit into the clean source worktree, adapt and review the combined delta, verify it, and return fresh source pins plus the target identity used. Composite reconciliation and integration retain explicit per-repository partial outcomes; they do not claim atomicity.
+
 ## Closure
 
 A lane closes only after applicable terminal observation, result consumption, required review and lane verification, merge or an explicit no-change/discard decision, and cleanup are recorded. The batch closes only after every lane is closed and the full integrated canonical verification result is recorded and passing.

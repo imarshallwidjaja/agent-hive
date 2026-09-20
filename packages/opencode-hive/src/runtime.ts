@@ -24,6 +24,8 @@ import {
   readCompositeWorkspaceManifest,
   type ContextScope,
   type CustomAgentBase,
+  type AdhocMergeOptions,
+  type MergeOptions,
   type ResolvedCustomAgentConfig,
   type StandingConstraintEntry,
 } from 'hive-core';
@@ -75,6 +77,11 @@ const NON_FEATURE_NAMESPACES = new Set(['adhoc', 'review']);
 const MAX_SNAPSHOT_REPOSITORIES = 32;
 const json = (value: unknown): string => JSON.stringify(value, null, 2);
 const BACKGROUND_DELEGATION_SKILL_ID = 'background-delegation';
+const targetIdentitySchema = tool.schema.object({
+  path: tool.schema.string(),
+  ref: tool.schema.string().nullable(),
+  commit: tool.schema.string(),
+});
 
 function normalizeMergePins(
   inspected: { commit: string; repos?: Record<string, { commit: string }> },
@@ -521,6 +528,7 @@ const plugin: Plugin = async (ctx) => {
         feature: tool.schema.string().optional(), task: tool.schema.string(), repoIds: tool.schema.array(tool.schema.string()).optional(), candidate: tool.schema.string().optional(),
         strategy: tool.schema.enum(['merge', 'squash', 'rebase']).optional(), message: tool.schema.string().optional(), preserveConflicts: tool.schema.boolean().optional(),
         cleanup: tool.schema.enum(['none', 'worktree', 'worktree+branch']).optional(), sourceCommit: tool.schema.string().optional(), sourceCommits: tool.schema.record(tool.schema.string(), tool.schema.string()).optional(),
+        expectedTarget: targetIdentitySchema.optional(), expectedTargets: tool.schema.record(tool.schema.string(), targetIdentitySchema).optional(),
       },
       execute: async ({ feature, task, repoIds, candidate, strategy = 'squash', message, ...options }, context) => {
         const selected = requireFeature(feature, context);
@@ -530,7 +538,7 @@ const plugin: Plugin = async (ctx) => {
         if (!inspected) throw new Error('Task worktree not found');
         const { sourceCommit, sourceCommits, ...mergeOptions } = options;
         const pins = normalizeMergePins(inspected, sourceCommit, sourceCommits);
-        return json(await worktreeService.merge(selected, task, strategy, message, { ...mergeOptions, ...pins }, candidate));
+        return json(await worktreeService.merge(selected, task, strategy, message, { ...mergeOptions, ...pins } as MergeOptions, candidate));
       },
     }),
     hive_worktree_cleanup: tool({
@@ -567,6 +575,7 @@ const plugin: Plugin = async (ctx) => {
         runId: tool.schema.string(), repoIds: tool.schema.array(tool.schema.string()).optional(), sourceDirectory: tool.schema.string().optional(),
         strategy: tool.schema.enum(['merge', 'squash', 'rebase']).optional(), message: tool.schema.string().optional(), preserveConflicts: tool.schema.boolean().optional(), cleanup: tool.schema.enum(['none', 'worktree', 'worktree+branch']).optional(),
         sourceCommit: tool.schema.string().optional(), sourceCommits: tool.schema.record(tool.schema.string(), tool.schema.string()).optional(),
+        expectedTarget: targetIdentitySchema.optional(), expectedTargets: tool.schema.record(tool.schema.string(), targetIdentitySchema).optional(),
       },
       execute: async ({ runId, repoIds, sourceDirectory, strategy = 'squash', message, ...options }) => {
         const service = adhocService(sourceDirectory, repoIds);
@@ -574,7 +583,7 @@ const plugin: Plugin = async (ctx) => {
         if (!inspected) throw new Error('Ad-hoc worktree not found');
         const { sourceCommit, sourceCommits, ...mergeOptions } = options;
         const pins = normalizeMergePins(inspected, sourceCommit, sourceCommits);
-        return json(await service.merge(runId, strategy, message, { ...mergeOptions, ...pins }));
+        return json(await service.merge(runId, strategy, message, { ...mergeOptions, ...pins } as AdhocMergeOptions));
       },
     }),
     hive_adhoc_worktree_cleanup: tool({

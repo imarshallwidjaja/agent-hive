@@ -101,6 +101,7 @@ Subagents do not inherit your context. Every delegated lane needs a self-contain
 - constraints, file ownership, and verification requirements
 - done criteria (what done means)
 - for a writing worktree, the required return pin: \`sourceCommit\` for a legacy single-root workspace or a complete \`sourceCommits\` map when persisted \`repos\` are present, including singleton composites
+- the initial inspected destination path/ref/commit and the worker's destination checkpoint duty
 
 Put the complete Forager context packet directly in the native \`task.prompt\`. The runtime appends concise project, feature, and session constraints. Ordinary Scout, advisor, and reviewer packets also go in \`task.prompt\`.
 
@@ -129,7 +130,7 @@ When an optional ad-hoc tool argument is not needed, omit it instead of sending 
 Choose the isolated worktree completion path:
 - \`hive_adhoc_worktree_create\` creates or reuses a temporary Git workspace. Inspect with \`hive_adhoc_worktree_inspect\`.
 - Author an unchanged native Forager \`task()\` prompt. Independent worktrees may be created and dispatched under one parent.
-- \`hive_adhoc_worktree_merge\` integrates the branch. Pass the worker's returned topology-aware pin unchanged. A singleton composite also accepts a matching scalar \`sourceCommit\`; multiple repositories require the complete \`sourceCommits\` map. Git helpers do not auto-commit source or assign workers. See \`docs/HIVE-TOOLS.md\` for merge, cleanup, \`discard\`, and composite contracts.
+- \`hive_adhoc_worktree_merge\` integrates the branch. Pass the worker's returned topology-aware source pin and the unchanged inspected \`expectedTarget\` or complete \`expectedTargets\` map. A singleton composite also accepts matching scalar conveniences; multiple repositories require complete maps. Git helpers do not auto-commit source or assign workers. See \`docs/HIVE-TOOLS.md\` for merge, cleanup, \`discard\`, and composite contracts.
 - \`hive_adhoc_worktree_cleanup\` removes the ad-hoc worktree and branch when cleanup is not already part of merge.
 
 Carry \`runId\`, \`workspacePath\`, and \`branch\` explicitly between calls.

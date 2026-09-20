@@ -896,6 +896,9 @@ describe('Hive (Hybrid) prompt', () => {
       expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('Use the map when persisted `repos` are present');
       expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('a singleton composite also accepts a matching scalar convenience at merge');
       expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('Pass the returned pin unchanged to the matching merge tool');
+      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('The primary owns the intended destination path');
+      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('Every merge supplies the exact inspected `expectedTarget`');
+      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('Reconciliation uses a fresh worker session in the same clean, registered worktree');
       expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain("either set `status: 'blocked'` with a structured blocker");
       expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain("keep `status: 'in_progress'` with pending-integration detail in `summary` or `report` and no blocker");
       expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('explicit operator request to continue specific existing uncommitted changes');
@@ -1559,7 +1562,8 @@ describe('Hive Helper prompt', () => {
 
   it('uses hive_worktree_merge first only for merge recovery and resolves preserved conflicts locally', () => {
     expect(HIVE_HELPER_PROMPT).toContain('hive_worktree_merge');
-    expect(HIVE_HELPER_PROMPT).toContain('Merge recovery / merge batch: pass the caller\'s returned topology-aware pin unchanged to `hive_worktree_merge`');
+    expect(HIVE_HELPER_PROMPT).toContain('Merge recovery / merge batch: pass the caller\'s returned topology-aware source pin and inspected target expectation unchanged to `hive_worktree_merge`');
+    expect(HIVE_HELPER_PROMPT).toContain('On `TARGET_MISMATCH`, stop for primary reconciliation');
     expect(HIVE_HELPER_PROMPT).not.toContain('- use `hive_merge` first');
     expect(HIVE_HELPER_PROMPT).not.toContain('1. Call `hive_merge` first for the requested task branch.');
     expect(HIVE_HELPER_PROMPT).toContain("conflictState: 'preserved'");
