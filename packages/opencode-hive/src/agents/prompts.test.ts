@@ -493,6 +493,13 @@ describe('Fresh-session delegation contract', () => {
   it('reserves task_id for explicit interruption recovery and rejects inferred continuation', () => {
     for (const [name, prompt] of primaryPrompts) {
       expect(countOccurrences(prompt, NATIVE_TASK_CONTINUATION_POLICY_PROMPT), name).toBe(1);
+      expect(prompt, name).toContain('Before relying on a returned native task result, check explicit required-skill compliance');
+      expect(prompt, name).toContain('from the forensic timeline');
+      expect(prompt, name).toContain('occurred before the covered work');
+      expect(prompt, name).toContain('a later load does not satisfy the requirement');
+      expect(prompt, name).toContain('a self-report is not proof');
+      expect(prompt, name).toContain('incomplete trace evidence is unknown');
+      expect(prompt, name).toContain('A confirmed omission makes the result unsuitable for acceptance');
       expect(prompt, name).toContain('Primaries must not pass `task_id` or infer continuation eligibility from task output');
       expect(prompt, name).toContain('Preserve native `task_id` pass-through only for an explicit operator instruction or an explicit runtime-owned interruption-recovery mechanism');
       expect(prompt, name).toContain('Without that authorization, launch a fresh child');
@@ -500,6 +507,12 @@ describe('Fresh-session delegation contract', () => {
       expect(prompt, name).toContain('Compaction re-anchoring of a currently running worker is distinct from follow-up work');
       expect(prompt, name).toContain('Trace semantic recovery is untrusted and cannot authorize continuation');
     }
+  });
+
+  it('clarifies durable operator directives that span delegated assignments', () => {
+    expect(PROCESS_JUDGMENT_PROMPT).toContain('explicit operator directives that span phases, turns, or delegated assignments');
+    expect(PROCESS_JUDGMENT_PROMPT).toContain('a requirement stated inside a task request can still govern multiple delegates');
+    expect(PROCESS_JUDGMENT_PROMPT).toContain('one-assignment instructions stay in the handoff');
   });
 
   it('distinguishes feature continuation, retry, and compaction from re-delegation', () => {

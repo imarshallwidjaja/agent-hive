@@ -830,6 +830,7 @@ const plugin: Plugin = async (ctx) => {
       const constraintTools = ['hive_constraints_read', 'hive_constraints_add', 'hive_constraints_edit', 'hive_constraints_clear'];
       const repositoryTools = ['hive_repositories_status', 'hive_repositories_discover', 'hive_repositories_update'];
       const reviewTools = [...contextRW, 'hive_git_snapshot'];
+      const taskTraceTools = ['hive_task_trace', 'hive_task_trace_content'];
       const custom = configService.getCustomAgentConfigs();
       const skipped = new Map(prepared.skipped.map((entry) => [entry.name, entry]));
       const routingBases = ['scout-researcher', 'forager-worker', 'plan-reviewer', 'code-reviewer', 'simplicity-reviewer', 'approach-advisor', 'vulnerability-reviewer'] as const;
@@ -871,7 +872,7 @@ const plugin: Plugin = async (ctx) => {
       };
       const agents: Record<string, any> = {
         'hive-master': mk('hive-master', 'primary', primaryTools, hiveBeeAgent.description, { question: 'allow', task: 'allow', skill: 'allow' }),
-        'architect-planner': mk('architect-planner', 'all', ['hive_feature_create', 'hive_feature_select', 'hive_plan_write', 'hive_plan_patch', 'hive_plan_read', ...constraintTools, ...repositoryTools, ...contextRW, 'hive_context_archive', 'hive_worktree_inspect', 'hive_status', 'hive_git_snapshot'], architectBeeAgent.description, { question: 'allow', task: architectTaskPermission, edit: 'deny', skill: 'allow' }),
+        'architect-planner': mk('architect-planner', 'all', ['hive_feature_create', 'hive_feature_select', 'hive_plan_write', 'hive_plan_patch', 'hive_plan_read', ...constraintTools, ...repositoryTools, ...contextRW, 'hive_context_archive', 'hive_worktree_inspect', 'hive_status', 'hive_git_snapshot', ...taskTraceTools], architectBeeAgent.description, { question: 'allow', task: architectTaskPermission, edit: 'deny', skill: 'allow' }),
         'swarm-orchestrator': mk('swarm-orchestrator', 'primary', primaryTools, swarmBeeAgent.description, { question: 'allow', task: 'allow', skill: 'allow' }),
         'hive-builder': mk('hive-builder', 'primary', primaryTools, hiveBuilderAgent.description, { question: 'allow', task: 'allow', skill: 'allow' }),
         'scout-researcher': mk('scout-researcher', 'subagent', ['hive_context_read', 'hive_status', 'hive_git_snapshot', 'hive_repositories_status', 'hive_repositories_discover'], descriptions['scout-researcher'], { edit: 'deny', question: 'deny', task: 'deny', skill: 'allow' }),
@@ -882,8 +883,8 @@ const plugin: Plugin = async (ctx) => {
         'simplicity-reviewer': mk('simplicity-reviewer', 'subagent', reviewTools, descriptions['simplicity-reviewer'], { edit: 'deny', question: 'deny', task: 'deny', skill: 'allow' }),
         'approach-advisor': mk('approach-advisor', 'subagent', reviewTools, descriptions['approach-advisor'], { edit: 'deny', question: 'deny', task: 'deny', skill: 'allow' }),
         'vulnerability-reviewer': mk('vulnerability-reviewer', 'subagent', reviewTools, descriptions['vulnerability-reviewer'], { edit: 'deny', question: 'deny', task: 'deny', skill: 'allow' }),
-        'dash-reviewer': mk('dash-reviewer', 'primary', [...reviewTools, 'hive_background_status', 'hive_background_reconcile', 'hive_background_reconcile_batch', 'hive_background_cancel'], 'Dash Reviewer - Read-only implementation review orchestrator.', { edit: 'deny', question: 'allow', task: 'allow', skill: 'allow' }),
-        'vulnerability-review-primary': mk('vulnerability-review-primary', 'primary', [...reviewTools, 'hive_background_status', 'hive_background_reconcile', 'hive_background_reconcile_batch', 'hive_background_cancel'], 'Private vulnerability review orchestrator.', { edit: 'deny', question: 'allow', task: 'allow', skill: 'allow' }),
+        'dash-reviewer': mk('dash-reviewer', 'primary', [...reviewTools, ...taskTraceTools, 'hive_background_status', 'hive_background_reconcile', 'hive_background_reconcile_batch', 'hive_background_cancel'], 'Dash Reviewer - Read-only implementation review orchestrator.', { edit: 'deny', question: 'allow', task: 'allow', skill: 'allow' }),
+        'vulnerability-review-primary': mk('vulnerability-review-primary', 'primary', [...reviewTools, ...taskTraceTools, 'hive_background_status', 'hive_background_reconcile', 'hive_background_reconcile_batch', 'hive_background_cancel'], 'Private vulnerability review orchestrator.', { edit: 'deny', question: 'allow', task: 'allow', skill: 'allow' }),
       };
       agents['dash-reviewer'].hidden = true;
       agents['vulnerability-review-primary'].hidden = true;

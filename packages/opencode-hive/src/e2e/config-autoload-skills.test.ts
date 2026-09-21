@@ -506,6 +506,43 @@ describe('config hook autoLoadSkills guidance', () => {
     expect(warnings.some((message) => message.includes('native-file-skill'))).toBe(false);
   });
 
+  it('carries the explicit skill contract into built-in and custom advisors and primaries', async () => {
+    writeHiveConfig(testRoot, {
+      agentMode: 'unified',
+      customAgents: {
+        'advisor-design': {
+          baseAgent: 'approach-advisor',
+          description: 'Use for design route advice.',
+          autoLoadSkills: [],
+        },
+      },
+    });
+
+    const opencodeConfig = await applyConfigHook(testRoot);
+    const advisorPrompt = getAgentPrompt(opencodeConfig, 'approach-advisor');
+    const customAdvisorPrompt = getAgentPrompt(opencodeConfig, 'advisor-design');
+    const primaryPrompts = [
+      ['Hive', await renderRuntimeSystemPrompt(testRoot, 'hive-master', { trackMessage: false })],
+      ['Architect', getAgentPrompt(opencodeConfig, 'architect-planner')],
+      ['Swarm', await renderRuntimeSystemPrompt(testRoot, 'swarm-orchestrator', { trackMessage: false })],
+      ['Hive Builder', await renderRuntimeSystemPrompt(testRoot, 'hive-builder', { trackMessage: false })],
+    ] as const;
+
+    for (const [name, prompt] of [
+      ['Approach Advisor', advisorPrompt],
+      ['Custom Advisor', customAdvisorPrompt],
+    ] as const) {
+      expect(prompt, name).toContain('## Explicit Operator Skill Requirements');
+      expect(prompt, name).toContain('A parent or sibling load does not count');
+      expect(prompt, name).toContain('stop-design-slop and stop-slop are distinct');
+    }
+
+    for (const [name, prompt] of primaryPrompts) {
+      expect(prompt, name).toContain('## Explicit Operator Skill Requirements');
+      expect(prompt, name).toContain('Before relying on a returned native task result, check explicit required-skill compliance');
+    }
+  });
+
   it('adds user-configured bundled autoLoadSkills guidance on top of defaults', async () => {
     writeHiveConfig(testRoot, {
       agentMode: 'unified',

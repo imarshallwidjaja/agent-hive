@@ -15,6 +15,15 @@ describe('HIVE_SYSTEM_PROMPT', () => {
     expect(HIVE_SYSTEM_PROMPT).toContain('every other subagent are terminal');
   });
 
+  it('requires exact independent skill loads for explicit operator requirements', () => {
+    expect(HIVE_SYSTEM_PROMPT).toContain('explicitly names a skill');
+    expect(HIVE_SYSTEM_PROMPT).toContain('spans phases, turns, or delegated assignments');
+    expect(HIVE_SYSTEM_PROMPT).toContain('Each child, including advisors, reviewers, and custom overlays');
+    expect(HIVE_SYSTEM_PROMPT).toContain('A parent or sibling load does not count');
+    expect(HIVE_SYSTEM_PROMPT).toContain('stop-design-slop and stop-slop are distinct');
+    expect(HIVE_SYSTEM_PROMPT).toContain('there is no blanket all-skills autoload');
+  });
+
   it('defines the shared capability-based tool contract', () => {
     expect(HIVE_SYSTEM_PROMPT).toContain('Inspect the descriptions and input schemas of tools exposed to this agent');
     expect(HIVE_SYSTEM_PROMPT).toContain('Choose the narrowest existing tool');

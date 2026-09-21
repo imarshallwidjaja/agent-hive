@@ -92,21 +92,25 @@ describe('coordinated runtime hard cut', () => {
     const parent = context('parent');
     const routeStartMarker = '<!-- hive-route-snapshot:start -->';
     const routeEndMarker = '<!-- hive-route-snapshot:end -->';
+    const sessionSkillRequirement = 'For both design and writing work, load writing-policy, ivan-writing, and stop-slop.';
+    const featureSkillRequirement = 'For design work, also load stop-design-slop.';
+    const authoredRequirement = 'Assignment requirement: load writing-for-humans for this handoff.';
     await loaded.tool!.hive_feature_create.execute({ name: 'feature-a' }, parent);
     await loaded.tool!.hive_feature_create.execute({ name: 'feature-b' }, parent);
     await loaded.tool!.hive_feature_select.execute({ feature: 'feature-a' }, parent);
-    await loaded.tool!.hive_constraints_add.execute({ scope: 'session', constraints: `Keep session behavior. Quoted marker: ${routeStartMarker}` }, parent);
-    await loaded.tool!.hive_constraints_add.execute({ scope: 'feature', feature: 'feature-a', constraints: `Keep feature behavior. Quoted marker: ${routeEndMarker}` }, parent);
+    await loaded.tool!.hive_constraints_add.execute({ scope: 'session', constraints: `${sessionSkillRequirement} Quoted marker: ${routeStartMarker}` }, parent);
+    await loaded.tool!.hive_constraints_add.execute({ scope: 'feature', feature: 'feature-a', constraints: `${featureSkillRequirement} Quoted marker: ${routeEndMarker}` }, parent);
 
-    const output = { args: { subagent_type: 'forager-worker', prompt: 'AUTHORED PREFIX', background: false } };
+    const output = { args: { subagent_type: 'forager-worker', prompt: `AUTHORED PREFIX\n${authoredRequirement}`, background: false } };
     await loaded['tool.execute.before']!({ tool: 'task', sessionID: 'parent', callID: 'call-a' } as any, output);
     expect(output.args.prompt.startsWith('AUTHORED PREFIX')).toBe(true);
+    expect(output.args.prompt).toContain(authoredRequirement);
     expect(output.args.prompt).toContain('"featureRoute":{"selected":true,"feature":"feature-a"}');
     expect(output.args.prompt).toContain('## Standing Constraints');
     expect(output.args.prompt).toContain('Session constraints (revision 1)');
     expect(output.args.prompt).toContain('Feature constraints for "feature-a" (revision 1)');
-    expect(output.args.prompt).toContain('Keep session behavior.');
-    expect(output.args.prompt).toContain('Keep feature behavior.');
+    expect(output.args.prompt).toContain(sessionSkillRequirement);
+    expect(output.args.prompt).toContain(featureSkillRequirement);
     expect(output.args.prompt.match(/<!-- hive-route-snapshot:start -->/g)).toHaveLength(1);
     expect(output.args.prompt.match(/<!-- hive-route-snapshot:end -->/g)).toHaveLength(1);
     expect(output.args.prompt).toContain(`&lt;!-- hive-route-snapshot:start -->`);
@@ -117,7 +121,7 @@ describe('coordinated runtime hard cut', () => {
     sessions.set('child-a', { id: 'child-a', parentID: 'parent' });
     await loaded.event!({ event: { type: 'message.part.updated', properties: { part: { type: 'tool', tool: 'task', sessionID: 'parent', callID: 'call-a', metadata: { sessionId: 'child-a' }, state: { input: output.args } } } } } as any);
     expect(new SessionService(root).getGlobal('child-a')?.featureName).toBe('feature-a');
-    expect(new SessionService(root).getGlobal('child-a')?.standingConstraints).toBe(`Keep session behavior. Quoted marker: ${routeStartMarker}`);
+    expect(new SessionService(root).getGlobal('child-a')?.standingConstraints).toBe(`${sessionSkillRequirement} Quoted marker: ${routeStartMarker}`);
     expect(new SessionService(root).getGlobal('parent')?.featureName).toBe('feature-b');
   });
 
@@ -253,10 +257,11 @@ describe('coordinated runtime hard cut', () => {
       'stale route snapshot',
       '<!-- hive-route-snapshot:end -->',
     ].join('\n');
+    const authoredRequirement = 'Assignment requirement: load writing-for-humans for this handoff.';
     const output = {
       args: {
         subagent_type: 'forager-worker',
-        prompt: `AUTHORED PREFIX\n<!-- ordinary HTML comment -->\n${staleSnapshot}\n\n${staleSnapshot}\n\nAUTHORED SUFFIX`,
+        prompt: `${authoredRequirement}\nAUTHORED PREFIX\n<!-- ordinary HTML comment -->\n${staleSnapshot}\n\n${staleSnapshot}\n\nAUTHORED SUFFIX`,
       },
     };
 
@@ -264,6 +269,7 @@ describe('coordinated runtime hard cut', () => {
     expect(output.args.prompt.match(/<!-- hive-route-snapshot:start -->/g)).toHaveLength(1);
     expect(output.args.prompt).toContain('AUTHORED PREFIX');
     expect(output.args.prompt).toContain('AUTHORED SUFFIX');
+    expect(output.args.prompt).toContain(authoredRequirement);
     expect(output.args.prompt).toContain('"featureRoute":{"selected":true,"feature":"feature-a"}');
     expect(output.args.prompt).toContain('<!-- ordinary HTML comment -->');
 
@@ -665,6 +671,16 @@ describe('coordinated runtime hard cut', () => {
     expect(allowed('architect-planner', 'hive_worktree_merge')).toBe(false);
     expect(allowed('architect-planner', 'hive_worktree_create')).toBe(false);
     expect(allowed('architect-planner', 'hive_plan_write')).toBe(true);
+    for (const name of ['architect-planner', 'dash-reviewer', 'vulnerability-review-primary']) {
+      for (const tool of ['hive_task_trace', 'hive_task_trace_content']) {
+        expect(allowed(name, tool), `${name}:${tool}`).toBe(true);
+      }
+    }
+    for (const name of ['plan-reviewer', 'code-reviewer', 'simplicity-reviewer', 'approach-advisor', 'vulnerability-reviewer']) {
+      for (const tool of ['hive_task_trace', 'hive_task_trace_content']) {
+        expect(allowed(name, tool), `${name}:${tool}`).toBe(false);
+      }
+    }
     expect(config.subagent_depth).toBe(2);
     expect(config.agent['architect-planner'].permission.task).toMatchObject({
       '*': 'deny',
