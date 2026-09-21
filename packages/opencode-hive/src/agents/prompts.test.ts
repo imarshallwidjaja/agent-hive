@@ -2101,6 +2101,12 @@ describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
     expect(HIVE_BUILDER_PROMPT).toContain('branch');
   });
 
+  it('requires human-readable ad-hoc worktree branch identifiers', () => {
+    expect(HIVE_BUILDER_PROMPT).toContain('concise kebab-case `runId` derived from the lane goal');
+    expect(HIVE_BUILDER_PROMPT).toContain('becomes the Git branch suffix');
+    expect(QUEEN_BEE_PROMPT).toContain('concise kebab-case `runId` derived from the lane goal');
+  });
+
   it('prefers squash merges while allowing explicit normal merges', () => {
     expect(HIVE_BUILDER_PROMPT).toContain('Prefer squash merges');
     expect(HIVE_BUILDER_PROMPT).toContain('explicit normal merge');
