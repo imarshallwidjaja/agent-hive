@@ -178,7 +178,8 @@ export class BackgroundJobService {
   markTerminal(identifier: string, runtimeState: 'completed' | 'error' | 'cancelled', patch: RuntimeStatePatch = {}): BackgroundJobRecord {
     return this.updateBoard((board) => {
       const record = this.findRecord(board, identifier);
-      if (isTerminalRuntimeState(record.runtimeState) && record.runtimeState !== runtimeState) return record;
+      const wasTerminal = isTerminalRuntimeState(record.runtimeState);
+      if (wasTerminal && record.runtimeState !== runtimeState) return record;
       let changed = false;
 
       changed = this.applyIfChanged(record, 'runtimeState', runtimeState) || changed;
@@ -201,7 +202,7 @@ export class BackgroundJobService {
             delete record.lastStatusError;
             changed = true;
           }
-        } else if (record.lastStatusError === undefined) {
+        } else if (!wasTerminal || record.lastStatusError === undefined) {
           changed = this.applyIfChanged(record, 'lastStatusError', patch.lastStatusError) || changed;
         }
       }

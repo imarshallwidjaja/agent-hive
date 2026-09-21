@@ -4,6 +4,7 @@ import type {
   BackgroundJobService,
   SessionInfo,
 } from 'hive-core';
+import { isBackgroundJobArchived } from 'hive-core';
 import {
   parseTaskCompletionNotification,
   parseTaskLifecycleEvent,
@@ -39,6 +40,10 @@ export interface BackgroundJobAdapterOptions {
   parseLifecycleEvent?: (input: unknown, output: unknown, context?: TaskLifecycleContext) => ParsedTaskLifecycleEvent | undefined;
   warn?: (message: string) => void;
 }
+
+type SessionLifecycleObservation =
+  | { kind: 'idle'; sessionId: string }
+  | { kind: 'error'; sessionId: string; runtimeState: 'error' | 'cancelled'; diagnostic: string };
 
 export function classifyRuntimeEpochStaleJobs(input: {
   service: BackgroundJobService;
@@ -160,10 +165,18 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
         return;
       }
 
-      const sessionID = extractIdleSessionId(input);
-      if (sessionID) {
-        options.service.markPromptAcknowledgedForSession(sessionID);
+      const observation = extractSessionLifecycleObservation(input);
+      if (!observation) {
+        return;
       }
+      if (observation.kind === 'idle') {
+        try {
+          options.service.markPromptAcknowledgedForSession(observation.sessionId);
+        } catch (error) {
+          warn(`[hive:background] failed to acknowledge parent prompt for ${observation.sessionId}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+      observeSessionLifecycle(observation);
     },
   };
 
@@ -303,6 +316,33 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
     }
   }
 
+  function observeSessionLifecycle(observation: SessionLifecycleObservation): void {
+    try {
+      const history = options.service
+        .listScoped({ projectRoot: options.projectRoot }, { includeArchived: true })
+        .filter(job => job.sessionId === observation.sessionId);
+      const currentJobs = history.filter(job =>
+        !isBackgroundJobArchived(job) && !isTerminalRuntimeState(job.runtimeState));
+      if (currentJobs.length === 0) return;
+      if (history.length > 1) {
+        markAmbiguousObservation(history, observation.sessionId, `session ${observation.kind} event`);
+        return;
+      }
+
+      const job = currentJobs[0]!;
+      if (observation.kind === 'idle') {
+        options.service.updateRuntimeState(job.alias, 'unknown', { statusUncertain: true });
+      } else {
+        options.service.markTerminal(job.alias, observation.runtimeState, {
+          statusUncertain: false,
+          lastStatusError: observation.diagnostic,
+        });
+      }
+    } catch (error) {
+      warn(`[hive:background] failed to observe session ${observation.kind} for ${observation.sessionId}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   function findNativeJobs(taskId: string, parentSessionId: string, callId?: string): BackgroundJobRecord[] {
     return options.service
       .listScoped({ projectRoot: options.projectRoot, parentSessionId }, { includeArchived: true })
@@ -315,7 +355,7 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
     const diagnostic = `Ambiguous ${source} for reused native child '${taskId}'. Preserved prior terminal outcomes; inspect hive_task_trace({ task_id: ${JSON.stringify(taskId)} }) and use an exact board alias (${aliases}).`;
     let succeeded = true;
     for (const job of jobs) {
-      if (!isTerminalRuntimeState(job.runtimeState)) {
+      if (!isBackgroundJobArchived(job) && !isTerminalRuntimeState(job.runtimeState)) {
         try {
           options.service.updateRuntimeState(job.alias, 'unknown', {
             statusUncertain: true,
@@ -338,20 +378,59 @@ function toolCallKey(sessionID: string, callID: string): string {
   return JSON.stringify([sessionID, callID]);
 }
 
-function extractIdleSessionId(input: unknown): string | undefined {
+function extractSessionLifecycleObservation(input: unknown): SessionLifecycleObservation | undefined {
   if (!input || typeof input !== 'object') {
     return undefined;
   }
 
-  const event = (input as { event?: { type?: string; properties?: { sessionID?: string; sessionId?: string } } }).event;
-  if (event?.type !== 'session.idle' && event?.type !== 'session.status') {
+  const event = (input as { event?: unknown }).event;
+  if (!event || typeof event !== 'object') {
     return undefined;
   }
-  if (event.type === 'session.status' && (event.properties as { status?: string } | undefined)?.status !== 'idle') {
+  const { type, properties } = event as { type?: unknown; properties?: unknown };
+  if (!properties || typeof properties !== 'object') {
+    return undefined;
+  }
+  const record = properties as Record<string, unknown>;
+  const sessionId = typeof record.sessionID === 'string'
+    ? record.sessionID
+    : typeof record.sessionId === 'string' ? record.sessionId : undefined;
+  if (!sessionId) return undefined;
+
+  if (type === 'session.idle') {
+    return { kind: 'idle', sessionId };
+  }
+  if (type === 'session.status') {
+    const status = record.status;
+    const statusType = status && typeof status === 'object'
+      ? (status as { type?: unknown }).type
+      : status;
+    return statusType === 'idle' ? { kind: 'idle', sessionId } : undefined;
+  }
+  if (type !== 'session.error') {
     return undefined;
   }
 
-  return event.properties?.sessionID ?? event.properties?.sessionId;
+  const error = record.error;
+  if (!error || typeof error !== 'object') return undefined;
+  const errorRecord = error as Record<string, unknown>;
+  const name = typeof errorRecord.name === 'string' && errorRecord.name.trim()
+    ? errorRecord.name.trim()
+    : 'SessionError';
+  const data = errorRecord.data && typeof errorRecord.data === 'object'
+    ? errorRecord.data as Record<string, unknown>
+    : undefined;
+  const message = typeof data?.message === 'string'
+    ? data.message
+    : typeof errorRecord.message === 'string' ? errorRecord.message : undefined;
+  const diagnostic = message?.trim() ? `${name}: ${singleLine(message)}` : name;
+
+  return {
+    kind: 'error',
+    sessionId,
+    runtimeState: name === 'MessageAbortedError' ? 'cancelled' : 'error',
+    diagnostic,
+  };
 }
 
 function findTargetUserMessage(messages: ReplayMessageEntry[]): ReplayMessageEntry | undefined {

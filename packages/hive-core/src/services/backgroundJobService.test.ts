@@ -257,6 +257,25 @@ describe('BackgroundJobService', () => {
     expect(enriched).toMatchObject({ resultSummary: 'worker failed', lastStatusError: 'provider disconnected' });
   });
 
+  it('replaces a preterminal diagnostic with the first terminal error', () => {
+    registerJob(service);
+    service.updateRuntimeState('task-1', 'unknown', {
+      statusUncertain: true,
+      lastStatusError: 'transient status miss',
+    });
+
+    const terminal = service.markTerminal('task-1', 'error', {
+      statusUncertain: false,
+      lastStatusError: 'provider disconnected',
+    });
+
+    expect(terminal).toMatchObject({
+      runtimeState: 'error',
+      statusUncertain: false,
+      lastStatusError: 'provider disconnected',
+    });
+  });
+
   it('clears explicitly replaced terminal diagnostics', () => {
     registerJob(service);
     service.updateRuntimeState('task-1', 'unknown', {
