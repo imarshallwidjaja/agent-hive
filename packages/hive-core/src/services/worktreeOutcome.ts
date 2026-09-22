@@ -29,6 +29,7 @@ export type WorktreeReasonCode =
   | 'SOURCE_BRANCH_MISSING'
   | 'TARGET_MISMATCH'
   | 'TARGET_DIRTY'
+  | 'TARGET_RECONCILIATION_REQUIRED'
   | 'GIT_OPERATION_IN_PROGRESS'
   | 'NO_TRACKED_CHANGES'
   | 'MERGE_CONFLICT_ABORTED'
@@ -42,6 +43,7 @@ export type WorktreeReasonCode =
 export type WorktreeRecoveryAction =
   | 'correct_arguments'
   | 'clean_target'
+  | 'reconcile_target'
   | 'resolve_conflicts'
   | 'inspect_state'
   | 'retry_same_operation'
@@ -139,6 +141,7 @@ const WORKTREE_OUTCOME_TABLE: Record<WorktreeReasonCode, WorktreeOutcomeRule> = 
   SOURCE_BRANCH_MISSING: { phase: 'preflight', mutation: 'none', retryable: false, action: 'inspect_state' },
   TARGET_MISMATCH: { phase: 'preflight', mutation: 'none', retryable: false, action: 'inspect_state' },
   TARGET_DIRTY: { phase: 'preflight', mutation: 'none', retryable: true, action: 'clean_target' },
+  TARGET_RECONCILIATION_REQUIRED: { phase: 'preflight', mutation: 'none', retryable: false, action: 'reconcile_target' },
   GIT_OPERATION_IN_PROGRESS: { phase: 'preflight', mutation: 'none', retryable: false, action: 'inspect_state' },
   NO_TRACKED_CHANGES: { phase: 'integration', mutation: 'none', retryable: false, action: 'none' },
   MERGE_CONFLICT_ABORTED: { phase: 'integration', mutation: 'none', retryable: true, action: 'retry_same_operation' },

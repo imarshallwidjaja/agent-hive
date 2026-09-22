@@ -940,6 +940,11 @@ describe('Hive (Hybrid) prompt', () => {
       expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('Reconciliation uses a fresh worker session in the same clean, registered worktree');
       expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain("either set `status: 'blocked'` with a structured blocker");
       expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain("keep `status: 'in_progress'` with pending-integration detail in `summary` or `report` and no blocker");
+      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('A destination may retain disjoint untracked or ignored files');
+      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('TARGET_RECONCILIATION_REQUIRED with reconcile_target');
+      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('without deleting Hive state, dependencies, build output, or user files');
+      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('without relying on Git merge flags');
+      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('incoming-path collision state still blocks merge');
       expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('explicit operator request to continue specific existing uncommitted changes');
       expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('A dirty checkout alone does not justify direct checkout');
     });
@@ -1740,6 +1745,16 @@ describe('README.md documentation', () => {
   const philosophyContent = readFileSync(PHILOSOPHY_PATH, 'utf-8');
   const AGENTS_PATH = path.resolve(import.meta.dir, '..', '..', '..', '..', 'AGENTS.md');
   const agentsContent = readFileSync(AGENTS_PATH, 'utf-8');
+
+  it('documents the target eligibility contract consistently', () => {
+    for (const content of [operatorGuideContent, hiveToolsContent, agentsContent]) {
+      expect(content).toContain('Disjoint untracked or ignored destination files');
+      expect(content).toContain('TARGET_RECONCILIATION_REQUIRED');
+      expect(content).toContain('reconcile_target');
+      expect(content).toContain('Incoming path collisions always block');
+      expect(content).toMatch(/without relying on Git merge flags|Git merge flags are not the protection boundary/);
+    }
+  });
 
   it('keeps removed assignment-artifact authority out of active prompts and docs', () => {
     for (const content of [

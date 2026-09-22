@@ -665,7 +665,7 @@ describe("AdhocWorktreeService.merge", () => {
     expect((await fixture.repoGit.status()).isClean()).toBe(true);
   });
 
-  it("classifies a dirty target as TARGET_DIRTY without mutating anything", async () => {
+  it("preserves a disjoint untracked target file during integration", async () => {
     const fixture = await createFixture();
     const created = await fixture.service.create({ runId: "dirty-target-classification" });
     await fs.writeFile(path.join(created.path, "adhoc-file.txt"), "content\n", "utf-8");
@@ -678,19 +678,27 @@ describe("AdhocWorktreeService.merge", () => {
 
     const result = await fixture.service.merge(created.runId, "squash", mergeMessage);
 
-    expect(result).toMatchObject({
-      success: false,
-      merged: false,
-      reasonCode: "TARGET_DIRTY",
-      phase: "preflight",
-      mutation: "none",
-      retryable: true,
-      action: "clean_target",
-      filesChanged: [],
-      conflicts: [],
-    });
-    expect((await fixture.repoGit.revparse(["HEAD"])).trim()).toBe(beforeHead);
+    expect(result).toMatchObject({ success: true, merged: true, filesChanged: ['adhoc-file.txt'] });
+    expect((await fixture.repoGit.revparse(["HEAD"])).trim()).not.toBe(beforeHead);
     expect(await fs.readFile(dirtyPath, "utf-8")).toBe("untracked user content\n");
+  });
+
+  it('rejects an untracked directory descendant collision without mutation', async () => {
+    const fixture = await createFixture();
+    const created = await fixture.service.create({ runId: 'untracked-descendant-collision' });
+    await fs.writeFile(path.join(created.path, 'generated'), 'task file\n', 'utf-8');
+    await commitAdhocChanges(fixture.service, created.runId, testCommitMessage('feat: add generated file'));
+    const targetPath = path.join(fixture.repoPath, 'generated', 'user-note.txt');
+    await fs.mkdir(path.dirname(targetPath), { recursive: true });
+    await fs.writeFile(targetPath, 'user content\n', 'utf-8');
+    const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
+
+    const result = await fixture.service.merge(created.runId, 'squash', mergeMessage);
+
+    expect(result).toMatchObject({ success: false, reasonCode: 'TARGET_DIRTY', mutation: 'none' });
+    expect(result.error).toMatch(/untracked path.*generated\/user-note\.txt.*collides/i);
+    expect((await fixture.repoGit.revparse(['HEAD'])).trim()).toBe(beforeHead);
+    expect(await fs.readFile(targetPath, 'utf-8')).toBe('user content\n');
   });
 
   it("classifies an active Git operation as GIT_OPERATION_IN_PROGRESS", async () => {
@@ -1007,7 +1015,7 @@ describe("AdhocWorktreeService.merge", () => {
         get(target, key) {
           if (key !== 'raw') return Reflect.get(target, key);
           return async (args: string[]) => {
-            if (args[0] !== 'cherry-pick') return target.raw(args);
+            if (!args.includes('cherry-pick')) return target.raw(args);
             cherryPicks += 1;
             try {
               return await target.raw(args);
@@ -1062,7 +1070,7 @@ describe("AdhocWorktreeService.merge", () => {
         get(target, key) {
           if (key !== 'raw') return Reflect.get(target, key);
           return async (args: string[]) => {
-            if (args[0] === 'cherry-pick') {
+            if (args.includes('cherry-pick')) {
               await target.raw(['update-ref', 'refs/heads/main', externalHead]);
               throw new Error('simulated cherry-pick failure after external movement');
             }
@@ -1406,9 +1414,11 @@ describe("AdhocWorktreeService.merge", () => {
     const cleanRun = await fixture.service.create({ runId: 'invariant-clean' });
     await fs.writeFile(path.join(cleanRun.path, 'f.txt'), 'f\n', 'utf-8');
     await commitAdhocChanges(fixture.service, cleanRun.runId, testCommitMessage('feat: ad-hoc change'));
-    await fs.writeFile(path.join(fixture.repoPath, 'dirty.txt'), 'dirty\n', 'utf-8');
+    const trackedPath = path.join(fixture.repoPath, 'tracked.txt');
+    const trackedContent = await fs.readFile(trackedPath, 'utf-8');
+    await fs.writeFile(trackedPath, 'dirty\n', 'utf-8');
     responses.push(await fixture.service.merge(cleanRun.runId, 'squash', mergeMessage));
-    await fs.rm(path.join(fixture.repoPath, 'dirty.txt'), { force: true });
+    await fs.writeFile(trackedPath, trackedContent, 'utf-8');
 
     responses.push(await fixture.service.merge(cleanRun.runId, 'rebase', 'feat: with message\n\nBody.'));
     responses.push(await fixture.service.merge('missing-run-id', 'squash', mergeMessage));
@@ -1840,8 +1850,8 @@ describe("AdhocWorktreeService composite merge", () => {
     await fs.writeFile(path.join(created.repos!.api.path, "api-new.txt"), "a\n", "utf-8");
     await commitAdhocChanges(fixture.service, created.runId, testCommitMessage('feat: api change only'));
 
-    // Dirty the api source repo
-    await fs.writeFile(path.join(fixture.repos[0].path, "dirty.txt"), "dirty\n", "utf-8");
+    // Dirty a tracked file in the api source repo.
+    await fs.writeFile(path.join(fixture.repos[0].path, "tracked.txt"), "dirty\n", "utf-8");
 
     const result = await fixture.service.merge(created.runId);
 
@@ -1849,6 +1859,62 @@ describe("AdhocWorktreeService composite merge", () => {
     expect(result.merged).toBe(false);
     expect(result.error).toMatch(/api/);
     expect(result.error?.toLowerCase()).toMatch(/dirty|uncommitted/);
+  });
+
+  it('allows disjoint untracked files across composite ad-hoc targets', async () => {
+    const fixture = await createCompositeFixture();
+    const created = await fixture.service.create({
+      runId: 'merge-composite-disjoint-untracked',
+      repoIds: ['api', 'web'],
+    });
+    await fs.writeFile(path.join(created.repos!.api.path, 'api-new.txt'), 'a\n', 'utf-8');
+    await fs.writeFile(path.join(created.repos!.web.path, 'web-new.txt'), 'w\n', 'utf-8');
+    await commitAdhocChanges(fixture.service, created.runId, testCommitMessage('feat: add composite changes'));
+    const apiNote = path.join(fixture.repos[0].path, 'api-note.txt');
+    const webNote = path.join(fixture.repos[1].path, 'web-note.txt');
+    await fs.writeFile(apiNote, 'api user content\n', 'utf-8');
+    await fs.writeFile(webNote, 'web user content\n', 'utf-8');
+
+    const result = await fixture.service.merge(created.runId, 'squash', mergeMessage);
+
+    expect(result).toMatchObject({ success: true, merged: true });
+    expect(await fs.readFile(apiNote, 'utf-8')).toBe('api user content\n');
+    expect(await fs.readFile(webNote, 'utf-8')).toBe('web user content\n');
+  });
+
+  it('requires reconciliation for unsafe composite topology with local data before any mutation', async () => {
+    const fixture = await createCompositeFixture();
+    const created = await fixture.service.create({
+      runId: 'merge-composite-divergent-dirty',
+      repoIds: ['api', 'web'],
+    });
+    await fs.writeFile(path.join(created.repos!.api.path, 'api-new.txt'), 'api source\n', 'utf-8');
+    await fs.writeFile(path.join(created.repos!.web.path, 'web-new.txt'), 'web source\n', 'utf-8');
+    await commitAdhocChanges(fixture.service, created.runId, testCommitMessage('feat: add composite source changes'));
+    await fs.writeFile(path.join(fixture.repos[1].path, 'web-target.txt'), 'target change\n', 'utf-8');
+    await fixture.webGit.add('-A');
+    await fixture.webGit.commit(testCommitMessage('feat: advance web target'));
+    const localPath = path.join(fixture.repos[1].path, 'web-local.txt');
+    await fs.writeFile(localPath, 'local content\n', 'utf-8');
+    const beforeApi = (await fixture.apiGit.revparse(['HEAD'])).trim();
+    const beforeWeb = (await fixture.webGit.revparse(['HEAD'])).trim();
+
+    const result = await fixture.service.merge(created.runId, 'squash', mergeMessage);
+
+    expect(result).toMatchObject({
+      success: false,
+      reasonCode: 'TARGET_RECONCILIATION_REQUIRED',
+      phase: 'preflight',
+      mutation: 'none',
+      retryable: false,
+      action: 'reconcile_target',
+      partial: false,
+    });
+    expect(result.error).toMatch(/web.*reconcile the pinned target/i);
+    expect((await fixture.apiGit.revparse(['HEAD'])).trim()).toBe(beforeApi);
+    expect((await fixture.webGit.revparse(['HEAD'])).trim()).toBe(beforeWeb);
+    expect(await pathExists(path.join(fixture.repos[0].path, 'api-new.txt'))).toBe(false);
+    expect(await fs.readFile(localPath, 'utf-8')).toBe('local content\n');
   });
 
   it('rolls back a later repo after its second cherry-pick fails and reports only the earlier repo as partial progress', async () => {
@@ -1902,7 +1968,7 @@ describe("AdhocWorktreeService composite merge", () => {
     });
     await fs.writeFile(path.join(created.repos!.api.path, "api-new.txt"), "a\n", "utf-8");
     await commitAdhocChanges(fixture.service, created.runId, testCommitMessage('feat: api change only'));
-    await fs.writeFile(path.join(fixture.repos[0].path, "dirty.txt"), "dirty\n", "utf-8");
+    await fs.writeFile(path.join(fixture.repos[0].path, "tracked.txt"), "dirty\n", "utf-8");
 
     const result = await fixture.service.merge(created.runId, "squash", mergeMessage);
 

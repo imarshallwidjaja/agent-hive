@@ -32,12 +32,13 @@ import {
 import type { WorktreeTargetComparison, WorktreeTargetIdentity } from './worktreeTarget.js';
 import {
   integrateWorktreeRepository,
+  inspectTargetMergeEligibility,
   integrationFailure,
   mergeSuccessClassification,
   readValidatedCommitMessage,
-  resolveGitPath,
   validateSourceCommitMessages,
 } from './worktreeIntegration.js';
+import type { TargetMergeCandidates } from './worktreeIntegration.js';
 import type {
   CleanupStepOutcome,
   WorktreeCleanupOutcome,
@@ -1544,6 +1545,7 @@ export class WorktreeService {
     const repoIds = Object.keys(manifest.repos).sort();
     const trustedById = this.trustedRepositoriesForManifest(manifest);
     const pinnedSourceCommits: Record<string, string> = {};
+    const precomputedCandidates: Record<string, TargetMergeCandidates> = {};
 
     const preflightFailure = (
       repoId: string,
@@ -1597,52 +1599,25 @@ export class WorktreeService {
         return preflightFailure(repoId, 'source worktree has tracked or untracked changes', 'TARGET_DIRTY');
       }
 
-      // Source repo target must be clean
       try {
-        const status = await repoGit.status();
-        const dirty =
-          status.modified.length > 0 ||
-          status.not_added.length > 0 ||
-          status.staged.length > 0 ||
-          status.deleted.length > 0 ||
-          status.created.length > 0 ||
-          status.conflicted.length > 0;
-        if (dirty) {
-          return preflightFailure(repoId, 'target repo has uncommitted (dirty) changes', 'TARGET_DIRTY');
+        const eligibility = await inspectTargetMergeEligibility({
+          targetGit: repoGit,
+          targetRoot: repoRoot,
+          targetCommit: options.expectedTargets[repoId].commit,
+          sourceCommit: pinnedSourceCommits[repoId],
+          strategy,
+          excludedLocalPaths: [repoWtPath, path.join(this.config.hiveDir, '.operation-locks')],
+        });
+        if ('error' in eligibility) return preflightFailure(repoId, eligibility.error, eligibility.reasonCode);
+        precomputedCandidates[repoId] = eligibility;
+        if (eligibility.candidateFiles.length > 0 && strategy !== 'squash') {
+          const currentBranch = (await repoGit.branch()).current;
+          const sourceError = await validateSourceCommitMessages(repoGit, currentBranch, entry.branch);
+          if (sourceError) return preflightFailure(repoId, sourceError, 'INVALID_COMMIT_MESSAGE');
         }
       } catch (e: unknown) {
         const msg = (e as { message?: string }).message ?? 'unable to read status';
         return preflightFailure(repoId, msg, 'GIT_OPERATION_FAILED');
-      }
-
-      // No active merge/rebase/cherry-pick state. Resolve state paths via
-      // `git rev-parse --git-path` so linked worktrees (where .git is a file)
-      // and per-worktree state directories are handled correctly.
-      const stateChecks: Array<{ name: string; label: string }> = [
-        { name: 'MERGE_HEAD', label: 'merge' },
-        { name: 'REBASE_HEAD', label: 'rebase' },
-        { name: 'CHERRY_PICK_HEAD', label: 'cherry-pick' },
-        { name: 'rebase-merge', label: 'rebase' },
-        { name: 'rebase-apply', label: 'rebase' },
-      ];
-      for (const { name, label } of stateChecks) {
-        const statePath = await resolveGitPath(repoGit, repoRoot, name);
-        try {
-          await fs.access(statePath);
-          return preflightFailure(repoId, `active ${label} state in progress`, 'GIT_OPERATION_IN_PROGRESS');
-        } catch {
-          // not present -> ok
-        }
-      }
-
-      const currentBranch = (await repoGit.branch()).current;
-      const targetHead = (await repoGit.revparse(['HEAD'])).trim();
-      const changedFiles = (await repoGit.diff([targetHead, entry.branch, '--name-only'])).trim();
-      if (changedFiles) {
-        if (strategy !== 'squash') {
-          const sourceError = await validateSourceCommitMessages(repoGit, currentBranch, entry.branch);
-          if (sourceError) return preflightFailure(repoId, sourceError, 'INVALID_COMMIT_MESSAGE');
-        }
       }
     }
 
@@ -1671,6 +1646,7 @@ export class WorktreeService {
         sourceCommit: pinnedSourceCommits[repoId],
         expectedTarget: options.expectedTargets[repoId],
         sourceWorktreePath: path.join(this.getCompositeRoot(feature, step, attemptSlot), entry.path),
+        precomputedCandidates: precomputedCandidates[repoId],
         cleanupFn: async () => buildNotRequestedCleanupOutcome(),
       });
       repos[repoId] = {
@@ -1933,6 +1909,7 @@ export class WorktreeService {
     sourceCommit: string;
     expectedTarget: WorktreeTargetIdentity;
     sourceWorktreePath: string;
+    precomputedCandidates?: TargetMergeCandidates;
     cleanupFn: (deleteBranch: boolean) => Promise<WorktreeCleanupOutcome>;
   }): Promise<RepoMergeResult> {
     const result = await integrateWorktreeRepository({
@@ -1942,6 +1919,8 @@ export class WorktreeService {
       sourceCommit: options.sourceCommit,
       expectedTarget: options.expectedTarget,
       sourceDiagnosticPath: options.sourceWorktreePath,
+      excludedLocalPaths: [path.join(this.config.hiveDir, '.operation-locks')],
+      precomputedCandidates: options.precomputedCandidates,
       strategy: options.strategy,
       message: options.message,
       preserveConflicts: options.preserveConflicts,

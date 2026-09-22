@@ -8,6 +8,7 @@ import type { ResolvedRepository } from "../types";
 import { WorktreeService as CoreWorktreeService } from "./worktreeService";
 import type { MergeOptions, MergeResult, WorktreeConfig } from "./worktreeService";
 import { WorktreeLinkageError } from "./worktreeOutcome";
+import { inspectTargetMergeEligibility } from './worktreeIntegration.js';
 import { readWorktreeTargetIdentity } from './worktreeTarget.js';
 
 interface TestFixture {
@@ -178,6 +179,53 @@ async function createCommittedFixture(): Promise<TestFixture> {
   await fixture.repoGit.checkout("main");
 
   return fixture;
+}
+
+async function createDivergentDirectoryRenameFixture(sourcePath: string): Promise<TestFixture> {
+  const fixture = await createFixture();
+  const originalDirectory = path.join(fixture.repoPath, 'original');
+  await fs.mkdir(originalDirectory);
+  await fs.writeFile(path.join(originalDirectory, 'base.txt'), 'base directory content\n', 'utf-8');
+  await fixture.repoGit.add('-A');
+  await fixture.repoGit.commit(testCommitMessage('feat: add original directory'));
+  const sharedCommit = (await fixture.repoGit.revparse(['HEAD'])).trim();
+
+  const worktreeGit = simpleGit(fixture.worktreePath);
+  await worktreeGit.merge([sharedCommit, '--ff-only']);
+  const sourceFile = path.join(fixture.worktreePath, sourcePath);
+  await fs.mkdir(path.dirname(sourceFile), { recursive: true });
+  await fs.writeFile(sourceFile, 'incoming source content\n', 'utf-8');
+  await worktreeGit.add('-A');
+  await worktreeGit.commit(testCommitMessage('feat: add source file before directory rename'));
+
+  await fixture.repoGit.mv('original', 'renamed');
+  await fixture.repoGit.add('-A');
+  await fixture.repoGit.commit(testCommitMessage('refactor: rename target directory'));
+  return fixture;
+}
+
+async function createLateRebaseEligibilityFixture(): Promise<{
+  fixture: TestFixture;
+  beforeHead: string;
+  collisionPath: string;
+}> {
+  const fixture = await createFixture();
+  const worktreeGit = simpleGit(fixture.worktreePath);
+  await fs.writeFile(path.join(fixture.worktreePath, 'first.txt'), 'first\n', 'utf-8');
+  await worktreeGit.add('-A');
+  await worktreeGit.commit(testCommitMessage('feat: add first file'));
+  await fs.mkdir(path.join(fixture.worktreePath, 'nested'));
+  await fs.writeFile(path.join(fixture.worktreePath, 'nested', 'file.txt'), 'task content\n', 'utf-8');
+  await worktreeGit.add('-A');
+  await worktreeGit.commit(testCommitMessage('feat: add nested file'));
+  await fs.appendFile(path.join(fixture.repoPath, '.gitignore'), 'nested/\n', 'utf-8');
+  await fixture.repoGit.add('.gitignore');
+  await fixture.repoGit.commit(testCommitMessage('chore: ignore nested repository'));
+  return {
+    fixture,
+    beforeHead: (await fixture.repoGit.revparse(['HEAD'])).trim(),
+    collisionPath: path.join(fixture.repoPath, 'nested', 'user.txt'),
+  };
 }
 
 async function createNetZeroCommittedFixture(): Promise<TestFixture> {
@@ -536,6 +584,391 @@ describe("WorktreeService merge and commit messages", () => {
     expect(await fs.readFile(untrackedPath, 'utf-8')).toBe('untracked user content\n');
   });
 
+  for (const strategy of ['squash', 'merge', 'rebase'] as const) {
+    it(`preserves disjoint untracked and ignored target files during path-bounded ${strategy}`, async () => {
+      const fixture = await createCommittedFixture();
+      const worktreeGit = simpleGit(fixture.worktreePath);
+      await fs.writeFile(path.join(fixture.worktreePath, 'second-task-change.txt'), 'second task change\n', 'utf-8');
+      await worktreeGit.add('-A');
+      await worktreeGit.commit(testCommitMessage('feat: add second source commit'));
+      const untrackedPath = path.join(fixture.repoPath, 'user\nnote.txt');
+      const untrackedContent = Buffer.from([0, 1, 2, 10, 255]);
+      await fs.writeFile(untrackedPath, untrackedContent);
+      await fs.appendFile(path.join(fixture.repoPath, '.git', 'info', 'exclude'), 'build/\n', 'utf-8');
+      const ignoredPath = path.join(fixture.repoPath, 'build', 'cache.bin');
+      const ignoredContent = Buffer.from([255, 0, 17, 10]);
+      await fs.mkdir(path.dirname(ignoredPath));
+      await fs.writeFile(ignoredPath, ignoredContent);
+
+      const result = await fixture.service.merge(
+        fixture.feature,
+        fixture.task,
+        strategy,
+        strategy === 'rebase' ? undefined : mergeMessage,
+      );
+
+      expect(result).toMatchObject({ success: true, merged: true });
+      expect(await fs.readFile(untrackedPath)).toEqual(untrackedContent);
+      expect(await fs.readFile(ignoredPath)).toEqual(ignoredContent);
+      expect((await fixture.repoGit.raw(['ls-files', '--others', '--exclude-standard', '-z'])).split('\0')).toContain('user\nnote.txt');
+    });
+  }
+
+  it('rejects an untracked collision at a rename destination without mutation', async () => {
+    const fixture = await createFixture();
+    const worktreeGit = simpleGit(fixture.worktreePath);
+    await worktreeGit.mv('tracked.txt', 'renamed.txt');
+    await worktreeGit.commit(testCommitMessage('refactor: rename tracked file'));
+    await fs.writeFile(path.join(fixture.repoPath, 'renamed.txt'), 'user content\n', 'utf-8');
+    await fixture.repoGit.raw(['config', 'status.showUntrackedFiles', 'no']);
+    expect(await fixture.repoGit.raw(['status', '--porcelain=v1'])).toBe('');
+    const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
+
+    const result = await fixture.service.merge(fixture.feature, fixture.task, 'merge', mergeMessage);
+
+    expect(result).toMatchObject({ success: false, reasonCode: 'TARGET_DIRTY', mutation: 'none' });
+    expect(result.error).toMatch(/untracked path.*renamed\.txt.*collides/i);
+    expect((await fixture.repoGit.revparse(['HEAD'])).trim()).toBe(beforeHead);
+    expect(await fs.readFile(path.join(fixture.repoPath, 'renamed.txt'), 'utf-8')).toBe('user content\n');
+  });
+
+  for (const strategy of ['squash', 'merge', 'rebase'] as const) {
+    it(`rejects divergent ${strategy} before a directory rename can overwrite an ignored destination`, async () => {
+      const fixture = await createDivergentDirectoryRenameFixture('original/generated.txt');
+      await fs.appendFile(path.join(fixture.repoPath, '.git', 'info', 'exclude'), 'renamed/generated.txt\n', 'utf-8');
+      const sentinelPath = path.join(fixture.repoPath, 'renamed', 'generated.txt');
+      const sentinel = Buffer.from([0, 255, 10, 99]);
+      await fs.writeFile(sentinelPath, sentinel);
+      const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
+      const beforeStatus = await fixture.repoGit.raw([
+        'status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignored=matching',
+      ]);
+
+      const result = await fixture.service.merge(
+        fixture.feature,
+        fixture.task,
+        strategy,
+        strategy === 'rebase' ? undefined : mergeMessage,
+      );
+
+      expect(result).toMatchObject({
+        success: false,
+        reasonCode: 'TARGET_RECONCILIATION_REQUIRED',
+        mutation: 'none',
+        retryable: false,
+        action: 'reconcile_target',
+      });
+      expect(result.error).toMatch(/pinned target.*source worktree.*fresh source and target pins/i);
+      expect((await fixture.repoGit.revparse(['HEAD'])).trim()).toBe(beforeHead);
+      expect(await fixture.repoGit.raw([
+        'status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignored=matching',
+      ])).toBe(beforeStatus);
+      expect(await fs.readFile(sentinelPath)).toEqual(sentinel);
+    });
+  }
+
+  it('rejects a divergent directory rename without changing an untracked nested repository', async () => {
+    const fixture = await createDivergentDirectoryRenameFixture('original/foreign/incoming.txt');
+    const foreignRoot = path.join(fixture.repoPath, 'renamed', 'foreign');
+    await fs.mkdir(foreignRoot);
+    const foreignGit = simpleGit(foreignRoot);
+    await foreignGit.init();
+    await foreignGit.raw(['config', 'user.email', 'foreign@example.com']);
+    await foreignGit.raw(['config', 'user.name', 'Foreign User']);
+    const foreignFile = path.join(foreignRoot, 'incoming.txt');
+    await fs.writeFile(foreignFile, 'foreign bytes\n', 'utf-8');
+    await foreignGit.add('-A');
+    await foreignGit.commit(testCommitMessage('chore: preserve foreign repository'));
+    const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
+    const foreignHead = (await foreignGit.revparse(['HEAD'])).trim();
+    const foreignStatus = await foreignGit.raw(['status', '--porcelain=v1', '-z']);
+
+    const result = await fixture.service.merge(fixture.feature, fixture.task, 'squash', mergeMessage);
+
+    expect(result).toMatchObject({
+      success: false,
+      reasonCode: 'TARGET_RECONCILIATION_REQUIRED',
+      mutation: 'none',
+      retryable: false,
+      action: 'reconcile_target',
+    });
+    expect((await fixture.repoGit.revparse(['HEAD'])).trim()).toBe(beforeHead);
+    expect((await foreignGit.revparse(['HEAD'])).trim()).toBe(foreignHead);
+    expect(await foreignGit.raw(['status', '--porcelain=v1', '-z'])).toBe(foreignStatus);
+    expect(await fs.readFile(foreignFile, 'utf-8')).toBe('foreign bytes\n');
+  });
+
+  it('requires reconciliation for divergent history with local data hidden by status configuration', async () => {
+    const fixture = await createCommittedFixture();
+    await fs.writeFile(path.join(fixture.repoPath, 'target-only.txt'), 'target change\n', 'utf-8');
+    await fixture.repoGit.add('-A');
+    await fixture.repoGit.commit(testCommitMessage('feat: advance target independently'));
+    await fixture.repoGit.raw(['config', 'status.showUntrackedFiles', 'no']);
+    const localPath = path.join(fixture.repoPath, 'disjoint-local.txt');
+    await fs.writeFile(localPath, 'local content\n', 'utf-8');
+    expect(await fixture.repoGit.raw(['status', '--porcelain=v1'])).toBe('');
+    const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
+
+    const result = await fixture.service.merge(fixture.feature, fixture.task, 'merge', mergeMessage);
+
+    expect(result).toMatchObject({
+      success: false,
+      reasonCode: 'TARGET_RECONCILIATION_REQUIRED',
+      mutation: 'none',
+      retryable: false,
+      action: 'reconcile_target',
+    });
+    expect(result.error).toMatch(/path-bounded integration.*reconcile/i);
+    expect((await fixture.repoGit.revparse(['HEAD'])).trim()).toBe(beforeHead);
+    expect(await fs.readFile(localPath, 'utf-8')).toBe('local content\n');
+  });
+
+  it('preserves standard-layout Hive state when divergent history requires reconciliation', async () => {
+    const fixture = await createCommittedFixture();
+    await fs.writeFile(path.join(fixture.repoPath, 'target-only.txt'), 'target change\n', 'utf-8');
+    await fixture.repoGit.add('-A');
+    await fixture.repoGit.commit(testCommitMessage('feat: advance target with Hive state present'));
+    const hiveStatePath = path.join(fixture.repoPath, '.hive', 'features', 'active', 'context', 'decisions.md');
+    const hiveState = '# Decisions\n\nKeep this local state.\n';
+    await fs.mkdir(path.dirname(hiveStatePath), { recursive: true });
+    await fs.writeFile(hiveStatePath, hiveState, 'utf-8');
+    const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
+
+    const result = await fixture.service.merge(fixture.feature, fixture.task, 'merge', mergeMessage);
+
+    expect(result).toMatchObject({
+      success: false,
+      reasonCode: 'TARGET_RECONCILIATION_REQUIRED',
+      phase: 'preflight',
+      mutation: 'none',
+      retryable: false,
+      action: 'reconcile_target',
+    });
+    expect(result.error).toContain('.hive/features/active/context/decisions.md');
+    expect(result.error).not.toMatch(/clean|delete|remove/i);
+    expect((await fixture.repoGit.revparse(['HEAD'])).trim()).toBe(beforeHead);
+    expect(await fs.readFile(hiveStatePath, 'utf-8')).toBe(hiveState);
+  });
+
+  it('expands root commits and rescans excluded roots with literal pathspecs', async () => {
+    const { repoPath, repoGit } = await createTempRepo();
+    const targetCommit = (await repoGit.revparse(['HEAD'])).trim();
+    await repoGit.raw(['checkout', '--orphan', 'root-source']);
+    await repoGit.raw(['rm', '-rf', '.']);
+    await fs.writeFile(path.join(repoPath, 'root-source.txt'), 'root source\n', 'utf-8');
+    await repoGit.add('-A');
+    await repoGit.commit(testCommitMessage('feat: create unrelated root source'));
+    const sourceCommit = (await repoGit.revparse(['HEAD'])).trim();
+    await repoGit.checkout('main');
+
+    const excludedPath = path.join(repoPath, 'local[1]', 'excluded');
+    await fs.mkdir(excludedPath, { recursive: true });
+    await fs.writeFile(path.join(excludedPath, 'diagnostic.json'), '{}\n', 'utf-8');
+    const preservedPath = path.join(repoPath, 'local[1]', 'preserved.txt');
+    await fs.writeFile(preservedPath, 'preserved\n', 'utf-8');
+
+    const result = await inspectTargetMergeEligibility({
+      targetGit: repoGit,
+      targetRoot: repoPath,
+      targetCommit,
+      sourceCommit,
+      strategy: 'rebase',
+      excludedLocalPaths: [excludedPath],
+    });
+
+    expect(result).toMatchObject({ reasonCode: 'TARGET_RECONCILIATION_REQUIRED' });
+    expect('error' in result && result.error).toContain('local[1]/preserved.txt');
+    expect(await fs.readFile(preservedPath, 'utf-8')).toBe('preserved\n');
+  });
+
+  it('refuses a nonlinear rebase range with local data before the first pick', async () => {
+    const fixture = await createFixture();
+    const worktreeGit = simpleGit(fixture.worktreePath);
+    const sourceBranch = (await worktreeGit.branch()).current;
+    await worktreeGit.checkoutLocalBranch('nonlinear-side');
+    await fs.writeFile(path.join(fixture.worktreePath, 'side.txt'), 'side\n', 'utf-8');
+    await worktreeGit.add('-A');
+    await worktreeGit.commit(testCommitMessage('feat: add side change'));
+    await worktreeGit.checkout(sourceBranch);
+    await fs.writeFile(path.join(fixture.worktreePath, 'main-source.txt'), 'main source\n', 'utf-8');
+    await worktreeGit.add('-A');
+    await worktreeGit.commit(testCommitMessage('feat: add main source change'));
+    await worktreeGit.merge(['nonlinear-side', '--no-ff', '-m', testCommitMessage('merge: combine source history')]);
+    const localPath = path.join(fixture.repoPath, 'local-note.txt');
+    await fs.writeFile(localPath, 'local\n', 'utf-8');
+    const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
+
+    const result = await fixture.service.merge(fixture.feature, fixture.task, 'rebase');
+
+    expect(result).toMatchObject({
+      success: false,
+      reasonCode: 'TARGET_RECONCILIATION_REQUIRED',
+      mutation: 'none',
+      retryable: false,
+      action: 'reconcile_target',
+    });
+    expect((await fixture.repoGit.revparse(['HEAD'])).trim()).toBe(beforeHead);
+    expect(await pathExists(path.join(fixture.repoPath, 'main-source.txt'))).toBe(false);
+    expect(await pathExists(path.join(fixture.repoPath, 'side.txt'))).toBe(false);
+    expect(await fs.readFile(localPath, 'utf-8')).toBe('local\n');
+  });
+
+  it('rejects an untracked file that is an ancestor of an incoming path', async () => {
+    const fixture = await createFixture();
+    await fs.mkdir(path.join(fixture.worktreePath, 'nested'));
+    await fs.writeFile(path.join(fixture.worktreePath, 'nested', 'change.txt'), 'task content\n', 'utf-8');
+    await commitTaskChanges(fixture.service, fixture.feature, fixture.task, testCommitMessage('feat: add nested change'));
+    await fs.writeFile(path.join(fixture.repoPath, 'nested'), 'user content\n', 'utf-8');
+    const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
+
+    const result = await fixture.service.merge(fixture.feature, fixture.task, 'squash', mergeMessage);
+
+    expect(result).toMatchObject({ success: false, reasonCode: 'TARGET_DIRTY', mutation: 'none' });
+    expect(result.error).toMatch(/untracked path.*nested.*collides/i);
+    expect((await fixture.repoGit.revparse(['HEAD'])).trim()).toBe(beforeHead);
+    expect(await fs.readFile(path.join(fixture.repoPath, 'nested'), 'utf-8')).toBe('user content\n');
+  });
+
+  for (const strategy of ['squash', 'merge', 'rebase'] as const) {
+    it(`rejects an exact ignored-file collision during ${strategy} without mutation`, async () => {
+      const fixture = await createFixture();
+      await fs.appendFile(path.join(fixture.repoPath, '.gitignore'), 'build/\n', 'utf-8');
+      await fixture.repoGit.add('.gitignore');
+      await fixture.repoGit.commit(testCommitMessage('chore: ignore build output'));
+      const targetCommit = (await fixture.repoGit.revparse(['HEAD'])).trim();
+      const worktreeGit = simpleGit(fixture.worktreePath);
+      await worktreeGit.merge([targetCommit, '--ff-only']);
+      await fs.mkdir(path.join(fixture.worktreePath, 'build'));
+      await fs.writeFile(path.join(fixture.worktreePath, 'build', 'output.txt'), 'task content\n', 'utf-8');
+      await worktreeGit.add(['-f', 'build/output.txt']);
+      await worktreeGit.commit(testCommitMessage('feat: add build output'));
+      await fs.mkdir(path.join(fixture.repoPath, 'build'), { recursive: true });
+      await fs.writeFile(path.join(fixture.repoPath, 'build', 'output.txt'), 'user content\n', 'utf-8');
+      const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
+
+      const result = await fixture.service.merge(
+        fixture.feature,
+        fixture.task,
+        strategy,
+        strategy === 'rebase' ? undefined : mergeMessage,
+      );
+
+      expect(result).toMatchObject({ success: false, reasonCode: 'TARGET_DIRTY', mutation: 'none' });
+      expect(result.error).toMatch(/ignored path.*build\/output\.txt.*collides/i);
+      expect((await fixture.repoGit.revparse(['HEAD'])).trim()).toBe(beforeHead);
+      expect(await fs.readFile(path.join(fixture.repoPath, 'build', 'output.txt'), 'utf-8')).toBe('user content\n');
+    });
+  }
+
+  for (const strategy of ['squash', 'merge', 'rebase'] as const) {
+    it(`rejects an ignored nested repository directory collision during ${strategy}`, async () => {
+      const fixture = await createFixture();
+      await fs.appendFile(path.join(fixture.repoPath, '.gitignore'), 'nested/\n', 'utf-8');
+      await fixture.repoGit.add('.gitignore');
+      await fixture.repoGit.commit(testCommitMessage('chore: ignore nested repository'));
+      const targetCommit = (await fixture.repoGit.revparse(['HEAD'])).trim();
+      const worktreeGit = simpleGit(fixture.worktreePath);
+      await worktreeGit.merge([targetCommit, '--ff-only']);
+      await fs.mkdir(path.join(fixture.worktreePath, 'nested'));
+      await fs.writeFile(path.join(fixture.worktreePath, 'nested', 'file.txt'), 'task content\n', 'utf-8');
+      await worktreeGit.add(['-f', 'nested/file.txt']);
+      await worktreeGit.commit(testCommitMessage('feat: add nested file'));
+      const nestedPath = path.join(fixture.repoPath, 'nested');
+      await fs.mkdir(nestedPath);
+      await simpleGit(nestedPath).init();
+      const ignoredPath = path.join(nestedPath, 'user.txt');
+      await fs.writeFile(ignoredPath, 'user content\n', 'utf-8');
+      const ignoredListing = await fixture.repoGit.raw([
+        'ls-files', '--others', '--ignored', '--exclude-standard', '-z', '--', 'nested', 'nested/file.txt',
+      ]);
+      expect(ignoredListing.split('\0')).toContain('nested/');
+      const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
+
+      const result = await fixture.service.merge(
+        fixture.feature,
+        fixture.task,
+        strategy,
+        strategy === 'rebase' ? undefined : mergeMessage,
+      );
+
+      expect(result).toMatchObject({ success: false, reasonCode: 'TARGET_DIRTY', mutation: 'none' });
+      expect(result.error).toMatch(/ignored path.*nested\/.*collides/i);
+      expect((await fixture.repoGit.revparse(['HEAD'])).trim()).toBe(beforeHead);
+      expect(await fs.readFile(ignoredPath, 'utf-8')).toBe('user content\n');
+    });
+  }
+
+  for (const strategy of ['squash', 'merge', 'rebase'] as const) {
+    it(`rejects an untracked nested repository collision during ${strategy} without changing the foreign worktree`, async () => {
+      const fixture = await createFixture();
+      await fs.mkdir(path.join(fixture.worktreePath, 'urepo'));
+      await fs.writeFile(path.join(fixture.worktreePath, 'urepo', 'file.txt'), 'task content\n', 'utf-8');
+      await commitTaskChanges(fixture.service, fixture.feature, fixture.task, testCommitMessage('feat: add nested repository file'));
+      const nestedPath = path.join(fixture.repoPath, 'urepo');
+      await fs.mkdir(nestedPath);
+      const nestedGit = simpleGit(nestedPath);
+      await nestedGit.init();
+      await nestedGit.raw(['config', 'user.email', 'foreign@example.com']);
+      await nestedGit.raw(['config', 'user.name', 'Foreign User']);
+      const foreignPath = path.join(nestedPath, 'file.txt');
+      await fs.writeFile(foreignPath, 'foreign content\n', 'utf-8');
+      await nestedGit.add('file.txt');
+      await nestedGit.commit(testCommitMessage('chore: preserve foreign content'));
+      const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
+      const foreignHead = (await nestedGit.revparse(['HEAD'])).trim();
+      const foreignStatus = await nestedGit.raw(['status', '--porcelain=v1', '-z']);
+
+      const result = await fixture.service.merge(
+        fixture.feature,
+        fixture.task,
+        strategy,
+        strategy === 'rebase' ? undefined : mergeMessage,
+      );
+
+      expect(result).toMatchObject({ success: false, reasonCode: 'TARGET_DIRTY', mutation: 'none' });
+      expect(result.error).toMatch(/untracked path.*urepo\/.*collides/i);
+      expect((await fixture.repoGit.revparse(['HEAD'])).trim()).toBe(beforeHead);
+      expect((await nestedGit.revparse(['HEAD'])).trim()).toBe(foreignHead);
+      expect(await nestedGit.raw(['status', '--porcelain=v1', '-z'])).toBe(foreignStatus);
+      expect(await fs.readFile(foreignPath, 'utf-8')).toBe('foreign content\n');
+    });
+  }
+
+  it('revalidates target path collisions immediately before mutation', async () => {
+    const fixture = await createCommittedFixture();
+    const originalGetGit = (fixture.service as any).getGit.bind(fixture.service);
+    const collisionPath = path.join(fixture.repoPath, 'task-change.txt');
+    let pathScans = 0;
+    const gitSpy = spyOn(fixture.service as any, 'getGit').mockImplementation((cwd?: string) => {
+      const git = originalGetGit(cwd);
+      if (cwd !== undefined) return git;
+      return new Proxy(git, {
+        get(target, key) {
+          if (key !== 'raw') return Reflect.get(target, key);
+          return async (args: string[]) => {
+            if (args.includes('ls-files') && ++pathScans === 3) {
+              await fs.writeFile(collisionPath, 'late user content\n', 'utf-8');
+            }
+            return target.raw(args);
+          };
+        },
+      });
+    });
+    const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
+
+    let result;
+    try {
+      result = await fixture.service.merge(fixture.feature, fixture.task, 'squash', mergeMessage);
+    } finally {
+      gitSpy.mockRestore();
+    }
+
+    expect(result).toMatchObject({ success: false, reasonCode: 'TARGET_DIRTY', mutation: 'none' });
+    expect(result.error).toMatch(/untracked path.*task-change\.txt.*collides/i);
+    expect((await fixture.repoGit.revparse(['HEAD'])).trim()).toBe(beforeHead);
+    expect(await fs.readFile(collisionPath, 'utf-8')).toBe('late user content\n');
+  });
+
   it('restores the target when the second cherry-pick fails', async () => {
     const fixture = await createFixture();
     const worktreeGit = simpleGit(fixture.worktreePath);
@@ -558,6 +991,169 @@ describe("WorktreeService merge and commit messages", () => {
     expect((await fixture.repoGit.revparse(['HEAD'])).trim()).toBe(beforeHead);
     expect((await fixture.repoGit.status()).isClean()).toBe(true);
   });
+
+  it('restores earlier picks when the pre-pick recheck finds an ignored collision', async () => {
+    const { fixture, beforeHead, collisionPath } = await createLateRebaseEligibilityFixture();
+    const originalGetGit = (fixture.service as any).getGit.bind(fixture.service);
+    let cherryPicks = 0;
+    let endpointDiffScans = 0;
+    let commitDiffScans = 0;
+    const gitSpy = spyOn(fixture.service as any, 'getGit').mockImplementation((cwd?: string) => {
+      const git = originalGetGit(cwd);
+      if (cwd !== undefined) return git;
+      return new Proxy(git, {
+        get(target, key) {
+          if (key !== 'raw') return Reflect.get(target, key);
+          return async (args: string[]) => {
+            if (args[0] === 'diff' && args.includes('--name-status')) endpointDiffScans++;
+            if (args[0] === 'diff-tree' && args.includes('--name-status')) commitDiffScans++;
+            const result = await target.raw(args);
+            if (args[0] === 'cherry-pick' && ++cherryPicks === 1) {
+              await fs.mkdir(path.dirname(collisionPath));
+              await simpleGit(path.dirname(collisionPath)).init();
+              await fs.writeFile(collisionPath, 'late user content\n', 'utf-8');
+            }
+            return result;
+          };
+        },
+      });
+    });
+
+    let result;
+    try {
+      result = await fixture.service.merge(fixture.feature, fixture.task, 'rebase');
+    } finally {
+      gitSpy.mockRestore();
+    }
+
+    expect(cherryPicks).toBe(1);
+    expect(endpointDiffScans).toBe(1);
+    expect(commitDiffScans).toBe(2);
+    expect(result).toMatchObject({
+      success: false,
+      reasonCode: 'TARGET_RECONCILIATION_REQUIRED',
+      mutation: 'none',
+      retryable: false,
+      action: 'reconcile_target',
+      conflictState: 'none',
+    });
+    expect((await fixture.repoGit.revparse(['HEAD'])).trim()).toBe(beforeHead);
+    expect(await pathExists(path.join(fixture.repoPath, 'first.txt'))).toBe(false);
+    expect(await fs.readFile(collisionPath, 'utf-8')).toBe('late user content\n');
+    expect((await fixture.repoGit.status()).isClean()).toBe(true);
+    for (const state of ['MERGE_HEAD', 'REBASE_HEAD', 'CHERRY_PICK_HEAD', 'rebase-merge', 'rebase-apply']) {
+      expect(await fixture.repoGit.raw(['rev-parse', '--git-path', state]).then(pathExists)).toBe(false);
+    }
+  });
+
+  it('skips late eligibility rollback when the target moves after the last operation checkpoint', async () => {
+    const { fixture, collisionPath } = await createLateRebaseEligibilityFixture();
+    await fixture.repoGit.checkoutLocalBranch('external-target');
+    await fs.writeFile(path.join(fixture.repoPath, 'external.txt'), 'external\n', 'utf-8');
+    await fixture.repoGit.add('-A');
+    await fixture.repoGit.commit(testCommitMessage('feat: external target move'));
+    const externalHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
+    await fixture.repoGit.checkout('main');
+    const originalGetGit = (fixture.service as any).getGit.bind(fixture.service);
+    let cherryPicks = 0;
+    let operationHead: string | undefined;
+    let targetMoved = false;
+    const gitSpy = spyOn(fixture.service as any, 'getGit').mockImplementation((cwd?: string) => {
+      const git = originalGetGit(cwd);
+      if (cwd !== undefined) return git;
+      return new Proxy(git, {
+        get(target, key) {
+          if (key !== 'raw') return Reflect.get(target, key);
+          return async (args: string[]) => {
+            const moveTarget = args.includes('ls-files') && cherryPicks === 1 && !targetMoved;
+            if (moveTarget) targetMoved = true;
+            const result = await target.raw(args);
+            if (args[0] === 'cherry-pick' && ++cherryPicks === 1) {
+              operationHead = (await target.revparse(['HEAD'])).trim();
+              await fs.mkdir(path.dirname(collisionPath));
+              await simpleGit(path.dirname(collisionPath)).init();
+              await fs.writeFile(collisionPath, 'late user content\n', 'utf-8');
+            }
+            if (moveTarget) await target.raw(['update-ref', 'refs/heads/main', externalHead]);
+            return result;
+          };
+        },
+      });
+    });
+
+    let result;
+    try {
+      result = await fixture.service.merge(fixture.feature, fixture.task, 'rebase');
+    } finally {
+      gitSpy.mockRestore();
+    }
+
+    expect(targetMoved).toBe(true);
+    expect(result).toMatchObject({
+      success: false,
+      reasonCode: 'POST_INTEGRATION_VERIFICATION_FAILED',
+      mutation: 'unknown',
+      expectedTarget: { commit: operationHead },
+      observedTarget: { commit: externalHead },
+    });
+    expect(result.error).toMatch(/protected local data.*nested\/.*rollback was skipped.*checkpoint/i);
+    expect((await fixture.repoGit.revparse(['HEAD'])).trim()).toBe(externalHead);
+    expect(await fs.readFile(collisionPath, 'utf-8')).toBe('late user content\n');
+  });
+
+  for (const resetBehavior of ['fails', 'does not restore HEAD'] as const) {
+    it(`reports ROLLBACK_FAILED when the late eligibility reset ${resetBehavior}`, async () => {
+      const { fixture, beforeHead, collisionPath } = await createLateRebaseEligibilityFixture();
+      const originalGetGit = (fixture.service as any).getGit.bind(fixture.service);
+      let cherryPicks = 0;
+      let operationHead: string | undefined;
+      const gitSpy = spyOn(fixture.service as any, 'getGit').mockImplementation((cwd?: string) => {
+        const git = originalGetGit(cwd);
+        if (cwd !== undefined) return git;
+        return new Proxy(git, {
+          get(target, key) {
+            if (key !== 'raw') return Reflect.get(target, key);
+            return async (args: string[]) => {
+              if (args[0] === 'reset' && args[1] === '--merge') {
+                if (resetBehavior === 'fails') throw new Error('simulated late eligibility reset failure');
+                return '';
+              }
+              const result = await target.raw(args);
+              if (args[0] === 'cherry-pick' && ++cherryPicks === 1) {
+                operationHead = (await target.revparse(['HEAD'])).trim();
+                await fs.mkdir(path.dirname(collisionPath));
+                await simpleGit(path.dirname(collisionPath)).init();
+                await fs.writeFile(collisionPath, 'late user content\n', 'utf-8');
+              }
+              return result;
+            };
+          },
+        });
+      });
+
+      let result;
+      try {
+        result = await fixture.service.merge(fixture.feature, fixture.task, 'rebase');
+      } finally {
+        gitSpy.mockRestore();
+      }
+
+      expect(result).toMatchObject({
+        success: false,
+        reasonCode: 'ROLLBACK_FAILED',
+        mutation: 'unknown',
+        action: 'manual_recovery',
+      });
+      expect(result.error).toMatch(/protected local data.*nested\/.*failed to restore target/i);
+      expect(result.error).toMatch(resetBehavior === 'fails'
+        ? /simulated late eligibility reset failure/
+        : /reset did not restore the original target HEAD/i);
+      expect((await fixture.repoGit.revparse(['HEAD'])).trim()).toBe(operationHead!);
+      expect(operationHead).not.toBe(beforeHead);
+      expect(await fs.readFile(path.join(fixture.repoPath, 'first.txt'), 'utf-8')).toBe('first\n');
+      expect(await fs.readFile(collisionPath, 'utf-8')).toBe('late user content\n');
+    });
+  }
 
   it('returns helper-friendly merge details and preserves branch/worktree by default', async () => {
     const fixture = await createCommittedFixture();
@@ -2126,6 +2722,54 @@ describe("WorktreeService composite merge aggregation", () => {
     expect(result.error).toMatch(/api/);
     // No mutation in web-ui
     expect((await fx.repos['web-ui'].git.revparse(['HEAD'])).trim()).toBe(beforeWeb);
+  });
+
+  it('allows disjoint untracked files across composite feature targets', async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
+    await fx.service.create(fx.feature, fx.task);
+    await commitChangeInRepo(fx, 'api', 'a.txt', 'a\n');
+    await commitChangeInRepo(fx, 'web-ui', 'w.txt', 'w\n');
+    const apiNote = path.join(fx.repos.api.path, 'api-note.txt');
+    const webNote = path.join(fx.repos['web-ui'].path, 'web-note.txt');
+    await fs.writeFile(apiNote, 'api user content\n', 'utf-8');
+    await fs.writeFile(webNote, 'web user content\n', 'utf-8');
+
+    const result = await fx.service.merge(fx.feature, fx.task, 'squash', mergeMessage);
+
+    expect(result).toMatchObject({ success: true, merged: true });
+    expect(await fs.readFile(apiNote, 'utf-8')).toBe('api user content\n');
+    expect(await fs.readFile(webNote, 'utf-8')).toBe('web user content\n');
+  });
+
+  it('propagates reconciliation-required classification from composite preflight', async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
+    await fx.service.create(fx.feature, fx.task);
+    await commitChangeInRepo(fx, 'api', 'api-new.txt', 'api source\n');
+    await commitChangeInRepo(fx, 'web-ui', 'web-new.txt', 'web source\n');
+    await fs.writeFile(path.join(fx.repos['web-ui'].path, 'web-target.txt'), 'target change\n', 'utf-8');
+    await fx.repos['web-ui'].git.add('-A');
+    await fx.repos['web-ui'].git.commit(testCommitMessage('feat: advance web target'));
+    const localPath = path.join(fx.repos['web-ui'].path, 'web-local.txt');
+    await fs.writeFile(localPath, 'local content\n', 'utf-8');
+    const beforeApi = (await fx.repos.api.git.revparse(['HEAD'])).trim();
+    const beforeWeb = (await fx.repos['web-ui'].git.revparse(['HEAD'])).trim();
+
+    const result = await fx.service.merge(fx.feature, fx.task, 'squash', mergeMessage);
+
+    expect(result).toMatchObject({
+      success: false,
+      merged: false,
+      partial: false,
+      reasonCode: 'TARGET_RECONCILIATION_REQUIRED',
+      phase: 'preflight',
+      mutation: 'none',
+      retryable: false,
+      action: 'reconcile_target',
+    });
+    expect(result.error).toMatch(/web-ui.*reconcile the pinned target/i);
+    expect((await fx.repos.api.git.revparse(['HEAD'])).trim()).toBe(beforeApi);
+    expect((await fx.repos['web-ui'].git.revparse(['HEAD'])).trim()).toBe(beforeWeb);
+    expect(await fs.readFile(localPath, 'utf-8')).toBe('local content\n');
   });
 
   it("fails preflight when a source repo has an active merge state and does not mutate any repo", async () => {

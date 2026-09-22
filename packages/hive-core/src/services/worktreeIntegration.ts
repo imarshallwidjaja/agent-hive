@@ -23,6 +23,25 @@ import type { WorktreeTargetIdentity } from './worktreeTarget.js';
 
 type IntegrationStrategy = 'merge' | 'squash' | 'rebase';
 type CleanupMode = WorktreeCleanupOutcome['requested'];
+export type TargetMergeCandidates = Readonly<{
+  targetCommit: string;
+  sourceCommit: string;
+  strategy: IntegrationStrategy;
+  candidateFiles: readonly string[];
+  collisionCandidates: readonly string[];
+}>;
+
+type TargetMergeEligibility =
+  | TargetMergeCandidates
+  | { reasonCode: 'TARGET_DIRTY' | 'TARGET_RECONCILIATION_REQUIRED' | 'GIT_OPERATION_IN_PROGRESS'; error: string };
+
+const gitOperationStates = [
+  { name: 'MERGE_HEAD', label: 'merge' },
+  { name: 'REBASE_HEAD', label: 'rebase' },
+  { name: 'CHERRY_PICK_HEAD', label: 'cherry-pick' },
+  { name: 'rebase-merge', label: 'rebase' },
+  { name: 'rebase-apply', label: 'rebase' },
+] as const;
 
 export interface WorktreeIntegrationResult extends WorktreeRepositoryMergeResult {}
 
@@ -68,7 +87,7 @@ export function mergeSuccessClassification(
   return { phase: 'integration', mutation, retryable: false, action: 'none' };
 }
 
-export async function resolveGitPath(git: SimpleGit, repoRoot: string, name: string): Promise<string> {
+async function resolveGitPath(git: SimpleGit, repoRoot: string, name: string): Promise<string> {
   try {
     const output = (await git.raw(['rev-parse', '--git-path', name])).trim();
     if (!output) return path.join(repoRoot, '.git', name);
@@ -76,6 +95,15 @@ export async function resolveGitPath(git: SimpleGit, repoRoot: string, name: str
   } catch {
     return path.join(repoRoot, '.git', name);
   }
+}
+
+async function activeGitOperationStates(git: SimpleGit, repoRoot: string): Promise<string[]> {
+  const activeStates: string[] = [];
+  for (const { name } of gitOperationStates) {
+    const statePath = await resolveGitPath(git, repoRoot, name);
+    if (await fs.access(statePath).then(() => true).catch(() => false)) activeStates.push(name);
+  }
+  return activeStates;
 }
 
 export async function validateSourceCommitMessages(
@@ -111,6 +139,218 @@ async function observedDeltaFiles(git: SimpleGit, startingHead: string, finalHea
   return output.split('\n').map((line) => line.trim()).filter(Boolean);
 }
 
+function parseChangedPaths(output: string): string[] {
+  const fields = output.split('\0');
+  const paths: string[] = [];
+  for (let index = 0; index < fields.length - 1;) {
+    const status = fields[index++];
+    if (!status) continue;
+    const firstPath = fields[index++];
+    if (firstPath) paths.push(firstPath);
+    if (status.startsWith('R') || status.startsWith('C')) {
+      const secondPath = fields[index++];
+      if (secondPath) paths.push(secondPath);
+    }
+  }
+  return [...new Set(paths)];
+}
+
+async function changedPaths(git: SimpleGit, from: string, to: string): Promise<string[]> {
+  return parseChangedPaths(await git.raw(['diff', '--name-status', '-z', '--find-renames', from, to, '--']));
+}
+
+async function commitChangedPaths(git: SimpleGit, commit: string): Promise<string[]> {
+  return parseChangedPaths(await git.raw([
+    'diff-tree', '--root', '--no-commit-id', '--name-status', '-z', '--find-renames', '-r',
+    '--diff-merges=first-parent', commit, '--',
+  ]));
+}
+
+async function computeTargetMergeCandidates(
+  git: SimpleGit,
+  targetCommit: string,
+  sourceCommit: string,
+  strategy: IntegrationStrategy,
+): Promise<TargetMergeCandidates> {
+  const candidateFiles = Object.freeze(await changedPaths(git, targetCommit, sourceCommit));
+  if (candidateFiles.length === 0 || strategy !== 'rebase') {
+    return Object.freeze({ targetCommit, sourceCommit, strategy, candidateFiles, collisionCandidates: candidateFiles });
+  }
+
+  const commitsOutput = (await git.raw(['rev-list', '--reverse', `${targetCommit}..${sourceCommit}`])).trim();
+  const commits = commitsOutput ? commitsOutput.split('\n').filter(Boolean) : [];
+  const commitPaths = await Promise.all(commits.map(commit => commitChangedPaths(git, commit)));
+  const collisionCandidates = Object.freeze([...new Set([...candidateFiles, ...commitPaths.flat()])]);
+  return Object.freeze({ targetCommit, sourceCommit, strategy, candidateFiles, collisionCandidates });
+}
+
+async function isAncestor(git: SimpleGit, ancestor: string, descendant: string): Promise<boolean> {
+  const mergeBases = await git.raw(['merge-base', '--all', ancestor, descendant]).catch(() => '');
+  return mergeBases.split('\n').some(commit => commit.trim() === ancestor);
+}
+
+async function isPathBoundedTopology(
+  git: SimpleGit,
+  targetCommit: string,
+  sourceCommit: string,
+  strategy: IntegrationStrategy,
+): Promise<boolean> {
+  if (!(await isAncestor(git, targetCommit, sourceCommit))) return false;
+  if (strategy !== 'rebase') return true;
+  const mergeCommit = await git.raw(['rev-list', '--merges', '--max-count=1', `${targetCommit}..${sourceCommit}`]);
+  return mergeCommit.trim().length === 0;
+}
+
+function localDataExclusions(targetRoot: string, excludedLocalPaths: string[]): {
+  relatives: string[];
+  roots: string[];
+} {
+  const excludedRelatives: string[] = [];
+  for (const excludedPath of excludedLocalPaths) {
+    const relative = path.relative(targetRoot, excludedPath).split(path.sep).join('/');
+    if (!relative || relative === '..' || relative.startsWith('../') || path.isAbsolute(relative)) continue;
+    excludedRelatives.push(relative);
+  }
+  const excludedRoots = [...new Set(excludedRelatives.map(relative => relative.split('/')[0]!))];
+  return { relatives: excludedRelatives, roots: excludedRoots };
+}
+
+async function hasLocalUntrackedOrIgnoredData(
+  git: SimpleGit,
+  targetRoot: string,
+  excludedLocalPaths: string[],
+): Promise<string | null> {
+  const exclusions = localDataExclusions(targetRoot, excludedLocalPaths);
+  for (const flags of [[], ['--ignored']] as const) {
+    const collapsed = await git.raw([
+      'ls-files', '--others', ...flags, '--exclude-standard', '--directory', '--no-empty-directory', '-z', '--',
+    ]);
+    const firstPath = collapsed.split('\0').find(pathname =>
+      pathname && !exclusions.roots.some(root => pathname === root || pathname === `${root}/`)
+    );
+    if (firstPath) return firstPath;
+
+    for (const root of exclusions.roots) {
+      const output = await git.raw([
+        '--literal-pathspecs', 'ls-files', '--others', ...flags, '--exclude-standard', '-z', '--', root,
+      ]);
+      const firstPath = output.split('\0').find(pathname => {
+        if (!pathname) return false;
+        const normalized = collisionPath(pathname);
+        return !exclusions.relatives.some(relative => normalized === relative || normalized.startsWith(`${relative}/`));
+      });
+      if (firstPath) return firstPath;
+    }
+  }
+  return null;
+}
+
+function collisionAncestorPathspecs(candidateFiles: readonly string[]): string[] {
+  const pathspecs = new Set<string>();
+  for (const candidate of candidateFiles) {
+    let current = path.posix.dirname(candidate);
+    while (current && current !== '.') {
+      pathspecs.add(current);
+      current = path.posix.dirname(current);
+    }
+  }
+  return [...pathspecs];
+}
+
+function collides(left: string, right: string): boolean {
+  return left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`);
+}
+
+function collisionPath(pathname: string): string {
+  return pathname.endsWith('/') ? pathname.slice(0, -1) : pathname;
+}
+
+export async function inspectTargetMergeEligibility(options: {
+  targetGit: SimpleGit;
+  targetRoot: string;
+  targetCommit: string;
+  topologyTargetCommit?: string;
+  sourceCommit: string;
+  strategy: IntegrationStrategy;
+  excludedLocalPaths?: string[];
+  precomputedCandidates?: TargetMergeCandidates;
+}): Promise<TargetMergeEligibility> {
+  const {
+    targetGit,
+    targetRoot,
+    targetCommit,
+    topologyTargetCommit = targetCommit,
+    sourceCommit,
+    strategy,
+    excludedLocalPaths = [],
+    precomputedCandidates,
+  } = options;
+  for (const { name, label } of gitOperationStates) {
+    const statePath = await resolveGitPath(targetGit, targetRoot, name);
+    if (await fs.access(statePath).then(() => true).catch(() => false)) {
+      return { reasonCode: 'GIT_OPERATION_IN_PROGRESS', error: `active ${label} state in progress` };
+    }
+  }
+
+  const trackedStatus = await targetGit.raw(['status', '--porcelain=v1', '-z', '--untracked-files=no']);
+  if (trackedStatus.length > 0) {
+    return {
+      reasonCode: 'TARGET_DIRTY',
+      error: 'Target repo has dirty tracked/index state: staged, unstaged tracked, or unmerged changes',
+    };
+  }
+
+  if (precomputedCandidates && (
+    precomputedCandidates.targetCommit !== topologyTargetCommit
+    || precomputedCandidates.sourceCommit !== sourceCommit
+    || precomputedCandidates.strategy !== strategy
+  )) {
+    throw new Error('Precomputed merge candidates do not match the immutable integration pins');
+  }
+  const candidates = precomputedCandidates
+    ?? await computeTargetMergeCandidates(targetGit, targetCommit, sourceCommit, strategy);
+  if (candidates.candidateFiles.length === 0) return candidates;
+
+  const pathBounded = await isPathBoundedTopology(targetGit, topologyTargetCommit, sourceCommit, strategy);
+  const localDataPath = pathBounded
+    ? null
+    : await hasLocalUntrackedOrIgnoredData(targetGit, targetRoot, excludedLocalPaths);
+  if (localDataPath) {
+    return {
+      reasonCode: 'TARGET_RECONCILIATION_REQUIRED',
+      error: `Target has protected local data at ${JSON.stringify(localDataPath)}, but the pinned source does not provide a path-bounded integration. Reconcile the pinned target into the source worktree, preserve the local data, and return fresh source and target pins`,
+    };
+  }
+
+  const { collisionCandidates } = candidates;
+  const ancestorPathspecs = collisionAncestorPathspecs(collisionCandidates);
+  const scanPaths = (flags: string[], pathspecs: readonly string[]): Promise<string> => pathspecs.length === 0
+    ? Promise.resolve('')
+    : targetGit.raw(['--literal-pathspecs', 'ls-files', '--others', ...flags, '--exclude-standard', '-z', '--', ...pathspecs]);
+  const [untrackedExact, untrackedAncestors, ignoredExact, ignoredAncestors] = await Promise.all([
+    scanPaths([], collisionCandidates),
+    scanPaths([], ancestorPathspecs),
+    scanPaths(['--ignored'], collisionCandidates),
+    scanPaths(['--ignored'], ancestorPathspecs),
+  ]);
+  for (const [kind, outputs] of [
+    ['untracked', [untrackedExact, untrackedAncestors]],
+    ['ignored', [ignoredExact, ignoredAncestors]],
+  ] as const) {
+    const existingPaths = [...new Set(outputs.flatMap(output => output.split('\0').filter(Boolean)))];
+    const collision = existingPaths.find(existing =>
+      collisionCandidates.some(candidate => collides(collisionPath(existing), candidate))
+    );
+    if (collision) {
+      return {
+        reasonCode: 'TARGET_DIRTY',
+        error: `Target ${kind} path ${JSON.stringify(collision)} collides with the incoming update`,
+      };
+    }
+  }
+  return candidates;
+}
+
 export async function integrateWorktreeRepository(options: {
   targetGit: SimpleGit;
   sourceGit: SimpleGit;
@@ -118,6 +358,8 @@ export async function integrateWorktreeRepository(options: {
   sourceCommit: string;
   expectedTarget: WorktreeTargetIdentity;
   sourceDiagnosticPath: string;
+  excludedLocalPaths?: string[];
+  precomputedCandidates?: TargetMergeCandidates;
   strategy: IntegrationStrategy;
   message: string | undefined;
   preserveConflicts: boolean;
@@ -132,6 +374,8 @@ export async function integrateWorktreeRepository(options: {
     sourceCommit,
     expectedTarget,
     sourceDiagnosticPath,
+    excludedLocalPaths = [],
+    precomputedCandidates,
     strategy,
     message,
     preserveConflicts,
@@ -144,6 +388,11 @@ export async function integrateWorktreeRepository(options: {
   let operationTarget: WorktreeTargetIdentity | undefined;
   let cleanupFailureMutation: WorktreeMutationState | undefined;
   let verificationFailure = false;
+  const eligibilityExcludedLocalPaths = [
+    sourceDiagnosticPath,
+    `${sourceDiagnosticPath}.json`,
+    ...excludedLocalPaths,
+  ];
 
   const targetIdentityFailure = async (
     expectedIdentity: WorktreeTargetIdentity,
@@ -249,30 +498,21 @@ export async function integrateWorktreeRepository(options: {
       return integrationFailure('TARGET_DIRTY', `Source worktree ${sourceDiagnosticPath} has tracked or untracked changes`);
     }
 
-    const stateChecks = [
-      { name: 'MERGE_HEAD', label: 'merge' },
-      { name: 'REBASE_HEAD', label: 'rebase' },
-      { name: 'CHERRY_PICK_HEAD', label: 'cherry-pick' },
-      { name: 'rebase-merge', label: 'rebase' },
-      { name: 'rebase-apply', label: 'rebase' },
-    ];
-    for (const { name, label } of stateChecks) {
-      const statePath = await resolveGitPath(targetGit, targetRoot, name);
-      try {
-        await fs.access(statePath);
-        return integrationFailure('GIT_OPERATION_IN_PROGRESS', `active ${label} state in progress`);
-      } catch {}
-    }
-
-    if (!(await targetGit.status()).isClean()) {
-      return integrationFailure('TARGET_DIRTY', 'Target repo has uncommitted (dirty) changes');
-    }
     startingHead = (await targetGit.revparse(['HEAD'])).trim();
     const initialTargetFailure = await targetIdentityFailure(expectedTarget);
     if (initialTargetFailure) return initialTargetFailure;
     operationTarget = { ...expectedTarget, path: targetRoot };
-    const candidateFiles = (await targetGit.diff([startingHead, sourceCommit, '--name-only']))
-      .split('\n').map((line) => line.trim()).filter(Boolean);
+    const eligibility = await inspectTargetMergeEligibility({
+      targetGit,
+      targetRoot,
+      targetCommit: startingHead,
+      sourceCommit,
+      strategy,
+      excludedLocalPaths: eligibilityExcludedLocalPaths,
+      precomputedCandidates,
+    });
+    if ('error' in eligibility) return integrationFailure(eligibility.reasonCode, eligibility.error);
+    const { candidateFiles } = eligibility;
 
     if (candidateFiles.length === 0) {
       cleanupFailureMutation = 'none';
@@ -313,8 +553,21 @@ export async function integrateWorktreeRepository(options: {
     let createdCommitMessage: string | undefined;
     const immediateTargetFailure = await targetIdentityFailure(operationTarget);
     if (immediateTargetFailure) return immediateTargetFailure;
+    const immediateEligibility = await inspectTargetMergeEligibility({
+      targetGit,
+      targetRoot,
+      targetCommit: operationTarget.commit,
+      topologyTargetCommit: startingHead,
+      sourceCommit,
+      strategy,
+      excludedLocalPaths: eligibilityExcludedLocalPaths,
+      precomputedCandidates: eligibility,
+    });
+    if ('error' in immediateEligibility) {
+      return integrationFailure(immediateEligibility.reasonCode, immediateEligibility.error);
+    }
     if (strategy === 'squash') {
-      await targetGit.raw(['merge', '--squash', sourceCommit]);
+      await targetGit.raw(['merge', '--squash', '--no-overwrite-ignore', sourceCommit]);
       const stagedTargetFailure = await targetIdentityFailure(
         operationTarget,
         'POST_INTEGRATION_VERIFICATION_FAILED',
@@ -353,6 +606,62 @@ export async function integrateWorktreeRepository(options: {
           'unknown',
         );
         if (beforePickFailure) return beforePickFailure;
+        const beforePickEligibility = await inspectTargetMergeEligibility({
+          targetGit,
+          targetRoot,
+          targetCommit: operationTarget.commit,
+          topologyTargetCommit: startingHead,
+          sourceCommit,
+          strategy,
+          excludedLocalPaths: eligibilityExcludedLocalPaths,
+          precomputedCandidates: eligibility,
+        });
+        if ('error' in beforePickEligibility) {
+          if (operationTarget.commit !== startingHead) {
+            const unsafeRollback = await targetIdentityFailure(
+              operationTarget,
+              'POST_INTEGRATION_VERIFICATION_FAILED',
+              'POST_INTEGRATION_VERIFICATION_FAILED',
+              'unknown',
+            );
+            if (unsafeRollback) {
+              return integrationFailure(
+                'POST_INTEGRATION_VERIFICATION_FAILED',
+                `${beforePickEligibility.error}; rollback was skipped because the target no longer matches the last verified operation checkpoint: ${unsafeRollback.error}`,
+                {
+                  mutation: 'unknown',
+                  expectedTarget: operationTarget,
+                  observedTarget: unsafeRollback.observedTarget,
+                },
+              );
+            }
+            let rollbackError: string | undefined;
+            await targetGit.raw(['reset', '--merge', startingHead]).catch((error: unknown) => {
+              rollbackError = (error as { message?: string }).message ?? 'reset --merge failed';
+            });
+            if (!rollbackError && (await targetGit.revparse(['HEAD']).catch(() => '')).trim() !== startingHead) {
+              rollbackError = 'Git reset did not restore the original target HEAD';
+            }
+            if (!rollbackError) {
+              const trackedStatus = await targetGit.raw(['status', '--porcelain=v1', '-z', '--untracked-files=no']);
+              if (trackedStatus.length > 0) rollbackError = 'Git reset did not restore a clean tracked/index state';
+            }
+            if (!rollbackError) {
+              const activeStates = await activeGitOperationStates(targetGit, targetRoot);
+              if (activeStates.length > 0 || (await activeConflictFiles(targetGit)).length > 0) {
+                rollbackError = `Git operation remains active after reset${activeStates.length > 0 ? `: ${activeStates.join(', ')}` : ''}`;
+              }
+            }
+            if (rollbackError) {
+              return integrationFailure(
+                'ROLLBACK_FAILED',
+                `${beforePickEligibility.error}; failed to restore target: ${rollbackError}`,
+                { mutation: 'unknown' },
+              );
+            }
+          }
+          return integrationFailure(beforePickEligibility.reasonCode, beforePickEligibility.error);
+        }
         await targetGit.raw(['cherry-pick', hash]);
         const cherryPickHead = (await targetGit.revparse(['HEAD'])).trim();
         const commitFailure = await recordOperationCommit(operationTarget, cherryPickHead);
@@ -470,11 +779,7 @@ export async function integrateWorktreeRepository(options: {
     }
 
     if (!preserveConflictState && startingHead && !rollbackError) {
-      const activeStates: string[] = [];
-      for (const name of ['MERGE_HEAD', 'REBASE_HEAD', 'CHERRY_PICK_HEAD', 'rebase-merge', 'rebase-apply']) {
-        const statePath = await resolveGitPath(targetGit, targetRoot ?? '', name);
-        if (await fs.access(statePath).then(() => true).catch(() => false)) activeStates.push(name);
-      }
+      const activeStates = await activeGitOperationStates(targetGit, targetRoot ?? '');
       if (activeStates.length > 0 || (await activeConflictFiles(targetGit)).length > 0) {
         rollbackError = `Git operation remains active after abort/reset${activeStates.length > 0 ? `: ${activeStates.join(', ')}` : ''}`;
       }

@@ -65,7 +65,7 @@ Worktree and merge results carry the same recovery classification fields, added 
 | `reasonCode` | Stable uppercase code naming the condition. |
 | `mutation` | Durable target state relative to the operation's starting state: `none`, `applied`, `partial`, `preserved`, or `unknown`. Cleanup itself never changes this value. |
 | `retryable` | True only when the exact same tool call may be repeated after satisfying the reported prerequisite and no durable target mutation occurred from this attempt. |
-| `action` | The conservative recovery step: `correct_arguments`, `clean_target`, `resolve_conflicts`, `inspect_state`, `retry_same_operation`, `cleanup_only`, `start_fresh_run`, `manual_recovery`, or `none`. |
+| `action` | The conservative recovery step: `correct_arguments`, `clean_target`, `reconcile_target`, `resolve_conflicts`, `inspect_state`, `retry_same_operation`, `cleanup_only`, `start_fresh_run`, `manual_recovery`, or `none`. |
 
 | `reasonCode` | `phase` | `mutation` | `retryable` | `action` |
 |------|------|------|------|------|
@@ -81,6 +81,7 @@ Worktree and merge results carry the same recovery classification fields, added 
 | `SOURCE_BRANCH_MISSING` | `preflight` | `none` | `false` | `inspect_state` |
 | `TARGET_MISMATCH` | `preflight` | `none` | `false` | `inspect_state` |
 | `TARGET_DIRTY` | `preflight` | `none` | `true` | `clean_target` |
+| `TARGET_RECONCILIATION_REQUIRED` | `preflight` | `none` | `false` | `reconcile_target` |
 | `GIT_OPERATION_IN_PROGRESS` | `preflight` | `none` | `false` | `inspect_state` |
 | `NO_TRACKED_CHANGES` | `integration` | `none` | `false` | `none` |
 | `MERGE_CONFLICT_ABORTED` | `integration` | `none` | `true` | `retry_same_operation` |
@@ -92,6 +93,7 @@ Worktree and merge results carry the same recovery classification fields, added 
 | `COMPOSITE_PARTIAL` | `integration` | `partial` | `false` | `inspect_state` |
 
 - `NO_TRACKED_CHANGES` keeps its current meaning: the source had no net tracked changes to integrate, the operation is a successful no-op, `merged` stays `false`, and no `sha` is reported.
+- `TARGET_DIRTY` covers tracked/index dirt and incoming-path collisions. `TARGET_RECONCILIATION_REQUIRED` means the integration topology is unsafe while the target contains local data, including ignored Hive state, dependencies, or build output. Reconcile the pinned target into the source worktree and return fresh pins; do not delete local data to make the retry pass. Hive's preflight scan and immediate or per-pick rechecks protect local data. Git merge flags are not the protection boundary.
 - `filesChanged` on a successful integration is the observed difference between the target HEAD immediately before integration and the target HEAD after integration. Composite results flatten entries as `repoId:path`.
 - Cleanup results report per-step status for worktree removal, branch deletion, and prune using `not_requested`, `not_attempted`, `already_absent`, `succeeded`, or `failed`, plus a `failures` list.
 - `COMPOSITE_PARTIAL` means at least one repository was integrated and a later repository failed. Earlier repositories remain integrated. There is no rollback of partial composite outcomes.
@@ -112,7 +114,7 @@ Public names are fixed. Git helpers do not change task status, auto-commit sourc
 | `hive_adhoc_worktree_merge` | Integrate an ad-hoc branch |
 | `hive_adhoc_worktree_cleanup` | Remove an ad-hoc worktree and optionally its branch |
 
-Canonical workspace names are metadata. Existing slotted or composite workspaces are selectable. Merge wants a clean source and dest pinned SHA, squash default, and an explicit message. Locks are operation-local. Dirty, untracked, ignored, and unmerged data is protected; there is no force or rm fallback. Same-call squash cleanup may use observed identity; later ambiguous branches stay unless `discard: true` is explicit. `deleteBranch` alone does not discard an unmerged branch.
+Canonical workspace names are metadata. Existing slotted or composite workspaces are selectable. Merge wants a clean source, a destination with a clean index and tracked working tree, the pinned SHA, squash default, and an explicit message. Disjoint untracked or ignored destination files may remain when the pinned source contains the pinned target history; rebase also requires a linear replay range. Unsafe topology with local data requires same-worktree reconciliation and fresh pins, even when Git reports a clean worktree because Hive state, dependencies, or build output is ignored. Incoming path collisions always block. Hive preflight and rechecks protect local data without relying on Git merge flags. Locks are operation-local. Dirty, untracked, ignored, and unmerged data is protected; there is no force or rm fallback. Same-call squash cleanup may use observed identity; later ambiguous branches stay unless `discard: true` is explicit. `deleteBranch` alone does not discard an unmerged branch.
 
 Stable public inputs:
 
