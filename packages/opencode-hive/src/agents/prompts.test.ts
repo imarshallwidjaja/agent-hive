@@ -18,7 +18,7 @@ import { VULNERABILITY_REVIEW_PRIMARY_PROMPT } from './vulnerability-review-prim
 import { VULNERABILITY_REVIEWER_PROMPT } from './vulnerability-reviewer';
 import { HIVE_SYSTEM_PROMPT } from '../hooks/system-hook';
 import { ENGINEERING_JUDGMENT_PROMPT } from './engineering-judgment';
-import { NATIVE_TASK_CONTINUATION_POLICY_PROMPT, PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT } from './process-judgment';
+import { NATIVE_TASK_CONTINUATION_POLICY_PROMPT, PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT, REVIEW_FOLLOW_UP_PROMPT } from './process-judgment';
 
 const STANDING_CONSTRAINTS_HEADING = '## Standing Constraints (operator, session-wide)';
 
@@ -247,6 +247,53 @@ describe('Process judgment prompt reach', () => {
     expect(QUEEN_BEE_PROMPT).not.toContain('### Anti-Patterns');
     expect(QUEEN_BEE_PROMPT).not.toContain('Valid endings:');
     expect(QUEEN_BEE_PROMPT).not.toContain('NEVER end with:');
+  });
+});
+
+describe('Review follow-up contract', () => {
+  it('composes one shared fragment only in execution primaries', () => {
+    for (const [name, prompt] of [
+      ['Hive', QUEEN_BEE_PROMPT],
+      ['Swarm', SWARM_BEE_PROMPT],
+      ['Hive Builder', HIVE_BUILDER_PROMPT],
+    ] as const) {
+      expect(countOccurrences(prompt, REVIEW_FOLLOW_UP_PROMPT), name).toBe(1);
+    }
+    for (const [name, prompt] of [
+      ['Architect', ARCHITECT_BEE_PROMPT],
+      ['Forager', FORAGER_BEE_PROMPT],
+      ['Dash Reviewer', DASH_REVIEWER_PROMPT],
+      ['Vulnerability Review Primary', VULNERABILITY_REVIEW_PRIMARY_PROMPT],
+      ['Code Reviewer', CODE_REVIEWER_PROMPT],
+      ['Simplicity Reviewer', SIMPLICITY_REVIEWER_PROMPT],
+      ['Vulnerability Reviewer', VULNERABILITY_REVIEWER_PROMPT],
+    ] as const) {
+      expect(prompt, name).not.toContain(REVIEW_FOLLOW_UP_PROMPT);
+    }
+  });
+
+  it('accepts before routing and bounds remediation, review reuse, and closure', () => {
+    for (const term of [
+      'required reviews of the settled candidate before remediation',
+      'Consolidate overlapping root causes',
+      'Reviewer severity and votes do not decide acceptance',
+      'counter-evidence for a rejected material concern',
+      'complete fix diff',
+      'affected callers, consumers, error paths, and state transitions',
+      'retain earlier unaffected coverage with a reason',
+      'missing required review',
+      'shared contract or behavior expands',
+      'serious late evidence in unchanged in-scope code',
+      'An interrupted or missing reviewer leaves its obligation open',
+      'If coupled failures recur',
+      'integrated security review',
+    ]) expect(REVIEW_FOLLOW_UP_PROMPT).toContain(term);
+
+    for (const prompt of [QUEEN_BEE_PROMPT, SWARM_BEE_PROMPT]) {
+      expect(prompt).toContain('only accepted work reaches this table');
+      expect(prompt).toContain('| Accepted local correction to the completed batch | **Inline fix**');
+      expect(prompt).not.toContain('| Minor / local to the completed batch | **Inline fix**');
+    }
   });
 });
 
@@ -843,6 +890,28 @@ describe('Specialized reviewer prompts', () => {
     expect(CODE_REVIEWER_PROMPT).toContain('actual output and tested-candidate applicability');
     expect(CODE_REVIEWER_PROMPT).toContain('Request additional execution only for a named unproven behavior or affected boundary');
     expect(CODE_REVIEWER_PROMPT).toContain('Code review does not perform final verification');
+  });
+
+  it('lets clean reviews end without manufacturing fixes while retaining material finding bars', () => {
+    expect(CODE_REVIEWER_PROMPT).toContain('A clean in-scope review is APPROVE with No action');
+    expect(CODE_REVIEWER_PROMPT).toContain('APPROVE may include optional suggestions');
+    expect(CODE_REVIEWER_PROMPT).toContain('REQUEST_CHANGES requires a supported material failure');
+    expect(CODE_REVIEWER_PROMPT).toContain('significant maintainability requirements');
+    expect(CODE_REVIEWER_PROMPT).toContain('important unproven behavior');
+    expect(CODE_REVIEWER_PROMPT).toContain('Executable proof is not required for every finding');
+    expect(CODE_REVIEWER_PROMPT).toContain('Use NEEDS_DISCUSSION for a material question');
+    expect(SIMPLICITY_REVIEWER_PROMPT).toContain('ALREADY_MINIMAL means no worthwhile in-scope simplification was found');
+    expect(SIMPLICITY_REVIEWER_PROMPT).toContain('MINOR_TWEAKS describes optional improvements');
+    expect(SIMPLICITY_REVIEWER_PROMPT).toContain('SIMPLIFY recommends action but is not an automatic merge veto');
+    for (const prompt of [CODE_REVIEWER_PROMPT, SIMPLICITY_REVIEWER_PROMPT]) {
+      expect(prompt).not.toContain('80%');
+      expect(prompt).not.toMatch(/### Action Plan\n1\./);
+    }
+    expect(VULNERABILITY_REVIEWER_PROMPT).toContain('No confirmed vulnerabilities found in reviewed scope');
+    expect(VULNERABILITY_REVIEWER_PROMPT).toContain('A concrete material unresolved security acceptance question needs evidence or a decision');
+    expect(VULNERABILITY_REVIEWER_PROMPT).toContain('Do not propose or apply a patch');
+    expect(DASH_REVIEWER_PROMPT).toContain('deduplicate by root cause');
+    expect(VULNERABILITY_REVIEW_PRIMARY_PROMPT).toContain('unresolved leads with missing evidence and coverage gaps');
   });
 
   it('keeps simplicity-reviewer focused on diff-scoped deletion-biased cleanup', () => {

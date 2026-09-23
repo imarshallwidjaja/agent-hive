@@ -5,7 +5,7 @@ description: Use when explicitly asked for adversarial, hostile, red-team, stres
 
 # Adversarial Review
 
-Adversarial review is a read-only second-pass review posture. It tries to break the artifact under review, then consolidates only evidence-backed findings into a usable verdict or action path.
+Adversarial review is a read-only second-pass review posture. It tries to falsify the artifact's claims, then consolidates evidence-backed findings into a usable verdict or action path. A clean in-scope result is a valid outcome.
 
 Core rule: the host agent contract still wins. `plan-reviewer`, `code-reviewer`, `approach-advisor`, and `simplicity-reviewer` keep their normal scope, verdict labels, and tool boundaries.
 
@@ -21,7 +21,7 @@ This flat skill distills these adversarial review patterns without importing ref
 
 Use this skill only when the operator or caller explicitly asks for adversarial review, stress testing, red-team review, hostile review, multi-pass review, cross-model review, or similar wording.
 
-Do not use it for ordinary plan review, code review, simplicity review, or approach advice. Adversarial mode is intentionally noisier and should not contaminate normal reviewer behavior.
+Do not use it for ordinary plan review, code review, simplicity review, or approach advice. Adversarial mode searches harder within the host review's finding bar; it does not lower that bar.
 
 ## Non-Negotiables
 
@@ -30,7 +30,7 @@ Do not use it for ordinary plan review, code review, simplicity review, or appro
 - Separate baseline from attack. First establish what exists; then switch posture and try to invalidate it.
 - Report missing, empty, stale, or invalid review inputs. Do not silently skip a reviewer, file, plan, diff, or external validation result.
 - If any review step mutates the artifact under review, stop and report the mutation. Continuing would review a moving target.
-- Findings need concrete evidence. No vague concerns, taste comments, or speculative risks without a plausible failure path.
+- Findings need evidence relevant to the host's decision, such as a discriminating test, authoritative contract, or clear source execution path. A plausible failure path alone is a lead, not a mandatory fix.
 - Host output format wins. If a base reviewer requires `OKAY/REJECT`, `APPROVE/REQUEST_CHANGES`, or advisory output, preserve that contract and put adversarial detail inside the allowed sections.
 
 ## Mode Detection
@@ -88,7 +88,7 @@ Do not critique in this pass. Build the map the adversarial pass will attack.
 
 ### 4. Adversarial Pass
 
-Switch posture. Assume the baseline missed something material.
+Switch posture. Try to falsify the baseline's important claims and probe high-consequence boundaries, including unchanged in-scope code when late evidence bears on the result. A failed attempt to find a defect is a legitimate clean result.
 
 Use the smallest lens set that fits the risk:
 
@@ -108,7 +108,7 @@ Lens definitions:
 - Boundary Breaker: attacks trust boundaries, auth/authz, data integrity, persistence, concurrency, and public contracts.
 - Stress Tester: attacks hot paths, scaling assumptions, expensive loops, test/runtime cost, and resource leaks.
 
-Only report a finding if it has a concrete failure mode, affected artifact, impact, and fix direction.
+Apply the host's finding bar to each result. For a supported finding, show the affected artifact, failure mode, evidence, impact, and actionable direction. For a material unresolved question, identify the missing evidence or decision. Discard unsupported hypotheses.
 
 ### 5. Optional External Validation
 
@@ -126,13 +126,13 @@ If external validation is not available or not safe, say it was skipped and cont
 
 ### 6. Consolidation
 
-Deduplicate findings. Keep the highest severity and clearest evidence. Drop concerns that are merely stylistic, already covered by host reviewer scope, or not actionable.
+Deduplicate by root cause. Keep the clearest evidence and report severity separately from certainty. Drop concerns that are merely stylistic, unsupported, or outside the host review's scope.
 
 Severity:
 
 - Critical: breaks correctness, data integrity, security, public contract, or the stated task.
 - High: likely defect, serious missing requirement, unsafe sequence, or major verification gap.
-- Medium: plausible edge case, maintainability risk, or meaningful missing coverage.
+- Medium: consequential supported edge case, maintainability problem, or important unproven behavior.
 - Low: small cleanup or clarity issue. Include only if the host format has room.
 
 ## Mode-Specific Bars
@@ -143,7 +143,7 @@ Preserve `plan-reviewer` semantics. `REJECT` still means a capable worker would 
 
 ### Code Mode
 
-Preserve `code-reviewer` semantics. Findings must cite changed files or behavior. Prefer defects, missing tests, requirement mismatches, risky persistence/API/concurrency behavior, and verification gaps over broad style feedback.
+Preserve `code-reviewer` semantics. Findings cite affected files or behavior. REQUEST_CHANGES needs a supported material failure or applicable quality requirement violation; APPROVE can carry optional suggestions. Use NEEDS_DISCUSSION for a material unresolved question and what would settle it.
 
 ### Code-Vs-Plan Mode
 
@@ -151,11 +151,11 @@ Map each material plan requirement to implementation evidence. Attack omissions,
 
 ### Approach Mode
 
-Preserve `approach-advisor` semantics. Do not approve or reject. Recommend whether the path survives constraints, which assumption is weakest, and what would trigger escalation to a different route.
+Preserve `approach-advisor` semantics. Advice remains advisory. Explain whether the path survives constraints, which assumption needs evidence, and what would trigger a different route.
 
 ### Simplicity Mode
 
-Preserve `simplicity-reviewer` semantics. The adversarial posture is deletion-biased: attack every abstraction, option bag, fallback branch, adapter, compatibility path, and duplicated check. Only report simplifications that preserve approved behavior.
+Preserve `simplicity-reviewer` labels and behavioral-equivalence bar. Probe abstractions, option bags, fallback branches, adapters, compatibility paths, and duplicated checks for unjustified changed complexity. Report only worthwhile in-scope simplifications that preserve approved behavior; MINOR_TWEAKS remains optional.
 
 ## Output Template
 
@@ -186,14 +186,13 @@ Use the host agent's required format when one exists. If no format is provided, 
 - Stress Tester: [covered / not used + reason]
 
 ### Action Path
-1. [highest priority fix or "No action"]
-2. [next]
+[No action | supported actions needed to resolve the review]
 ```
 
 Verdict guidance:
 
-- `APPROVED`: no critical/high/medium findings remain.
-- `REVISE`: at least one critical/high/medium finding needs action.
-- `NEEDS_DISCUSSION`: artifact, intent, scope, or evidence is too ambiguous to review honestly.
+- `APPROVED`: no supported material blocker remains; optional suggestions may remain.
+- `REVISE`: supported material failure or applicable requirement violation needs action under the host's bar, regardless of severity label.
+- `NEEDS_DISCUSSION`: a material artifact, intent, scope, or evidence question prevents a sound decision; name what resolves it.
 
-When running under `plan-reviewer`, translate this into `OKAY` or `REJECT`. When running under `approach-advisor`, do not use approval language; provide a recommendation and risks.
+When running under a host reviewer, use only its output contract and verdict labels: `plan-reviewer` keeps `OKAY/REJECT`, `code-reviewer` keeps `APPROVE/REQUEST_CHANGES/NEEDS_DISCUSSION`, `simplicity-reviewer` keeps `SIMPLIFY/MINOR_TWEAKS/ALREADY_MINIMAL/NEEDS_DISCUSSION`, and `approach-advisor` gives advice without an approval verdict. The template above applies only when no host format exists.

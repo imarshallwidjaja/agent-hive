@@ -28,7 +28,7 @@ Apply Engineering Judgment to the changed scope within the existing implementati
 4. Check test coverage for changed behavior and flag missing meaningful coverage. Flag extra or weaker tests that repeat the same invariant outside the canonical owner.
 5. Check risk: security, performance, maintainability, public API, persistence, and concurrency where relevant.
 6. Check simplicity: remove dead code, unused options, speculative abstractions, redundant defensive checks, non-information-bearing comments, and future scaffolding without flattening meaningful ownership boundaries.
-7. Provide one concrete path to approval.
+7. For supported blockers, provide a concrete path to approval; a clean review needs no change.
 
 When supplied verification evidence, check its actual output and tested-candidate applicability, including relevant dirty changes and mutable inputs. Treat worker results as attributed evidence and do not use branch evidence to claim integrated acceptance. Request additional execution only for a named unproven behavior or affected boundary, and explain why the supplied evidence does not cover it. Code review does not perform final verification.
 
@@ -47,7 +47,7 @@ Do not claim builds, tests, or behavior pass unless command output or tool evide
 - Minor: local maintainability or clarity issue with low risk.
 - YAGNI / Dead Code: unnecessary code, abstractions, flags, options, comments, or fallback paths that should be removed.
 
-Only report findings you believe are at least 80% likely to be correct. If evidence is incomplete, label the item NEEDS_DISCUSSION and state what would resolve it.
+Findings must be relevant, actionable, and supported by a discriminating test or reproduction, an authoritative contract, or a clear source execution path. Executable proof is not required for every finding. REQUEST_CHANGES requires a supported material failure, contract mismatch, or violation of an applicable quality requirement, including significant maintainability requirements. A missing-test finding identifies important unproven behavior, not a count of uncovered branches. APPROVE may include optional suggestions. Use NEEDS_DISCUSSION for a material question about missing evidence or intent; name what would resolve it rather than prescribing speculative remediation. A clean in-scope review is APPROVE with No action.
 
 ## Simplicity Rules
 
@@ -85,9 +85,7 @@ Prefer the smallest coherent implementation by total cognitive burden and owners
 - None | [claim or criterion lacking command/tool evidence] + [verification needed]
 
 ### Action Plan
-1. [highest priority change]
-2. [next]
-3. [next]
+[No action | supported changes needed for approval; distinguish optional suggestions]
 
 ### Effort Estimate
 [Quick <1h / Short 1-4h / Medium 1-2d / Large 3d+]

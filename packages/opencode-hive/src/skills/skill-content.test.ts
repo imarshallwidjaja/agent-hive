@@ -114,6 +114,20 @@ describe('skill content', () => {
     expect(skill!.template).toContain('Do not let external tools mutate the artifact under review');
   });
 
+  it('uses host finding bars for adversarial falsification and permits clean results', () => {
+    const template = BUILTIN_SKILLS.find((entry) => entry.name === 'adversarial-review')!.template;
+    expect(template).toContain('Try to falsify the baseline');
+    expect(template).toContain('A failed attempt to find a defect is a legitimate clean result');
+    expect(template).toContain('Severity:');
+    expect(template).toContain('severity separately from certainty');
+    expect(template).toContain('A plausible failure path alone is a lead');
+    expect(template).toContain('REVISE`: supported material failure or applicable requirement violation');
+    expect(template).toContain('approach-advisor` gives advice without an approval verdict');
+    expect(template).toContain('simplicity-reviewer` keeps `SIMPLIFY/MINOR_TWEAKS/ALREADY_MINIMAL/NEEDS_DISCUSSION`');
+    expect(template).not.toContain('Assume the baseline missed something material');
+    expect(template).not.toContain('at least one critical/high/medium finding needs action');
+  });
+
   it('keeps brainstorming design in-session without mandatory tracked design documents', () => {
     const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'brainstorming');
 
@@ -638,6 +652,17 @@ describe('skill content', () => {
     expect(skill!.template).toContain('every task-named integrated deferral');
     expect(skill!.template).toContain('After a correction, retain the failure evidence');
     expect(skill!.template).toContain('Missing output or uncertain applicability means run the required check on the current target');
+  });
+
+  it('routes accepted review work without promoting optional feedback to automatic fixes', () => {
+    const executing = BUILTIN_SKILLS.find((entry) => entry.name === 'executing-plans')!.template;
+    const adhoc = BUILTIN_SKILLS.find((entry) => entry.name === 'orchestrating-ad-hoc-work')!.template;
+    expect(executing).toContain('Collect required reviews on the settled candidate and assess findings before routing work');
+    expect(executing).toContain('Route accepted work through this decision tree');
+    expect(executing).toContain('| Accepted local correction to the completed batch | **Inline fix**');
+    expect(executing).not.toContain('| Minor / local to the completed batch | **Inline fix**');
+    expect(adhoc).toContain("Apply the primary's Review Follow-Up guidance to settled lane reviews before remediation and closure");
+    expect(adhoc).toContain('preserve usable unaffected review coverage');
   });
 
   it('finishes executing-plans through verification and Hive merge instead of a generic finish menu', () => {

@@ -1,5 +1,5 @@
 import { ENGINEERING_JUDGMENT_PROMPT } from './engineering-judgment.js';
-import { NATIVE_TASK_CONTINUATION_POLICY_PROMPT, PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT } from './process-judgment.js';
+import { NATIVE_TASK_CONTINUATION_POLICY_PROMPT, PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT, REVIEW_FOLLOW_UP_PROMPT } from './process-judgment.js';
 
 /**
  * Swarm (Orchestrator)
@@ -15,6 +15,8 @@ Delegate by default. Work yourself only when trivial.
 Tool availability plus these instructions govern action. Each Hive tool validates its own operation.
 
 ${PROCESS_JUDGMENT_PROMPT}
+
+${REVIEW_FOLLOW_UP_PROMPT}
 
 ${ENGINEERING_JUDGMENT_PROMPT}
 
@@ -219,15 +221,15 @@ Escalate to xhigh reviewer variants only after the default reviewer identifies a
 For implementation correctness review, choose the code reviewer whose description best fits the review lens. Use built-in \`code-reviewer\` when no configured code-reviewer-derived custom description is a closer match. Then run \`task({ subagent_type: "<chosen-reviewer>", prompt: "Review implementation changes from the latest batch." })\`.
 For simplicity review, choose the simplicity reviewer whose description best fits the cleanup lens. Use built-in \`simplicity-reviewer\` when no configured simplicity-reviewer-derived custom description is a closer match. Then run \`task({ subagent_type: "<chosen-reviewer>", prompt: "Review implementation changes from the latest batch as a final post-implementation cleanup pass. Focus on YAGNI, dead code, duplicated logic, unnecessary abstractions, redundant defensive code, and safe deletion-biased simplification." })\`.
 Treat \`simplicity-reviewer\` as a post-implementation cleanup pass, not plan readiness, broad correctness review, architecture advice, or verification.
-Route review feedback through this decision tree before starting the next batch:
+Accept review feedback before routing any needed work through this decision tree:
 
 #### Review Follow-Up Routing
 
-Apply Process Judgment before choosing a route.
+Apply Process Judgment before choosing a route. Apply Review Follow-Up; only accepted work reaches this table.
 
 | Feedback type | Action |
 |---------------|--------|
-| Minor / local to the completed batch | **Inline fix** — apply directly, no new task |
+| Accepted local correction to the completed batch | **Inline fix** — apply directly, no new task |
 | New isolated work that does not affect downstream sequencing | **Manual task** — \`hive_task_create()\` for non-blocking ad-hoc work; when the need comes from hard-task cleanup or wrap-up handling, Swarm may delegate the safe append-only manual follow-up to \`hive-helper\` |
 | Changes downstream sequencing, dependencies, or scope | **Plan amendment** — delegate the plan edit to \`architect-planner\`, then \`hive_tasks_sync({ refreshPending: true })\` to rewrite pending tasks from the amended plan |
 

@@ -1,5 +1,5 @@
 import { ENGINEERING_JUDGMENT_PROMPT } from './engineering-judgment.js';
-import { NATIVE_TASK_CONTINUATION_POLICY_PROMPT, PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT } from './process-judgment.js';
+import { NATIVE_TASK_CONTINUATION_POLICY_PROMPT, PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT, REVIEW_FOLLOW_UP_PROMPT } from './process-judgment.js';
 
 export const HIVE_BUILDER_PROMPT = `# Hive Builder
 
@@ -8,6 +8,8 @@ You are the Hive Builder: a primary general-purpose Hive-aware ad-hoc orchestrat
 Tool availability plus these instructions govern action. Each Hive tool validates its own operation.
 
 ${PROCESS_JUDGMENT_PROMPT}
+
+${REVIEW_FOLLOW_UP_PROMPT}
 
 ${ENGINEERING_JUDGMENT_PROMPT}
 
