@@ -374,18 +374,26 @@ What we're building and why.
 
 ## Tasks
 
-### 1. Task Name
-Description of what to do.
+### 1. Change an owned behavior
+Description of the task and its scope.
+
+**Verify**:
+- Required before merge: `[exact command]` -> [expected signal]
+- Integrated-only deferral: [named behavior or consumer]
 
 ### 2. Another Task
 Description.
 
 ## Final Verification
 
-- Run the full test suite after task branches are merged.
+- [Integrated acceptance group] — owner: [suite/team]; prerequisite: [integrated candidate]; run: `[exact command]`; signal: [expected result]
 ```
 
 `hive_tasks_sync` reads numbered task headings from `## Tasks` in modern plans. A final verification section stays outside the task DAG unless the verification itself needs tracked artifacts produced by a task.
+
+Keep approved repository and operator checks binding. A required early or pre-merge check stays in the task's `Verify`; every integrated-only deferral named by a task must have a matching final-verification entry with an owner, prerequisite, exact command, and expected signal. Final acceptance records unique integrated proof. The same suite can appear in both places when it proves a different candidate or boundary.
+
+For example, a shared DTO task can verify the DTO owner suite before merge and defer a named CLI consumer check to integrated acceptance. A schema feasibility check required before merge stays in the task even if it is expensive. When a task fails, keep its output, verify the owning regression, and rerun affected consumers and integrated checks; an unexplained green retry does not resolve the failure.
 
 ## Configuration
 
@@ -528,7 +536,7 @@ Generated/managed shape (for inspection) at `<project>/.hive/repositories.json`:
 | `parallel-exploration` | Researcher fan-out for read-only research |
 | `systematic-debugging` | Root-cause investigation before fixes |
 | `test-driven-development` | Strict red-green-refactor when TDD is the selected testing strategy |
-| `verification` | Fresh evidence before completion or verification claims |
+| `verification` | Applicable command/tool evidence before completion or verification claims |
 | `verification-before-completion` | Deprecated wrapper; use `verification` completion gate mode |
 | `verification-reviewer` | Deprecated wrapper; use `verification` report mode |
 | `writing-for-agents` | Reference for authoring documents agents consume: skills, subagent prompts, instructions, and pointer architecture |

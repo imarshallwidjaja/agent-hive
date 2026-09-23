@@ -48,12 +48,21 @@ For a brand-new config, a plugin array containing only `"oc-arkive@latest"` is s
    sync it. Hive creates the executable task records.
 4. Start execution with `/start-execution`. The primary resolves repository-backed
    placement, delegates work, and tracks dependencies and progress.
-5. Each worker runs task-level, best-effort checks. The primary
-   records status and reports with `hive_task_update`.
+5. Each worker runs the task's selected checks and reports command output with
+   the candidate it tested. The primary records status and evidence with
+   `hive_task_update`.
 6. Merge completed worktree task branches with `hive_worktree_merge`. Non-Git
    or report-only work has no Hive Git merge step.
-7. Run fresh build/test verification against the merged result or the live target.
-8. Mark the feature complete only after that target verification passes.
+7. Run selected integrated acceptance on the merged candidate, including
+   binding repository/operator checks and every named `## Final Verification`
+   obligation. Keep required pre-merge checks before merge.
+8. Mark the feature complete only after applicable required evidence and reviews
+   pass. A task-branch result does not establish integrated acceptance.
+
+The planner selects checks from changed behavior, risk, repository requirements,
+canonical owners, and affected consumers. If impact is unclear, the operator
+guide explains how to broaden checks, preserve failure evidence, and decide when
+existing results still apply.
 
 ## What you can run
 

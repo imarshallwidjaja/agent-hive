@@ -125,7 +125,7 @@ When agents return:
 - Read each summary
 - Verify fixes don't conflict
 - In feature-task mode, pass each returned topology-aware pin unchanged through the feature workflow's verification and `hive_worktree_merge` lifecycle. Use the complete map when persisted `repos` are present; a singleton composite scalar is accepted, while multiple repositories require the complete map.
-- In ad-hoc mode, return result state and its exact pin to `orchestrating-ad-hoc-work`, which owns review gates, deterministic integration, full integrated-batch verification, and `hive_adhoc_worktree_merge`.
+- In ad-hoc mode, return result state and its exact pin to `orchestrating-ad-hoc-work`, which owns review gates, deterministic integration, selected integrated acceptance, and `hive_adhoc_worktree_merge`.
 
 ## Agent Prompt Structure
 
@@ -212,7 +212,7 @@ Agent 3 → Fix tool-approval-race-conditions.test.ts
 
 ## Verification by Mode
 
-In feature-task mode, follow the feature workflow's review, merge, and final-verification gates, including its full-suite policy. In ad-hoc mode, return result and resource state to `orchestrating-ad-hoc-work`; it owns per-lane gates and one integrated canonical verification after the accepted batch is merged.
+In feature-task mode, follow binding repository/operator checks and the plan's task and final-verification gates. Keep required early and pre-merge checks at their approved boundary, and resolve each named integrated deferral against its `## Final Verification` owner and prerequisite. In ad-hoc mode, return result and resource state to `orchestrating-ad-hoc-work`; it owns per-lane gates and selected integrated acceptance after the accepted batch is merged.
 
 ## Real-World Impact
 

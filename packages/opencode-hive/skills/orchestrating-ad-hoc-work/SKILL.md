@@ -26,7 +26,7 @@ Choose boundaries in this order:
 1. Identify coherent, independently verifiable outcomes. Keep tightly coupled code, tests, documentation, and generated artifacts together.
 2. Name each concrete predecessor output or capability decision. If a handoff cannot be stated, keep the work together or recommend escalation.
 3. Assign one owner for each module/path and shared resource: generated outputs, external mutable resources, fixed-path test fixtures, ports, databases, and containers. Distinct worktrees do not isolate these resources; use one owner or sequence access.
-4. Define done criteria, lane verification, reviews required by the active primary's configured review policy, and deterministic integration order.
+4. Define done criteria, binding repository/operator checks, required early or pre-merge gates, lane verification, reviews required by the active primary's configured review policy, and deterministic integration order. Name any integrated-only obligation in the lane/todo inventory with its owner, prerequisite, command, and expected signal.
 5. Add dependency edges and derive ready waves only after those contracts are clear.
 
 Record each lane's purpose, kind/owner, inputs/handoffs, path and resource ownership, done/verification/review contract, dependencies, integration order, and wait mode. Session state or `todowrite` is enough to track that. Do not create a mandatory evidence ledger.
@@ -39,7 +39,11 @@ Parallel writers require distinct ad-hoc `runId`s and worktrees. Writes and fix 
 
 For each ready wave, emit all independent launches in the same assistant message. Blocking is a wait mode, not serial scheduling. Use `dispatching-parallel-agents` for launch mechanics and `background-delegation` when background wait mode is available.
 
-The ad-hoc primary owns merge and cleanup. Lane changes receive the reviews required by the active primary's configured review policy; this skill adds no separate reviewer-approval gate. Required review and lane verification each gate merge. Integrate accepted lanes in stable topological order, using inventory order to break ties. Schedule shared fixtures, ports, databases, containers, external resources, and canonical verification so separate processes cannot collide. Run full canonical verification once against the integrated batch.
+The ad-hoc primary owns merge and cleanup. Lane changes receive the reviews required by the active primary's configured review policy; this skill adds no separate reviewer-approval gate. Required review, repository/operator checks, and lane verification each gate merge. Integrate accepted lanes in stable topological order, using inventory order to break ties. Schedule shared fixtures, ports, databases, containers, external resources, and verification so separate processes cannot collide; batch live checks only when their prerequisites and mutable state are compatible, and serialize stateful checks that share state.
+
+Run the selected integrated acceptance against the integrated batch, including binding repository/operator checks and every named deferral. Do not impose an unrelated full suite when repository policy and impact do not require it. If no gate catalogue exists, inspect scripts, CI, and test owners; uncertain impact selects a broader coherent existing check, with any missing check reported. Capture actual output and the tested candidate plus relevant fixtures, configuration, generated artifacts, or live state. Worker prose alone is not evidence, and branch results do not prove the integrated batch.
+
+After a correction, preserve the failure, verify the owning regression, and rerun affected consumer and integrated checks. Retain unaffected results only with a short non-impact reason. An unexplained green retry does not resolve an intermittent failure. Required skipped, unrun, failed, or blocked checks are not passing. If the session ends with a required obligation outstanding, report the batch incomplete.
 
 Use `hive_adhoc_worktree_create`, `hive_adhoc_worktree_inspect`, `hive_adhoc_worktree_merge`, and `hive_adhoc_worktree_cleanup`. A legacy single-root worker returns `sourceCommit`; a composite worker returns the complete `sourceCommits` map keyed by persisted repository ID. A singleton composite also accepts a matching scalar convenience; multiple repositories require the complete map. Pass that topology-aware pin unchanged to merge. Git helpers do not auto-commit source or assign workers.
 
@@ -47,4 +51,4 @@ Capture the initial inspect target identity before dispatch and include it in th
 
 ## Closure
 
-A lane closes only after applicable terminal observation, result consumption, required review and lane verification, merge or an explicit no-change/discard decision, and cleanup are recorded. The batch closes only after every lane is closed and the full integrated canonical verification result is recorded and passing.
+A lane closes only after applicable terminal observation, result consumption, required review and lane verification, merge or an explicit no-change/discard decision, and cleanup are recorded. The batch closes only after every lane is closed and selected integrated acceptance, including all named obligations, has applicable passing evidence recorded. Stop once required evidence and reviews suffice; run more checks only for a named gap, invalidation, or new risk.

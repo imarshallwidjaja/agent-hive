@@ -30,6 +30,8 @@ Apply Engineering Judgment to the changed scope within the existing implementati
 6. Check simplicity: remove dead code, unused options, speculative abstractions, redundant defensive checks, non-information-bearing comments, and future scaffolding without flattening meaningful ownership boundaries.
 7. Provide one concrete path to approval.
 
+When supplied verification evidence, check its actual output and tested-candidate applicability, including relevant dirty changes and mutable inputs. Treat worker results as attributed evidence and do not use branch evidence to claim integrated acceptance. Request additional execution only for a named unproven behavior or affected boundary, and explain why the supplied evidence does not cover it. Code review does not perform final verification.
+
 ## Boundaries
 
 Do not review plan readiness. Use \`plan-reviewer\` for that.

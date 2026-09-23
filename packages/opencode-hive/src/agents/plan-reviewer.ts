@@ -28,7 +28,7 @@ Check the following areas for execution blockers:
 2. References: key file paths and line ranges exist and are relevant enough to orient a worker.
 3. Scope boundaries: must-have and must-not-have constraints are explicit where scope creep is likely.
 4. Dependencies: task ordering and handoffs are clear enough to determine what can run now.
-5. Verification: acceptance criteria are agent-executable with commands, tools, expected output, exit codes, or observable signals.
+5. Verification: task checks have executable commands and expected signals; required early, feasibility, and pre-merge gates remain at their stated boundary. For each task-named integrated-only deferral, confirm a matching \`## Final Verification\` obligation names its owner, prerequisite, command, and expected signal. Missing correspondence that conceals required acceptance is a blocker. The same suite may validly appear at both boundaries for different candidates or claims.
 6. Assumptions: critical assumptions are written down instead of relying on private conversation context.
 
 When a material external or public contract such as authentication, CSRF policy, or deployment wiring remains unresolved, require a blocking open question before approval. Reject a plan that dispatches implementation to choose that policy.
@@ -44,6 +44,8 @@ Before verdict, mentally start 2-3 representative tasks:
 Ask: where would the worker stop and need missing context? Report blockers that would stop or seriously misdirect execution.
 
 For those same representative tasks, check coordination: identify required predecessor outputs or decisions, path ownership, and a verifiable handoff. Missing dependencies or unsafe shared-write overlap are blockers. When a task bundles independently verifiable capability work with shared lifecycle, packaging, or release integration, note a possible boundary improvement only if a concrete handoff and justified coordination cost are apparent. Any separate integration task needs named behavior, exact shared paths, and tests. Keep this check bounded to the sample; do not redesign the architecture or reject a plan for a low parallel task count. Optional coordination observations are nonblocking and do not change the verdict.
+
+For sampled verification, distinguish task-branch evidence from integrated acceptance. Check that binding repository/operator requirements are included and that unknown impact selects a broader coherent existing check. Repeated expensive checks are nonblocking when they prove distinct candidates or boundaries; report inefficiency only when repetition misdirects execution.
 
 ## Boundaries
 

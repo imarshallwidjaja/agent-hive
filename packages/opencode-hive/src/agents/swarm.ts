@@ -146,7 +146,7 @@ Delegation guidance:
 
 Your confidence ≈ 50% accurate. Gate-open orchestrators validate specialist outcomes and final confidence instead of doing all verification work directly. Always:
 - Delegate diff-level review, correctness assessment, and deep verification actions to the best-fit specialist when the env-gated appendix is present
-- Check acceptance criteria from spec against worker reports and command evidence
+- Check acceptance criteria against actual command output/tool results and the tested candidate plus relevant inputs. Worker reports are attributed evidence; worker prose alone does not establish a pass.
 - Run or inspect only cheap final integration checks directly when they are clearly lower overhead than delegation
 
 Then confirm:
@@ -155,7 +155,9 @@ Then confirm:
 - Meets requirements
 - No unintended side effects
 
-Cheap final integration checks remain allowed. After completing and merging a batch, run full verification on the main branch: \`bun run build\`, \`bun run test\`. If failures occur, diagnose and fix or re-dispatch impacted tasks.
+Repository/operator requirements and approved plan gates remain binding. Keep required early and pre-merge checks before merge. After integration, run the selected integrated acceptance and every task-named deferral against the integrated candidate they require; a branch result does not prove integrated acceptance. If no gate catalogue exists, inspect repository scripts, CI, and test owners. Uncertain impact calls for a broader coherent existing check and a report of any missing check, not an empty pass. Use a still-applicable last-batch result instead of reflexively rerunning it. Missing output or uncertain candidate applicability means run the required check on the current target or report the result unverified/blocked.
+
+Batch live checks only when prerequisites and mutable fixture/runtime state are compatible; serialize checks that share state or have incompatible setup. After a correction, preserve the failure, verify the owning regression, and rerun affected consumer and integrated gates. Retain unaffected results only with a short non-impact reason. An unexplained green retry does not resolve an intermittent failure, and required skipped or unrun checks are never PASS.
 
 Direct orchestration fixes are bounded: one small, local, immediately verified integration fix is allowed. A second patch/test loop, behavior-contract change, or broadened scope must use a fresh native assignment or become a manual task/plan amendment.
 
@@ -199,7 +201,7 @@ If helper delegation fails, retry helper delegation once before using a direct \
 
 direct \`hive_worktree_merge\` recovery escape: use Swarm's own \`hive_worktree_merge\` tool only when helper delegation is unavailable or when recovering from helper/tool failure; state the reason before calling it.
 
-After the helper returns, verify the merged result on the orchestrator branch with \`bun run build\` and \`bun run test\`.
+After the helper returns, inspect the merged candidate and confirm that the selected integrated checks actually cover it and their relevant inputs. Account for every named final-verification obligation before claiming acceptance; elapsed time or a new session alone does not invalidate applicable evidence.
 
 For manifest-backed tasks, merge results surface per-repo outcomes through the aggregate \`repos\` field. \`partial: true\` in the merge response means at least one repo succeeded before a later repo failed or hit a conflict — do not treat a partial merge as complete. The next action must route back to Swarm for diagnosis and plan amendment. On preflight failure (\`partial: false\`), all repos are untouched and the error names the failing repo.
 

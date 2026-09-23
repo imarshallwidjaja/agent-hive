@@ -840,6 +840,9 @@ describe('Specialized reviewer prompts', () => {
     expect(CODE_REVIEWER_PROMPT).toContain('Reviews implementation changes against a task or plan');
     expect(CODE_REVIEWER_PROMPT).toContain('REQUEST_CHANGES');
     expect(CODE_REVIEWER_PROMPT).toContain('canonical `verification` skill');
+    expect(CODE_REVIEWER_PROMPT).toContain('actual output and tested-candidate applicability');
+    expect(CODE_REVIEWER_PROMPT).toContain('Request additional execution only for a named unproven behavior or affected boundary');
+    expect(CODE_REVIEWER_PROMPT).toContain('Code review does not perform final verification');
   });
 
   it('keeps simplicity-reviewer focused on diff-scoped deletion-biased cleanup', () => {
@@ -984,12 +987,16 @@ describe('Hive (Hybrid) prompt', () => {
       expect(QUEEN_BEE_PROMPT).toContain('split broad research earlier');
     });
 
-    it('delegates batch merges to hive-helper and keeps post-batch verification with Hive', () => {
+    it('delegates batch merges and selects integrated acceptance without a generic suite', () => {
       expect(QUEEN_BEE_PROMPT).toContain("task({ subagent_type: 'hive-helper'");
       expect(QUEEN_BEE_PROMPT).toContain('delegate the merge batch');
-      expect(QUEEN_BEE_PROMPT).toContain('After the helper returns');
-      expect(QUEEN_BEE_PROMPT).toContain('bun run build');
-      expect(QUEEN_BEE_PROMPT).toContain('bun run test');
+      expect(QUEEN_BEE_PROMPT).toContain('On the resulting integrated candidate');
+      expect(QUEEN_BEE_PROMPT).toContain('binding repository/operator checks');
+      expect(QUEEN_BEE_PROMPT).toContain('every deferral named by tasks');
+      expect(QUEEN_BEE_PROMPT).toContain('use that evidence rather than rerunning solely because it is the last batch');
+      expect(QUEEN_BEE_PROMPT).toMatch(
+        /^6\. On the resulting integrated candidate.*If no gate catalogue exists, inspect repository scripts, CI, and test owners\. Uncertain impact calls for a broader coherent existing check and a report of any missing check, not an empty pass\./m,
+      );
     });
 
     it('defaults to one polished squash commit per task', () => {
@@ -1407,12 +1414,12 @@ describe('Swarm (Orchestrator) prompt', () => {
       expect(SWARM_BEE_PROMPT).toContain('split broad research earlier');
     });
 
-    it('delegates batch merges to hive-helper and keeps post-batch verification with Swarm', () => {
+    it('delegates batch merges and inspects the selected integrated candidate', () => {
       expect(SWARM_BEE_PROMPT).toContain("task({ subagent_type: 'hive-helper'");
       expect(SWARM_BEE_PROMPT).toContain('returned topology-aware pins unchanged');
-      expect(SWARM_BEE_PROMPT).toContain('After the helper returns');
-      expect(SWARM_BEE_PROMPT).toContain('bun run build');
-      expect(SWARM_BEE_PROMPT).toContain('bun run test');
+      expect(SWARM_BEE_PROMPT).toContain('After the helper returns, inspect the merged candidate');
+      expect(SWARM_BEE_PROMPT).toContain('selected integrated acceptance');
+      expect(SWARM_BEE_PROMPT).toContain('every named final-verification obligation');
     });
 
     it('defaults to one polished squash commit per task', () => {
@@ -1458,7 +1465,8 @@ describe('Swarm (Orchestrator) prompt', () => {
   it('contains verification checklist', () => {
     expect(SWARM_BEE_PROMPT).toContain('After Delegation - VERIFY');
     expect(SWARM_BEE_PROMPT).toContain('Delegate diff-level review, correctness assessment, and deep verification actions');
-    expect(SWARM_BEE_PROMPT).toContain('Cheap final integration checks remain allowed');
+    expect(SWARM_BEE_PROMPT).toContain('Repository/operator requirements and approved plan gates remain binding');
+    expect(SWARM_BEE_PROMPT).toContain('After integration, run the selected integrated acceptance');
   });
 
   it('teaches orchestrators to maintain overview at execution milestones', () => {
@@ -1688,11 +1696,16 @@ describe('Scout (Explorer/Researcher) prompt', () => {
 
 describe('Plan reviewer prompt', () => {
   it('contains agent-executable verification guidance', () => {
-    expect(PLAN_REVIEWER_PROMPT).toContain('agent-executable');
+    expect(PLAN_REVIEWER_PROMPT).toContain('task checks have executable commands and expected signals');
   });
 
   it('keeps verification routed to the canonical skill', () => {
     expect(PLAN_REVIEWER_PROMPT).toContain('verification` skill');
+    expect(PLAN_REVIEWER_PROMPT).toContain('required early, feasibility, and pre-merge gates');
+    expect(PLAN_REVIEWER_PROMPT).toContain('each task-named integrated-only deferral');
+    expect(PLAN_REVIEWER_PROMPT).toContain('owner, prerequisite, command, and expected signal');
+    expect(PLAN_REVIEWER_PROMPT).toContain('Missing correspondence that conceals required acceptance is a blocker');
+    expect(PLAN_REVIEWER_PROMPT).toContain('different candidates or claims');
   });
 
   it('blocks unresolved material public contracts before approval', () => {
@@ -1708,6 +1721,30 @@ describe('Plan reviewer prompt', () => {
       expect(prompt, name).toContain('implementation');
       expect(prompt, name).toContain('choose that policy');
     }
+  });
+});
+
+describe('Change-scoped verification prompts', () => {
+  const executorPrompts = [
+    ['Hive', QUEEN_BEE_PROMPT],
+    ['Swarm', SWARM_BEE_PROMPT],
+  ] as const;
+
+  it('keeps required gates, candidate applicability, unknown-impact fallback, and remediation aligned', () => {
+    for (const [name, prompt] of executorPrompts) {
+      expect(prompt, name).not.toMatch(/\bbun\s+run\b/i);
+      expect(prompt, name).toContain('early');
+      expect(prompt, name).toContain('pre-merge');
+      expect(prompt, name).toContain('integrated candidate');
+      expect(prompt, name).toContain('broader coherent existing check');
+      expect(prompt, name).toContain('actual command output');
+      expect(prompt, name).toContain('relevant inputs');
+      expect(prompt, name).toContain('branch result');
+      expect(prompt, name).toContain('preserve the failure');
+      expect(prompt, name).toContain('unexplained green retry');
+      expect(prompt, name).toContain('required skipped or unrun');
+    }
+    expect(QUEEN_BEE_PROMPT).toContain('hive_feature_complete` does not enforce these checks');
   });
 });
 

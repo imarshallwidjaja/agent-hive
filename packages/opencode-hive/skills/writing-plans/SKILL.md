@@ -20,6 +20,9 @@ During planning, implementation files remain read-only; Hive planning state may 
 - Record constraints, non-goals, must-not-do guardrails, and assumptions that affect correctness or scope.
 - Cross-feature overlap does not block plan approval. Record concrete cross-feature prerequisites so the orchestrator can block the affected execution tasks or lanes. Treat overlap as an approval blocker only when it leaves the plan itself materially unresolved. Unresolved plan comments still block approval. Do not invent automatic cross-feature dependencies.
 - State the context-selected testing strategy for each behavior: TDD when examples discover a contract, algorithm, or regression; characterization tests before poorly understood legacy changes; tests alongside or after implementation when design needs exploration or behavior is clear; existing contract coverage for a pure internal refactor; or proportionate no-new-test verification with concrete rationale. Ask only when repository evidence and requirements leave a material choice unresolved. Keep tests with their implementation task by default. When tests are selected, name the owning layer and canonical suite in the same implementation task; must not plan a later test-cleanup pass.
+- Select checks from changed behavior, risk, binding repository/operator requirements, canonical owners, and affected consumers. When no gate catalogue exists, inspect repository scripts, CI, and test ownership; if impact or reach remains uncertain, select a broader coherent existing check and state any missing check.
+- Task `Verify` may include a required early, feasibility, or pre-merge gate. Keep every approved required check at its specified boundary, with its exact command and expected signal. Name an integrated-only deferral in the task and mirror it under `## Final Verification` with its owner, prerequisite, command, and expected signal.
+- `## Final Verification` names unique integrated acceptance, not a copy of task commands. The same suite may run at both boundaries when it proves different candidates or claims. Do not repeat a still-applicable check only because time passed or a new session began.
 - Include bounded behavior-preserving preparatory refactoring only when it directly lowers risk for the requested outcome. Mark it separately from behavior change and say how preservation is checked.
 - Code snippets only when exact syntax removes material ambiguity. Describe contracts and observable outcomes instead of transcribing the implementation.
 - Use durable domain names. Planning phases, option labels, task numbers, and ticket language do not belong in lasting code names.
@@ -71,6 +74,7 @@ Every plan uses this shape:
 - [Requested behavior and contract]
 - [Ownership or integration boundary]
 - [Testing strategy; when tests are selected, owning layer and canonical suite; any justified preparatory refactoring]
+- [Task Verify: exact required early/pre-merge commands and expected signals; name each integrated-only deferral and match it under Final Verification]
 **Must NOT do**:
 - [Guardrail]
 **References**:
@@ -80,12 +84,14 @@ Every plan uses this shape:
 - Observe: [acceptance signal]
 
 ## Final Verification
-- Run: `[non-branching integrated check]` -> [expected result]
+- [Integrated acceptance group] — owner: [suite/team]; prerequisite: [integrated candidate or other prerequisite]; run: `[exact command]`; signal: [expected output/result]
 ```
 
 Always include **Depends on**. Use `none` for parallel starts or task numbers for explicit dependencies. For manifest-backed tracked writes, include **Repos** before task sync or worktree creation and prefer one repository per task unless a shared contract or coordinated change makes a multi-repository task coherent. For a plan-backed task with missing or incorrect repository metadata, amend the plan and require `hive_tasks_sync({ refreshPending: true })` before worktree creation. For an incorrectly scoped manual task, require the orchestrator to automatically replace and cancel it only when no work has started and no existing task depends on it; the replacement must mirror incoming `dependsOn` and supply corrected `repos` via `hive_task_create(...)`. If work started or reverse dependents exist, require the orchestrator to retain the incorrect task as blocked with a structured blocker and escalate; do not rewrite dependencies.
 
 Keep pure checks under `## Final Verification`; numbered tasks should write tracked implementation, test, documentation, or generated artifacts. Verification must be agent-executable unless a manual step is an unavoidable product requirement and its owner and signal are explicit.
+
+The orchestrator reconciles every task-named deferral with this section before closure; `hive_feature_complete` does not enforce these checks. Task checks prove only the candidate they tested; integrated acceptance runs against the integrated candidate. Repository and operator gates remain binding, and an executor cannot silently drop or move an approved check.
 
 ## Review Surfaces
 

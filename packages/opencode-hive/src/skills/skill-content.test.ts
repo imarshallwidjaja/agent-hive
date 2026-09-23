@@ -216,6 +216,11 @@ describe('skill content', () => {
       'preparatory refactoring',
       'selected testing strategy',
       'coordination boundaries, not module boundaries',
+      'binding repository/operator requirements',
+      'broader coherent existing check',
+      'integrated-only deferral',
+      'expected signal',
+      'unique integrated acceptance',
     ]) {
       expect(template.toLowerCase(), requirement).toContain(requirement.toLowerCase());
     }
@@ -228,6 +233,32 @@ describe('skill content', () => {
     expect(template).toContain('canonical suite');
     expect(template).toContain('must not plan a later test-cleanup pass');
     expect(template).toContain('Apply Process Judgment before adding scope or blockers.');
+    expect(template).toContain('hive_feature_complete` does not enforce these checks');
+  });
+
+  it('ties verification claims to observed output and the candidate and inputs tested', () => {
+    const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'verification');
+    const template = skill!.template;
+
+    expect(skill).toBeDefined();
+    expect(skill!.description).not.toContain('fresh');
+    expect(template).toContain('actual command output or tool-result evidence');
+    expect(template).toContain('Worker reports are attributed evidence, not independent verification');
+    expect(template).toContain('A source-backed trace can expose tool output');
+    expect(template).toContain('is not a result cache');
+    expect(template).toContain('Session recency neither proves nor invalidates evidence');
+    expect(template).toContain('relevant dirty changes');
+    expect(template).toContain('fixtures, configuration, toolchain, generated artifacts, and live or deployed state');
+    expect(template).toContain('A branch result proves that branch only');
+    expect(template).toContain('task-named integrated-only deferral');
+    expect(template).toContain('skipped, unrun, failed, or blocked are not PASS');
+    expect(template).toContain('An unexplained green retry does not resolve an intermittent failure');
+    expect(template).toContain('Once applicable required evidence and reviews are sufficient, stop');
+    expect(template).toContain('Any required `FAIL` makes the verdict `FAIL`');
+    expect(template).toContain('an empty or incomplete set is missing proof');
+    expect(template).toContain('A required `PARTIAL`, `UNVERIFIED`, or `BLOCKED` result, or any other missing required proof, prevents `PASS`');
+    expect(template).toContain('use `PARTIAL` only when an environmental or tool limitation is the sole reason required proof is missing');
+    expect(template).toContain('A final `FAIL` means required acceptance failed or remains unproven; it does not imply that an executed command exited unsuccessfully');
   });
 
   it('chooses coherent task boundaries before dependencies without parallel quotas', () => {
@@ -503,21 +534,34 @@ describe('skill content', () => {
 
     expect(template).toContain("Lane changes receive the reviews required by the active primary's configured review policy");
     expect(template).toContain('this skill adds no separate reviewer-approval gate');
-    expect(template).toContain('Required review and lane verification each gate merge');
-    expect(template).toContain('full integrated canonical verification result is recorded and passing');
+    expect(template).toContain('Required review, repository/operator checks, and lane verification each gate merge');
+    expect(template).toContain('selected integrated acceptance');
+    expect(template).toContain('including binding repository/operator checks and every named deferral');
+    expect(template).toContain('owner, prerequisite, command, and expected signal');
+    expect(template).toContain('batch live checks only when their prerequisites and mutable state are compatible');
+    expect(template).toContain('If the session ends with a required obligation outstanding, report the batch incomplete');
+    expect(template).toContain('An unexplained green retry does not resolve an intermittent failure');
+    expect(template).not.toContain('full integrated canonical verification result is recorded and passing');
   });
 
-  it('keeps the expanded ad-hoc trigger reachable from operator and agent documentation', () => {
-    for (const content of [
-      readRepoFile('AGENTS.md'),
-      readRepoFile('README.md'),
-      readRepoFile('docs/OPERATOR-GUIDE.md'),
-      readRepoFile('packages/opencode-hive/README.md'),
-    ]) {
+  it('routes ad-hoc work and documents verification scope for operators', () => {
+    const rootReadme = readRepoFile('README.md');
+    const operatorGuide = readRepoFile('docs/OPERATOR-GUIDE.md');
+    const pluginReadme = readRepoFile('packages/opencode-hive/README.md');
+
+    for (const content of [readRepoFile('AGENTS.md'), rootReadme, operatorGuide, pluginReadme]) {
       expect(content).toContain('orchestrating-ad-hoc-work');
       expect(content).toMatch(/background execution/);
       expect(content).toMatch(/more than one worker attempt or turn/);
     }
+    expect(rootReadme).toContain('A task-branch result does not establish integrated acceptance');
+    expect(pluginReadme).toContain('every integrated-only deferral named by a task');
+    expect(pluginReadme).toContain('unexplained green retry does not resolve the failure');
+    expect(operatorGuide).toContain('early, feasibility, or pre-merge gates');
+    expect(operatorGuide).toContain('broader coherent existing check');
+    expect(operatorGuide).toContain('A branch result never proves integrated acceptance');
+    expect(operatorGuide).toContain('run additional checks only for a named gap, invalidation, or new risk');
+    expect(operatorGuide).toContain('the tool does not enforce verification gates');
   });
 
   it('keeps escalation advisory without bypassing material questions', () => {
@@ -537,8 +581,10 @@ describe('skill content', () => {
     expect(dispatch).toContain('In Hive Builder or unified Hive ad-hoc mode, load `orchestrating-ad-hoc-work`');
     expect(dispatch).toContain('In feature-task mode, use `hive_status()`');
     expect(dispatch).toContain('In ad-hoc mode, return result state and its exact pin to `orchestrating-ad-hoc-work`');
-    expect(dispatch).toContain('In feature-task mode, follow the feature workflow\'s review, merge, and final-verification gates');
+    expect(dispatch).toContain('In feature-task mode, follow binding repository/operator checks and the plan\'s task and final-verification gates');
     expect(dispatch).toContain('In ad-hoc mode, return result and resource state to `orchestrating-ad-hoc-work`');
+    expect(dispatch).toContain('selected integrated acceptance');
+    expect(dispatch).toContain('each named integrated deferral');
     expect(exploration).toContain('Hive Builder or unified Hive ad-hoc mode loads `orchestrating-ad-hoc-work`');
     expect(background).toContain('`orchestrating-ad-hoc-work` supplies the already-defined lanes');
     expect(background).toContain('owns background observation, reconciliation, cancellation, and wait-mode protocol');
@@ -586,6 +632,12 @@ describe('skill content', () => {
     expect(skill!.template).toContain('one feature per worker assignment');
     expect(skill!.template).toContain('Cross-feature prerequisites block affected execution tasks or lanes');
     expect(skill!.template).toContain('Do not infer or create automatic cross-feature dependencies');
+    expect(skill!.template).toContain('Keep approved repository/operator checks and required early, feasibility, or pre-merge gates');
+    expect(skill!.template).toContain('actual command output and the candidate plus relevant mutable inputs');
+    expect(skill!.template).toContain('a branch result does not establish integrated acceptance');
+    expect(skill!.template).toContain('every task-named integrated deferral');
+    expect(skill!.template).toContain('After a correction, retain the failure evidence');
+    expect(skill!.template).toContain('Missing output or uncertain applicability means run the required check on the current target');
   });
 
   it('finishes executing-plans through verification and Hive merge instead of a generic finish menu', () => {

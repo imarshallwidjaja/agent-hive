@@ -204,6 +204,9 @@ Plan includes: Discovery (Original Request, Interview Summary, Research Findings
 - Files must list Create/Modify/Test with exact paths and line ranges where applicable
 - References must use file:line format
 - Verify must include exact command + expected output
+- Select checks from binding repository/operator requirements, changed behavior, risk, canonical owners, and affected consumers. If no gate catalogue exists, inspect scripts, CI, and test owners; uncertain impact calls for a broader coherent existing check and a stated missing-check gap.
+- Task \`Verify\` may contain a required early or pre-merge gate. Name each integrated-only deferral in that task and match it under \`## Final Verification\` with owner, prerequisite, exact command, and expected signal. Keep required checks at their approved boundary.
+- Final acceptance states unique integrated proof. A repeated suite is justified when it checks a distinct candidate or boundary.
 
 Each task declares dependencies with **Depends on**:
 - **Depends on**: none for no dependencies / parallel starts
@@ -284,9 +287,12 @@ When multiple tasks are in flight, prefer **batch completion** over per-task ver
 1. Dispatch a batch sequenced from dependencies and any explicit operator direction.
 2. Wait for all workers to finish.
 3. Decide which completed task branches belong in the next merge batch.
-4. For worktree tasks, include each task's returned topology-aware pin verbatim and delegate the merge batch to \`hive-helper\`, for example: \`task({ subagent_type: 'hive-helper', prompt: 'Merge the listed task branches with these returned topology-aware pins unchanged; use the complete sourceCommits map when persisted repos are present, with scalar convenience only for a singleton composite. Squash each into one polished root commit, resolve preserved conflicts locally, continue through the batch, and return a concise summary.' })\`. Non-Git or report-only tasks have no Hive merge step; verify their target instead.
-5. After the helper returns for worktrees, or after non-Git/report-only target completion, run full verification **once** on the resulting target: \`bun run build\` + \`bun run test\`.
-6. If verification fails, diagnose with full context. Apply a small local integration fix when that is cheaper; otherwise re-dispatch a targeted task or amend the plan.
+4. Keep repository/operator checks and plan-selected early, feasibility, and pre-merge gates at their approved boundary; passing evidence is required before merge when the plan says so.
+5. For worktree tasks, include each task's returned topology-aware pin verbatim and delegate the merge batch to \`hive-helper\`, for example: \`task({ subagent_type: 'hive-helper', prompt: 'Merge the listed task branches with these returned topology-aware pins unchanged; use the complete sourceCommits map when persisted repos are present, with scalar convenience only for a singleton composite. Squash each into one polished root commit, resolve preserved conflicts locally, continue through the batch, and return a concise summary.' })\`. Non-Git or report-only tasks have no Hive merge step; verify their target instead.
+6. On the resulting integrated candidate, run the binding repository/operator checks and plan-selected integrated acceptance, including every deferral named by tasks. Do not impose a generic suite when the repository and plan do not require it. If no gate catalogue exists, inspect repository scripts, CI, and test owners. Uncertain impact calls for a broader coherent existing check and a report of any missing check, not an empty pass. If the last batch already passed a required check on this candidate and its relevant inputs remain applicable, use that evidence rather than rerunning solely because it is the last batch; elapsed time or a new session alone does not invalidate it.
+7. Inspect actual command output or tool results and the tested candidate, including relevant dirty changes and mutable fixture, configuration, toolchain, generated-artifact, or live-state inputs. Worker results are attributed; worker prose alone is not evidence, and a branch result never proves integrated acceptance. Batch only checks whose prerequisites and shared state are compatible; keep incompatible or stateful live checks separate.
+8. If a check fails, preserve the failure, verify the owning regression, and rerun affected owner, consumer, and integrated checks. Retain unaffected results only with a concise non-impact reason; an unexplained green retry does not resolve the failure. Report required skipped or unrun checks as unverified, never PASS.
+9. Reconcile every \`## Final Verification\` obligation before feature completion; \`hive_feature_complete\` does not enforce these checks. Stop when applicable required evidence and reviews suffice; additional checks need a named gap, invalidation, or new risk.
 
 ### Failure Recovery (After 3 Consecutive Failures)
 1. Stop all further edits
