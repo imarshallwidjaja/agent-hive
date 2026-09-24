@@ -28,7 +28,7 @@ PROBLEM  -> CONTEXT  -> EXECUTION -> REPORT
 │       ├── workspace.json  <- Repo manifest, branches, base commits (composite only)
 │       └── repos/          <- Per-repo git worktrees (composite only)
 │           └── {repoId}/
-└── ...                   <- Runtime state only; Agent Hive config is global
+└── ...                   <- Runtime state; agent model/variant overrides may be project-local
 
 packages/
 ├── hive-core/            <- Shared logic (services, types, utils)

@@ -312,7 +312,7 @@ Configured reviewer descriptions guide selection. Explicit operator-required rev
 
 **Docker sandbox** provides isolated test environments for workers:
 
-- **Config source**: all Agent Hive runtime configuration comes only from `~/.config/opencode/agent_hive.json`; project `.hive/agent-hive.json` and `.opencode/agent_hive.json` files are ignored.
+- **Config source**: `~/.config/opencode/agent_hive.json` is authoritative for Agent Hive runtime configuration. The only project-local exception is `.hive/agent-hive.override.json`, which may set `model` and/or `variant` for matching built-in or effective custom-agent declarations. All other settings remain global; project `.hive/agent-hive.json` and `.opencode/agent_hive.json` files remain ignored. Restart OpenCode after changing configuration.
 - **Repository topology**: `<canonical-project-root>/.hive/repositories.json` stores `{ "schemaVersion": 1, "repositories": [...] }`; paths are relative to and contained by that root. Global `repositoryRoot`/`repositories` are migration-only legacy fields.
 - **Runtime fields**:
   - `sandbox: 'none' | 'docker'` — Isolation mode (default: 'none')

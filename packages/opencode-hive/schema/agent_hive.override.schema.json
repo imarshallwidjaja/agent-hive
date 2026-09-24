@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/imarshallwidjaja/agent-hive/main/packages/opencode-hive/schema/agent_hive.override.schema.json",
+  "title": "Agent Hive Project Agent Overrides",
+  "description": "Project-local model and variant overrides for matching built-in and effective custom-agent declarations. All other Agent Hive settings remain global.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Schema reference for this project override file."
+    },
+    "agents": {
+      "type": "object",
+      "description": "Model and variant overrides for matching built-in agents present in the effective global/default config. Unknown names are ignored.",
+      "additionalProperties": {
+        "$ref": "#/$defs/agentModelVariantOverride"
+      }
+    },
+    "customAgents": {
+      "type": "object",
+      "description": "Model and variant overrides for matching custom-agent declarations in the effective global/default config. Unknown names are ignored and never create agents.",
+      "additionalProperties": {
+        "$ref": "#/$defs/agentModelVariantOverride"
+      }
+    }
+  },
+  "$defs": {
+    "agentModelVariantOverride": {
+      "type": "object",
+      "additionalProperties": false,
+      "anyOf": [
+        { "required": ["model"] },
+        { "required": ["variant"] }
+      ],
+      "properties": {
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": ".*\\S.*",
+          "description": "Model identifier override, such as provider/model-id."
+        },
+        "variant": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": ".*\\S.*",
+          "description": "Model variant override."
+        }
+      }
+    }
+  }
+}

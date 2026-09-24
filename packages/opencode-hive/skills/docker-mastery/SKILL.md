@@ -287,9 +287,9 @@ Hive detects runtime from project files:
 - `Dockerfile` → Builds from project Dockerfile
 - Fallback → `ubuntu:24.04`
 
-**Override:** Set `dockerImage` in `~/.config/opencode/agent_hive.json`, the only Agent Hive runtime configuration source.
+**Override:** Set `dockerImage` in `~/.config/opencode/agent_hive.json`; Docker settings remain global-only.
 
-If the global config is missing, Hive uses defaults. Invalid global JSON or shape produces a runtime warning and falls back to defaults. Project-local config files are ignored.
+The only project-local Agent Hive runtime config is `.hive/agent-hive.override.json`, which accepts model and variant overrides for existing agents. Project `.hive/agent-hive.json` and `.opencode/agent_hive.json` files remain ignored. If global config is missing, Hive uses defaults. Invalid global config falls back to defaults with a runtime warning; invalid project overrides are ignored with a source-specific warning. Restart OpenCode after changing either config file.
 
 ## Red Flags - STOP
 

@@ -1,14 +1,42 @@
 import { describe, expect, it } from 'bun:test';
 import Ajv2020 from 'ajv/dist/2020.js';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
+import { ConfigService } from 'hive-core';
 
 const schemaPath = path.resolve(import.meta.dir, '..', '..', 'schema', 'agent_hive.schema.json');
 const schema = JSON.parse(fs.readFileSync(schemaPath, 'utf-8')) as Record<string, any>;
+const projectOverrideSchemaPath = path.resolve(import.meta.dir, '..', '..', 'schema', 'agent_hive.override.schema.json');
+const projectOverrideSchema = JSON.parse(fs.readFileSync(projectOverrideSchemaPath, 'utf-8')) as Record<string, any>;
 const packageJsonPath = path.resolve(import.meta.dir, '..', '..', 'package.json');
 const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8')) as { peerDependencies?: Record<string, string> };
 
 const validateConfigShape = new Ajv2020({ strict: false }).compile(schema);
+const validateProjectOverrideShape = new Ajv2020({ strict: false }).compile(projectOverrideSchema);
+
+function acceptsRuntimeProjectOverride(value: unknown): boolean {
+  const originalHome = process.env.HOME;
+  const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-project-override-schema-'));
+  const projectRoot = path.join(tempHome, 'project');
+  const overridePath = path.join(projectRoot, '.hive', 'agent-hive.override.json');
+
+  try {
+    process.env.HOME = tempHome;
+    fs.mkdirSync(path.dirname(overridePath), { recursive: true });
+    fs.writeFileSync(overridePath, JSON.stringify(value));
+    const configService = new ConfigService(projectRoot);
+    configService.get();
+    return configService.getLastFallbackWarning() === null;
+  } finally {
+    if (originalHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = originalHome;
+    }
+    fs.rmSync(tempHome, { recursive: true, force: true });
+  }
+}
 
 const expectReservedNameToFail = (name: string): void => {
   const reservedNames = schema.properties?.customAgents?.propertyNames?.not?.enum;
@@ -311,5 +339,58 @@ describe('agent_hive schema council contract', () => {
     { name: 'unknown top-level schema property', config: { unknown: true } },
   ])('rejects $name', ({ config }) => {
     expect(validateConfigShape(config)).toBe(false);
+  });
+});
+
+describe('agent_hive.override schema contract', () => {
+  it('only describes the narrow project model and variant overlay', () => {
+    expect(projectOverrideSchema.properties).toHaveProperty('$schema');
+    expect(Object.keys(projectOverrideSchema.properties).sort()).toEqual([
+      '$schema',
+      'agents',
+      'customAgents',
+    ]);
+    expect(projectOverrideSchema.properties.agents.additionalProperties).toEqual({
+      $ref: '#/$defs/agentModelVariantOverride',
+    });
+    expect(projectOverrideSchema.properties.customAgents.additionalProperties).toEqual({
+      $ref: '#/$defs/agentModelVariantOverride',
+    });
+    expect(projectOverrideSchema.$defs.agentModelVariantOverride.additionalProperties).toBe(false);
+    expect(projectOverrideSchema.$defs.agentModelVariantOverride.anyOf).toEqual([
+      { required: ['model'] },
+      { required: ['variant'] },
+    ]);
+  });
+
+  it('agrees with the runtime validator for supported and rejected shapes', () => {
+    const accepted = [
+      {},
+      { $schema: 'https://example.test/agent-hive.override.schema.json' },
+      {
+        agents: { 'not-a-built-in-name': { model: 'provider/model' } },
+        customAgents: { 'not-a-global-custom-agent': { variant: 'high' } },
+      },
+      { agents: { 'known-agent': { model: 'provider/model', variant: 'high' } } },
+    ];
+    const rejected = [
+      null,
+      [],
+      { sandbox: 'docker' },
+      { agents: { 'known-agent': {} } },
+      { agents: { 'known-agent': { model: '   ' } } },
+      { agents: { 'known-agent': { variant: '  ' } } },
+      { agents: { 'known-agent': { model: 'provider/model', temperature: 0.2 } } },
+      { customAgents: { 'known-agent': { skills: ['verification'] } } },
+    ];
+
+    for (const value of accepted) {
+      expect(validateProjectOverrideShape(value)).toBe(true);
+      expect(acceptsRuntimeProjectOverride(value)).toBe(true);
+    }
+    for (const value of rejected) {
+      expect(validateProjectOverrideShape(value)).toBe(false);
+      expect(acceptsRuntimeProjectOverride(value)).toBe(false);
+    }
   });
 });

@@ -4,6 +4,7 @@
 
 ```
 .hive/
+├── agent-hive.override.json   # Optional project-local agent model/variant overrides
 ├── repositories.json          # Optional Hive-managed project-local multi-repo manifest
 ├── sessions.json              # Optional top-level session index (when used)
 ├── background-jobs.json       # Background board (observational bookkeeping)
@@ -39,7 +40,7 @@
                                 #   Composite: adhoc/{runId}/repos/{repoId}/
 ```
 
-Runtime Agent Hive configuration is **not** stored under `.hive/`. It lives only at `~/.config/opencode/agent_hive.json`. Project-local `agent_hive.json` / `agent-hive.json` files are ignored.
+Runtime Agent Hive configuration lives at `~/.config/opencode/agent_hive.json`. The only project-local runtime configuration file is `.hive/agent-hive.override.json`, which can override `model` and `variant` for matching built-in or effective custom-agent declarations. Global config remains authoritative for all other settings. Project `.hive/agent-hive.json` and `.opencode/agent_hive.json` remain ignored; restart OpenCode after changing configuration.
 
 Single-repo projects use the git root directly; multi-repo topology, when needed, is stored in this manifest.
 

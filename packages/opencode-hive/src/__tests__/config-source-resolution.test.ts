@@ -61,10 +61,13 @@ describe('plugin config source resolution', () => {
 
   it('reports a global config failure', async () => {
     const globalConfigPath = path.join(testRoot, '.config', 'opencode', 'agent_hive.json');
-    const warningMessage = `Failed to read global config at ${globalConfigPath}; using defaults`;
+    const overridePath = path.join(testRoot, '.hive', 'agent-hive.override.json');
+    const warningMessage = `Failed to read global config at ${globalConfigPath}; using defaults. Failed to read project agent override at ${overridePath}; ignoring it and using defaults`;
 
     fs.mkdirSync(path.dirname(globalConfigPath), { recursive: true });
     fs.writeFileSync(globalConfigPath, JSON.stringify({ sandbox: 123 }));
+    fs.mkdirSync(path.dirname(overridePath), { recursive: true });
+    fs.writeFileSync(overridePath, JSON.stringify({ agents: { 'forager-worker': { temperature: 0.3 } } }));
 
     const notifications: Array<{ message: string }> = [];
 
@@ -92,6 +95,68 @@ describe('plugin config source resolution', () => {
     expect(notifications.length).toBe(1);
     expect(notifications[0].message).toContain('[hive:config]');
     expect(hiveStatus.warning).toBe(warningMessage);
+  });
+
+  it('registers project model and variant overrides and uses the same values in the variant hook', async () => {
+    const globalConfigPath = path.join(testRoot, '.config', 'opencode', 'agent_hive.json');
+    const overridePath = path.join(testRoot, '.hive', 'agent-hive.override.json');
+    fs.mkdirSync(path.dirname(globalConfigPath), { recursive: true });
+    fs.writeFileSync(globalConfigPath, JSON.stringify({
+      agents: {
+        'forager-worker': { model: 'global/forager', variant: 'medium', temperature: 0.7 },
+      },
+      customAgents: {
+        'forager-inherited': {
+          baseAgent: 'forager-worker',
+          description: 'Inherits the base agent model settings.',
+        },
+        'forager-direct': {
+          baseAgent: 'forager-worker',
+          description: 'Overrides the inherited variant.',
+          model: 'global/custom-forager',
+          variant: 'xhigh',
+        },
+      },
+    }));
+    fs.mkdirSync(path.dirname(overridePath), { recursive: true });
+    fs.writeFileSync(overridePath, JSON.stringify({
+      agents: { 'forager-worker': { model: ' project/forager ', variant: ' high ' } },
+      customAgents: { 'forager-direct': { model: ' project/custom-forager ', variant: ' low ' } },
+    }));
+
+    const aliasRoot = path.join(TEST_ROOT_BASE, 'project-alias');
+    fs.symlinkSync(testRoot, aliasRoot, 'dir');
+    const ctx: any = {
+      directory: aliasRoot,
+      worktree: aliasRoot,
+      serverUrl: new URL('http://localhost:1'),
+      project: createProject(aliasRoot),
+      client: { notify: () => true },
+    };
+    const hooks = await plugin(ctx);
+    const opencodeConfig: any = { agent: { existing: { model: 'existing/model' } } };
+    await hooks.config!(opencodeConfig);
+
+    expect(opencodeConfig.agent['forager-worker']).toMatchObject({
+      model: 'project/forager',
+      variant: 'high',
+      temperature: 0.7,
+    });
+    expect(opencodeConfig.agent['forager-inherited']).toMatchObject({
+      model: 'project/forager',
+      variant: 'high',
+      temperature: 0.7,
+    });
+    expect(opencodeConfig.agent['forager-direct']).toMatchObject({
+      model: 'project/custom-forager',
+      variant: 'low',
+      temperature: 0.7,
+    });
+
+    const output: any = { message: { agent: 'forager-direct' }, parts: [] };
+    await hooks['chat.message']!({ sessionID: 'sess_project_agent_override', agent: 'forager-direct' } as any, output);
+    expect(output.message.variant).toBe('low');
+    expect(output.message.variant).toBe(opencodeConfig.agent['forager-direct'].variant);
   });
 
 });

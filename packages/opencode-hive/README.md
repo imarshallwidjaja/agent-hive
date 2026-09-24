@@ -41,7 +41,7 @@ The config hook intentionally mutates these OpenCode fields:
 
 Configure research integrations and their permissions in OpenCode. oc-arkive does not install, register, configure, or alter them. Hive agents inspect the capabilities already exposed to their session, select the narrowest suitable interface from its description and schema, and report a missing capability when required evidence cannot be retrieved. They do not install tools or improvise shell or network substitutes.
 
-Default mode is dedicated (`architect-planner` + `swarm-orchestrator`). Set `"agentMode": "unified"` for a single hybrid `hive-master` seat; see [Agent mode](#agent-mode). Runtime config is **global only**: `~/.config/opencode/agent_hive.json`.
+Default mode is dedicated (`architect-planner` + `swarm-orchestrator`). Set `"agentMode": "unified"` for a single hybrid `hive-master` seat; see [Agent mode](#agent-mode). Runtime settings live in `~/.config/opencode/agent_hive.json`, with a narrow project-local exception for existing agents' `model` and `variant` values in `.hive/agent-hive.override.json`.
 
 ## The Workflow
 
@@ -217,7 +217,7 @@ For execution work, treat worker output as evidence to inspect, not proof to tru
 ### Local skill and model use cases
 
 - **Local skill experiments:** keep a skill in `<project>/.opencode/skills/<id>/SKILL.md` or `<project>/.claude/skills/<id>/SKILL.md`, then load it with OpenCode's native `skill` tool, reference it in agent instructions, or list its frontmatter `name` in `autoLoadSkills`. User file skills are discovered through OpenCode's native `.opencode`, `.claude`, `.agents`, `skills.paths`, and `skills.urls` mechanisms.
-- **Runtime configuration:** set global agent models, variants, sandbox policy, custom agents, `taskTraceSummarizer`, and skill auto-load settings in `~/.config/opencode/agent_hive.json`. See [Agent mode](#agent-mode) and [Task trace summarizer](#task-trace-summarizer).
+- **Runtime configuration:** set global agent models, variants, sandbox policy, custom agents, `taskTraceSummarizer`, and skill auto-load settings in `~/.config/opencode/agent_hive.json`. A project may override only `model` and/or `variant` for matching built-in or effective custom-agent declarations in `.hive/agent-hive.override.json`. Global config remains authoritative for all other settings. See [Configuration](#configuration).
 
 #### Canonical Delegation Threshold
 
@@ -397,9 +397,9 @@ For example, a shared DTO task can verify the DTO owner suite before merge and d
 
 ## Configuration
 
-Hive reads runtime configuration only from `~/.config/opencode/agent_hive.json`. Project-local `.hive/agent-hive.json` and `.opencode/agent_hive.json` files are ignored, including malformed files. Global config failures still produce a runtime warning and fall back to defaults.
+Hive reads runtime configuration from `~/.config/opencode/agent_hive.json`. The only project-local override file is `.hive/agent-hive.override.json`; it accepts only `model` and `variant` under `agents` and `customAgents`, and affects matching agents already present in the effective global/default configuration. Unknown names are ignored and never create agents. Project-local `.hive/agent-hive.json` and `.opencode/agent_hive.json` files remain ignored. Invalid global config falls back to defaults; an invalid project override is ignored with a runtime warning. Restart OpenCode after changing either config file.
 
-All runtime policy, agent definitions, and auto-load skill settings use the global file.
+Global config remains authoritative for runtime policy, agent definitions, sandbox settings, and auto-load skill settings. See [`agent_hive.override.schema.json`](schema/agent_hive.override.schema.json) for the project override shape.
 
 `hook_cadence` currently has no useful tuning surface: production gates only the safety-critical `tool.execute.before` hook, which is forced to cadence `1`. The schema remains the machine-readable reference for this field.
 

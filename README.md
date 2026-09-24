@@ -107,10 +107,13 @@ are in both modes.
 Why each seat exists, how it behaves, and the full ad-hoc / dash-review /
 vuln-review loops are in the [Operator Guide](docs/OPERATOR-GUIDE.md).
 
-Runtime configuration is global only: `~/.config/opencode/agent_hive.json`.
-Project-local `agent_hive.json` and `agent-hive.json` files are ignored. Dedicated
-mode is the default; set `"agentMode": "unified"` for a single `hive-master` seat
-(see the [plugin README agent mode section](packages/opencode-hive/README.md#agent-mode)).
+Runtime configuration lives in `~/.config/opencode/agent_hive.json`. A project
+may override only existing agents' `model` and `variant` values in
+`.hive/agent-hive.override.json`; the global file remains authoritative for all
+other settings. Project `.hive/agent-hive.json` and `.opencode/agent_hive.json`
+files remain ignored. Restart OpenCode after changing either config file.
+Dedicated mode is the default; set `"agentMode": "unified"` for a single
+`hive-master` seat (see the [plugin README agent mode section](packages/opencode-hive/README.md#agent-mode)).
 For existing-config compatibility, see the
 [plugin README](packages/opencode-hive/README.md#existing-opencode-configurations).
 

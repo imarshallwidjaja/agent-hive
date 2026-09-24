@@ -50,6 +50,7 @@
   "files": [
     "dist/",
     "plugin.json",
+    "schema/",
     "skills/",
     "README.md"
   ]

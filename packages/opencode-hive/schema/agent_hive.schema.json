@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/imarshallwidjaja/agent-hive/main/packages/opencode-hive/schema/agent_hive.schema.json",
   "title": "Agent Hive Configuration",
-  "description": "Configuration schema for ~/.config/opencode/agent_hive.json, the only Agent Hive runtime configuration source. Project-local .hive/agent-hive.json and .opencode/agent_hive.json files are ignored.",
+  "description": "Configuration schema for ~/.config/opencode/agent_hive.json. Project-local agent model and variant overrides use .hive/agent-hive.override.json; project .hive/agent-hive.json and .opencode/agent_hive.json files are ignored.",
   "type": "object",
   "additionalProperties": false,
   "dependentRequired": {
@@ -144,7 +144,7 @@
     },
     "customAgents": {
       "type": "object",
-      "description": "Global custom Hive subagent definitions derived from scout-researcher, forager-worker, plan-reviewer, code-reviewer, simplicity-reviewer, approach-advisor, or vulnerability-reviewer. Project-local values are ignored by runtime config resolution. IDs cannot reuse built-in or plugin-reserved names or contain native permission wildcard characters '*' or '?'. dash-reviewer remains available for existing custom configuration because the command uses a private runtime identity.",
+      "description": "Global custom Hive subagent definitions derived from scout-researcher, forager-worker, plan-reviewer, code-reviewer, simplicity-reviewer, approach-advisor, or vulnerability-reviewer. Project-local model and variant overrides may target matching declarations through .hive/agent-hive.override.json. IDs cannot reuse built-in or plugin-reserved names or contain native permission wildcard characters '*' or '?'. dash-reviewer remains available for existing custom configuration because the command uses a private runtime identity.",
       "propertyNames": {
         "pattern": "^[^*?]*$",
         "not": {

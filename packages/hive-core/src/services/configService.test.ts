@@ -9,6 +9,13 @@ let originalHome: string | undefined;
 let tempHome: string;
 
 const makeTempHome = () => fs.mkdtempSync(path.join(os.tmpdir(), "hive-home-"));
+const projectOverridePath = (projectRoot: string) => path.join(projectRoot, '.hive', 'agent-hive.override.json');
+const writeProjectOverride = (projectRoot: string, value: unknown) => {
+  const overridePath = projectOverridePath(projectRoot);
+  fs.mkdirSync(path.dirname(overridePath), { recursive: true });
+  fs.writeFileSync(overridePath, JSON.stringify(value));
+  return overridePath;
+};
 
 beforeEach(() => {
   originalHome = process.env.HOME;
@@ -1728,5 +1735,240 @@ describe('ConfigService write validation and persistence', () => {
       repositories: [{ id: 'api', path: './api' }],
     })).toThrow('Repository root does not exist');
     expect(fs.readFileSync(configPath, 'utf-8')).toBe(original);
+  });
+
+  describe('project agent overrides', () => {
+    it('changes built-in model or variant while preserving the other global settings', () => {
+      const projectRoot = path.join(tempHome, 'project');
+      const service = new ConfigService(projectRoot);
+      const configPath = service.getPath();
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+      fs.writeFileSync(configPath, JSON.stringify({
+        agents: {
+          'forager-worker': { model: 'global/forager', variant: 'medium', temperature: 0.65 },
+          'hive-builder': { model: 'global/builder', temperature: 0.7 },
+        },
+      }));
+      writeProjectOverride(projectRoot, {
+        agents: {
+          'forager-worker': { model: 'project/forager' },
+          'hive-builder': { variant: 'high' },
+        },
+      });
+
+      expect(service.getAgentConfig('forager-worker')).toMatchObject({
+        model: 'project/forager',
+        variant: 'medium',
+        temperature: 0.65,
+      });
+      expect(service.getAgentConfig('hive-builder')).toMatchObject({
+        model: 'global/builder',
+        variant: 'high',
+        temperature: 0.7,
+      });
+    });
+
+    it('applies overrides over defaults when global config is missing', () => {
+      const projectRoot = path.join(tempHome, 'project');
+      const service = new ConfigService(projectRoot);
+      writeProjectOverride(projectRoot, {
+        agents: {
+          'hive-builder': { model: 'project/builder' },
+          'forager-worker': { variant: 'high' },
+        },
+      });
+
+      expect(fs.existsSync(service.getPath())).toBe(false);
+      expect(service.getAgentConfig('hive-builder')).toMatchObject({
+        model: 'project/builder',
+        temperature: DEFAULT_HIVE_CONFIG.agents?.['hive-builder']?.temperature,
+      });
+      expect(service.getAgentConfig('forager-worker')).toMatchObject({
+        model: DEFAULT_HIVE_CONFIG.agents?.['forager-worker']?.model,
+        variant: 'high',
+      });
+      expect(service.getLastFallbackWarning()).toBeNull();
+    });
+
+    it('trims project model and variant overrides before exposing built-in and custom agent config', () => {
+      const projectRoot = path.join(tempHome, 'project');
+      const service = new ConfigService(projectRoot);
+      fs.mkdirSync(path.dirname(service.getPath()), { recursive: true });
+      fs.writeFileSync(service.getPath(), JSON.stringify({
+        customAgents: {
+          'forager-direct': {
+            baseAgent: 'forager-worker',
+            description: 'Directly configured custom agent.',
+          },
+        },
+      }));
+      writeProjectOverride(projectRoot, {
+        agents: { 'forager-worker': { model: ' project/forager ', variant: ' high ' } },
+        customAgents: { 'forager-direct': { model: ' project/direct ', variant: ' low ' } },
+      });
+
+      expect(service.getAgentConfig('forager-worker')).toMatchObject({
+        model: 'project/forager',
+        variant: 'high',
+      });
+      expect(service.getCustomAgentConfigs()['forager-direct']).toMatchObject({
+        model: 'project/direct',
+        variant: 'low',
+      });
+    });
+
+    it('overrides matching custom agents and preserves built-in inheritance precedence', () => {
+      const projectRoot = path.join(tempHome, 'project');
+      const service = new ConfigService(projectRoot);
+      const configPath = service.getPath();
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+      fs.writeFileSync(configPath, JSON.stringify({
+        agents: {
+          'forager-worker': { model: 'global/forager', variant: 'medium', temperature: 0.6 },
+        },
+        customAgents: {
+          'forager-inherited': {
+            baseAgent: 'forager-worker',
+            description: 'Inherits its model settings.',
+          },
+          'forager-direct': {
+            baseAgent: 'forager-worker',
+            description: 'Has a direct global variant.',
+            variant: 'global-custom',
+          },
+        },
+      }));
+      writeProjectOverride(projectRoot, {
+        agents: { 'forager-worker': { model: 'project/forager', variant: 'high' } },
+        customAgents: { 'forager-direct': { variant: 'low' } },
+      });
+
+      expect(service.getCustomAgentConfigs()['forager-inherited']).toMatchObject({
+        model: 'project/forager',
+        variant: 'high',
+        temperature: 0.6,
+      });
+      expect(service.getCustomAgentConfigs()['forager-direct']).toMatchObject({
+        model: 'project/forager',
+        variant: 'low',
+        temperature: 0.6,
+      });
+    });
+
+    it('ignores unmatched built-in and custom agent names without creating agents', () => {
+      const projectRoot = path.join(tempHome, 'project');
+      const service = new ConfigService(projectRoot);
+      const configPath = service.getPath();
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+      fs.writeFileSync(configPath, JSON.stringify({
+        customAgents: {
+          'known-specialist': {
+            baseAgent: 'forager-worker',
+            description: 'Existing specialist.',
+          },
+        },
+      }));
+      writeProjectOverride(projectRoot, {
+        agents: { 'unknown-built-in': { model: 'project/unknown' } },
+        customAgents: { 'unknown-custom': { variant: 'high' } },
+      });
+
+      const config = service.get();
+      expect(config.agents).not.toHaveProperty('unknown-built-in');
+      expect(config.customAgents).not.toHaveProperty('unknown-custom');
+      expect(service.getCustomAgentConfigs()).not.toHaveProperty('unknown-custom');
+      expect(service.hasConfiguredAgent('unknown-custom')).toBe(false);
+      expect(service.getCustomAgentConfigs()).toHaveProperty('known-specialist');
+    });
+
+    it('ignores malformed JSON and rejects the entire document when fields are unsupported', () => {
+      const projectRoot = path.join(tempHome, 'project');
+      const configPath = new ConfigService(projectRoot).getPath();
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+      fs.writeFileSync(configPath, JSON.stringify({
+        agents: { 'forager-worker': { model: 'global/forager', variant: 'medium' } },
+      }));
+      fs.mkdirSync(path.dirname(projectOverridePath(projectRoot)), { recursive: true });
+
+      for (const invalid of [
+        '{invalid json',
+        JSON.stringify({
+          agents: {
+            'forager-worker': { model: 'project/forager' },
+            'hive-builder': { variant: 'high', temperature: 0.2 },
+          },
+        }),
+      ]) {
+        fs.writeFileSync(projectOverridePath(projectRoot), invalid);
+        const service = new ConfigService(projectRoot);
+        expect(service.getAgentConfig('forager-worker').model).toBe('global/forager');
+        expect(service.getAgentConfig('hive-builder').variant).toBeUndefined();
+        expect(service.getLastFallbackWarning()).toMatchObject({
+          sourceType: 'project',
+          sourcePath: projectOverridePath(projectRoot),
+        });
+      }
+    });
+
+    it('combines global and project failure details in the fallback warning', () => {
+      const projectRoot = path.join(tempHome, 'project');
+      const service = new ConfigService(projectRoot);
+      fs.mkdirSync(path.dirname(service.getPath()), { recursive: true });
+      fs.writeFileSync(service.getPath(), JSON.stringify({ sandbox: 123 }));
+      const overridePath = projectOverridePath(projectRoot);
+      fs.mkdirSync(path.dirname(overridePath), { recursive: true });
+      fs.writeFileSync(overridePath, '{invalid json');
+
+      const config = service.get();
+
+      expect(config).toEqual(DEFAULT_HIVE_CONFIG);
+      expect(service.getLastFallbackWarning()?.message).toContain(service.getPath());
+      expect(service.getLastFallbackWarning()?.message).toContain(overridePath);
+      expect(service.getLastFallbackWarning()?.message).toContain('using defaults');
+    });
+
+    it('reports valid project overrides applied over defaults after a global config failure', () => {
+      const projectRoot = path.join(tempHome, 'project');
+      const service = new ConfigService(projectRoot);
+      fs.mkdirSync(path.dirname(service.getPath()), { recursive: true });
+      fs.writeFileSync(service.getPath(), JSON.stringify({ sandbox: 123 }));
+      writeProjectOverride(projectRoot, {
+        agents: { 'hive-builder': { model: 'project/builder' } },
+      });
+
+      expect(service.getAgentConfig('hive-builder').model).toBe('project/builder');
+      expect(service.getLastFallbackWarning()?.message).toContain(
+        'using defaults with valid project agent overrides applied',
+      );
+    });
+
+    it('keeps project values out of global writes and reapplies the startup snapshot after set()', () => {
+      const projectRoot = path.join(tempHome, 'project');
+      const service = new ConfigService(projectRoot);
+      const overridePath = writeProjectOverride(projectRoot, {
+        agents: { 'forager-worker': { model: 'project/forager', variant: 'high' } },
+      });
+
+      expect(service.init().agents?.['forager-worker']?.model).toBe('project/forager');
+      writeProjectOverride(projectRoot, {
+        agents: { 'forager-worker': { model: 'changed/project', variant: 'low' } },
+      });
+      const updated = service.set({
+        agents: { 'forager-worker': { temperature: 0.8 } },
+      });
+      const stored = JSON.parse(fs.readFileSync(service.getPath(), 'utf-8'));
+
+      expect(updated.agents?.['forager-worker']).toMatchObject({
+        model: 'project/forager',
+        variant: 'high',
+        temperature: 0.8,
+      });
+      expect(service.getAgentConfig('forager-worker').model).toBe('project/forager');
+      expect(stored.agents?.['forager-worker']?.model).toBe(
+        DEFAULT_HIVE_CONFIG.agents?.['forager-worker']?.model,
+      );
+      expect(stored.agents?.['forager-worker']?.variant).not.toBe('high');
+      expect(fs.readFileSync(overridePath, 'utf-8')).toContain('changed/project');
+    });
   });
 });

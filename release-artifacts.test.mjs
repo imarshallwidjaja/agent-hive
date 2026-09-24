@@ -390,6 +390,8 @@ describe(`release ${releaseVersion} artifact contract on main`, () => {
   it('packs every oc-arkive asset without unresolved hive-core module references', () => {
     withPackedPackage(opencodeHiveRoot, (packageRoot, packedFiles) => {
       assertPackedFile(packedFiles, 'dist/index.js', 'oc-arkive');
+      assertPackedFile(packedFiles, 'schema/agent_hive.schema.json', 'oc-arkive');
+      assertPackedFile(packedFiles, 'schema/agent_hive.override.schema.json', 'oc-arkive');
       assert.ok(
         [...packedFiles].some((filePath) => filePath.startsWith('skills/')),
         'README-promised oc-arkive asset missing from npm pack: skills/'

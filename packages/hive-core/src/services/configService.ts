@@ -36,26 +36,49 @@ const STORED_CONFIG_KEYS = new Set([
   'customAgents',
 ]);
 
+type ConfigReadFailureReason = 'parse_error' | 'validation_error' | 'read_error';
+
+interface AgentModelVariantOverride {
+  model?: string;
+  variant?: string;
+}
+
+interface ProjectAgentOverrides {
+  $schema?: string;
+  agents?: Record<string, AgentModelVariantOverride>;
+  customAgents?: Record<string, AgentModelVariantOverride>;
+}
+
+type ProjectAgentOverrideRead =
+  | { ok: true; value: ProjectAgentOverrides | null }
+  | { ok: false; reason: ConfigReadFailureReason };
+
 /**
- * ConfigService manages Agent Hive config at ~/.config/opencode/agent_hive.json.
+ * ConfigService resolves global Agent Hive config and an optional project agent model/variant override.
+ * Writes remain scoped to ~/.config/opencode/agent_hive.json.
  */
 export class ConfigService {
   private configPath: string;
+  private projectAgentOverridePath: string | null;
   private cachedConfig: HiveConfig | null = null;
   private cachedCustomAgentConfigs: Record<string, ResolvedCustomAgentConfig> | null = null;
+  private cachedProjectAgentOverrideRead: ProjectAgentOverrideRead | null = null;
   private lastFallbackWarning: {
     message: string;
     sourceType: 'project' | 'global';
     sourcePath: string;
     fallbackType: 'global' | 'defaults';
     fallbackPath?: string;
-    reason: 'parse_error' | 'validation_error' | 'read_error';
+    reason: ConfigReadFailureReason;
   } | null = null;
 
-  constructor(_projectRoot?: string) {
+  constructor(projectRoot?: string) {
     const homeDir = process.env.HOME || process.env.USERPROFILE || '';
     const configDir = path.join(homeDir, '.config', 'opencode');
     this.configPath = path.join(configDir, 'agent_hive.json');
+    this.projectAgentOverridePath = projectRoot
+      ? path.join(path.resolve(projectRoot), '.hive', 'agent-hive.override.json')
+      : null;
   }
 
   /**
@@ -74,32 +97,16 @@ export class ConfigService {
     }
 
     if (!fs.existsSync(this.configPath)) {
-      this.cachedConfig = { ...DEFAULT_HIVE_CONFIG };
-      this.cachedCustomAgentConfigs = null;
-
-      return this.cachedConfig;
+      return this.cacheEffectiveConfig({ ...DEFAULT_HIVE_CONFIG }, 'defaults');
     }
 
     const globalStored = this.readStoredConfig(this.configPath);
     if (globalStored.ok) {
-      this.cachedConfig = this.mergeWithDefaults(globalStored.value);
-      this.cachedCustomAgentConfigs = null;
-      return this.cachedConfig;
+      return this.cacheEffectiveConfig(this.mergeWithDefaults(globalStored.value), 'global');
     }
 
     const fallbackReason = 'reason' in globalStored ? globalStored.reason : 'read_error';
-    this.cachedConfig = { ...DEFAULT_HIVE_CONFIG };
-    this.cachedCustomAgentConfigs = null;
-
-    this.lastFallbackWarning = {
-      message: `Failed to read global config at ${this.configPath}; using defaults`,
-      sourceType: 'global',
-      sourcePath: this.configPath,
-      fallbackType: 'defaults',
-      reason: fallbackReason,
-    };
-
-    return this.cachedConfig;
+    return this.cacheEffectiveConfig({ ...DEFAULT_HIVE_CONFIG }, 'defaults', fallbackReason);
   }
 
   getActiveReadSourceType(): 'project' | 'global' {
@@ -155,7 +162,7 @@ export class ConfigService {
     sourcePath: string;
     fallbackType: 'global' | 'defaults';
     fallbackPath?: string;
-    reason: 'parse_error' | 'validation_error' | 'read_error';
+    reason: ConfigReadFailureReason;
   } | null {
     return this.lastFallbackWarning;
   }
@@ -212,9 +219,7 @@ export class ConfigService {
 
       writeAtomic(this.configPath, JSON.stringify(stored, null, 2));
       const merged = this.mergeWithDefaults(stored);
-      this.cachedConfig = merged;
-      this.cachedCustomAgentConfigs = null;
-      return merged;
+      return this.cacheEffectiveConfig(merged, 'global');
     } finally {
       release();
     }
@@ -489,6 +494,165 @@ export class ConfigService {
       }
       return { ok: false, reason: 'read_error' };
     }
+  }
+
+  private readProjectAgentOverrides(): ProjectAgentOverrideRead {
+    if (this.cachedProjectAgentOverrideRead !== null) {
+      return this.cachedProjectAgentOverrideRead;
+    }
+
+    const overridePath = this.projectAgentOverridePath;
+    if (!overridePath || !fs.existsSync(overridePath)) {
+      this.cachedProjectAgentOverrideRead = { ok: true, value: null };
+      return this.cachedProjectAgentOverrideRead;
+    }
+
+    try {
+      const parsed = JSON.parse(fs.readFileSync(overridePath, 'utf-8')) as unknown;
+      this.cachedProjectAgentOverrideRead = this.isValidProjectAgentOverrides(parsed)
+        ? { ok: true, value: parsed }
+        : { ok: false, reason: 'validation_error' };
+    } catch (error) {
+      this.cachedProjectAgentOverrideRead = {
+        ok: false,
+        reason: error instanceof SyntaxError ? 'parse_error' : 'read_error',
+      };
+    }
+
+    return this.cachedProjectAgentOverrideRead;
+  }
+
+  private cacheEffectiveConfig(
+    baseConfig: HiveConfig,
+    baseSource: 'global' | 'defaults',
+    globalFailureReason?: ConfigReadFailureReason,
+  ): HiveConfig {
+    const projectRead = this.readProjectAgentOverrides();
+    const projectFailureReason = 'reason' in projectRead ? projectRead.reason : undefined;
+    this.cachedConfig = projectRead.ok && projectRead.value
+      ? this.applyProjectAgentOverrides(baseConfig, projectRead.value)
+      : baseConfig;
+    this.cachedCustomAgentConfigs = null;
+
+    const messages: string[] = [];
+    if (globalFailureReason) {
+      const projectOverridesApply = projectRead.ok && projectRead.value !== null;
+      messages.push(
+        `Failed to read global config at ${this.configPath}; using defaults${projectOverridesApply ? ' with valid project agent overrides applied' : ''}`,
+      );
+    }
+    if (projectFailureReason) {
+      const fallback = baseSource === 'global'
+        ? `global config at ${this.configPath}`
+        : 'defaults';
+      messages.push(
+        `Failed to read project agent override at ${this.projectAgentOverridePath}; ignoring it and using ${fallback}`,
+      );
+    }
+
+    if (messages.length === 0) {
+      this.lastFallbackWarning = null;
+    } else {
+      const projectFailed = projectFailureReason !== undefined;
+      this.lastFallbackWarning = {
+        message: messages.join('. '),
+        sourceType: projectFailed ? 'project' : 'global',
+        sourcePath: projectFailed ? this.projectAgentOverridePath! : this.configPath,
+        fallbackType: baseSource,
+        ...(baseSource === 'global' ? { fallbackPath: this.configPath } : {}),
+        reason: projectFailureReason ?? globalFailureReason!,
+      };
+    }
+
+    return this.cachedConfig;
+  }
+
+  private applyProjectAgentOverrides(
+    baseConfig: HiveConfig,
+    overrides: ProjectAgentOverrides,
+  ): HiveConfig {
+    const agents = { ...(baseConfig.agents ?? {}) };
+    for (const [agentName, override] of Object.entries(overrides.agents ?? {})) {
+      if (
+        !this.isBuiltInAgent(agentName)
+        || !Object.prototype.hasOwnProperty.call(agents, agentName)
+      ) {
+        continue;
+      }
+
+      const agentConfig = { ...agents[agentName] };
+      if (override.model !== undefined) agentConfig.model = override.model.trim();
+      if (override.variant !== undefined) agentConfig.variant = override.variant.trim();
+      agents[agentName] = agentConfig;
+    }
+
+    const customAgents = { ...(baseConfig.customAgents ?? {}) };
+    for (const [agentName, override] of Object.entries(overrides.customAgents ?? {})) {
+      if (!Object.prototype.hasOwnProperty.call(customAgents, agentName)) {
+        continue;
+      }
+
+      const agentConfig = { ...customAgents[agentName] };
+      if (override.model !== undefined) agentConfig.model = override.model.trim();
+      if (override.variant !== undefined) agentConfig.variant = override.variant.trim();
+      customAgents[agentName] = agentConfig;
+    }
+
+    return {
+      ...baseConfig,
+      agents,
+      customAgents,
+    };
+  }
+
+  private isValidProjectAgentOverrides(value: unknown): value is ProjectAgentOverrides {
+    if (!this.isObjectRecord(value)) {
+      return false;
+    }
+
+    if (Object.keys(value).some((key) => !['$schema', 'agents', 'customAgents'].includes(key))) {
+      return false;
+    }
+    if (value.$schema !== undefined && typeof value.$schema !== 'string') {
+      return false;
+    }
+
+    for (const mapName of ['agents', 'customAgents'] as const) {
+      const overrides = value[mapName];
+      if (overrides === undefined) {
+        continue;
+      }
+      if (!this.isObjectRecord(overrides)) {
+        return false;
+      }
+
+      for (const declaration of Object.values(overrides)) {
+        if (!this.isObjectRecord(declaration)) {
+          return false;
+        }
+        const fields = Object.keys(declaration);
+        if (
+          fields.length === 0
+          || fields.some((field) => field !== 'model' && field !== 'variant')
+        ) {
+          return false;
+        }
+        if (
+          'model' in declaration
+          && (typeof declaration.model !== 'string' || declaration.model.trim() === '')
+        ) {
+          return false;
+        }
+        if (
+          'variant' in declaration
+          && (typeof declaration.variant !== 'string' || declaration.variant.trim() === '')
+        ) {
+          return false;
+        }
+      }
+    }
+
+    return true;
   }
 
   private mergeWithDefaults(stored: Partial<HiveConfig>): HiveConfig {
