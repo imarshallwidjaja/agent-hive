@@ -3,6 +3,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { spawn } from "node:child_process";
 import { TaskService, TaskUpdatePersistenceError, TASK_STATUS_SCHEMA_VERSION } from "./taskService";
+import { PlanService } from "./planService";
 import { SubtaskService } from "./subtaskService";
 import { TaskUpdatePersistenceError as PublicTaskUpdatePersistenceError } from "../index";
 import type { TaskUpdateInput as PublicTaskUpdateInput, TaskUpdateResult as PublicTaskUpdateResult } from "../index";
@@ -2288,6 +2289,143 @@ Final body.
       expect(specPlanSection(readSpec(featurePath, "01-setup"))).toBe("### 1. Setup\n\nOwn body.");
       expect(specPlanSection(readSpec(featurePath, "02-build"))).toBe("### 2. Build\n\nBuild body.\n\n#### 2.1 Detail\n\nDetail body.");
       expect(specPlanSection(readSpec(featurePath, "03-final"))).toBe("### 3. Final\n\nFinal body.");
+    });
+  });
+
+  describe("CRLF plan parsing", () => {
+    const LF_PLAN = `# Plan
+
+## Tasks
+
+### 1. Setup
+
+**Repos**: root
+
+Prepare the workspace.
+
+### 2. Build
+
+**Depends on**: 1
+
+Build the workspace.
+
+### 3. Verify
+
+**Depends on**: 1, 2
+
+**Repos**: root, docs
+
+Verify the workspace.
+`;
+    const asCrlf = (plan: string): string => plan.replace(/\n/g, "\r\n");
+
+    const writePlan = (featureName: string, plan: string): string => {
+      setupFeature(featureName);
+      const featurePath = path.join(TEST_DIR, ".hive", "features", featureName);
+      fs.writeFileSync(path.join(featurePath, "plan.md"), plan);
+      return featurePath;
+    };
+    const readSpec = (featurePath: string, folder: string): string =>
+      fs.readFileSync(path.join(featurePath, "tasks", folder, "spec.md"), "utf-8");
+
+    it("syncs CRLF plans to the same folders, dependencies, repositories, and specs as LF plans", () => {
+      const featureName = "crlf-sync";
+      const featurePath = writePlan(featureName, LF_PLAN);
+      expect(service.sync(featureName).created).toEqual(["01-setup", "02-build", "03-verify"]);
+
+      const lfSpecs = new Map(
+        ["01-setup", "02-build", "03-verify"].map(folder => [folder, readSpec(featurePath, folder)])
+      );
+      const lfStatuses = new Map(
+        ["01-setup", "02-build", "03-verify"].map(folder => [folder, service.getRawStatus(featureName, folder)])
+      );
+
+      fs.rmSync(path.join(featurePath, "tasks"), { recursive: true, force: true });
+      fs.writeFileSync(path.join(featurePath, "plan.md"), asCrlf(LF_PLAN));
+
+      const crlfResult = service.sync(featureName);
+
+      expect(crlfResult.created).toEqual(["01-setup", "02-build", "03-verify"]);
+      for (const folder of crlfResult.created) {
+        expect(service.getRawStatus(featureName, folder)).toEqual(lfStatuses.get(folder));
+        const crlfSpec = readSpec(featurePath, folder);
+        expect(crlfSpec).toBe(lfSpecs.get(folder));
+        expect(crlfSpec).not.toContain("\r");
+      }
+
+      expect(service.getRawStatus(featureName, "01-setup")?.repoIds).toEqual(["root"]);
+      expect(service.getRawStatus(featureName, "02-build")?.dependsOn).toEqual(["01-setup"]);
+      expect(service.getRawStatus(featureName, "03-verify")?.dependsOn).toEqual(["01-setup", "02-build"]);
+      expect(service.getRawStatus(featureName, "03-verify")?.repoIds).toEqual(["root", "docs"]);
+    });
+
+    it("reports matches_plan freshness with the same planSection line numbers as LF plans", () => {
+      writePlan("crlf-freshness-lf", LF_PLAN);
+      writePlan("crlf-freshness-crlf", asCrlf(LF_PLAN));
+      service.sync("crlf-freshness-lf");
+      service.sync("crlf-freshness-crlf");
+
+      const crlfFreshness = service.getSpecFreshness("crlf-freshness-crlf");
+      expect(crlfFreshness).toEqual(service.getSpecFreshness("crlf-freshness-lf"));
+      expect(crlfFreshness).toEqual([
+        { folder: "01-setup", specStale: false, specStaleReason: "matches_plan", planSection: { startLine: 5, endLine: 9 } },
+        { folder: "02-build", specStale: false, specStaleReason: "matches_plan", planSection: { startLine: 11, endLine: 15 } },
+        { folder: "03-verify", specStale: false, specStaleReason: "matches_plan", planSection: { startLine: 17, endLine: 23 } },
+      ]);
+    });
+
+    it("parses mixed-ending plans with LF task headings and CRLF annotation lines like LF plans", () => {
+      const featureName = "crlf-mixed";
+      const featurePath = writePlan(featureName, LF_PLAN);
+      service.sync(featureName);
+      const folders = ["01-setup", "02-build", "03-verify"];
+      const lfStatuses = new Map(folders.map(folder => [folder, service.getRawStatus(featureName, folder)]));
+      const lfSpecs = new Map(folders.map(folder => [folder, readSpec(featurePath, folder)]));
+
+      const mixedPlan = LF_PLAN
+        .replace("**Repos**: root\n", "**Repos**: root\r\n")
+        .replace("**Depends on**: 1\n", "**Depends on**: 1\r\n")
+        .replace("**Depends on**: 1, 2\n", "**Depends on**: 1, 2\r\n")
+        .replace("**Repos**: root, docs\n", "**Repos**: root, docs\r\n");
+      fs.rmSync(path.join(featurePath, "tasks"), { recursive: true, force: true });
+      fs.writeFileSync(path.join(featurePath, "plan.md"), mixedPlan);
+
+      const mixedResult = service.sync(featureName);
+
+      expect(mixedResult.created).toEqual(folders);
+      // 03-verify names both earlier tasks; the implicit previous-task fallback would only chain 02-build.
+      expect(service.getRawStatus(featureName, "03-verify")?.dependsOn).toEqual(["01-setup", "02-build"]);
+      expect(service.getRawStatus(featureName, "01-setup")?.repoIds).toEqual(["root"]);
+      expect(service.getRawStatus(featureName, "03-verify")?.repoIds).toEqual(["root", "docs"]);
+      for (const folder of mixedResult.created) {
+        expect(service.getRawStatus(featureName, folder)).toEqual(lfStatuses.get(folder));
+        expect(readSpec(featurePath, folder)).toBe(lfSpecs.get(folder));
+      }
+    });
+
+    it("syncs a CRLF plan after planService.patch replaces a task", () => {
+      const featureName = "crlf-patch";
+      writePlan(featureName, asCrlf(LF_PLAN));
+
+      const planService = new PlanService(PROJECT_ROOT);
+      const plan = planService.read(featureName);
+      expect(plan).not.toBeNull();
+      const patched = planService.patch(featureName, plan!.revision, [
+        {
+          type: "replace_task",
+          taskNumber: 2,
+          content: "### 2. Build\n\n**Depends on**: 1\n\nBuild the patched workspace.\n",
+        },
+      ]);
+      expect(patched.changedSections).toEqual(["Task 2"]);
+
+      const result = service.sync(featureName);
+      expect(result.created).toEqual(["01-setup", "02-build", "03-verify"]);
+      expect(service.getRawStatus(featureName, "02-build")?.dependsOn).toEqual(["01-setup"]);
+      expect(service.getRawStatus(featureName, "03-verify")?.dependsOn).toEqual(["01-setup", "02-build"]);
+      const spec = service.readSpec(featureName, "02-build") ?? "";
+      expect(spec).toContain("Build the patched workspace.");
+      expect(spec).not.toContain("\r");
     });
   });
 

@@ -161,9 +161,8 @@ export class TaskService {
   }
 
   sync(featureName: string, options?: SyncOptions): TasksSyncResult {
-    const planPath = getPlanPath(this.projectRoot, featureName);
-    const planContent = readText(planPath);
-    
+    const planContent = this.readNormalizedPlanContent(featureName);
+
     if (!planContent) {
       throw new Error(`No plan.md found for feature '${featureName}'`);
     }
@@ -352,7 +351,7 @@ export class TaskService {
    * plan preamble) do not make it stale.
    */
   getSpecFreshness(featureName: string): TaskSpecFreshness[] {
-    const planContent = readText(getPlanPath(this.projectRoot, featureName));
+    const planContent = this.readNormalizedPlanContent(featureName);
     let plan: { tasks: ParsedTask[]; layout: PlanTaskLayout } | null = null;
     if (planContent) {
       try {
@@ -966,6 +965,16 @@ export class TaskService {
         throw new Error(`Invalid repository ID "${repoId}" in ${context}. Repository IDs must use the Task 1 repository ID grammar.`);
       }
     }
+  }
+
+  /**
+   * Read plan.md for parsing with CRLF normalized to LF, so line-oriented matching, section
+   * extraction, and generated specs treat CRLF plans like LF ones. Lone CR characters are
+   * content, not line endings: keeping them leaves line numbers aligned with the saved file.
+   */
+  private readNormalizedPlanContent(featureName: string): string | null {
+    const content = readText(getPlanPath(this.projectRoot, featureName));
+    return content === null ? null : content.replace(/\r\n/g, '\n');
   }
 
   private parseTasksFromPlan(content: string): ParsedTask[] {
