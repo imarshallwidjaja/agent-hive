@@ -13,6 +13,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -47,3 +52,6 @@ jobs:
       - name: Test vscode-arkive
         working-directory: packages/vscode-hive
         run: bun test
+
+      - name: Test release artifacts
+        run: node --test --test-concurrency=1 release-docs.test.mjs release-workflow.test.mjs release-artifacts.test.mjs release-vscode-bundle.test.mjs

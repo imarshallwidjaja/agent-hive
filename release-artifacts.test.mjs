@@ -267,6 +267,26 @@ describe(`release ${releaseVersion} artifact contract on main`, () => {
     }
   });
 
+  it('declares canonical repository metadata in every package manifest', () => {
+    const canonicalRepository = {
+      url: 'https://github.com/imarshallwidjaja/agent-hive.git',
+      homepage: 'https://github.com/imarshallwidjaja/agent-hive#readme',
+      bugs: 'https://github.com/imarshallwidjaja/agent-hive/issues',
+    };
+    for (const file of [
+      'packages/hive-core/package.json',
+      'packages/opencode-hive/package.json',
+      'packages/vscode-hive/package.json',
+    ]) {
+      const manifest = readJson(file);
+      assert.deepEqual(
+        { url: manifest.repository?.url, homepage: manifest.homepage, bugs: manifest.bugs?.url },
+        canonicalRepository,
+        `${file} should declare the canonical repository metadata`
+      );
+    }
+  });
+
   it(`refreshes tracked OpenCode lockfile markers to ${releaseVersion}`, () => {
     const packageLock = readJson('package-lock.json');
     const bunLock = readText('bun.lock');
@@ -469,7 +489,7 @@ describe('release documentation artifact locality', () => {
         );
       }
 
-      const output = execFileSync(process.execPath, ['--test', 'release-docs.test.mjs'], {
+      const output = execFileSync(process.execPath, ['--test', '--test-reporter=tap', 'release-docs.test.mjs'], {
         cwd: stagingRoot,
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'pipe'],

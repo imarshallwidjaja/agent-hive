@@ -8,12 +8,12 @@
   "icon": "icon.png",
   "repository": {
     "type": "git",
-    "url": "https://github.com/tctinh/agent-hive.git",
+    "url": "https://github.com/imarshallwidjaja/agent-hive.git",
     "directory": "packages/vscode-hive"
   },
-  "homepage": "https://github.com/tctinh/agent-hive#readme",
+  "homepage": "https://github.com/imarshallwidjaja/agent-hive#readme",
   "bugs": {
-    "url": "https://github.com/tctinh/agent-hive/issues"
+    "url": "https://github.com/imarshallwidjaja/agent-hive/issues"
   },
   "keywords": [
     "ai",
