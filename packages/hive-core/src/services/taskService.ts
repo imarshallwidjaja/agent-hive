@@ -94,7 +94,7 @@ export interface TaskSpecFreshness {
   specStaleReason: TaskSpecFreshnessReason;
   /**
    * 1-based inclusive plan.md lines of the task's section per the layout, when the task resolves in
-   * the plan. These can differ from the spec's extracted text for zero-padded `### 01.` headings.
+   * the plan. The spec's extracted section text comes from these same lines.
    */
   planSection?: { startLine: number; endLine: number };
   /** Lines of unowned headings following the task section, for unowned_heading_after_task_section. */
@@ -488,49 +488,12 @@ export class TaskService {
   }
 
   private extractPlanSection(planContent: string | null, task: { name: string; order: number; folder: string }): string | null {
-    if (!planContent) return null;
+    if (!planContent || task.order <= 0) return null;
 
-    const tasksSection = extractTasksSectionContent(planContent);
-    if (!tasksSection) return null;
+    const section = readPlanTaskLayout(planContent).tasks.find(candidate => candidate.taskNumber === task.order);
+    if (!section) return null;
 
-    const orderRegex = new RegExp(`^ {0,3}###\\s+${task.order}\\.\\s+[^\\n]+\\s*$`, 'i');
-    const boundaryRegex = /^ {0,3}###\s+/;
-    const lines = tasksSection.split('\n');
-    let fence: FenceState | null = null;
-    const nestedFences: FenceState[] = [];
-    let sectionLines: string[] | null = null;
-
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i].trimEnd();
-
-      const transition = getFenceTransition(line, fence, nestedFences);
-      if (transition) {
-        if (sectionLines) sectionLines.push(lines[i]);
-        if (!fence && transition.opened) {
-          fence = transition.opened;
-        } else if (transition.closedOuter) {
-          fence = null;
-        }
-        continue;
-      }
-
-      if (fence) {
-        if (sectionLines) sectionLines.push(lines[i]);
-        continue;
-      }
-
-      if (sectionLines) {
-        if (boundaryRegex.test(line)) break;
-        sectionLines.push(lines[i]);
-        continue;
-      }
-
-      if (task.order > 0 && orderRegex.test(line)) {
-        sectionLines = [lines[i]];
-      }
-    }
-
-    return sectionLines ? sectionLines.join('\n').trim() : null;
+    return planContent.split('\n').slice(section.startLine - 1, section.endLine).join('\n').trim();
   }
 
   /**

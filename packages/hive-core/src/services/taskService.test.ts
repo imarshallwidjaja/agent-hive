@@ -2121,6 +2121,176 @@ This pre-task heading must not create an executable task.
     });
   });
 
+  describe("sync() - plan task section extraction", () => {
+    const writePlan = (featureName: string, plan: string): string => {
+      const featurePath = path.join(TEST_DIR, ".hive", "features", featureName);
+      fs.mkdirSync(featurePath, { recursive: true });
+      fs.writeFileSync(
+        path.join(featurePath, "feature.json"),
+        JSON.stringify({ name: featureName, status: "executing", createdAt: new Date().toISOString() })
+      );
+      fs.writeFileSync(path.join(featurePath, "plan.md"), plan);
+      return featurePath;
+    };
+    const readSpec = (featurePath: string, folder: string): string =>
+      fs.readFileSync(path.join(featurePath, "tasks", folder, "spec.md"), "utf-8");
+    const specPlanSection = (spec: string): string => {
+      const afterHeading = spec.split("## Plan Section\n\n")[1] ?? "";
+      const taskTypeAt = afterHeading.indexOf("\n\n## Task Type");
+      return (taskTypeAt === -1 ? afterHeading : afterHeading.slice(0, taskTypeAt)).replace(/\n+$/, "");
+    };
+    const planLines = (plan: string, startLine: number, endLine: number): string =>
+      plan.split("\n").slice(startLine - 1, endLine).join("\n");
+    const freshnessByFolder = (featureName: string) =>
+      new Map(service.getSpecFreshness(featureName).map(entry => [entry.folder, entry]));
+
+    it("copies zero-padded task headings into specs and reports the same lines as freshness", () => {
+      const featureName = "zero-padded-sections";
+      const plan = `# Plan
+
+## Tasks
+
+### 01. Setup
+
+Setup body.
+
+### 02. Build
+
+Build body.
+`;
+      const featurePath = writePlan(featureName, plan);
+
+      expect(service.sync(featureName).created).toEqual(["01-setup", "02-build"]);
+
+      const expected = [
+        { folder: "01-setup", startLine: 5, endLine: 7 },
+        { folder: "02-build", startLine: 9, endLine: 11 },
+      ];
+      const freshness = freshnessByFolder(featureName);
+      for (const { folder, startLine, endLine } of expected) {
+        expect(freshness.get(folder)).toEqual({
+          folder,
+          specStale: false,
+          specStaleReason: "matches_plan",
+          planSection: { startLine, endLine },
+        });
+        expect(specPlanSection(readSpec(featurePath, folder))).toBe(planLines(plan, startLine, endLine));
+      }
+      expect(readSpec(featurePath, "01-setup")).not.toContain("_No plan section available._");
+    });
+
+    it("flags legacy specs that lack a zero-padded section and refreshes them when pending", () => {
+      const featureName = "zero-padded-legacy-spec";
+      const plan = `# Plan
+
+## Tasks
+
+### 01. Setup
+
+Setup body.
+
+### 02. Build
+
+Build body.
+`;
+      const featurePath = writePlan(featureName, plan);
+      service.sync(featureName);
+
+      const legacySection = "## Plan Section\n\n_No plan section available._\n";
+      fs.writeFileSync(
+        path.join(featurePath, "tasks", "01-setup", "spec.md"),
+        `# Task: 01-setup\n\n## Feature: ${featureName}\n\n## Dependencies\n\n_None_\n\n${legacySection}`
+      );
+      service.update(featureName, "02-build", { status: "in_progress" });
+      fs.writeFileSync(
+        path.join(featurePath, "tasks", "02-build", "spec.md"),
+        `# Task: 02-build\n\n## Feature: ${featureName}\n\n## Dependencies\n\n- **1. Setup** (01-setup)\n\n${legacySection}`
+      );
+
+      const before = freshnessByFolder(featureName);
+      expect(before.get("01-setup")).toEqual({
+        folder: "01-setup",
+        specStale: true,
+        specStaleReason: "differs_from_plan",
+        planSection: { startLine: 5, endLine: 7 },
+      });
+      expect(before.get("02-build")).toEqual({
+        folder: "02-build",
+        specStale: true,
+        specStaleReason: "differs_from_plan",
+        planSection: { startLine: 9, endLine: 11 },
+      });
+
+      service.sync(featureName, { refreshPending: true });
+
+      expect(specPlanSection(readSpec(featurePath, "01-setup"))).toBe("### 01. Setup\n\nSetup body.");
+      expect(readSpec(featurePath, "01-setup")).not.toContain("_No plan section available._");
+      expect(readSpec(featurePath, "02-build")).toContain("_No plan section available._");
+      expect(service.getRawStatus(featureName, "02-build")?.status).toBe("in_progress");
+
+      const after = freshnessByFolder(featureName);
+      expect(after.get("01-setup")?.specStaleReason).toBe("matches_plan");
+      expect(after.get("02-build")).toMatchObject({ specStale: true, specStaleReason: "differs_from_plan" });
+    });
+
+    it("does not cross-match single-digit and multi-digit task numbers", () => {
+      const featureName = "task-number-cross-match";
+      const plan = `# Plan
+
+## Tasks
+
+### 1. First
+
+First body.
+
+### 10. Tenth
+
+Tenth body.
+`;
+      const featurePath = writePlan(featureName, plan);
+
+      expect(service.sync(featureName).created).toEqual(["01-first", "10-tenth"]);
+      expect(specPlanSection(readSpec(featurePath, "01-first"))).toBe("### 1. First\n\nFirst body.");
+      expect(specPlanSection(readSpec(featurePath, "10-tenth"))).toBe("### 10. Tenth\n\nTenth body.");
+    });
+
+    it("ends sections at unowned headings and keeps trailing blanks and nested subsections out of the wrong section", () => {
+      const featureName = "section-boundaries";
+      const plan = `# Plan
+
+## Tasks
+
+### 1. Setup
+
+Own body.
+
+
+
+### Notes
+
+Not part of Setup.
+
+### 2. Build
+
+Build body.
+
+#### 2.1 Detail
+
+Detail body.
+
+### 3. Final
+
+Final body.
+`;
+      const featurePath = writePlan(featureName, plan);
+      service.sync(featureName);
+
+      expect(specPlanSection(readSpec(featurePath, "01-setup"))).toBe("### 1. Setup\n\nOwn body.");
+      expect(specPlanSection(readSpec(featurePath, "02-build"))).toBe("### 2. Build\n\nBuild body.\n\n#### 2.1 Detail\n\nDetail body.");
+      expect(specPlanSection(readSpec(featurePath, "03-final"))).toBe("### 3. Final\n\nFinal body.");
+    });
+  });
+
   describe("sync() - dependency validation edge cases", () => {
     it("allows forward dependencies (later task depending on earlier)", () => {
       const featureName = "test-feature";

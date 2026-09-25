@@ -46,7 +46,10 @@ export interface PlanTaskSectionHeading {
   taskNumber: number | null;
 }
 
-/** A numbered task heading and the plan.md lines its extracted spec section covers. */
+/**
+ * A numbered task heading and the plan.md lines copied into the task's generated spec section.
+ * Numbers are parsed, so `### 01. Setup` and `### 1. Setup` both yield taskNumber 1.
+ */
 export interface PlanTaskSection {
   taskNumber: number;
   /** 1-based line of the task heading. */

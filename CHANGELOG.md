@@ -42,6 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Required operator skill directives carry across delegation; primaries are instructed to verify child skill loads with session traces. Review-only agent seats are hidden from public configuration, and `hive-master` is exposed only in unified mode.
 - VS Code context tooltips state that only the durable character guideline counts UTF-16 code units and that every managed document is limited to 1 MiB.
 - Agent prompts and packaged skills no longer claim a project constraint register, injected context documents or catalogs, a context section in `spec.md`, a 70% context threshold in `hive_status`, or a generated repository table for Forager. Primaries carry assignment-specific instructions while workers read task records through the brief's pointers; unmet dependencies remain in the `blocked` map in `hive_status`.
+- Plan sections for zero-padded task headings such as `### 01.` are now copied into `spec.md`. Existing pending specs pick up the section on `hive_tasks_sync({ refreshPending: true })`; started tasks report `differs_from_plan`.
 
 ### Upgrade
 
