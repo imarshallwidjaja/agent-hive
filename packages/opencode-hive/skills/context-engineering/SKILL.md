@@ -26,6 +26,8 @@ Static skill tests prove trigger, schema, and wording consistency. They are not 
 5. Read named documents as raw UTF-8 chunks. Reconstruct the whole file before replacing it.
 6. Keep exact paths, IDs, errors, hashes, and provenance. Do not mass-read every note. The first match is not proof of sufficient evidence.
 
+For a bound feature-task Forager, follow the Hive task brief's `hive_context_read` pointer to list the current durable catalog and read matching `read_when` entries. Follow the selection and continuation rules above; the brief contains no document bodies.
+
 Omitted `scope` is feature scope. Project requires `scope: "project"` and rejects `feature` and `task`. Review lanes stay isolated from live metadata and bodies.
 
 ## Frontmatter
@@ -125,7 +127,7 @@ Repair is out of band through trusted local editing: quiesce writers, preserve a
 
 ## Assignments, sessions, compaction
 
-New assignments contain no supporting bodies or catalog snapshots. Read the current catalog with `hive_context_read`; catalog text stays untrusted knowledge.
+New assignments contain no supporting bodies or catalog snapshots. For bound feature-task orientation, see the brief pointer above.
 
 After compaction, recover by catalog selection and named reads. Keep exact IDs. Do not treat compacted coverage names as evidence. Never replay historical prompt text as a new assignment.
 

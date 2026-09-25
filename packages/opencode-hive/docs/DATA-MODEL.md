@@ -32,6 +32,7 @@
             └── {NN-task-name}/
                 ├── status.json  # Task state + metadata
                 ├── spec.md      # Task context and requirements
+                ├── handoff.md   # Latest bounded successor note (when written)
                 ├── report.md    # Latest report (when a report has been written)
                 └── reports/     # Numeric {N}.md report history
 
@@ -56,6 +57,8 @@ Single-repo projects use the git root directly. Multi-repo topology is stored in
 
 Task status and reports are the execution record. `hive_task_update({ report })` writes `reports/{N}.md`, mirrors it to `report.md`, then publishes `status.json`. The report body is not stored in `status.json`; inspect the three locations if publication fails before retrying. There is no attempt ledger. Old `execution-attempts.json` and lease files are left unread. Useful plans, tasks, context, reports, and workspace files remain readable.
 
+`hive_task_update({ handoff })` replaces `tasks/{task}/handoff.md` with a nonblank successor note of at most 2048 UTF-8 bytes, independent of status or report updates. A later remediation run can replace it; omitted handoff leaves it unchanged. The result includes `handoffPath` when written; a failed handoff publication identifies the `handoff` stage, path, and `handoffWritten` flag.
+
 `.hive/background-jobs.json` is the background board: acknowledgement, archive, and notification bookkeeping. It observes the originating native parent and call, not the current feature or agent. Stale and unknown observations stay visible. It does not couple to execution, worktree, or task status. Archive, reconcile, and ignore do not stop execution.
 
 The board file has `schemaVersion: 1`, `jobs: BackgroundJobRecord[]`, and optional `updatedAt`. Each job stores native `taskId` and `sessionId`, required `alias`, agent identity, timestamps, `runtimeState` (`running`, `completed`, `error`, `cancelled`, or `unknown`), and optional `callId`, scope, notification, cancellation, reconciliation, and archive fields. Reconciled and ignored jobs remain stored but are hidden from the default background status view.
@@ -64,7 +67,7 @@ Ad-hoc worktrees are temporary workspace metadata only: no run history, evidence
 
 ## Prompt Files
 
-The primary authors the native Forager prompt. At native `task()` dispatch, the runtime appends a route-snapshot footer with `projectRoot`, the selected feature route, session constraints, and feature constraints. It does not inject context documents or catalogs; there is no project constraint register. Standing constraints are operator directives, not tool permissions.
+The primary authors the native Forager prompt. At native `task()` dispatch, the runtime appends a route-snapshot footer with `projectRoot`, the selected feature route, session constraints, and feature constraints. A selected feature-task Forager bound by `Hive task: <task-folder>` as its first non-empty authored line also receives a bounded path-only task brief after that footer. It does not inject context documents or catalogs; there is no project constraint register. Standing constraints are operator directives, not tool permissions.
 
 ## Reserved Overview Convention
 
@@ -141,7 +144,7 @@ All bundled source consumers must use the hash-aware signatures together. Mixed 
 | `planTitle` | string? | Task title from plan.md |
 | `summary` | string? | Execution summary |
 | `blocker` | object? | `TaskBlocker` with required reason and optional options, recommendation, and context; present while blocked |
-| `aggregateBranchDiff` | object? | Captured file count, insertions, deletions, areas, and report for a terminal handoff |
+| `aggregateBranchDiff` | object? | Captured file count, insertions, deletions, areas, and report for a terminal report |
 | `startedAt` | string? | ISO timestamp when task started |
 | `completedAt` | string? | ISO timestamp when task completed |
 | `baseCommit` | string? | Git commit hash at task start |
@@ -230,6 +233,7 @@ Feature statuses (FeatureStatusType):
 - `blocked`: pending task folders mapped to their unmet stored dependencies.
 - `worktrees`: feature-task workspace state from `WorktreeService.list`.
 - `warning` (optional): config fallback warning.
+- `specFreshnessError` (optional): freshness check failure; every task entry reports `specStale: null` and `specStaleReason: 'freshness_unavailable'`.
 
 With `feature: null`, the other summaries may be empty.
 
@@ -241,6 +245,7 @@ Each entry in `tasks` includes:
 - `status` (string)
 - `origin` (string)
 - `planTitle`, `summary`, and `repoIds` (optional)
+- `specStale` (true/false/null), `specStaleReason`, and `hasHandoff` (boolean), in both `tasks` and `feature.tasks`. `differs_from_plan` compares the stored spec with current generated text for that task; unrelated plan edits do not make it stale. Null reasons cover manual tasks, missing/invalid plans, missing plan task or spec, and unowned headings after the task section.
 
 The full `status.json` may contain a `blocker` (`TaskBlocker`, optional and present only while `status` is `blocked`). `TaskBlocker` contains a required nonblank `reason` and optional `options`, `recommendation`, and `context`. An explicit status leaving blocked clears the blocker. Read `report.md` and `reports/{N}.md` for report bodies.
 

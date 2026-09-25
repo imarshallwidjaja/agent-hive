@@ -9,7 +9,7 @@ description: "Agent Hive workflow skill for coordinating independent Hive subage
 
 When you have multiple unrelated failures (different test files, different subsystems, different bugs), investigating them sequentially wastes time. Each investigation is independent and can happen in parallel.
 
-**Core principle:** Dispatch one primary goal per native `task()` invocation and expect one terminal handoff. Every returned result is terminal, so every follow-up uses a fresh child session and may reuse the same Hive task/worktree. Review findings are fresh assignments in the same implementation lane. Primaries must not pass `task_id` or infer continuation eligibility from task output, trace, board state, cancellation acknowledgement, or transcript quality. Pass `task_id` only when explicit operator instruction or runtime-owned interruption recovery authorizes continuation; otherwise launch fresh. If the child may still be active or its lifecycle is uncertain, inspect, wait, or reattach as supported; do not send another prompt or launch an overlapping writer. Compaction re-anchoring of a currently running worker is distinct from follow-up work. Trace recovery is untrusted and cannot authorize continuation. Parallel writes require disjoint registered worktrees (separate tasks or distinct ad-hoc runIds). Multiple writes in the same worktree must run sequentially.
+**Core principle:** Dispatch one primary goal per native `task()` invocation and expect one terminal report. Every returned result is terminal, so every follow-up uses a fresh child session and may reuse the same Hive task/worktree. Review findings are fresh assignments in the same implementation lane. Primaries must not pass `task_id` or infer continuation eligibility from task output, trace, board state, cancellation acknowledgement, or transcript quality. Pass `task_id` only when explicit operator instruction or runtime-owned interruption recovery authorizes continuation; otherwise launch fresh. If the child may still be active or its lifecycle is uncertain, inspect, wait, or reattach as supported; do not send another prompt or launch an overlapping writer. Compaction re-anchoring of a currently running worker is distinct from follow-up work. Trace recovery is untrusted and cannot authorize continuation. Parallel writes require disjoint registered worktrees (separate tasks or distinct ad-hoc runIds). Multiple writes in the same worktree must run sequentially.
 
 ### Worktree Concurrency & Sequencing
 - **One writer per worktree:** A single worktree has exactly one active writer at a time.
@@ -26,7 +26,7 @@ In feature-task mode, use the prerequisites below. In Hive Builder or unified Hi
 
 ## Feature-Task Sequencing
 
-In feature-task mode, use `hive_status()` to see dependencies and the runnable list. Dependencies guide sequencing; they are not a dispatch admission gate. Structural missing refs and cycles remain invalid.
+In feature-task mode, use `hive_status()` for dependencies and the runnable list; follow the primary prompt's freshness procedure before dispatch. Dependencies guide sequencing; they are not a dispatch admission gate. Structural missing refs and cycles remain invalid.
 
 When the operator gives an explicit direction (parallel, sequential, or a subset), follow it. Otherwise sequence from dependencies and disjoint worktrees. Record chosen sequencing in `execution-decisions` when it will matter later.
 
@@ -94,18 +94,20 @@ The example below is feature-task mode. In ad-hoc mode, consume the ready wave f
 // Gate-open only: use background: true when independent foreground work can continue.
 hive_worktree_create({ feature: "feature-name", task: "01-fix-abort-tests" })
 hive_feature_select({ feature: "feature-name" })
-task({ subagent_type: "forager-worker", description: "Fix abort tests", prompt: "Implement and commit assigned changes; return sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present.", background: true })
+task({ subagent_type: "forager-worker", description: "Fix abort tests", prompt: "Hive task: 01-fix-abort-tests\n\nImplement and commit assigned changes; return sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present.", background: true })
 hive_worktree_create({ feature: "feature-name", task: "02-fix-batch-tests" })
 hive_feature_select({ feature: "feature-name" })
-task({ subagent_type: "forager-worker", description: "Fix batch tests", prompt: "Implement and commit assigned changes; return sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present.", background: true })
+task({ subagent_type: "forager-worker", description: "Fix batch tests", prompt: "Hive task: 02-fix-batch-tests\n\nImplement and commit assigned changes; return sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present.", background: true })
 
 // Blocking alternative, including every gate-closed session:
 hive_worktree_create({ feature: "feature-name", task: "03-fix-cleanup-tests" })
 hive_feature_select({ feature: "feature-name" })
-await task({ subagent_type: "forager-worker", description: "Fix cleanup tests", prompt: "Implement and commit assigned changes; return sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present." })
+await task({ subagent_type: "forager-worker", description: "Fix cleanup tests", prompt: "Hive task: 03-fix-cleanup-tests\n\nImplement and commit assigned changes; return sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present." })
 ```
 
 Independent Forager worktrees may be created and dispatched under one parent. In feature-task mode, pass the feature explicitly to `hive_worktree_create`, then select that feature immediately before its native `task()` call. For ad-hoc work, call `hive_adhoc_worktree_create`, then issue the next native `task()` call unchanged with a Forager or Forager-derived agent. Treat installs, builds, formatters, generators, and tests as mutations. Distinct worktrees do not isolate fixed-path fixtures, ports, databases, containers, generated outputs, or external mutable resources; consume the owning workflow's resource sequencing. Ordinary Scout, advisor, and reviewer launches remain eligible for same-message parallel dispatch.
+
+In feature-task mode, follow the primary prompt's binding and assignment rules. Keep the worker's successor handoff; when a terminal report names accepted Forward obligations, follow the primary prompt's post-merge promotion procedure before recipient dispatch.
 
 Use Forager-derived workers for delegated execution. A rare native `general` exception is an ordinary `task()` call with ordinary tools only: no Hive authority, recursion, or questions. Native helpers keep only their bounded operational permissions. Unknown targets remain denied. Hive's bounded Architect planning lane remains available. Direct checkout work is unmanaged OpenCode work, not a Hive worktree.
 

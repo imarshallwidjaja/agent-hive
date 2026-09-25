@@ -300,17 +300,17 @@ describe('Review follow-up contract', () => {
 describe('Orchestrator synthesis-before-delegation', () => {
   it('Hive prompt contains synthesis-before-delegating reminder', () => {
     expect(QUEEN_BEE_PROMPT).toContain('Synthesize Before Delegating');
-    expect(QUEEN_BEE_PROMPT).toContain('Workers do not inherit your context');
+    expect(QUEEN_BEE_PROMPT).toContain('Workers do not inherit your conversation');
   });
 
   it('Hive delegation check includes synthesis proof step', () => {
-    expect(QUEEN_BEE_PROMPT).toContain('restate the task in concrete terms');
-    expect(QUEEN_BEE_PROMPT).toContain('files, line ranges, expected outcome');
+    expect(QUEEN_BEE_PROMPT).toContain('Use `hive_status` before dispatch: refresh a stale pending task');
+    expect(QUEEN_BEE_PROMPT).toContain('State the concrete expected outcome');
   });
 
   it('Swarm prompt has a dedicated synthesis section with rules', () => {
     expect(SWARM_BEE_PROMPT).toContain('## Synthesize Before Delegating');
-    expect(SWARM_BEE_PROMPT).toContain('Workers do not inherit your context');
+    expect(SWARM_BEE_PROMPT).toContain('Workers do not inherit your conversation');
   });
 
   it('Swarm synthesis section forbids vague delegation phrases', () => {
@@ -512,12 +512,12 @@ describe('Fresh-session delegation contract', () => {
     ['Vulnerability Review Primary', VULNERABILITY_REVIEW_PRIMARY_PROMPT],
   ] as const;
 
-  it('applies terminal handoffs and fresh follow-up sessions to every primary prompt', () => {
+  it('applies terminal reports and fresh follow-up sessions to every primary prompt', () => {
     for (const [name, prompt] of primaryPrompts) {
       expect(prompt, name).toContain('one primary goal');
-      expect(prompt, name).toContain('one terminal handoff');
+      expect(prompt, name).toContain('one terminal report');
       expect(prompt, name).toContain('tightly coupled code, tests, docs, and multiple files');
-      expect(prompt, name).toContain('Every returned result is a terminal handoff');
+      expect(prompt, name).toContain('Every returned result is a terminal report');
       expect(prompt, name).toContain('Every follow-up after a returned result uses a fresh child session');
       expect(prompt, name).toContain('Review findings are fresh assignments in the same implementation lane');
       for (const result of [
@@ -621,9 +621,12 @@ describe('Active native-task guidance contradiction checks', () => {
     'packages/opencode-hive/skills/context-engineering/SKILL.md',
     'packages/opencode-hive/skills/dispatching-parallel-agents/SKILL.md',
     'packages/opencode-hive/skills/executing-plans/SKILL.md',
+    'packages/opencode-hive/skills/writing-plans/SKILL.md',
     'packages/opencode-hive/skills/orchestrating-ad-hoc-work/SKILL.md',
     'packages/opencode-hive/skills/parallel-exploration/SKILL.md',
     'packages/opencode-hive/src/agents/architect.ts',
+    'packages/opencode-hive/src/agents/forager.ts',
+    'packages/opencode-hive/src/agents/plan-reviewer.ts',
     'packages/opencode-hive/src/agents/hive-helper.ts',
     'packages/opencode-hive/src/agents/hive.ts',
     'packages/opencode-hive/src/agents/hive-builder.ts',
@@ -646,7 +649,9 @@ describe('Active native-task guidance contradiction checks', () => {
     'enter worker execution context',
     'stays out of worker and network prompts',
     'Live catalogs',
-    'Fresh catalogs arrive in untrusted knowledge messages',
+    'Fresh catalogs arrive',
+    'task-local worker prompt',
+    'receive durable execution context via spec.md',
     'durable execution context',
     'blockedBy',
   ] as const;
@@ -657,7 +662,50 @@ describe('Active native-task guidance contradiction checks', () => {
       for (const phrase of forbiddenPhrases) {
         expect(content, `${relativePath}: ${phrase}`).not.toContain(phrase);
       }
+      expect(content, `${relativePath}: spec context delivery`).not.toMatch(/spec\.md[^\n]{0,100}(?:delivers|contains|provides)[^\n]{0,100}## Context/i);
     }
+  });
+
+  it('pins feature-task orientation, successor handoffs, and plan consumer ownership', () => {
+    expect(FORAGER_BEE_PROMPT).toContain('If the assignment starts with `Hive task:`');
+    expect(FORAGER_BEE_PROMPT).toContain('use `hive_status` to confirm task identity and freshness');
+    expect(FORAGER_BEE_PROMPT).toContain('request the paths or a correctly bound dispatch');
+    expect(FORAGER_BEE_PROMPT).toContain('`manual_task` makes the manual spec the task contract');
+    expect(FORAGER_BEE_PROMPT).toContain('`differs_from_plan` requires the current plan task section');
+    expect(FORAGER_BEE_PROMPT).toContain('`unowned_heading_after_task_section` requires the listed lines');
+    expect(FORAGER_BEE_PROMPT).toContain('`freshness_unavailable`');
+    expect(FORAGER_BEE_PROMPT).toContain('direct dependencies\' successor handoffs');
+    expect(FORAGER_BEE_PROMPT).toContain('hive_task_update({ feature, task, handoff })');
+    expect(FORAGER_BEE_PROMPT).toContain('Forward obligations');
+    for (const prompt of [SWARM_BEE_PROMPT, QUEEN_BEE_PROMPT]) {
+      expect(prompt).toContain('Hive task: 01-task-name');
+      expect(prompt).toContain('specStale');
+      expect(prompt).toContain('refreshPending: true');
+      expect(prompt).toContain('Forward obligations');
+      expect(prompt).toContain('execution-decisions');
+      expect(prompt).toContain('reviewers cannot query `hive_status`');
+      expect(prompt).toContain('`specStale`/`specStaleReason` from `hive_status`');
+      expect(prompt).toContain('only after the producer is merged');
+      expect(prompt).toContain('The patch revokes approval');
+      expect(prompt).toContain('`hive_plan_approve`');
+      expect(prompt).toContain('explicit `Depends on` relationship');
+      expect(prompt).toContain('When the recipient task has already started or finished, the plan amendment does not reach that assignment');
+      expect(prompt).toContain('send the amended requirement to a fresh worker for that task or record why the existing work already satisfies it');
+      expect(prompt).toContain('Do not treat the recipient as complete until the amended requirement is addressed');
+    }
+    expect(SWARM_BEE_PROMPT).not.toContain('Explicit tool whitelist');
+    expect(ARCHITECT_BEE_PROMPT).toContain('every `###` heading must be `### N. Title`');
+    expect(ARCHITECT_BEE_PROMPT).toContain('every consumer');
+    expect(PLAN_REVIEWER_PROMPT).toContain('unownedTaskHeadings');
+    expect(PLAN_REVIEWER_PROMPT).toContain('every consumer');
+    expect(CODE_REVIEWER_PROMPT).toContain('forward obligations');
+    expect(CODE_REVIEWER_PROMPT).toContain('Request missing identity or freshness evidence');
+    expect(CODE_REVIEWER_PROMPT).toContain('`manual_task`, review against the supplied spec as the task contract');
+    expect(CODE_REVIEWER_PROMPT).toContain('`differs_from_plan`, the current plan section governs');
+    for (const reason of ['plan_missing', 'plan_invalid', 'task_not_in_plan', 'spec_missing', 'freshness_unavailable', 'unowned_heading_after_task_section']) {
+      expect(CODE_REVIEWER_PROMPT).toContain(`\`${reason}\``);
+    }
+    expect(CODE_REVIEWER_PROMPT).toContain('request the missing authoritative records or report the ambiguity');
   });
 });
 
@@ -760,14 +808,14 @@ describe('Forager verification and tool-scope clarity', () => {
     expect(FORAGER_BEE_PROMPT).toContain('Never revert unrelated or user changes');
     expect(FORAGER_BEE_PROMPT).toContain('Return the blocker, evidence, options, and recommendation');
     expect(FORAGER_BEE_PROMPT).toContain('Do not call `hive_task_update` to leave blocked');
-    expect(FORAGER_BEE_PROMPT).toContain('Keep report-only diagnostic discoveries in the terminal handoff');
+    expect(FORAGER_BEE_PROMPT).toContain('Keep report-only diagnostic discoveries in the terminal report');
     expect(FORAGER_BEE_PROMPT).toContain('unless the mission explicitly authorizes metadata persistence');
     expect(FORAGER_BEE_PROMPT).toContain('Worker prose is report input');
   });
 
-  it('defers tool scope to worker prompt', () => {
+  it('respects exposed tools and assignment scope', () => {
     expect(FORAGER_BEE_PROMPT).toContain('tool access is scoped to your role');
-    expect(FORAGER_BEE_PROMPT).toContain('worker prompt');
+    expect(FORAGER_BEE_PROMPT).toContain('Your assignment states scope and verification expectations');
   });
 
   it('records observed output in verification step', () => {
@@ -988,7 +1036,7 @@ describe('Hive (Hybrid) prompt', () => {
       expect(QUEEN_BEE_PROMPT).toContain('the scout researcher whose description best fits the research slice');
       expect(QUEEN_BEE_PROMPT).toContain('Use built-in `scout-researcher` when no configured scout-derived custom description is a closer domain/workflow match');
       expect(QUEEN_BEE_PROMPT).toContain('task({ subagent_type: "<chosen-researcher>"');
-      expect(QUEEN_BEE_PROMPT).toContain('objective, known facts, references, prior failures, constraints, expected output');
+      expect(QUEEN_BEE_PROMPT).toContain('mission mode, writable scope/repositories, required skills');
     });
 
     it('records blocked status then clears the blocker on an explicit leaving status', () => {
@@ -1163,7 +1211,7 @@ describe('Architect (Planner) prompt', () => {
     it('contains output-based canonical delegation guidance', () => {
       expect(ARCHITECT_BEE_PROMPT).toContain('### Canonical Delegation Guidance');
       expect(ARCHITECT_BEE_PROMPT).toContain('requested output is bounded source evidence');
-      expect(ARCHITECT_BEE_PROMPT).toContain('Bounded direct reads remain acceptable');
+      expect(ARCHITECT_BEE_PROMPT).toContain('Bounded direct reads remain allowed');
     });
 
     it('broadens research to include internal repo exploration', () => {
@@ -1603,7 +1651,7 @@ describe('Forager (Worker/Coder) prompt', () => {
     );
     expect(FORAGER_BEE_PROMPT).not.toContain('For existing-workspace assignments, managed context and Hive lifecycle tools are denied.');
     expect(FORAGER_BEE_PROMPT).toContain('Foragers write feature and project context through hash integrity');
-    expect(FORAGER_BEE_PROMPT).toContain('When implementation is authorized and a feature/task worker prompt identifies a Hive feature');
+    expect(FORAGER_BEE_PROMPT).toContain('When implementation is authorized and the assignment identifies a Hive feature task');
   });
 
   it('gives commit authority only to worktree implementation assignments', () => {
@@ -1625,14 +1673,14 @@ describe('Forager (Worker/Coder) prompt', () => {
     expect(FORAGER_BEE_PROMPT).toContain('Completion Checklist');
   });
 
-  it('requires one terminal handoff without worker finalization', () => {
-    expect(FORAGER_BEE_PROMPT).toContain('return one terminal response');
+  it('requires one terminal report without worker finalization', () => {
+    expect(FORAGER_BEE_PROMPT).toContain('return one terminal report');
     expect(FORAGER_BEE_PROMPT).toContain('the primary records task status');
     expect(FORAGER_BEE_PROMPT).not.toContain(['hive', 'worktree', 'commit'].join('_'));
   });
 
   it('requires a final concise handoff response for primary finalization', () => {
-    expect(FORAGER_BEE_PROMPT).toContain('one terminal response');
+    expect(FORAGER_BEE_PROMPT).toContain('one terminal report');
     expect(FORAGER_BEE_PROMPT).toContain('concise summary');
     expect(FORAGER_BEE_PROMPT).toContain('exact verification evidence');
     expect(FORAGER_BEE_PROMPT).not.toContain('stop and hand off to orchestrator');

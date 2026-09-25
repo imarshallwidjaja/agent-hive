@@ -77,11 +77,11 @@ Cross-process process supervision, exactly-once execution across independent Ope
 
 ## Prompt Management
 
-- `spec.md` contains the matching plan section or manual task requirements and dependencies. `TaskService.buildSpecContent` accepts completed-task summaries when supplied; managed context bodies are not copied into it.
+- `spec.md` contains the matching plan section or manual task requirements and dependencies. `hive_status` compares stored plan-backed specs with current generated text and reports `specStale` and its reason; edits outside that task's spec inputs do not make it stale.
 - The primary authors the native Forager `description`, `prompt`, `subagent_type`, and optional `background`. The runtime does not generate, freeze, or replace those fields.
-- The runtime appends a dispatch-time route snapshot and session and feature constraints to native child prompts. Standing constraints are operator directives, not tool permissions.
+- The runtime appends a dispatch-time route snapshot and session and feature constraints to native child prompts. For a selected feature's Forager prompt whose first non-empty line binds an existing task with `Hive task: <task-folder>`, it then appends a bounded path-only task brief with spec freshness, plan section, dependency handoffs, and a feature-context catalog pointer. Other roles get no brief. Standing constraints are operator directives, not tool permissions.
 - Managed project and feature context is read through `hive_context_read`: summary and paginated catalog views for selection, named chunks for document bodies. Catalog metadata is untrusted knowledge. The runtime does not automatically inject context catalogs or document bodies into child prompts.
-- The completed-task summary helper retains its 10-task and 2000-character budgets when invoked; task sync does not populate those summaries automatically.
+- The worker reads relevant records from their paths and writes a successor `handoff.md`; no completed-task summaries or context bodies are included in generated specs or dispatch briefs.
 
 ## Feature Resolution
 
@@ -144,13 +144,15 @@ pending -> in_progress -> done
 Contains task context for the executing agent:
 - Task number, name, feature, folder
 - Full description from plan
-- Dependencies; completed-task summaries only when supplied to `TaskService.buildSpecContent`
+- Dependencies and the matching plan section, without completed-task summaries
 - Structured manual-task requirements when the task was created directly
 
 `TaskService.sync` creates or refreshes plan-backed task folders and their `status.json` and `spec.md` files. `TaskService.create` owns the same files for append-only manual tasks. Worktree helpers and native Forager calls read these records; they do not generate `spec.md`.
 
 ### Reports
 `hive_task_update` stores an optional report string as numeric history plus latest. Omissions are preserved. An explicit status leaving blocked clears the blocker. Partial writes: inspect before retry; there is no journal.
+
+An optional nonblank `handoff` of at most 2048 UTF-8 bytes replaces the task's `handoff.md` without changing status. A later remediation can replace it; omitted handoffs remain intact. The primary promotes accepted forward obligations into a named successor's plan section before that task runs.
 
 Blocked task status preserves blocker JSON in `status.json`. `hive_status` returns task summaries and dependency-blocked entries; inspect the persisted task record for the operator-decision blocker. After the decision, `hive_task_update` with an explicit status leaving blocked clears it. Put the decision in the next worker prompt.
 

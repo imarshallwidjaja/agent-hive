@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Selected-feature Forager dispatches with `Hive task: <task-folder>` as the first non-empty prompt line now receive a bounded path-only brief after the route snapshot. Task updates can persist a successor `handoff.md`; status exposes spec freshness, reasons, and handoff presence.
 - Project-local `.hive/agent-hive.override.json` can set `model` and `variant` for matching built-in and configured custom agents. Other runtime settings remain in the global config.
 - Project and feature context now have scoped catalogs, bounded reads, and hash-guarded writes. VS Code can browse and archive scoped context and show numeric task report history.
 - `hive_task_trace` can inspect any explicitly identified session visible to the connected OpenCode runtime; recovery for non-direct-child sessions remains inspect-only. `hive_git_snapshot` returns a versioned, consistency-checked result with structured failure and omission details.
@@ -17,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Agent guidance now orients workers from live task records, refreshes stale pending specs, repairs unowned plan task headings, and promotes accepted forward obligations into successor plan tasks. Planning and review guidance assigns shared-contract consumer updates explicitly.
 - Task status and immutable report history replace execution attempts. Feature or ad-hoc Hive worktrees are the default for tracked Git writes, with narrow direct-checkout exceptions; workers commit the source and primaries inspect, merge, and clean up. Background job tracking remains observational.
 - Feature targets on individual calls no longer change the session route. Select a feature with `hive_feature_select` before delegation.
 - Constraints can be scoped to a feature with `scope: "feature"`; the selected route carries both session and feature constraints to children.
@@ -39,7 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Plan approval returns an explicit result. Interrupted background jobs are observed through child session events instead of remaining indefinitely marked running.
 - Required operator skill directives carry across delegation; primaries are instructed to verify child skill loads with session traces. Review-only agent seats are hidden from public configuration, and `hive-master` is exposed only in unified mode.
 - VS Code context tooltips state that only the durable character guideline counts UTF-16 code units and that every managed document is limited to 1 MiB.
-- Agent prompts and packaged skills no longer claim a project constraint register, injected context documents or catalogs, a context section in `spec.md`, a 70% context threshold in `hive_status`, or a generated repository table for Forager. Primaries now put worker instructions in the handoff rather than relying on `spec.md`, and read unmet dependencies from the `blocked` map in `hive_status`.
+- Agent prompts and packaged skills no longer claim a project constraint register, injected context documents or catalogs, a context section in `spec.md`, a 70% context threshold in `hive_status`, or a generated repository table for Forager. Primaries carry assignment-specific instructions while workers read task records through the brief's pointers; unmet dependencies remain in the `blocked` map in `hive_status`.
 
 ### Upgrade
 

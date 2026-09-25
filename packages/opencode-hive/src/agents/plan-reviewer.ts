@@ -30,6 +30,8 @@ Check the following areas for execution blockers:
 4. Dependencies: task ordering and handoffs are clear enough to determine what can run now.
 5. Verification: task checks have executable commands and expected signals; required early, feasibility, and pre-merge gates remain at their stated boundary. For each task-named integrated-only deferral, confirm a matching \`## Final Verification\` obligation names its owner, prerequisite, command, and expected signal. Missing correspondence that conceals required acceptance is a blocker. The same suite may validly appear at both boundaries for different candidates or claims.
 6. Assumptions: critical assumptions are written down instead of relying on private conversation context.
+7. Task headings: inspect \`unownedTaskHeadings\` diagnostics from full \`hive_plan_read\` (or plan write/sync results). Every \`###\` inside \`## Tasks\` must be a numbered task; flag unowned headings and unreadable task layouts before approval.
+8. Shared contracts: when a task changes a schema, ID or version scheme, protocol, packaged identity, or public API, check that the plan names every consumer and assigns each required update to a task.
 
 When a material external or public contract such as authentication, CSRF policy, or deployment wiring remains unresolved, require a blocking open question before approval. Reject a plan that dispatches implementation to choose that policy.
 

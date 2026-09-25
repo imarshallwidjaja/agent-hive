@@ -318,6 +318,9 @@ describe('skill content', () => {
     expect(template).toContain('materially unresolved');
     expect(template).toContain('Unresolved plan comments still block approval');
     expect(template).toContain('Do not invent automatic cross-feature dependencies');
+    expect(template).toContain('name every consumer and assign each required consumer update to a task');
+    expect(template).toContain('every `###` heading must be `### N. Title`');
+    expect(template).toContain('one `replace_section` on `["Tasks"]`');
   });
 
   it('scopes strict TDD mechanics to an explicitly selected testing strategy', () => {
@@ -396,7 +399,7 @@ describe('skill content', () => {
     expect(skill!.template).toContain('one primary goal');
     expect(skill!.template).toContain('Every returned result is terminal');
     expect(skill!.template).toContain('Every returned result is terminal, so every follow-up uses a fresh child session');
-    expect(skill!.template).toContain('one terminal handoff');
+    expect(skill!.template).toContain('one terminal report');
     expect(skill!.template).toContain('Pass `task_id` only when explicit operator instruction or runtime-owned interruption recovery authorizes continuation');
     expect(skill!.template).toContain('If the child may still be active or its lifecycle is uncertain');
   });
@@ -628,8 +631,8 @@ describe('skill content', () => {
     expect(skill!.template).toContain('Execution and Forager lanes are managed/heavy background lanes');
     expect(skill!.template).toContain('unresolved-lane checks before dependent decisions');
     expect(skill!.template).toContain('hive_worktree_create');
-    expect(skill!.template).toContain('native Forager');
-    expect(skill!.template).toContain('In gate-closed sessions use a blocking native `task()` call');
+    expect(skill!.template).toContain('Forager assignment');
+    expect(skill!.template).toContain('In gate-closed sessions use blocking native `task()`');
     expect(skill!.template).toContain('Risk-Tier Review Routing');
     expect(skill!.template).toContain('Post-Batch Code Review');
     expect(skill!.template).toContain('recommended review path');
@@ -642,8 +645,10 @@ describe('skill content', () => {
     expect(skill!.template).not.toContain('Non-Hive mutation-capable or unknown task targets are denied');
     expect(skill!.template).toContain('execution-decisions');
     expect(skill!.template).toContain('Dependencies guide sequencing');
-    expect(skill!.template).toContain('immediately before native `task()` dispatch');
-    expect(skill!.template).toContain('one feature per worker assignment');
+    expect(skill!.template).toContain('immediately before dispatch');
+    expect(skill!.template).toContain('Hive task: <task-folder>');
+    expect(skill!.template).toContain('Promote accepted Forward obligations');
+    expect(skill!.template).toContain('explicit feature target');
     expect(skill!.template).toContain('Cross-feature prerequisites block affected execution tasks or lanes');
     expect(skill!.template).toContain('Do not infer or create automatic cross-feature dependencies');
     expect(skill!.template).toContain('Keep approved repository/operator checks and required early, feasibility, or pre-merge gates');
@@ -1014,6 +1019,8 @@ describe('skill content', () => {
     expect(template).toContain('complete: true');
     expect(template).toContain('Do not mass-read every note');
     expect(template).toContain('The first match is not proof of sufficient evidence');
+    expect(template).toContain('Hive task brief');
+    expect(template).toContain('the brief contains no document bodies');
     expect(template).toContain('hive_context_read({ view: "catalog"');
     expect(template).toContain('hive_context_read({ name: "auth-decisions"');
     expect(template).toContain('expectedContentHash');

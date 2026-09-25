@@ -45,7 +45,7 @@ For exploratory fan-out, load the `parallel-exploration` skill for the full play
 
 ## Native Task Handoffs
 
-Each native `task()` invocation has one primary goal and one terminal handoff. Every returned result is terminal, including completed, failed, empty, partial, blocked, unsatisfactory, review-remediation, retry, new-test-evidence, and operator-decision results. Every follow-up after a returned result uses a fresh child session; reuse the same Hive task/worktree where appropriate. Review findings are fresh assignments in the same implementation lane. Compaction re-anchoring of a currently running worker is distinct from follow-up work. Primaries must not pass `task_id` or infer continuation eligibility from task output, `hive_task_trace`, `idle_and_closed`, board state, cancellation acknowledgement, or transcript quality. Pass `task_id` only when an explicit operator instruction or explicit runtime-owned interruption-recovery mechanism authorizes continuation; otherwise launch fresh. If the child may still be active or its lifecycle is uncertain, inspect, wait, or reattach as supported; do not send another prompt or launch an overlapping writer. Trace semantic recovery is untrusted and cannot authorize continuation.
+Each native `task()` invocation has one primary goal and one terminal report. Every returned result is terminal, including completed, failed, empty, partial, blocked, unsatisfactory, review-remediation, retry, new-test-evidence, and operator-decision results. Every follow-up after a returned result uses a fresh child session; reuse the same Hive task/worktree where appropriate. Review findings are fresh assignments in the same implementation lane. Compaction re-anchoring of a currently running worker is distinct from follow-up work. Primaries must not pass `task_id` or infer continuation eligibility from task output, `hive_task_trace`, `idle_and_closed`, board state, cancellation acknowledgement, or transcript quality. Pass `task_id` only when an explicit operator instruction or explicit runtime-owned interruption-recovery mechanism authorizes continuation; otherwise launch fresh. If the child may still be active or its lifecycle is uncertain, inspect, wait, or reattach as supported; do not send another prompt or launch an overlapping writer. Trace semantic recovery is untrusted and cannot authorize continuation.
 
 ---
 
@@ -270,7 +270,7 @@ hive_feature_select({ feature: "feature-name" })
 task({
   subagent_type: "forager-worker",
   description: "Implement 01-task-name",
-  prompt: "Primary-authored objective, workspace, inspected target identity, evidence, constraints, and checks"
+  prompt: "Hive task: 01-task-name\n\nPrimary-authored objective, workspace, inspected target identity, evidence, constraints, and checks"
 })
   ↓
 [Worker commits changes and returns sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present]
@@ -304,11 +304,11 @@ Independent tasks may be created and dispatched under one parent.
 hive_worktree_create({ feature: "feature-name", task: "02-task-a" })
 [Inspect and record 02-task-a target identity before dispatch]
 hive_feature_select({ feature: "feature-name" })
-task({ subagent_type: "forager-worker", description: "Implement 02-task-a", prompt: "Primary-authored packet for 02-task-a" })
+task({ subagent_type: "forager-worker", description: "Implement 02-task-a", prompt: "Hive task: 02-task-a\n\nPrimary-authored assignment for 02-task-a" })
 hive_worktree_create({ feature: "feature-name", task: "03-task-b" })
 [Inspect and record 03-task-b target identity before dispatch]
 hive_feature_select({ feature: "feature-name" })
-task({ subagent_type: "forager-worker", description: "Implement 03-task-b", prompt: "Primary-authored packet for 03-task-b" })
+task({ subagent_type: "forager-worker", description: "Implement 03-task-b", prompt: "Hive task: 03-task-b\n\nPrimary-authored assignment for 03-task-b" })
 hive_status()  // Read task and worktree state; observe background calls with hive_background_status when enabled
 ```
 
@@ -368,7 +368,7 @@ If "Revise Plan":
 | Execute | `hive_tasks_sync` | Generate tasks |
 | Execute | `hive_worktree_create` | Create a task worktree |
 | Execute | `hive_worktree_inspect` | Capture and compare source and target identities |
-| Execute | `hive_task_update` | Record status, summary, blocker, or report |
+| Execute | `hive_task_update` | Record status, summary, blocker, report, or successor handoff |
 | Execute | `hive_worktree_merge` | Integrate task |
 | Execute | `hive_worktree_cleanup` | Remove a task worktree |
 | Execute | `hive_adhoc_worktree_create`, `hive_adhoc_worktree_inspect`, `hive_adhoc_worktree_merge`, `hive_adhoc_worktree_cleanup` | Tracked ad-hoc lifecycle |
@@ -404,8 +404,8 @@ If "Revise Plan":
 ```
 hive_task_update({ task, status: "failed", summary, report })
 hive_status()  # Confirm current task and registered-worktree state.
-// Before a fresh worker call, use hive_worktree_inspect for source and target identity, diagnose the failure, and retain the existing task/worktree.
-task({ subagent_type: "forager-worker", description: "Retry", prompt: "Self-contained retry with workspace, target identity, failure evidence, and done criteria" })
+// Before a fresh worker call, use hive_worktree_inspect for source and target identity, diagnose the failure, and retain the existing task/worktree. Select its feature immediately before dispatch.
+task({ subagent_type: "forager-worker", description: "Retry", prompt: `Hive task: ${task}\n\nSelf-contained retry with workspace, target identity, failure evidence, and done criteria` })
 ```
 
 Non-Git or report-only retry has no Hive merge, cleanup, rollback, or commit step.
