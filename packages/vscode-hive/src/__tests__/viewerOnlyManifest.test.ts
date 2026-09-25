@@ -73,7 +73,7 @@ describe('viewer-only VS Code manifest', () => {
 
     expect(readme).toContain('Background Jobs');
     expect(readme).toContain('Tracked Repositories');
-    expect(readme).toContain('does not start worktrees, commit changes, merge branches, cancel jobs');
+    expect(readme).toContain('does not start worktrees, commit changes, merge branches, cancel jobs, or reconcile jobs; archiving a background job is its only job mutation');
     expect(readme).toContain('Archive Background Job');
     expect(readme).toContain('Archive Feature');
   });

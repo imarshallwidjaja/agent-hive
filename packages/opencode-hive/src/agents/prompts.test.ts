@@ -1979,7 +1979,7 @@ describe('README.md documentation', () => {
     it('documents VS Code background views as viewer-only surfaces', () => {
       expect(vscodeReadmeContent).toContain('Background Jobs');
       expect(vscodeReadmeContent).toContain('Tracked Repositories');
-      expect(vscodeReadmeContent).toContain('does not start worktrees, commit changes, merge branches, cancel jobs, reconcile jobs, or ignore jobs');
+      expect(vscodeReadmeContent).toContain('does not start worktrees, commit changes, merge branches, cancel jobs, or reconcile jobs; archiving a background job is its only job mutation');
     });
 
     it('routes ad-hoc review fixes to the active mode primary', () => {
