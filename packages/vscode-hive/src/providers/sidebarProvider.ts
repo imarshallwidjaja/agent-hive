@@ -178,7 +178,7 @@ class ContextFolderItem extends vscode.TreeItem {
     this.iconPath = new vscode.ThemeIcon(this.readyIcon(catalog, measuredChars) ? 'warning' : 'folder')
     const tooltip = [
       `Revision: ${catalog.revision}`,
-      'Durable budget uses UTF-16 code units. Reserved and evidence documents are uncapped.',
+      'The durable character guideline counts UTF-16 code units. Reserved and evidence documents do not count toward durable guidelines; every managed document is limited to 1 MiB.',
       ...budget.consolidationHints,
       ...budget.warnings,
     ]

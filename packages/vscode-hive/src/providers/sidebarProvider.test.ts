@@ -408,6 +408,7 @@ describe('HiveSidebarProvider', () => {
 
     let folder = await folderOf();
     expect(folder.description).toBe('1 documents · 1/8 durable · 5 B · chars unavailable');
+    expect(folder.tooltip).toContain('The durable character guideline counts UTF-16 code units. Reserved and evidence documents do not count toward durable guidelines; every managed document is limited to 1 MiB.');
     expect(folder.tooltip).toContain('Exact character totals are unavailable until an explicit character scan runs.');
 
     provider.scanChars({ type: 'feature', featureName: 'chars' });
