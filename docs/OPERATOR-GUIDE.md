@@ -191,6 +191,6 @@ Slash-command arguments for these native skills are interpolated into the skill 
 
 ## Upgrade
 
-Before upgrading, remove `disableMcps`, `sandbox`, `dockerImage`, and `persistentContainers` from `~/.config/opencode/agent_hive.json`. Strict validation rejects those removed keys. Configurations created by earlier versions contain `disableMcps` and `sandbox` by default. While any of those keys remain, Hive ignores the whole global configuration, and repository and worktree tools fail with an invalid-config error.
+Before upgrading, remove `disableMcps`, `sandbox`, `dockerImage`, and `persistentContainers` from `~/.config/opencode/agent_hive.json`. Strict validation rejects those removed keys. Earlier versions wrote `disableMcps` and `sandbox` when they created the file. While any of those keys remain, Hive ignores the whole global configuration, including agent model overrides and custom agents. In projects without `.hive/repositories.json` or a generated `workspace.json`, repository and worktree tools also fail with an invalid-config error that names the file but not the key.
 
 Restart OpenCode after upgrade. Finish or abandon old live workers first. Remove stale copied user-authored workflow instructions yourself; Hive does not silently overwrite global settings. Old attempt and lease files are left unread. Useful plans, tasks, context, reports, and workspace files remain readable.

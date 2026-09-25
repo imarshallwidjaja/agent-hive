@@ -26,7 +26,7 @@ Restart OpenCode after changing plugins.
 
 If you already have an OpenCode config, append `oc-arkive@latest` to its existing `plugin` array. Keep your surrounding settings and existing plugin entries, and preserve unrelated settings in the source file. The plugin still intentionally mutates the OpenCode fields listed below. This section is the full compatibility reference; the root README points here instead of repeating these mutations.
 
-Before upgrading, remove `disableMcps`, `sandbox`, `dockerImage`, and `persistentContainers` from `~/.config/opencode/agent_hive.json`. Strict validation rejects those removed keys. Configurations created by earlier versions contain `disableMcps` and `sandbox` by default. While any of those keys remain, Hive ignores the whole global configuration, and repository and worktree tools fail with an invalid-config error.
+Before upgrading, remove `disableMcps`, `sandbox`, `dockerImage`, and `persistentContainers` from `~/.config/opencode/agent_hive.json`. Strict validation rejects those removed keys. Earlier versions wrote `disableMcps` and `sandbox` when they created the file. While any of those keys remain, Hive ignores the whole global configuration, including agent model overrides and custom agents. In projects without `.hive/repositories.json` or a generated `workspace.json`, repository and worktree tools also fail with an invalid-config error that names the file but not the key.
 
 The config hook intentionally mutates these OpenCode fields:
 
@@ -280,7 +280,7 @@ After session compaction, use `hive_context_read` to search current catalogs and
 
 Moving a project root does not continue old task or ad-hoc work. At the new root, create a valid worktree if needed and launch fresh. Old sessions and artifacts remain historical.
 
-Manual tasks created with `hive_task_create()` follow the same DAG model as plan-backed tasks. The `goal`, `description`, `acceptanceCriteria`, `files`, and `references` fields are turned into `spec.md` content visible to the worker. To change downstream sequencing or scope after review feedback, update `plan.md` and run `hive_tasks_sync({ refreshPending: true })`.
+Manual tasks created with `hive_task_create()` follow the same DAG model as plan-backed tasks. The `goal`, `description`, `acceptanceCriteria`, `files`, and `references` fields are recorded in the task's `spec.md`. The primary's `task()` prompt must carry what the worker needs. To change downstream sequencing or scope after review feedback, update `plan.md` and run `hive_tasks_sync({ refreshPending: true })`.
 
 `hive-helper` is a runtime-only bounded assistant for merge recovery, state clarification, interrupted-state wrap-up, and safe manual-follow-up assistance. It stays within the current approved DAG boundary and is not a selectable custom base agent.
 
@@ -288,7 +288,7 @@ Manual tasks created with `hive_task_create()` follow the same DAG model as plan
 
 ## Task Prompts & Observability
 
-Hive does not inject context documents, catalogs, or a bounded previous-task history into native task prompts. Agents can search current durable-file catalogs and read named files with `hive_context_read`. Evidence files remain readable by name. The exported `applyTaskBudget` defaults are not used for dispatch; `taskService` writes completed-task summaries to `spec.md` without a task-count or summary-length cap ([prompt budgeting utility](../hive-core/src/utils/prompt-budgeting.ts), [task service](../hive-core/src/services/taskService.ts)).
+Hive does not inject context documents, catalogs, or a bounded previous-task history into native task prompts. Agents can search current durable-file catalogs and read named files with `hive_context_read`. Evidence files remain readable by name. The exported `applyTaskBudget` defaults are not used for dispatch; `taskService` does not include completed-task summaries in `spec.md` when creating or refreshing plan-backed tasks ([prompt budgeting utility](../hive-core/src/utils/prompt-budgeting.ts), [task service](../hive-core/src/services/taskService.ts)).
 
 ### Observability
 

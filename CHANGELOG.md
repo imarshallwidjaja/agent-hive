@@ -25,21 +25,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Every returned native task result ends that child invocation. Follow-ups start fresh child sessions; passing `task_id` requires an explicit operator instruction or runtime-owned interruption recovery.
 - Verification follows affected behavior and required gates; review remediation requires evidenced material findings. Bundled skills are discovered from packaged `SKILL.md` files.
 - Research guidance uses exposed tools by capability and evidence source. Missing tools are reported as evidence gaps.
+- Package repository, homepage, and issue links for hive-core and vscode-arkive now point to `imarshallwidjaja/agent-hive`.
 
 ### Removed
 
 - Removed `hive_worktree_start`, `hive_worktree_commit`, `hive_worktree_discard`, `hive_merge`, `hive_adhoc_worktree_commit`, `hive_adhoc_merge`, and `hive_adhoc_cleanup`. Private review tools were also removed: `hive_review_evidence_resolve`, `hive_review_workspace_create`, `hive_review_workspace_claim`, `hive_review_workspace_inspect`, `hive_review_workspace_cleanup`, and `hive_vulnerability_compare_report_read`.
 - oc-arkive no longer bundles or configures research MCP integrations or the provider-specific structural-search skill. Configure research tools through OpenCode and its other installed integrations.
+- Removed the opt-in Docker sandbox (`"sandbox": "docker"`), which ran bash commands with a Hive worktree `workdir` inside a container, along with the `HOST:` command prefix and the bundled `docker-mastery` skill.
 
 ### Fixed
 
 - Disjoint untracked destination files can remain when the merge topology is safe; a one-repository composite accepts an exact scalar source pin.
 - Plan approval returns an explicit result. Interrupted background jobs are observed through child session events instead of remaining indefinitely marked running.
 - Required operator skill directives carry across delegation; primaries are instructed to verify child skill loads with session traces. Review-only agent seats are hidden from public configuration, and `hive-master` is exposed only in unified mode.
+- VS Code context tooltips state that only the durable character guideline counts UTF-16 code units and that every managed document is limited to 1 MiB.
+- Agent prompts and packaged skills no longer claim a project constraint register, injected context documents or catalogs, a context section in `spec.md`, a 70% context threshold in `hive_status`, or a generated repository table for Forager. Primaries now put worker instructions in the handoff rather than relying on `spec.md`, and read unmet dependencies from the `blocked` map in `hive_status`.
 
 ### Upgrade
 
-- Before upgrading, remove `disableMcps` from `~/.config/opencode/agent_hive.json`; the strict current config schema no longer accepts it.
+- Before upgrading, remove `disableMcps`, `sandbox`, `dockerImage`, and `persistentContainers` from `~/.config/opencode/agent_hive.json`. Strict validation rejects those removed keys. Versions up to 2.5.0 wrote `disableMcps` and `sandbox` when they created the file. While any of those keys remain, Hive ignores the whole global configuration, including agent model overrides and custom agents. In projects without `.hive/repositories.json` or a generated `workspace.json`, repository and worktree tools also fail with an invalid-config error that names the file but not the key.
 - Rename custom agent IDs containing `*` or `?` and update their references; the config schema now rejects those characters.
 - Update scripts and copied agent instructions: replace `hive_worktree_start` with `hive_worktree_create` followed by native `task()` dispatch. `hive_worktree_create` now creates a task worktree without changing task state; in 2.5.0 it launched blocked-task continuation. Replace `hive_worktree_commit` and `hive_adhoc_worktree_commit` with a worker commit followed by `hive_worktree_merge` or `hive_adhoc_worktree_merge`, passing the worker's exact `sourceCommit` (or complete `sourceCommits` map) and the inspected `expectedTarget` (or complete `expectedTargets` map). Use `hive_task_update` for task status and reports, and `/dash-review` or `/vuln-review` for reviews.
 - Read context with `hive_context_read` before replacing, appending, or archiving it. Pass `expectedRevision` and `expectedContentHash` for replacement or append; archive requires `expectedRevision` and per-name `expectedContentHashes`.
