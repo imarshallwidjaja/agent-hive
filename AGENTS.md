@@ -2,7 +2,7 @@
 
 ## Overview
 
-**agent-hive** is a context-driven development system for AI coding assistants. It implements a plan-first workflow: Plan → Approve → Execute.
+**agent-hive** is a context-driven development system for AI coding assistants. Feature work follows Plan → Approve → Execute.
 
 ## Build & Test Commands
 
@@ -10,22 +10,22 @@
 # Build all packages
 bun run build
 
-# Development mode (all packages)
+# Build core, then start package dev scripts
 bun run dev
 
-# Run all workspace tests from the repository root
+# Run npm workspace test scripts from the repository root
 bun run test
 
-# Run a focused test from the owning package
+# Run a focused Bun test from the owning package
 bun test <file>
 
 # Release verification / manual preparation
-bun run release:check     # Install, build, and test release artifacts
+bun run release:check     # Install, build, and verify release artifacts and packages
 ```
 
 Release note: the active release path publishes `oc-arkive` to npm and attaches `vscode-arkive.vsix` to the GitHub Release. Prepare root/hive-core/opencode/vscode package version bumps, changelog entries, and `docs/releases/vX.Y.Z.md` manually before running the GitHub `workflow_dispatch` rehearsal and tagging. Set the OpenCode package's `devDependencies.hive-core` and the VS Code package's `dependencies.hive-core` to the same exact version, regenerate both root lockfiles, and rerun the release artifact checks for exact pins, local workspace linking, and packed dependency isolation; a stale pin can resolve `hive-core` from the registry instead. The pushed `vX.Y.Z` tag must point at a commit whose root package version is `X.Y.Z` and whose matching release-note file exists. If a tagged release partially fails, rerun the same workflow in tag-backed recovery mode and enable only the unfinished `oc-arkive` npm publish and/or GitHub Release target.
 
-Worktrees start without installed dependencies. When running worktree verification, install dependencies there and confirm that `hive-core` resolves inside that worktree; build core before running OpenCode checks. A passing test against the canonical checkout’s `hive-core` does not verify worktree changes. If local verification is unavailable, report the limitation. Run full build and test verification on the canonical checkout after merge. A worktree build updates only its own plugin bundle; rebuild the canonical checkout before saying a restart will load plugin changes.
+Worktrees start without installed dependencies. When running worktree verification, install dependencies there and confirm that `hive-core` resolves inside that worktree; build core before running OpenCode checks. A passing test against the canonical checkout’s `hive-core` does not verify worktree changes. If local verification is unavailable, report the limitation. Run full build and test verification on the canonical checkout after merge, along with affected integrated checks. A worktree build updates only its own plugin bundle; rebuild the canonical checkout before saying a restart will load plugin changes.
 
 A root build can refresh tracked `packages/vscode-hive/dist/extension.js` after `hive-core` changes even though `dist/` is ignored. Inspect and commit deterministic bundle changes with `git add -u -- packages/vscode-hive/dist/extension.js`; do not discard them as unrelated.
 
@@ -58,11 +58,10 @@ bun run build             # Build vscode-arkive VS Code extension
 - **Naming**:
   - `camelCase` for variables, functions
   - `PascalCase` for types, interfaces, classes
-  - Descriptive function names (`readFeatureJson`, `ensureFeatureDir`)
 
 ### Tests
 
-- Test files use `.test.ts` suffix
+- TypeScript test files use `.test.ts` suffix
 - Place tests next to source files or in `__tests__/` directories
 - Use descriptive test names
 - Some `packages/opencode-hive` suites mutate the process cwd and temporary Git state. If a concurrent run fails in a worktree or lifecycle test, rerun the owning file and then `bun test --max-concurrency=1`; report the concurrent failure separately, and change production code only if isolated or serialized execution also fails.
@@ -95,11 +94,11 @@ Require explicit dependency metadata for every generated subtask.
 ### Core Philosophy
 
 1. **Context Persists** - Write to `.hive/` files; memory is ephemeral
-2. **Plan → Approve → Execute** - No code without approved plan
+2. **Plan → Approve → Execute** - Feature implementation requires an approved plan; authorized ad-hoc work does not
 3. **Human Shapes, Agent Builds** - Humans decide direction, agents implement
 4. **Good Enough Wins** - Ship working code, iterate later
 5. **Batched Parallelism** - Delegate independent tasks to workers
-6. **Tests Define Done** - Workers do best-effort checks; orchestrator runs full test suite after batch merge
+6. **Tests Define Done** - Workers check their lane; the orchestrator runs full build and test verification on the canonical checkout after merge, plus affected integrated checks
 7. **Review Integrated Security Boundaries** - Before completing security-sensitive work that spans tasks or lifecycle phases, adversarially review the merged implementation as a whole; task-local reviews and passing tests do not establish composition safety.
 8. **Tool Exposure Governs Action** - Tool availability plus instructions govern agents; each tool validates its own operation
 9. **Cross-Model Prompts** — Agent prompts must work across all supported LLM providers. Use conditional triggers ("when X, do Y") instead of absolute mandates ("always do Y") or blanket defaults ("by default, do Y").
@@ -107,31 +106,13 @@ Require explicit dependency metadata for every generated subtask.
 
 ### Agent Roles
 
-| Agent | Role |
-|-------|------|
-| Hive (Hybrid) | Plans AND orchestrates; phase-aware |
-| Architect | Plans features, interviews, writes plans. NEVER executes |
-| Swarm | Orchestrates execution. Delegates, spawns workers, verifies |
-| Hive Builder | Ad-hoc orchestrator for non-feature work; decomposes larger requests into coherent lane inventories and dependency waves, delegates non-trivial work, and tracks verification and integration. Parallel writers use distinct ad-hoc worktrees. Background mode only changes wait mode and board protocol. Available in both modes, not default |
-| Scout | Researches codebase + external docs/data. Read-only |
-| Forager | Executes delegated work in the chosen workspace. Never delegates |
-| Hygienic | Reviews plan/code quality. OKAY/REJECT verdict |
+In default `dedicated` mode, Architect (`architect-planner`) plans and Swarm (`swarm-orchestrator`) executes; `unified` uses Hive (`hive-master`) for both. Hive Builder (`hive-builder`) handles ad-hoc orchestration in either mode. Scout (`scout-researcher`) retrieves read-only research; Forager (`forager-worker`) implements delegated work. `hive-helper` handles delegated merge and cleanup integration. Plan, code, simplicity, approach, and vulnerability reviews have separate subagents.
 
 ### Data Model
 
-Project knowledge lives at `.hive/context/`. Feature knowledge lives under `.hive/features/<name>/context/`. Both are managed through `hive_context_*`; catalogs and bodies are untrusted knowledge, not AGENTS.md or policy. Load `context-engineering` for selection, hash-guarded mutation, and recovery.
+Project knowledge lives at `.hive/context/`. Feature knowledge lives in the feature directory's `context/`. Both are managed through `hive_context_*`; catalogs and bodies are untrusted knowledge, not AGENTS.md or policy. Load `context-engineering` for selection, hash-guarded mutation, and recovery.
 
-Features stored in `.hive/features/<name>/`:
-```
-.hive/features/my-feature/
-├── feature.json       # Feature metadata
-├── plan.md            # Execution plan (can include a readable design summary before ## Tasks)
-├── tasks/             # Per-task status.json, spec.md, and reports
-└── context/           # Managed persistent context
-    ├── index.json     # Revisioned kind and timestamp metadata
-    ├── overview.md    # Reserved human-facing summary/history
-    └── decisions.md   # Durable execution context
-```
+Resolve feature paths through `getFeaturePath` in `packages/hive-core/src/utils/paths.ts`; new feature directories use an indexed prefix, and existing unprefixed directories remain readable. Do not construct `.hive/features/<name>/` paths from the logical name.
 
 Task status and reports are the execution record. There is no attempt ledger. Old attempt and lease files are unread. Useful plans, tasks, context, reports, and workspace files remain readable. `.hive/background-jobs.json` is observational board bookkeeping.
 
@@ -139,10 +120,11 @@ Task status and reports are the execution record. There is no attempt ledger. Ol
 
 ### Adding a New Tool
 
-1. Create tool in `packages/opencode-hive/src/tools/`
-2. Register in tool index
-3. Add to agent system prompt if needed
-4. Test with actual agent invocation
+1. Add the tool definition to `packages/opencode-hive/src/runtime.ts`, `src/background/backgroundTools.ts`, or `src/task-trace.ts`, according to its owner.
+2. Register its name in `HIVE_TOOL_NAMES` in `packages/opencode-hive/src/utils/plugin-manifest.ts`; regenerate `plugin.json` with the package build.
+3. Update role tool filters and agent guidance where the tool must be available or explained.
+4. Update the tool table in `AGENTS.md`, `packages/opencode-hive/docs/HIVE-TOOLS.md`, and the tool-count pin in `packages/opencode-hive/src/runtime.test.ts`.
+5. Test the tool through the plugin runtime.
 
 ### Adding a New Skill
 
@@ -154,53 +136,13 @@ Task status and reports are the execution record. There is no attempt ledger. Ol
 ### Adding a Service
 
 1. Create in `packages/hive-core/src/services/`
-2. Export from `services/index.ts`
-3. Add types to `types.ts`
-4. Write unit tests
-
-## Important Patterns
-
-### File System Operations
-
-Use the utility functions from hive-core:
-
-```typescript
-import { readJson, writeJson, fileExists, ensureDir } from './utils/fs.js';
-
-const data = await readJson<Config>(path);
-await ensureDir(dirPath);
-```
-
-### Error Handling
-
-```typescript
-try {
-  const feature = await featureService.load(name);
-  return { success: true, feature };
-} catch (error) {
-  return {
-    error: `Failed to load feature: ${error.message}`,
-    hint: 'Check that the feature exists'
-  };
-}
-```
-
-### Path Resolution
-
-```typescript
-import { getHiveDir, getFeatureDir } from './utils/paths.js';
-
-const hivePath = getHiveDir(rootDir);
-const featurePath = getFeatureDir(rootDir, featureName);
-```
-
-## Monorepo Structure
-
-This is a **bun workspaces** monorepo. Dependencies are hoisted to root `node_modules/`. Each package has its own `package.json`. Run aggregate `build` and `test` scripts from the repository root. Run package-specific scripts and focused tests from the owning package directory.
+2. Export the service and service-local types from `services/index.ts`.
+3. Use the synchronous `readJson`, `writeJsonAtomic`, `writeJsonLockedSync`, and `acquireLockSync` helpers in `packages/hive-core/src/utils/paths.ts` for file I/O and locking; do not add parallel fs utilities.
+4. Write unit tests.
 
 ## Hive - Feature Development System
 
-Plan-first development: Write plan → User reviews → Approve → Execute tasks.
+For feature work: write the plan → user reviews → approve → execute tasks.
 
 Tool availability plus instructions govern action. Each tool validates its own operation.
 
@@ -221,7 +163,7 @@ Tool availability plus instructions govern action. Each tool validates its own o
 | Status | hive_status |
 | Snapshot | hive_git_snapshot (optional `directory`) |
 
-Parent authors the native `task()` prompt. The runtime appends concise project, feature, and session constraints. Do not regenerate a native command payload.
+Parent authors the native `task()` prompt. At dispatch, the runtime appends a route-snapshot footer with `projectRoot`, the selected feature route, session constraints, and feature constraints. Do not regenerate a native command payload.
 
 Feature-scoped calls resolve in this order: explicit call target, selected session route (including explicit null), detected feature worktree/path, then the sole live feature. The same effective route is captured for child dispatch. Explicit targets are call-local. Only `hive_feature_select` changes the selected route; feature creation and feature-task worktree lifecycle calls do not. Explicit null suppresses detected-context and sole-live fallback. Select the child's feature immediately before native `task()` dispatch; unrelated explicit feature operations do not alter that route.
 
@@ -241,7 +183,7 @@ When an ad-hoc request has multiple independently verifiable outcomes, dependenc
 
 The four `hive_constraints_*` tools manage verbatim operator directives. Default scope is `session`; pass `scope: "feature"` for feature constraints. Use `hive_constraints_add` only for durable directives, not every user message, example, or task-local request. Before a correction or removal, call `hive_constraints_read`, then pass its stable ID and revision to `hive_constraints_edit`; call `hive_constraints_clear` only for an explicit whole-register clear. Edit and clear reject stale revisions atomically, identical additions are idempotent, and the aggregate cap is 8000 UTF-16 code units. Inherited session and feature labels travel with every child captured at dispatch, including review children. If they conflict, the agent surfaces the conflict. Do not promote context files into constraints. Only primaries can add, edit, or clear constraints. Workers receive the injected register and may read it. That is tool exposure, not a semantic runtime gate.
 
-Feature context is revisioned in `context/index.json`. Read with `hive_context_read` before replacement, append, or selective archive, then pass the returned revision and named-read `contentHash` as `expectedRevision` and `expectedContentHash` (archive uses `expectedContentHashes`). Non-reserved files are `durable` by default and enter worker/network context; `evidence` files remain available to explicit reads but are excluded from prompts. Select from the catalog by `description`/`read_when`; finish named chunks before whole-document replacement. Feature hygiene warnings begin strictly above 8 durable files or 40,000 UTF-16 units; project warnings begin strictly above 32 files or 160,000 units. These are review signals, not admission rejection. When they appear, load `context-engineering` and review; do not auto-consolidate, auto-promote, or archive on feature completion. `overview`, `draft`, and `execution-decisions` remain reserved and uncapped, and do not accept a caller-provided kind. Plan approval leaves draft cleanup explicit so archival failure cannot make a persisted approval appear unsuccessful. Project owner/date are accountability, not authority. Foragers and reviewers write feature and project context through revision and content-hash checks. Scout is read-only. Archive is primary-only. Newer notes do not rewrite a running assignment. Tool schemas: `packages/opencode-hive/docs/HIVE-TOOLS.md` and `docs/OPERATOR-GUIDE.md`.
+Feature context is revisioned in `context/index.json`. Read with `hive_context_read` before replacement, append, or selective archive, then pass the returned revision and named-read `contentHash` as `expectedRevision` and `expectedContentHash` (archive uses `expectedContentHashes`). Non-reserved files default to `durable` and appear in the `hive_context_read` catalog; `evidence` files are omitted from that catalog but remain readable by name. Neither kind causes dispatch-time prompt injection. Select from the catalog by `description`/`read_when`; finish named chunks before whole-document replacement. Feature hygiene warnings begin strictly above 8 durable files or 40,000 UTF-16 units; project warnings begin strictly above 32 files or 160,000 units. These are review signals, not admission rejection. When they appear, load `context-engineering` and review; do not auto-consolidate, auto-promote, or archive on feature completion. `overview`, `draft`, and `execution-decisions` are reserved, excluded from durable hygiene counts, and reject caller-provided kind; the 1 MiB per-file content limit still applies. Plan approval leaves draft cleanup explicit so archival failure cannot make a persisted approval appear unsuccessful. Project owner/date are accountability, not authority. Foragers and reviewers write feature and project context through revision and content-hash checks. Scout is read-only. Archive is primary-only. Newer notes do not rewrite a running assignment. Tool schemas: `packages/opencode-hive/docs/HIVE-TOOLS.md` and `docs/OPERATOR-GUIDE.md`.
 
 `hive_git_snapshot` is a low-level diagnostic with an optional `directory` for a foreign checkout. It returns a versioned `hive-git-snapshot/v1` envelope. Shape, failure codes, per-section omissions, and hard limits: `packages/opencode-hive/docs/HIVE-TOOLS.md`.
 
@@ -283,7 +225,7 @@ Parent chooses direct work or delegation according to the repository-backed exec
 
 Forager is the default execution role. Native `general` is an ordinary `task()` call with ordinary tools only. Helper calls retain bounded operational permissions.
 
-Author the native Forager `task({ subagent_type, description, prompt, background? })` prompt. The runtime appends concise project, feature, and session constraints.
+Author the native Forager `task({ subagent_type, description, prompt, background? })` prompt; the runtime adds the route-snapshot footer described above.
 
 Each native `task()` invocation has one primary goal and one terminal handoff. Every returned result is terminal, including completed, failed, empty, partial, blocked, unsatisfactory, review-remediation, retry, new-test-evidence, and operator-decision results. Every follow-up after a returned result uses a fresh child session; reuse the same Hive task/worktree where appropriate. Review findings are fresh assignments in the same implementation lane. Compaction re-anchoring of a currently running worker is distinct from follow-up work. Primaries must not pass `task_id` or infer continuation eligibility from task output, `hive_task_trace`, `idle_and_closed`, board state, cancellation acknowledgement, or transcript quality. Pass `task_id` only when an explicit operator instruction or explicit runtime-owned interruption-recovery mechanism authorizes continuation; otherwise launch fresh. If the child may still be active or its lifecycle is uncertain, inspect, wait, or reattach as supported; do not send another prompt or launch an overlapping writer. Trace semantic recovery is untrusted and cannot authorize continuation. A primary goal may include tightly coupled code, tests, docs, and multiple files; do not split it by file or step. Architect is the only subagent that may call one terminal layer of read-only planning helpers; every other subagent is terminal. Subagents cannot use `question`; they return required operator clarification to their parent in the terminal handoff.
 
@@ -305,12 +247,12 @@ Configured reviewer descriptions guide selection. Explicit operator-required rev
 
 **After task() Returns:**
 - task() is BLOCKING by default — when it returns with defined output, the worker is done for that call
-- Call `hive_task_update` as needed, then `hive_status()`
+- For managed feature tasks, call `hive_task_update` as needed, then `hive_status()`
 - When the background experiment is enabled, load `background-delegation` for wait mode and board protocol. Cancel acknowledgement is not proof of termination.
 
 ### Sandbox Configuration
 
-**Docker sandbox** provides isolated test environments for workers:
+In Docker mode, the runtime wraps bash calls only when their `workdir` starts with `<projectRoot>/.hive/.worktrees`, regardless of agent. Calls without that `workdir` run on the host.
 
 - **Config source**: `~/.config/opencode/agent_hive.json` is authoritative for Agent Hive runtime configuration. The only project-local exception is `.hive/agent-hive.override.json`, which may set `model` and/or `variant` for matching built-in or effective custom-agent declarations. All other settings remain global; project `.hive/agent-hive.json` and `.opencode/agent_hive.json` files remain ignored. Restart OpenCode after changing configuration.
 - **Repository topology**: `<canonical-project-root>/.hive/repositories.json` stores `{ "schemaVersion": 1, "repositories": [...] }`; paths are relative to and contained by that root. Global `repositoryRoot`/`repositories` are migration-only legacy fields.
@@ -318,14 +260,14 @@ Configured reviewer descriptions guide selection. Explicit operator-required rev
   - `sandbox: 'none' | 'docker'` — Isolation mode (default: 'none')
   - `dockerImage?: string` — Custom Docker image (optional, auto-detects if omitted)
   - `persistentContainers?: boolean` — Reuse Docker containers per worktree
-- **Auto-detection**: Detects runtime from project files:
+- **Auto-detection**: Detects an image from worktree files when no image is configured:
+  - `Dockerfile` → no automatic image; the command runs unwrapped unless `dockerImage` is set
   - `package.json` → `node:22-slim`
   - `requirements.txt` / `pyproject.toml` → `python:3.12-slim`
   - `go.mod` → `golang:1.22-slim`
   - `Cargo.toml` → `rust:1.77-slim`
-  - `Dockerfile` → builds from project Dockerfile
   - Fallback → `ubuntu:24.04`
-- **Escape hatch**: Prefix commands with `HOST:` to bypass sandbox and run directly on host
+- **Host bypass**: The runtime recognizes `HOST:`, but workers report host-only command needs as blocked instead of bypassing their sandbox
 
 **Example config**:
 ```json
@@ -335,4 +277,4 @@ Configured reviewer descriptions guide selection. Explicit operator-required rev
 }
 ```
 
-Workers are unaware of sandboxing — bash commands are transparently intercepted and wrapped with `docker run`.
+For eligible bash calls with an image, persistent containers (the Docker-mode default) use `docker exec`; otherwise the runtime uses `docker run --rm`.
