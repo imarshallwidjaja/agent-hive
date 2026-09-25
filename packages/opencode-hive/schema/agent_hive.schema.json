@@ -14,21 +14,6 @@
       "type": "string",
       "description": "Schema reference for this config file"
     },
-    "sandbox": {
-      "type": "string",
-      "enum": ["none", "docker"],
-      "default": "none",
-      "description": "Global sandbox isolation mode. 'none' runs commands directly; 'docker' wraps bash commands in Docker containers."
-    },
-    "dockerImage": {
-      "type": "string",
-      "description": "Global Docker image override. Auto-detected from active project files if omitted (e.g., node:22-slim for Node.js projects)."
-    },
-    "persistentContainers": {
-      "type": "boolean",
-      "default": true,
-      "description": "Reuse Docker containers per worktree (docker exec) instead of creating new ones per command (docker run --rm). Default: true when sandbox is 'docker'."
-    },
     "repositoryRoot": {
       "type": "string",
       "pattern": "^(?:/|[A-Za-z]:[\\\\/]|\\\\\\\\)",
@@ -67,7 +52,7 @@
     },
     "hook_cadence": {
       "type": "object",
-      "description": "Global hook cadence configuration. Production currently gates only tool.execute.before, which is safety-critical and forced to cadence 1. Other hook keys have no runtime effect.",
+      "description": "Global hook cadence configuration. No production hook currently invokes the cadence gate, so configured values have no runtime effect.",
       "additionalProperties": {
         "type": "integer",
         "minimum": 1,

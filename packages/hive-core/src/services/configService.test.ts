@@ -421,7 +421,7 @@ describe("ConfigService defaults", () => {
       fs.writeFileSync(
         legacyProjectConfigPath,
         JSON.stringify({
-          sandbox: 'docker',
+          disableSkills: ['ignored-project-skill'],
         }),
       );
 
@@ -445,7 +445,7 @@ describe("ConfigService defaults", () => {
       fs.writeFileSync(
         projectConfigPath,
         JSON.stringify({
-          sandbox: 'docker',
+          disableSkills: ['ignored-project-skill'],
         }),
       );
 
@@ -1137,59 +1137,6 @@ describe('ConfigService hook cadence', () => {
 
     expect(service.getHookCadence('experimental.chat.messages.transform')).toBe(1);
   });
-
-  it('forces safety-critical hooks to cadence 1 and warns about the ignored value', () => {
-    const service = new ConfigService();
-    const warn = spyOn(console, 'warn').mockImplementation(() => {});
-    fs.mkdirSync(path.dirname(service.getPath()), { recursive: true });
-    fs.writeFileSync(service.getPath(), JSON.stringify({ hook_cadence: { 'tool.execute.before': 5 } }));
-
-    expect(service.getHookCadence('tool.execute.before', { safetyCritical: true })).toBe(1);
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('safety-critical hook: tool.execute.before'));
-    warn.mockRestore();
-  });
-});
-
-describe("ConfigService sandbox config", () => {
-  it("getSandboxConfig() returns { mode: 'none' } when not configured", () => {
-    const service = new ConfigService();
-    const sandboxConfig = service.getSandboxConfig();
-
-    expect(sandboxConfig).toEqual({ mode: 'none', persistent: false });
-  });
-
-  it("getSandboxConfig() returns { mode: 'docker' } when sandbox is set to docker", () => {
-    const service = new ConfigService();
-    const configPath = service.getPath();
-
-    fs.mkdirSync(path.dirname(configPath), { recursive: true });
-    fs.writeFileSync(
-      configPath,
-      JSON.stringify({
-        sandbox: 'docker',
-      }),
-    );
-
-    const sandboxConfig = service.getSandboxConfig();
-    expect(sandboxConfig).toEqual({ mode: 'docker', persistent: true });
-  });
-
-  it("getSandboxConfig() returns { mode: 'docker', image: 'node:22-slim' } when configured with dockerImage", () => {
-    const service = new ConfigService();
-    const configPath = service.getPath();
-
-    fs.mkdirSync(path.dirname(configPath), { recursive: true });
-    fs.writeFileSync(
-      configPath,
-      JSON.stringify({
-        sandbox: 'docker',
-        dockerImage: 'node:22-slim',
-      }),
-    );
-
-    const sandboxConfig = service.getSandboxConfig();
-    expect(sandboxConfig).toEqual({ mode: 'docker', image: 'node:22-slim', persistent: true });
-  });
 });
 
 describe('ConfigService global-only read source selection', () => {
@@ -1203,7 +1150,7 @@ describe('ConfigService global-only read source selection', () => {
     fs.writeFileSync(
       projectConfigPath,
       JSON.stringify({
-        sandbox: 'docker',
+        agentMode: 'dedicated',
         customAgents: {
           'project-agent': { baseAgent: 'forager-worker', description: 'Project agent' },
         },
@@ -1216,7 +1163,7 @@ describe('ConfigService global-only read source selection', () => {
     fs.writeFileSync(
       globalConfigPath,
       JSON.stringify({
-        sandbox: 'none',
+        agentMode: 'unified',
         agents: {
           'forager-worker': { autoLoadSkills: ['global-skill'] },
         },
@@ -1229,7 +1176,7 @@ describe('ConfigService global-only read source selection', () => {
     const service = new ConfigService(projectRoot);
     const config = service.get();
 
-    expect(config.sandbox).toBe('none');
+    expect(config.agentMode).toBe('unified');
     expect(service.getAgentConfig('forager-worker').autoLoadSkills).toContain('global-skill');
     expect(service.getCustomAgentConfigs()).toHaveProperty('global-agent');
     expect(service.getCustomAgentConfigs()).not.toHaveProperty('project-agent');
@@ -1248,14 +1195,14 @@ describe('ConfigService global-only read source selection', () => {
     fs.writeFileSync(
       globalConfigPath,
       JSON.stringify({
-        sandbox: 'docker',
+        agentMode: 'unified',
       }),
     );
 
     const service = new ConfigService(projectRoot);
     const config = service.get();
 
-    expect(config.sandbox).toBe('docker');
+    expect(config.agentMode).toBe('unified');
     expect(service.getActiveReadSourceType()).toBe('global');
     expect(service.getActiveReadPath()).toBe(globalConfigPath);
     expect(service.getLastFallbackWarning()).toBeNull();
@@ -1270,7 +1217,7 @@ describe('ConfigService global-only read source selection', () => {
     fs.writeFileSync(
       globalConfigPath,
       JSON.stringify({
-        sandbox: 123,
+        agentMode: 'bogus',
       }),
     );
 
@@ -1358,7 +1305,7 @@ describe('ConfigService global-only read source selection', () => {
     fs.writeFileSync(
       globalConfigPath,
       JSON.stringify({
-        sandbox: 123,
+        agentMode: 'bogus',
       }),
     );
 
@@ -1480,7 +1427,7 @@ describe('ConfigService repository manifest validation', () => {
       expect(service.getLastFallbackWarning()?.reason).toBe('validation_error');
 
       const original = `${JSON.stringify({
-        sandbox: 'docker',
+        agentMode: 'unified',
         repositoryRoot: projectRoot,
         repositories: [{ id: 'api', path: './api' }],
       }, null, 2)}\n`;
@@ -1566,7 +1513,7 @@ describe('ConfigService write validation and persistence', () => {
     }));
 
     const updated = service.set({
-      sandbox: 'docker',
+      agentMode: 'unified',
       agents: {
         'forager-worker': { variant: 'high' },
       },
@@ -1579,7 +1526,7 @@ describe('ConfigService write validation and persistence', () => {
     });
 
     const expectedStored = {
-      sandbox: 'docker',
+      agentMode: 'unified',
       agents: {
         'hive-master': { model: 'user/hive-model' },
         'forager-worker': { variant: 'high' },
@@ -1613,12 +1560,12 @@ describe('ConfigService write validation and persistence', () => {
     fs.mkdirSync(repositoryRoot);
     const repositories = [{ id: 'api', path: './api' }];
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
-    fs.writeFileSync(configPath, JSON.stringify({ sandbox: 'docker', repositoryRoot, repositories }));
+    fs.writeFileSync(configPath, JSON.stringify({ agentMode: 'unified', repositoryRoot, repositories }));
     service.get();
     new ConfigService().set({ disableSkills: ['example'] });
 
     expect(service.removeLegacyRepositoryManifestIfMatches(repositoryRoot, repositories)).toBe('removed');
-    expect(JSON.parse(fs.readFileSync(configPath, 'utf-8'))).toMatchObject({ sandbox: 'docker', disableSkills: ['example'] });
+    expect(JSON.parse(fs.readFileSync(configPath, 'utf-8'))).toMatchObject({ agentMode: 'unified', disableSkills: ['example'] });
   });
 
   it('skips conditional legacy cleanup when a fresh global read no longer matches', () => {
@@ -1643,16 +1590,16 @@ describe('ConfigService write validation and persistence', () => {
     const staleService = new ConfigService();
     const configPath = staleService.getPath();
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
-    fs.writeFileSync(configPath, JSON.stringify({ sandbox: 'none', disableSkills: ['existing'] }));
+    fs.writeFileSync(configPath, JSON.stringify({ hook_cadence: { 'chat.message': 1 }, disableSkills: ['existing'] }));
     staleService.get();
 
     new ConfigService().set({ agentMode: 'unified' });
-    const updated = staleService.set({ sandbox: 'docker' });
+    const updated = staleService.set({ hook_cadence: { 'chat.message': 2 } });
 
     expect(updated.agentMode).toBe('unified');
     expect(updated.disableSkills).toEqual(['existing']);
     expect(JSON.parse(fs.readFileSync(configPath, 'utf-8'))).toMatchObject({
-      sandbox: 'docker',
+      hook_cadence: { 'chat.message': 2 },
       disableSkills: ['existing'],
       agentMode: 'unified',
     });
@@ -1665,24 +1612,24 @@ describe('ConfigService write validation and persistence', () => {
     const repositories = [{ id: 'api', path: './api' }];
     fs.mkdirSync(repositoryRoot);
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
-    fs.writeFileSync(configPath, JSON.stringify({ sandbox: 'none', repositoryRoot, repositories }));
+    fs.writeFileSync(configPath, JSON.stringify({ agentMode: 'dedicated', repositoryRoot, repositories }));
     writer.get();
 
     expect(new ConfigService().removeLegacyRepositoryManifestIfMatches(repositoryRoot, repositories)).toBe('removed');
-    const updated = writer.set({ sandbox: 'docker' });
+    const updated = writer.set({ agentMode: 'unified' });
     const stored = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
 
     expect(updated.repositoryRoot).toBeUndefined();
     expect(updated.repositories).toBeUndefined();
     expect(stored.repositoryRoot).toBeUndefined();
     expect(stored.repositories).toBeUndefined();
-    expect(stored.sandbox).toBe('docker');
+    expect(stored.agentMode).toBe('unified');
   });
 
   it('rejects an invalid merged config without changing the stored file', () => {
     const service = new ConfigService();
     const configPath = service.getPath();
-    const original = `${JSON.stringify({ sandbox: 'docker' }, null, 2)}\n`;
+    const original = `${JSON.stringify({ agentMode: 'unified' }, null, 2)}\n`;
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
     fs.writeFileSync(configPath, original);
 
@@ -1705,28 +1652,28 @@ describe('ConfigService write validation and persistence', () => {
   it('keeps the existing file and cache when atomic persistence fails', () => {
     const service = new ConfigService();
     const configPath = service.getPath();
-    const original = `${JSON.stringify({ sandbox: 'docker' }, null, 2)}\n`;
+    const original = `${JSON.stringify({ agentMode: 'unified' }, null, 2)}\n`;
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
     fs.writeFileSync(configPath, original);
-    expect(service.get().sandbox).toBe('docker');
+    expect(service.get().agentMode).toBe('unified');
 
     const renameSpy = spyOn(fs, 'renameSync').mockImplementation(() => {
       throw new Error('rename failed');
     });
     try {
-      expect(() => service.set({ sandbox: 'none' })).toThrow('rename failed');
+      expect(() => service.set({ agentMode: 'dedicated' })).toThrow('rename failed');
     } finally {
       renameSpy.mockRestore();
     }
 
     expect(fs.readFileSync(configPath, 'utf-8')).toBe(original);
-    expect(service.get().sandbox).toBe('docker');
+    expect(service.get().agentMode).toBe('unified');
   });
 
   it('rejects writing a manifest whose active repository root does not exist', () => {
     const service = new ConfigService();
     const configPath = service.getPath();
-    const original = `${JSON.stringify({ sandbox: 'none' }, null, 2)}\n`;
+    const original = `${JSON.stringify({ agentMode: 'dedicated' }, null, 2)}\n`;
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
     fs.writeFileSync(configPath, original);
 
@@ -1914,7 +1861,7 @@ describe('ConfigService write validation and persistence', () => {
       const projectRoot = path.join(tempHome, 'project');
       const service = new ConfigService(projectRoot);
       fs.mkdirSync(path.dirname(service.getPath()), { recursive: true });
-      fs.writeFileSync(service.getPath(), JSON.stringify({ sandbox: 123 }));
+      fs.writeFileSync(service.getPath(), JSON.stringify({ agentMode: 'bogus' }));
       const overridePath = projectOverridePath(projectRoot);
       fs.mkdirSync(path.dirname(overridePath), { recursive: true });
       fs.writeFileSync(overridePath, '{invalid json');
@@ -1931,7 +1878,7 @@ describe('ConfigService write validation and persistence', () => {
       const projectRoot = path.join(tempHome, 'project');
       const service = new ConfigService(projectRoot);
       fs.mkdirSync(path.dirname(service.getPath()), { recursive: true });
-      fs.writeFileSync(service.getPath(), JSON.stringify({ sandbox: 123 }));
+      fs.writeFileSync(service.getPath(), JSON.stringify({ agentMode: 'bogus' }));
       writeProjectOverride(projectRoot, {
         agents: { 'hive-builder': { model: 'project/builder' } },
       });

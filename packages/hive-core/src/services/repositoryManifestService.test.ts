@@ -127,7 +127,7 @@ describe('RepositoryManifestService', () => {
   it('writes a project-local manifest without changing global policy', () => {
     withTempEnvironment((projectRoot, configPath) => {
       fs.mkdirSync(path.dirname(configPath), { recursive: true });
-      fs.writeFileSync(configPath, JSON.stringify({ sandbox: 'docker', disableSkills: ['example'] }));
+      fs.writeFileSync(configPath, JSON.stringify({ disableSkills: ['example'] }));
       initGitRepo(path.join(projectRoot, 'api'));
 
       const result = new RepositoryManifestService(projectRoot).add([{ id: 'api', path: './api' }]);
@@ -140,7 +140,7 @@ describe('RepositoryManifestService', () => {
         schemaVersion: 1,
         repositories: [{ id: 'api', path: './api' }],
       });
-      expect(globalConfig).toEqual({ sandbox: 'docker', disableSkills: ['example'] });
+      expect(globalConfig).toEqual({ disableSkills: ['example'] });
     });
   });
 
@@ -289,7 +289,7 @@ describe('RepositoryManifestService', () => {
   ])('rejects an $label without changing stored state', ({ repository }) => {
     withTempEnvironment((projectRoot, configPath) => {
       fs.mkdirSync(path.dirname(configPath), { recursive: true });
-      const original = `${JSON.stringify({ sandbox: 'none' }, null, 2)}\n`;
+      const original = `${JSON.stringify({ disableSkills: ['keep'] }, null, 2)}\n`;
       fs.writeFileSync(configPath, original);
 
       expect(() => new RepositoryManifestService(projectRoot).add([repository])).toThrow('Invalid repository entry');
@@ -342,7 +342,7 @@ describe('RepositoryManifestService', () => {
       initGitRepo(path.join(projectRoot, 'web'));
       fs.mkdirSync(path.dirname(configPath), { recursive: true });
       fs.writeFileSync(configPath, JSON.stringify({
-        sandbox: 'docker',
+        agentMode: 'unified',
         repositoryRoot: projectRoot,
         repositories: [{ id: 'api', path: './api' }],
       }));
@@ -350,7 +350,7 @@ describe('RepositoryManifestService', () => {
       const result = new RepositoryManifestService(projectRoot).add([{ id: 'web', path: './web' }]);
       expect(result.repositories.map(({ id }) => id)).toEqual(['api', 'web']);
       expect(result.legacyCleanup).toBe('removed');
-      expect(JSON.parse(fs.readFileSync(configPath, 'utf-8'))).toEqual({ sandbox: 'docker' });
+      expect(JSON.parse(fs.readFileSync(configPath, 'utf-8'))).toEqual({ agentMode: 'unified' });
     });
   });
 
@@ -562,7 +562,7 @@ describe('RepositoryManifestService', () => {
   it('rejects an invalid global config for status and update operations', () => {
     withTempEnvironment((projectRoot, configPath) => {
       fs.mkdirSync(path.dirname(configPath), { recursive: true });
-      fs.writeFileSync(configPath, JSON.stringify({ sandbox: 'bogus' }));
+      fs.writeFileSync(configPath, JSON.stringify({ agentMode: 'bogus' }));
       initGitRepo(projectRoot);
       const service = new RepositoryManifestService(projectRoot);
 

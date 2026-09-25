@@ -1112,10 +1112,6 @@ describe('Hive (Hybrid) prompt', () => {
     expect(QUEEN_BEE_PROMPT).toContain('Turn Termination');
   });
 
-  it('contains docker-mastery skill reference', () => {
-    expect(QUEEN_BEE_PROMPT).toContain('docker-mastery');
-  });
-
   it('contains agents-md-mastery skill reference', () => {
     expect(QUEEN_BEE_PROMPT).toContain('agents-md-mastery');
   });
@@ -1648,19 +1644,6 @@ describe('Forager (Worker/Coder) prompt', () => {
   it('expands the orient step with explicit pre-flight actions', () => {
     expect(FORAGER_BEE_PROMPT).toContain('Read the referenced files and surrounding code');
     expect(FORAGER_BEE_PROMPT).toContain('Search for similar patterns in the codebase');
-  });
-
-  it('contains Docker Sandbox section in Iron Laws', () => {
-    expect(FORAGER_BEE_PROMPT).toContain('Docker Sandbox');
-  });
-
-  it('instructs to report as blocked instead of HOST: escape', () => {
-    expect(FORAGER_BEE_PROMPT).toContain('report as blocked');
-    expect(FORAGER_BEE_PROMPT).not.toContain('HOST:');
-  });
-
-  it('contains docker-mastery skill reference', () => {
-    expect(FORAGER_BEE_PROMPT).toContain('docker-mastery');
   });
 
   it('directs forager to honor declared repository scope and escalate out-of-scope files through the blocker protocol', () => {

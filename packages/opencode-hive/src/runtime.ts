@@ -9,7 +9,6 @@ import {
   ContextMutationError,
   ContextService,
   DEFAULT_COUNCIL_CONFIG,
-  DockerSandboxService,
   FeatureConstraintService,
   FeatureService,
   PlanService,
@@ -787,18 +786,6 @@ const plugin: Plugin = async (ctx) => {
         output.args.prompt = `${prompt}${routeFooter(snapshot, prompt.length > 0)}`;
       }
       await backgroundAdapter['tool.execute.before'](input, output);
-      // Retain the safety-critical cadence warning even though generic cadence gating is gone.
-      configService.getHookCadence('tool.execute.before', { safetyCritical: true });
-      if (input.tool !== 'bash') return;
-      const sandbox = configService.getSandboxConfig();
-      const command = output.args?.command?.trim();
-      if (sandbox.mode === 'none' || !command) return;
-      if (/^HOST:\s*/i.test(command)) { output.args.command = command.replace(/^HOST:\s*/i, ''); return; }
-      const workdir = output.args?.workdir;
-      if (typeof workdir === 'string' && workdir.startsWith(path.join(projectRoot, '.hive', '.worktrees'))) {
-        output.args.command = DockerSandboxService.wrapCommand(workdir, command, sandbox);
-        output.args.workdir = undefined;
-      }
     },
     'tool.execute.after': async (input, output) => {
       try {

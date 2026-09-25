@@ -164,7 +164,6 @@ Load when detailed guidance needed:
 | \`skill({ name: "systematic-debugging" })\` | Bugs, test failures, unexpected behavior |
 | \`skill({ name: "test-driven-development" })\` | TDD approach |
 | \`skill({ name: "verification" })\` | Before claiming work is complete, fixed, passing, or verified |
-| \`skill({ name: "docker-mastery" })\` | Docker containers, debugging, compose |
 | \`skill({ name: "agents-md-mastery" })\` | AGENTS.md updates, quality review |
 | \`skill({ name: "context-engineering" })\` | Catalog selection, hash-guarded context reads/writes, durable maintenance, compacted-handoff recovery |
 

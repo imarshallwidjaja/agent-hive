@@ -26,7 +26,7 @@ Restart OpenCode after changing plugins.
 
 If you already have an OpenCode config, append `oc-arkive@latest` to its existing `plugin` array. Keep your surrounding settings and existing plugin entries, and preserve unrelated settings in the source file. The plugin still intentionally mutates the OpenCode fields listed below. This section is the full compatibility reference; the root README points here instead of repeating these mutations.
 
-Before upgrading, remove `disableMcps` from `~/.config/opencode/agent_hive.json`. Strict validation rejects the removed key, and the whole Hive config is ignored until the key is removed.
+Before upgrading, remove `disableMcps`, `sandbox`, `dockerImage`, and `persistentContainers` from `~/.config/opencode/agent_hive.json`. Strict validation rejects those removed keys. Configurations created by earlier versions contain `disableMcps` and `sandbox` by default. While any of those keys remain, Hive ignores the whole global configuration, and repository and worktree tools fail with an invalid-config error.
 
 The config hook intentionally mutates these OpenCode fields:
 
@@ -132,7 +132,7 @@ When an operator explicitly requires a skill, include the exact name in the assi
 ### Local skill and model use cases
 
 - **Local skill experiments:** keep a skill in `<project>/.opencode/skills/<id>/SKILL.md` or `<project>/.claude/skills/<id>/SKILL.md`, then load it with OpenCode's native `skill` tool, reference it in agent instructions, or list its frontmatter `name` in `autoLoadSkills`. User file skills are discovered through OpenCode's native `.opencode`, `.claude`, `.agents`, `skills.paths`, and `skills.urls` mechanisms.
-- **Runtime configuration:** set global agent models, variants, sandbox policy, custom agents, `taskTraceSummarizer`, and skill auto-load settings in `~/.config/opencode/agent_hive.json`. A project may override only `model` and/or `variant` for matching built-in or effective custom-agent declarations in `.hive/agent-hive.override.json`. Global config remains authoritative for all other settings. See [Configuration](#configuration).
+- **Runtime configuration:** set global agent models, variants, custom agents, `taskTraceSummarizer`, and skill auto-load settings in `~/.config/opencode/agent_hive.json`. A project may override only `model` and/or `variant` for matching built-in or effective custom-agent declarations in `.hive/agent-hive.override.json`. Global config remains authoritative for all other settings. See [Configuration](#configuration).
 
 #### Canonical Delegation Threshold
 
@@ -335,7 +335,7 @@ For example, a shared DTO task can verify the DTO owner suite before merge and d
 
 Hive reads runtime configuration from `~/.config/opencode/agent_hive.json`. The only project-local override file is `.hive/agent-hive.override.json`; it accepts only `model` and `variant` under `agents` and `customAgents`, and affects matching agents already present in the effective global/default configuration. Unknown names are ignored and never create agents. Project-local `.hive/agent-hive.json` and `.opencode/agent_hive.json` files remain ignored. Hive uses defaults when the global config is missing, unreadable, invalid JSON, or rejected by runtime validation. That validation rejects unknown top-level keys (including removed `disableMcps`) and wrong types for known fields, but does not enforce every restriction in the published schema: unknown keys inside `agents` declarations and some malformed `customAgents` entries do not invalidate the whole file ([config service](../hive-core/src/services/configService.ts), [schema](schema/agent_hive.schema.json)). An invalid project override is ignored with a runtime warning. Restart OpenCode after changing either config file.
 
-Global config remains authoritative for runtime policy, agent definitions, sandbox settings, and auto-load skill settings. See [`agent_hive.override.schema.json`](schema/agent_hive.override.schema.json) for the project override shape.
+Global config remains authoritative for runtime policy, agent definitions, and auto-load skill settings. See [`agent_hive.override.schema.json`](schema/agent_hive.override.schema.json) for the project override shape.
 
 The global schema also accepts `enableToolsFor` (default `[]`), but the current runtime does not use it to grant tools; tool access comes from agent permissions. `repositoryRoot` and `repositories` are migration-only fields for legacy topology. New repository declarations go in the project manifest managed through `hive_repositories_update`.
 
@@ -350,9 +350,7 @@ For example, to change the model for one project without changing the global age
 }
 ```
 
-The global `sandbox` default is `"none"`. With `"sandbox": "docker"`, Hive wraps a bash call only when its `workdir` starts with `<projectRoot>/.hive/.worktrees`, regardless of agent ([runtime hook](src/runtime.ts)). `dockerImage` selects an image, and `persistentContainers` controls per-worktree reuse (default `true` in Docker mode). Without `dockerImage`, Hive detects an image from project files; if the worktree contains a `Dockerfile`, detection returns no image and the command runs unwrapped ([sandbox service](../hive-core/src/services/dockerSandboxService.ts)). Prefix a command with `HOST:` to run it unwrapped. These settings belong in the global config, not the project override.
-
-`hook_cadence` currently has no useful tuning surface: production gates only the safety-critical `tool.execute.before` hook, which is forced to cadence `1`. The schema remains the machine-readable reference for this field.
+`hook_cadence` currently has no runtime effect: no production hook invokes the cadence gate. The schema remains the machine-readable reference for this field.
 
 ### Agent mode
 
@@ -484,7 +482,6 @@ Generated/managed shape (for inspection) at `<project>/.hive/repositories.json`:
 | `complexity-review` | Read-only complexity review of an explicit diff or bounded scope |
 | `context-engineering` | Select, retrieve, and update managed context with revision and hash checks |
 | `dispatching-parallel-agents` | Coordinate independent subagent work |
-| `docker-mastery` | Dockerfiles, containers, and sandbox debugging |
 | `executing-plans` | Execute an approved plan with review checkpoints |
 | `grilling` | Question supplied context until material decisions and evidence are aligned |
 | `orchestrating-ad-hoc-work` | Coordinate qualifying ad-hoc work for Hive Builder or unified Hive |

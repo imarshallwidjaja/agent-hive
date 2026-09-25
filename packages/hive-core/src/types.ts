@@ -514,12 +514,6 @@ export interface HiveConfig {
   council?: CouncilConfig;
   /** Optional model settings for delegated-task recovery interpretation. */
   taskTraceSummarizer?: TaskTraceSummarizerConfig;
-  /** Sandbox mode for worker isolation */
-  sandbox?: 'none' | 'docker';
-  /** Docker image to use when sandbox is 'docker' (optional explicit override) */
-  dockerImage?: string;
-  /** Reuse Docker containers per worktree (default: true when sandbox is 'docker') */
-  persistentContainers?: boolean;
   /** @deprecated Migration-only root for legacy globally stored repository topology. */
   repositoryRoot?: string;
   /** @deprecated Migration-only topology. New manifests live in .hive/repositories.json. */
@@ -573,7 +567,6 @@ export const DEFAULT_HIVE_CONFIG: HiveConfig = {
   enableToolsFor: [],
   disableSkills: [],
   agentMode: 'dedicated',
-  sandbox: 'none',
   council: DEFAULT_COUNCIL_CONFIG,
   taskTraceSummarizer: { temperature: 0 },
   customAgents: {

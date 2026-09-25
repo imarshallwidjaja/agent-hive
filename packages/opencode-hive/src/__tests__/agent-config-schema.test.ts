@@ -376,7 +376,7 @@ describe('agent_hive.override schema contract', () => {
     const rejected = [
       null,
       [],
-      { sandbox: 'docker' },
+      { agentMode: 'unified' },
       { agents: { 'known-agent': {} } },
       { agents: { 'known-agent': { model: '   ' } } },
       { agents: { 'known-agent': { variant: '  ' } } },

@@ -65,7 +65,7 @@ describe('plugin config source resolution', () => {
     const warningMessage = `Failed to read global config at ${globalConfigPath}; using defaults. Failed to read project agent override at ${overridePath}; ignoring it and using defaults`;
 
     fs.mkdirSync(path.dirname(globalConfigPath), { recursive: true });
-    fs.writeFileSync(globalConfigPath, JSON.stringify({ sandbox: 123 }));
+    fs.writeFileSync(globalConfigPath, JSON.stringify({ agentMode: 'bogus' }));
     fs.mkdirSync(path.dirname(overridePath), { recursive: true });
     fs.writeFileSync(overridePath, JSON.stringify({ agents: { 'forager-worker': { temperature: 0.3 } } }));
 

@@ -250,31 +250,7 @@ Configured reviewer descriptions guide selection. Explicit operator-required rev
 - For managed feature tasks, call `hive_task_update` as needed, then `hive_status()`
 - When the background experiment is enabled, load `background-delegation` for wait mode and board protocol. Cancel acknowledgement is not proof of termination.
 
-### Sandbox Configuration
-
-In Docker mode, the runtime wraps bash calls only when their `workdir` starts with `<projectRoot>/.hive/.worktrees`, regardless of agent. Calls without that `workdir` run on the host.
+### Runtime Configuration
 
 - **Config source**: `~/.config/opencode/agent_hive.json` is authoritative for Agent Hive runtime configuration. The only project-local exception is `.hive/agent-hive.override.json`, which may set `model` and/or `variant` for matching built-in or effective custom-agent declarations. All other settings remain global; project `.hive/agent-hive.json` and `.opencode/agent_hive.json` files remain ignored. Restart OpenCode after changing configuration.
 - **Repository topology**: `<canonical-project-root>/.hive/repositories.json` stores `{ "schemaVersion": 1, "repositories": [...] }`; paths are relative to and contained by that root. Global `repositoryRoot`/`repositories` are migration-only legacy fields.
-- **Runtime fields**:
-  - `sandbox: 'none' | 'docker'` — Isolation mode (default: 'none')
-  - `dockerImage?: string` — Custom Docker image (optional, auto-detects if omitted)
-  - `persistentContainers?: boolean` — Reuse Docker containers per worktree
-- **Auto-detection**: Detects an image from worktree files when no image is configured:
-  - `Dockerfile` → no automatic image; the command runs unwrapped unless `dockerImage` is set
-  - `package.json` → `node:22-slim`
-  - `requirements.txt` / `pyproject.toml` → `python:3.12-slim`
-  - `go.mod` → `golang:1.22-slim`
-  - `Cargo.toml` → `rust:1.77-slim`
-  - Fallback → `ubuntu:24.04`
-- **Host bypass**: The runtime recognizes `HOST:`, but workers report host-only command needs as blocked instead of bypassing their sandbox
-
-**Example config**:
-```json
-{
-  "sandbox": "docker",
-  "dockerImage": "node:22-slim"
-}
-```
-
-For eligible bash calls with an image, persistent containers (the Docker-mode default) use `docker exec`; otherwise the runtime uses `docker run --rm`.

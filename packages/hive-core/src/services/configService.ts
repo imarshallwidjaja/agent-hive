@@ -17,13 +17,9 @@ import type {
   HiveConfig,
   ResolvedCustomAgentConfig,
 } from '../types.js';
-import type { SandboxConfig } from './dockerSandboxService.js';
 
 const STORED_CONFIG_KEYS = new Set([
   '$schema',
-  'sandbox',
-  'dockerImage',
-  'persistentContainers',
   'repositoryRoot',
   'repositories',
   'enableToolsFor',
@@ -421,39 +417,16 @@ export class ConfigService {
   }
 
   /**
-   * Get sandbox configuration for worker isolation.
-   * Returns { mode: 'none' | 'docker', image?: string, persistent?: boolean }
-   */
-  getSandboxConfig(): SandboxConfig {
-    const config = this.get();
-    const mode = config.sandbox ?? 'none';
-    const image = config.dockerImage;
-    const persistent = config.persistentContainers ?? (mode === 'docker');
-
-    return { mode, ...(image && { image }), persistent };
-  }
-
-  /**
    * Get hook execution cadence for a specific hook.
    * Returns the configured cadence or 1 (every turn) if not set.
    * Validates cadence values and defaults to 1 for invalid values.
    * 
    * @param hookName - The OpenCode hook name (e.g., 'experimental.chat.system.transform')
-   * @param options - Optional configuration
-   * @param options.safetyCritical - If true, enforces cadence=1 regardless of config
    * @returns Validated cadence value (always >= 1)
    */
-  getHookCadence(hookName: string, options?: { safetyCritical?: boolean }): number {
+  getHookCadence(hookName: string): number {
     const config = this.get();
     const configuredCadence = config.hook_cadence?.[hookName];
-
-    // Safety-critical hooks must always fire (cadence=1)
-    if (options?.safetyCritical && configuredCadence && configuredCadence > 1) {
-      console.warn(
-        `[hive:cadence] Ignoring cadence > 1 for safety-critical hook: ${hookName}`
-      );
-      return 1;
-    }
 
     // Validate and clamp cadence
     if (configuredCadence === undefined || configuredCadence === null) {
@@ -773,21 +746,6 @@ export class ConfigService {
     }
 
     if (config.taskTraceSummarizer !== undefined && !this.isValidTaskTraceSummarizerConfig(config.taskTraceSummarizer)) {
-      return false;
-    }
-
-    if (config.sandbox !== undefined && config.sandbox !== 'none' && config.sandbox !== 'docker') {
-      return false;
-    }
-
-    if (config.dockerImage !== undefined && typeof config.dockerImage !== 'string') {
-      return false;
-    }
-
-    if (
-      config.persistentContainers !== undefined
-      && typeof config.persistentContainers !== 'boolean'
-    ) {
       return false;
     }
 

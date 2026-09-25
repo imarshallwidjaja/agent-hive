@@ -116,7 +116,5 @@ export type {
   RepositoryManifestStatus,
   RepositoryManifestUpdateResult,
 } from './repositoryManifestService.js';
-export { DockerSandboxService } from './dockerSandboxService.js';
-export type { SandboxConfig } from './dockerSandboxService.js';
 export { buildEffectiveDependencies, computeRunnableAndBlocked } from './taskDependencyGraph.js';
 export type { TaskWithDeps, RunnableBlockedResult } from './taskDependencyGraph.js';
