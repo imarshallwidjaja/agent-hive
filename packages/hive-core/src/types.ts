@@ -562,6 +562,27 @@ export const DEFAULT_COUNCIL_CONFIG: CouncilConfig = {
   },
 };
 
+export const STARTER_CUSTOM_AGENTS: Record<string, CustomAgentConfig> = {
+  'scout-example-template': {
+    baseAgent: 'scout-researcher',
+    description: 'Example template only: rename or delete this entry before use. Do not expect planners/orchestrators to select this placeholder agent as configured.',
+    autoLoadSkills: [],
+  },
+  'forager-example-template': {
+    baseAgent: 'forager-worker',
+    description: 'Example template only: rename or delete this entry before use. Do not expect planners/orchestrators to select this placeholder agent as configured.',
+    model: 'anthropic/claude-sonnet-4-20250514',
+    temperature: 0.2,
+    variant: 'high',
+    autoLoadSkills: ['verification'],
+  },
+  'reviewer-example-template': {
+    baseAgent: 'code-reviewer',
+    description: 'Example template only: rename or delete this entry before use. Do not expect planners/orchestrators to select this placeholder agent as configured.',
+    autoLoadSkills: [],
+  },
+};
+
 export const DEFAULT_HIVE_CONFIG: HiveConfig = {
   $schema: 'https://raw.githubusercontent.com/imarshallwidjaja/agent-hive/main/packages/opencode-hive/schema/agent_hive.schema.json',
   enableToolsFor: [],
@@ -569,26 +590,7 @@ export const DEFAULT_HIVE_CONFIG: HiveConfig = {
   agentMode: 'dedicated',
   council: DEFAULT_COUNCIL_CONFIG,
   taskTraceSummarizer: { temperature: 0 },
-  customAgents: {
-    'scout-example-template': {
-      baseAgent: 'scout-researcher',
-      description: 'Example template only: rename or delete this entry before use. Do not expect planners/orchestrators to select this placeholder agent as configured.',
-      autoLoadSkills: [],
-    },
-    'forager-example-template': {
-      baseAgent: 'forager-worker',
-      description: 'Example template only: rename or delete this entry before use. Do not expect planners/orchestrators to select this placeholder agent as configured.',
-      model: 'anthropic/claude-sonnet-4-20250514',
-      temperature: 0.2,
-      variant: 'high',
-      autoLoadSkills: ['verification'],
-    },
-    'reviewer-example-template': {
-      baseAgent: 'code-reviewer',
-      description: 'Example template only: rename or delete this entry before use. Do not expect planners/orchestrators to select this placeholder agent as configured.',
-      autoLoadSkills: [],
-    },
-  },
+  customAgents: {},
   agents: {
     'hive-master': {
       model: DEFAULT_AGENT_MODELS['hive-master'],

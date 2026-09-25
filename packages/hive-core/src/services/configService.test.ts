@@ -3,7 +3,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import { ConfigService } from "./configService";
-import { CUSTOM_AGENT_BASES, DEFAULT_HIVE_CONFIG, DEFAULT_ROUTING_AGENT_DESCRIPTIONS } from "../types";
+import { CUSTOM_AGENT_BASES, DEFAULT_HIVE_CONFIG, DEFAULT_ROUTING_AGENT_DESCRIPTIONS, STARTER_CUSTOM_AGENTS } from "../types";
 
 let originalHome: string | undefined;
 let tempHome: string;
@@ -66,26 +66,7 @@ describe("ConfigService defaults", () => {
       temperature: 0.3,
       autoLoadSkills: [],
     });
-    expect(config.customAgents).toEqual({
-      'scout-example-template': {
-        baseAgent: 'scout-researcher',
-        description: 'Example template only: rename or delete this entry before use. Do not expect planners/orchestrators to select this placeholder agent as configured.',
-        autoLoadSkills: [],
-      },
-      'forager-example-template': {
-        baseAgent: 'forager-worker',
-        description: 'Example template only: rename or delete this entry before use. Do not expect planners/orchestrators to select this placeholder agent as configured.',
-        model: 'anthropic/claude-sonnet-4-20250514',
-        temperature: 0.2,
-        variant: 'high',
-        autoLoadSkills: ['verification'],
-      },
-      'reviewer-example-template': {
-        baseAgent: 'code-reviewer',
-        description: 'Example template only: rename or delete this entry before use. Do not expect planners/orchestrators to select this placeholder agent as configured.',
-        autoLoadSkills: [],
-      },
-    });
+    expect(config.customAgents).toEqual({});
   });
 
   it('defaults task trace summarization to the OpenCode model with deterministic temperature', () => {
@@ -379,26 +360,7 @@ describe("ConfigService defaults", () => {
 
     const config = service.get();
     expect(config.agentMode).toBe("dedicated");
-    expect(config.customAgents).toEqual({
-      'scout-example-template': {
-        baseAgent: 'scout-researcher',
-        description: 'Example template only: rename or delete this entry before use. Do not expect planners/orchestrators to select this placeholder agent as configured.',
-        autoLoadSkills: [],
-      },
-      'forager-example-template': {
-        baseAgent: 'forager-worker',
-        description: 'Example template only: rename or delete this entry before use. Do not expect planners/orchestrators to select this placeholder agent as configured.',
-        model: 'anthropic/claude-sonnet-4-20250514',
-        temperature: 0.2,
-        variant: 'high',
-        autoLoadSkills: ['verification'],
-      },
-      'reviewer-example-template': {
-        baseAgent: 'code-reviewer',
-        description: 'Example template only: rename or delete this entry before use. Do not expect planners/orchestrators to select this placeholder agent as configured.',
-        autoLoadSkills: [],
-      },
-    });
+    expect(config.customAgents).toEqual({});
     expect(config.agents?.["forager-worker"]?.variant).toBe("high");
   });
 
@@ -435,7 +397,7 @@ describe("ConfigService defaults", () => {
     }
   });
 
-  it('init() writes global defaults even when a project root is supplied', () => {
+  it('init() writes global defaults with starter custom agents even when a project root is supplied', () => {
     const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'project-init-config-test-'));
     try {
       const service = new ConfigService(projectDir);
@@ -451,10 +413,11 @@ describe("ConfigService defaults", () => {
 
       const config = service.init();
 
-      expect(config).toEqual(DEFAULT_HIVE_CONFIG);
+      expect(config).toEqual({ ...DEFAULT_HIVE_CONFIG, customAgents: STARTER_CUSTOM_AGENTS });
       expect(service.getActiveReadSourceType()).toBe('global');
       expect(fs.existsSync(service.getPath())).toBe(true);
       const stored = JSON.parse(fs.readFileSync(service.getPath(), 'utf-8'));
+      expect(stored.customAgents).toEqual(STARTER_CUSTOM_AGENTS);
       for (const baseAgent of CUSTOM_AGENT_BASES) {
         expect(stored.agents?.[baseAgent]).not.toHaveProperty('description');
         expect(service.getRoutingAgentDescription(baseAgent)).toBe(
@@ -1546,9 +1509,9 @@ describe('ConfigService write validation and persistence', () => {
     expect(updated.agents?.['hive-master']?.temperature).toBe(
       DEFAULT_HIVE_CONFIG.agents?.['hive-master']?.temperature,
     );
-    expect(updated.customAgents?.['forager-example-template']).toEqual(
-      DEFAULT_HIVE_CONFIG.customAgents?.['forager-example-template'],
-    );
+    expect(updated.customAgents).not.toHaveProperty('scout-example-template');
+    expect(updated.customAgents).not.toHaveProperty('forager-example-template');
+    expect(updated.customAgents).not.toHaveProperty('reviewer-example-template');
     expect(service.get()).toEqual(updated);
     expect(new ConfigService().get()).toEqual(updated);
   });

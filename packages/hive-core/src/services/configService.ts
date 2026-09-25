@@ -6,6 +6,7 @@ import {
   CUSTOM_AGENT_RESERVED_NAMES,
   DEFAULT_HIVE_CONFIG,
   DEFAULT_ROUTING_AGENT_DESCRIPTIONS,
+  STARTER_CUSTOM_AGENTS,
 } from '../types.js';
 import { isValidRepositoryConfig } from '../utils/repositoryConfig.js';
 import { acquireLockSync, writeAtomic } from '../utils/paths.js';
@@ -230,12 +231,17 @@ export class ConfigService {
 
   /**
    * Initialize config with defaults if it doesn't exist.
+   * A newly created file includes the starter custom agent templates; existing
+   * files keep only the custom agents they declare.
    */
   init(): HiveConfig {
     const resolved = this.get();
 
     if (!this.exists()) {
-      return this.set(DEFAULT_HIVE_CONFIG);
+      return this.set({
+        ...DEFAULT_HIVE_CONFIG,
+        customAgents: { ...STARTER_CUSTOM_AGENTS },
+      });
     }
     return resolved;
   }
@@ -667,10 +673,7 @@ export class ConfigService {
         ...stored.agents,
         ...mergedBuiltInAgents,
       },
-      customAgents: {
-        ...DEFAULT_HIVE_CONFIG.customAgents,
-        ...storedCustomAgents,
-      },
+      customAgents: storedCustomAgents,
       council: this.mergeCouncilConfig(DEFAULT_HIVE_CONFIG.council, stored.council),
       taskTraceSummarizer: {
         ...DEFAULT_HIVE_CONFIG.taskTraceSummarizer,

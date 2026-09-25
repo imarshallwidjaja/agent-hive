@@ -63,9 +63,7 @@ function defaultCard(name: keyof typeof resolvedBaseDescriptions): string {
 const scoutDocsCard = '- `scout-docs` — kind: custom overlay; base: `scout-researcher`; Use for research centered on documentation, release notes, READMEs, or external docs synthesis.';
 const foragerUiCard = '- `forager-ui` — kind: custom overlay; base: `forager-worker`; Use for UI implementation tasks touching React/Next components, styling, accessibility, or browser-visible behavior.';
 const reviewerSecurityCard = '- `reviewer-security` — kind: custom overlay; base: `code-reviewer`; Use for review passes focused on auth, permissions, secret handling, injection risk, or other security-sensitive changes.';
-const scoutTemplateCard = '- `scout-example-template` — kind: custom overlay; base: `scout-researcher`; Example template only: rename or delete this entry before use. Do not expect planners/orchestrators to select this placeholder agent as configured.';
-const foragerTemplateCard = '- `forager-example-template` — kind: custom overlay; base: `forager-worker`; Example template only: rename or delete this entry before use. Do not expect planners/orchestrators to select this placeholder agent as configured.';
-const reviewerTemplateCard = '- `reviewer-example-template` — kind: custom overlay; base: `code-reviewer`; Example template only: rename or delete this entry before use. Do not expect planners/orchestrators to select this placeholder agent as configured.';
+const templateAgentNames = ['scout-example-template', 'forager-example-template', 'reviewer-example-template'];
 const autonomousRoutingGuidance = "Choose autonomously the agent whose description best matches the task's domain, workflow, artifact type, or concrete review/approach risk; use the built-in base agent when no configured custom subagent is a closer fit.";
 const routingGuard = 'Candidate-specific conditions in an individual description still apply, including a condition that the candidate may be selected only when the operator explicitly names it.';
 const broadExplicitNameRoute = 'or when the operator explicitly names it';
@@ -73,13 +71,10 @@ const broadExplicitNameRoute = 'or when the operator explicitly names it';
 const allRoutingCards = [
   defaultCard('scout-researcher'),
   scoutDocsCard,
-  scoutTemplateCard,
   defaultCard('forager-worker'),
-  foragerTemplateCard,
   foragerUiCard,
   defaultCard('plan-reviewer'),
   defaultCard('code-reviewer'),
-  reviewerTemplateCard,
   reviewerSecurityCard,
   defaultCard('simplicity-reviewer'),
   defaultCard('approach-advisor'),
@@ -184,7 +179,6 @@ describe('e2e: published custom-agent docs example', () => {
     expect(routingCards(architectPrompt)).toEqual([
       defaultCard('scout-researcher'),
       scoutDocsCard,
-      scoutTemplateCard,
       defaultCard('plan-reviewer'),
       defaultCard('approach-advisor'),
     ]);
@@ -209,6 +203,9 @@ describe('e2e: published custom-agent docs example', () => {
     expect(swarmPrompt).toContain('Do not choose a custom subagent only because the task is important, large, complex, or quality-sensitive.');
     expect(swarmPrompt).not.toContain('exception routes, not capability upgrades');
     expect(routingCards(swarmPrompt)).toEqual(allRoutingCards);
+    for (const templateName of templateAgentNames) {
+      expect(swarmPrompt).not.toContain(`\`${templateName}\``);
+    }
 
     const builderOutput = { system: ['OpenCode provider base prompt'] };
     await systemTransform?.({ sessionID: 'sess_docs_builder', agent: 'hive-builder' }, builderOutput);
@@ -217,12 +214,9 @@ describe('e2e: published custom-agent docs example', () => {
     expect(routingCards(builderPrompt)).toEqual([
       defaultCard('scout-researcher'),
       scoutDocsCard,
-      scoutTemplateCard,
       defaultCard('forager-worker'),
-      foragerTemplateCard,
       foragerUiCard,
       defaultCard('code-reviewer'),
-      reviewerTemplateCard,
       reviewerSecurityCard,
       defaultCard('simplicity-reviewer'),
     ]);
