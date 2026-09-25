@@ -16,7 +16,7 @@ After the first OIDC publish succeeds, remove the `NPM_KEY` repository secret on
 
 The workflow authenticates through the GitHub OIDC token: the publish job declares `permissions: contents: read` and `id-token: write` and publishes with Node 24 and npm CLI 11.5+ (`npm install -g npm@^11.5.1`) on a GitHub-hosted runner, which meets the npm Trusted Publishing requirements.
 
-Trusted Publishing is configured on the existing `oc-arkive` package. The CI skip check runs `npm view oc-arkive@<requested version>` anonymously: an absent requested version is publish-ready and an already-published requested version skips publishing. The workflow keeps public access explicit with `npm publish --access public`. Publishes through Trusted Publishing from GitHub Actions automatically generate npm provenance attestations, so the workflow does not pass `--provenance` explicitly.
+Trusted Publishing is configured on the existing `oc-arkive` package. The CI skip check runs `npm view oc-arkive@<requested version>` anonymously: an absent requested version is publish-ready and an already-published requested version skips publishing. The check also treats registry lookup failures as publish-ready; investigate registry errors before retrying a failed publish. The workflow keeps public access explicit with `npm publish --access public`. Publishes through Trusted Publishing from GitHub Actions automatically generate npm provenance attestations, so the workflow does not pass `--provenance` explicitly.
 
 ## 2. Prep the release locally
 
@@ -26,12 +26,12 @@ Release preparation is manual. Update the release branch explicitly for `vX.Y.Z`
 - set `packages/opencode-hive/package.json`'s `devDependencies.hive-core` and `packages/vscode-hive/package.json`'s `dependencies.hive-core` to that exact `X.Y.Z` version
 - regenerate `bun.lock` and `package-lock.json`; a stale exact pin can resolve `hive-core` from the registry instead of linking the local workspace
 - regenerate `packages/opencode-hive/plugin.json` by running the package build
-- regenerate `packages/vscode-hive/dist/extension.js` and `packages/vscode-hive/vscode-arkive.vsix` by running the package build
+- regenerate and commit `packages/vscode-hive/dist/extension.js` with the package build; run `bun run --filter vscode-arkive package` to inspect the local `packages/vscode-hive/vscode-arkive.vsix` (gitignored). CI builds its own VSIX.
 - add `docs/releases/vX.Y.Z.md`
 - add the `X.Y.Z` entry near the top of `CHANGELOG.md`
 - update OpenCode install or release docs if the package contract changed
 
-The release workflow publishes `docs/releases/${github.ref_name}.md` as the GitHub Release body, so the matching release note file must exist before tagging.
+The release workflow uses `docs/releases/vX.Y.Z.md` as the GitHub Release body for the resolved release tag, so the matching release note file must exist before tagging.
 
 The pushed tag must also match the root package version. A `v1.2.3` tag on a commit whose `package.json` version is still `1.2.2` is invalid and fails before publish jobs run. The release artifact check verifies both exact `hive-core` pins, the npm local-workspace link, and the packed `oc-arkive` dependency and module-reference boundaries.
 
@@ -53,10 +53,10 @@ npm access list collaborators oc-arkive --json
 These checks are not preparation shortcuts:
 
 - `npm whoami` confirms your local npm login works.
-- `npm access list collaborators oc-arkive --json` shows the current user's package access for human inspection. It does not automatically verify GitHub OIDC Trusted Publishing or authority to make the first publish.
-- `bun run release:check` installs dependencies, verifies the release artifacts and workflow contract, builds `hive-core`, `oc-arkive`, and `vscode-arkive`, and runs their test suites.
+- `npm access list collaborators oc-arkive --json` lists package collaborators for human inspection. It does not verify GitHub OIDC Trusted Publishing or authority to make the first publish.
+- `bun run release:check` installs dependencies; builds `hive-core` and `vscode-arkive`; checks release artifacts, the workflow, and VS Code bundle reproducibility; then builds `oc-arkive` and runs the three package test suites. The artifact check also builds and packs `oc-arkive` and runs the release documentation contract in an isolated staging tree.
 
-The documentation contract verifies the canonical documents, active links, and removed-document references. `release-docs.test.mjs` discovers the repository Markdown set from repository artifacts when `.git` is absent, so it runs unchanged from a source checkout or an isolated release staging tree:
+The documentation contract checks that canonical documents exist, the 37-tool manifest contains required tools, the manifest and runtime omit retired tools, and the release guide includes `workflow_dispatch` without a preparation shortcut. `release-artifacts.test.mjs` also runs it in an isolated staging tree without Git metadata:
 
 ```bash
 node --test release-docs.test.mjs
@@ -70,7 +70,7 @@ Fix any `bun run release:check` failure before creating a tag. A failed optional
 
 ## 4. Rehearse the GitHub workflow
 
-Before tagging, run the `Release` GitHub Actions workflow manually with `workflow_dispatch` from the release branch or the merge commit you expect to tag.
+After merging release prep, run the `Release` GitHub Actions workflow manually with `workflow_dispatch` from the branch head you will tag, normally `main`. Select that branch in the workflow UI; rehearsal checks out its selected commit.
 
 Use the default `rehearse` mode to confirm:
 

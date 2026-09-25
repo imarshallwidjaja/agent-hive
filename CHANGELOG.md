@@ -7,20 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Project-local `.hive/agent-hive.override.json` can set `model` and `variant` for matching built-in and configured custom agents. Other runtime settings remain in the global config.
+- Project and feature context now have scoped catalogs, bounded reads, and hash-guarded writes. VS Code can browse and archive scoped context and show numeric task report history.
+- `hive_task_trace` can inspect any explicitly identified session visible to the connected OpenCode runtime; recovery for non-direct-child sessions remains inspect-only. `hive_git_snapshot` returns a versioned, consistency-checked result with structured failure and omission details.
+- Read-only `complexity-review` and `complexity-audit` skills cover bounded diffs and named code roots.
+- The `orchestrating-ad-hoc-work` skill guides outcome-first lanes, ownership, dependency waves, and integration order for multi-lane ad-hoc work. The bundled `writing-for-agents` skill covers documents written for agents.
+
 ### Changed
 
-- Tool availability plus instructions govern action. Each tool validates its own operation. Task status and reports replace the attempt ledger. Public worktree families are `hive_worktree_create` / `inspect` / `merge` / `cleanup` and `hive_adhoc_worktree_*`. `hive_feature_select` routes context and constraints. Constraints accept `scope: session|feature`. Every returned native task result is terminal; follow-ups use fresh child sessions, while `task_id` pass-through requires explicit operator or runtime-owned interruption-recovery authorization.
-- Research guidance now selects already-exposed capabilities by operation, source authority, freshness, scope, and permitted effects. Missing capabilities are reported as evidence gaps rather than recreated.
+- Task status and immutable report history replace execution attempts. Feature or ad-hoc Hive worktrees are the default for tracked Git writes, with narrow direct-checkout exceptions; workers commit the source and primaries inspect, merge, and clean up. Background job tracking remains observational.
+- Feature targets on individual calls no longer change the session route. Select a feature with `hive_feature_select` before delegation.
+- Constraints can be scoped to a feature with `scope: "feature"`; the selected route carries both session and feature constraints to children.
+- Durable context above the file or character guidelines now produces hygiene warnings instead of rejecting growth. Worker prompts no longer receive injected context documents; agents retrieve relevant context with `hive_context_read`.
+- Worktree integration requires the caller's inspected destination identity. If the destination has moved, inspect and reconcile before merging.
+- Every returned native task result ends that child invocation. Follow-ups start fresh child sessions; passing `task_id` requires an explicit operator instruction or runtime-owned interruption recovery.
+- Verification follows affected behavior and required gates; review remediation requires evidenced material findings. Bundled skills are discovered from packaged `SKILL.md` files.
+- Research guidance uses exposed tools by capability and evidence source. Missing tools are reported as evidence gaps.
 
 ### Removed
 
-- oc-arkive no longer bundles or registers research integrations, packages their launch dependencies or templates, or mutates OpenCode's external-tool configuration. OpenCode owns integration setup and permissions.
-- Removed the provider-specific structural-search skill. Shared agent guidance now covers generic structural-search and syntax-inspection capabilities.
+- Removed `hive_worktree_start`, `hive_worktree_commit`, `hive_worktree_discard`, `hive_merge`, `hive_adhoc_worktree_commit`, `hive_adhoc_merge`, and `hive_adhoc_cleanup`. Private review tools were also removed: `hive_review_evidence_resolve`, `hive_review_workspace_create`, `hive_review_workspace_claim`, `hive_review_workspace_inspect`, `hive_review_workspace_cleanup`, and `hive_vulnerability_compare_report_read`.
+- oc-arkive no longer bundles or configures research MCP integrations or the provider-specific structural-search skill. Configure research tools through OpenCode and its other installed integrations.
+
+### Fixed
+
+- Disjoint untracked destination files can remain when the merge topology is safe; a one-repository composite accepts an exact scalar source pin.
+- Plan approval returns an explicit result. Interrupted background jobs are observed through child session events instead of remaining indefinitely marked running.
+- Required operator skill directives carry across delegation; primaries are instructed to verify child skill loads with session traces. Review-only agent seats are hidden from public configuration, and `hive-master` is exposed only in unified mode.
 
 ### Upgrade
 
 - Before upgrading, remove `disableMcps` from `~/.config/opencode/agent_hive.json`; the strict current config schema no longer accepts it.
-- Restart OpenCode after upgrade. Finish or abandon old live workers first. Remove stale copied user-authored workflow instructions yourself; Hive does not silently overwrite global settings. Old attempt and lease files are left unread.
+- Rename custom agent IDs containing `*` or `?` and update their references; the config schema now rejects those characters.
+- Update scripts and copied agent instructions: replace `hive_worktree_start` with `hive_worktree_create` followed by native `task()` dispatch. `hive_worktree_create` now creates a task worktree without changing task state; in 2.5.0 it launched blocked-task continuation. Replace `hive_worktree_commit` and `hive_adhoc_worktree_commit` with a worker commit followed by `hive_worktree_merge` or `hive_adhoc_worktree_merge`, passing the worker's exact `sourceCommit` (or complete `sourceCommits` map) and the inspected `expectedTarget` (or complete `expectedTargets` map). Use `hive_task_update` for task status and reports, and `/dash-review` or `/vuln-review` for reviews.
+- Read context with `hive_context_read` before replacing, appending, or archiving it. Pass `expectedRevision` and `expectedContentHash` for replacement or append; archive requires `expectedRevision` and per-name `expectedContentHashes`.
+- Restart OpenCode after upgrade. Finish or abandon old live workers first. Remove stale copied user-authored workflow instructions yourself; Hive does not silently overwrite global settings. Old attempt and lease files are left unread; plans, tasks, context, reports, and workspace files remain readable.
 
 ## [2.5.0] - 2026-09-08
 
