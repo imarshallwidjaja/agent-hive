@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/oc-arkive)](https://www.npmjs.com/package/oc-arkive)
 [![License: MIT with Commons Clause](https://img.shields.io/badge/License-MIT%20with%20Commons%20Clause-blue.svg)](../../LICENSE)
 
-OpenCode workflow plugin for plan-first development: feature plans, approval gates, managed Git worktrees, durable `.hive/` state, and optional review commands.
+OpenCode workflow plugin for plan-first feature development and ad-hoc work: feature plans, approval and task sync, Git worktrees, durable `.hive/` state, and review commands.
 
 Requires **OpenCode >= 1.18.30** for native task attachment hooks. Open your project and ask Hive to work.
 
@@ -31,17 +31,17 @@ Before upgrading, remove `disableMcps` from `~/.config/opencode/agent_hive.json`
 The config hook intentionally mutates these OpenCode fields:
 
 - `default_agent`: selects `hive-master` in unified mode or `architect-planner` in dedicated mode.
-- `agent`: Known reserved legacy/current agent IDs are removed and replaced; unrelated agent IDs remain.
+- `agent`: Shipped agent IDs are replaced; unrelated agent entries remain. In dedicated mode, the registered `hive-master` seat is hidden from the agent picker.
 - `command`: Shipped command keys replace same-key user command definitions; unrelated command keys remain.
 - `subagent_depth`: sets the OpenCode value to `2`.
 - `skills.paths`: when Hive skills are materialized, registers the generated Hive skill path first, followed by resolved user-configured paths.
-- `experimental.primary_tools`: removes `task` and existing `question` entries, then ensures one `question` entry while preserving other string entries.
+- `experimental.primary_tools`: ensures one `question` entry while preserving the existing entries.
 
 ### Research integrations
 
 Configure research integrations and their permissions in OpenCode. oc-arkive does not install, register, configure, or alter them. Hive agents inspect the capabilities already exposed to their session, select the narrowest suitable interface from its description and schema, and report a missing capability when required evidence cannot be retrieved. They do not install tools or improvise shell or network substitutes.
 
-Default mode is dedicated (`architect-planner` + `swarm-orchestrator`). Set `"agentMode": "unified"` for a single hybrid `hive-master` seat; see [Agent mode](#agent-mode). Runtime settings live in `~/.config/opencode/agent_hive.json`, with a narrow project-local exception for existing agents' `model` and `variant` values in `.hive/agent-hive.override.json`.
+Default mode is dedicated (`architect-planner` + `swarm-orchestrator`). Set `"agentMode": "unified"` to make `hive-master` the default agent; see [Agent mode](#agent-mode). Runtime settings live in `~/.config/opencode/agent_hive.json`, with a narrow project-local exception for existing agents' `model` and `variant` values in `.hive/agent-hive.override.json`.
 
 ## The Workflow
 
@@ -49,12 +49,12 @@ Default mode is dedicated (`architect-planner` + `swarm-orchestrator`). Set `"ag
 2. **Write plan** - target one feature with explicit `hive_plan_write` / `hive_plan_patch` calls
 3. **Human review** - comments and chat
 4. **Approve + sync** - `hive_plan_approve`, then `hive_tasks_sync`
-5. **Execute** - create the matching `hive_worktree_create` workspace with an explicit feature target, select that feature immediately before dispatch, then issue one ordinary native Forager call
-6. **Record** - the primary calls `hive_task_update` for status, summary, blocker, or report
-7. **Merge** - `hive_worktree_merge` integrates completed task branches
+5. **Execute** - create and inspect the matching `hive_worktree_create` workspace with an explicit feature target, record the destination identity, select that feature immediately before dispatch, then issue one ordinary native Forager call
+6. **Integrate** - verify the committed source, pass its pin and the inspected destination identity to `hive_worktree_merge`, and clean up the integrated worktree
+7. **Record** - the primary calls `hive_task_update` for status, summary, blocker, or report; mark a task done only after integration succeeds
 8. **Complete feature** - `hive_feature_complete` when done
 
-Use the feature flow when work needs plan review, a task DAG, and a durable audit trail. Use ad-hoc orchestration for bounded non-feature work that should not create feature or task records. Hive Builder or unified `hive-master` loads `orchestrating-ad-hoc-work` before requests with multiple independently verifiable outcomes, dependency waves, shared write/runtime resources, possible background execution, or an expected need for more than one worker attempt or turn. Parallel writers use distinct ad-hoc worktrees, but fixed-path fixtures, ports, databases, containers, generated outputs, and external mutable resources still require explicit ownership or sequencing. Ad-hoc Git work uses `hive_adhoc_worktree_create`, `hive_adhoc_worktree_merge`, and `hive_adhoc_worktree_cleanup`. `architect-planner` is planning-only. Operator-facing seats and loops are in the [Operator Guide](../../docs/OPERATOR-GUIDE.md).
+Use the feature flow when work needs plan review, a task DAG, and a durable audit trail. Use ad-hoc orchestration for bounded non-feature work that should not create feature or task records. Hive Builder or unified `hive-master` loads `orchestrating-ad-hoc-work` before requests with multiple independently verifiable outcomes, dependency waves, shared write/runtime resources, possible background execution, or an expected need for more than one worker attempt or turn. Parallel writers use distinct ad-hoc worktrees, but fixed-path fixtures, ports, databases, containers, generated outputs, and external mutable resources still require explicit ownership or sequencing. Ad-hoc Git work uses `hive_adhoc_worktree_create`, `hive_adhoc_worktree_inspect`, `hive_adhoc_worktree_merge`, and `hive_adhoc_worktree_cleanup`. `architect-planner` is planning-only. Operator-facing seats and loops are in the [Operator Guide](../../docs/OPERATOR-GUIDE.md).
 
 ### Operator Commands
 
@@ -71,7 +71,7 @@ Use the feature flow when work needs plan review, a task DAG, and a durable audi
 | `/council-directive` | Turn rough input into a reusable directive for a council run. |
 | `/council` | Run a read-only council and synthesize a recommendation. |
 | `/dash-review [intent]` | Review a folder, inline text, or the current checkout without changing source. |
-| `/vuln-review [intent] [flags]` | Resolve a conversational scope, then run a findings-first static vulnerability review. |
+| `/vuln-review [scope]` | Review requested source for evidenced vulnerabilities with configured specialists. |
 | `/compact-summary` | Produce a compact recovery summary for the current session. |
 
 ### Native Skill Commands
@@ -99,108 +99,21 @@ Except for `/dash-review` and `/vuln-review`, dedicated-mode slash commands do n
 
 Use `/interview <idea>` to clarify an idea toward a reliable implementation-brief handoff. It keeps questions implementation-oriented and prepares context for the separate `/implementation-brief` command rather than producing that full brief. Use `/grill <context>` when the endpoint is explicit shared understanding of any topic. Both ask one material question per turn and do not automatically create a plan, implement, or start follow-on work; confirmed alignment ends the interaction, and later action requires a separate operator request. A named destination authorizes writing only the confirmed alignment brief there. Discoverable facts are researched without forced fan-out. Unavailable or failed research is disclosed as unresolved or an explicit assumption; it is never guessed.
 
-Use `/dash-review` for one read-only Git, process/concept, or local-artifact review. It does not edit source, create Hive tasks, or start a fix. The operator loop is in the [Operator Guide](../../docs/OPERATOR-GUIDE.md#dash-review).
+Use `/dash-review` for one read-only Git, process/concept, or local-artifact review. It does not edit source, create Hive tasks, or start a fix. See [Reviews in the Operator Guide](../../docs/OPERATOR-GUIDE.md#reviews).
 
-`/dash-review` is an ordinary read-only orchestrator over a folder, inline text, or the current checkout. Optional `hive_git_snapshot({ directory })` and an ad-hoc worktree cover a foreign PR or ref. Lanes are adaptive from configured reviewer descriptions. Git remains findings-first. Process, concept, and general evidence answers requested questions without inventing implementation severity. It does not edit source, create Hive tasks, or start a fix. Findings are review context, never auto-created tasks.
+`/dash-review` is a read-only orchestrator over a folder, inline text, or the current checkout. An optional `hive_git_snapshot({ directory })` or operator-selected worktree covers foreign Git evidence. The primary chooses the smallest useful configured reviewer set and includes explicitly requested reviewers. It does not edit source, create Hive tasks, or start a fix; findings remain review context.
 
 For an ad-hoc run, review the existing run or branch, then give a later fix instruction to the ad-hoc orchestrator. For a Hive feature run, review the task, feature, or branch, then give the active planner or orchestrator a later fix instruction.
 
-Background instructions appear only when `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL` is set and the bundled background protocol is available. Use the existing Background Orchestration section and the `background-delegation` skill for the scheduler protocol; command text only points at it when the gate is open. `/dash-review` is a deliberate exception and remains blocking-only.
+Background instructions appear only when `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL` has a truthy value (empty, `0`, `false`, and `no` keep the gate closed) and the bundled background protocol is available. Use the [Background Orchestration](#background-orchestration) section and the `background-delegation` skill for the scheduler protocol. The `/dash-review` command template does not add background instructions, though its private primary has access to the background board tools when the gate is open ([command renderer](src/commands/renderers.ts), [runtime grants](src/runtime.ts)).
 
 ### Vulnerability Review
 
-Use `/vuln-review` when you are authorized to assess the source and want a findings-first static review of one source snapshot. It does not exploit systems, edit source, or create automatic fixes. A scoped clean result is not a repository-security claim. The operator loop is in the [Operator Guide](../../docs/OPERATOR-GUIDE.md#vuln-review). The rest of this section is the command contract.
+Use `/vuln-review` with a source scope in ordinary language, for example `/vuln-review review the authentication boundary changed in this branch`. The private review primary accepts the requested checkout, folder, paths, inline evidence, or an optional Git snapshot through ordinary tools. For a foreign Git root, `hive_git_snapshot({ directory })` takes an absolute path to its exact Git top-level. A prior report can be compared when you supply it as readable input. See [Reviews in the Operator Guide](../../docs/OPERATOR-GUIDE.md#reviews).
 
-`/vuln-review` is for authorized use against source the operator is permitted to assess. It performs a bounded static/local review and does not establish compliance, replace SAST or DAST, prove exhaustive coverage, or establish repository security.
+The primary selects configured `vulnerability-reviewer` specialists by description and dispatches every explicitly requested configured specialist. It preserves the source fingerprint when it uses a Git snapshot. The report leads with deduplicated, severity-ordered findings backed by an attacker-to-impact path, confidence, affected locations, and root cause; it also states unresolved leads and coverage gaps. With no confirmed findings, it says "No confirmed vulnerabilities found in reviewed scope." A clean result applies only to the reviewed scope, not repository security ([reviewer contract](src/agents/vulnerability-reviewer.ts)).
 
-#### Scope and examples
-
-The command accepts free text, recognized flags, a mixture of both, or no arguments. Text and relevant bounded conversation context supply inert intent for one coherent target; no-argument use infers from conversation and current Git/Hive metadata rather than silently selecting current change. Recognized flags are deterministic fixed overrides: inference can fill absent dimensions but cannot replace, widen, or reinterpret a fixed value. Whole-repository scope requires `--whole-repo` or explicit approval of that inferred expansion. Exact examples:
-
-- No arguments (scope inferred): `/vuln-review`
-- Current change narrowed by repository and path: `/vuln-review --repo api --path src/auth`
-- Git range: `/vuln-review --range main...HEAD`
-- Git refs: `/vuln-review --base main --target HEAD`
-- Hive task: `/vuln-review --task 03-implement-auth`
-- Hive feature: `/vuln-review --feature authentication`
-- Whole repository: `/vuln-review --whole-repo`
-- Current change compared with a prior report: `/vuln-review --compare approved/prior-review.md`
-- Free-text intent: `/vuln-review review the authentication boundary changed in this branch`
-- Free text with fixed boundaries: `/vuln-review review authentication --repo api --path src/auth`
-
-Legal combinations:
-
-| Mode | Required mode flag | Other allowed flags |
-|------|--------------------|---------------------|
-| Current change | No dedicated mode flag; available only when inferred and accepted | Repeatable `--repo <id>`, repeatable `--path <relative-path>`, one `--compare <local-prior-report.md>` |
-| Git range | One `--range <base>...<target>` | Repeatable `--repo`, repeatable `--path`, one `--compare` |
-| Git refs | One `--base <ref>` | Optional `--target <ref>`, repeatable `--repo`, repeatable `--path`, one `--compare` |
-| Hive task | One `--task <task-folder>` | Repeatable `--repo`, repeatable `--path`, one `--compare` |
-| Hive feature | One `--feature <feature-name>` | Repeatable `--repo`, repeatable `--path`, one `--compare` |
-| Whole repository | `--whole-repo` | Repeatable `--repo`, one `--compare`; `--path` is not allowed |
-
-`--range` cannot be combined with `--base` or `--target`; `--target` requires `--base`. Git mode, task mode, feature mode, and whole-repository mode are mutually exclusive. Singleton flags cannot be repeated. Ordinary positional text and PR numbers remain inert intent; `--pr` is unsupported. An exact safe GitHub PR URL may authorize one runtime-owned metadata lookup only when no fixed selector conflicts and the raw command contains no CR, LF, NEL, LS, or PS separator. Fixed `--repo` and `--path` boundaries survive without normalizing newline eligibility. Explicit local selectors remain strict and never fall back.
-
-Current change is one possible canonical mode after inference and acceptance, not a parser default selected by omitting flags.
-
-`--compare` is a project-relative prior report for this invocation. Vulnerability review accepts Git evidence only. Optional `hive_git_snapshot({ directory })` and an ad-hoc worktree cover a foreign PR or ref. Lanes are adaptive from configured reviewer descriptions. Methods and prior-finding comparison remain.
-
-#### Authorized-use and safety boundary
-
-The workflow performs source review only: no active exploitation, no network scanning or probing, no credential use, no package installation, no shell commands, no scanner execution, no source edits, no external-state mutation, and no recursive delegation. It produces no automatic fix, remediation, plan, task, commit, merge, or patch. Remediation requires separate operator authorization after the review.
-
-External queries may contain only public dependency names and versions or public advisory identifiers such as CVE or GHSA IDs. They must not contain proprietary source, symbols, paths, configuration, logs, or stack traces. An unavailable research capability is a coverage gap, not permission to add another tool. The workflow adds zero new scanner dependencies and requires no scanner setup.
-
-Sensitive findings remain in OpenCode session history. No report file or SARIF is written. Operators must apply appropriate session retention and access controls, or manually export the report to an approved location under their own data-handling policy.
-
-#### Stages and evidence
-
-The stages run in this order:
-
-1. **Resolve** combines intent, conversation, and Git/Hive metadata with fixed overrides. It reads an optional comparison report, previews the source, builds threat context, and selects zero to two specialist lenses, or asks one clarification, or stops.
-2. **Investigate** runs zero to two specialist lanes selected from configured reviewer descriptions and the observed attack surface, not model prestige.
-3. **Challenge** gives every normalized candidate to an independent configured review lane. With no candidates, it tests the bounded hypothesis that no actionable vulnerability exists in the reviewed scope. A challenge-originated suspicion remains unresolved and cannot become a confirmed finding in that run.
-4. **Synthesize and report** groups confirmed findings by root cause, orders them by severity, records coverage and integrity limits, and returns the report in the session only.
-
-A failed review lane gets one fresh retry. A repeated lane failure, declined required expansion, or integrity failure produces `INCOMPLETE`.
-
-#### Report contract
-
-The report starts with these case-sensitive metadata lines:
-
-```text
-Schema: hive-vuln-review/v1
-Scope mode: <current-change|git-comparison|hive-task|hive-feature|whole-repository>
-Scope fingerprint: sha256:<64 lowercase hex>
-Source fingerprint: sha256:<64 lowercase hex>
-Repositories: <sorted comma-separated IDs>
-Paths: <canonical JSON string array>
-Comparison base: <selector-or-none>
-Hive scope: <task:name|feature:name|none>
-Selected lenses: <canonical JSON string array>
-Prior comparison: <not-requested|skipped:reason|comparable>
-```
-
-Canonical arrays are JSON-escaped, code-point sorted, deduplicated, and contain no extra whitespace. The scope fingerprint hashes canonical scope identity in this key order: schema, mode, repositories, paths, comparison base, and Hive scope. The source fingerprint separately covers resolved commits and captured dirty content. The report then contains `Scope`, `Threat Context`, `Findings`, `Coverage Gaps`, `Rejected Leads`, `Unresolved Leads`, `Re-review Classification`, `Review Lanes`, `Integrity`, and `State`, in that order. Scope metadata records normalized selectors, repositories, refs, paths, fingerprints, Hive identity, and prior-report status. Review-lane metadata lists only agents, models, variants, and lenses that actually ran.
-
-Every confirmed finding includes a display ID, Root-cause key, severity, locations, evidence, attacker-to-impact path, impact, exploitability stance, confidence, fix direction without a patch, variants, producing lens, and challenge disposition. The Root-cause key has four `::`-separated, `encodeURIComponent`-encoded segments: manifest repository ID; POSIX-normalized repository-relative primary path; trimmed case-preserving symbol or boundary; and lowercase ASCII missing-control slug. To build the slug, each non-`[a-z0-9]` run becomes one hyphen and edge hyphens are removed. The key excludes line numbers and run-local display IDs.
-
-Prior comparison runs only for a supported `hive-vuln-review/v1` report with complete scope/source/lens metadata and Root-cause keys. Scope mode, repositories, paths, comparison base, and task/feature identity must match exactly. Otherwise the report says `comparison skipped` with a reason and assigns no per-finding classification. For comparable reports, `new` is a current key not present before and `unchanged` is a key still confirmed. `resolved` requires changed source plus explicit re-examination of the prior location, exploit preconditions, and prior or equivalent coverage. An absent prior key is `stale` when any resolution precondition is missing; same-source or nondeterministic absence never proves resolution.
-
-The report ends with exactly one state: `CONFIRMED_FINDINGS`, `NO_CONFIRMED_FINDINGS_IN_REVIEWED_SCOPE`, or `INCOMPLETE`. `INCOMPLETE` takes precedence over a clean state, but confirmed findings remain visible when attribution or cleanup later fails.
-
-#### Models and specialists
-
-The four built-in specialist lenses are:
-
-- `trust-and-identity`: authentication, authorization, tenant/object isolation, session, and privilege boundaries.
-- `untrusted-data`: parsing, injection, deserialization, path, process, template, and database boundaries.
-- `secrets-and-platform`: cryptography, secrets/configuration, dependencies, CI/IaC, cloud, and container exposure.
-- `stateful-abuse`: replay, races/TOCTOU, workflow bypass, business logic, and state-transition invariants.
-
-The workflow uses OpenCode's normal provider/model resolution. It adds no model-provider SDK, credential setup, or provider-specific CLI dependency beyond the operator's existing OpenCode configuration. A different configured model or variant is allowed, but the report says multi-model only when different model identities actually ran.
-
-Custom agents with `baseAgent: "vulnerability-reviewer"` are selectable specialists when their descriptions match the observed risk. They inherit the configured base model, variant, and temperature unless overridden. Configured reviewer descriptions guide selection, and explicit operator-required review targets must be honored.
+External research may receive only public dependency names and versions or public advisory IDs such as CVE and GHSA IDs. Never send proprietary source, symbols, paths, configuration, logs, or stack traces to external tools ([reviewer contract](src/agents/vulnerability-reviewer.ts)). Findings stay in session history; the command writes no report file. The private primary has edit permission denied and does not begin remediation in the first response ([runtime grants](src/runtime.ts), [primary prompt](src/agents/vulnerability-review-primary.ts)).
 
 ### Planning-mode delegation
 
@@ -213,6 +126,8 @@ Each native `task()` invocation has one primary goal and one terminal handoff. E
 One implementation assignment normally maps to one numbered task. Amend the DAG or create an append-only manual task for a new independent deliverable. A blocked feature continuation follows `hive_task_update` with blocked status and blocker, the operator decision, then `hive_task_update` with an explicit status leaving blocked. Failed or retry work starts a new worker with a concise self-contained handoff. For ad-hoc work, use multiple fresh one-goal launches on worktrees whose registered identities do not intersect, or sequence writers that share a worktree. Architect is the only subagent allowed one terminal layer of read-only planning helpers; every other subagent is terminal. The `question` tool is reserved for primary sessions. Any subagent that needs operator clarification returns the exact question in its terminal response for the parent orchestrator to ask.
 
 For execution work, treat worker output as evidence to inspect, not proof to trust blindly. OpenCode is the supported execution runtime; if you use `vscode-arkive`, treat it as a review/sidebar companion. Read changed files yourself and run the shared verification commands on the main branch before claiming the batch is complete.
+
+When an operator explicitly requires a skill, include the exact name in the assignment or applicable standing constraints. Each child loads it independently before the covered work; a parent load does not count, and a later load does not satisfy the requirement. Before accepting a returned result, the primary checks the forensic `hive_task_trace` timeline (and `hive_task_trace_content` when needed) for successful loads in that order ([continuation policy](src/agents/process-judgment.ts)). Missing or uncertain evidence does not establish compliance.
 
 ### Local skill and model use cases
 
@@ -232,6 +147,14 @@ For execution work, treat worker output as evidence to inspect, not proof to tru
 | `hive_feature_create` | Create a new feature without changing the selected session route |
 | `hive_feature_complete` | Mark feature as complete |
 | `hive_feature_select` | Set or clear the session route used for omitted feature-scoped calls and child dispatch |
+
+### Repository Topology
+
+| Tool | Description |
+|------|-------------|
+| `hive_repositories_status` | Inspect the active repository mode and manifest |
+| `hive_repositories_discover` | Discover repositories in the project |
+| `hive_repositories_update` | Add repositories to the project manifest |
 
 ### Planning
 | Tool | Description |
@@ -254,10 +177,14 @@ For execution work, treat worker output as evidence to inspect, not proof to tru
 |------|-------------|
 | `hive_worktree_create` | Create or select a feature-task Git workspace |
 | `hive_worktree_inspect` | Inspect a feature-task workspace |
-| `hive_worktree_merge` | Merge a completed task branch, with merge/squash/rebase strategies, optional conflict preservation, and optional cleanup |
+| `hive_worktree_merge` | Integrate an exact task source pin against the inspected destination identity, with merge/squash/rebase strategies, optional conflict preservation, and optional cleanup |
 | `hive_worktree_cleanup` | Remove a feature-task worktree |
 
-Git helpers do not change task status, auto-commit source, or assign workers. Merge wants a clean source, a destination with a clean index and tracked working tree, and the pinned SHA. Disjoint untracked or ignored destination files may remain when the pinned source contains the pinned target history; rebase also requires a linear replay range. Unsafe topology with local data returns `TARGET_RECONCILIATION_REQUIRED` with `reconcile_target` and requires same-worktree reconciliation with fresh pins. Ignored Hive state, dependencies, and build output count as local data even when Git reports a clean worktree. Incoming path collisions always block. Hive preflight and rechecks protect local data without relying on Git merge flags. Dirty, untracked, ignored, and unmerged data is protected; there is no force or rm fallback. Same-call squash cleanup may use observed identity; later ambiguous branches stay unless discard is explicit. Composite partial outcomes are not rolled back.
+Git helpers do not change task status, auto-commit source, or assign workers. Before dispatching a writing lane, inspect the worktree and record the intended destination's canonical path, full symbolic ref (or detached `null`), and commit. Reinspect after each writing handoff, before review or remediation, after known destination movement, and before integration. Pass the unchanged identity as `expectedTarget` for a legacy single-root workspace or the complete `expectedTargets` map for a composite. A legacy worker returns `sourceCommit`; a composite worker returns the complete `sourceCommits` map keyed by repository ID. A singleton composite can use a matching scalar pin at merge. Pass the worker's pin unchanged.
+
+Merge requires a clean source and a destination with a clean index and tracked working tree. Disjoint untracked or ignored destination files may remain when the pinned source contains the pinned target history; rebase also requires a linear replay range. Unsafe topology with local data returns `TARGET_RECONCILIATION_REQUIRED` with `reconcile_target` and requires same-worktree reconciliation with fresh pins. Ignored Hive state, dependencies, and build output count as local data even when Git reports a clean worktree. Incoming path collisions always block. Hive preflight and rechecks protect local data without relying on Git merge flags. Dirty, untracked, ignored, and unmerged data is protected; there is no force or rm fallback. Same-call squash cleanup may use observed identity; later ambiguous branches stay unless `discard: true` is explicit. Composite partial outcomes are not rolled back.
+
+For a merge that creates a commit, supply `message` with a one-line subject, a blank line, and a descriptive body. Integration defaults to squash. Rebase does not take a non-blank `message`.
 
 Pass the feature explicitly to `hive_worktree_create`, select that feature immediately before dispatch, then issue one ordinary native Forager call. Blocking and background calls use the native task shape unchanged.
 
@@ -273,19 +200,26 @@ When a task branch has no net tracked changes to integrate, `hive_worktree_merge
 
 Use ad-hoc orchestration when you need delegation, verification, and a managed worktree without a feature, plan, or task record. Dedicated mode uses `hive-builder`; unified mode can use `hive-master`. The operator loop is in the [Operator Guide](../../docs/OPERATOR-GUIDE.md#ad-hoc-work).
 
-The ad-hoc orchestrator calls `hive_adhoc_worktree_create`, then an ordinary native Forager call. These runs do not create feature/task records and do not appear in `hive_status`. The response supplies the `runId` and placement. Integrate with `hive_adhoc_worktree_merge` and `hive_adhoc_worktree_cleanup`. Ad-hoc worktrees are temporary workspace metadata only. See `docs/HIVE-TOOLS.md` for the full contracts.
+| Tool | Description |
+|------|-------------|
+| `hive_adhoc_worktree_create` | Create a scoped ad-hoc Git workspace |
+| `hive_adhoc_worktree_inspect` | Inspect the source and destination identities |
+| `hive_adhoc_worktree_merge` | Integrate the pinned source against the inspected destination |
+| `hive_adhoc_worktree_cleanup` | Remove the integrated workspace; `discard: true` explicitly retires unintegrated work |
+
+The ad-hoc orchestrator resolves repository ownership with `hive_repositories_status` unless scope is already explicit, then calls `hive_adhoc_worktree_create` with the owned `repoIds` and a meaningful kebab-case `runId` before an ordinary native Forager call. These runs do not create feature/task records and do not appear in `hive_status`. The response supplies the `runId` and placement. Inspect the worktree to record the destination identity before dispatch; integrate with `hive_adhoc_worktree_merge` using that identity and the committed source pin, then clean up with `hive_adhoc_worktree_cleanup`. Ad-hoc worktrees are temporary workspace metadata only. See [Hive Tools](docs/HIVE-TOOLS.md) for the full contracts.
 
 Feature escalation is advisory. If the operator rejects it, continue ad-hoc only when material scope, contracts, and risks are otherwise resolved. Ask any remaining concrete blocking question before creating workers.
 
 Forager is an execution role. Use a matching worktree for tracked Git writes; non-Git or report-only work follows the direct-work exceptions. Direct foreground OpenCode work is unmanaged OpenCode work, not a Hive worktree.
 
-Native `general` is an ordinary unmanaged delegation. General has ordinary tools only and cannot delegate or ask questions. Native helpers retain bounded operational permissions.
+Native `general` is an ordinary delegation with ordinary tools only; it cannot delegate or ask questions. Native helpers retain bounded operational permissions.
 
 ### Background Orchestration
 
 With the env gate unset (`OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`), Hive keeps normal blocking `task()` wait mode. Background board tools report `background_tools_disabled`, and no background appendix is injected into primary prompts.
 
-With the env gate set, primary orchestrators receive delegate-first background scheduling guidance and the board tools are active. This is the background-first scheduler contract under the experimental gate, not always-on behavior. It does not add agents or change custom-agent preservation: primary agents still choose built-in or configured custom specialists by descriptor, not by a fixed routing table.
+With the env gate set, board tools are active. Primary orchestrators receive background wait-mode guidance when `background-delegation` is available. This is the background-first scheduler contract under the experimental gate, not always-on behavior. It does not add agents or change custom-agent preservation: primary agents still choose built-in or configured custom specialists by descriptor, not by a fixed routing table.
 
 Gate-open orchestration uses lane kind to decide how much management is needed. Exploratory/read-only and review lanes are lightweight background candidates. Writing/change and execution lanes require state tracking, verification routing, unresolved-lane checks, integration control, and a context packet. Declared file ownership is tracking metadata, not a concurrency guarantee. See `docs/HIVE-TOOLS.md` and the `background-delegation` skill for the full scheduler protocol.
 
@@ -299,7 +233,19 @@ Cancellation is not rollback. A cancellation request does not revert files, bran
 
 ### Runtime Session Inspection
 
-Primary orchestrators can inspect any explicitly identified native OpenCode session visible to the connected runtime with `hive_task_trace`, including self, direct children, foreign-parent sessions, and parentless primaries. Omitted or false `recovery` returns the forensic v2 report; `hive_task_trace({ task_id, recovery: true })` requests an untrusted semantic handoff. Self and uncertain targets cannot recover, and non-direct-child recovery is always inspect-only. A missing target entry in a valid status map means idle because OpenCode removes idle entries; unavailable or invalid maps are uncertain and make zero model calls. Recovery output never authorizes acceptance, merge, retry, resume, or automatic execution. See `docs/HIVE-TOOLS.md` for the full contract.
+Primary orchestrators can inspect any explicitly identified native OpenCode session visible to the connected runtime with `hive_task_trace`, including self, direct children, foreign-parent sessions, and parentless primaries. Use `hive_task_trace_content` to read a source-backed field in UTF-8-safe chunks by its returned content ID. Omitted or false `recovery` returns the forensic v2 report; `hive_task_trace({ task_id, recovery: true })` requests an untrusted semantic handoff. Self and uncertain targets cannot recover, and non-direct-child recovery is always inspect-only. A missing target entry in a valid status map means idle because OpenCode removes idle entries; unavailable or invalid maps are uncertain and make zero model calls. Recovery output never authorizes acceptance, merge, retry, resume, or automatic execution. See [Hive Tools](docs/HIVE-TOOLS.md) for the full contract.
+
+### Managed Context
+
+`hive_context_read`, `hive_context_write`, `hive_context_append`, and `hive_context_archive` manage project (`.hive/context/`) or feature (`.hive/features/<name>/context/`) knowledge. Feature is the default scope; pass `scope: "project"` for project knowledge. Read the summary or search the catalog by name, `description`, and `read_when`, then read a named file in chunks. Before replacing, appending, or selectively archiving, read its revision and content hash and pass `expectedRevision` and `expectedContentHash` (or `expectedContentHashes` for archive). Only primary agents can archive. The `hive_context_read` catalog lists durable files; evidence files remain available through named reads ([context service](../hive-core/src/services/contextService.ts)). See [Hive Tools](docs/HIVE-TOOLS.md) for the read and mutation contracts.
+
+### Operator Constraints
+
+`hive_constraints_read`, `hive_constraints_add`, `hive_constraints_edit`, and `hive_constraints_clear` manage durable operator directives. Scope defaults to the current session; pass `scope: "feature"` for a feature directive. Read the current register before editing or clearing; `hive_constraints_edit` takes the constraint `id` and register `expectedRevision`, while `hive_constraints_clear` takes `expectedRevision` ([runtime tools](src/runtime.ts)). Only primary agents can mutate constraints. The selected feature route, session constraints, and feature constraints travel with native child dispatch.
+
+### Git Snapshot
+
+`hive_git_snapshot` captures a validated `hive-git-snapshot/v1` envelope for a selected Git range or paths. Its optional absolute `directory` must be an exact foreign Git top-level without a Hive manifest and cannot be combined with `repositoryIds` ([runtime tool](src/runtime.ts)). In a manifest-backed project, omit `directory` and select repositories with `repositoryIds` when needed. Check the returned status and failure records before using the snapshot as review evidence.
 
 ### Troubleshooting
 
@@ -330,7 +276,7 @@ For normal usage, set the OpenCode plugin entry to `"oc-arkive@latest"`. Keep a 
 
 ### Task worker recovery
 
-After session compaction, recover supporting knowledge from live catalogs and named reads. Do not replay historical prompt text as a new assignment. Plugin restart does not continue old live workers; finish or abandon them first, then send a new message so the runtime observes the agent again.
+After session compaction, use `hive_context_read` to search current catalogs and read the named files you need. Do not replay historical prompt text as a new assignment. Plugin restart does not continue old live workers; finish or abandon them first, then send a new message so the runtime observes the agent again.
 
 Moving a project root does not continue old task or ad-hoc work. At the new root, create a valid worktree if needed and launch fresh. Old sessions and artifacts remain historical.
 
@@ -340,27 +286,17 @@ Manual tasks created with `hive_task_create()` follow the same DAG model as plan
 
 `simplicity-reviewer` is a built-in read-only reviewer for final post-implementation cleanup and a supported `customAgents` base for specialized cleanup passes. It reviews completed diffs for YAGNI, dead code, duplication, unnecessary abstractions, redundant defensive code, and safe deletion-biased simplification.
 
-## Prompt Budgeting & Observability
+## Task Prompts & Observability
 
-Hive bounds fixed assignment history and delivers supporting knowledge through live catalogs instead of prompt bodies.
-
-### Budgeting Defaults
-
-| Limit | Default | Description |
-|-------|---------|-------------|
-| `maxTasks` | 10 | Number of previous tasks included |
-| `maxSummaryChars` | 2,000 | Max chars per task summary |
-| Live catalogs | 8 KiB | Combined automatic project and feature catalog delivery |
-
-Long task summaries use explicit `...[truncated]` markers and report paths. Catalog pages expose explicit continuations; workers retrieve selected bodies with `hive_context_read`.
+Hive does not inject context documents, catalogs, or a bounded previous-task history into native task prompts. Agents can search current durable-file catalogs and read named files with `hive_context_read`. Evidence files remain readable by name. The exported `applyTaskBudget` defaults are not used for dispatch; `taskService` writes completed-task summaries to `spec.md` without a task-count or summary-length cap ([prompt budgeting utility](../hive-core/src/utils/prompt-budgeting.ts), [task service](../hive-core/src/services/taskService.ts)).
 
 ### Observability
 
 `hive_worktree_create` and `hive_worktree_inspect` return workspace path, branch, and commit facts. They do not return a generated native-task payload.
 
-### Prompt Files
+### Native Task Prompts
 
-The primary authors the native Forager prompt. At dispatch, Hive appends concise project, feature, and session constraints without replacing caller prompt bytes. Catalog refresh preserves real user and assistant messages, including quoted catalog markers.
+The primary authors the native Forager prompt. At dispatch, Hive appends a route-snapshot footer with `projectRoot`, the selected feature route, session constraints, and feature constraints; it does not attach a context catalog ([runtime hook](src/runtime.ts)).
 
 A blocked continuation waits for an explicit status leaving blocked. The operator decision belongs in the primary-authored native prompt.
 
@@ -397,9 +333,24 @@ For example, a shared DTO task can verify the DTO owner suite before merge and d
 
 ## Configuration
 
-Hive reads runtime configuration from `~/.config/opencode/agent_hive.json`. The only project-local override file is `.hive/agent-hive.override.json`; it accepts only `model` and `variant` under `agents` and `customAgents`, and affects matching agents already present in the effective global/default configuration. Unknown names are ignored and never create agents. Project-local `.hive/agent-hive.json` and `.opencode/agent_hive.json` files remain ignored. Invalid global config falls back to defaults; an invalid project override is ignored with a runtime warning. Restart OpenCode after changing either config file.
+Hive reads runtime configuration from `~/.config/opencode/agent_hive.json`. The only project-local override file is `.hive/agent-hive.override.json`; it accepts only `model` and `variant` under `agents` and `customAgents`, and affects matching agents already present in the effective global/default configuration. Unknown names are ignored and never create agents. Project-local `.hive/agent-hive.json` and `.opencode/agent_hive.json` files remain ignored. Hive uses defaults when the global config is missing, unreadable, invalid JSON, or rejected by runtime validation. That validation rejects unknown top-level keys (including removed `disableMcps`) and wrong types for known fields, but does not enforce every restriction in the published schema: unknown keys inside `agents` declarations and some malformed `customAgents` entries do not invalidate the whole file ([config service](../hive-core/src/services/configService.ts), [schema](schema/agent_hive.schema.json)). An invalid project override is ignored with a runtime warning. Restart OpenCode after changing either config file.
 
 Global config remains authoritative for runtime policy, agent definitions, sandbox settings, and auto-load skill settings. See [`agent_hive.override.schema.json`](schema/agent_hive.override.schema.json) for the project override shape.
+
+The global schema also accepts `enableToolsFor` (default `[]`), but the current runtime does not use it to grant tools; tool access comes from agent permissions. `repositoryRoot` and `repositories` are migration-only fields for legacy topology. New repository declarations go in the project manifest managed through `hive_repositories_update`.
+
+For example, to change the model for one project without changing the global agent roster, put this in `<project>/.hive/agent-hive.override.json`:
+
+```json
+{
+  "$schema": "https://raw.githubusercontent.com/imarshallwidjaja/agent-hive/main/packages/opencode-hive/schema/agent_hive.override.schema.json",
+  "agents": {
+    "forager-worker": { "model": "anthropic/claude-sonnet-4-20250514", "variant": "high" }
+  }
+}
+```
+
+The global `sandbox` default is `"none"`. With `"sandbox": "docker"`, Hive wraps a bash call only when its `workdir` starts with `<projectRoot>/.hive/.worktrees`, regardless of agent ([runtime hook](src/runtime.ts)). `dockerImage` selects an image, and `persistentContainers` controls per-worktree reuse (default `true` in Docker mode). Without `dockerImage`, Hive detects an image from project files; if the worktree contains a `Dockerfile`, detection returns no image and the command runs unwrapped ([sandbox service](../hive-core/src/services/dockerSandboxService.ts)). Prefix a command with `HOST:` to run it unwrapped. These settings belong in the global config, not the project override.
 
 `hook_cadence` currently has no useful tuning surface: production gates only the safety-critical `tool.execute.before` hook, which is forced to cadence `1`. The schema remains the machine-readable reference for this field.
 
@@ -410,11 +361,11 @@ Global config remains authoritative for runtime policy, agent definitions, sandb
 | Value | Default agent | Primary seats | When to use |
 |-------|---------------|---------------|-------------|
 | `dedicated` | `architect-planner` | Separate `architect-planner` and `swarm-orchestrator` | Default; split planning and execution across two primary seats |
-| `unified` | `hive-master` | One hybrid planner+orchestrator | One primary agent owns the full feature loop |
+| `unified` | `hive-master` | `hive-master`, `architect-planner`, and `swarm-orchestrator` | `hive-master` is the default for planning and orchestration |
 
 In both modes:
 
-- Researchers, workers, reviewers, `hive-helper`, and `hive-builder` remain available.
+- `architect-planner` and `swarm-orchestrator` stay registered. Researchers, workers, reviewers, `hive-helper`, and `hive-builder` remain available. `hive-master` is hidden in dedicated mode ([runtime registration](src/runtime.ts)).
 - Slash-command routing follows the [Operator Commands](#operator-commands) table.
 - Custom derived subagents attach to the active planner/orchestrator prompts for that mode.
 
@@ -529,9 +480,13 @@ Generated/managed shape (for inspection) at `<project>/.hive/repositories.json`:
 | `background-delegation` | Env-gated background wait-mode and board protocol |
 | `brainstorming` | Explore intent and design before implementation |
 | `code-reviewer` | Deprecated compatibility wrapper; prefer the `code-reviewer` subagent |
+| `complexity-audit` | Read-only complexity audit of named roots or the current worktree |
+| `complexity-review` | Read-only complexity review of an explicit diff or bounded scope |
+| `context-engineering` | Select, retrieve, and update managed context with revision and hash checks |
 | `dispatching-parallel-agents` | Coordinate independent subagent work |
 | `docker-mastery` | Dockerfiles, containers, and sandbox debugging |
 | `executing-plans` | Execute an approved plan with review checkpoints |
+| `grilling` | Question supplied context until material decisions and evidence are aligned |
 | `orchestrating-ad-hoc-work` | Coordinate qualifying ad-hoc work for Hive Builder or unified Hive |
 | `parallel-exploration` | Researcher fan-out for read-only research |
 | `systematic-debugging` | Root-cause investigation before fixes |
@@ -581,7 +536,7 @@ Skills are loaded through OpenCode's native `skill` tool, not through a Hive plu
 - `skills` is a legacy field kept for config compatibility. In the native skill slice, skill visibility is controlled by OpenCode's native `skills.paths` registration and `disableSkills`, not by per-agent `skills` allowlists.
 - `autoLoadSkills` adds a compact system-prompt directive to load OpenCode-discovered native skills or eligible Hive bundled skills with `skill({ name: "..." })` before matching work; it does not preload full skill bodies
 - These are **independent**: a skill can be advertised for native loading even if it is not in the agent's legacy `skills` list
-- User `autoLoadSkills` are **merged** with defaults (use global `disableSkills` to remove defaults from autoload)
+- User `autoLoadSkills` are **merged** with defaults. Global `disableSkills` suppresses only Hive-bundled skill materialization and bundled auto-load guidance; a native/user skill with the same name can still be advertised.
 
 **Default auto-load skills by agent:**
 
@@ -596,7 +551,9 @@ Skills are loaded through OpenCode's native `skill` tool, not through a Hive plu
 | `swarm-orchestrator` | `parallel-exploration` |
 | `plan-reviewer` | (none) |
 | `code-reviewer` | (none) |
+| `simplicity-reviewer` | (none) |
 | `approach-advisor` | (none) |
+| `vulnerability-reviewer` | (none) |
 
 `background-delegation` is not a default `autoLoadSkills` entry for any agent. For ad-hoc orchestration, delegation-first guidance is in the base prompt; the env flag (`OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`) only appends background wait-mode and board guidance without adding it to the default autoload set.
 
@@ -669,13 +626,11 @@ The same seven built-in bases allow an optional routing-description override und
 
 Primary orchestrators, `hive-builder`, `hive-helper`, `architect-planner`, private `__hive_*` identities, and generated review lanes do not expose description overrides.
 
-`hive-helper` is not a custom base agent. In v1 it stays runtime-only for isolated merge recovery.
+`hive-helper` is not a custom base agent. It stays runtime-only for bounded merge recovery, state clarification, interrupted-state wrap-up, and safe manual-follow-up assistance.
 
 `simplicity-reviewer` is a custom base agent for specialized cleanup passes. Primary agents still use the built-in `simplicity-reviewer` when no configured simplicity-reviewer-derived custom description is a closer match.
 
 `vulnerability-reviewer` is a custom base agent for selectable `/vuln-review` specialist lenses. It preserves the configured description, model, variant, and temperature while enforcing the vulnerability workflow's read-only tool policy. Configured reviewer descriptions guide selection.
-
-`hive-helper` is also not a network consumer; planning, orchestration, and review roles get network access first.
 
 Published example (validated by `src/e2e/custom-agent-docs-example.test.ts`):
 
@@ -727,13 +682,13 @@ ID guardrails:
 - `customAgents` keys cannot reuse built-in Hive agent IDs
 - custom agent IDs cannot contain native permission wildcard characters (`*` or `?`)
 - plugin-reserved aliases are blocked (`hive`, `architect`, `swarm`, `scout`, `forager`, `hygienic`, `hygienic-reviewer`, `receiver`)
-- operational IDs are blocked (`build`, `plan`, `code`)
+- operational IDs are blocked (`build`, `builder`, `plan`, `code`)
 
 Compaction classification follows the base agent:
 
 - `scout-researcher` derivatives are treated as `subagent`
 - `forager-worker` derivatives are treated as `task-worker`
-- `plan-reviewer`, `code-reviewer`, `approach-advisor`, and `vulnerability-reviewer` derivatives are treated as `subagent`
+- `plan-reviewer`, `code-reviewer`, `simplicity-reviewer`, `approach-advisor`, and `vulnerability-reviewer` derivatives are treated as `subagent`
 
 This ensures custom workers recover with the same execution constraints as their base role.
 
