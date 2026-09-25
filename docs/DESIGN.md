@@ -13,28 +13,42 @@ PROBLEM  -> CONTEXT  -> EXECUTION -> REPORT
 
 ```
 .hive/                    <- Shared data (all clients)
+├── context/              <- Managed project knowledge (index.json and Markdown files)
+├── repositories.json     <- Optional project repository manifest
+├── sessions.json         <- Global session metadata, session constraints, and selected routes
 ├── features/             <- Feature-scoped work
 │   └── 01_feature-name/
 │       ├── feature.json  <- Feature metadata and state
-│       ├── plan.md       <- Single required human-review and execution document (keep a readable design summary before ## Tasks)
-│       ├── context/      <- Optional persistent knowledge files (all free-form support notes)
+│       ├── plan.md       <- Human-reviewed plan; numbered executable tasks live under ## Tasks
+│       ├── context/      <- Managed feature knowledge (index.json and Markdown files)
+│       ├── comments/plan.json <- Plan review threads (when present)
+│       ├── comments/overview.json <- Overview review threads (when present)
+│       ├── constraints.json <- Feature standing constraints (when present)
 │       └── tasks/        <- Individual task folders
 │           └── {task}/
-│               ├── status.json      <- Task state (repoIds, baseCommits for manifest-backed tasks)
+│               ├── status.json      <- Task state and declared repo IDs
 │               ├── spec.md          <- Task context and requirements
-│               └── report.md        <- Execution summary and results
-├── .worktrees/           <- Isolated git worktrees per task
-│   └── {feature}/{task}/ <- Composite root (manifest-backed) or single git worktree (legacy)
-│       ├── workspace.json  <- Repo manifest, branches, base commits (composite only)
-│       └── repos/          <- Per-repo git worktrees (composite only)
-│           └── {repoId}/
-└── ...                   <- Runtime state; agent model/variant overrides may be project-local
+│               ├── report.md        <- Latest optional report
+│               └── reports/         <- Numbered report history
+├── .worktrees/           <- Isolated feature-task and ad-hoc Git worktrees
+│   ├── {feature}/{task}/ <- Feature-task workspace
+│   └── adhoc/{runId}/    <- Ad-hoc workspace
+│       ├── workspace.json <- Composite placement metadata (composite only)
+│       └── repos/{repoId}/ <- Per-repo worktrees (composite only)
+├── background-jobs.json <- Observational background board
+└── agent-hive.override.json <- Optional model/variant overrides for agents
 
 packages/
 ├── hive-core/            <- Shared logic (services, types, utils)
 ├── opencode-hive/        <- OpenCode plugin (planning, execution, tracking)
 └── vscode-hive/          <- VS Code extension (viewer-first plan/overview review, status, limited archive)
 ```
+
+### Component responsibilities
+
+- `hive-core` owns feature, plan, task, context, repository-manifest, session, constraint, background-board, and worktree services. `TaskService` parses tasks and persists status and reports; `WorktreeService` and `AdhocWorktreeService` inspect and integrate Git workspaces without assigning workers or updating task state.
+- `opencode-hive/src/runtime.ts` registers the direct `hive_*` tools, builds agent and command configuration, captures route and constraint snapshots for native `task()` calls, and connects background observation. Bundled skills are discovered and materialized from packaged `SKILL.md` files.
+- `vscode-hive` displays feature and task state, plans, comments, and scoped context; its plan comment controller writes review threads while its filesystem watcher triggers UI refresh.
 
 ### Execution ownership
 
@@ -54,92 +68,44 @@ Cross-process process supervision, exactly-once execution across independent Ope
 
 1. User creates feature via `hive_feature_create`
 2. Agent writes plan via `hive_plan_write`
-3. User reviews `plan.md` and adds comments there
-4. User approves via `hive_plan_approve`
+3. User reviews `plan.md`; VS Code stores review threads in `comments/plan.json`
+4. After user approval, the agent calls `hive_plan_approve`
 5. Tasks synced via `hive_tasks_sync` (generates spec.md for each)
 6. Each tracked Git task executes via `hive_worktree_create` and a native Forager `task()`
-7. The primary records status and reports with `hive_task_update`
-8. The primary merges the worktree before marking the task done; non-Git or report-only work has no Hive merge step
+7. The worker commits assigned work and returns its exact source pin; the primary merges it using the inspected target identity
+8. The primary records completion and optional report with `hive_task_update` after a successful merge, then cleans up the worktree; non-Git or report-only work has no Hive merge step
 
 ## Prompt Management
 
-- `spec.md` contains the fixed task contract: the matching plan section, manual task requirements, dependencies, and bounded completed-task summaries. Supporting context bodies are not copied into it.
+- `spec.md` contains the matching plan section or manual task requirements and dependencies. `TaskService.buildSpecContent` accepts completed-task summaries when supplied; managed context bodies are not copied into it.
 - The primary authors the native Forager `description`, `prompt`, `subagent_type`, and optional `background`. The runtime does not generate, freeze, or replace those fields.
-- The runtime appends concise project, feature, and session constraints without replacing caller prompt bytes. Standing constraints are operator directives, not tool permissions.
-- Live project and feature catalogs are delivered separately as untrusted metadata under one 8 KiB automatic budget. Catalog continuations and current storage errors remain explicit; supporting document bodies require `hive_context_read`.
-- Catalog refresh removes only the plugin-owned synthetic user message with matching session, message, and part identities. Marker-prefixed user or assistant text is preserved.
-- Completed-task history retains the 10-task and 2000-character summary budgets. Supporting-context prompt budgets were removed with eager body injection.
+- The runtime appends a dispatch-time route snapshot and session and feature constraints to native child prompts. Standing constraints are operator directives, not tool permissions.
+- Managed project and feature context is read through `hive_context_read`: summary and paginated catalog views for selection, named chunks for document bodies. Catalog metadata is untrusted knowledge. The runtime does not automatically inject context catalogs or document bodies into child prompts.
+- The completed-task summary helper retains its 10-task and 2000-character budgets when invoked; task sync does not populate those summaries automatically.
 
 ## Feature Resolution
 
-Feature-scoped tools use logical feature names even when storage folders are indexed (`01_feature-name`). Explicit feature arguments target one call without changing the selected session route. Omitted feature arguments resolve from local context and session state:
+Feature-scoped tools use logical feature names even when storage folders are indexed (`01_feature-name`). Explicit feature arguments target one call without changing the selected session route. Omitted feature arguments resolve from session state and local context: explicit call argument, selected session route (including explicit null), detected feature path, then the sole live feature. A route snapshot and session and feature constraints are attached to each native child dispatch.
 
-```typescript
-function resolveFeature(explicit?: string, sessionId?: string): string | null {
-  if (explicit !== undefined) return validate(explicit)
-
-  const selected = sessionId ? findSelectedRouteBySession(sessionId) : undefined
-  if (selected) return selected.feature
-
-  const detected = detectContext(cwd)
-  if (detected.feature) return detected.feature
-
-  const liveFeatures = listLiveFeatures()
-  return liveFeatures.length === 1 ? liveFeatures[0] : null
-}
-```
-
-When multiple live features remain, the tool returns their logical names and makes no mutation. Retry with the explicit `feature` argument, or the explicit `name` argument for `hive_feature_complete`. Only `hive_feature_select` changes the selected session route. That route, including explicit null, governs omitted tool calls and child dispatch before detected context. Explicit null suppresses detected-context and sole-live fallback. When no live feature exists, the response tells the agent to create one with `hive_feature_create`.
-
-This keeps task-worktree and session ownership authoritative, supports parallel feature sessions, and prevents alphabetical feature selection from becoming hidden orchestration state.
+When no feature can be resolved, feature-required tools report that a feature is required; select one with `hive_feature_select` or pass the explicit `feature` argument (`name` for `hive_feature_complete`). Only `hive_feature_select` changes the selected session route. That route, including explicit null, takes precedence over worktree-path detection and suppresses detected-context and sole-live fallback when explicitly null. Explicit targets remain call-local, so select the child's feature immediately before dispatch.
 
 ## Session Tracking
 
-Hive uses a two-level session model so compaction recovery can find the right role before it finds the right feature:
+The runtime stores session identity, feature routes, and session constraints in global `.hive/sessions.json`:
 
-- Global session identity lives in global `.hive/sessions.json`.
-- Once a session is bound to a feature, it is mirrored into feature-local `sessions.json` files at `.hive/features/<feature>/sessions.json`.
-- The global file is authoritative. Feature-local files are projections and cannot recover or rebind a child when they disagree.
+- `chat.message` writes `agent` and `projectRoot`; the session service also records `sessionId`, `startedAt`, and `lastActiveAt`.
+- `hive_feature_select` writes the global `featureName` route, including explicit null.
+- Native child binding writes `parentSessionId`, `projectRoot`, `agent` when provided, `featureName` when selected, and `standingConstraints`, `standingConstraintEntries`, and `standingConstraintsRevision` from the captured session constraints. Constraint tools also update the session constraint register.
 
-Tracked metadata can include:
+`SessionService.bindFeature` can write a feature-local `sessions.json` projection, but no current runtime path calls it. The global file governs route selection and child dispatch.
 
-- `sessionId`
-- `agent` / `baseAgent`
-- `sessionKind`
-- `featureName`
-- `taskFolder`
-- `projectRoot`
-- `adHocRunId` for project-only ad-hoc workers
-- `executionWorkspacePath` for an authenticated delegated execution
-- `duplicatedFromSessionId` for generic origin continuity
-- `directivePrompt`
-- replay flags and activity metadata
+`classifySession` recognizes `primary`, `subagent`, `task-worker`, and `unknown`, but the runtime calls `createVariantHook` without a session service. It does not persist `sessionKind` or `baseAgent`. No production runtime path writes `taskFolder` or `adHocRunId` to session metadata.
 
-This metadata records role and context continuity. Tool availability plus instructions govern action. Each tool validates its own operation. There is no attempt ledger.
+Tool availability plus instructions govern action. Each tool validates its own operation. There is no attempt ledger.
 
-### Session kinds
+### Session inspection and follow-ups
 
-Hive distinguishes `primary`, `subagent`, `task-worker`, and `unknown` sessions.
-
-- `primary`: top-level planner, orchestrator, or hybrid conversations
-- `subagent`: delegated research or review sessions
-- `task-worker`: workers and worker-derived custom agents executing a task
-- `unknown`: safe fallback when Hive cannot classify the session confidently
-
-### Recovery behavior after compaction
-
-When OpenCode emits a compaction event, Hive rebuilds a minimal re-anchor prompt from stored session metadata.
-
-- Primary and subagent sessions are re-anchored to their role.
-- Primary and subagent sessions can restore the last real user directive through post-compaction replay, with `directiveRecoveryState` tracking whether recovery is still available for the current directive.
-- For primary/subagent sessions the state machine is `available -> consumed -> escalated`, so one normal replay attempt is allowed before later compactions switch the session into escalation-only behavior.
-- A new real directive resets the state so the next real assignment can use one fresh recovery cycle instead of inheriting the old session's terminal state.
-- Task-worker sessions do not restore the full user directive or replay an earlier generated prompt. Hive refreshes live context catalogs separately as untrusted metadata.
-- Recovery uses current catalog reads; historical prompt text is not a new assignment.
-- Recovery prompts tell sessions not to switch roles, not to rediscover state through status tools, and not to re-read the full codebase.
-- Moving a project root does not continue old task or ad-hoc work. At the new root, create a valid worktree if needed and launch fresh. Historical session records remain unchanged.
-
-This keeps recovery narrow: orchestrators recover their role and directive, while workers recover their task contract from `.hive` state rather than transcript replay. Plugin restart does not continue old live workers.
+`hive_task_trace` inspects a runtime-visible OpenCode session, including one with compacted surviving messages. Its optional semantic recovery projection is untrusted context coverage, not authority to accept, merge, retry, or resume work. A returned native `task()` call is terminal; subsequent assignments use fresh child sessions unless the operator or explicit runtime-owned interruption recovery authorizes continuation. Child dispatch captures the current feature route and standing constraints.
 
 ## Todo Alignment
 
@@ -150,7 +116,7 @@ OpenCode todo behavior remains intentionally simple in this design:
 - Hive does not create a derived projected-todo field or another projected todo contract.
 - Subagents and task workers should not be modeled as first-class todo writers.
 
-This feature does not introduce a new upstream OpenCode todo API. The source of truth for task state remains `.hive`, while any OpenCode todo usage stays an explicit session-level behavior.
+The source of truth for task state remains `.hive`; OpenCode todos are session-level UI state.
 
 ## Task Lifecycle
 
@@ -178,7 +144,7 @@ pending -> in_progress -> done
 Contains task context for the executing agent:
 - Task number, name, feature, folder
 - Full description from plan
-- Dependencies and bounded completed-task summaries
+- Dependencies; completed-task summaries only when supplied to `TaskService.buildSpecContent`
 - Structured manual-task requirements when the task was created directly
 
 `TaskService.sync` creates or refreshes plan-backed task folders and their `status.json` and `spec.md` files. `TaskService.create` owns the same files for append-only manual tasks. Worktree helpers and native Forager calls read these records; they do not generate `spec.md`.
@@ -186,7 +152,7 @@ Contains task context for the executing agent:
 ### Reports
 `hive_task_update` stores an optional report string as numeric history plus latest. Omissions are preserved. An explicit status leaving blocked clears the blocker. Partial writes: inspect before retry; there is no journal.
 
-Blocked task status preserves blocker JSON and exposes it through `hive_status.tasks.list[].blocker`. After the operator decision, `hive_task_update` with an explicit status leaving blocked clears it. Put the decision in the next worker prompt.
+Blocked task status preserves blocker JSON in `status.json`. `hive_status` returns task summaries and dependency-blocked entries; inspect the persisted task record for the operator-decision blocker. After the decision, `hive_task_update` with an explicit status leaving blocked clears it. Put the decision in the next worker prompt.
 
 ## Execution Placement
 
@@ -249,17 +215,9 @@ When `.hive/repositories.json` defines project repositories, every task with tra
 - Missing, empty, or unknown repo IDs fail before worktree creation
 - Legacy single-root tasks omit `Repos:` and keep implicit root behavior
 
-### Aggregate Commit Contract
+### Source Commit Contract
 
-Composite commits iterate repositories in persisted placement order. Feature-task order matches the task `Repos:` list; it is not a universally sorted ID order.
-
-| Scenario | `committed` | `partial` | `error` |
-|---|---|---|---|
-| All changed repos succeed | `true` | absent | absent |
-| All repos no changes | `false` | `false` | absent |
-| Some succeed, later repo fails | `false` | `true` | names failed repo |
-
-Top-level `sha` is the first repo result SHA in that persisted order. Per-repo SHAs are authoritative. `committed: true` only when at least one repo committed and none failed.
+Workers commit their assigned changes in each selected repository and return the exact commit pin: `sourceCommit` in legacy single-root mode or a complete `sourceCommits` map in composite mode. Hive Git helpers do not create worker commits. Integration validates the pins against the inspected source; a singleton composite accepts the matching scalar pin.
 
 ### Aggregate Merge Contract
 
@@ -269,10 +227,10 @@ Top-level `filesChanged` and `conflicts` flatten per-repo paths as `repoId:path`
 
 ## Key Principles
 
-- **No global selection state** — Feature tools use explicit, path, session, or sole-live resolution
-- **Detection-first** — Task-worktree paths override session and repository fallback
+- **Session-scoped selection** — Feature tools resolve explicit target, selected route, detected path, then sole live feature
+- **Dispatch snapshots** — Native child calls capture the effective feature route and session and feature constraints
 - **Placement-specific execution** — Tracked Git tasks use isolated workspaces; non-Git or report-only work is cooperative and has no Hive rollback, merge, or cleanup
-- **Audit trail** — Every action logged to `.hive/`
+- **Durable records** — Plans, task states, report history, context, and workspace metadata live under `.hive/`; ad-hoc runs have no task report record
 - **Agent-friendly** — Minimal overhead during execution
 
 ## Source of Truth Rules
@@ -282,19 +240,18 @@ Hive uses file-based state with clear ownership boundaries:
 | File | Owner | Other Access |
 |------|-------|--------------| 
 | `feature.json` | Primary agent | VS Code (read-only) |
-| `status.json` (task) | `TaskService` sync/create and `hive_task_update` | Worker (read), Poller (read-only) |
+| `status.json` (task) | `TaskService` sync/create and `hive_task_update` | Worker (read), VS Code watcher (read-only) |
 | `plan.md` | Primary agent | VS Code (read + comment, execution source of truth) |
-| `comments/plan.json` | VS Code | Primary agent (read-only) |
+| `comments/plan.json` | VS Code writes threads; `PlanService` clears them on plan write or patch | Primary agent (read-only) |
 | `spec.md` | `TaskService.sync` / `TaskService.create` | Worker (read-only) |
-| `report` / `reports` | Primary via `hive_task_update` | All (read-only) |
-| `BLOCKED` | Operator | All (read-only, blocks operations) |
+| `report.md` / `reports/*.md` | `hive_task_update` | All (read-only) |
+| `sessions.json` (global) | `SessionService` | Runtime route and constraint reads |
+| `context/index.json` and managed Markdown | `ContextService` via `hive_context_*` | Agent roles according to tool permissions |
+| `repositories.json` | `RepositoryManifestService` | Worktree services (read) |
 
-### Poller Constraints
+### VS Code watcher
 
-The VSCode extension poller watches `.hive/` for changes:
-- **Read-only**: Poller NEVER writes to any file
-- **Debounced**: File changes debounced to avoid thrashing
-- **Selective**: Only watches files it needs for UI
+The VS Code `HiveWatcher` watches `.hive/**/*` and calls the sidebar refresh callback on create, change, and delete events, excluding `.lock` files. Review comments are written by the plan comment controller, not by the watcher.
 
 ## Field Ownership
 
@@ -302,15 +259,16 @@ Task `status.json` fields and who writes them:
 
 | Field | Written By | When |
 |-------|-----------|------|
-| `status` | Primary via `hive_task_update` | On recorded disposition |
+| `status` | `TaskService` on plan sync or manual task creation; primary via `hive_task_update` | Initially `pending`, then on recorded disposition |
 | `origin` | `hive_tasks_sync` | On task creation |
 | `planTitle` | `hive_tasks_sync` | On task creation |
 | `summary` | Primary via `hive_task_update` | On recorded disposition |
-| `report` | Primary via `hive_task_update` | Latest report string |
 | `repoIds` | `hive_tasks_sync` / `hive_task_create` | On plan sync or manual task creation |
 | `blocker` | Primary via `hive_task_update` | When blocked status is recorded |
 | `dependsOn` | `hive_tasks_sync` / `hive_task_create` | On plan sync or manual task creation |
 | `metadata` | `hive_task_create` | On structured manual task creation |
+
+Reports are separate files: `report.md` holds the latest report and `reports/<number>.md` preserves each update. A report write precedes the status write; if an update fails partway through, inspect the returned persistence stage and on-disk files before retrying.
 
 ### Reused worktree integrity
 
@@ -334,9 +292,10 @@ These operations have side effects:
 - `hive_tasks_sync` - Reconciles plan-backed tasks; `refreshPending: true` rewrites pending plan tasks from `plan.md`, updates `planTitle` / `dependsOn`, regenerates `spec.md`, and removes pending plan tasks deleted from the plan while preserving manual tasks and execution history
 - `hive_task_create` - Creates a manual task with explicit `dependsOn` and optional structured metadata
 - `hive_task_update` - Optional status/summary/blocker/report; omissions preserved; inspect before retry
-- `hive_worktree_create` - Creates or selects a Git workspace
+- `hive_worktree_create` - Creates or selects a task Git workspace
 - `hive_worktree_merge` - Merges a task branch
 - `hive_worktree_cleanup` - Removes a worktree
+- `hive_adhoc_worktree_create` / `hive_adhoc_worktree_merge` / `hive_adhoc_worktree_cleanup` - Manage tracked ad-hoc Git work without task records
 
 ### Manual task model
 
@@ -349,8 +308,6 @@ Manual tasks are first-class task records, not loose notes.
 ### Recovery Patterns
 
 If a tool call fails mid-operation:
-1. Check `hive_status` to see current state
-2. Most operations leave state consistent (atomic file writes)
-3. If `hive_task_update` is partial, inspect before retry; there is no journal
-4. Composite partial merge outcomes are not rolled back
-5. Partial merges require manual git intervention
+1. Inspect the operation result, task state, and registered worktree before retrying.
+2. For partial `hive_task_update` writes, inspect report history, latest report, and status separately; there is no journal.
+3. A composite merge may retain earlier repository integrations if a later one fails. Inspect per-repository results before deciding the next action.
