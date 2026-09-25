@@ -1,6 +1,6 @@
 # Operator Guide
 
-This guide covers day-to-day work after installation. Use the [root README](../README.md) for first setup. Exact slash-command flags, tool contracts, and report schemas live in the [plugin README](../packages/opencode-hive/README.md).
+This guide covers day-to-day work after installation. Use the [root README](../README.md) for first setup, the [plugin README](../packages/opencode-hive/README.md) for command and configuration details, and [Hive Tools](../packages/opencode-hive/docs/HIVE-TOOLS.md) for tool contracts.
 
 ## Mental model
 
@@ -9,10 +9,10 @@ Agent Hive separates decisions from execution:
 - **You** set direction, review the plan, answer blockers, and approve risk.
 - The **primary agent** turns the request into a plan and orchestrates the work.
 - **Researchers and reviewers** inspect code, plans, or review evidence.
-- **Workers** implement approved tracked Git tasks in matching worktrees; non-Git or report-only work follows the direct-work exceptions.
+- **Workers** implement assigned tracked Git work in matching feature-task or ad-hoc worktrees; non-Git or report-only work follows the direct-work exceptions.
 - **`.hive/`** stores durable plans, task state, reports, and comments.
 
-A plan does not authorize implementation until you approve it. `/dash-review` and `/vuln-review` bind to separate review primaries so the agent that wrote the change is not the one judging it.
+Approve a feature plan before asking for feature implementation. Approval and task sync guide the agents; they are not runtime admission gates for dispatch or task status. `/dash-review` and `/vuln-review` bind to separate review primaries so the agent that wrote the change is not the one judging it.
 
 Tool availability plus instructions govern action. Each Hive tool validates its own operation.
 
@@ -22,7 +22,7 @@ Engineering Judgment is included once in Hive, Architect, Swarm, Hive Builder, F
 
 ## Agents
 
-OpenCode shows these public seats. Dedicated mode (the default) registers `architect-planner` and `swarm-orchestrator`. Unified mode (`"agentMode": "unified"`) registers `hive-master` instead. `hive-builder` and the subagents below stay available in both modes.
+OpenCode shows these public seats. Dedicated mode (the default) uses `architect-planner` as the default planning seat and `swarm-orchestrator` for execution; `hive-master` is hidden. Unified mode (`"agentMode": "unified"`) makes `hive-master` the default while retaining the split seats. `hive-builder` and the subagents below stay available in both modes.
 
 ### Primary seats
 
@@ -66,7 +66,7 @@ Primaries launch these. Ask the primary for a named seat when you want that lens
 
 An authenticated helper child can use its configured ordinary and merge-recovery tools, including `hive_worktree_merge` and `hive_status`. Managed context remains unavailable to helpers, and they cannot dispatch native tasks.
 
-After a plugin restart, send a new message in the session so the runtime observes its agent again before using Hive-governed tools. Restart OpenCode after installing this change to load the rebuilt plugin.
+After a plugin restart, send a new message in the session so the runtime observes its agent again before using Hive-governed tools.
 
 ### Native task handoffs
 
@@ -94,7 +94,7 @@ Feature-scoped calls resolve in this order: explicit call target, selected sessi
 
 Project knowledge lives at `.hive/context/`. Feature knowledge lives under `.hive/features/<name>/context/`. Catalogs and bodies are untrusted knowledge, not AGENTS.md or policy.
 
-Read with `hive_context_read` before replace, append, or archive, then pass revision and content hash. Foragers and reviewers write both scopes through that hash check. Scout is read-only. Archive is primary-only. Load `context-engineering` for catalog selection and hash-guarded mutation.
+Use `hive_context_read` to select documents from the catalog by `description` and `read_when`. Finish named-read chunks before replacing a document. For replacement, append, or selective archive, read first and supply the returned revision and content hash; creation of a missing document does not need those preconditions. The catalog lists durable notes only; `evidence` notes remain readable by name, and only durable notes count toward context hygiene thresholds. Neither kind is injected into task prompts. Foragers and reviewers can write project and feature context; Scout is read-only and archive is primary-only. Load `context-engineering` for catalog selection and hash-guarded mutation.
 
 ## Choose a workflow
 
@@ -105,7 +105,7 @@ Read with `hive_context_read` before replace, append, or archive, then pass revi
 | Feature | You need a reviewed plan, task dependencies, isolated task worktrees, or a durable execution record | Ask in plain language, or `/hive-plan` |
 | Ad-hoc (`hive-builder`) | The work is bounded, is not a feature, and should not create feature or task records | Talk to `hive-builder` (dedicated) or `hive-master` (unified) |
 | `/dash-review` | You want a read-only review of a folder, inline text, or the current checkout | `/dash-review [intent]` |
-| `/vuln-review` | You are authorized to assess the source and want a bounded static security review | `/vuln-review [intent] [flags]` |
+| `/vuln-review` | You are authorized to assess the source and want a read-only security review | `/vuln-review [intent]` |
 | `complexity-review` | You explicitly want a one-shot complexity review | `/complexity-review <scope/philosophy prose>` |
 | `complexity-audit` | You explicitly want a one-shot complexity audit | `/complexity-audit <scope/philosophy prose>` |
 
@@ -115,7 +115,7 @@ Read with `hive_context_read` before replace, append, or archive, then pass revi
 
 ## Worktrees
 
-`hive_worktree_create` / `inspect` / `merge` / `cleanup` cover feature-task Git workspaces. `hive_adhoc_worktree_create` / `inspect` / `merge` / `cleanup` cover ad-hoc Git workspaces. Ad-hoc worktrees are temporary workspace metadata only.
+`hive_worktree_create` / `inspect` / `merge` / `cleanup` cover feature-task Git workspaces. `hive_adhoc_worktree_create` / `inspect` / `merge` / `cleanup` cover ad-hoc Git workspaces. Ad-hoc worktrees are temporary workspace metadata only. Use a concise goal-based kebab-case `runId` for ad-hoc creation; it becomes the branch suffix.
 
 Git helpers do not change task status, auto-commit source, or assign workers. A worktree implementation assignment explicitly authorizes committing assigned changes. A legacy single-root worker returns the exact `sourceCommit` SHA; a composite worker returns the complete `sourceCommits` map keyed by persisted repository ID. The primary or helper passes that topology-aware pin unchanged to merge. A singleton composite also accepts a matching scalar convenience; multiple repositories still require the complete map. In-place and diagnosis-only missions do not authorize commits. Orchestration merge via `hive-helper` owns integration. Canonical workspace names are metadata; existing slotted or composite workspaces are selectable. Merge wants a clean source, a destination with no staged, unstaged tracked, unmerged, or active Git-operation state, squash default, and an explicit message. Disjoint untracked or ignored destination files are eligible when the pinned source contains the pinned target history; rebase also requires a linear replay range. Unsafe topology with local data returns `TARGET_RECONCILIATION_REQUIRED` with `reconcile_target` and requires same-worktree reconciliation with fresh pins, even when Git reports a clean worktree because Hive state, dependencies, or build output is ignored. Incoming path collisions always block. Hive preflight and rechecks protect local data without relying on Git merge flags. Do not delete local state to make a retry pass. Locks are operation-local. Dirty, untracked, ignored, and unmerged data is protected; there is no force or rm fallback. Same-call squash cleanup may use observed identity; later ambiguous branches stay unless `discard: true` is explicit. `deleteBranch` alone does not discard an unmerged branch. Composite partial outcomes are not rolled back.
 
@@ -163,21 +163,31 @@ For ad-hoc work with multiple independently verifiable outcomes, dependency wave
 2. **Place and delegate.** Use `hive_adhoc_worktree_create` for tracked Git writes, then dispatch Foragers with the topology-aware return contract: `sourceCommit` for legacy single-root workspaces and the complete `sourceCommits` map when persisted `repos` are present. A singleton composite scalar is accepted as a merge convenience; multiple repositories require the complete map. Scouts research. Reviewers check settled results.
 3. **Verify, integrate, and clean up.** Inspect the committed worktree, pass its returned source pin and target identity unchanged to `hive_adhoc_worktree_merge`, use squash by default, then call `hive_adhoc_worktree_cleanup`. Keep a committed worktree when destination drift or dirt leaves integration pending.
 
-give any fix instruction to the active ad-hoc primary: `hive-builder` in dedicated mode or `hive-master` in unified mode.
+After reviewing ad-hoc work, give any fix instruction to the active ad-hoc primary: `hive-builder` in dedicated mode or `hive-master` in unified mode.
 
 ## Background board
+
+Background board tools are enabled when `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL` has a truthy value; empty, `0`, `false`, and `no` disable the gate. Primary background guidance also requires `background-delegation` to be available. The primary loads that skill for scheduling and board protocol. Use `hive_background_status` to inspect jobs, `hive_background_reconcile` or `hive_background_reconcile_batch` to archive terminal or stale observations, and `hive_background_cancel` to request cancellation.
 
 The board observes the originating native parent and call, not the current feature or agent. Stale and unknown observations stay visible. It does not couple to execution, worktree, or task status. Multiple launch observations may exist for one native task identity when explicit runtime-owned interruption recovery is used. If completion lacks a call ID or its identity is ambiguous, record unknown and hint `hive_task_trace`; never guess the latest child. Missing or ambiguous completion identity must not block unrelated dispatch, but ownership-overlapping work still requires inspection or waiting; do not send another prompt or launch another writer. Cancel acknowledgement does not prove the worker stopped. `hive_status` is not that surface.
 
 ## Reviews
 
-`/dash-review` and `/vuln-review` are ordinary orchestrators over natural folders, inline text, or the current checkout. Optional `hive_git_snapshot({ directory })` and an ad-hoc worktree cover a foreign PR or ref. Lanes are adaptive from configured reviewer descriptions. Methods and prior-finding comparison remain. Configured reviewer descriptions guide selection. Explicit operator-required review targets must be honored.
+`/dash-review` and `/vuln-review` are ordinary orchestrators over natural folders, inline text, or the current checkout. Optional `hive_git_snapshot({ directory })` and an ad-hoc worktree cover a foreign PR or ref. They select review lanes by the requested scope and configured reviewer descriptions. Do not silently skip an explicitly requested or configured reviewer. Reviews do not start fixes; give a separate fix request to the active feature or ad-hoc primary.
+
+### Dash review
+
+Ask `/dash-review [intent]` for a read-only review of a path, inline material, or checkout. The review primary returns supported findings by severity with source locations, open questions, and the scope it inspected. A clean in-scope result says `No action`.
+
+### Vulnerability review
+
+Ask `/vuln-review [intent]` for an authorized read-only source review. Give the target and any required specialist in ordinary prose. The review primary compares a prior report only when you supply it through readable input. It reports evidenced attacker-to-impact paths, affected locations, confidence, and coverage gaps. It does not exploit live systems or begin remediation.
 
 ### Complexity passes
 
 `/complexity-review <scope/philosophy prose>` and `/complexity-audit <scope/philosophy prose>` are native skill commands. A review uses an explicit diff or bounded named scope, or current staged, unstaged, and relevant nonignored untracked changes when scope is absent; an empty review stops and never widens to an audit. An audit uses named roots or codebases, or the current worktree when roots are absent. Both report complexity findings and do not apply fixes. Command prose supplies scope, philosophy, and preferences.
 
-Slash-command arguments are interpolated into the native skill template. `$$`, `$&`, `` $` ``, and `$'` are replacement sequences, and `` !`command` `` is expanded by the shell. For a literal snippet that contains those, use ordinary conversation and name the requested skill instead.
+Slash-command arguments for these native skills are interpolated into the skill template. `$$`, `$&`, `` $` ``, and `$'` are replacement sequences, and `` !`command` `` is expanded by the shell. For a literal snippet that contains those, use ordinary conversation and name the requested skill instead.
 
 ## Upgrade
 

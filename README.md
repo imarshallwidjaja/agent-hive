@@ -48,11 +48,15 @@ For a brand-new config, a plugin array containing only `"oc-arkive@latest"` is s
    sync it. Hive creates the executable task records.
 4. Start execution with `/start-execution`. The primary resolves repository-backed
    placement, delegates work, and tracks dependencies and progress.
-5. Each worker runs the task's selected checks and reports command output with
-   the candidate it tested. The primary records status and evidence with
-   `hive_task_update`.
-6. Merge completed worktree task branches with `hive_worktree_merge`. Non-Git
-   or report-only work has no Hive Git merge step.
+5. For a worktree implementation assignment, the worker runs selected checks,
+   commits assigned changes, and returns the exact source commit pin with
+   evidence for the tested candidate. In-place, non-Git, report-only, and
+   diagnosis-only assignments return evidence without a source commit. The
+   primary records status and reports with `hive_task_update`.
+6. Inspect the worktree and merge completed task branches with
+   `hive_worktree_merge`, supplying the worker's source pin and the previously
+   inspected destination identity (`expectedTarget` or `expectedTargets`).
+   Non-Git or report-only work has no Hive Git merge step.
 7. Run selected integrated acceptance on the merged candidate, including
    binding repository/operator checks and every named `## Final Verification`
    obligation. Keep required pre-merge checks before merge.
@@ -73,28 +77,26 @@ existing results still apply.
 | Feature | Plan review, task dependencies, isolated task worktrees, or a durable audit trail | Ask in plain language, or `/hive-plan` |
 | Ad-hoc (`hive-builder`) | Bounded non-feature work that should not create feature or task records | Talk to `hive-builder` (dedicated mode) or `hive-master` (unified) |
 | `/dash-review` | Read-only review of a folder, inline text, or the current checkout | `/dash-review [intent]` |
-| `/vuln-review` | Authorized bounded static security review | `/vuln-review [intent] [flags]` |
+| `/vuln-review` | Authorized read-only security review of a requested source | `/vuln-review [intent]` |
 | Native `complexity-review` | Explicit one-shot complexity review of an explicit diff or bounded named scope; otherwise current staged, unstaged, and relevant nonignored untracked changes | `/complexity-review <scope/philosophy prose>` |
 | Native `complexity-audit` | Explicit one-shot complexity audit of named roots or codebases | `/complexity-audit <scope/philosophy prose>` |
 
-By default (dedicated mode), `architect-planner` and `swarm-orchestrator` handle
-feature work and `hive-builder` handles ad-hoc work. Set `"agentMode": "unified"`
-for one hybrid `hive-master` that can coordinate both. `/dash-review` and
-`/vuln-review` always bind to separate review primaries.
+`/dash-review` and `/vuln-review` bind to separate review primaries.
 
 For ad-hoc work with multiple independently verifiable outcomes, dependency waves, shared write/runtime resources, possible background execution, or an expected need for more than one worker attempt or turn, either ad-hoc seat loads `orchestrating-ad-hoc-work` before worktree create or delegated dispatch. Rejected feature escalation continues ad-hoc only after material scope, contracts, and risks are resolved.
 
 ## Agents at a glance
 
-Dedicated mode registers `architect-planner` and `swarm-orchestrator`. Unified
-mode registers `hive-master` instead. `hive-builder` and the subagents below
-are in both modes.
+Dedicated mode defaults to `architect-planner` for planning and uses
+`swarm-orchestrator` for execution; `hive-master` is hidden. Unified mode makes
+`hive-master` the default and keeps the split seats available. `hive-builder`
+and the subagents below are available in both modes.
 
 | Seat | Role |
 |------|------|
 | `architect-planner` | Writes feature plans. Does not implement. Default in dedicated mode. |
 | `swarm-orchestrator` | Executes approved feature work. Dedicated-mode execution seat. |
-| `hive-master` | Hybrid planner and orchestrator. Unified-mode default. |
+| `hive-master` | Hybrid planner and orchestrator for feature and ad-hoc work. Unified-mode default. |
 | `hive-builder` | Ad-hoc orchestrator. No feature or task DAG. |
 | `scout-researcher` | Retrieves bounded source evidence; does not own diagnosis, tradeoffs, or solution selection. |
 | `forager-worker` | Implements in the chosen workspace; diagnosis-only work is report-only. Never delegates. |
@@ -108,14 +110,14 @@ Why each seat exists, how it behaves, and the full ad-hoc / dash-review /
 vuln-review loops are in the [Operator Guide](docs/OPERATOR-GUIDE.md).
 
 Runtime configuration lives in `~/.config/opencode/agent_hive.json`. A project
-may override only existing agents' `model` and `variant` values in
-`.hive/agent-hive.override.json`; the global file remains authoritative for all
-other settings. Project `.hive/agent-hive.json` and `.opencode/agent_hive.json`
-files remain ignored. Restart OpenCode after changing either config file.
-Dedicated mode is the default; set `"agentMode": "unified"` for a single
-`hive-master` seat (see the [plugin README agent mode section](packages/opencode-hive/README.md#agent-mode)).
-For existing-config compatibility, see the
-[plugin README](packages/opencode-hive/README.md#existing-opencode-configurations).
+may override `model` and/or `variant` for matching built-in or configured custom
+agents in `.hive/agent-hive.override.json`, under the `agents` or `customAgents`
+keys. Unknown names do not create agents. The global file remains authoritative
+for all other settings. Project `.hive/agent-hive.json` and
+`.opencode/agent_hive.json` files remain ignored. Restart OpenCode after changing
+either config file. For agent-mode settings and existing-config compatibility,
+see the [plugin README](packages/opencode-hive/README.md#agent-mode) and its
+[existing-config section](packages/opencode-hive/README.md#existing-opencode-configurations).
 
 ## Packages
 
@@ -129,7 +131,7 @@ For existing-config compatibility, see the
 | Doc | Audience |
 |-----|----------|
 | [Operator Guide](docs/OPERATOR-GUIDE.md) | Agents, feature / ad-hoc / dash-review / vuln-review workflows |
-| [Plugin README](packages/opencode-hive/README.md) | Slash-command flags, tool contracts, helper recovery, and config |
+| [Plugin README](packages/opencode-hive/README.md) | Command usage, helper recovery, and config |
 | [Philosophy](PHILOSOPHY.md) | Why the workflow is shaped this way |
 | [Design](docs/DESIGN.md) | Internal architecture and source-of-truth rules |
 | [Hive Tools](packages/opencode-hive/docs/HIVE-TOOLS.md) | Full tool inventory and contracts |
