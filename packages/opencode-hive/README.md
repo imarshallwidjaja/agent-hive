@@ -477,7 +477,6 @@ Generated/managed shape (for inspection) at `<project>/.hive/repositories.json`:
 | `agents-md-mastery` | Bootstrap, review, or prune AGENTS.md by placing rules next to the code they govern |
 | `background-delegation` | Env-gated background wait-mode and board protocol |
 | `brainstorming` | Explore intent and design before implementation |
-| `code-reviewer` | Deprecated compatibility wrapper; prefer the `code-reviewer` subagent |
 | `complexity-audit` | Read-only complexity audit of named roots or the current worktree |
 | `complexity-review` | Read-only complexity review of an explicit diff or bounded scope |
 | `context-engineering` | Select, retrieve, and update managed context with revision and hash checks |
@@ -489,8 +488,6 @@ Generated/managed shape (for inspection) at `<project>/.hive/repositories.json`:
 | `systematic-debugging` | Root-cause investigation before fixes |
 | `test-driven-development` | Strict red-green-refactor when TDD is the selected testing strategy |
 | `verification` | Applicable command/tool evidence before completion or verification claims |
-| `verification-before-completion` | Deprecated wrapper; use `verification` completion gate mode |
-| `verification-reviewer` | Deprecated wrapper; use `verification` report mode |
 | `writing-for-agents` | Reference for authoring documents agents consume: skills, subagent prompts, instructions, and pointer architecture |
 | `writing-plans` | Turn requirements into an implementation plan |
 
