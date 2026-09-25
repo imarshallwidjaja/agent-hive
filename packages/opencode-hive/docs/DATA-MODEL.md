@@ -6,65 +6,75 @@
 .hive/
 ├── agent-hive.override.json   # Optional project-local agent model/variant overrides
 ├── repositories.json          # Optional Hive-managed project-local multi-repo manifest
-├── sessions.json              # Optional top-level session index (when used)
+├── sessions.json              # Canonical session bindings and session constraints
 ├── background-jobs.json       # Background board (observational bookkeeping)
 ├── context/                    # Project-wide managed knowledge
 │   ├── index.json              # Schema-v1 operational index
 │   └── {name}.md               # Raw Markdown with discovery frontmatter
+├── archive/context/            # Archived project context
 └── features/
-    └── {feature-name}/
+    └── {NN}_{feature-name}/    # New features use indexed directories; older names still resolve
         ├── feature.json         # Feature metadata + lifecycle timestamps
         ├── plan.md              # Execution plan
-        ├── comments/            # Document-aware review threads
-        │   ├── overview.json    # Comments on context/overview.md
-        │   └── plan.json        # Comments on plan.md
-        ├── sessions.json        # Session tracking
+        ├── APPROVED             # Plan approval marker
+        ├── comments/plan.json   # Plan review threads
+        ├── constraints.json     # Optional feature-scoped operator directives
+        ├── sessions.json        # Optional feature-local navigation projection
         ├── context/             # Persistent knowledge files
         │   ├── index.json       # Schema-v1 operational index
         │   ├── .managed-mutation-pending.json # Present only during publication/recovery
-        │   ├── overview.md      # Reserved human-facing summary/history/review file
+        │   ├── overview.md      # Reserved human-facing summary/history file
         │   ├── decisions.md     # Optional example context file
         │   ├── architecture.md  # Optional example context file
         │   └── constraints.md   # Optional example context file
+        ├── archive/context/     # Archived feature context
         └── tasks/               # Individual task folders (PRIMARY)
             └── {NN-task-name}/
                 ├── status.json  # Task state + metadata
                 ├── spec.md      # Task context and requirements
-                └── reports/     # Numeric report history; latest is also on status.json
+                ├── report.md    # Latest report (when a report has been written)
+                └── reports/     # Numeric {N}.md report history
 
 .hive/.worktrees/              # Isolated git worktrees
-    ├── {feature}/{task}/       # Task-backed: full repo copy for safe execution
+    ├── {feature}/{task}/       # Task-backed single-root worktree
+    │                           # Composite: {feature}/{task}/repos/{repoId}/
     └── adhoc/
         └── {runId}/            # Ad-hoc: temporary workspace metadata only
                                 #   No feature/task records, not in hive_status
                                 #   Composite: adhoc/{runId}/repos/{repoId}/
 ```
 
+Task worktree paths may instead end in `{task}--{candidate}`. The corresponding single-root branches are `hive/{feature}/{task}` or `hive/{feature}/{task}-{candidate}`; composite branches prefix the feature with `{repoId}`. Ad-hoc branches are `hive/adhoc/{runId}` (single root) or `hive/adhoc/{repoId}/{runId}` (composite). Single-root workspace metadata sits beside the worktree as `{task}.json` or `{runId}.json`; composite roots contain `workspace.json` and one worktree per selected repository.
+
 Runtime Agent Hive configuration lives at `~/.config/opencode/agent_hive.json`. The only project-local runtime configuration file is `.hive/agent-hive.override.json`, which can override `model` and `variant` for matching built-in or effective custom-agent declarations. Global config remains authoritative for all other settings. Project `.hive/agent-hive.json` and `.opencode/agent_hive.json` remain ignored; restart OpenCode after changing configuration.
 
-Single-repo projects use the git root directly; multi-repo topology, when needed, is stored in this manifest.
+Single-repo projects use the git root directly. Multi-repo topology is stored in `.hive/repositories.json` as `{ "schemaVersion": 1, "repositories": [{ "id": "repo-id", "path": "relative/path" }] }`. Paths are project-relative and contained within the project root; global `repositoryRoot`/`repositories` are migration-only legacy fields.
+
+`feature.json` stores required `name`, `status`, and `createdAt`, with optional `ticket`, `sessionId`, `approvedAt`, `completedAt`, `archivedAt`, and `archiveReason`. New features start in `planning` and use an indexed directory such as `01_example`; callers address them by logical name `example`. Existing unindexed or differently separated indexed feature directories remain resolvable by the logical name in `feature.json`.
 
 ## Execution records
 
-Task status and reports are the execution record. There is no attempt ledger. Old `execution-attempts.json` and lease files are left unread. Useful plans, tasks, context, reports, and workspace files remain readable.
+Task status and reports are the execution record. `hive_task_update({ report })` writes `reports/{N}.md`, mirrors it to `report.md`, then publishes `status.json`. The report body is not stored in `status.json`; inspect the three locations if publication fails before retrying. There is no attempt ledger. Old `execution-attempts.json` and lease files are left unread. Useful plans, tasks, context, reports, and workspace files remain readable.
 
 `.hive/background-jobs.json` is the background board: acknowledgement, archive, and notification bookkeeping. It observes the originating native parent and call, not the current feature or agent. Stale and unknown observations stay visible. It does not couple to execution, worktree, or task status. Archive, reconcile, and ignore do not stop execution.
+
+The board file has `schemaVersion: 1`, `jobs: BackgroundJobRecord[]`, and optional `updatedAt`. Each job stores native `taskId` and `sessionId`, required `alias`, agent identity, timestamps, `runtimeState` (`running`, `completed`, `error`, `cancelled`, or `unknown`), and optional `callId`, scope, notification, cancellation, reconciliation, and archive fields. Reconciled and ignored jobs remain stored but are hidden from the default background status view.
 
 Ad-hoc worktrees are temporary workspace metadata only: no run history, evidence ledgers, or reports.
 
 ## Prompt Files
 
-The primary authors the native Forager prompt. The runtime appends concise project, feature, and session constraints without replacing caller prompt bytes. Standing constraints are operator directives, not tool permissions.
+The primary authors the native Forager prompt. At native `task()` dispatch, the runtime appends a route-snapshot footer with `projectRoot`, the selected feature route, session constraints, and feature constraints. It does not inject context documents or catalogs; there is no project constraint register. Standing constraints are operator directives, not tool permissions.
 
 ## Reserved Overview Convention
 
-- `context/overview.md` is the primary human-facing summary and review surface.
+- `context/overview.md` is a human-facing summary. Plan review threads are stored in `comments/plan.json`; `comments.json` is a legacy fallback.
 - Create it with `hive_context_write`. For later replacement, call a named `hive_context_read` and pass its revision and `contentHash` as `expectedRevision` and `expectedContentHash`. From a repository-root session, provide `feature` whenever more than one live feature exists; a bound session or sole live feature can resolve it when omitted.
 - `plan.md` remains the graph source of truth for plan-backed task generation, dependency parsing, and execution, and may still include a readable design summary before `## Tasks`.
-- `context/overview.md` is intentionally excluded from worker execution context so the narrative summary does not blur implementation truth.
-- `context/index.json` has `schemaVersion: 1`, a scope-local monotonic `revision`, and metadata keyed by normalized context name. Each non-reserved entry records `kind` (`durable` or `evidence`), creation/update timestamps, an optional task, and the optional hash from its last managed write. Public file metadata reports `kindSource: "index"` for those entries and `kindSource: "legacy_default"` for unindexed non-reserved Markdown under valid or missing control state. Invalid or pending control state does not guess classification. Legacy files remain byte-for-byte unchanged.
-- Durable files are the entries eligible for execution and network context. Catalogs list them in deterministic Unicode code-point name order, and `task` association is selection metadata rather than automatic freshness or task-distance prioritization. Evidence files preserve raw logs and historical verification without entering worker or network prompts. Feature hygiene warnings start above 8 durable files or 40,000 UTF-16 characters. Project warnings start above 32 files or 160,000 UTF-16 characters. These thresholds request explicit review; they do not reject otherwise bounded growth.
-- `overview`, `draft`, and `execution-decisions` are reserved, excluded from execution context, and uncapped. Plan approval leaves the active draft unchanged so approval cannot partially succeed and then report failure during cleanup. Archive an obsolete draft explicitly with `hive_context_archive` after approval.
+- `context/overview.md` is readable by name but absent from the durable catalog.
+- `context/index.json` has `schemaVersion: 1`, a scope-local monotonic `revision`, and metadata keyed by normalized context name. Each indexed entry records `kind` (`durable` or `evidence`), creation/update timestamps, an optional task, and the optional hash from its last managed write. Public file metadata reports `kindSource: "index"` for indexed non-reserved entries and `kindSource: "legacy_default"` for unindexed non-reserved Markdown under valid or missing control state. Invalid or pending control state does not guess classification. Legacy files remain byte-for-byte unchanged.
+- Durable files appear in the `hive_context_read` catalog in deterministic Unicode code-point name order. `task` association is selection metadata rather than automatic freshness or task-distance prioritization. Evidence files remain readable by name but are absent from the durable catalog; neither kind enters prompts automatically. Feature hygiene warnings start above 8 durable files or 40,000 UTF-16 characters. Project warnings start above 32 files or 160,000 UTF-16 characters. These thresholds request explicit review; they do not reject otherwise bounded growth.
+- `overview`, `draft`, and `execution-decisions` are reserved, absent from the durable catalog and excluded from durable-context hygiene counts. Each managed file still has a 1 MiB content limit. Plan approval leaves the active draft unchanged so approval cannot partially succeed and then report failure during cleanup. Archive an obsolete draft explicitly with `hive_context_archive` after approval.
 
 ## Managed Context Storage
 
@@ -130,14 +140,15 @@ All bundled source consumers must use the hash-aware signatures together. Mixed 
 | `origin` | string | `"plan"` (from plan.md) or `"manual"` (manually created) |
 | `planTitle` | string? | Task title from plan.md |
 | `summary` | string? | Execution summary |
-| `report` | string? | Latest report string |
-| `reports` | string[]? | Numeric report history |
+| `blocker` | object? | `TaskBlocker` with required reason and optional options, recommendation, and context; present while blocked |
+| `aggregateBranchDiff` | object? | Captured file count, insertions, deletions, areas, and report for a terminal handoff |
 | `startedAt` | string? | ISO timestamp when task started |
 | `completedAt` | string? | ISO timestamp when task completed |
 | `baseCommit` | string? | Git commit hash at task start |
+| `baseCommits` | map? | Base commit hashes keyed by repository ID |
+| `repoIds` | string[]? | Persisted repository selection for a manifest-backed task |
 | `subtasks` | object[]? | Optional nested subtask state when a task is decomposed during execution. |
-| `workerAttempt` | number? | Optional generation counter for the current worker pass. |
-| `dependsOn` | string[]? | Task folder names this task depends on (for example, `["01-setup"]`). A task is runnable only when every dependency is `done`. Plan tasks resolve this from `plan.md` `Depends on:` annotations during `hive_tasks_sync`; manual tasks persist an explicit array and default to `[]`. |
+| `dependsOn` | string[]? | Task folder names this task depends on (for example, `["01-setup"]`). Plan tasks resolve this from `plan.md` `Depends on:` annotations during `hive_tasks_sync`; manual tasks persist an explicit array and default to `[]`. |
 | `metadata` | object? | Structured manual-task metadata used to generate `spec.md`. Omitted for normal plan-backed tasks. |
 
 **Dependency rules**:
@@ -146,10 +157,9 @@ All bundled source consumers must use the hash-aware signatures together. Mixed 
 - Manual tasks always write explicit dependency metadata. Omitting `dependsOn` at creation time means `[]`, not "infer the previous task".
 - manual tasks are append-only.
 - If `order` is omitted, Hive stores the next order automatically; explicit `order` is accepted only when it equals that next order, so intermediate insertion requires plan amendment.
-- Explicit manual dependencies are for isolated ad-hoc/operator work only, and only when every target task is already `done`.
-- dependencies on unfinished work require plan amendment.
+- Manual dependencies may name unfinished existing tasks. They block readiness until those tasks are `done`; missing references, self-dependencies, and cycles are rejected.
 - Review-sourced manual tasks cannot declare explicit dependencies. If review feedback changes downstream sequencing, dependencies, or scope, amend `plan.md` instead.
-- If `dependsOn` is omitted by a legacy task record, Hive applies implicit sequential ordering based on the numeric task prefix (N depends on N-1).
+- The dependency graph helper applies implicit sequential ordering when `dependsOn` is missing from a legacy task record (N depends on N-1). `hive_status` supplies `[]` for a missing field, so its readiness output does not use that fallback.
 
 ### Manual-task metadata
 
@@ -166,8 +176,8 @@ Manual tasks support the following structured metadata in `status.json.metadata`
 | `source` | string? | One of `review`, `operator`, or `ad_hoc` |
 
 Some notes:
-- `hive_task_create()` accepts `dependsOn` alongside the metadata fields, but stores it at the top level in `status.json.dependsOn`.
-- `buildManualTaskSpec()` turns these structured fields into a worker-ready `spec.md` with `Goal`, `Description`, `Acceptance Criteria`, `Files`, `References`, and `Origin` sections.
+- `hive_task_create()` accepts `dependsOn` and `repos` alongside the metadata fields, but stores them at the top level in `status.json.dependsOn` and `status.json.repoIds`.
+- `buildManualTaskSpec()` turns these structured fields into a worker-ready `spec.md` with `Goal`, `Description`, `Acceptance Criteria`, `Files`, `References`, and `Origin` sections; when repositories are declared it also includes `Repositories`.
 
 ## Pending-task refresh path
 
@@ -181,6 +191,7 @@ hive_tasks_sync({ refreshPending: true })
 - Rewrites pending plan-backed tasks from the current `plan.md`
 - Updates `status.json.planTitle`
 - Updates `status.json.dependsOn`
+- Updates `status.json.repoIds` from `Repos:` in the plan (or removes it if the plan no longer declares repositories)
 - Regenerates `spec.md`
 - Deletes pending plan-backed tasks removed from `plan.md`
 - Preserves manual tasks and any task with execution history (`in_progress`, `done`, `blocked`, `failed`, `partial`)
@@ -204,77 +215,64 @@ Feature statuses (FeatureStatusType):
 - `planning`: Plan being written/reviewed
 - `approved`: Plan approved, ready for execution
 - `executing`: Tasks being executed
-- `completed`: Terminal state; all later plan and task mutations are rejected
+- `completed`: Feature marked complete; it cannot be reopened, and plan write, patch, and approval are rejected
+- `archived`: Feature archived and hidden from the default feature listing
 
 ## hive_status Output
 
-`hive_status` returns a JSON summary of feature state, review state, and DAG readiness.
+`hive_status({ feature? })` returns feature information, task summaries, dependency readiness, and feature-task worktrees. It does not include the background board, ad-hoc runs, managed context, report bodies, or an overview projection.
 
 ### Top-Level Objects
 
-- `feature.name`, `feature.status`, `feature.ticket`, `feature.createdAt`
-- `plan.exists`, `plan.status`, `plan.approved`
-- `overview.exists`, `overview.path`, `overview.updatedAt`
-- `review.unresolvedTotal`, `review.byDocument.overview`, `review.byDocument.plan`
-- `tasks.total`, `tasks.pending`, `tasks.inProgress`, `tasks.done`, `tasks.list`, `tasks.runnable`, `tasks.blockedBy`
-- `context.fileCount`, `context.files[]`, `context.metadataClipped`, `context.diagnostics` — `metadataClipped` is `true` when the summary exceeded the response bound and per-file descriptive metadata was omitted. When the context summary read fails, `context` becomes `{ available: false, reason, error, hint }` with null context metrics while all other objects remain valid, `overview.exists` is derived from disk, and `hint` is reason-aware (control-state failures point to primary-management repair rather than the catalog)
-- `nextAction`
+- `feature`: `{ name, status, tasks, hasPlan, commentCount, reviewCounts: { plan } }` from `FeatureService.getInfo`, or `null` for an unknown feature or missing `feature.json`. This is a summary, not the full `feature.json` (which also stores `ticket`, `createdAt`, and optional lifecycle timestamps).
+- `tasks`: task summaries from `TaskService.list`.
+- `runnable`: pending task folders whose stored dependencies are all `done`.
+- `blocked`: pending task folders mapped to their unmet stored dependencies.
+- `worktrees`: feature-task workspace state from `WorktreeService.list`.
+- `warning` (optional): config fallback warning.
+
+With `feature: null`, the other summaries may be empty.
 
 ### Task List Fields
 
-Each entry in `tasks.list` includes:
+Each entry in `tasks` includes:
 - `folder` (string)
 - `name` (string)
 - `status` (string)
 - `origin` (string)
-- `summary` (string | null)
-- `dependsOn` (string[] | null, raw dependency metadata from `status.json`)
-- `blocker` (`TaskBlocker`, optional and present only while `status` is `blocked`)
-- `report` (string | null, latest report)
-- `reports` (numeric history of report strings)
+- `planTitle`, `summary`, and `repoIds` (optional)
 
-`TaskBlocker` contains a required nonblank `reason` and optional `options`, `recommendation`, and `context`. An explicit status leaving blocked clears the blocker.
+The full `status.json` may contain a `blocker` (`TaskBlocker`, optional and present only while `status` is `blocked`). `TaskBlocker` contains a required nonblank `reason` and optional `options`, `recommendation`, and `context`. An explicit status leaving blocked clears the blocker. Read `report.md` and `reports/{N}.md` for report bodies.
 
 ### Runnable and Blocked
 
 ```
-tasks.runnable   # array of task folders ready to start
-tasks.blockedBy  # map: task folder -> array of unmet dependency folders
+runnable   # array of pending task folders with satisfied dependencies
+blocked    # map: pending task folder -> array of unmet dependency folders
 ```
 
 Rules:
 - Only `done` satisfies dependencies.
-- `tasks.runnable` lists task folders whose effective dependency set is fully satisfied.
-- `tasks.blockedBy` maps task folders to the unmet dependency folders keeping them blocked.
-- `tasks.list[].dependsOn` shows the raw stored dependency metadata; `tasks.runnable` and `tasks.blockedBy` are computed from the effective graph, which applies legacy sequential fallback only when a task record omits `dependsOn`.
+- Only pending tasks appear in `runnable` or `blocked`. `hive_status` reads stored `dependsOn` and treats a missing field as `[]`; legacy numeric sequential fallback in the graph helper is not applied by this tool.
+- These arrays describe dependency readiness; they are not a dispatch-admission gate.
 
 Example:
 
 ```json
 {
-  "overview": {
-    "exists": true,
-    "path": ".hive/features/example/context/overview.md",
-    "updatedAt": "2026-03-31T10:30:00.000Z"
-  },
-  "review": {
-    "unresolvedTotal": 1,
-    "byDocument": {
-      "overview": 0,
-      "plan": 1
-    }
-  },
-  "tasks": {
-    "list": [
-      {"folder":"01-setup","status":"done","dependsOn":[]},
-      {"folder":"02-core","status":"pending","dependsOn":["01-setup"]},
-      {"folder":"03-ui","status":"blocked","dependsOn":["02-core"],"blocker":{"reason":"Choose the deployment region.","options":["iad","ams"],"recommendation":"iad","context":"The existing data residency approval covers iad."}}
-    ],
-    "runnable": ["02-core"],
-    "blockedBy": {
-      "03-ui": ["02-core"]
-    }
-  }
+  "feature": { "name": "example", "status": "executing", "tasks": [
+    { "folder": "01-setup", "name": "setup", "status": "done", "origin": "plan" },
+    { "folder": "02-core", "name": "core", "status": "pending", "origin": "plan" },
+    { "folder": "03-ui", "name": "ui", "status": "pending", "origin": "plan" }
+  ], "hasPlan": true, "commentCount": 1, "reviewCounts": { "plan": 1 } },
+  "tasks": [
+    { "folder": "01-setup", "name": "setup", "status": "done", "origin": "plan" },
+    { "folder": "02-core", "name": "core", "status": "pending", "origin": "plan" },
+    { "folder": "03-ui", "name": "ui", "status": "pending", "origin": "plan" }
+  ],
+  "runnable": ["02-core"],
+  "blocked": { "03-ui": ["02-core"] },
+  "worktrees": []
 }
 ```
 
@@ -295,9 +293,10 @@ _None_
 ```
 
 Plan-backed specs also include the matching `## Plan Section` excerpt from `plan.md`.
-Supporting context bodies do not appear in generated specs. Live catalogs provide current project and feature metadata after the child session is authenticated.
+Supporting context bodies do not appear in generated specs. The runtime does not deliver context catalogs to child prompts; agents can query current project or feature context through `hive_context_read`.
 
 Manual-task specs derive their sections from structured metadata and may include:
+- `## Repositories` (when `repos` were supplied)
 - `## Goal`
 - `## Description`
 - `## Acceptance Criteria`
@@ -307,7 +306,7 @@ Manual-task specs derive their sections from structured metadata and may include
 
 ## Session Metadata
 
-Canonical session bindings live in project `.hive/sessions.json`. Feature-local `sessions.json` files are projections for navigation and cannot replace missing canonical provenance.
+Canonical session bindings and session-scoped constraint entries live in project `.hive/sessions.json`. Feature-local `sessions.json` files are projections for navigation and cannot replace missing canonical provenance. A selected feature route is stored as `featureName`; explicit `null` means featureless, while an absent field leaves route fallback available. Feature-scoped constraints live separately in `.hive/features/{feature-directory}/constraints.json` as `{ "entries": [{ "id": "constraint-...", "text": "..." }], "revision": 1 }`.
 
 ```json
 {
@@ -319,7 +318,6 @@ Canonical session bindings live in project `.hive/sessions.json`. Feature-local 
       "featureName": "feature-a",
       "taskFolder": "01-first-task",
       "projectRoot": "/trusted/project",
-      "executionWorkspacePath": "/trusted/project/.hive/.worktrees/feature-a/01-first-task",
       "startedAt": "2025-01-05T09:00:00Z",
       "lastActiveAt": "2025-01-05T10:30:00Z",
       "messageCount": 42,
@@ -336,9 +334,9 @@ Canonical session bindings live in project `.hive/sessions.json`. Feature-local 
 
 `standingConstraintEntries` holds independently addressable verbatim directives. `standingConstraintsRevision` provides optimistic concurrency for targeted edits and explicit whole-register clears. `standingConstraints` is the rendered aggregate injected into delegated task and worker prompts, capped at 8000 UTF-16 code units. String-only records written by earlier versions are read as one deterministic `legacy` entry and migrate on the next mutation.
 
-Task `status.json` records status, summary, blocker, and report history from `hive_task_update`. Stale generated-assignment keys in older JSON are ignored.
+Task `status.json` records status, summary, and blocker from `hive_task_update`; report history and the latest report are Markdown files under the task directory. Stale generated-assignment keys in older JSON are ignored.
 
-`standingConstraintEntries` may be session-scoped or feature-scoped. Inherited session and feature labels travel with the child captured at dispatch.
+The session register and the feature register are separate. The runtime captures both registers for child dispatch and labels each in the prompt; it stores the session snapshot in the child's canonical session entry.
 
 ## Compatibility
 
