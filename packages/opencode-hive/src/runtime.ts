@@ -58,7 +58,7 @@ import { createBackgroundTools } from './background/backgroundTools.js';
 import { isBackgroundSubagentsExperimentEnabled, resolveBackgroundDelegationAvailability } from './utils/background-gate.js';
 import { GitSnapshotError, inspectGitSnapshot, isExactGitTopLevel } from './utils/git-snapshot.js';
 import { HIVE_SYSTEM_PROMPT, SUBAGENT_CLARIFICATION_PROMPT } from './hooks/system-hook.js';
-import { createVariantHook } from './hooks/variant-hook.js';
+import { classifySession, createVariantHook } from './hooks/variant-hook.js';
 import { HIVE_TOOL_NAMES } from './utils/plugin-manifest.js';
 import { buildHiveCommandMap } from './commands/runtime.js';
 import { HIVE_COMMANDS } from './commands/registry.js';
@@ -66,6 +66,7 @@ import { hiveCommandRenderers } from './commands/renderers.js';
 import { isReadOnlyCouncilEligibleBase } from './commands/council.js';
 import type { HiveCommandAgentDescriptor, HiveCommandContext } from './commands/types.js';
 import { createTaskTraceTools, injectTaskTraceHint, TASK_TRACE_SUMMARIZER_AGENT } from './task-trace.js';
+import { composeTaskBrief, TASK_BRIEF_BLOCK } from './task-brief.js';
 
 type ToolContext = { sessionID?: string; agent?: string };
 type RouteSnapshot = {
@@ -196,7 +197,11 @@ function taskChildBinding(event: unknown): { parent: string; call: string; child
   };
 }
 
-const ROUTE_SNAPSHOT_BLOCK = /(?:\n\n)?<!-- hive-route-snapshot:start -->(?:(?!<!-- hive-route-snapshot:(?:start|end) -->)[\s\S])*?<!-- hive-route-snapshot:end -->/g;
+/**
+ * Matches a generated route snapshot block and its separator. The start marker must open the
+ * generated heading line, so an authored prompt that quotes the marker pair inline is preserved.
+ */
+const ROUTE_SNAPSHOT_BLOCK = /(?:\n\n)?<!-- hive-route-snapshot:start -->\n## Hive route snapshot\n(?:(?!<!-- hive-route-snapshot:(?:start|end) -->)[\s\S])*?<!-- hive-route-snapshot:end -->/g;
 
 function escapeRouteSnapshotMarkers(text: string): string {
   return text
@@ -821,9 +826,15 @@ const plugin: Plugin = async (ctx) => {
         const snapshot = captureRoute(input.sessionID);
         dispatchSnapshots.set(`${input.sessionID}\0${input.callID}`, snapshot);
         const prompt = typeof output.args?.prompt === 'string'
-          ? output.args.prompt.replace(ROUTE_SNAPSHOT_BLOCK, '')
+          ? output.args.prompt.replace(ROUTE_SNAPSHOT_BLOCK, '').replace(TASK_BRIEF_BLOCK, '')
           : '';
-        output.args.prompt = `${prompt}${routeFooter(snapshot, prompt.length > 0)}`;
+        const agent = output.args?.subagent_type;
+        const foragerDispatch = typeof agent === 'string'
+          && classifySession(agent, configService.getCustomAgentConfigs()).baseAgent === 'forager-worker';
+        const brief = foragerDispatch && snapshot.hasFeatureRoute && typeof snapshot.featureName === 'string'
+          ? `\n\n${composeTaskBrief({ projectRoot, taskService, contextService }, snapshot.featureName, prompt)}`
+          : '';
+        output.args.prompt = `${prompt}${routeFooter(snapshot, prompt.length > 0)}${brief}`;
       }
       await backgroundAdapter['tool.execute.before'](input, output);
     },

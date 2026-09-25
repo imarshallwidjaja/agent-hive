@@ -9,11 +9,15 @@ import { createPluginWithHome } from './e2e/plugin-test-home.js';
 
 const roots: string[] = [];
 
-function createRuntime(options: { detectedFeature?: string } = {}) {
+function createRuntime(options: { detectedFeature?: string; hiveConfig?: Record<string, unknown> } = {}) {
   const root = fs.mkdtempSync(`/tmp/hive-runtime-cutover-${process.pid}-`);
   const home = fs.mkdtempSync(`/tmp/hive-runtime-cutover-home-${process.pid}-`);
   roots.push(root, home);
   fs.mkdirSync(path.join(root, '.hive'), { recursive: true });
+  if (options.hiveConfig) {
+    fs.mkdirSync(path.join(home, '.config', 'opencode'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.config', 'opencode', 'agent_hive.json'), JSON.stringify(options.hiveConfig));
+  }
   const workTarget = options.detectedFeature
     ? path.join(root, '.hive', '.worktrees', options.detectedFeature, '01-task')
     : root;
@@ -254,6 +258,7 @@ describe('coordinated runtime hard cut', () => {
 
     const staleSnapshot = [
       '<!-- hive-route-snapshot:start -->',
+      '## Hive route snapshot',
       'stale route snapshot',
       '<!-- hive-route-snapshot:end -->',
     ].join('\n');
@@ -290,6 +295,7 @@ describe('coordinated runtime hard cut', () => {
     const loaded = await hooks;
     const staleSnapshot = [
       '<!-- hive-route-snapshot:start -->',
+      '## Hive route snapshot',
       'stale route snapshot',
       '<!-- hive-route-snapshot:end -->',
     ].join('\n');
@@ -322,6 +328,7 @@ describe('coordinated runtime hard cut', () => {
     const loaded = await hooks;
     const staleSnapshot = [
       '<!-- hive-route-snapshot:start -->',
+      '## Hive route snapshot',
       'stale route snapshot',
       '<!-- hive-route-snapshot:end -->',
     ].join('\n');
@@ -831,6 +838,120 @@ describe('coordinated runtime hard cut', () => {
       { folder: '02-build', specStale: null, specStaleReason: 'freshness_unavailable', hasHandoff: false },
     ]);
     expect(projected(degraded.feature.tasks)).toEqual(projected(degraded.tasks));
+  });
+
+  it('appends a task brief after the unchanged route snapshot only for bound Forager dispatches', async () => {
+    const { hooks } = createRuntime({ hiveConfig: { customAgents: { 'forager-specialist': { baseAgent: 'forager-worker', description: 'Specialist Forager.' } } } });
+    const loaded = await hooks;
+    const caller = context('brief-parent');
+    const briefStart = /<!-- hive-task-brief:start -->/g;
+    const routeStart = /<!-- hive-route-snapshot:start -->/g;
+    const briefBlock = /\n\n<!-- hive-task-brief:start -->[\s\S]*<!-- hive-task-brief:end -->$/;
+    await loaded.tool!.hive_feature_create.execute({ name: '10_x' }, caller);
+    await loaded.tool!.hive_feature_select.execute({ feature: '10_x' }, caller);
+    const written = JSON.parse(await loaded.tool!.hive_plan_write.execute({ content: '# Plan\n\n## Tasks\n\n### 1. Setup\n\nSetup.\n\n### 2. Build\n\nBuild.\n' }, caller));
+    const featureDir = path.dirname(written.path);
+    expect(path.basename(featureDir)).toBe('01_10_x');
+    await loaded.tool!.hive_plan_approve.execute({}, caller);
+    await loaded.tool!.hive_tasks_sync.execute({}, caller);
+    await loaded.tool!.hive_task_update.execute({ task: '01-setup', status: 'done', handoff: 'Setup notes.' }, caller);
+    await loaded.tool!.hive_context_write.execute({ name: 'research-notes', content: '---\ndescription: Notes\nread_when: Always.\nowner: test\nreview_after: 2099-01-01\n---\n\nBody.' }, caller);
+
+    const dispatch = async (subagent_type: string, prompt: string, callID: string) => {
+      const output = { args: { subagent_type, prompt } };
+      await loaded['tool.execute.before']!({ tool: 'task', sessionID: 'brief-parent', callID } as any, output);
+      return output;
+    };
+    const authored = 'Hive task: 02-build\nImplement the build.';
+    const forager = await dispatch('forager-worker', authored, 'call-build');
+    expect(forager.args.prompt).toContain('Task: 02-build - Build (pending)');
+
+    // Route footer bytes match a dispatch that receives no brief.
+    const scout = await dispatch('scout-researcher', authored, 'call-scout');
+    expect(forager.args.prompt.replace(briefBlock, '')).toBe(scout.args.prompt);
+    expect(forager.args.prompt.indexOf('<!-- hive-route-snapshot:end -->')).toBeLessThan(forager.args.prompt.indexOf('<!-- hive-task-brief:start -->'));
+    for (const agent of ['code-reviewer', 'scout-researcher', 'approach-advisor', 'general']) {
+      expect((await dispatch(agent, authored, `call-${agent}`)).args.prompt).not.toContain('hive-task-brief');
+    }
+
+    const custom = await dispatch('forager-specialist', authored, 'call-custom');
+    expect(custom.args.prompt).toBe(forager.args.prompt);
+
+    const redispatched = { args: { subagent_type: 'forager-worker', prompt: forager.args.prompt } };
+    await loaded['tool.execute.before']!({ tool: 'task', sessionID: 'brief-parent', callID: 'call-build-again' } as any, redispatched);
+    expect(redispatched.args.prompt).toBe(forager.args.prompt);
+    expect(redispatched.args.prompt.match(routeStart)).toHaveLength(1);
+    expect(redispatched.args.prompt.match(briefStart)).toHaveLength(1);
+    const reviewerOfMutated = await dispatch('code-reviewer', forager.args.prompt, 'call-review-mutated');
+    expect(reviewerOfMutated.args.prompt).toBe(scout.args.prompt);
+    expect(reviewerOfMutated.args.prompt).not.toContain('hive-task-brief');
+
+    const [setup, build] = await Promise.all([
+      dispatch('forager-worker', 'Hive task: 01-setup\nSetup.', 'call-parallel-setup'),
+      dispatch('forager-worker', 'Hive task: 02-build\nBuild.', 'call-parallel-build'),
+    ]);
+    expect(setup.args.prompt).toContain('Task: 01-setup - Setup (done)');
+    expect(setup.args.prompt).not.toContain('Task: 02-build');
+    expect(build.args.prompt).toContain('Task: 02-build - Build (pending)');
+  });
+
+  it('preserves authored prompts that quote generated block markers inline', async () => {
+    const { hooks } = createRuntime();
+    const loaded = await hooks;
+    const caller = context('brief-quoted');
+    await loaded.tool!.hive_feature_create.execute({ name: 'quoted' }, caller);
+    await loaded.tool!.hive_feature_select.execute({ feature: 'quoted' }, caller);
+    await loaded.tool!.hive_plan_write.execute({ content: '# Plan\n\n## Tasks\n\n### 1. Setup\n\nSetup.\n' }, caller);
+    await loaded.tool!.hive_plan_approve.execute({}, caller);
+    await loaded.tool!.hive_tasks_sync.execute({}, caller);
+
+    const authored = [
+      'Hive task: 01-setup',
+      'Explain `<!-- hive-task-brief:start -->` and `<!-- hive-task-brief:end -->`.',
+      'Explain `<!-- hive-route-snapshot:start -->` and `<!-- hive-route-snapshot:end -->`.',
+    ].join('\n');
+    const dispatch = async (subagent_type: string, callID: string) => {
+      const output = { args: { subagent_type, prompt: authored } };
+      await loaded['tool.execute.before']!({ tool: 'task', sessionID: 'brief-quoted', callID } as any, output);
+      return output;
+    };
+
+    const forager = await dispatch('forager-worker', 'call-quoted-forager');
+    expect(forager.args.prompt.startsWith(authored)).toBe(true);
+    expect(forager.args.prompt).toContain('Explain `<!-- hive-task-brief:start -->` and `<!-- hive-task-brief:end -->`.');
+    expect(forager.args.prompt.match(/<!-- hive-task-brief:(?:start|end) -->/g)).toHaveLength(4);
+    expect(forager.args.prompt.match(/<!-- hive-route-snapshot:(?:start|end) -->/g)).toHaveLength(4);
+
+    const scout = await dispatch('scout-researcher', 'call-quoted-scout');
+    expect(scout.args.prompt.startsWith(authored)).toBe(true);
+    expect(scout.args.prompt).toContain('Explain `<!-- hive-route-snapshot:start -->` and `<!-- hive-route-snapshot:end -->`.');
+    expect(scout.args.prompt.match(/<!-- hive-task-brief:(?:start|end) -->/g)).toHaveLength(2);
+    expect(scout.args.prompt.match(/<!-- hive-route-snapshot:(?:start|end) -->/g)).toHaveLength(4);
+
+    const redispatched = { args: { subagent_type: 'forager-worker', prompt: forager.args.prompt } };
+    await loaded['tool.execute.before']!({ tool: 'task', sessionID: 'brief-quoted', callID: 'call-quoted-again' } as any, redispatched);
+    expect(redispatched.args.prompt).toBe(forager.args.prompt);
+  });
+
+  it('attaches no task brief without a selected feature route', async () => {
+    const { hooks } = createRuntime();
+    const loaded = await hooks;
+    const caller = context('brief-unselected');
+    await loaded.tool!.hive_feature_create.execute({ name: 'sole-live' }, caller);
+    await loaded.tool!.hive_plan_write.execute({ feature: 'sole-live', content: '# Plan\n\n## Tasks\n\n### 1. Setup\n\nSetup.\n' }, caller);
+    await loaded.tool!.hive_plan_approve.execute({ feature: 'sole-live' }, caller);
+    await loaded.tool!.hive_tasks_sync.execute({ feature: 'sole-live' }, caller);
+
+    const fallback = { args: { subagent_type: 'forager-worker', prompt: 'Hive task: 01-setup' } };
+    await loaded['tool.execute.before']!({ tool: 'task', sessionID: 'brief-unselected', callID: 'call-fallback' } as any, fallback);
+    expect(fallback.args.prompt).toContain('"featureRoute":{"selected":false,"feature":"sole-live"}');
+    expect(fallback.args.prompt).not.toContain('hive-task-brief');
+
+    await loaded.tool!.hive_feature_select.execute({ feature: null }, caller);
+    const explicitNull = { args: { subagent_type: 'forager-worker', prompt: 'Hive task: 01-setup' } };
+    await loaded['tool.execute.before']!({ tool: 'task', sessionID: 'brief-unselected', callID: 'call-null' } as any, explicitNull);
+    expect(explicitNull.args.prompt).toContain('"featureRoute":{"selected":true,"feature":null}');
+    expect(explicitNull.args.prompt).not.toContain('hive-task-brief');
   });
 
   it('ignores malformed legacy execution-attempt state during startup and status', async () => {
