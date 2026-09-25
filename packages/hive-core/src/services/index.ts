@@ -6,8 +6,15 @@ export {
 } from './constraintRegister.js';
 export type { ConstraintRegister } from './constraintRegister.js';
 export { PlanService } from './planService.js';
-export { TaskService, TaskUpdatePersistenceError } from './taskService.js';
-export type { SyncOptions, TaskUpdateInput, TaskUpdateResult } from './taskService.js';
+export { TaskService, TaskUpdatePersistenceError, TASK_HANDOFF_MAX_BYTES } from './taskService.js';
+export type {
+  SyncOptions,
+  TaskSpecFreshness,
+  TaskSpecFreshnessReason,
+  TaskUpdateInput,
+  TaskUpdatePersistenceStage,
+  TaskUpdateResult,
+} from './taskService.js';
 export { SubtaskService } from './subtaskService.js';
 export { WorktreeService, createWorktreeService } from './worktreeService.js';
 export type {

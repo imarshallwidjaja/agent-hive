@@ -14,12 +14,14 @@ import {
   PlanService,
   RepositoryManifestService,
   SessionService,
+  TASK_HANDOFF_MAX_BYTES,
   TaskService,
   TaskUpdatePersistenceError,
   WorktreeService,
   assertValidFeatureName,
   computeRunnableAndBlocked,
   detectContext,
+  getTaskHandoffPath,
   readCompositeWorkspaceManifest,
   type ContextScope,
   type CustomAgentBase,
@@ -27,6 +29,8 @@ import {
   type MergeOptions,
   type ResolvedCustomAgentConfig,
   type StandingConstraintEntry,
+  type TaskSpecFreshness,
+  type TaskSpecFreshnessReason,
 } from 'hive-core';
 import { QUEEN_BEE_PROMPT, hiveBeeAgent } from './agents/hive.js';
 import { ARCHITECT_BEE_PROMPT, architectBeeAgent } from './agents/architect.js';
@@ -436,7 +440,7 @@ const plugin: Plugin = async (ctx) => {
     hive_plan_write: tool({
       description: 'Write plan.md.',
       args: { content: tool.schema.string(), feature: tool.schema.string().optional() },
-      execute: async ({ content, feature }, context) => planService.write(requireFeature(feature, context), content),
+      execute: async ({ content, feature }, context) => json(planService.write(requireFeature(feature, context), content)),
     }),
     hive_plan_patch: tool({
       description: 'Patch bounded plan sections.',
@@ -480,20 +484,21 @@ const plugin: Plugin = async (ctx) => {
       execute: async ({ name, order, feature, repos, ...metadata }, context) => taskService.create(requireFeature(feature, context), name, order, { ...metadata, repoIds: repos } as any),
     }),
     hive_task_update: tool({
-      description: 'Update task state and optionally persist an immutable report.',
+      description: `Update task state, optionally persist an immutable report, and optionally replace the successor handoff (handoff.md, at most ${TASK_HANDOFF_MAX_BYTES} UTF-8 bytes).`,
       args: {
         task: tool.schema.string(),
         status: tool.schema.enum(['pending', 'in_progress', 'done', 'cancelled', 'blocked', 'failed', 'partial']).optional(),
         summary: tool.schema.string().optional(),
         blocker: tool.schema.object({ reason: tool.schema.string(), options: tool.schema.array(tool.schema.string()).optional(), recommendation: tool.schema.string().optional(), context: tool.schema.string().optional() }).nullable().optional(),
         report: tool.schema.string().optional(),
+        handoff: tool.schema.string().optional(),
         feature: tool.schema.string().optional(),
       },
       execute: async ({ task, feature, ...updates }, context) => {
         try { return json(taskService.update(requireFeature(feature, context), task, updates)); }
         catch (error) {
           if (!(error instanceof TaskUpdatePersistenceError)) throw error;
-          return json({ success: false, reason: 'task_update_persistence_failed', error: error.message, failedStage: error.failedStage, reportPath: error.reportPath, latestReportPath: error.latestReportPath, reportHistoryWritten: error.reportHistoryWritten, latestReportWritten: error.latestReportWritten, failedWritePublished: error.failedWritePublished });
+          return json({ success: false, reason: 'task_update_persistence_failed', error: error.message, failedStage: error.failedStage, reportPath: error.reportPath, latestReportPath: error.latestReportPath, reportHistoryWritten: error.reportHistoryWritten, latestReportWritten: error.latestReportWritten, handoffPath: error.handoffPath, handoffWritten: error.handoffWritten, failedWritePublished: error.failedWritePublished });
         }
       },
     }),
@@ -691,7 +696,42 @@ const plugin: Plugin = async (ctx) => {
         const tasks = taskService.list(selected);
         const graph = computeRunnableAndBlocked(tasks.map((task) => ({ folder: task.folder, status: task.status, dependsOn: taskService.getRawStatus(selected, task.folder)?.dependsOn ?? [] })));
         const worktrees = await worktreeService.list(selected);
-        return json({ feature: featureService.getInfo(selected), tasks, runnable: graph.runnable, blocked: graph.blocked, worktrees, ...(configFallbackWarning ? { warning: configFallbackWarning } : {}) });
+        const info = featureService.getInfo(selected);
+        let freshness = new Map<string, TaskSpecFreshness>();
+        let specFreshnessError: string | undefined;
+        try {
+          freshness = new Map(taskService.getSpecFreshness(selected).map((entry) => [entry.folder, entry]));
+        } catch (error) {
+          specFreshnessError = error instanceof Error ? error.message : String(error);
+        }
+        // One projection for both task lists so they cannot disagree.
+        type TaskStateProjection = {
+          specStale: boolean | null;
+          specStaleReason: TaskSpecFreshnessReason | 'freshness_unavailable';
+          hasHandoff: boolean;
+        };
+        const taskState = new Map<string, TaskStateProjection>();
+        const projectedFolders = new Set([
+          ...tasks.map(task => task.folder),
+          ...(info?.tasks.map(task => task.folder) ?? []),
+        ]);
+        for (const folder of projectedFolders) {
+          taskState.set(folder, {
+            specStale: freshness.get(folder)?.specStale ?? null,
+            specStaleReason: freshness.get(folder)?.specStaleReason ?? 'freshness_unavailable',
+            hasHandoff: fs.existsSync(getTaskHandoffPath(projectRoot, selected, folder)),
+          });
+        }
+        const withTaskState = <T extends { folder: string }>(task: T) => ({ ...task, ...taskState.get(task.folder) });
+        return json({
+          feature: info ? { ...info, tasks: info.tasks.map(withTaskState) } : info,
+          tasks: tasks.map(withTaskState),
+          runnable: graph.runnable,
+          blocked: graph.blocked,
+          worktrees,
+          ...(specFreshnessError ? { specFreshnessError } : {}),
+          ...(configFallbackWarning ? { warning: configFallbackWarning } : {}),
+        });
       },
     }),
     hive_git_snapshot: tool({

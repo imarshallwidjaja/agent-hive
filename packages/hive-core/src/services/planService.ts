@@ -19,7 +19,15 @@ import type {
   PlanReadOutlineResult,
   PlanReadResult,
   PlanTaskOutline,
+  PlanUnownedTaskHeading,
+  PlanWriteResult,
 } from '../types.js';
+import {
+  getFenceTransition,
+  readPlanTaskLayout,
+  listUnownedTaskHeadings,
+  type FenceState,
+} from '../utils/planTaskSections.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import { createHash } from 'crypto';
@@ -27,11 +35,6 @@ import { ReviewService } from './reviewService.js';
 
 interface ParsedHeading extends PlanHeadingOutline {
   start: number;
-}
-
-interface FenceState {
-  marker: '`' | '~';
-  length: number;
 }
 
 function getContentHash(content: string): string {
@@ -46,37 +49,6 @@ function getRevision(contentHash: string, comments: PlanComment[], isApproved: b
 
 function normalizeHeadingTitle(rawTitle: string): string {
   return rawTitle.replace(/\s+#+\s*$/, '').trim();
-}
-
-function getFenceTransition(line: string, fence: FenceState | null, nestedFences: FenceState[]): { opened?: FenceState; closedOuter: boolean } | null {
-  const closingFenceMatch = fence
-    ? line.match(/^ {0,3}(`{3,}|~{3,})[ \t]*$/)
-    : null;
-  if (closingFenceMatch) {
-    const marker = closingFenceMatch[1][0] as '`' | '~';
-    const length = closingFenceMatch[1].length;
-    const nestedFence = nestedFences.at(-1);
-    if (nestedFence && nestedFence.marker === marker && length === nestedFence.length) {
-      nestedFences.pop();
-      return { closedOuter: false };
-    }
-    if (fence.marker === marker && length >= fence.length) {
-      nestedFences.length = 0;
-      return { closedOuter: true };
-    }
-  }
-
-  const openingFenceMatch = line.match(/^ {0,3}(`{3,}|~{3,})/);
-  if (!openingFenceMatch) return null;
-
-  const marker = openingFenceMatch[1][0] as '`' | '~';
-  const length = openingFenceMatch[1].length;
-  const opened = { marker, length };
-  if (fence) {
-    nestedFences.push(opened);
-  }
-
-  return { opened, closedOuter: false };
 }
 
 function hasUnclosedFence(content: string): boolean {
@@ -339,6 +311,56 @@ function buildOutline(content: string): { headings: PlanHeadingOutline[]; taskLi
   };
 }
 
+const PATCH_TASK_SECTION_HEADING_GUIDANCE =
+  'Inside ## Tasks every ### heading must be a numbered task (### N. Title). '
+  + 'Put task amendments inside the owning task as a level-4 (####) subsection by rewriting the task with replace_task, '
+  + 'and move shared notes outside ## Tasks.';
+
+// A replace_task cannot rewrite an existing orphan heading: it stops at the next level-3 heading,
+// and a replace_section on the orphan must keep its own heading. Repairing the section is the working fix.
+const APPROVAL_TASK_SECTION_HEADING_GUIDANCE =
+  'To repair an existing unnumbered heading, rewrite ## Tasks with one replace_section (headingPath ["Tasks"]) '
+  + 'that folds each amendment into its owning task as a level-4 (####) subsection or moves shared notes outside ## Tasks.';
+
+function formatUnownedTaskHeadings(headings: PlanUnownedTaskHeading[]): string {
+  return headings.map(heading => `line ${heading.line}: ### ${heading.title}`).join('; ');
+}
+
+function findUnownedTaskHeadings(content: string): PlanUnownedTaskHeading[] {
+  try {
+    return listUnownedTaskHeadings(readPlanTaskLayout(content));
+  } catch {
+    // A plan with multiple Tasks sections has no single task layout; sync and approve report that error.
+    return [];
+  }
+}
+
+function withUnownedTaskHeadings<T extends object>(result: T, content: string): T & { unownedTaskHeadings?: PlanUnownedTaskHeading[] } {
+  const unownedTaskHeadings = findUnownedTaskHeadings(content);
+  return unownedTaskHeadings.length > 0 ? { ...result, unownedTaskHeadings } : result;
+}
+
+/** Reject unowned task-section headings the patch adds; ones already present may stay. */
+function assertNoNewUnownedTaskHeadings(before: string, after: string): void {
+  const remaining = new Map<string, number>();
+  for (const heading of findUnownedTaskHeadings(before)) {
+    remaining.set(heading.title, (remaining.get(heading.title) ?? 0) + 1);
+  }
+  const added = findUnownedTaskHeadings(after).filter(heading => {
+    const count = remaining.get(heading.title) ?? 0;
+    if (count === 0) return true;
+    remaining.set(heading.title, count - 1);
+    return false;
+  });
+
+  if (added.length > 0) {
+    throw new Error(
+      `Plan patch would add task-section heading(s) that are not numbered tasks: ${formatUnownedTaskHeadings(added)}. `
+      + PATCH_TASK_SECTION_HEADING_GUIDANCE,
+    );
+  }
+}
+
 export class PlanService {
   private reviewService: ReviewService;
 
@@ -369,7 +391,7 @@ export class PlanService {
     }
   }
 
-  write(featureName: string, content: string): string {
+  write(featureName: string, content: string): PlanWriteResult {
     return this.withPlanStateLock(featureName, () => {
       const planPath = getPlanPath(this.projectRoot, featureName);
       writeText(planPath, content);
@@ -377,7 +399,7 @@ export class PlanService {
       this.clearCommentsUnlocked(featureName);
       this.revokeApprovalUnlocked(featureName);
 
-      return planPath;
+      return withUnownedTaskHeadings({ path: planPath }, content);
     });
   }
 
@@ -408,10 +430,10 @@ export class PlanService {
       };
     }
 
-    return {
+    return withUnownedTaskHeadings({
       ...base,
       content,
-    };
+    }, content);
   }
 
   patch(
@@ -520,6 +542,7 @@ export class PlanService {
 
       assertNoDuplicateSectionPaths(nextContent);
       assertNoDuplicateTaskNumbers(nextContent);
+      assertNoNewUnownedTaskHeadings(content, nextContent);
 
       const validationError = validateContent?.(nextContent);
       if (validationError) {
@@ -559,6 +582,21 @@ export class PlanService {
 
       if (this.getReviewService().hasUnresolvedThreads(featureName, 'plan')) {
         throw new Error(`Cannot approve feature '${featureName}' with unresolved review comments`);
+      }
+
+      let unownedTaskHeadings: PlanUnownedTaskHeading[];
+      try {
+        unownedTaskHeadings = listUnownedTaskHeadings(readPlanTaskLayout(readText(getPlanPath(this.projectRoot, featureName)) ?? ''));
+      } catch (error) {
+        // An unreadable task layout (for example two Tasks sections) makes the plan unexecutable.
+        throw new Error(`Cannot approve feature '${featureName}': ${error instanceof Error ? error.message : String(error)}`);
+      }
+
+      if (unownedTaskHeadings.length > 0) {
+        throw new Error(
+          `Cannot approve feature '${featureName}': ## Tasks contains heading(s) that are not numbered tasks: `
+          + `${formatUnownedTaskHeadings(unownedTaskHeadings)}. ${APPROVAL_TASK_SECTION_HEADING_GUIDANCE}`,
+        );
       }
 
       const approvedPath = getApprovedPath(this.projectRoot, featureName);

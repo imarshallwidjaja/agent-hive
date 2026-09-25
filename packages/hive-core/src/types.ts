@@ -59,11 +59,6 @@ export interface TaskAggregateBranchDiff {
   report: string;
 }
 
-export function renderAggregateBranchDiff(diff: TaskAggregateBranchDiff): string {
-  return `Aggregate branch diff at commit time: ${diff.fileCount} file(s), +${diff.insertions}/-${diff.deletions}; `
-    + `areas: ${diff.areas.length > 0 ? diff.areas.join(', ') : 'none'}; report: ${diff.report}`;
-}
-
 export interface TaskBlocker {
   reason: string;
   options?: string[];
@@ -130,12 +125,28 @@ export interface PlanTaskOutline {
   title: string;
 }
 
+/** A level-3 heading inside `## Tasks` that is not a numbered `### N. Title` task. */
+export interface PlanUnownedTaskHeading {
+  /** 1-based line number in plan.md. */
+  line: number;
+  /** Heading text after `###`. */
+  title: string;
+}
+
 export interface PlanReadResult {
   content: string;
   status: FeatureStatusType;
   comments: ReviewThread[];
   revision: string;
   contentHash: string;
+  /** Non-blocking diagnostic, present only when `## Tasks` contains unowned headings. */
+  unownedTaskHeadings?: PlanUnownedTaskHeading[];
+}
+
+export interface PlanWriteResult {
+  path: string;
+  /** Non-blocking diagnostic, present only when `## Tasks` contains unowned headings. */
+  unownedTaskHeadings?: PlanUnownedTaskHeading[];
 }
 
 export interface PlanReadOutlineResult {
@@ -179,6 +190,8 @@ export interface TasksSyncResult {
   removed: string[];
   kept: string[];
   manual: string[];
+  /** Non-blocking diagnostic, present only when `## Tasks` contains unowned headings. */
+  unownedTaskHeadings?: PlanUnownedTaskHeading[];
 }
 
 export interface TaskInfo {

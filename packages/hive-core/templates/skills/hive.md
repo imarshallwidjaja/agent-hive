@@ -140,6 +140,8 @@ hive_plan_write({ content: "..." })
 
 Keep a readable design summary before `## Tasks`. `hive_tasks_sync` parses numbered tasks under `## Tasks` only. Add sections that serve the plan; the following is a starting shape, not a required schema.
 
+Inside `## Tasks`, every `###` heading is a numbered task (`### N. Title`); use `####` for subsections within a task. To amend a task, rewrite it with `hive_plan_patch` `replace_task` and put the amendment in a `####` subsection. Put shared notes outside `## Tasks`. Patches that add an unnumbered `###` inside `## Tasks` are rejected, and approval is blocked while one remains. To repair an existing unnumbered heading, rewrite `## Tasks` with one `replace_section` (`headingPath: ["Tasks"]`) that folds each amendment into its owning task as a `####` subsection or moves shared notes outside `## Tasks`; a `replace_task` cannot rewrite an orphan heading because it stops at the next `###`.
+
 ```markdown
 # {Feature Title}
 

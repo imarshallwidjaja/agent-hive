@@ -411,6 +411,7 @@ describe("TaskService", () => {
           status: "done",
           summary: "Updated",
           report: "published report",
+          handoff: "next steps",
         });
       } catch (error) {
         thrown = error;
@@ -423,9 +424,12 @@ describe("TaskService", () => {
       expect(persistenceError.failedStage).toBe("status");
       expect(persistenceError.reportHistoryWritten).toBe(true);
       expect(persistenceError.latestReportWritten).toBe(true);
+      expect(persistenceError.handoffWritten).toBe(true);
       expect(persistenceError.failedWritePublished).toBe(false);
       expect(persistenceError.reportPath).toBe(path.join(taskPath, "reports", "1.md"));
       expect(persistenceError.latestReportPath).toBe(path.join(taskPath, "report.md"));
+      expect(persistenceError.handoffPath).toBe(path.join(taskPath, "handoff.md"));
+      expect(fs.readFileSync(persistenceError.handoffPath!, "utf8")).toBe("next steps");
       expect(fs.readFileSync(persistenceError.reportPath!, "utf8")).toBe("published report");
       expect(fs.readFileSync(persistenceError.latestReportPath!, "utf8")).toBe("published report");
       const stored = JSON.parse(fs.readFileSync(statusPath, "utf8"));
@@ -433,6 +437,93 @@ describe("TaskService", () => {
       expect(stored).not.toHaveProperty("report");
       expect(stored).not.toHaveProperty("reportPath");
       expect(stored).not.toHaveProperty("latestReportPath");
+    });
+
+    it("persists a handoff without touching status fields or reports, and keeps it across later updates", () => {
+      const featureName = "test-feature";
+      setupFeature(featureName);
+      setupTask(featureName, "01-test-task", {
+        status: "blocked",
+        summary: "Keep this summary",
+        blocker: { reason: "Keep this blocker" },
+      });
+      const taskPath = path.join(TEST_DIR, ".hive", "features", featureName, "tasks", "01-test-task");
+      const handoffPath = path.join(taskPath, "handoff.md");
+
+      const first = service.update(featureName, "01-test-task", { handoff: "Start from the parser; tests pin folder identity." });
+
+      expect(first.handoffPath).toBe(handoffPath);
+      expect(first.reportPath).toBeUndefined();
+      expect(fs.readFileSync(handoffPath, "utf8")).toBe("Start from the parser; tests pin folder identity.");
+      expect(service.getRawStatus(featureName, "01-test-task")).toMatchObject({
+        status: "blocked",
+        summary: "Keep this summary",
+        blocker: { reason: "Keep this blocker" },
+      });
+      expect(service.getRawStatus(featureName, "01-test-task")).not.toHaveProperty("handoff");
+      expect(fs.existsSync(path.join(taskPath, "reports"))).toBe(false);
+      expect(fs.existsSync(path.join(taskPath, "report.md"))).toBe(false);
+
+      const later = service.update(featureName, "01-test-task", { status: "done", summary: "Finished", report: "final report" });
+      expect(later.handoffPath).toBeUndefined();
+      expect(fs.readFileSync(handoffPath, "utf8")).toBe("Start from the parser; tests pin folder identity.");
+
+      service.update(featureName, "01-test-task", { handoff: "Latest handoff wins." });
+      expect(fs.readFileSync(handoffPath, "utf8")).toBe("Latest handoff wins.");
+      expect(service.getRawStatus(featureName, "01-test-task")).toMatchObject({ status: "done", summary: "Finished" });
+    });
+
+    it("rejects blank and oversize handoffs before any write", () => {
+      const featureName = "test-feature";
+      setupFeature(featureName);
+      setupTask(featureName, "01-test-task", { summary: "Original" });
+      const taskPath = path.join(TEST_DIR, ".hive", "features", featureName, "tasks", "01-test-task");
+      const statusBefore = fs.readFileSync(path.join(taskPath, "status.json"), "utf8");
+      // 1025 two-byte characters: under 2048 UTF-16 units, over 2048 UTF-8 bytes.
+      const oversize = "\u00e9".repeat(1025);
+      const assertRejectedWithoutWrites = () => {
+        expect(fs.existsSync(path.join(taskPath, "handoff.md"))).toBe(false);
+        expect(fs.existsSync(path.join(taskPath, "reports"))).toBe(false);
+        expect(fs.readFileSync(path.join(taskPath, "status.json"), "utf8")).toBe(statusBefore);
+      };
+
+      expect(() => service.update(featureName, "01-test-task", { handoff: "   \n" })).toThrow("Task handoff cannot be blank");
+      assertRejectedWithoutWrites();
+      expect(() => service.update(featureName, "01-test-task", { status: "done", report: "report", handoff: oversize })).toThrow(
+        "Task handoff is 2050 UTF-8 bytes; the limit is 2048. Shorten it; handoffs are not truncated.",
+      );
+      assertRejectedWithoutWrites();
+      expect(() => service.update(featureName, "01-test-task", { handoff: "" })).toThrow("Task handoff cannot be blank");
+      assertRejectedWithoutWrites();
+
+      expect(service.update(featureName, "01-test-task", { handoff: "a".repeat(2048) }).handoffPath).toBe(path.join(taskPath, "handoff.md"));
+      fs.rmSync(path.join(taskPath, "handoff.md"));
+    });
+
+    it("reports handoff-stage partial persistence after reports are published", () => {
+      const featureName = "test-feature";
+      setupFeature(featureName);
+      setupTask(featureName, "01-test-task", { summary: "Original" });
+      const taskPath = path.join(TEST_DIR, ".hive", "features", featureName, "tasks", "01-test-task");
+      fs.mkdirSync(path.join(taskPath, "handoff.md"));
+      let thrown: unknown;
+
+      try {
+        service.update(featureName, "01-test-task", { status: "done", report: "published report", handoff: "next steps" });
+      } catch (error) {
+        thrown = error;
+      }
+
+      expect(thrown).toBeInstanceOf(TaskUpdatePersistenceError);
+      const persistenceError = thrown as TaskUpdatePersistenceError;
+      expect(persistenceError.failedStage).toBe("handoff");
+      expect(persistenceError.message).toBe("Task update failed while writing handoff. The destination was not published.");
+      expect(persistenceError.reportHistoryWritten).toBe(true);
+      expect(persistenceError.latestReportWritten).toBe(true);
+      expect(persistenceError.handoffPath).toBe(path.join(taskPath, "handoff.md"));
+      expect(persistenceError.handoffWritten).toBe(false);
+      expect(persistenceError.failedWritePublished).toBe(false);
+      expect(service.getRawStatus(featureName, "01-test-task")).toMatchObject({ status: "pending", summary: "Original" });
     });
 
     it("wraps report history setup failures with no writes reported", () => {
@@ -516,6 +607,171 @@ describe("TaskService", () => {
         expect(service.update(featureName, "01-test-task", { status }).blocker).toBeUndefined();
       },
     );
+  });
+
+  describe("getSpecFreshness", () => {
+    const writePlan = (featureName: string, plan: string): string => {
+      const featurePath = path.join(TEST_DIR, ".hive", "features", featureName);
+      fs.mkdirSync(featurePath, { recursive: true });
+      fs.writeFileSync(
+        path.join(featurePath, "feature.json"),
+        JSON.stringify({ name: featureName, status: "executing", createdAt: new Date().toISOString() })
+      );
+      fs.writeFileSync(path.join(featurePath, "plan.md"), plan);
+      return featurePath;
+    };
+    const byFolder = (featureName: string) => new Map(service.getSpecFreshness(featureName).map(entry => [entry.folder, entry]));
+    const plan = `# Plan
+
+## Tasks
+
+### 1. Setup
+
+Setup.
+
+### 2. Build
+
+Build.
+
+## Final Verification
+
+Run tests.
+`;
+
+    it("matches freshly synced specs, flags an in-progress task whose section changed, and ignores the preamble", () => {
+      const featureName = "freshness";
+      const featurePath = writePlan(featureName, plan);
+      service.sync(featureName);
+
+      expect(service.getSpecFreshness(featureName)).toEqual([
+        { folder: "01-setup", specStale: false, specStaleReason: "matches_plan", planSection: { startLine: 5, endLine: 7 } },
+        { folder: "02-build", specStale: false, specStaleReason: "matches_plan", planSection: { startLine: 9, endLine: 11 } },
+      ]);
+
+      service.update(featureName, "02-build", { status: "in_progress" });
+      fs.writeFileSync(
+        path.join(featurePath, "plan.md"),
+        plan.replace("# Plan\n", "# Plan\n\nNew preamble.\n").replace("Build.", "Build with the revised contract."),
+      );
+
+      const freshness = byFolder(featureName);
+      expect(freshness.get("01-setup")).toEqual({ folder: "01-setup", specStale: false, specStaleReason: "matches_plan", planSection: { startLine: 7, endLine: 9 } });
+      expect(freshness.get("02-build")).toEqual({ folder: "02-build", specStale: true, specStaleReason: "differs_from_plan", planSection: { startLine: 11, endLine: 13 } });
+    });
+
+    it("flags a dependent task when its dependency title changes without changing folders", () => {
+      const featureName = "freshness-dependency-title";
+      const featurePath = writePlan(featureName, plan);
+      service.sync(featureName);
+      service.update(featureName, "01-setup", { status: "done" });
+      service.update(featureName, "02-build", { status: "in_progress" });
+
+      fs.writeFileSync(path.join(featurePath, "plan.md"), plan.replace("### 1. Setup", "### 1. Setup!"));
+      const freshness = byFolder(featureName);
+
+      expect(freshness.get("01-setup")?.specStaleReason).toBe("differs_from_plan");
+      expect(freshness.get("02-build")).toMatchObject({ specStale: true, specStaleReason: "differs_from_plan" });
+      expect(service.buildSpecContent({
+        featureName,
+        task: { folder: "02-build", name: "Build", order: 2 },
+        dependsOn: ["01-setup"],
+        allTasks: [{ folder: "01-setup", name: "Setup!", order: 1 }, { folder: "02-build", name: "Build", order: 2 }],
+      })).toContain("- **1. Setup!** (01-setup)");
+    });
+
+    it("keeps folder identity from the raw heading title, including closing hashes", () => {
+      const featureName = "freshness-closing-hashes";
+      writePlan(featureName, "# Plan\n\n## Tasks\n\n### 1. Setup ##\n\nSetup.\n");
+
+      expect(service.sync(featureName).created).toEqual(["01-setup-"]);
+      expect(service.getRawStatus(featureName, "01-setup-")?.planTitle).toBe("Setup ##");
+      expect(service.getSpecFreshness(featureName)).toEqual([
+        { folder: "01-setup-", specStale: false, specStaleReason: "matches_plan", planSection: { startLine: 5, endLine: 7 } },
+      ]);
+    });
+
+    it("returns null freshness with a reason when the spec cannot be compared", () => {
+      const featureName = "freshness-null-reasons";
+      const featurePath = writePlan(featureName, plan);
+      service.sync(featureName);
+      service.create(featureName, "Manual Follow Up");
+      fs.rmSync(path.join(featurePath, "tasks", "01-setup", "spec.md"));
+      service.update(featureName, "02-build", { status: "in_progress" });
+
+      // Renaming task 2 keeps its number, but the folder must not rebind by number.
+      fs.writeFileSync(path.join(featurePath, "plan.md"), plan.replace("### 2. Build", "### 2. Compile"));
+      expect(service.getSpecFreshness(featureName)).toEqual([
+        { folder: "01-setup", specStale: null, specStaleReason: "spec_missing", planSection: { startLine: 5, endLine: 7 } },
+        { folder: "02-build", specStale: null, specStaleReason: "task_not_in_plan" },
+        { folder: "03-manual-follow-up", specStale: null, specStaleReason: "manual_task" },
+      ]);
+
+      fs.writeFileSync(path.join(featurePath, "plan.md"), `${plan}\n## tasks\n\n### 3. Extra\n`);
+      expect(byFolder(featureName).get("01-setup")).toEqual({ folder: "01-setup", specStale: null, specStaleReason: "plan_invalid" });
+
+      fs.rmSync(path.join(featurePath, "plan.md"));
+      expect(byFolder(featureName).get("01-setup")).toEqual({ folder: "01-setup", specStale: null, specStaleReason: "plan_missing" });
+      expect(byFolder(featureName).get("03-manual-follow-up")?.specStaleReason).toBe("manual_task");
+    });
+
+    it("treats an invalid dependency graph and duplicate task numbers as plan_invalid", () => {
+      const featureName = "freshness-invalid-graph";
+      const featurePath = writePlan(featureName, plan);
+      service.sync(featureName);
+
+      fs.writeFileSync(path.join(featurePath, "plan.md"), plan.replace("### 2. Build\n\nBuild.", "### 2. Build\n\nDepends on: 3\n\nBuild."));
+      expect(byFolder(featureName).get("01-setup")).toEqual({ folder: "01-setup", specStale: null, specStaleReason: "plan_invalid" });
+      expect(byFolder(featureName).get("02-build")?.specStaleReason).toBe("plan_invalid");
+
+      fs.writeFileSync(path.join(featurePath, "plan.md"), plan.replace("### 2. Build", "### 1. Build"));
+      expect(byFolder(featureName).get("01-setup")).toEqual({ folder: "01-setup", specStale: null, specStaleReason: "plan_invalid" });
+      expect(byFolder(featureName).get("02-build")?.specStaleReason).toBe("plan_invalid");
+    });
+
+    it("flags a spec as differing when the plan's Repos line changes", () => {
+      const featureName = "freshness-repos-line";
+      const featurePath = writePlan(featureName, "# Plan\n\n## Tasks\n\n### 1. Setup\n\nRepos: root\n\nSetup.\n");
+      service.sync(featureName);
+
+      expect(byFolder(featureName).get("01-setup")).toMatchObject({ specStale: false, specStaleReason: "matches_plan" });
+      expect(service.readSpec(featureName, "01-setup")).toContain("## Repositories\n\n- root");
+
+      fs.writeFileSync(path.join(featurePath, "plan.md"), "# Plan\n\n## Tasks\n\n### 1. Setup\n\nRepos: core\n\nSetup.\n");
+      expect(byFolder(featureName).get("01-setup")).toMatchObject({ specStale: true, specStaleReason: "differs_from_plan" });
+    });
+
+    it("reports unowned headings that follow a task section instead of comparing its spec", () => {
+      const featureName = "freshness-unowned";
+      const featurePath = writePlan(featureName, plan);
+      service.sync(featureName);
+      fs.writeFileSync(
+        path.join(featurePath, "plan.md"),
+        plan.replace("### 2. Build", "### Task 1 amendment (binding)\n\nUse the amendment.\n\n```md\n### fenced\n```\n\n### Notes\n\n### 2. Build"),
+      );
+
+      const freshness = byFolder(featureName);
+      expect(freshness.get("01-setup")).toEqual({
+        folder: "01-setup",
+        specStale: null,
+        specStaleReason: "unowned_heading_after_task_section",
+        planSection: { startLine: 5, endLine: 7 },
+        unownedHeadingLines: [9, 17],
+      });
+      expect(freshness.get("02-build")).toEqual({ folder: "02-build", specStale: false, specStaleReason: "matches_plan", planSection: { startLine: 19, endLine: 21 } });
+    });
+
+    it("surfaces unowned task-section headings from sync without blocking task creation", () => {
+      const featureName = "sync-unowned";
+      writePlan(featureName, plan.replace("### 2. Build", "### Shared Notes\n\nNotes.\n\n### 2. Build"));
+
+      const result = service.sync(featureName);
+
+      expect(result.created).toEqual(["01-setup", "02-build"]);
+      expect(result.unownedTaskHeadings).toEqual([{ line: 9, title: "Shared Notes" }]);
+
+      writePlan("sync-clean", plan);
+      expect(service.sync("sync-clean")).not.toHaveProperty("unownedTaskHeadings");
+    });
   });
 
   describe("getRawStatus", () => {
@@ -1425,6 +1681,38 @@ Real task section must appear in spec.md.
       expect(specContent).not.toContain("Fenced fake section must not appear");
     });
 
+    it("does not extract a stray task-like heading without a separating space as a task's spec section", () => {
+      const featureName = "test-feature";
+      const featurePath = path.join(TEST_DIR, ".hive", "features", featureName);
+      fs.mkdirSync(featurePath, { recursive: true });
+
+      fs.writeFileSync(
+        path.join(featurePath, "feature.json"),
+        JSON.stringify({ name: featureName, status: "executing", createdAt: new Date().toISOString() })
+      );
+
+      fs.writeFileSync(path.join(featurePath, "plan.md"), `# Plan
+
+## Tasks
+
+###1. Impostor
+
+Impostor text.
+
+### 1. Real Task
+
+Real task body.
+`);
+
+      const result = service.sync(featureName);
+
+      expect(result.created).toEqual(["01-real-task"]);
+      const specContent = fs.readFileSync(path.join(featurePath, "tasks", "01-real-task", "spec.md"), "utf-8");
+      expect(specContent).toContain("### 1. Real Task");
+      expect(specContent).toContain("Real task body.");
+      expect(specContent).not.toContain("Impostor");
+    });
+
     it("parses task headings indented up to three spaces", () => {
       const featureName = "test-feature";
       const featurePath = path.join(TEST_DIR, ".hive", "features", featureName);
@@ -2052,45 +2340,6 @@ Align documentation wording.
       });
 
       expect(specContent).not.toContain("## Task Type");
-    });
-  });
-
-  describe("buildSpecContent - completed task metadata", () => {
-    it("renders aggregate branch diff after worker prose and supports tasks without metadata", () => {
-      const specContent = service.buildSpecContent({
-        featureName: "test-feature",
-        task: { folder: "03-next-task", name: "Next Task", order: 3 },
-        dependsOn: ["01-first-task", "02-second-task"],
-        allTasks: [
-          { folder: "01-first-task", name: "First Task", order: 1 },
-          { folder: "02-second-task", name: "Second Task", order: 2 },
-          { folder: "03-next-task", name: "Next Task", order: 3 },
-        ],
-        completedTasks: [
-          {
-            name: "01-first-task",
-            summary: "Worker prose.",
-            aggregateBranchDiff: {
-              fileCount: 2,
-              insertions: 8,
-              deletions: 3,
-              areas: ["packages", "docs"],
-              report: ".hive/features/test-feature/tasks/01-first-task/report.md",
-            },
-          },
-          { name: "02-second-task", summary: "Legacy completion." },
-        ],
-      });
-
-      expect(specContent).toContain("- 01-first-task: Worker prose.");
-      expect(specContent).toContain(
-        "  Aggregate branch diff at commit time: 2 file(s), +8/-3; areas: packages, docs; "
-          + "report: .hive/features/test-feature/tasks/01-first-task/report.md",
-      );
-      expect(specContent.indexOf("Worker prose.")).toBeLessThan(
-        specContent.indexOf("Aggregate branch diff at commit time:"),
-      );
-      expect(specContent).toContain("- 02-second-task: Legacy completion.");
     });
   });
 

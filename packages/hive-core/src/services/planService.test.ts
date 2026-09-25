@@ -465,7 +465,7 @@ Do the first task.
     expect(service.read(featureName)!.content).toContain('Do the revised task.\n\n## Final Verification');
   });
 
-  it('replace_task stops before the next task-level heading even when it is not numbered', () => {
+  it('replace_task keeps a pre-existing unowned task-section heading and stops before it', () => {
     const featureName = 'replace-task-before-unnumbered-heading';
     setupFeature(featureName);
     service.write(featureName, `# Plan
@@ -502,11 +502,174 @@ Do the second task.
       },
     ]);
 
-    const content = service.read(featureName)!.content;
+    const read = service.read(featureName)!;
+    const content = read.content;
     expect(content).toContain('### 1. Revised Task\n\nDo the revised task.');
     expect(content).toContain('### Shared Notes\n\nNotes that belong after task one.');
     expect(content).toContain('### 2. Second Task\n\nDo the second task.');
     expect(content).not.toContain('Do the first task.');
+    expect(read.unownedTaskHeadings).toEqual([{ line: 16, title: 'Shared Notes' }]);
+  });
+
+  describe('task-section heading integrity', () => {
+    const amendment = '### Task 1 amendment (binding)\n\nUse the binding amendment.\n';
+
+    it('rejects an insert_after_section amendment that becomes an unowned task-section heading', () => {
+      const featureName = 'orphan-insert-after';
+      const featurePath = setupFeature(featureName);
+      writePatchablePlan(service, featureName);
+      const revision = service.read(featureName)!.revision;
+      const before = fs.readFileSync(path.join(featurePath, 'plan.md'), 'utf-8');
+
+      let message = '';
+      try {
+        service.patch(featureName, revision, [
+          { type: 'insert_after_section', headingPath: ['Tasks', '1. First Task'], content: amendment },
+        ]);
+      } catch (error) {
+        message = (error as Error).message;
+      }
+
+      expect(message).toContain('Plan patch would add task-section heading(s) that are not numbered tasks: line 17: ### Task 1 amendment (binding).');
+      expect(message).toContain('Put task amendments inside the owning task as a level-4 (####) subsection by rewriting the task with replace_task');
+      expect(message).toContain('move shared notes outside ## Tasks');
+      expect(fs.readFileSync(path.join(featurePath, 'plan.md'), 'utf-8')).toBe(before);
+      expect(service.read(featureName)!.revision).toBe(revision);
+    });
+
+    it('rejects a replace_section that adds an unowned heading inside Tasks', () => {
+      const featureName = 'orphan-replace-section';
+      const featurePath = setupFeature(featureName);
+      writePatchablePlan(service, featureName);
+      const revision = service.read(featureName)!.revision;
+      const before = fs.readFileSync(path.join(featurePath, 'plan.md'), 'utf-8');
+
+      expect(() => service.patch(featureName, revision, [{
+        type: 'replace_section',
+        headingPath: ['Tasks'],
+        content: '## Tasks\n\n### 1. First Task\n\nDo the first task.\n\n### Shared Notes\n\nNotes.\n\n### 2. Second Task\n\nDo the second task.\n\n',
+      }])).toThrow(/line 17: ### Shared Notes/);
+      expect(fs.readFileSync(path.join(featurePath, 'plan.md'), 'utf-8')).toBe(before);
+    });
+
+    it('rejects the whole patch, including a valid replace_task, when any operation adds an unowned heading', () => {
+      const featureName = 'orphan-mixed-operations';
+      const featurePath = setupFeature(featureName);
+      writePatchablePlan(service, featureName);
+      const revision = service.read(featureName)!.revision;
+      const before = fs.readFileSync(path.join(featurePath, 'plan.md'), 'utf-8');
+
+      // replace_task already rejects any additional level-3 heading in its own content.
+      expect(() => service.patch(featureName, revision, [
+        { type: 'replace_task', taskNumber: 2, content: '### 2. Second Task\n\nDo the revised second task.\n\n' },
+        { type: 'insert_after_section', headingPath: ['Tasks', '1. First Task'], content: amendment },
+      ])).toThrow(/not numbered tasks: line 17: ### Task 1 amendment \(binding\)/);
+      expect(fs.readFileSync(path.join(featurePath, 'plan.md'), 'utf-8')).toBe(before);
+    });
+
+    it('ignores fenced level-3 headings inside Tasks', () => {
+      const featureName = 'orphan-fenced';
+      setupFeature(featureName);
+      const written = service.write(featureName, '# Plan\n\n## Tasks\n\n### 1. First Task\n\n```markdown\n### Not A Heading\n```\n');
+      const revision = service.read(featureName)!.revision;
+
+      expect(written.unownedTaskHeadings).toBeUndefined();
+      service.patch(featureName, revision, [{
+        type: 'replace_task',
+        taskNumber: 1,
+        content: '### 1. First Task\n\n~~~\n### Example Heading\n~~~\n',
+      }]);
+      expect(service.read(featureName)!.unownedTaskHeadings).toBeUndefined();
+      expect(() => service.approve(featureName)).not.toThrow();
+    });
+
+    it('repairs an orphan amendment with one replace_section that moves it under its task as level 4', () => {
+      const featureName = 'orphan-repair';
+      setupFeature(featureName);
+      const written = service.write(featureName, `# Plan
+
+## Tasks
+
+### 1. First Task
+
+Do the first task.
+
+### Task 1 amendment (binding)
+
+Use the binding amendment.
+
+### 2. Second Task
+
+Do the second task.
+`);
+      expect(written.unownedTaskHeadings).toEqual([{ line: 9, title: 'Task 1 amendment (binding)' }]);
+      expect(service.read(featureName)!.unownedTaskHeadings).toEqual([{ line: 9, title: 'Task 1 amendment (binding)' }]);
+      const revision = service.read(featureName)!.revision;
+
+      service.patch(featureName, revision, [{
+        type: 'replace_section',
+        headingPath: ['Tasks'],
+        content: '## Tasks\n\n### 1. First Task\n\nDo the first task.\n\n#### Amendment (binding)\n\nUse the binding amendment.\n\n### 2. Second Task\n\nDo the second task.\n',
+      }]);
+
+      const read = service.read(featureName)!;
+      expect(read.content).toContain('#### Amendment (binding)');
+      expect(read.unownedTaskHeadings).toBeUndefined();
+      expect(() => service.approve(featureName)).not.toThrow();
+    });
+
+    it('rejects approval while Tasks contains an unowned heading', () => {
+      const featureName = 'orphan-approval';
+      setupFeature(featureName);
+      service.write(featureName, '# Plan\n\n## Tasks\n\n### 1. First Task\n\nDo it.\n\n### Shared Notes\n\nNotes.\n');
+
+      expect(() => service.approve(featureName)).toThrow(
+        "Cannot approve feature 'orphan-approval': ## Tasks contains heading(s) that are not numbered tasks: line 9: ### Shared Notes. "
+        + 'To repair an existing unnumbered heading, rewrite ## Tasks with one replace_section (headingPath ["Tasks"]) '
+        + 'that folds each amendment into its owning task as a level-4 (####) subsection or moves shared notes outside ## Tasks.',
+      );
+      expect(service.isApproved(featureName)).toBe(false);
+    });
+
+    it('rejects approval when the plan has multiple Tasks sections instead of approving an unexecutable plan', () => {
+      const featureName = 'orphan-multiple-tasks-sections';
+      setupFeature(featureName);
+      const written = service.write(featureName, '# Plan\n\n## Tasks\n\n### 1. A\n\nbody\n\n### Orphan\n\ntext\n\n## Tasks\n\n### 2. B\n\nbody\n');
+
+      // Write and read stay non-throwing diagnostics; approval must surface the layout error.
+      expect(written.unownedTaskHeadings).toBeUndefined();
+      expect(service.read(featureName)!.unownedTaskHeadings).toBeUndefined();
+      expect(() => service.approve(featureName)).toThrow(
+        "Cannot approve feature 'orphan-multiple-tasks-sections': Plan contains multiple Tasks sections",
+      );
+      expect(service.isApproved(featureName)).toBe(false);
+    });
+
+    it('rejects a patch that swaps one unowned heading for another', () => {
+      const featureName = 'orphan-swap';
+      const featurePath = setupFeature(featureName);
+      service.write(featureName, '# Plan\n\n## Tasks\n\n### 1. First Task\n\nDo the first task.\n\n### Shared Notes A\n\nNotes A.\n\n### 2. Second Task\n\nDo the second task.\n');
+      const revision = service.read(featureName)!.revision;
+      const before = fs.readFileSync(path.join(featurePath, 'plan.md'), 'utf-8');
+
+      expect(() => service.patch(featureName, revision, [{
+        type: 'replace_section',
+        headingPath: ['Tasks'],
+        content: '## Tasks\n\n### 1. First Task\n\nDo the first task.\n\n### Shared Notes B\n\nNotes B.\n\n### 2. Second Task\n\nDo the second task.\n',
+      }])).toThrow(/not numbered tasks: line 9: ### Shared Notes B/);
+
+      expect(fs.readFileSync(path.join(featurePath, 'plan.md'), 'utf-8')).toBe(before);
+    });
+
+    it('detects an unnumbered heading inside Tasks in a CRLF plan', () => {
+      const featureName = 'orphan-crlf';
+      setupFeature(featureName);
+      const written = service.write(featureName, '# Plan\r\n\r\n## Tasks\r\n\r\n### 1. First Task\r\n\r\nDo it.\r\n\r\n### Shared Notes\r\n\r\nNotes.\r\n');
+
+      expect(written.unownedTaskHeadings).toEqual([{ line: 9, title: 'Shared Notes' }]);
+      expect(() => service.approve(featureName)).toThrow(/line 9: ### Shared Notes/);
+      expect(service.isApproved(featureName)).toBe(false);
+    });
   });
 
   it('replace_section rejects replacement content with prose before the expected heading', () => {

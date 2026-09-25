@@ -774,6 +774,65 @@ describe('coordinated runtime hard cut', () => {
     await expect(loaded.tool!.hive_context_write.execute({ name: 'notes', content: 'body', task: 'missing' }, caller)).rejects.toThrow(/does not exist/);
   });
 
+  it('reports task-section heading integrity, spec freshness, and successor handoffs through plan, task, and status tools', async () => {
+    const { hooks } = createRuntime();
+    const loaded = await hooks;
+    const caller = context('task-state');
+    await loaded.tool!.hive_feature_create.execute({ name: 'task-state' }, caller);
+    await loaded.tool!.hive_feature_select.execute({ feature: 'task-state' }, caller);
+    const orphanPlan = '# Plan\n\n## Tasks\n\n### 1. Setup\n\nSetup.\n\n### Setup amendment\n\nAmend.\n\n### 2. Build\n\nBuild.\n';
+
+    const written = JSON.parse(await loaded.tool!.hive_plan_write.execute({ content: orphanPlan }, caller));
+    expect(written.path).toEndWith('plan.md');
+    expect(written.unownedTaskHeadings).toEqual([{ line: 9, title: 'Setup amendment' }]);
+    const read = JSON.parse(await loaded.tool!.hive_plan_read.execute({}, caller));
+    expect(read.unownedTaskHeadings).toEqual([{ line: 9, title: 'Setup amendment' }]);
+    await expect(loaded.tool!.hive_plan_approve.execute({}, caller)).rejects.toThrow(/not numbered tasks: line 9: ### Setup amendment/);
+    await expect(loaded.tool!.hive_plan_patch.execute({
+      expectedRevision: read.revision,
+      operations: [{ type: 'insert_after_section', headingPath: ['Tasks', '2. Build'], content: '### Build notes\n\nMore.\n' }],
+    }, caller)).rejects.toThrow(/not numbered tasks: line 16: ### Build notes\. /);
+
+    await loaded.tool!.hive_plan_patch.execute({
+      expectedRevision: read.revision,
+      operations: [{ type: 'replace_section', headingPath: ['Tasks'], content: '## Tasks\n\n### 1. Setup\n\nSetup.\n\n#### Amendment\n\nAmend.\n\n### 2. Build\n\nBuild.\n' }],
+    }, caller);
+    await loaded.tool!.hive_plan_approve.execute({}, caller);
+    expect(JSON.parse(await loaded.tool!.hive_tasks_sync.execute({}, caller)).created).toEqual(['01-setup', '02-build']);
+
+    const handoff = JSON.parse(await loaded.tool!.hive_task_update.execute({ task: '01-setup', handoff: 'Build reads the amendment.' }, caller));
+    expect(handoff.status).toBe('pending');
+    expect(handoff.handoffPath).toEndWith(path.join('tasks', '01-setup', 'handoff.md'));
+    await expect(loaded.tool!.hive_task_update.execute({ task: '01-setup', handoff: 'x'.repeat(2049) }, caller)).rejects.toThrow('Task handoff is 2049 UTF-8 bytes; the limit is 2048.');
+    const tasksPath = path.join(path.dirname(written.path), 'tasks');
+    fs.mkdirSync(path.join(tasksPath, '02-build', 'handoff.md'));
+    const failed = JSON.parse(await loaded.tool!.hive_task_update.execute({ task: '02-build', handoff: 'next' }, caller));
+    expect(failed).toMatchObject({ success: false, reason: 'task_update_persistence_failed', failedStage: 'handoff', handoffWritten: false });
+    expect(failed.handoffPath).toEndWith(path.join('02-build', 'handoff.md'));
+    fs.rmSync(path.join(tasksPath, '02-build', 'handoff.md'), { recursive: true });
+
+    const plan = JSON.parse(await loaded.tool!.hive_plan_read.execute({}, caller));
+    fs.writeFileSync(path.join(path.dirname(written.path), 'plan.md'), plan.content.replace('Build.', 'Build again.'));
+    const status = JSON.parse(await loaded.tool!.hive_status.execute({}, caller));
+    const projected = (entries: any[]) => entries.map(({ folder, specStale, specStaleReason, hasHandoff }) => ({ folder, specStale, specStaleReason, hasHandoff }));
+    expect(projected(status.tasks)).toEqual([
+      { folder: '01-setup', specStale: false, specStaleReason: 'matches_plan', hasHandoff: true },
+      { folder: '02-build', specStale: true, specStaleReason: 'differs_from_plan', hasHandoff: false },
+    ]);
+    expect(projected(status.feature.tasks)).toEqual(projected(status.tasks));
+    expect(status).not.toHaveProperty('specFreshnessError');
+
+    fs.rmSync(path.join(tasksPath, '02-build', 'spec.md'));
+    fs.mkdirSync(path.join(tasksPath, '02-build', 'spec.md'));
+    const degraded = JSON.parse(await loaded.tool!.hive_status.execute({}, caller));
+    expect(degraded.specFreshnessError).toMatch(/EISDIR/);
+    expect(projected(degraded.tasks)).toEqual([
+      { folder: '01-setup', specStale: null, specStaleReason: 'freshness_unavailable', hasHandoff: true },
+      { folder: '02-build', specStale: null, specStaleReason: 'freshness_unavailable', hasHandoff: false },
+    ]);
+    expect(projected(degraded.feature.tasks)).toEqual(projected(degraded.tasks));
+  });
+
   it('ignores malformed legacy execution-attempt state during startup and status', async () => {
     const runtime = createRuntime();
     fs.writeFileSync(path.join(runtime.root, '.hive', 'execution-attempts.json'), '{ malformed legacy state');

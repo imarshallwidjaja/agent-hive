@@ -13,6 +13,7 @@ const OVERVIEW_FILE = 'overview.md';
 const FEATURE_FILE = 'feature.json';
 const STATUS_FILE = 'status.json';
 const REPORT_FILE = 'report.md';
+const HANDOFF_FILE = 'handoff.md';
 const APPROVED_FILE = 'APPROVED';
 
 export const FEATURE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
@@ -149,6 +150,11 @@ export function getTaskStatusPath(projectRoot: string, featureName: string, task
 
 export function getTaskReportPath(projectRoot: string, featureName: string, taskFolder: string): string {
   return path.join(getTaskPath(projectRoot, featureName, taskFolder), REPORT_FILE);
+}
+
+/** Latest successor handoff written through task updates. */
+export function getTaskHandoffPath(projectRoot: string, featureName: string, taskFolder: string): string {
+  return path.join(getTaskPath(projectRoot, featureName, taskFolder), HANDOFF_FILE);
 }
 
 export function getTaskSpecPath(projectRoot: string, featureName: string, taskFolder: string): string {

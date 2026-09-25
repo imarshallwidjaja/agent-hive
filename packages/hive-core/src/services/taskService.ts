@@ -5,6 +5,7 @@ import {
   getTaskPath,
   getTaskStatusPath,
   getTaskSpecPath,
+  getTaskHandoffPath,
   getSubtasksPath,
   getSubtaskPath,
   getSubtaskStatusPath,
@@ -33,25 +34,72 @@ import {
   SubtaskType,
   SubtaskStatus,
   ManualTaskMetadata,
-  renderAggregateBranchDiff,
 } from '../types.js';
 import { RepositoryService } from './repositoryService.js';
 import { SubtaskService } from './subtaskService.js';
 import { buildEffectiveDependencies } from './taskDependencyGraph.js';
+import {
+  extractTasksSectionContent,
+  getFenceTransition,
+  listUnownedHeadingsAfterTask,
+  listUnownedTaskHeadings,
+  readPlanTaskLayout,
+  type FenceState,
+  type PlanTaskLayout,
+} from '../utils/planTaskSections.js';
 
 /** Current schema version for TaskStatus */
 export const TASK_STATUS_SCHEMA_VERSION = 1;
 
+/** Upper bound for a successor handoff, in UTF-8 bytes. */
+export const TASK_HANDOFF_MAX_BYTES = 2048;
+
 export interface TaskUpdateInput extends Partial<Pick<TaskStatus, 'status' | 'summary' | 'aggregateBranchDiff' | 'baseCommit'>> {
   blocker?: TaskStatus['blocker'] | null;
   report?: string;
+  /** Bounded note for the next worker; replaces handoff.md. */
+  handoff?: string;
 }
 
 export type TaskUpdateResult = TaskStatus & {
   reportPath?: string;
+  handoffPath?: string;
 };
 
-export type TaskUpdatePersistenceStage = 'report_history' | 'latest_report' | 'status';
+export type TaskUpdatePersistenceStage = 'report_history' | 'latest_report' | 'handoff' | 'status';
+
+/**
+ * Why a task's spec is or is not stale. Checked in this order:
+ * manual_task, plan_missing, plan_invalid, task_not_in_plan, spec_missing,
+ * unowned_heading_after_task_section, then matches_plan / differs_from_plan.
+ *
+ * `differs_from_plan` means the stored spec text differs from what the current plan would generate,
+ * whether from plan edits, output of an older generator, or manual spec edits; plan changes outside
+ * the task's section do not affect freshness.
+ */
+export type TaskSpecFreshnessReason =
+  | 'matches_plan'
+  | 'differs_from_plan'
+  | 'unowned_heading_after_task_section'
+  | 'plan_missing'
+  | 'plan_invalid'
+  | 'spec_missing'
+  | 'task_not_in_plan'
+  | 'manual_task';
+
+export interface TaskSpecFreshness {
+  folder: string;
+  /** true or false only when the stored spec was compared with a regenerated one. */
+  specStale: boolean | null;
+  specStaleReason: TaskSpecFreshnessReason;
+  /**
+   * 1-based inclusive plan.md lines of the task's section per the layout, when the task resolves in
+   * the plan. These can differ from the spec's extracted text for zero-padded `### 01.` headings.
+   */
+  planSection?: { startLine: number; endLine: number };
+  /** Lines of unowned headings following the task section, for unowned_heading_after_task_section. */
+  unownedHeadingLines?: number[];
+}
 
 export class TaskUpdatePersistenceError extends Error {
   constructor(
@@ -62,11 +110,22 @@ export class TaskUpdatePersistenceError extends Error {
     public readonly reportHistoryWritten: boolean,
     public readonly latestReportWritten: boolean,
     public readonly failedWritePublished: boolean,
+    public readonly handoffPath: string | undefined,
+    public readonly handoffWritten: boolean,
     options: { cause: unknown },
   ) {
     super(message, options);
     this.name = 'TaskUpdatePersistenceError';
   }
+}
+
+interface TaskUpdateWrites {
+  reportPath?: string;
+  latestReportPath?: string;
+  reportHistoryWritten: boolean;
+  latestReportWritten: boolean;
+  handoffPath?: string;
+  handoffWritten: boolean;
 }
 
 interface ParsedTask {
@@ -77,42 +136,6 @@ interface ParsedTask {
   /** Raw dependency numbers parsed from plan. null = not specified (use implicit), [] = explicit none */
   dependsOnNumbers: number[] | null;
   repoIds: string[] | null;
-}
-
-interface FenceState {
-  marker: '`' | '~';
-  length: number;
-}
-
-function getFenceTransition(line: string, fence: FenceState | null, nestedFences: FenceState[]): { opened?: FenceState; closedOuter: boolean } | null {
-  const closingFenceMatch = fence
-    ? line.match(/^ {0,3}(`{3,}|~{3,})[ \t]*$/)
-    : null;
-  if (closingFenceMatch) {
-    const marker = closingFenceMatch[1][0] as '`' | '~';
-    const length = closingFenceMatch[1].length;
-    const nestedFence = nestedFences.at(-1);
-    if (nestedFence && nestedFence.marker === marker && length === nestedFence.length) {
-      nestedFences.pop();
-      return { closedOuter: false };
-    }
-    if (fence.marker === marker && length >= fence.length) {
-      nestedFences.length = 0;
-      return { closedOuter: true };
-    }
-  }
-
-  const openingFenceMatch = line.match(/^ {0,3}(`{3,}|~{3,})/);
-  if (!openingFenceMatch) return null;
-
-  const marker = openingFenceMatch[1][0] as '`' | '~';
-  const length = openingFenceMatch[1].length;
-  const opened = { marker, length };
-  if (fence) {
-    nestedFences.push(opened);
-  }
-
-  return { opened, closedOuter: false };
 }
 
 export interface SyncOptions {
@@ -200,6 +223,11 @@ export class TaskService {
       }
     }
 
+    const unownedTaskHeadings = listUnownedTaskHeadings(readPlanTaskLayout(planContent));
+    if (unownedTaskHeadings.length > 0) {
+      result.unownedTaskHeadings = unownedTaskHeadings;
+    }
+
     return result;
   }
 
@@ -273,8 +301,7 @@ export class TaskService {
     const taskPath = getTaskPath(this.projectRoot, featureName, task.folder);
     ensureDir(taskPath);
 
-    // Resolve dependencies: numbers -> folder names
-    const dependsOn = this.resolveDependencies(task, allTasks);
+    const { dependsOn, spec } = this.buildPlanTaskSpec(featureName, task, allTasks, planContent);
 
     const status: TaskStatus = {
       status: 'pending',
@@ -284,21 +311,11 @@ export class TaskService {
       ...(task.repoIds !== null ? { repoIds: task.repoIds } : {}),
     };
     writeJson(getTaskStatusPath(this.projectRoot, featureName, task.folder), status);
-
-    const specContent = this.buildSpecContent({
-      featureName,
-      task,
-      dependsOn,
-      repoIds: task.repoIds ?? undefined,
-      allTasks,
-      planContent,
-    });
-
-    writeText(getTaskSpecPath(this.projectRoot, featureName, task.folder), specContent);
+    writeText(getTaskSpecPath(this.projectRoot, featureName, task.folder), spec);
   }
 
   private refreshPendingTask(featureName: string, task: ParsedTask, allTasks: ParsedTask[], planContent: string): void {
-    const dependsOn = this.resolveDependencies(task, allTasks);
+    const { dependsOn, spec } = this.buildPlanTaskSpec(featureName, task, allTasks, planContent);
 
     const statusPath = getTaskStatusPath(this.projectRoot, featureName, task.folder);
     const current = readJson<TaskStatus>(statusPath);
@@ -312,7 +329,13 @@ export class TaskService {
       writeJson(statusPath, updated);
     }
 
-    const specContent = this.buildSpecContent({
+    writeText(getTaskSpecPath(this.projectRoot, featureName, task.folder), spec);
+  }
+
+  /** Spec input construction shared by sync create, sync refresh, and spec freshness. */
+  private buildPlanTaskSpec(featureName: string, task: ParsedTask, allTasks: ParsedTask[], planContent: string): { dependsOn: string[]; spec: string } {
+    const dependsOn = this.resolveDependencies(task, allTasks);
+    const spec = this.buildSpecContent({
       featureName,
       task,
       dependsOn,
@@ -320,8 +343,63 @@ export class TaskService {
       allTasks,
       planContent,
     });
+    return { dependsOn, spec };
+  }
 
-    writeText(getTaskSpecPath(this.projectRoot, featureName, task.folder), specContent);
+  /**
+   * Compare each task's stored spec.md with the spec sync would generate from the current plan.
+   * This is a generated-text comparison: plan edits outside a task's own spec inputs (such as the
+   * plan preamble) do not make it stale.
+   */
+  getSpecFreshness(featureName: string): TaskSpecFreshness[] {
+    const planContent = readText(getPlanPath(this.projectRoot, featureName));
+    let plan: { tasks: ParsedTask[]; layout: PlanTaskLayout } | null = null;
+    if (planContent) {
+      try {
+        const tasks = this.parseTasksFromPlan(planContent);
+        this.validateDependencyGraph(tasks, featureName);
+        const layout = readPlanTaskLayout(planContent);
+        if (new Set(layout.tasks.map(task => task.taskNumber)).size !== layout.tasks.length) {
+          throw new Error('Plan contains duplicate task numbers');
+        }
+        plan = { tasks, layout };
+      } catch {
+        // Sync reports the parse error; freshness only records that the plan cannot be compared.
+      }
+    }
+
+    return this.listFolders(featureName).map((folder): TaskSpecFreshness => {
+      const status = readJson<TaskStatus>(getTaskStatusPath(this.projectRoot, featureName, folder));
+      if (status?.origin === 'manual') return { folder, specStale: null, specStaleReason: 'manual_task' };
+      if (!planContent) return { folder, specStale: null, specStaleReason: 'plan_missing' };
+      if (!plan) return { folder, specStale: null, specStaleReason: 'plan_invalid' };
+
+      // Resolve by folder identity only; a renamed task never rebinds by number.
+      const planTask = plan.tasks.find(candidate => candidate.folder === folder);
+      if (!planTask) return { folder, specStale: null, specStaleReason: 'task_not_in_plan' };
+
+      const section = plan.layout.tasks.find(candidate => candidate.taskNumber === planTask.order);
+      const located = section ? { planSection: { startLine: section.startLine, endLine: section.endLine } } : {};
+
+      const storedSpec = readText(getTaskSpecPath(this.projectRoot, featureName, folder));
+      if (storedSpec === null) return { folder, specStale: null, specStaleReason: 'spec_missing', ...located };
+
+      const unowned = section ? listUnownedHeadingsAfterTask(plan.layout, section) : [];
+      if (unowned.length > 0) {
+        return {
+          folder,
+          specStale: null,
+          specStaleReason: 'unowned_heading_after_task_section',
+          ...located,
+          unownedHeadingLines: unowned.map(heading => heading.line),
+        };
+      }
+
+      const { spec } = this.buildPlanTaskSpec(featureName, planTask, plan.tasks, planContent);
+      return spec === storedSpec
+        ? { folder, specStale: false, specStaleReason: 'matches_plan', ...located }
+        : { folder, specStale: true, specStaleReason: 'differs_from_plan', ...located };
+    });
   }
 
   buildSpecContent(params: {
@@ -331,13 +409,8 @@ export class TaskService {
     repoIds?: string[];
     allTasks: Array<{ folder: string; name: string; order: number }>;
     planContent?: string | null;
-    completedTasks?: Array<{
-      name: string;
-      summary: string;
-      aggregateBranchDiff?: TaskStatus['aggregateBranchDiff'];
-    }>;
   }): string {
-    const { featureName, task, dependsOn, repoIds, allTasks, planContent, completedTasks = [] } = params;
+    const { featureName, task, dependsOn, repoIds, allTasks, planContent } = params;
 
     const getTaskType = (planSection: string | null, taskName: string): string | null => {
       if (!planSection) {
@@ -411,26 +484,16 @@ export class TaskService {
       specLines.push('## Task Type', '', taskType, '');
     }
 
-    if (completedTasks.length > 0) {
-      const completedLines = completedTasks.flatMap(task => [
-        `- ${task.name}: ${task.summary}`,
-        ...(task.aggregateBranchDiff
-          ? [`  ${renderAggregateBranchDiff(task.aggregateBranchDiff)}`]
-          : []),
-      ]);
-      specLines.push('## Completed Tasks', '', ...completedLines, '');
-    }
-
     return specLines.join('\n');
   }
 
   private extractPlanSection(planContent: string | null, task: { name: string; order: number; folder: string }): string | null {
     if (!planContent) return null;
 
-    const tasksSection = this.extractTasksSectionContent(planContent);
+    const tasksSection = extractTasksSectionContent(planContent);
     if (!tasksSection) return null;
 
-    const orderRegex = new RegExp(`^ {0,3}###\\s*${task.order}\\.\\s+[^\\n]+\\s*$`, 'i');
+    const orderRegex = new RegExp(`^ {0,3}###\\s+${task.order}\\.\\s+[^\\n]+\\s*$`, 'i');
     const boundaryRegex = /^ {0,3}###\s+/;
     const lines = tasksSection.split('\n');
     let fence: FenceState | null = null;
@@ -684,13 +747,14 @@ export class TaskService {
 
       const taskPath = getTaskPath(this.projectRoot, featureName, taskFolder);
       const reportsPath = path.join(taskPath, 'reports');
-      let reportPath: string | undefined;
-      let latestReportPath: string | undefined;
-      let reportHistoryWritten = false;
-      let latestReportWritten = false;
+      const written: TaskUpdateWrites = {
+        reportHistoryWritten: false,
+        latestReportWritten: false,
+        handoffWritten: false,
+      };
 
       if (updates.report !== undefined) {
-        latestReportPath = path.join(taskPath, 'report.md');
+        written.latestReportPath = path.join(taskPath, 'report.md');
         try {
           ensureDir(reportsPath);
           syncDirectory(taskPath);
@@ -698,44 +762,46 @@ export class TaskService {
             .map(name => name.match(/^(\d+)\.md$/)?.[1])
             .filter((value): value is string => value !== undefined)
             .reduce((max, value) => Math.max(max, Number(value)), 0) + 1;
-          reportPath = path.join(reportsPath, `${nextReport}.md`);
+          written.reportPath = path.join(reportsPath, `${nextReport}.md`);
         } catch (error) {
-          throw this.persistenceError('report_history', error, reportPath, latestReportPath, false, false, updates.report);
+          throw this.persistenceError('report_history', error, written, updates.report);
         }
 
         try {
-          writeAtomicDurable(reportPath, updates.report);
-          reportHistoryWritten = true;
+          writeAtomicDurable(written.reportPath, updates.report);
+          written.reportHistoryWritten = true;
         } catch (error) {
-          throw this.persistenceError('report_history', error, reportPath, latestReportPath, false, false, updates.report);
+          throw this.persistenceError('report_history', error, written, updates.report);
         }
 
         try {
-          writeAtomicDurable(latestReportPath, updates.report);
-          latestReportWritten = true;
+          writeAtomicDurable(written.latestReportPath, updates.report);
+          written.latestReportWritten = true;
         } catch (error) {
-          throw this.persistenceError('latest_report', error, reportPath, latestReportPath, true, false, updates.report);
+          throw this.persistenceError('latest_report', error, written, updates.report);
+        }
+      }
+
+      if (updates.handoff !== undefined) {
+        written.handoffPath = getTaskHandoffPath(this.projectRoot, featureName, taskFolder);
+        try {
+          writeAtomicDurable(written.handoffPath, updates.handoff);
+          written.handoffWritten = true;
+        } catch (error) {
+          throw this.persistenceError('handoff', error, written, updates.handoff);
         }
       }
 
       try {
         writeJsonAtomicDurable(statusPath, updated);
       } catch (error) {
-        throw this.persistenceError(
-          'status',
-          error,
-          reportPath,
-          latestReportPath,
-          reportHistoryWritten,
-          latestReportWritten,
-          JSON.stringify(updated, null, 2),
-          statusPath,
-        );
+        throw this.persistenceError('status', error, written, JSON.stringify(updated, null, 2), statusPath);
       }
 
       return {
         ...updated,
-        ...(reportPath ? { reportPath } : {}),
+        ...(written.reportPath ? { reportPath: written.reportPath } : {}),
+        ...(written.handoffPath ? { handoffPath: written.handoffPath } : {}),
       };
     } finally {
       release();
@@ -751,6 +817,15 @@ export class TaskService {
     }
     if (updates.report !== undefined && (typeof updates.report !== 'string' || updates.report.trim().length === 0)) {
       throw new Error('Task report cannot be blank');
+    }
+    if (updates.handoff !== undefined) {
+      if (typeof updates.handoff !== 'string' || updates.handoff.trim().length === 0) {
+        throw new Error('Task handoff cannot be blank');
+      }
+      const handoffBytes = Buffer.byteLength(updates.handoff, 'utf8');
+      if (handoffBytes > TASK_HANDOFF_MAX_BYTES) {
+        throw new Error(`Task handoff is ${handoffBytes} UTF-8 bytes; the limit is ${TASK_HANDOFF_MAX_BYTES}. Shorten it; handoffs are not truncated.`);
+      }
     }
     if (updates.blocker !== undefined && updates.blocker !== null) {
       if (typeof updates.blocker !== 'object'
@@ -784,12 +859,11 @@ export class TaskService {
   private persistenceError(
     stage: TaskUpdatePersistenceStage,
     cause: unknown,
-    reportPath: string | undefined,
-    latestReportPath: string | undefined,
-    reportHistoryWritten: boolean,
-    latestReportWritten: boolean,
+    written: TaskUpdateWrites,
     expectedContent: string,
-    failedPath = stage === 'report_history' ? reportPath : latestReportPath,
+    failedPath = stage === 'report_history' ? written.reportPath
+      : stage === 'handoff' ? written.handoffPath
+        : written.latestReportPath,
   ): TaskUpdatePersistenceError {
     let failedWritePublished = false;
     if (failedPath) {
@@ -805,11 +879,13 @@ export class TaskService {
     return new TaskUpdatePersistenceError(
       `Task update failed while writing ${stage}. ${detail}`,
       stage,
-      reportPath,
-      latestReportPath,
-      reportHistoryWritten,
-      latestReportWritten,
+      written.reportPath,
+      written.latestReportPath,
+      written.reportHistoryWritten,
+      written.latestReportWritten,
       failedWritePublished,
+      written.handoffPath,
+      written.handoffWritten,
       { cause },
     );
   }
@@ -929,72 +1005,8 @@ export class TaskService {
     }
   }
 
-  private extractTasksSectionContent(content: string): string | null {
-    const lines = content.split('\n');
-    const tasksHeadingRegex = /^ {0,3}##\s+tasks(?:\s+#+)?\s*$/i;
-    const sectionBoundaryRegex = /^ {0,3}#{1,2}\s+/;
-    let startIndex = -1;
-    let tasksHeadingCount = 0;
-    let fence: FenceState | null = null;
-    const nestedFences: FenceState[] = [];
-
-    for (let i = 0; i < lines.length; i++) {
-      const transition = getFenceTransition(lines[i].trimEnd(), fence, nestedFences);
-      if (transition) {
-        if (!fence && transition.opened) {
-          fence = transition.opened;
-        } else if (transition.closedOuter) {
-          fence = null;
-        }
-        continue;
-      }
-
-      if (fence) continue;
-
-      if (tasksHeadingRegex.test(lines[i].trimEnd())) {
-        tasksHeadingCount += 1;
-        if (tasksHeadingCount > 1) {
-          throw new Error('Plan contains multiple Tasks sections');
-        }
-        startIndex = i + 1;
-      }
-    }
-
-    if (startIndex === -1) {
-      return null;
-    }
-
-    const sectionLines: string[] = [];
-    fence = null;
-    nestedFences.length = 0;
-    for (let i = startIndex; i < lines.length; i++) {
-      const transition = getFenceTransition(lines[i].trimEnd(), fence, nestedFences);
-      if (transition) {
-        if (!fence && transition.opened) {
-          fence = transition.opened;
-        } else if (transition.closedOuter) {
-          fence = null;
-        }
-        sectionLines.push(lines[i]);
-        continue;
-      }
-
-      if (fence) {
-        sectionLines.push(lines[i]);
-        continue;
-      }
-
-      if (sectionBoundaryRegex.test(lines[i])) {
-        break;
-      }
-      sectionLines.push(lines[i]);
-    }
-
-    return sectionLines.join('\n');
-  }
-
   private parseTasksFromPlan(content: string): ParsedTask[] {
-    const tasksSection = this.extractTasksSectionContent(content);
+    const tasksSection = extractTasksSectionContent(content);
     if (tasksSection === null) {
       return [];
     }
