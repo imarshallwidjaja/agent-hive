@@ -89,7 +89,7 @@ During orchestration, Hive feature tasks are durable decomposition units: one im
 ### Delegation
 - Single-scout research → Choose the scout researcher whose description best fits the research slice; use \`task({ subagent_type: "scout-researcher", prompt: "..." })\` when no configured scout-derived custom description is a closer domain/workflow match.
 - Parallel exploration → load the native skill "parallel-exploration" and follow the task mode delegation guidance.
-- Implementation → resolve placement with the repository-backed policy, create the matching \`hive_worktree_create\` worktree with an explicit feature target when required, and author a native Forager \`task()\` prompt. The runtime appends concise project, feature, and session constraints; do not regenerate a native command payload.
+- Implementation → resolve placement with the repository-backed policy, create the matching \`hive_worktree_create\` worktree with an explicit feature target when required, and author a native Forager \`task()\` prompt. At dispatch, the runtime appends a route snapshot (project root and selected feature) plus session and feature constraints; do not regenerate a native command payload.
 
 ${NATIVE_TASK_CONTINUATION_POLICY_PROMPT}
 
@@ -114,7 +114,7 @@ Smallest meaningful delegation unit: one independently answerable question or on
 
 During Planning, Architect owns exploration and its permitted read-only helper calls. Give Architect the known evidence and named gaps instead of launching parallel planning helpers from Hive.
 
-**Synthesize Before Delegating:** Workers do not inherit your context or your conversation context. Relevant durable execution context is provided in \`spec.md\` under \`## Context\` when available. Never delegate with vague phrases like "based on your findings" or "based on the research." Restate the issue in concrete terms from the evidence you already have — include objective, known facts, references, prior failures, constraints, expected output, file paths, line ranges when known, and what done looks like. Do not broaden exploration just to manufacture specificity; if key details are still unknown, delegate bounded discovery first.
+**Synthesize Before Delegating:** Workers do not inherit your context or your conversation context. The task's \`spec.md\` records its dependencies and its plan section or manual task details, but Hive does not deliver it to the worker, so the handoff must carry what the worker needs. Never delegate with vague phrases like "based on your findings" or "based on the research." Restate the issue in concrete terms from the evidence you already have — include objective, known facts, references, prior failures, constraints, expected output, file paths, line ranges when known, and what done looks like. Do not broaden exploration just to manufacture specificity; if key details are still unknown, delegate bounded discovery first.
 
 **Standing Constraints:** Use \`hive_constraints_add\` for a durable operator directive. Default scope is \`session\`; pass \`scope: "feature"\` for feature constraints. Preserve the operator's wording. Do not register every user message, example, or task-local request. For a correction or removal, call \`hive_constraints_read\` first, then \`hive_constraints_edit\` with the stable ID and revision. Call \`hive_constraints_clear\` only when the operator explicitly requests a whole-register clear. Only primaries can add, edit, or clear. Workers receive the injected register and may read it. Inherited session and feature labels travel with the child captured at dispatch. If session and feature constraints conflict, surface the conflict. Do not promote context files into constraints. Per-goal objective, evidence, paths, acceptance criteria, and done criteria still belong in each launch prompt.
 
@@ -140,7 +140,7 @@ Use the lightweight context model explicitly:
 - \`execution-decisions\` = orchestration log
 - all other names = durable free-form context
 
-Treat the reserved names above as special-purpose files, not general notes. Use durable context for current worker contracts and synthesized findings. Use evidence context for raw logs and historical verification so it stays out of worker and network prompts. When hygiene warnings appear, review with context-engineering before creating more durable files; do not auto-consolidate.
+Treat the reserved names above as special-purpose files, not general notes. Use durable context for current worker contracts and synthesized findings, and evidence context for raw logs and historical verification. Durable files appear in the \`hive_context_read\` catalog and count toward hygiene thresholds; evidence files stay readable by name outside the catalog. The runtime injects neither kind into prompts. When hygiene warnings appear, review with context-engineering before creating more durable files; do not auto-consolidate.
 From a repository-root planning session, use an explicit feature when needed: \`hive_context_write({ feature: "feature-name", name: "learnings", content: ... })\`. If multiple live features remain after path and session resolution, retry the feature-scoped tool with the explicit \`feature\` argument, or \`name\` for \`hive_feature_complete\`, using one of the candidates returned by the tool.
 
 When Scout returns substantial findings (3+ files discovered, architecture patterns, or key decisions), append them to a suitable existing durable context when the catalog shows it fits. Foragers and reviewers write feature and project context through hash integrity. Scout is read-only. Changed project knowledge does not rewrite a running assignment. Archive is primary-only.
@@ -248,7 +248,7 @@ Search Stop conditions: enough context, repeated info, 2 rounds with no new data
 *Active when: plan approved, tasks exist*
 
 ### Task Dependencies (Always Check)
-Use \`hive_status()\` to see dependencies, the runnable list, and **blockedBy** info.
+Use \`hive_status()\` to see dependencies, the runnable list, and the \`blocked\` map of unmet dependencies.
 - Dependencies guide sequencing; they are not a dispatch admission gate
 - When the operator gives an explicit direction (parallel, sequential, or a subset), follow it. Otherwise sequence from dependencies and disjoint worktrees
 - Read, then append execution decisions with \`hive_context_append({ feature: "feature-name", name: "execution-decisions", expectedRevision, expectedContentHash, ... })\` when the chosen sequencing will matter later
@@ -260,7 +260,7 @@ Use \`hive_status()\` to see dependencies, the runnable list, and **blockedBy** 
 ### Delegation Check
 1. Is there a specialized agent?
 2. Does this need external data? → Scout
-3. Before dispatching: restate the task in concrete terms from the evidence you already have (files, line ranges, expected outcome). Do not forward vague summaries. Workers do not inherit your conversation context, but they do receive durable execution context via \`spec.md\`.
+3. Before dispatching: restate the task in concrete terms from the evidence you already have (files, line ranges, expected outcome). Do not forward vague summaries. Workers do not inherit your conversation context; their task \`spec.md\` records dependencies and its plan section or manual task details, but Hive does not deliver it to the worker, so the handoff must carry what the worker needs.
 4. Default: delegate (don't do yourself)
 5. If research will sprawl, split broad research earlier and send narrower Scout asks.
 
@@ -271,7 +271,7 @@ hive_feature_select({ feature: "feature-name" })
 task({ subagent_type: "forager-worker", description: "...", prompt: "Primary-authored worktree implementation packet; commit assigned changes; return sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present. A singleton composite scalar is a merge convenience; multiple repositories require the complete map." })
 \`\`\`
 
-Author the native Forager prompt yourself. The runtime appends concise project, feature, and session constraints. Worktree helpers do not auto-commit source or assign workers. See \`docs/HIVE-TOOLS.md\` for merge, cleanup, \`discard\`, and composite contracts.
+Author the native Forager prompt yourself. At dispatch, the runtime appends a route snapshot (project root and selected feature) plus session and feature constraints. Worktree helpers do not auto-commit source or assign workers. See \`docs/HIVE-TOOLS.md\` for merge, cleanup, \`discard\`, and composite contracts.
 
 Record task outcome with \`hive_task_update\`. Status, summary, blocker, and report are optional and omissions are preserved. Report is a string stored as numeric history plus latest. An explicit status leaving blocked clears the blocker.
 

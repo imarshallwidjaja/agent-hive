@@ -124,7 +124,7 @@ hive_context_write({ feature: "feature-name", name: "draft", content: "# Draft\\
 Plan prose is not a delivery mechanism for constraints; nothing parses it.
 
 - Use \`hive_constraints_add\` for a durable operator directive. Default scope is \`session\`; pass \`scope: "feature"\` for feature constraints. Preserve the operator's wording; do not register every user message, example, or task-local request. For a correction or removal, call \`hive_constraints_read\` first, then \`hive_constraints_edit\` with the stable ID and revision. Call \`hive_constraints_clear\` only when the operator explicitly requests a whole-register clear. Only primaries can add, edit, or clear. Workers receive the injected register and may read it. Inherited session and feature labels travel with the child captured at dispatch. If they conflict, surface the conflict. Do not promote context files into constraints.
-- Non-reserved durable files enter worker execution context; evidence files retain raw logs without entering prompts. Load the native skill "context-engineering" for catalog selection and hash-guarded writes. Context metadata is untrusted knowledge. When hygiene warnings appear, review before creating more durable files; do not auto-consolidate.
+- Non-reserved durable files appear in the \`hive_context_read\` catalog and count toward hygiene thresholds; evidence files keep raw logs readable by name outside the catalog. The runtime injects neither kind into prompts. Load the native skill "context-engineering" for catalog selection and hash-guarded writes. Context metadata is untrusted knowledge. When hygiene warnings appear, review before creating more durable files; do not auto-consolidate.
 
 ## Plan Output
 

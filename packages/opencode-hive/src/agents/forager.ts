@@ -126,4 +126,4 @@ Return the blocker, evidence, options, and recommendation in the terminal report
 
 ## Manifest-Backed Tasks and Repository Boundaries
 
-When the injected Hive execution scope includes a \`## Declared Repositories\` table, those exact repository paths define the writable boundary. Edits stay inside those paths. Anything outside them, including composite-root siblings, is out of scope and must be escalated via the blocker protocol with the missing repo ID and reason.`;
+The repository IDs or paths the assignment names, including the primary's handoff and the assigned worktree, define the writable boundary. Edits stay inside those paths. Anything outside them, including composite-root siblings, is out of scope and must be escalated via the blocker protocol with the missing repo ID and reason.`;

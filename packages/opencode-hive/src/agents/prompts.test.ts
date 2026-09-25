@@ -618,6 +618,7 @@ describe('Active native-task guidance contradiction checks', () => {
     'packages/opencode-hive/README.md',
     'packages/opencode-hive/docs/HIVE-TOOLS.md',
     'packages/opencode-hive/skills/background-delegation/SKILL.md',
+    'packages/opencode-hive/skills/context-engineering/SKILL.md',
     'packages/opencode-hive/skills/dispatching-parallel-agents/SKILL.md',
     'packages/opencode-hive/skills/executing-plans/SKILL.md',
     'packages/opencode-hive/skills/orchestrating-ad-hoc-work/SKILL.md',
@@ -641,9 +642,16 @@ describe('Active native-task guidance contradiction checks', () => {
     'Retry or resume native workers directly',
     'delegated, resumed, or',
     'A resumed child may create multiple launch observations',
+    'concise project, feature, and session constraints',
+    'enter worker execution context',
+    'stays out of worker and network prompts',
+    'Live catalogs',
+    'Fresh catalogs arrive in untrusted knowledge messages',
+    'durable execution context',
+    'blockedBy',
   ] as const;
 
-  it('has no stale broad-resume guidance on active surfaces', () => {
+  it('has no stale native-task or context-delivery guidance', () => {
     for (const relativePath of activeGuidanceFiles) {
       const content = readFileSync(path.join(workspaceRoot, relativePath), 'utf-8');
       for (const phrase of forbiddenPhrases) {
@@ -1356,8 +1364,9 @@ describe('Swarm (Orchestrator) prompt', () => {
     });
 
     it('conditions context consolidation and stale-state checks on observable pressure and task state', () => {
-      expect(SWARM_BEE_PROMPT).toContain('at or above 70%');
+      expect(SWARM_BEE_PROMPT).toContain('`hive_context_read` summary reports durable hygiene warnings');
       expect(SWARM_BEE_PROMPT).toContain('consolidation hints');
+      expect(SWARM_BEE_PROMPT).not.toContain('at or above 70%');
       expect(SWARM_BEE_PROMPT).toContain('before dispatching the next dependent task');
       expect(SWARM_BEE_PROMPT).toContain('evidence/archive inventories and raw logs as evidence');
       expect(SWARM_BEE_PROMPT).toContain('paused or blocked');
@@ -1647,8 +1656,9 @@ describe('Forager (Worker/Coder) prompt', () => {
   });
 
   it('directs forager to honor declared repository scope and escalate out-of-scope files through the blocker protocol', () => {
-    expect(FORAGER_BEE_PROMPT).toContain('When the injected Hive execution scope includes a `## Declared Repositories` table');
-    expect(FORAGER_BEE_PROMPT).toContain('those exact repository paths define the writable boundary');
+    expect(FORAGER_BEE_PROMPT).toContain('The repository IDs or paths the assignment names');
+    expect(FORAGER_BEE_PROMPT).toContain('define the writable boundary');
+    expect(FORAGER_BEE_PROMPT).not.toContain('When the injected Hive execution scope includes a `## Declared Repositories` table');
     expect(FORAGER_BEE_PROMPT).not.toContain('the worker prompt includes a `## Declared Repositories` table');
     expect(FORAGER_BEE_PROMPT).toContain('out of scope');
     expect(FORAGER_BEE_PROMPT).toContain('blocker protocol');

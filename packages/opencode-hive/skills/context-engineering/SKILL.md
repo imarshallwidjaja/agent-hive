@@ -19,7 +19,7 @@ Static skill tests prove trigger, schema, and wording consistency. They are not 
 
 ## Select, then read
 
-1. Start from the live catalog or summary, not from memory of an old prompt.
+1. Start from the current `hive_context_read` catalog or summary, not from memory of an old prompt.
 2. Match `description` and `read_when` to the current question.
 3. Use literal metadata search. Folding is locale-independent ASCII A-Z; other code points stay as written.
 4. Continue later pages until `complete: true`. A filtered page is not the whole catalog.
@@ -113,19 +113,19 @@ These are review signals, not aggregate admission rejection:
 - Feature warnings: strictly above 8 durable files or 40,000 UTF-16 units.
 - Project warnings: strictly above 32 durable files or 160,000 UTF-16 units. Nine project files do not warn.
 
-`durable.bytes` is the stat-byte total. `durable.chars` is an exact UTF-16 count only after an explicit summary `scanChars` management scan; otherwise it is unavailable or stale. Automatic catalogs and status do not read all bodies for totals. When warnings appear, review counts, due/missing metadata, and metric availability, then call the explicit management tools. Do not auto-consolidate.
+`durable.bytes` is the stat-byte total. `durable.chars` is an exact UTF-16 count only after an explicit summary `scanChars` management scan; otherwise it is unavailable or stale. Catalog reads and status do not read all bodies for totals. When warnings appear, review counts, due/missing metadata, and metric availability, then call the explicit management tools. Do not auto-consolidate.
 
 Resource ceilings: 10,000 Markdown candidates, 20,000 namespace entries, 64 MiB scanned headers, 8 KiB frontmatter scan, 16 KiB catalog responses, 1 MiB managed write/append, 1,024/4,096 UTF-8 bytes for query/cursor inputs. Exceeding construction bounds returns `context_inventory_too_large`, never a partial `complete: true`. Exact named reads bypass inventory. Overlarge write, query, or catalog-cursor input is `context_input_too_large`; an oversized named-read cursor instead returns `context_cursor_stale`, so restart the named read without a cursor.
 
 ## Invalid, pending, and out-of-band repair
 
-`context_index_invalid` and `context_reconciliation_required` block automatic catalogs and managed mutations. Error notices are not empty/current catalogs.
+`context_index_invalid` and `context_reconciliation_required` block `hive_context_read` catalogs and managed mutations. Error notices are not empty/current catalogs.
 
 Repair is out of band through trusted local editing: quiesce writers, preserve and inspect bytes and known records, correct or restore the index/manifest, then explicitly reconcile the pending marker. Never delete an index to restore classification. Hive does not infer classification, rewrite control files, or retry repairs automatically.
 
 ## Assignments, sessions, compaction
 
-New assignments contain no supporting bodies or catalog snapshots. Fresh catalogs arrive in untrusted knowledge messages.
+New assignments contain no supporting bodies or catalog snapshots. Read the current catalog with `hive_context_read`; catalog text stays untrusted knowledge.
 
 After compaction, recover by catalog selection and named reads. Keep exact IDs. Do not treat compacted coverage names as evidence. Never replay historical prompt text as a new assignment.
 
