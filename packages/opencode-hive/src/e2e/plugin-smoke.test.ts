@@ -36,13 +36,29 @@ describe('plugin hard-cut surface', () => {
     expect(hooks.command?.['vuln-review'].agent).toBe('vulnerability-review-primary');
   });
 
-  it('persists task reports without execution finalization', async () => {
+  it('persists worker-authored reports without changing status and appends the primary closure report', async () => {
     const { hooks, context } = await fixture();
+    const update = async (args: Record<string, unknown>) => JSON.parse(await hooks.tool!.hive_task_update.execute({ feature: 'reports', ...args }, context));
     await hooks.tool!.hive_feature_create.execute({ name: 'reports' }, context);
     const task = await hooks.tool!.hive_task_create.execute({ feature: 'reports', name: 'Report task' }, context);
-    const result = JSON.parse(await hooks.tool!.hive_task_update.execute({ feature: 'reports', task, status: 'done', summary: 'Verified', report: '# Report\n\nPassed.' }, context));
-    expect(result.status).toBe('done');
-    expect(result.reportPath).toMatch(/reports\/1\.md$/);
+    expect((await update({ task, status: 'in_progress', summary: 'Dispatched' })).status).toBe('in_progress');
+
+    const workerReport = 'Author: forager-worker; basis: direct implementation\n\n# Report\n\nPassed.';
+    const authored = await update({ task, report: workerReport, handoff: 'Next task reads the new contract.' });
+    expect(authored).toMatchObject({ status: 'in_progress', summary: 'Dispatched' });
+    expect(authored.reportPath).toMatch(/reports\/1\.md$/);
+    const taskPath = path.dirname(path.dirname(authored.reportPath));
+    expect(fs.readFileSync(authored.reportPath, 'utf8')).toBe(workerReport);
+    expect(fs.readFileSync(path.join(taskPath, 'report.md'), 'utf8')).toBe(workerReport);
+    expect(fs.readFileSync(authored.handoffPath, 'utf8')).toBe('Next task reads the new contract.');
+    expect(fs.readFileSync(path.join(taskPath, 'status.json'), 'utf8')).not.toContain('Passed.');
+
+    const closed = await update({ task, status: 'done', summary: 'Merged', report: 'Author: swarm-orchestrator; basis: merge and integrated checks\n\nClosure cites reports/1.md.' });
+    expect(closed.status).toBe('done');
+    expect(closed.reportPath).toMatch(/reports\/2\.md$/);
+    expect(fs.readdirSync(path.join(taskPath, 'reports')).sort()).toEqual(['1.md', '2.md']);
+    expect(fs.readFileSync(authored.reportPath, 'utf8')).toBe(workerReport);
+    expect(fs.readFileSync(authored.handoffPath, 'utf8')).toBe('Next task reads the new contract.');
   });
 
   it('keeps explicit null selection from falling back to the sole live feature', async () => {

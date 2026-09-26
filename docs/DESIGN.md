@@ -73,7 +73,7 @@ Cross-process process supervision, exactly-once execution across independent Ope
 5. Tasks synced via `hive_tasks_sync` (generates spec.md for each)
 6. Each tracked Git task executes via `hive_worktree_create` and a native Forager `task()`
 7. The worker commits assigned work and returns its exact source pin; the primary merges it using the inspected target identity
-8. The primary records completion and optional report with `hive_task_update` after a successful merge, then cleans up the worktree; non-Git or report-only work has no Hive merge step
+8. A bound implementation worker publishes its own task report; after a successful merge, or target verification for non-Git or report-only work, the primary records status and a closure report with `hive_task_update`, then cleans up any worktree
 
 ## Prompt Management
 
@@ -150,7 +150,7 @@ Contains task context for the executing agent:
 `TaskService.sync` creates or refreshes plan-backed task folders and their `status.json` and `spec.md` files. `TaskService.create` owns the same files for append-only manual tasks. Worktree helpers and native Forager calls read these records; they do not generate `spec.md`.
 
 ### Reports
-`hive_task_update` stores an optional report string as numeric history plus latest. Omissions are preserved. An explicit status leaving blocked clears the blocker. Partial writes: inspect before retry; there is no journal.
+`hive_task_update` stores an optional report string as numbered history plus `report.md`. Omissions are preserved. An explicit status leaving blocked clears the blocker. Report authorship, primary closure, and partial-write recovery are described in [Tasks and reports](OPERATOR-GUIDE.md#tasks-and-reports).
 
 An optional nonblank `handoff` of at most 2048 UTF-8 bytes replaces the task's `handoff.md` without changing status. A later remediation can replace it; omitted handoffs remain intact. The primary promotes accepted forward obligations into a named successor's plan section before that task runs.
 
@@ -293,7 +293,7 @@ These operations have side effects:
 - `hive_plan_write` - Overwrites plan.md, clears comments
 - `hive_tasks_sync` - Reconciles plan-backed tasks; `refreshPending: true` rewrites pending plan tasks from `plan.md`, updates `planTitle` / `dependsOn`, regenerates `spec.md`, and removes pending plan tasks deleted from the plan while preserving manual tasks and execution history
 - `hive_task_create` - Creates a manual task with explicit `dependsOn` and optional structured metadata
-- `hive_task_update` - Optional status/summary/blocker/report; omissions preserved; inspect before retry
+- `hive_task_update` - Optional status/summary/blocker/report/handoff; omissions preserved; inspect written files before retry and never resubmit a report already in history
 - `hive_worktree_create` - Creates or selects a task Git workspace
 - `hive_worktree_merge` - Merges a task branch
 - `hive_worktree_cleanup` - Removes a worktree
@@ -311,5 +311,5 @@ Manual tasks are first-class task records, not loose notes.
 
 If a tool call fails mid-operation:
 1. Inspect the operation result, task state, and registered worktree before retrying.
-2. For partial `hive_task_update` writes, inspect report history, latest report, and status separately; there is no journal.
+2. For partial `hive_task_update` writes, inspect report history, latest report, handoff, and status separately, and do not resubmit a report already in history; there is no journal.
 3. A composite merge may retain earlier repository integrations if a later one fails. Inspect per-repository results before deciding the next action.

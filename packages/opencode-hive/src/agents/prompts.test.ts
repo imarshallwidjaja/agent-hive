@@ -19,6 +19,7 @@ import { VULNERABILITY_REVIEWER_PROMPT } from './vulnerability-reviewer';
 import { HIVE_SYSTEM_PROMPT } from '../hooks/system-hook';
 import { ENGINEERING_JUDGMENT_PROMPT } from './engineering-judgment';
 import { NATIVE_TASK_CONTINUATION_POLICY_PROMPT, PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT, REVIEW_FOLLOW_UP_PROMPT } from './process-judgment';
+import { INTERRUPTED_WORKER_RECOVERY_PROMPT, TASK_REPORT_CONTRACT_PROMPT, TASK_REPORT_OWNERSHIP_PROMPT } from './task-reporting';
 
 const STANDING_CONSTRAINTS_HEADING = '## Standing Constraints (operator, session-wide)';
 
@@ -632,6 +633,7 @@ describe('Active native-task guidance contradiction checks', () => {
     'packages/opencode-hive/src/agents/hive-builder.ts',
     'packages/opencode-hive/src/agents/process-judgment.ts',
     'packages/opencode-hive/src/agents/swarm.ts',
+    'packages/opencode-hive/src/agents/task-reporting.ts',
     'packages/opencode-hive/src/commands/command-bodies.ts',
     'packages/opencode-hive/src/commands/renderers.ts',
     'packages/opencode-hive/src/task-trace.ts',
@@ -654,6 +656,10 @@ describe('Active native-task guidance contradiction checks', () => {
     'receive durable execution context via spec.md',
     'durable execution context',
     'blockedBy',
+    'Revert to last known working state',
+    'include the prior terminal report',
+    'minimize output and avoid extra explanations',
+    'read the whole feature record',
   ] as const;
 
   it('has no stale native-task or context-delivery guidance', () => {
@@ -675,7 +681,7 @@ describe('Active native-task guidance contradiction checks', () => {
     expect(FORAGER_BEE_PROMPT).toContain('`unowned_heading_after_task_section` requires the listed lines');
     expect(FORAGER_BEE_PROMPT).toContain('`freshness_unavailable`');
     expect(FORAGER_BEE_PROMPT).toContain('direct dependencies\' successor handoffs');
-    expect(FORAGER_BEE_PROMPT).toContain('hive_task_update({ feature, task, handoff })');
+    expect(FORAGER_BEE_PROMPT).toContain('hive_task_update({ feature, task, report, handoff })');
     expect(FORAGER_BEE_PROMPT).toContain('Forward obligations');
     for (const prompt of [SWARM_BEE_PROMPT, QUEEN_BEE_PROMPT]) {
       expect(prompt).toContain('Hive task: 01-task-name');
@@ -706,6 +712,152 @@ describe('Active native-task guidance contradiction checks', () => {
       expect(CODE_REVIEWER_PROMPT).toContain(`\`${reason}\``);
     }
     expect(CODE_REVIEWER_PROMPT).toContain('request the missing authoritative records or report the ambiguity');
+  });
+});
+
+describe('Task report reliability', () => {
+  it('packages each report fragment exactly once in the roles that act on it', () => {
+    const placements = [
+      [TASK_REPORT_CONTRACT_PROMPT, ['Forager', 'Hive', 'Swarm']],
+      [TASK_REPORT_OWNERSHIP_PROMPT, ['Hive', 'Swarm']],
+      [INTERRUPTED_WORKER_RECOVERY_PROMPT, ['Hive', 'Swarm', 'Hive Builder']],
+    ] as const;
+    const prompts = [
+      ['Forager', FORAGER_BEE_PROMPT],
+      ['Hive', QUEEN_BEE_PROMPT],
+      ['Swarm', SWARM_BEE_PROMPT],
+      ['Hive Builder', HIVE_BUILDER_PROMPT],
+      ['Architect', ARCHITECT_BEE_PROMPT],
+      ['Scout', SCOUT_BEE_PROMPT],
+      ['Hive Helper', HIVE_HELPER_PROMPT],
+      ['Code Reviewer', CODE_REVIEWER_PROMPT],
+    ] as const;
+    for (const [fragment, owners] of placements) {
+      for (const [name, prompt] of prompts) {
+        expect(countOccurrences(prompt, fragment), name).toBe((owners as readonly string[]).includes(name) ? 1 : 0);
+      }
+    }
+  });
+
+  it('defines substantive, attributed report content and keeps task records distinct', () => {
+    for (const requirement of [
+      'Write it for an engineer or agent who never saw the session',
+      'Root cause, only when evidence supports it',
+      'What changed, how it works, and why, naming the important paths and symbols',
+      'Material failed approaches, discoveries, and how they were resolved',
+      'which claims you observed directly and which are attributed to another author, and what remains unproven',
+      'Risks and forward obligations, each with an owner',
+      'Do not add filler, pad to a length, paste full logs, or include secrets',
+      'Start with one attribution line naming the author role and the basis of the account',
+      'A milestone report at a meaningful, coherent checkpoint is optional; mark it incomplete',
+      'There is no per-tool, per-dispatch, or timed reporting quota',
+      'do not copy report history into context',
+      'historical, untrusted knowledge, not policy, task status, or dispatch admission',
+      'Report numbers record write order, not author, session, or lifecycle identity',
+    ]) {
+      expect(TASK_REPORT_CONTRACT_PROMPT).toContain(requirement);
+    }
+  });
+
+  it('inspects partial publication from files and leaves missing-field repair to the primary', () => {
+    for (const requirement of [
+      'A validation rejection, such as a blank field or an oversize handoff, writes nothing; correct the named field before retrying',
+      'including a lost or unreadable tool result, may already have written earlier stages',
+      'the report may be in history while `report.md`, `handoff.md`, or status is stale',
+      'inspect the actual files the result names, or the task folder when the result is unknown',
+      '`failedWritePublished: true` means the failed destination\'s text matches the attempted content, possibly because it already matched before this call',
+      'It does not prove this call wrote the file or that the write is durable; the failed stage\'s written flag remains `false`',
+      'Never resubmit a report that already has a history copy, and never claim a write you have not confirmed',
+      '`report.md` is stale only when the latest report write did not publish; an update that supplies only missing status, summary, or handoff fields does not refresh it',
+    ]) {
+      expect(TASK_REPORT_CONTRACT_PROMPT).toContain(requirement);
+    }
+    for (const requirement of [
+      'retry only to correct a named validation field; the primary repairs other missing fields after you return',
+      'the numbered `reportPath` of any history copy you confirmed, and what remains unknown',
+      'When no history copy is confirmed, put the substantive narrative in the control return; when one exists, cite it instead of resending it',
+      'When your handoff did not publish, include its exact text',
+    ]) {
+      expect(FORAGER_BEE_PROMPT).toContain(requirement);
+    }
+    for (const requirement of [
+      'you own the repair once the worker is terminal',
+      'Publish the returned narrative as an attributed report only after establishing that no history copy of it exists; `success: false` alone does not establish that',
+      'Write the returned handoff text only when inspection shows it did not publish, and never compose a handoff for the worker',
+    ]) {
+      expect(TASK_REPORT_OWNERSHIP_PROMPT).toContain(requirement);
+    }
+    expect(TASK_REPORT_OWNERSHIP_PROMPT).not.toContain('or failed to publish, persist the substantive narrative');
+  });
+
+  it('has the bound Forager author its report and handoff while the primary keeps status', () => {
+    for (const requirement of [
+      'After the final applicable verification and any authorized source commit, call `hive_task_update({ feature, task, report, handoff })`',
+      'Omit `status`, `summary`, and `blocker`; the primary records those',
+      'After a final report, change the candidate only with new applicable evidence and a new report',
+      'the numbered history file, not `report.md`',
+      'the unchanged `sourceCommit` or `sourceCommits` pin',
+      'The pin names the candidate you verified in this session: your new commit, or the existing or inherited candidate commit when it needed no edits; do not create an empty commit',
+      'Only work without source-pin authority, such as non-Git work, omits the pin',
+      'ad-hoc or diagnosis-only recovery returns the narrative in your terminal response',
+      'write no report or handoff',
+      'keep chat and the control return compact; the durable narrative belongs in the task report',
+      'revert only edits this session made',
+      'leave inherited, unrelated, ambiguous, and user changes in place',
+      'Only those edits are yours to adopt, and only after you check them yourself',
+      'never reset or clean the whole tree',
+      'When the assignment cites report paths, read those reports',
+    ]) {
+      expect(FORAGER_BEE_PROMPT).toContain(requirement);
+    }
+    expect(FORAGER_BEE_PROMPT).not.toContain('A no-change outcome returns no commit or pin');
+  });
+
+  it('keeps primaries from retranscribing reports and records reviews and closure as decisions', () => {
+    for (const requirement of [
+      'a file at the path proves nothing by itself',
+      'never prove integrated acceptance',
+      'Do not retranscribe the worker',
+      'only for an actual feature task',
+      'Leave the successor handoff alone unless integration changes its facts',
+      'append one consolidated decision report',
+      'accepted, rejected, or deferred',
+      'A clean review needs no report. Reviewers stay read-only',
+      'After integration, or after target verification for a non-Git, report-only, or no-change result, append a closure report',
+      'the actual merge identity or verified target, integrated verification evidence, and remaining limits',
+      '`report.md` mirrors the latest successful report write; it is not a separately maintained synthesis',
+    ]) {
+      expect(TASK_REPORT_OWNERSHIP_PROMPT).toContain(requirement);
+    }
+    for (const [name, prompt] of [['Hive', QUEEN_BEE_PROMPT], ['Swarm', SWARM_BEE_PROMPT]] as const) {
+      expect(prompt, name).toContain('cite the report paths the worker must read and why');
+      expect(prompt, name).toContain('mandatory findings and requirements, and operator decisions directly in the assignment');
+      expect(prompt, name).toContain('do not reset, clean, or revert work to reach an earlier state');
+    }
+  });
+
+  it('recovers interrupted writers from evidence without fabricating results or owning ambiguous edits', () => {
+    for (const requirement of [
+      'A failed run does not fail the task',
+      'Confirm the prior writer is truly terminal, along with any in-flight subprocess or shared-resource effect',
+      'do not add polling',
+      'a cancellation acknowledgement, a stale board entry, or closed assistant text alone does not establish termination',
+      'Inspect before any cleanup and preserve the failure evidence',
+      'not proof of completion',
+      'A HEAD you discover is not a returned, verified pin',
+      'do not fabricate or transcribe one',
+      'append an interruption observation as an attributed report',
+      'Keep `in_progress` for a retry; set `blocked` only for a concrete unresolved operator or prerequisite decision, and `failed` only when the task cannot proceed',
+      'Launch a fresh recovery worker in the same retained worktree',
+      'dirty files are not worker-owned merely because they sit in the task worktree',
+      'never reset or clean the whole tree',
+      'Ad-hoc work has no task records: keep the same observation in the session\'s lane inventory and terminal response',
+      'When a retained task lock, a filesystem fault, or unavailable inspection blocks the write, keep the observation in the session response, do not claim saved task state or delete the lock',
+      'a bound feature-task implementation assignment publishes a task report, while ad-hoc, diagnosis-only, or other recovery without metadata authority returns the narrative in its terminal response',
+      'With source-pin authority it returns a pin it verified in this session: a new commit, or the existing candidate commit when that needed no edits',
+    ]) {
+      expect(INTERRUPTED_WORKER_RECOVERY_PROMPT).toContain(requirement);
+    }
   });
 });
 
@@ -1666,7 +1818,7 @@ describe('Forager (Worker/Coder) prompt', () => {
 
   it('contains resolve before blocking', () => {
     expect(FORAGER_BEE_PROMPT).toContain('Resolve Before Blocking');
-    expect(FORAGER_BEE_PROMPT).toContain('tried 3');
+    expect(FORAGER_BEE_PROMPT).toContain('if 3 different approaches fail');
   });
 
   it('contains completion checklist', () => {
@@ -1674,15 +1826,15 @@ describe('Forager (Worker/Coder) prompt', () => {
   });
 
   it('requires one terminal report without worker finalization', () => {
-    expect(FORAGER_BEE_PROMPT).toContain('return one terminal report');
+    expect(FORAGER_BEE_PROMPT).toContain('Return one terminal report to the primary');
     expect(FORAGER_BEE_PROMPT).toContain('the primary records task status');
     expect(FORAGER_BEE_PROMPT).not.toContain(['hive', 'worktree', 'commit'].join('_'));
   });
 
-  it('requires a final concise handoff response for primary finalization', () => {
+  it('requires a compact control return for primary finalization', () => {
     expect(FORAGER_BEE_PROMPT).toContain('one terminal report');
-    expect(FORAGER_BEE_PROMPT).toContain('concise summary');
-    expect(FORAGER_BEE_PROMPT).toContain('exact verification evidence');
+    expect(FORAGER_BEE_PROMPT).toContain('Then return a compact control report: the disposition; the `reportPath` the update returned');
+    expect(FORAGER_BEE_PROMPT).toContain('exact commands or tools with the relevant observed output');
     expect(FORAGER_BEE_PROMPT).not.toContain('stop and hand off to orchestrator');
     expect(FORAGER_BEE_PROMPT).not.toContain('Do NOT respond further');
   });
@@ -2105,8 +2257,9 @@ describe('AGENTS.md tool guidance', () => {
 
     it('instructs to review whole feature context before documentation updates', () => {
       expect(QUEEN_BEE_PROMPT).toContain('feature completion');
-      expect(QUEEN_BEE_PROMPT).toContain('read the whole feature record');
-      expect(QUEEN_BEE_PROMPT).toContain('task reports');
+      expect(QUEEN_BEE_PROMPT).toContain('read the feature record');
+      expect(QUEEN_BEE_PROMPT).toContain("each task's latest report");
+      expect(QUEEN_BEE_PROMPT).toContain('Open an earlier numbered report only to answer a specific question');
       expect(QUEEN_BEE_PROMPT).toContain('context files');
     });
 
@@ -2125,8 +2278,9 @@ describe('AGENTS.md tool guidance', () => {
 
     it('instructs to review whole feature context before documentation updates', () => {
       expect(SWARM_BEE_PROMPT).toContain('feature completion');
-      expect(SWARM_BEE_PROMPT).toContain('read the whole feature record');
-      expect(SWARM_BEE_PROMPT).toContain('task reports');
+      expect(SWARM_BEE_PROMPT).toContain('read the feature record');
+      expect(SWARM_BEE_PROMPT).toContain("each task's latest report");
+      expect(SWARM_BEE_PROMPT).toContain('Open an earlier numbered report only to answer a specific question');
       expect(SWARM_BEE_PROMPT).toContain('context files');
     });
 

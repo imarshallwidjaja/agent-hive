@@ -106,6 +106,8 @@ Project and feature context are separate stores. Feature context follows the imp
 
 Re-review project knowledge against evidence, then whole-document hash-guarded replace/re-date, or archive with a reason and replacement reference. There is no auto-renewal, metadata-only renewal command, auto-promotion, auto-consolidation, or archive on feature completion.
 
+Task reports and `handoff.md` are task records, not managed context. Do not copy report history into context. When a report surfaces reusable knowledge, write that knowledge to durable context deliberately; raw logs belong in evidence context.
+
 Changed project knowledge does not update a running assignment. Adopting a binding decision requires plan amendment or a new assignment. Surface conflicts with the fixed assignment; newer notes do not override instructions.
 
 ## Hygiene, units, ceilings

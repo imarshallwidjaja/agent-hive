@@ -42,7 +42,7 @@ Add comments on a feature's `plan.md` and `context/overview.md`. **Done Review**
 
 ### Task reports
 
-Expand a feature's **Tasks** group and a task to open its `spec.md`, latest handoff report, or **Report history**. History lists numbered report revisions and any finalization reports, newest first.
+Expand a feature's **Tasks** group and a task to open its `spec.md`, **Successor handoff** (`handoff.md`), **Latest report** (`report.md`), or **Report history**. Each appears only when its file exists. History lists numbered report revisions and any finalization reports, newest first.
 
 ### File Watching
 Watches `.hive/` for changes and refreshes automatically.

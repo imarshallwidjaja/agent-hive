@@ -117,5 +117,7 @@ describe('HIVE_COMMANDS', () => {
     expect(output).not.toContain('Retry or resume native workers directly');
     expect(output).not.toContain('After any usable terminal handoff');
     expect(output).not.toContain('confirmed-stopped interruption recovery');
+    expect(output).toContain('Read the report a bound worker published, then record status, summary, or blocker with hive_task_update');
+    expect(output).not.toContain('Persist worker outcomes with hive_task_update');
   });
 });

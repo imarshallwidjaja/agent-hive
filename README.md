@@ -51,8 +51,10 @@ For a brand-new config, a plugin array containing only `"oc-arkive@latest"` is s
 5. For a worktree implementation assignment, the worker runs selected checks,
    commits assigned changes, and returns the exact source commit pin with
    evidence for the tested candidate. In-place, non-Git, report-only, and
-   diagnosis-only assignments return evidence without a source commit. The
-   primary records status and reports with `hive_task_update`.
+   diagnosis-only assignments return evidence without a source commit. An
+   implementation worker bound to a feature task also writes its own task report
+   and successor handoff; the primary reads the report and records status with
+   `hive_task_update`.
 6. Inspect the worktree and merge completed task branches with
    `hive_worktree_merge`, supplying the worker's source pin and the previously
    inspected destination identity (`expectedTarget` or `expectedTargets`).

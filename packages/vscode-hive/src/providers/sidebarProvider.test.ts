@@ -121,13 +121,14 @@ describe('HiveSidebarProvider', () => {
     expect(completedGroup?.features[0]?.description).toBe('Completed · 1/1');
   });
 
-  it('opens latest handoffs and lazily lists immutable report revisions without writes', async () => {
+  it('opens the successor handoff and latest report separately and lazily lists immutable report revisions without writes', async () => {
     new FeatureService(testRoot).create('reports');
     const taskPath = hiveCore.getTaskPath(testRoot, 'reports', '01-worker');
     const reportsPath = path.join(taskPath, 'reports');
     fs.mkdirSync(reportsPath, { recursive: true });
     fs.writeFileSync(path.join(taskPath, 'spec.md'), 'spec');
     fs.writeFileSync(path.join(taskPath, 'report.md'), 'latest');
+    fs.writeFileSync(path.join(taskPath, 'handoff.md'), 'next worker notes');
     for (const filename of ['1.md', '2.md', 'finalization-a1b2.md', '0.md', '01.md', '-1.md', '3.txt', 'notes.md', '1.5.md']) {
       fs.writeFileSync(path.join(reportsPath, filename), filename);
     }
@@ -142,12 +143,16 @@ describe('HiveSidebarProvider', () => {
     expect(task.label).toBe('worker');
     expect((task as any).featureName).toBe('reports');
     expect((task as any).folder).toBe('01-worker');
+    const readFile = spyOn(fs, 'readFileSync');
     const children = await provider.getChildren(task);
-    expect(children.map(item => item.label)).toEqual(['spec.md', 'Latest handoff report', 'Report history']);
-    expect(children[1].command?.command).toBe('vscode.open');
-    expect(children[1].command?.arguments?.[0].fsPath).toBe(path.join(taskPath, 'report.md'));
+    expect(readFile.mock.calls.some(args => String(args[0]).endsWith('handoff.md') || String(args[0]).endsWith('report.md'))).toBe(false);
+    readFile.mockRestore();
+    expect(children.map(item => item.label)).toEqual(['spec.md', 'Successor handoff', 'Latest report', 'Report history']);
+    expect(children.slice(0, 3).map(item => item.command?.command)).toEqual(['vscode.open', 'vscode.open', 'vscode.open']);
     expect(children[0].command?.arguments?.[0].fsPath).toBe(path.join(taskPath, 'spec.md'));
-    const history = children[2];
+    expect(children[1].command?.arguments?.[0].fsPath).toBe(path.join(taskPath, 'handoff.md'));
+    expect(children[2].command?.arguments?.[0].fsPath).toBe(path.join(taskPath, 'report.md'));
+    const history = children[3];
     expect(history.collapsibleState).toBe(1);
     expect(history.command).toBeUndefined();
     fs.writeFileSync(path.join(reportsPath, '10.md'), 'new revision after task expansion');
@@ -164,6 +169,7 @@ describe('HiveSidebarProvider', () => {
       expect(write).not.toHaveBeenCalled();
       expect(fs.readdirSync(reportsPath)).toEqual(before);
       expect(fs.readFileSync(path.join(taskPath, 'report.md'), 'utf8')).toBe('latest');
+      expect(fs.readFileSync(path.join(taskPath, 'handoff.md'), 'utf8')).toBe('next worker notes');
     } finally { write.mockRestore(); }
     fs.rmSync(reportsPath, { recursive: true });
     expect(await provider.getChildren(history)).toEqual([]);
@@ -182,10 +188,33 @@ describe('HiveSidebarProvider', () => {
     const tasks = (await provider.getChildren(feature)).find(item => item.label === 'Tasks')!;
     const [task] = await provider.getChildren(tasks);
     const children = await provider.getChildren(task);
-    expect(children.map(item => item.label)).toEqual(['Latest handoff report']);
+    expect(children.map(item => item.label)).toEqual(['Latest report']);
     expect(children[0].command?.arguments?.[0].fsPath).toBe(path.join(taskPath, 'report.md'));
     expect(fs.existsSync(reportsPath)).toBe(history !== 'missing');
     expect(fs.readFileSync(path.join(taskPath, 'report.md'), 'utf8')).toBe('legacy bytes');
+  });
+
+  it('opens a successor handoff for a task that has no spec or report', async () => {
+    new FeatureService(testRoot).create('handoff-only');
+    const taskPath = hiveCore.getTaskPath(testRoot, 'handoff-only', '01-worker');
+    fs.mkdirSync(taskPath, { recursive: true });
+    fs.writeFileSync(path.join(taskPath, 'handoff.md'), 'handoff bytes');
+    const provider = new HiveSidebarProvider(testRoot);
+    const feature = await firstFeature(provider, 'handoff-only');
+    const tasks = (await provider.getChildren(feature)).find(item => item.label === 'Tasks')!;
+    const [task] = await provider.getChildren(tasks);
+    expect(task.collapsibleState).toBe(1);
+    const write = spyOn(fs, 'writeFileSync');
+    try {
+      const children = await provider.getChildren(task);
+      expect(children.map(item => item.label)).toEqual(['Successor handoff']);
+      expect(children[0].command?.command).toBe('vscode.open');
+      expect(children[0].command?.arguments?.[0].fsPath).toBe(path.join(taskPath, 'handoff.md'));
+      expect(write).not.toHaveBeenCalled();
+    } finally { write.mockRestore(); }
+    expect(fs.existsSync(path.join(taskPath, 'report.md'))).toBe(false);
+    expect(fs.existsSync(path.join(taskPath, 'reports'))).toBe(false);
+    expect(fs.readFileSync(path.join(taskPath, 'handoff.md'), 'utf8')).toBe('handoff bytes');
   });
 
   it('keeps overview inside context instead of as a first-class review item', async () => {

@@ -489,7 +489,7 @@ const plugin: Plugin = async (ctx) => {
       execute: async ({ name, order, feature, repos, ...metadata }, context) => taskService.create(requireFeature(feature, context), name, order, { ...metadata, repoIds: repos } as any),
     }),
     hive_task_update: tool({
-      description: `Update task state, optionally persist an immutable report, and optionally replace the successor handoff (handoff.md, at most ${TASK_HANDOFF_MAX_BYTES} UTF-8 bytes).`,
+      description: `Update task state, optionally persist an immutable report (next reports/{N}.md, mirrored to report.md; returns reportPath), and optionally replace the successor handoff (handoff.md, at most ${TASK_HANDOFF_MAX_BYTES} UTF-8 bytes). Omitted fields are preserved. Validation rejections write nothing. On success: false or an unknown result, inspect the files named by failedStage, reportPath, and the written/published flags before retrying; the flags are hints, and a report already in history must not be resubmitted.`,
       args: {
         task: tool.schema.string(),
         status: tool.schema.enum(['pending', 'in_progress', 'done', 'cancelled', 'blocked', 'failed', 'partial']).optional(),

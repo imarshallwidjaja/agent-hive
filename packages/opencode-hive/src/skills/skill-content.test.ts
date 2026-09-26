@@ -670,6 +670,28 @@ describe('skill content', () => {
     expect(adhoc).toContain('preserve usable unaffected review coverage');
   });
 
+  it('defers task report ownership and interruption recovery to the primary prompt', () => {
+    const executing = BUILTIN_SKILLS.find((entry) => entry.name === 'executing-plans')!.template;
+    const context = BUILTIN_SKILLS.find((entry) => entry.name === 'context-engineering')!.template;
+    const hiveSkill = readRepoFile('packages/hive-core/templates/skills/hive.md');
+    expect(executing).toContain("read the report it published and record status and a compact summary under the primary prompt's Task Report Ownership rules");
+    expect(executing).toContain("follow the primary prompt's Interrupted Worker Recovery rules; a failed run does not fail the task");
+    expect(executing).not.toContain('record its summary and terminal report');
+    expect(context).toContain('Task reports and `handoff.md` are task records, not managed context. Do not copy report history into context.');
+    expect(hiveSkill).toContain('A failed or interrupted worker run does not fail the task');
+    expect(hiveSkill).not.toContain('hive_task_update({ task, status: "failed", summary, report })');
+    const recoverySteps = [
+      '1. Confirm the prior worker and any in-flight subprocess or external effect have stopped',
+      '2. Inspect before any cleanup',
+      '3. Record what you observed',
+      '4. Call `hive_status()`, select the feature immediately before dispatch, and launch a fresh worker in the retained worktree',
+    ].map((step) => hiveSkill.indexOf(step));
+    expect(recoverySteps.every((index) => index >= 0)).toBe(true);
+    expect(recoverySteps).toEqual([...recoverySteps].sort((a, b) => a - b));
+    expect(hiveSkill).toContain('Do not delete locks, reset, or clean the worktree');
+    expect(hiveSkill).toContain('If inspection is unavailable, keep known facts and unknowns in your current response; do not claim saved state. Stop before writing or retrying and escalate for supported or operator recovery');
+  });
+
   it('finishes executing-plans through verification and Hive merge instead of a generic finish menu', () => {
     const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'executing-plans');
     const template = skill!.template;
@@ -700,7 +722,7 @@ describe('skill content', () => {
     expect(hiveSkill).toContain('hive_worktree_create({ feature: "feature-name", task: "02-task-a" })');
     expect(hiveSkill).toContain('hive_feature_select({ feature: "feature-name" })');
     expect(hiveSkill).toContain('subagent_type: "forager-worker"');
-    expect(hiveSkill).toContain('hive_task_update({ task: "01-task-name", status: "done", summary, report })');
+    expect(hiveSkill).toContain('hive_task_update({ task: "01-task-name", status: "done", summary, report: closureReport })  # Primary closure report: explains the problem, how the solution works, material issues and their resolutions; cites the worker\'s reportPath');
     expect(hiveSkill).toContain('hive_task_update({ task, status: "blocked"');
     expect(hiveSkill).toContain('strategy: "squash", message:');
     expect(hiveSkill).toContain('Do not call `hive_worktree_merge` again while preserved conflict state is active');

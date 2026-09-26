@@ -259,7 +259,7 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
         'Confirm parallel vs sequential execution strategy with the operator before proceeding.',
         'Use todos to track task progress and transitions.',
         'Create or inspect the task worktree with an explicit feature target when isolation is needed, call hive_feature_select for that feature immediately before dispatch, then issue the native Forager task() call with that path in its authored prompt.',
-        'Persist worker outcomes with hive_task_update, including blocker and report when present.',
+        'Read the report a bound worker published, then record status, summary, or blocker with hive_task_update under Task Report Ownership; do not retranscribe the report.',
         'After any returned native task result, launch a fresh child session for follow-up; preserve task_id pass-through only for explicit operator/runtime-owned interruption recovery.',
       ],
       doNotItems: [

@@ -394,6 +394,49 @@ describe("TaskService", () => {
       });
     });
 
+    // Directory fsync is a no-op on Windows, so the post-rename failure cannot occur there.
+    it.skipIf(process.platform === "win32")("reports a published report history copy when durability fails after the rename", () => {
+      const featureName = "test-feature";
+      setupFeature(featureName);
+      setupTask(featureName, "01-test-task", { summary: "Original" });
+      const taskPath = path.join(TEST_DIR, ".hive", "features", featureName, "tasks", "01-test-task");
+      const reportsPath = path.join(taskPath, "reports");
+      const descriptorPaths = new Map<number, string>();
+      const originalOpen = fs.openSync;
+      const originalFsync = fs.fsyncSync;
+      const openSpy = spyOn(fs, "openSync").mockImplementation(((target, flags, mode) => {
+        const descriptor = originalOpen(target, flags, mode);
+        descriptorPaths.set(descriptor, String(target));
+        return descriptor;
+      }) as typeof fs.openSync);
+      const fsyncSpy = spyOn(fs, "fsyncSync").mockImplementation((descriptor => {
+        if (descriptorPaths.get(descriptor) === reportsPath) throw new Error("reports directory fsync failed");
+        originalFsync(descriptor);
+      }) as typeof fs.fsyncSync);
+      let thrown: unknown;
+
+      try {
+        service.update(featureName, "01-test-task", { status: "done", report: "published history" });
+      } catch (error) {
+        thrown = error;
+      } finally {
+        fsyncSpy.mockRestore();
+        openSpy.mockRestore();
+      }
+
+      expect(thrown).toBeInstanceOf(TaskUpdatePersistenceError);
+      const persistenceError = thrown as TaskUpdatePersistenceError;
+      expect(persistenceError.failedStage).toBe("report_history");
+      expect(persistenceError.message).toBe("Task update failed while writing report_history. The destination was published, but durability is uncertain.");
+      expect(persistenceError.reportHistoryWritten).toBe(false);
+      expect(persistenceError.failedWritePublished).toBe(true);
+      expect(persistenceError.reportPath).toBe(path.join(reportsPath, "1.md"));
+      expect(fs.readFileSync(persistenceError.reportPath!, "utf8")).toBe("published history");
+      expect(persistenceError.latestReportWritten).toBe(false);
+      expect(fs.existsSync(path.join(taskPath, "report.md"))).toBe(false);
+      expect(service.getRawStatus(featureName, "01-test-task")).toMatchObject({ status: "pending", summary: "Original" });
+    });
+
     it("reports status-stage partial persistence without leaking report fields into status", () => {
       const featureName = "test-feature";
       setupFeature(featureName);

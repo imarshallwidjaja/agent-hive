@@ -273,7 +273,7 @@ task({
   prompt: "Hive task: 01-task-name\n\nPrimary-authored objective, workspace, inspected target identity, evidence, constraints, and checks"
 })
   ↓
-[Worker commits changes and returns sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present]
+[Worker commits changes and returns sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present, plus the numbered reportPath of the task report and handoff it published without status]
 
 hive_worktree_inspect({ task: "01-task-name" })
 [Reinspect source and destination after the worker returns; compare the target to the identity captured before dispatch. Composites use each repos[id].target]
@@ -283,7 +283,7 @@ hive_worktree_merge({ task: "01-task-name", sourceCommit, expectedTarget, strate
 // Composite workspace with persisted repos:
 hive_worktree_merge({ task: "01-task-name", sourceCommits, expectedTargets, strategy: "squash", message: "feat: implement task outcome\n\nDescribe the integrated behavior and why it changed." })
   ↓
-hive_task_update({ task: "01-task-name", status: "done", summary, report })
+hive_task_update({ task: "01-task-name", status: "done", summary, report: closureReport })  # Primary closure report: explains the problem, how the solution works, material issues and their resolutions; cites the worker's reportPath, merge identity, and integrated evidence. The worker's report stays in history.
   ↓
 hive_worktree_cleanup({ task: "01-task-name" })
 ```
@@ -400,12 +400,15 @@ If "Revise Plan":
 
 ## Error Recovery
 
-### Task Failed
+### Worker Run Failed
+A failed or interrupted worker run does not fail the task. Keep `in_progress` for a retry; set `blocked` only for a concrete operator or prerequisite decision and `failed` only when the task cannot proceed.
+
+1. Confirm the prior worker and any in-flight subprocess or external effect have stopped, using the lifecycle, trace, and board evidence you already have; no extra probe is required. While that stays uncertain, wait or ask instead of dispatching.
+2. Inspect before any cleanup: `hive_worktree_inspect` for source and target identity and dirty state, plus the task's report history, `report.md`, `handoff.md`, and any returned publication flags. Do not delete locks, reset, or clean the worktree. If inspection is unavailable, keep known facts and unknowns in your current response; do not claim saved state. Stop before writing or retrying and escalate for supported or operator recovery.
+3. Record what you observed: `hive_task_update({ task, report })` with an attributed interruption report; status stays `in_progress`. If a retained lock or filesystem fault blocks that write, keep the observation in your response and escalate instead of retrying.
+4. Call `hive_status()`, select the feature immediately before dispatch, and launch a fresh worker in the retained worktree:
 ```
-hive_task_update({ task, status: "failed", summary, report })
-hive_status()  # Confirm current task and registered-worktree state.
-// Before a fresh worker call, use hive_worktree_inspect for source and target identity, diagnose the failure, and retain the existing task/worktree. Select its feature immediately before dispatch.
-task({ subagent_type: "forager-worker", description: "Retry", prompt: `Hive task: ${task}\n\nSelf-contained retry with workspace, target identity, failure evidence, and done criteria` })
+task({ subagent_type: "forager-worker", description: "Retry", prompt: `Hive task: ${task}\n\nSelf-contained retry with workspace, target identity, failure evidence, report paths to read, edits proven to be the prior worker's, and done criteria` })
 ```
 
 Non-Git or report-only retry has no Hive merge, cleanup, rollback, or commit step.

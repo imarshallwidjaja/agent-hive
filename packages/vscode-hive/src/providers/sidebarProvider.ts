@@ -7,6 +7,7 @@ import {
   getContextPath,
   getProjectContextPath,
   getFeaturePath,
+  getTaskHandoffPath,
   getTaskPath,
   listFeatureDirectories,
 } from 'hive-core'
@@ -346,10 +347,11 @@ class TaskItem extends vscode.TreeItem {
     public readonly status: TaskStatus,
     public readonly specPath: string | null,
     public readonly reportPath: string | null,
-    public readonly reportsPath: string
+    public readonly reportsPath: string,
+    public readonly handoffPath: string | null
   ) {
     const name = folder.replace(/^\d+-/, '')
-    const hasFiles = specPath !== null || reportPath !== null || fs.existsSync(reportsPath)
+    const hasFiles = specPath !== null || reportPath !== null || handoffPath !== null || fs.existsSync(reportsPath)
     super(name, hasFiles ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None)
     this.description = status.summary || ''
     this.contextValue = `task-${status.status}${status.origin === 'manual' ? '-manual' : ''}`
@@ -691,10 +693,12 @@ export class HiveSidebarProvider implements vscode.TreeDataProvider<SidebarItem>
       const taskDir = getTaskPath(this.workspaceRoot, featureName, t.folder)
       const specPath = path.join(taskDir, 'spec.md')
       const reportPath = path.join(taskDir, 'report.md')
+      const handoffPath = getTaskHandoffPath(this.workspaceRoot, featureName, t.folder)
       const hasSpec = fs.existsSync(specPath)
       const hasReport = fs.existsSync(reportPath)
+      const hasHandoff = fs.existsSync(handoffPath)
 
-      return new TaskItem(featureName, t.folder, t.status, hasSpec ? specPath : null, hasReport ? reportPath : null, path.join(taskDir, 'reports'))
+      return new TaskItem(featureName, t.folder, t.status, hasSpec ? specPath : null, hasReport ? reportPath : null, path.join(taskDir, 'reports'), hasHandoff ? handoffPath : null)
     })
   }
 
@@ -711,8 +715,11 @@ export class HiveSidebarProvider implements vscode.TreeDataProvider<SidebarItem>
     if (taskItem.specPath) {
       items.push(new TaskFileItem('spec.md', taskItem.specPath))
     }
+    if (taskItem.handoffPath) {
+      items.push(new TaskFileItem('Successor handoff', taskItem.handoffPath))
+    }
     if (taskItem.reportPath) {
-      items.push(new TaskFileItem('Latest handoff report', taskItem.reportPath))
+      items.push(new TaskFileItem('Latest report', taskItem.reportPath))
     }
     if (this.getReportFilenames(taskItem.reportsPath).length > 0) {
       items.push(new ReportHistoryItem(taskItem.reportsPath))
