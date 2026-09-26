@@ -3,6 +3,7 @@ import { createOpencodeClient } from '@opencode-ai/sdk';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import plugin from '../index';
+import { NATIVE_TASK_CONTINUATION_POLICY_PROMPT } from '../agents/process-judgment.js';
 import { parseNativeSkillMarkdown, resolvePackagedSkillsDir } from '../skills/native-materializer.js';
 
 function createFileSkill(
@@ -539,7 +540,7 @@ describe('config hook autoLoadSkills guidance', () => {
 
     for (const [name, prompt] of primaryPrompts) {
       expect(prompt, name).toContain('## Explicit Operator Skill Requirements');
-      expect(prompt, name).toContain('Before relying on a returned native task result, check explicit required-skill compliance');
+      expect(countOccurrences(prompt, NATIVE_TASK_CONTINUATION_POLICY_PROMPT), name).toBe(1);
     }
   });
 

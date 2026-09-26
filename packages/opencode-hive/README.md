@@ -127,7 +127,7 @@ One implementation assignment normally maps to one numbered task. Amend the DAG 
 
 For execution work, treat worker output as evidence to inspect, not proof to trust blindly. OpenCode is the supported execution runtime; if you use `vscode-arkive`, treat it as a review/sidebar companion. Read changed files yourself and run the shared verification commands on the main branch before claiming the batch is complete.
 
-When an operator explicitly requires a skill, include the exact name in the assignment or applicable standing constraints. Each child loads it independently before the covered work; a parent load does not count, and a later load does not satisfy the requirement. Before accepting a returned result, the primary checks the forensic `hive_task_trace` timeline (and `hive_task_trace_content` when needed) for successful loads in that order ([continuation policy](src/agents/process-judgment.ts)). Missing or uncertain evidence does not establish compliance.
+When an operator explicitly requires a skill, include the exact name in the assignment or applicable standing constraints. Each child loads it independently before the covered work; a parent load does not count, and a later load does not satisfy the requirement. A named skill alone does not trigger a trace of a successful return. Audit skill loading only for an explicit operator audit request or a concrete concern about material noncompliance. See [Runtime Session Inspection](docs/HIVE-TOOLS.md#runtime-session-inspection-2-tools) for targeted tracing and audit evidence.
 
 ### Local skill and model use cases
 

@@ -538,16 +538,28 @@ describe('Fresh-session delegation contract', () => {
     }
   });
 
+  it('limits tracing to decision-relevant questions or explicitly requested audits', () => {
+    expect(NATIVE_TASK_CONTINUATION_POLICY_PROMPT).toContain('use it as the normal handoff and apply the required review and verification checks');
+    expect(NATIVE_TASK_CONTINUATION_POLICY_PROMPT).toContain('a specific unresolved question about output, lifecycle, verification evidence, or material instruction compliance could change acceptance or recovery');
+    expect(NATIVE_TASK_CONTINUATION_POLICY_PROMPT).toContain('the operator explicitly requests an audit');
+    expect(NATIVE_TASK_CONTINUATION_POLICY_PROMPT).toContain('stop when it is resolved');
+    expect(NATIVE_TASK_CONTINUATION_POLICY_PROMPT).toContain('Naming a skill alone does not require tracing a successful result');
+    expect(NATIVE_TASK_CONTINUATION_POLICY_PROMPT).toContain('a terminal return need not list skill loads');
+    expect(NATIVE_TASK_CONTINUATION_POLICY_PROMPT).not.toContain('Before relying on a returned native task result, check explicit required-skill compliance');
+  });
+
+  it('keeps requested skill audits evidence-based without treating unknowns as omissions', () => {
+    expect(NATIVE_TASK_CONTINUATION_POLICY_PROMPT).toContain('Required skills still apply before covered work');
+    expect(NATIVE_TASK_CONTINUATION_POLICY_PROMPT).toContain('exact required names before covered work');
+    expect(NATIVE_TASK_CONTINUATION_POLICY_PROMPT).toContain('loading does not prove adherence');
+    expect(NATIVE_TASK_CONTINUATION_POLICY_PROMPT).toContain('Missing or incomplete evidence is not a confirmed omission; keep the audit and affected acceptance question unresolved');
+    expect(NATIVE_TASK_CONTINUATION_POLICY_PROMPT).toContain('use a fresh child after the prior child is terminal, preserving the requirement');
+    expect(NATIVE_TASK_CONTINUATION_POLICY_PROMPT).toContain('keep the affected acceptance question unresolved');
+  });
+
   it('reserves task_id for explicit interruption recovery and rejects inferred continuation', () => {
     for (const [name, prompt] of primaryPrompts) {
       expect(countOccurrences(prompt, NATIVE_TASK_CONTINUATION_POLICY_PROMPT), name).toBe(1);
-      expect(prompt, name).toContain('Before relying on a returned native task result, check explicit required-skill compliance');
-      expect(prompt, name).toContain('from the forensic timeline');
-      expect(prompt, name).toContain('occurred before the covered work');
-      expect(prompt, name).toContain('a later load does not satisfy the requirement');
-      expect(prompt, name).toContain('a self-report is not proof');
-      expect(prompt, name).toContain('incomplete trace evidence is unknown');
-      expect(prompt, name).toContain('A confirmed omission makes the result unsuitable for acceptance');
       expect(prompt, name).toContain('Primaries must not pass `task_id` or infer continuation eligibility from task output');
       expect(prompt, name).toContain('Preserve native `task_id` pass-through only for an explicit operator instruction or an explicit runtime-owned interruption-recovery mechanism');
       expect(prompt, name).toContain('Without that authorization, launch a fresh child');
