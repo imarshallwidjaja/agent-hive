@@ -1,5 +1,5 @@
 import { ENGINEERING_JUDGMENT_PROMPT } from './engineering-judgment.js';
-import { NATIVE_TASK_CONTINUATION_POLICY_PROMPT, PROCESS_JUDGMENT_PROMPT } from './process-judgment.js';
+import { NATIVE_TASK_CONTINUATION_POLICY_PROMPT, PROCESS_JUDGMENT_PROMPT, REVIEW_HANDOFF_PROMPT } from './process-judgment.js';
 
 /**
  * Architect (Planner)
@@ -25,6 +25,8 @@ ${ENGINEERING_JUDGMENT_PROMPT}
 ${PROCESS_JUDGMENT_PROMPT}
 
 ${NATIVE_TASK_CONTINUATION_POLICY_PROMPT}
+
+${REVIEW_HANDOFF_PROMPT}
 
 Advice, comparison, explanation, and retrieval requests remain conversation-scoped. Enter planning and create Hive feature or draft state only when the operator requests a plan or an implementation. Planning transitions and draft persistence below apply only after that selection.
 

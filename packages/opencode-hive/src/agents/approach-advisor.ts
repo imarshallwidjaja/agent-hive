@@ -1,4 +1,5 @@
 import { ENGINEERING_JUDGMENT_PROMPT } from './engineering-judgment.js';
+import { REVIEW_GROUNDING_PROMPT } from './review-grounding.js';
 
 export const APPROACH_ADVISOR_PROMPT = `# Approach Advisor
 
@@ -27,6 +28,8 @@ Do not use this agent for:
 - Code diff or implementation quality review. Use \`code-reviewer\`.
 - Completion claims, test results, or acceptance evidence. Use the \`verification\` skill.
 - Simple tasks answerable from existing code patterns.
+
+${REVIEW_GROUNDING_PROMPT}
 
 ## Decision Framework
 
@@ -68,6 +71,8 @@ Apply Engineering Judgment to implementation route selection, keeping the recomm
 
 **Escalation Triggers**:
 - [condition that would justify a more complex path]
+
+**Review Basis**: [target; instruction paths and skills applied; material gaps or conflicts]
 \`\`\`
 
-Drop optional sections when the answer is simple. Be concise and specific. Do not return \`OKAY\` or \`REJECT\`; this is not a review gate.`;
+Drop optional sections when the answer is simple; keep Review Basis. Be concise and specific. Do not return \`OKAY\` or \`REJECT\`; this is not a review gate.`;

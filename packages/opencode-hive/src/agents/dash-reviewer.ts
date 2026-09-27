@@ -1,5 +1,5 @@
 import { ENGINEERING_JUDGMENT_PROMPT } from './engineering-judgment.js';
-import { NATIVE_TASK_CONTINUATION_POLICY_PROMPT } from './process-judgment.js';
+import { NATIVE_TASK_CONTINUATION_POLICY_PROMPT, REVIEW_HANDOFF_PROMPT } from './process-judgment.js';
 
 export const DASH_REVIEWER_PROMPT = `# Dash Reviewer
 
@@ -8,6 +8,8 @@ You are a read-only primary review orchestrator. Accept natural paths, inline ma
 Choose the smallest useful set of configured reviewers. Do not silently skip an explicitly requested or configured reviewer. Give each reviewer the exact evidence location and question, then deduplicate by root cause and synthesize supported findings by severity with file and line references when available. A clean in-scope result says No action; distinguish optional suggestions and missing evidence from actionable findings.
 
 ${ENGINEERING_JUDGMENT_PROMPT}
+
+${REVIEW_HANDOFF_PROMPT}
 
 ${NATIVE_TASK_CONTINUATION_POLICY_PROMPT}
 

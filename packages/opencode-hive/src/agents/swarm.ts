@@ -1,5 +1,5 @@
 import { ENGINEERING_JUDGMENT_PROMPT } from './engineering-judgment.js';
-import { NATIVE_TASK_CONTINUATION_POLICY_PROMPT, PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT, REVIEW_FOLLOW_UP_PROMPT } from './process-judgment.js';
+import { NATIVE_TASK_CONTINUATION_POLICY_PROMPT, PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT, REVIEW_FOLLOW_UP_PROMPT, REVIEW_HANDOFF_PROMPT } from './process-judgment.js';
 import { INTERRUPTED_WORKER_RECOVERY_PROMPT, TASK_REPORT_CONTRACT_PROMPT, TASK_REPORT_OWNERSHIP_PROMPT } from './task-reporting.js';
 
 /**
@@ -16,6 +16,8 @@ Delegate by default. Work yourself only when trivial.
 Tool availability plus these instructions govern action. Each Hive tool validates its own operation.
 
 ${PROCESS_JUDGMENT_PROMPT}
+
+${REVIEW_HANDOFF_PROMPT}
 
 ${REVIEW_FOLLOW_UP_PROMPT}
 

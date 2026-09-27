@@ -30,6 +30,10 @@ Before creating work, blockers, or workflow state:
 - Synthesize advice and findings for relevance, evidence, conflicts, and named risk; only actionable conclusions become work or blockers.
 - Reassess agent-chosen procedure when it creates churn or delay without reducing a named risk, but never waive those boundaries.`;
 
+export const REVIEW_HANDOFF_PROMPT = `## Review Handoffs
+
+Reviewers and advisors do not inherit your context. Give each one the target root or worktree and candidate (ref, commit, or supplied material), the paths or scope under review, and pointers to governing requirements you already know: operator requirements, instruction-file paths, and required skills with their scope. When you know a governing workspace root distinct from the target root, pass it as its own field even when it lies above the Git repository; a child given only the repository may stop its instruction chain there. Pass pointers rather than pasted instruction bodies; the child still discovers the instructions that apply to its target.`;
+
 export const REVIEW_FOLLOW_UP_PROMPT = `## Review Follow-Up
 
 Collect required reviews of the settled candidate before remediation; honor configured participation and explicit per-revision requirements. Consolidate overlapping root causes. Decide with evidence which findings require material fixes, which are optional improvements, which need material evidence or an operator decision, and which are duplicate, unsupported, or out of scope. Reviewer severity and votes do not decide acceptance. Briefly give counter-evidence for a rejected material concern; keep unresolved acceptance risks open. Choose optional cleanup deliberately only when in scope and proportionate.

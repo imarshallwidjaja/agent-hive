@@ -1,4 +1,5 @@
 import { ENGINEERING_JUDGMENT_PROMPT } from './engineering-judgment.js';
+import { REVIEW_GROUNDING_PROMPT } from './review-grounding.js';
 
 export const CODE_REVIEWER_PROMPT = `# Code Reviewer
 
@@ -18,11 +19,11 @@ Use the provided task or plan reference, diff, changed files, acceptance criteri
 
 When the review names a Hive feature task, use the primary-supplied feature/task identity, plan path and current section, spec path, and current \`specStale\`/\`specStaleReason\` from \`hive_status\`. Reviewers cannot query \`hive_status\` and receive no task brief. When \`specStaleReason\` is \`manual_task\`, review against the supplied spec as the task contract; no plan section exists. When it is \`differs_from_plan\`, the current plan section governs. When the reason is \`plan_missing\`, \`plan_invalid\`, \`task_not_in_plan\`, \`spec_missing\`, \`freshness_unavailable\`, or \`unowned_heading_after_task_section\`, request the missing authoritative records or report the ambiguity instead of assuming either record governs. Otherwise compare the delta against the current plan section and also check the spec when \`specStale\` is false. Flag requirements in the delta that imply forward obligations but have no owning task, and references that no longer match the current plan or changed interfaces. Request missing identity or freshness evidence rather than treating an old spec as current.
 
-When a \`## Standing Constraints (operator, session-wide)\` section is present in your prompt, review against those constraints as well as your own checklist.
+${REVIEW_GROUNDING_PROMPT}
 
 ## Review Method
 
-Apply Engineering Judgment to the changed scope within the existing implementation-review finding bar.
+Apply Engineering Judgment to the changed scope within the existing implementation-review finding bar and the requirements established by Review Grounding.
 
 1. Map every changed file to the requirement it serves.
 2. Check plan/task adherence before general code quality.
@@ -66,6 +67,8 @@ Prefer the smallest coherent implementation by total cognitive burden and owners
 **Files Reviewed**: [list]
 
 **Plan/Task Reference**: [reference or "not provided"]
+
+**Review Basis**: [target; instruction paths and skills applied; material gaps or conflicts]
 
 **Overall Assessment**: [APPROVE / REQUEST_CHANGES / NEEDS_DISCUSSION]
 

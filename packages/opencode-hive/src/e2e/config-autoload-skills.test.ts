@@ -3,7 +3,8 @@ import { createOpencodeClient } from '@opencode-ai/sdk';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import plugin from '../index';
-import { NATIVE_TASK_CONTINUATION_POLICY_PROMPT } from '../agents/process-judgment.js';
+import { NATIVE_TASK_CONTINUATION_POLICY_PROMPT, REVIEW_HANDOFF_PROMPT } from '../agents/process-judgment.js';
+import { REVIEW_GROUNDING_PROMPT } from '../agents/review-grounding.js';
 import { parseNativeSkillMarkdown, resolvePackagedSkillsDir } from '../skills/native-materializer.js';
 
 function createFileSkill(
@@ -507,7 +508,7 @@ describe('config hook autoLoadSkills guidance', () => {
     expect(warnings.some((message) => message.includes('native-file-skill'))).toBe(false);
   });
 
-  it('carries the explicit skill contract into built-in and custom advisors and primaries', async () => {
+  it('carries the explicit skill contract and review grounding into built-in and custom reviewers and primaries', async () => {
     writeHiveConfig(testRoot, {
       agentMode: 'unified',
       customAgents: {
@@ -516,6 +517,10 @@ describe('config hook autoLoadSkills guidance', () => {
           description: 'Use for design route advice.',
           autoLoadSkills: [],
         },
+        'plan-strict': { baseAgent: 'plan-reviewer', description: 'Use for strict plan readiness review.' },
+        'code-docs': { baseAgent: 'code-reviewer', description: 'Use for documentation-heavy code review.' },
+        'simplicity-docs': { baseAgent: 'simplicity-reviewer', description: 'Use for documentation cleanup review.' },
+        'security-authz': { baseAgent: 'vulnerability-reviewer', description: 'Use for authorization attack paths.' },
       },
     });
 
@@ -541,6 +546,18 @@ describe('config hook autoLoadSkills guidance', () => {
     for (const [name, prompt] of primaryPrompts) {
       expect(prompt, name).toContain('## Explicit Operator Skill Requirements');
       expect(countOccurrences(prompt, NATIVE_TASK_CONTINUATION_POLICY_PROMPT), name).toBe(1);
+      expect(countOccurrences(prompt, REVIEW_HANDOFF_PROMPT), name).toBe(1);
+      expect(prompt, name).not.toContain(REVIEW_GROUNDING_PROMPT);
+    }
+
+    for (const name of [
+      'approach-advisor', 'advisor-design',
+      'plan-reviewer', 'plan-strict',
+      'code-reviewer', 'code-docs',
+      'simplicity-reviewer', 'simplicity-docs',
+      'vulnerability-reviewer', 'security-authz',
+    ]) {
+      expect(countOccurrences(getAgentPrompt(opencodeConfig, name), REVIEW_GROUNDING_PROMPT), name).toBe(1);
     }
   });
 

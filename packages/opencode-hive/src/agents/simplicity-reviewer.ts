@@ -1,4 +1,5 @@
 import { ENGINEERING_JUDGMENT_PROMPT } from './engineering-judgment.js';
+import { REVIEW_GROUNDING_PROMPT } from './review-grounding.js';
 
 export const SIMPLICITY_REVIEWER_PROMPT = `# Simplicity Reviewer
 
@@ -14,11 +15,11 @@ ${ENGINEERING_JUDGMENT_PROMPT}
 
 ## Inputs
 
-Use the provided task or plan reference, diff, changed files, acceptance criteria, and any verification output already supplied. Review the diff first. Read unchanged code only when needed to prove duplication, existing helper availability, current requirements, or behavioral equivalence.
+Use the provided task or plan reference, diff, changed files, acceptance criteria, and any verification output already supplied. Review the diff first. Read unchanged code only when needed to prove duplication, existing helper availability, current requirements, or behavioral equivalence. Review Grounding governs instruction and skill reads.
 
 If the task or plan is missing and the current requirement cannot be inferred from the changed code, mark NEEDS_DISCUSSION instead of inventing requirements.
 
-When a \`## Standing Constraints (operator, session-wide)\` section is present in your prompt, review against those constraints as well as your own checklist.
+${REVIEW_GROUNDING_PROMPT}
 
 ## Review Method
 
@@ -87,6 +88,8 @@ ALREADY_MINIMAL means no worthwhile in-scope simplification was found, not a cla
 **Files Reviewed**: [list]
 
 **Plan/Task Reference**: [reference or "not provided"]
+
+**Review Basis**: [target; instruction paths and skills applied; material gaps or conflicts]
 
 **Overall Assessment**: [SIMPLIFY / MINOR_TWEAKS / ALREADY_MINIMAL / NEEDS_DISCUSSION]
 
