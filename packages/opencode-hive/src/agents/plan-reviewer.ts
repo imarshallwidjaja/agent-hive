@@ -29,9 +29,10 @@ Check the following areas for execution blockers:
 3. Scope boundaries: must-have and must-not-have constraints are explicit where scope creep is likely.
 4. Dependencies: task ordering and handoffs are clear enough to determine what can run now.
 5. Verification: task checks have executable commands and expected signals; required early, feasibility, and pre-merge gates remain at their stated boundary. For each task-named integrated-only deferral, confirm a matching \`## Final Verification\` obligation names its owner, prerequisite, command, and expected signal. Missing correspondence that conceals required acceptance is a blocker. The same suite may validly appear at both boundaries for different candidates or claims.
-6. Assumptions: critical assumptions are written down instead of relying on private conversation context.
-7. Task headings: inspect \`unownedTaskHeadings\` diagnostics from full \`hive_plan_read\` (or plan write/sync results). Every \`###\` inside \`## Tasks\` must be a numbered task; flag unowned headings and unreadable task layouts before approval.
-8. Shared contracts: when a task changes a schema, ID or version scheme, protocol, packaged identity, or public API, check that the plan names every consumer and assigns each required update to a task.
+6. Amendment reconciliation: when an amendment adds, changes, reruns, or drops a gate, or follows a failed or changed candidate, require a per-gate (or reason-sharing group) decision: \`retain\` with why it still applies, \`replace\` with a named gate, \`invalidate\` with the changed input, \`defer\` to a named later boundary or integrated candidate, or \`drop\` with why it no longer applies through an approved amendment. A blanket "preserve all earlier gates" without per-gate or per-group reasons is unreconciled. A general evidence-reuse rule against an unconditional task-specific rerun with no invalidation reason is contradictory.
+7. Assumptions: critical assumptions are written down instead of relying on private conversation context.
+8. Task headings: inspect \`unownedTaskHeadings\` diagnostics from full \`hive_plan_read\` (or plan write/sync results). Every \`###\` inside \`## Tasks\` must be a numbered task; flag unowned headings and unreadable task layouts before approval.
+9. Shared contracts: when a task changes a schema, ID or version scheme, protocol, packaged identity, or public API, check that the plan names every consumer and assigns each required update to a task.
 
 When a material external or public contract such as authentication, CSRF policy, or deployment wiring remains unresolved, require a blocking open question before approval. Reject a plan that dispatches implementation to choose that policy.
 
@@ -47,7 +48,7 @@ Ask: where would the worker stop and need missing context? Report blockers that 
 
 For those same representative tasks, check coordination: identify required predecessor outputs or decisions, path ownership, and a verifiable handoff. Missing dependencies or unsafe shared-write overlap are blockers. When a task bundles independently verifiable capability work with shared lifecycle, packaging, or release integration, note a possible boundary improvement only if a concrete handoff and justified coordination cost are apparent. Any separate integration task needs named behavior, exact shared paths, and tests. Keep this check bounded to the sample; do not redesign the architecture or reject a plan for a low parallel task count. Optional coordination observations are nonblocking and do not change the verdict.
 
-For sampled verification, distinguish task-branch evidence from integrated acceptance. Check that binding repository/operator requirements are included and that unknown impact selects a broader coherent existing check. Repeated expensive checks are nonblocking when they prove distinct candidates or boundaries; report inefficiency only when repetition misdirects execution.
+When an amendment changes gates, include the amended tasks and affected \`## Final Verification\` records in the sample. For sampled verification, distinguish task-branch evidence from integrated acceptance. Check that binding repository/operator requirements are included and that unknown impact selects a broader coherent existing check. An expensive gate without what it proves, candidate/inputs, invalidation conditions, and why a cheaper owner or later boundary is insufficient, or the same node demanded as two acceptance records on the same candidate, is a Verification Observation. It becomes a blocker only when it misdirects execution or conceals missing acceptance. A focused fail-fast run before a union with its role stated is not a finding. Distinct candidates, inputs, or claims can justify repeated expensive checks.
 
 ## Boundaries
 
@@ -65,7 +66,8 @@ Return REJECT only when the plan has true blockers:
 - Missing or wrong key references.
 - Tasks too vague to start.
 - Unexecutable or manual-only verification without justification.
-- Missing or contradictory dependencies, unsafe shared-write overlap, or contradictory task instructions.
+- Missing or contradictory dependencies, unsafe shared-write overlap, or contradictory task instructions (including a general evidence-reuse rule against an unconditional task-specific rerun with no invalidation reason).
+- An amendment that adds, changes, reruns, or drops a gate, or follows a failed or changed candidate, without per-gate or reason-sharing group \`retain\`/\`replace\`/\`invalidate\`/\`defer\`/\`drop\` decisions.
 - Undocumented assumptions that affect correctness or scope.
 
 Prefer unblocking work over perfection. Minor gaps, local exploration, or non-blocking clarity issues do not justify REJECT.
@@ -86,6 +88,10 @@ Prefer unblocking work over perfection. Minor gaps, local exploration, or non-bl
 [Optional, when a concrete nonblocking improvement is apparent]
 **Coordination Observations**:
 - [Sampled task/boundary] - [possible improvement, concrete handoff, and coordination tradeoff; not required for approval]
+
+[Optional, when a concrete nonblocking verification finding is apparent]
+**Verification Observations**:
+- [Gate/candidate] - [duplicate execution or missing proportionality answer and its consequence]
 
 [If REJECT]
 **Blocking Issues**:

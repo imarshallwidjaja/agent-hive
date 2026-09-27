@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Planning guidance now records candidate-bound gate evidence, reconciles verification changes in amendments, and checks costly reruns against affected inputs before approval.
 - Agent guidance now orients workers from live task records, refreshes stale pending specs, repairs unowned plan task headings, and promotes accepted forward obligations into successor plan tasks. Planning and review guidance assigns shared-contract consumer updates explicitly.
 - Task status and immutable report history replace execution attempts. Feature or ad-hoc Hive worktrees are the default for tracked Git writes, with narrow direct-checkout exceptions; workers commit the source and primaries inspect, merge, and clean up. Background job tracking remains observational.
 - Feature targets on individual calls no longer change the session route. Select a feature with `hive_feature_select` before delegation.

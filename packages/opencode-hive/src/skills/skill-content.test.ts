@@ -250,6 +250,49 @@ describe('skill content', () => {
     expect(template).toContain('hive_feature_complete` does not enforce these checks');
   });
 
+  it('plans candidate-bound gates and reconciles amendment evidence before approval', () => {
+    const template = BUILTIN_SKILLS.find((entry) => entry.name === 'writing-plans')!.template;
+    const section = template.slice(template.indexOf('## Verification Planning'), template.indexOf('## Worker-Branch Task Granularity'));
+
+    for (const token of [
+      'local iteration', 'task acceptance', 'integration checkpoint', 'release certification',
+      'passed and applies', 'invalidated', 'not run', 'failed', 'blocked',
+      'retain', 'replace', 'invalidate', 'defer', 'drop',
+    ]) {
+      expect(section, token).toContain(`\`${token}\``);
+    }
+    for (const requirement of [
+      'canonical test layer',
+      'candidate and input identity',
+      'A cheap gate with no mutable inputs needs one line: owner, command, expected signal, and "no mutable inputs"',
+      'replaces the task\'s current `Verify` list and decision table',
+      'A certificate is the set of candidate-bound gate records',
+      'A record counts only while it is `passed and applies`',
+      'an approved explicit gate stays binding until an approved amendment',
+      'A blanket "preserve all earlier gates" is unreconciled',
+      'what failure can it detect from this delta',
+      'why is a cheaper owning gate insufficient',
+      'is the same gate already due at a later boundary',
+      'what role does each run serve',
+      'Reproduce the failure red with the smallest valid check at the owning layer',
+      'Verify the owner and affected consumers',
+      'Physical-STAC correction.',
+      'Justified broad rerun.',
+    ]) {
+      expect(section, requirement).toContain(requirement);
+    }
+    const recovery = [
+      'Retain the first failure and its cleanup evidence',
+      'Reproduce the failure red with the smallest valid check at the owning layer',
+      'Verify the owner and affected consumers',
+      'Decide from input impact whether the certificate is invalidated',
+    ].map((step) => section.indexOf(step));
+    expect(recovery.every((index) => index >= 0)).toBe(true);
+    expect(recovery).toEqual([...recovery].sort((a, b) => a - b));
+    expect(template).toContain('replacing each rather than appending');
+    expect(template).toContain('- [Integrated acceptance gate record per Verification Planning; match any task-named integrated-only deferral]');
+  });
+
   it('ties verification claims to observed output and the candidate and inputs tested', () => {
     const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'verification');
     const template = skill!.template;
@@ -656,6 +699,9 @@ describe('skill content', () => {
     expect(skill!.template).toContain('a branch result does not establish integrated acceptance');
     expect(skill!.template).toContain('every task-named integrated deferral');
     expect(skill!.template).toContain('After a correction, retain the failure evidence');
+    expect(skill!.template).toContain('reproduce the first failure with the smallest valid check before rerunning it');
+    expect(skill!.template).toContain("request that amendment through the primary prompt's amendment and approval procedure");
+    expect(skill!.template).toContain('An approved explicit gate stays binding until an approved amendment retains, replaces, defers, or drops it');
     expect(skill!.template).toContain('Missing output or uncertain applicability means run the required check on the current target');
   });
 

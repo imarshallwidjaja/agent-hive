@@ -1451,6 +1451,8 @@ describe('Architect (Planner) prompt', () => {
     expect(ARCHITECT_BEE_PROMPT).toContain('Require proportionate verification');
     expect(ARCHITECT_BEE_PROMPT).toContain('keep tests with the implementation task');
     expect(ARCHITECT_BEE_PROMPT).toContain('do not create separate test tasks by default');
+    expect(ARCHITECT_BEE_PROMPT).toContain('Use writing-plans Verification Planning for gate records, boundaries, the candidate/input decision table, amendment reconciliation, proportionality, and failed-broad-run recovery');
+    expect(ARCHITECT_BEE_PROMPT).toContain('amending a verification gate to add, change, rerun, or drop it');
   });
 
   it('creates the feature before writing draft context', () => {
@@ -1980,6 +1982,14 @@ describe('Plan reviewer prompt', () => {
     expect(PLAN_REVIEWER_PROMPT).toContain('owner, prerequisite, command, and expected signal');
     expect(PLAN_REVIEWER_PROMPT).toContain('Missing correspondence that conceals required acceptance is a blocker');
     expect(PLAN_REVIEWER_PROMPT).toContain('different candidates or claims');
+    expect(PLAN_REVIEWER_PROMPT).toContain('6. Amendment reconciliation: when an amendment adds, changes, reruns, or drops a gate, or follows a failed or changed candidate');
+    expect(PLAN_REVIEWER_PROMPT).toContain('A blanket "preserve all earlier gates" without per-gate or per-group reasons is unreconciled');
+    expect(PLAN_REVIEWER_PROMPT).toContain('unconditional task-specific rerun with no invalidation reason');
+    expect(PLAN_REVIEWER_PROMPT).toContain('same node demanded as two acceptance records on the same candidate');
+    expect(PLAN_REVIEWER_PROMPT).toContain('is a Verification Observation. It becomes a blocker only when it misdirects execution or conceals missing acceptance');
+    expect(PLAN_REVIEWER_PROMPT).toContain('A focused fail-fast run before a union with its role stated is not a finding');
+    expect(PLAN_REVIEWER_PROMPT).toContain('**Verification Observations**:');
+    expect(PLAN_REVIEWER_PROMPT).toContain('When an amendment changes gates, include the amended tasks and affected `## Final Verification` records in the sample');
   });
 
   it('blocks unresolved material public contracts before approval', () => {

@@ -69,6 +69,7 @@ Dependency decides serial vs parallel. Wait mode decides blocking foreground vs 
 □ No critical ambiguities remaining?
 □ Technical approach decided?
 □ Testing and verification strategy resolved from evidence or confirmed where material?
+□ Required gates reconciled and proportionate to this candidate's changed inputs?
 □ No blocking questions outstanding?
 
 ALL YES after planning is selected → Announce "Requirements clear. Generating plan." → Write plan
@@ -85,6 +86,8 @@ Resolve the testing and verification strategy from repository evidence, requirem
 Select verification from changed behavior, risk boundaries, affected owners and consumers, and binding repository/operator requirements. If the repository has no gate catalogue, inspect existing scripts, CI, and test owners. When impact or consumer reach cannot be bounded, select a broader coherent existing check and identify any missing check instead of describing an empty pass.
 
 Task \`Verify\` may include a required early, feasibility, or pre-merge gate. Keep approved checks at their specified boundary and record the exact command and expected signal. Name each integrated-only deferral in its task and match it under \`## Final Verification\` with an owner, prerequisite, command, and expected signal. Final acceptance names unique integrated proof rather than copying task commands; the same suite may appear at both boundaries when it proves different candidates or claims.
+
+Use writing-plans Verification Planning for gate records, boundaries, the candidate/input decision table, amendment reconciliation, proportionality, and failed-broad-run recovery.
 
 When a material external or public contract such as authentication, CSRF policy, or deployment wiring remains unresolved, record it as a blocking open question before approval. Do not dispatch implementation and ask a worker to choose that policy.
 
@@ -128,7 +131,7 @@ Plan prose is not a delivery mechanism for constraints; nothing parses it.
 
 ## Plan Output
 
-When drafting a plan or materially revising task boundaries or dependencies, load the native skill "writing-plans". Use Engineering Judgment to make requested behavior, call-site contracts, ownership boundaries, risk policy, and justified preparatory refactoring executable without turning task boundaries into presumed module boundaries.
+When drafting a plan, materially revising task boundaries or dependencies, or amending a verification gate to add, change, rerun, or drop it, load the native skill "writing-plans". Use Engineering Judgment to make requested behavior, call-site contracts, ownership boundaries, risk policy, and justified preparatory refactoring executable without turning task boundaries into presumed module boundaries.
 
 \`\`\`
 hive_plan_write({ feature: "feature-name", content: "..." })
