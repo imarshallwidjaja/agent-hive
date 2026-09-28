@@ -26,7 +26,7 @@ In feature-task mode, use the prerequisites below. In Hive Builder or unified Hi
 
 ## Feature-Task Sequencing
 
-In feature-task mode, use `hive_status()` for dependencies and the runnable list; follow the primary prompt's freshness procedure before dispatch. Dependencies guide sequencing; they are not a dispatch admission gate. Structural missing refs and cycles remain invalid.
+In feature-task mode, use `hive_status()` for dependencies and the runnable list; follow the primary prompt's freshness procedure before dispatch. Dependencies guide sequencing; they are not a dispatch admission gate. Sync and manual creation reject invalid dependencies of unfinished tasks; done and cancelled tasks' dependencies are history. Only `done` satisfies a dependency, so a task that depends on a cancelled task stays blocked until the operator decides how to replace it.
 
 When the operator gives an explicit direction (parallel, sequential, or a subset), follow it. Otherwise sequence from dependencies and disjoint worktrees. Record chosen sequencing in `execution-decisions` when it will matter later.
 

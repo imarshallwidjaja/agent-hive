@@ -151,7 +151,7 @@ All bundled source consumers must use the hash-aware signatures together. Mixed 
 | `baseCommits` | map? | Base commit hashes keyed by repository ID |
 | `repoIds` | string[]? | Persisted repository selection for a manifest-backed task |
 | `subtasks` | object[]? | Optional nested subtask state when a task is decomposed during execution. |
-| `dependsOn` | string[]? | Task folder names this task depends on (for example, `["01-setup"]`). Plan tasks resolve this from `plan.md` `Depends on:` annotations during `hive_tasks_sync`; manual tasks persist an explicit array and default to `[]`. |
+| `dependsOn` | string[]? | Task folder names this task depends on (for example, `["01-setup"]`). Plan tasks resolve this from `plan.md` `Depends on:` annotations during `hive_tasks_sync`; manual tasks persist an explicit array and default to `[]`. A missing field in an older record reads as `[]`; reads never rewrite the file. |
 | `metadata` | object? | Structured manual-task metadata used to generate `spec.md`. Omitted for normal plan-backed tasks. |
 
 **Dependency rules**:
@@ -160,9 +160,12 @@ All bundled source consumers must use the hash-aware signatures together. Mixed 
 - Manual tasks always write explicit dependency metadata. Omitting `dependsOn` at creation time means `[]`, not "infer the previous task".
 - manual tasks are append-only.
 - If `order` is omitted, Hive stores the next order automatically; explicit `order` is accepted only when it equals that next order, so intermediate insertion requires plan amendment.
-- Manual dependencies may name unfinished existing tasks. They block readiness until those tasks are `done`; missing references, self-dependencies, and cycles are rejected.
+- Manual dependencies may name unfinished existing tasks. They block readiness until those tasks are `done`.
 - Review-sourced manual tasks cannot declare explicit dependencies. If review feedback changes downstream sequencing, dependencies, or scope, amend `plan.md` instead.
-- The dependency graph helper applies implicit sequential ordering when `dependsOn` is missing from a legacy task record (N depends on N-1). `hive_status` supplies `[]` for a missing field, so its readiness output does not use that fallback.
+- A missing `dependsOn` field means no dependencies. Folder numbers never imply an edge; the "previous task" default for a plan task without a `Depends on:` line is applied when sync compiles the plan and is stored explicitly.
+- Sync and manual creation reject a resulting graph in which an unfinished task (`pending`, `in_progress`, `blocked`, `failed`, `partial`) depends on a missing task or itself, or unfinished tasks form a cycle. A rejected call writes no task files.
+- Dependencies of `done` and `cancelled` tasks are history. They are kept unchanged and are not validated. A done or cancelled dependency target must exist, and only `done` satisfies it.
+- Cancelled tasks are retained across syncs with their artifacts. Cancelling releases the task's outgoing dependencies from validation; it does not rewire tasks that depend on it. Repair routes are listed in [HIVE-TOOLS.md](HIVE-TOOLS.md#task-dependency-graph).
 
 ### Manual-task metadata
 
@@ -197,7 +200,8 @@ hive_tasks_sync({ refreshPending: true })
 - Updates `status.json.repoIds` from `Repos:` in the plan (or removes it if the plan no longer declares repositories)
 - Regenerates `spec.md`
 - Deletes pending plan-backed tasks removed from `plan.md`
-- Preserves manual tasks and any task with execution history (`in_progress`, `done`, `blocked`, `failed`, `partial`)
+- Preserves manual tasks, cancelled tasks, and any task with execution history (`in_progress`, `done`, `blocked`, `failed`, `partial`)
+- Rejects the whole sync, before any write, when the resulting unfinished-task graph is invalid; refreshing a pending task's outdated dependencies is one of the repair routes
 
 Ad-hoc orchestration uses `hive_adhoc_worktree_create`, `hive_adhoc_worktree_merge`, and `hive_adhoc_worktree_cleanup` for Git worktree placement. Manual tasks remain for full Hive DAG follow-ups. Route sequencing or scope changes back through `plan.md`, then refresh pending tasks from that graph.
 
@@ -245,6 +249,7 @@ Each entry in `tasks` includes:
 - `status` (string)
 - `origin` (string)
 - `planTitle`, `summary`, and `repoIds` (optional)
+- `dependsOn` (string[]), in both `tasks` and `feature.tasks`: the stored dependency folders, `[]` when the field is missing. Done and cancelled tasks keep theirs as history.
 - `specStale` (true/false/null), `specStaleReason`, and `hasHandoff` (boolean), in both `tasks` and `feature.tasks`. `differs_from_plan` compares the stored spec with current generated text for that task; unrelated plan edits do not make it stale. Null reasons cover manual tasks, missing/invalid plans, missing plan task or spec, and unowned headings after the task section.
 
 The full `status.json` may contain a `blocker` (`TaskBlocker`, optional and present only while `status` is `blocked`). `TaskBlocker` contains a required nonblank `reason` and optional `options`, `recommendation`, and `context`. An explicit status leaving blocked clears the blocker. Read `report.md` and `reports/{N}.md` for report bodies.
@@ -258,7 +263,7 @@ blocked    # map: pending task folder -> array of unmet dependency folders
 
 Rules:
 - Only `done` satisfies dependencies.
-- Only pending tasks appear in `runnable` or `blocked`. `hive_status` reads stored `dependsOn` and treats a missing field as `[]`; legacy numeric sequential fallback in the graph helper is not applied by this tool.
+- Only pending tasks appear in `runnable` or `blocked`. Both are computed from the same `dependsOn` values the task lists report.
 - These arrays describe dependency readiness; they are not a dispatch-admission gate.
 
 Example:
@@ -266,14 +271,14 @@ Example:
 ```json
 {
   "feature": { "name": "example", "status": "executing", "tasks": [
-    { "folder": "01-setup", "name": "setup", "status": "done", "origin": "plan" },
-    { "folder": "02-core", "name": "core", "status": "pending", "origin": "plan" },
-    { "folder": "03-ui", "name": "ui", "status": "pending", "origin": "plan" }
+    { "folder": "01-setup", "name": "setup", "status": "done", "origin": "plan", "dependsOn": [] },
+    { "folder": "02-core", "name": "core", "status": "pending", "origin": "plan", "dependsOn": ["01-setup"] },
+    { "folder": "03-ui", "name": "ui", "status": "pending", "origin": "plan", "dependsOn": ["02-core"] }
   ], "hasPlan": true, "commentCount": 1, "reviewCounts": { "plan": 1 } },
   "tasks": [
-    { "folder": "01-setup", "name": "setup", "status": "done", "origin": "plan" },
-    { "folder": "02-core", "name": "core", "status": "pending", "origin": "plan" },
-    { "folder": "03-ui", "name": "ui", "status": "pending", "origin": "plan" }
+    { "folder": "01-setup", "name": "setup", "status": "done", "origin": "plan", "dependsOn": [] },
+    { "folder": "02-core", "name": "core", "status": "pending", "origin": "plan", "dependsOn": ["01-setup"] },
+    { "folder": "03-ui", "name": "ui", "status": "pending", "origin": "plan", "dependsOn": ["02-core"] }
   ],
   "runnable": ["02-core"],
   "blocked": { "03-ui": ["02-core"] },

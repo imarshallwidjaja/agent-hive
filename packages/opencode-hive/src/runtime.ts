@@ -699,7 +699,6 @@ const plugin: Plugin = async (ctx) => {
       execute: async ({ feature }, context) => {
         const selected = requireFeature(feature, context);
         const tasks = taskService.list(selected);
-        const graph = computeRunnableAndBlocked(tasks.map((task) => ({ folder: task.folder, status: task.status, dependsOn: taskService.getRawStatus(selected, task.folder)?.dependsOn ?? [] })));
         const worktrees = await worktreeService.list(selected);
         const info = featureService.getInfo(selected);
         let freshness = new Map<string, TaskSpecFreshness>();
@@ -709,8 +708,10 @@ const plugin: Plugin = async (ctx) => {
         } catch (error) {
           specFreshnessError = error instanceof Error ? error.message : String(error);
         }
-        // One projection for both task lists so they cannot disagree.
+        // One projection for both task lists and readiness so they cannot disagree.
         type TaskStateProjection = {
+          /** Stored dependency folders; a legacy status without the field reads as []. */
+          dependsOn: string[];
           specStale: boolean | null;
           specStaleReason: TaskSpecFreshnessReason | 'freshness_unavailable';
           hasHandoff: boolean;
@@ -722,11 +723,13 @@ const plugin: Plugin = async (ctx) => {
         ]);
         for (const folder of projectedFolders) {
           taskState.set(folder, {
+            dependsOn: taskService.getRawStatus(selected, folder)?.dependsOn ?? [],
             specStale: freshness.get(folder)?.specStale ?? null,
             specStaleReason: freshness.get(folder)?.specStaleReason ?? 'freshness_unavailable',
             hasHandoff: fs.existsSync(getTaskHandoffPath(projectRoot, selected, folder)),
           });
         }
+        const graph = computeRunnableAndBlocked(tasks.map((task) => ({ folder: task.folder, status: task.status, dependsOn: taskState.get(task.folder)!.dependsOn })));
         const withTaskState = <T extends { folder: string }>(task: T) => ({ ...task, ...taskState.get(task.folder) });
         return json({
           feature: info ? { ...info, tasks: info.tasks.map(withTaskState) } : info,

@@ -267,7 +267,7 @@ Task `status.json` fields and who writes them:
 | `summary` | Primary via `hive_task_update` | On recorded disposition |
 | `repoIds` | `hive_tasks_sync` / `hive_task_create` | On plan sync or manual task creation |
 | `blocker` | Primary via `hive_task_update` | When blocked status is recorded |
-| `dependsOn` | `hive_tasks_sync` / `hive_task_create` | On plan sync or manual task creation |
+| `dependsOn` | `hive_tasks_sync` / `hive_task_create` | On plan sync for created or refreshed pending plan tasks, or on manual task creation; other records keep their stored value |
 | `metadata` | `hive_task_create` | On structured manual task creation |
 
 Reports are separate files: `report.md` holds the latest report and `reports/<number>.md` preserves each update. A report write precedes the status write; if an update fails partway through, inspect the returned persistence stage and on-disk files before retrying.
@@ -291,8 +291,8 @@ These operations are safe to retry:
 These operations have side effects:
 - `hive_feature_create` - Creates feature directory (errors if exists)
 - `hive_plan_write` - Overwrites plan.md, clears comments
-- `hive_tasks_sync` - Reconciles plan-backed tasks; `refreshPending: true` rewrites pending plan tasks from `plan.md`, updates `planTitle` / `dependsOn`, regenerates `spec.md`, and removes pending plan tasks deleted from the plan while preserving manual tasks and execution history
-- `hive_task_create` - Creates a manual task with explicit `dependsOn` and optional structured metadata
+- `hive_tasks_sync` - Reconciles plan-backed tasks; `refreshPending: true` rewrites pending plan tasks from `plan.md`, updates `planTitle` / `dependsOn`, regenerates `spec.md`, and removes pending plan tasks deleted from the plan while preserving manual tasks, cancelled tasks, and execution history. It derives all actions first and writes nothing when the resulting unfinished-task graph is invalid; it is not transactional after validation passes
+- `hive_task_create` - Creates a manual task with explicit `dependsOn` and optional structured metadata, after the same unfinished-task graph check
 - `hive_task_update` - Optional status/summary/blocker/report/handoff; omissions preserved; inspect written files before retry and never resubmit a report already in history
 - `hive_worktree_create` - Creates or selects a task Git workspace
 - `hive_worktree_merge` - Merges a task branch
@@ -303,7 +303,8 @@ These operations have side effects:
 
 Manual tasks are first-class task records, not loose notes.
 
-- Manual tasks always persist an explicit `dependsOn` array. Omitting it means `[]`, not "infer the previous task".
+- Manual tasks always persist an explicit `dependsOn` array. Omitting it means `[]`, not "infer the previous task". A stored record without the field also reads as `[]`.
+- Dependencies of unfinished tasks (`pending`, `in_progress`, `blocked`, `failed`, `partial`) are active constraints: sync and manual creation reject missing targets, self-references, and cycles among them. Dependencies of `done` and `cancelled` tasks are history and are not revalidated. Cancelled tasks are retained and never satisfy a prerequisite. [Hive Tools](../packages/opencode-hive/docs/HIVE-TOOLS.md#task-dependency-graph) lists the repair routes.
 - Structured manual-task `metadata` can carry `goal`, `description`, `acceptanceCriteria`, `references`, `files`, `reason`, and `source` so Hive can generate a worker-ready `spec.md`.
 - Review-sourced manual tasks are for isolated follow-up only. If feedback changes sequencing, dependencies, or scope, update `plan.md` and run `hive_tasks_sync({ refreshPending: true })` so pending plan tasks match the amended DAG.
 

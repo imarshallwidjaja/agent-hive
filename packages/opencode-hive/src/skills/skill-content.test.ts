@@ -640,6 +640,8 @@ describe('skill content', () => {
 
     expect(dispatch).toContain('In Hive Builder or unified Hive ad-hoc mode, load `orchestrating-ad-hoc-work`');
     expect(dispatch).toContain('In feature-task mode, use `hive_status()`');
+    expect(dispatch).toContain("Sync and manual creation reject invalid dependencies of unfinished tasks; done and cancelled tasks' dependencies are history.");
+    expect(dispatch).toContain('Only `done` satisfies a dependency, so a task that depends on a cancelled task stays blocked');
     expect(dispatch).toContain('In ad-hoc mode, return result state and its exact pin to `orchestrating-ad-hoc-work`');
     expect(dispatch).toContain('In feature-task mode, follow binding repository/operator checks and the plan\'s task and final-verification gates');
     expect(dispatch).toContain('In ad-hoc mode, return result and resource state to `orchestrating-ad-hoc-work`');

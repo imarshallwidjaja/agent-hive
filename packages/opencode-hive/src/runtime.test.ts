@@ -821,21 +821,38 @@ describe('coordinated runtime hard cut', () => {
     const plan = JSON.parse(await loaded.tool!.hive_plan_read.execute({}, caller));
     fs.writeFileSync(path.join(path.dirname(written.path), 'plan.md'), plan.content.replace('Build.', 'Build again.'));
     const status = JSON.parse(await loaded.tool!.hive_status.execute({}, caller));
-    const projected = (entries: any[]) => entries.map(({ folder, specStale, specStaleReason, hasHandoff }) => ({ folder, specStale, specStaleReason, hasHandoff }));
+    const projected = (entries: any[]) => entries.map(({ folder, dependsOn, specStale, specStaleReason, hasHandoff }) => ({ folder, dependsOn, specStale, specStaleReason, hasHandoff }));
     expect(projected(status.tasks)).toEqual([
-      { folder: '01-setup', specStale: false, specStaleReason: 'matches_plan', hasHandoff: true },
-      { folder: '02-build', specStale: true, specStaleReason: 'differs_from_plan', hasHandoff: false },
+      { folder: '01-setup', dependsOn: [], specStale: false, specStaleReason: 'matches_plan', hasHandoff: true },
+      { folder: '02-build', dependsOn: ['01-setup'], specStale: true, specStaleReason: 'differs_from_plan', hasHandoff: false },
     ]);
     expect(projected(status.feature.tasks)).toEqual(projected(status.tasks));
     expect(status).not.toHaveProperty('specFreshnessError');
+    expect(status.runnable).toEqual(['01-setup']);
+    expect(status.blocked).toEqual({ '02-build': ['01-setup'] });
+
+    // A terminal record keeps its historical edges; a legacy status without dependsOn reads as [].
+    await loaded.tool!.hive_task_update.execute({ task: '02-build', status: 'done' }, caller);
+    const setupStatusPath = path.join(tasksPath, '01-setup', 'status.json');
+    const { dependsOn: _omitted, ...legacySetup } = JSON.parse(fs.readFileSync(setupStatusPath, 'utf8'));
+    fs.writeFileSync(setupStatusPath, JSON.stringify(legacySetup));
+    const edges = JSON.parse(await loaded.tool!.hive_status.execute({}, caller));
+    const dependencyView = (entries: any[]) => entries.map(({ folder, status, dependsOn }) => ({ folder, status, dependsOn }));
+    expect(dependencyView(edges.tasks)).toEqual([
+      { folder: '01-setup', status: 'pending', dependsOn: [] },
+      { folder: '02-build', status: 'done', dependsOn: ['01-setup'] },
+    ]);
+    expect(dependencyView(edges.feature.tasks)).toEqual(dependencyView(edges.tasks));
+    expect(edges.runnable).toEqual(['01-setup']);
+    expect(edges.blocked).toEqual({});
 
     fs.rmSync(path.join(tasksPath, '02-build', 'spec.md'));
     fs.mkdirSync(path.join(tasksPath, '02-build', 'spec.md'));
     const degraded = JSON.parse(await loaded.tool!.hive_status.execute({}, caller));
     expect(degraded.specFreshnessError).toMatch(/EISDIR/);
     expect(projected(degraded.tasks)).toEqual([
-      { folder: '01-setup', specStale: null, specStaleReason: 'freshness_unavailable', hasHandoff: true },
-      { folder: '02-build', specStale: null, specStaleReason: 'freshness_unavailable', hasHandoff: false },
+      { folder: '01-setup', dependsOn: [], specStale: null, specStaleReason: 'freshness_unavailable', hasHandoff: true },
+      { folder: '02-build', dependsOn: ['01-setup'], specStale: null, specStaleReason: 'freshness_unavailable', hasHandoff: false },
     ]);
     expect(projected(degraded.feature.tasks)).toEqual(projected(degraded.tasks));
   });

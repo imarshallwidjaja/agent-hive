@@ -37,7 +37,11 @@ import {
 } from '../types.js';
 import { RepositoryService } from './repositoryService.js';
 import { SubtaskService } from './subtaskService.js';
-import { buildEffectiveDependencies } from './taskDependencyGraph.js';
+import {
+  findUnfinishedDependencyViolation,
+  type DependencyGraphViolation,
+  type TaskWithDeps,
+} from './taskDependencyGraph.js';
 import {
   extractTasksSectionContent,
   getFenceTransition,
@@ -138,13 +142,22 @@ interface ParsedTask {
   repoIds: string[] | null;
 }
 
+/** Stored dependencies and spec text compiled from the plan for one task. */
+interface PlanTaskBuild {
+  dependsOn: string[];
+  spec: string;
+}
+
+/** A task in the stored graph that a sync or manual creation would produce. */
+interface GraphNode extends TaskWithDeps {
+  origin?: TaskOrigin;
+  /** Its dependencies were compiled from the current plan by this operation. */
+  fromPlan: boolean;
+}
+
 export interface SyncOptions {
   refreshPending?: boolean;
 }
-
-const EXECUTION_HISTORY_STATUSES: Set<TaskStatusType> = new Set([
-  'in_progress', 'done', 'blocked', 'failed', 'partial',
-]);
 
 const TASK_STATUSES: ReadonlySet<string> = new Set([
   'pending', 'in_progress', 'done', 'cancelled', 'blocked', 'failed', 'partial',
@@ -170,55 +183,71 @@ export class TaskService {
     const planTasks = this.parseTasksFromPlan(planContent);
     
     this.validateDependencyGraph(planTasks, featureName);
-    
-    const existingTasks = this.list(featureName);
-    
+
+    // Derive every action and the resulting stored graph first; nothing is written unless
+    // that graph is valid, and the writes below apply exactly these actions.
     const result: TasksSyncResult = {
       created: [],
       removed: [],
       kept: [],
       manual: [],
     };
-
-    const existingByName = new Map(existingTasks.map(t => [t.folder, t]));
+    const planByFolder = new Map(planTasks.map(task => [task.folder, task]));
     const refreshPending = options?.refreshPending === true;
+    const writes: Array<{ task: ParsedTask; built: PlanTaskBuild; refresh: boolean }> = [];
+    const proposed: GraphNode[] = [];
+    const existingFolders = new Set<string>();
 
-    for (const existing of existingTasks) {
-      if (existing.origin === 'manual') {
-        result.manual.push(existing.folder);
+    for (const { folder, status } of this.readStoredTasks(featureName)) {
+      existingFolders.add(folder);
+      const planTask = planByFolder.get(folder);
+      let dependsOn = status.dependsOn;
+      let fromPlan = false;
+
+      if (status.origin === 'manual') {
+        result.manual.push(folder);
+      } else if (status.status !== 'pending') {
+        // Execution history and cancelled records are retained with their stored edges.
+        result.kept.push(folder);
+      } else if (!planTask) {
+        result.removed.push(folder);
         continue;
-      }
-
-      if (EXECUTION_HISTORY_STATUSES.has(existing.status)) {
-        result.kept.push(existing.folder);
-        continue;
-      }
-
-      if (existing.status === 'cancelled') {
-        this.deleteTask(featureName, existing.folder);
-        result.removed.push(existing.folder);
-        continue;
-      }
-
-      const stillInPlan = planTasks.some(p => p.folder === existing.folder);
-      if (!stillInPlan) {
-        this.deleteTask(featureName, existing.folder);
-        result.removed.push(existing.folder);
-      } else if (refreshPending && existing.status === 'pending') {
-        const planTask = planTasks.find(p => p.folder === existing.folder);
-        if (planTask) {
-          this.refreshPendingTask(featureName, planTask, planTasks, planContent);
-        }
-        result.kept.push(existing.folder);
       } else {
-        result.kept.push(existing.folder);
+        result.kept.push(folder);
+        if (refreshPending) {
+          const built = this.buildPlanTaskSpec(featureName, planTask, planTasks, planContent);
+          writes.push({ task: planTask, built, refresh: true });
+          dependsOn = built.dependsOn;
+          fromPlan = true;
+        }
       }
+      proposed.push({ folder, status: status.status, origin: status.origin, dependsOn, fromPlan });
     }
 
     for (const planTask of planTasks) {
-      if (!existingByName.has(planTask.folder)) {
-        this.createFromPlan(featureName, planTask, planTasks, planContent);
-        result.created.push(planTask.folder);
+      if (existingFolders.has(planTask.folder)) continue;
+      const built = this.buildPlanTaskSpec(featureName, planTask, planTasks, planContent);
+      writes.push({ task: planTask, built, refresh: false });
+      proposed.push({ folder: planTask.folder, status: 'pending', origin: 'plan', dependsOn: built.dependsOn, fromPlan: true });
+      result.created.push(planTask.folder);
+    }
+
+    const violation = findUnfinishedDependencyViolation(proposed);
+    if (violation) {
+      throw new Error(
+        `Task sync rejected; no task files were changed. ` +
+        this.describeDependencyViolation(violation, proposed, planTasks, new Set(result.removed)),
+      );
+    }
+
+    for (const folder of result.removed) {
+      this.deleteTask(featureName, folder);
+    }
+    for (const { task, built, refresh } of writes) {
+      if (refresh) {
+        this.refreshPendingTask(featureName, task, built);
+      } else {
+        this.createFromPlan(featureName, task, built);
       }
     }
 
@@ -296,11 +325,9 @@ export class TaskService {
     return folder;
   }
 
-  private createFromPlan(featureName: string, task: ParsedTask, allTasks: ParsedTask[], planContent: string): void {
+  private createFromPlan(featureName: string, task: ParsedTask, { dependsOn, spec }: PlanTaskBuild): void {
     const taskPath = getTaskPath(this.projectRoot, featureName, task.folder);
     ensureDir(taskPath);
-
-    const { dependsOn, spec } = this.buildPlanTaskSpec(featureName, task, allTasks, planContent);
 
     const status: TaskStatus = {
       status: 'pending',
@@ -313,9 +340,7 @@ export class TaskService {
     writeText(getTaskSpecPath(this.projectRoot, featureName, task.folder), spec);
   }
 
-  private refreshPendingTask(featureName: string, task: ParsedTask, allTasks: ParsedTask[], planContent: string): void {
-    const { dependsOn, spec } = this.buildPlanTaskSpec(featureName, task, allTasks, planContent);
-
+  private refreshPendingTask(featureName: string, task: ParsedTask, { dependsOn, spec }: PlanTaskBuild): void {
     const statusPath = getTaskStatusPath(this.projectRoot, featureName, task.folder);
     const current = readJson<TaskStatus>(statusPath);
     if (current) {
@@ -332,7 +357,7 @@ export class TaskService {
   }
 
   /** Spec input construction shared by sync create, sync refresh, and spec freshness. */
-  private buildPlanTaskSpec(featureName: string, task: ParsedTask, allTasks: ParsedTask[], planContent: string): { dependsOn: string[]; spec: string } {
+  private buildPlanTaskSpec(featureName: string, task: ParsedTask, allTasks: ParsedTask[], planContent: string): PlanTaskBuild {
     const dependsOn = this.resolveDependencies(task, allTasks);
     const spec = this.buildSpecContent({
       featureName,
@@ -357,11 +382,7 @@ export class TaskService {
       try {
         const tasks = this.parseTasksFromPlan(planContent);
         this.validateDependencyGraph(tasks, featureName);
-        const layout = readPlanTaskLayout(planContent);
-        if (new Set(layout.tasks.map(task => task.taskNumber)).size !== layout.tasks.length) {
-          throw new Error('Plan contains duplicate task numbers');
-        }
-        plan = { tasks, layout };
+        plan = { tasks, layout: readPlanTaskLayout(planContent) };
       } catch {
         // Sync reports the parse error; freshness only records that the plan cannot be compared.
       }
@@ -528,12 +549,24 @@ export class TaskService {
    * Throws descriptive errors pointing the operator to fix plan.md.
    * 
    * Checks for:
+   * - Duplicate task numbers (checked first, so references are unambiguous)
    * - Unknown task numbers in dependencies
    * - Self-dependencies
    * - Cycles (using DFS topological sort)
    */
   private validateDependencyGraph(tasks: ParsedTask[], featureName: string): void {
-    const taskNumbers = new Set(tasks.map(t => t.order));
+    const taskByNumber = new Map<number, ParsedTask>();
+    for (const task of tasks) {
+      const prior = taskByNumber.get(task.order);
+      if (prior) {
+        throw new Error(
+          `Invalid plan.md: task number ${task.order} is used by both "${prior.name}" and "${task.name}". ` +
+          `Give each "### N. Title" heading a unique number and update the "Depends on:" lines that refer to it.`
+        );
+      }
+      taskByNumber.set(task.order, task);
+    }
+    const taskNumbers = new Set(taskByNumber.keys());
     
     // Validate each task's dependencies
     for (const task of tasks) {
@@ -911,44 +944,122 @@ export class TaskService {
     return Math.max(...orders, 0) + 1;
   }
 
-  private validateManualTaskDependsOn(featureName: string, taskFolder: string, dependsOn: string[]): void {
-    const folders = this.listFolders(featureName);
-    const tasks = folders.map(folder => {
-      const statusPath = getTaskStatusPath(this.projectRoot, featureName, folder);
-      const status = this.readValidatedTaskStatus(statusPath, folder);
-      if (!status) throw new Error(`Task '${folder}' has no status file`);
-      return { folder, status: status.status, dependsOn: status.dependsOn };
+  /** Status files of existing task folders; folders without one are skipped. */
+  private readStoredTasks(featureName: string): Array<{ folder: string; status: TaskStatus }> {
+    return this.listFolders(featureName).flatMap(folder => {
+      const status = this.readValidatedTaskStatus(getTaskStatusPath(this.projectRoot, featureName, folder), folder);
+      return status ? [{ folder, status }] : [];
     });
-    tasks.push({ folder: taskFolder, status: 'pending', dependsOn });
-    const dependencies = buildEffectiveDependencies(tasks);
+  }
 
-    for (const [folder, refs] of dependencies) {
-      for (const dependency of refs) {
-        if (dependency === folder) {
-          throw new Error(`Manual task dependency graph contains self-dependency for "${folder}".`);
-        }
-        if (!dependencies.has(dependency)) {
-          if (folder === taskFolder) {
-            throw new Error(`Manual task dependency "${dependency}" referenced by "${folder}" does not exist.`);
-          }
-          throw new Error(`Task '${folder}' has stale stored dependency "${dependency}" that does not exist.`);
-        }
-      }
+  private validateManualTaskDependsOn(featureName: string, taskFolder: string, dependsOn: string[]): void {
+    // The proposed task goes first so its own dependency errors are reported before older ones.
+    const tasks: GraphNode[] = [{ folder: taskFolder, status: 'pending', origin: 'manual', dependsOn, fromPlan: false }];
+    for (const folder of this.listFolders(featureName)) {
+      const status = this.readValidatedTaskStatus(getTaskStatusPath(this.projectRoot, featureName, folder), folder);
+      if (!status) throw new Error(`Task '${folder}' has no status file`);
+      tasks.push({ folder, status: status.status, origin: status.origin, dependsOn: status.dependsOn, fromPlan: false });
     }
 
-    const visiting = new Set<string>();
-    const visited = new Set<string>();
-    const visit = (folder: string): void => {
-      if (visiting.has(folder)) {
-        throw new Error(`Manual task dependency graph contains a cycle involving "${folder}".`);
+    const violation = findUnfinishedDependencyViolation(tasks);
+    if (!violation) return;
+    if (violation.kind === 'missing' && violation.source === taskFolder) {
+      throw new Error(`Manual task dependency "${violation.target}" referenced by "${taskFolder}" does not exist. Depend only on existing task folders.`);
+    }
+    if (violation.kind === 'self' && violation.source === taskFolder) {
+      throw new Error(`Manual task dependency graph contains self-dependency for "${taskFolder}".`);
+    }
+    if (violation.kind === 'cycle' && violation.path.includes(taskFolder)) {
+      throw new Error(
+        `Manual task dependency graph contains a cycle: ${violation.path.join(' -> ')}. ` +
+        `Choose dependencies that do not lead back to "${taskFolder}".`
+      );
+    }
+    throw new Error(
+      `Manual task creation rejected; no task files were changed. ` +
+      this.describeDependencyViolation(violation, tasks, this.readValidPlanTasks(featureName)),
+    );
+  }
+
+  /** Current plan tasks when plan.md exists and is structurally valid; null otherwise. */
+  private readValidPlanTasks(featureName: string): ParsedTask[] | null {
+    const planContent = this.readNormalizedPlanContent(featureName);
+    if (!planContent) return null;
+    try {
+      const tasks = this.parseTasksFromPlan(planContent);
+      this.validateDependencyGraph(tasks, featureName);
+      return tasks;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Explain an unfinished-graph violation and the repair routes that apply to each involved task.
+   * `planTasks` is the current plan, or null when it is unavailable; `removed` holds folders the
+   * rejected sync would have deleted.
+   */
+  private describeDependencyViolation(
+    violation: DependencyGraphViolation,
+    nodes: GraphNode[],
+    planTasks: ParsedTask[] | null,
+    removed: ReadonlySet<string> = new Set(),
+  ): string {
+    const byFolder = new Map(nodes.map(node => [node.folder, node]));
+    const label = (folder: string) => `"${folder}" (${byFolder.get(folder)!.status})`;
+    const lines: string[] = [];
+    let sources: string[];
+
+    if (violation.kind === 'missing') {
+      const { source, target } = violation;
+      const reason = removed.has(target)
+        ? 'this sync would remove because plan.md no longer has its task heading'
+        : 'does not exist';
+      lines.push(`Unfinished task ${label(source)} depends on "${target}", which ${reason}.`);
+      const restoreNumber = this.planRestorationNumber(target, planTasks);
+      if (restoreNumber !== null) {
+        lines.push(
+          `To restore "${target}" itself, add a "### ${restoreNumber}. <title>" task to plan.md whose title produces ` +
+          `that folder name, then run hive_tasks_sync again.`
+        );
       }
-      if (visited.has(folder)) return;
-      visiting.add(folder);
-      for (const dependency of dependencies.get(folder) ?? []) visit(dependency);
-      visiting.delete(folder);
-      visited.add(folder);
-    };
-    for (const folder of dependencies.keys()) visit(folder);
+      sources = [source];
+    } else if (violation.kind === 'self') {
+      lines.push(`Unfinished task ${label(violation.source)} depends on itself.`);
+      sources = [violation.source];
+    } else {
+      lines.push(`Unfinished tasks form a dependency cycle: ${violation.path.join(' -> ')}.`);
+      sources = [...new Set(violation.path)];
+    }
+
+    for (const folder of sources) {
+      const node = byFolder.get(folder)!;
+      if (node.fromPlan) {
+        lines.push(`"${folder}" takes its dependencies from plan.md: amend its "Depends on:" line.`);
+      } else if (node.status === 'pending' && node.origin !== 'manual' && planTasks?.some(task => task.folder === folder)) {
+        lines.push(
+          `"${folder}" is a pending plan task with outdated stored dependencies: amend its "Depends on:" line in ` +
+          `plan.md if needed, then run hive_tasks_sync with refreshPending: true.`
+        );
+      } else {
+        lines.push(
+          `"${folder}" keeps its stored dependencies; no tool edits them, and changing its status does not change them. ` +
+          `If it is obsolete, get operator approval to cancel it with hive_task_update. Cancelling releases its outgoing ` +
+          `dependencies but does not stop a running worker or rewire tasks that depend on it; create a replacement ` +
+          `with hive_task_create if the work is still needed.`
+        );
+      }
+    }
+    return lines.join(' ');
+  }
+
+  /** The plan task number that would recreate exactly this folder, when the current plan leaves it free. */
+  private planRestorationNumber(folder: string, planTasks: ParsedTask[] | null): number | null {
+    const match = folder.match(/^(\d+)-[a-z0-9-]+$/);
+    if (!planTasks || !match) return null;
+    const order = parseInt(match[1], 10);
+    if (String(order).padStart(2, '0') !== match[1]) return null;
+    return planTasks.some(task => task.order === order) ? null : order;
   }
 
   private validateRepoIds(repoIds: string[] | undefined, context: string): void {

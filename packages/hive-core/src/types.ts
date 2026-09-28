@@ -86,7 +86,10 @@ export interface TaskStatus {
   /**
    * Task dependencies expressed as task folder names (e.g., '01-setup', '02-core-api').
    * A task cannot start until all its dependencies have status 'done'.
-   * Resolved from plan.md dependency annotations during hive_tasks_sync.
+   * Resolved from plan.md dependency annotations during hive_tasks_sync, or supplied at manual
+   * creation. Writers store an explicit array; a missing field (legacy files) reads as [].
+   * Edges of unfinished tasks must name existing tasks without cycles; edges of done or
+   * cancelled tasks are history and are not revalidated.
    */
   dependsOn?: string[];
   /** Structured metadata for manual tasks */

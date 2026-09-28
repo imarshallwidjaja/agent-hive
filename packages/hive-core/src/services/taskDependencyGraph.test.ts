@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'bun:test';
-import { computeRunnableAndBlocked, TaskWithDeps } from './taskDependencyGraph.js';
+import {
+  buildEffectiveDependencies,
+  computeRunnableAndBlocked,
+  findUnfinishedDependencyViolation,
+  TaskWithDeps,
+} from './taskDependencyGraph.js';
 
 describe('computeRunnableAndBlocked', () => {
   it('returns all pending tasks with no deps as runnable', () => {
@@ -106,30 +111,16 @@ describe('computeRunnableAndBlocked', () => {
     });
   });
 
-  it('applies implicit sequential fallback when dependsOn is undefined', () => {
-    const tasks: TaskWithDeps[] = [
+  it('treats an omitted dependsOn like an explicit empty list, never inferring edges from folder numbers', () => {
+    const omitted: TaskWithDeps[] = [
       { folder: '01-task-a', status: 'pending', dependsOn: undefined },
       { folder: '02-task-b', status: 'pending', dependsOn: undefined },
     ];
+    const explicit: TaskWithDeps[] = omitted.map(task => ({ ...task, dependsOn: [] }));
 
-    const result = computeRunnableAndBlocked(tasks);
-
-    expect(result.runnable).toEqual(['01-task-a']);
-    expect(result.blocked).toEqual({
-      '02-task-b': ['01-task-a'],
-    });
-  });
-
-  it('marks implicit sequential tasks runnable once prior task is done', () => {
-    const tasks: TaskWithDeps[] = [
-      { folder: '01-task-a', status: 'done', dependsOn: undefined },
-      { folder: '02-task-b', status: 'pending', dependsOn: undefined },
-    ];
-
-    const result = computeRunnableAndBlocked(tasks);
-
-    expect(result.runnable).toEqual(['02-task-b']);
-    expect(result.blocked).toEqual({});
+    expect(buildEffectiveDependencies(omitted)).toEqual(new Map([['01-task-a', []], ['02-task-b', []]]));
+    expect(computeRunnableAndBlocked(omitted)).toEqual({ runnable: ['01-task-a', '02-task-b'], blocked: {} });
+    expect(computeRunnableAndBlocked(omitted)).toEqual(computeRunnableAndBlocked(explicit));
   });
 
   it('excludes cancelled/failed/blocked/partial from satisfying deps', () => {
@@ -159,20 +150,6 @@ describe('computeRunnableAndBlocked', () => {
     expect(result.blocked).toEqual({});
   });
 
-  it('manual task with explicit dependsOn: [] is immediately runnable', () => {
-    const tasks: TaskWithDeps[] = [
-      { folder: '01-task-a', status: 'pending', dependsOn: undefined },
-      { folder: '02-task-b', status: 'pending', dependsOn: undefined },
-      { folder: '03-manual-fix', status: 'pending', dependsOn: [] },
-    ];
-
-    const result = computeRunnableAndBlocked(tasks);
-
-    expect(result.runnable).toContain('01-task-a');
-    expect(result.runnable).toContain('03-manual-fix');
-    expect(result.runnable).not.toContain('02-task-b');
-  });
-
   it('manual task with explicit dependsOn blocks until deps are done', () => {
     const tasks: TaskWithDeps[] = [
       { folder: '01-task-a', status: 'pending', dependsOn: [] },
@@ -199,17 +176,54 @@ describe('computeRunnableAndBlocked', () => {
     expect(result.blocked).toEqual({});
   });
 
-  it('manual append-only task with explicit dependsOn stays authoritative over numeric fallback', () => {
-    const tasks: TaskWithDeps[] = [
-      { folder: '01-task-a', status: 'pending', dependsOn: undefined },
+});
+
+describe('findUnfinishedDependencyViolation', () => {
+  const UNFINISHED = ['pending', 'in_progress', 'blocked', 'failed', 'partial'] as const;
+  const TERMINAL = ['done', 'cancelled'] as const;
+
+  it('rejects missing, self, and cyclic outgoing edges of every unfinished status', () => {
+    for (const status of UNFINISHED) {
+      expect(findUnfinishedDependencyViolation([
+        { folder: '01-source', status, dependsOn: ['09-missing'] },
+      ])).toEqual({ kind: 'missing', source: '01-source', target: '09-missing' });
+
+      expect(findUnfinishedDependencyViolation([
+        { folder: '01-source', status, dependsOn: ['01-source'] },
+      ])).toEqual({ kind: 'self', source: '01-source' });
+
+      expect(findUnfinishedDependencyViolation([
+        { folder: '01-source', status, dependsOn: ['02-peer'] },
+        { folder: '02-peer', status: 'pending', dependsOn: ['01-source'] },
+      ])).toEqual({ kind: 'cycle', path: ['01-source', '02-peer', '01-source'] });
+    }
+  });
+
+  it('treats outgoing edges of done and cancelled tasks as history', () => {
+    for (const status of TERMINAL) {
+      expect(findUnfinishedDependencyViolation([
+        { folder: '01-history', status, dependsOn: ['09-missing', '01-history', '02-consumer'] },
+        { folder: '02-consumer', status: 'pending', dependsOn: ['01-history'] },
+      ])).toBeNull();
+    }
+  });
+
+  it('requires done and cancelled targets to exist while ending cycle traversal at them', () => {
+    for (const status of TERMINAL) {
+      expect(findUnfinishedDependencyViolation([
+        { folder: '01-target', status, dependsOn: ['02-source'] },
+        { folder: '02-source', status: 'pending', dependsOn: ['01-target'] },
+      ])).toBeNull();
+    }
+    expect(findUnfinishedDependencyViolation([
+      { folder: '02-source', status: 'pending', dependsOn: ['01-target'] },
+    ])).toEqual({ kind: 'missing', source: '02-source', target: '01-target' });
+  });
+
+  it('checks an omitted dependsOn as no dependencies', () => {
+    expect(findUnfinishedDependencyViolation([
+      { folder: '01-task-a', status: 'pending', dependsOn: ['02-task-b'] },
       { folder: '02-task-b', status: 'pending', dependsOn: undefined },
-      { folder: '03-manual-fix', status: 'pending', dependsOn: [] },
-    ];
-
-    const result = computeRunnableAndBlocked(tasks);
-
-    expect(result.runnable).toContain('01-task-a');
-    expect(result.runnable).toContain('03-manual-fix');
-    expect(result.blocked['02-task-b']).toEqual(['01-task-a']);
+    ])).toBeNull();
   });
 });

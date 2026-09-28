@@ -561,6 +561,10 @@ describe('Multi-plan feature routing guidance', () => {
       expect(prompt, name).toContain('Cross-feature prerequisites block affected execution tasks or lanes, not plan approval');
       expect(prompt, name).toContain('Unresolved plan comments still block approval');
       expect(prompt, name).toContain('Do not infer or create automatic cross-feature dependencies');
+      expect(prompt, name).toContain('Authored plans keep their structural dependency checks');
+      expect(prompt, name).toContain('Sync and manual creation reject missing, self, or cyclic dependencies of unfinished tasks (pending, in_progress, blocked, failed, partial)');
+      expect(prompt, name).toContain("done and cancelled tasks' dependencies are history, and a cancelled task never satisfies a prerequisite");
+      expect(prompt, name).not.toContain('Structural missing refs and cycles remain invalid');
     }
   });
 });

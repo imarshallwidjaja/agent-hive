@@ -142,6 +142,15 @@ describe('task dispatch brief', () => {
     expect(lines).toContain(`Spec: /project/.hive/features/${featureName}/tasks/01-task/spec.md - specStale: null (freshness_unavailable)`);
   });
 
+  it('renders a legacy status without dependsOn as no dependencies', () => {
+    const { featureDir, sources } = createProject('legacy', PLAN);
+    const statusPath = path.join(featureDir, 'tasks', '02-build', 'status.json');
+    const { dependsOn: _omitted, ...legacy } = JSON.parse(fs.readFileSync(statusPath, 'utf8'));
+    fs.writeFileSync(statusPath, JSON.stringify(legacy));
+
+    expect(briefLines(composeTaskBrief(sources, 'legacy', 'Hive task: 02-build'))).toContain('Dependencies: none');
+  });
+
   it('reports an unknown dependency as (unknown)', () => {
     const sources = stubSources({
       taskService: {

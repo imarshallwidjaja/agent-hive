@@ -2918,7 +2918,7 @@ Align documentation wording.
       })).toThrow(/cycle/i);
     });
 
-    it("includes legacy implicit dependencies when validating manual task cycles", () => {
+    it("reads a legacy status file without dependsOn as no dependencies, not the previous folder", () => {
       const featureName = "test-feature";
       setupFeature(featureName);
       setupTask(featureName, "01-setup", {
@@ -2928,9 +2928,10 @@ Align documentation wording.
       });
       setupTask(featureName, "02-build", { status: "pending", origin: "plan" });
 
-      expect(() => service.create(featureName, "follow-up", undefined, {
-        dependsOn: ["02-build"],
-      })).toThrow(/cycle/i);
+      const folder = service.create(featureName, "follow-up", undefined, { dependsOn: ["02-build"] });
+
+      expect(folder).toBe("03-follow-up");
+      expect(service.getRawStatus(featureName, "02-build")).not.toHaveProperty("dependsOn");
     });
 
     it("identifies stale stored dependencies separately from the proposed dependency", () => {
@@ -2943,8 +2944,9 @@ Align documentation wording.
       });
 
       expect(() => service.create(featureName, "follow-up")).toThrow(
-        /01-setup.*stale stored dependency.*99-removed/i,
+        /no task files were changed.*"01-setup" \(pending\) depends on "99-removed", which does not exist/i,
       );
+      expect(service.getRawStatus(featureName, "02-follow-up")).toBeNull();
     });
 
     it("wraps truncated status JSON while loading the manual dependency graph", () => {
@@ -3297,6 +3299,174 @@ Build.
       expect(service.getRawStatus(featureName, "01-setup")).not.toBeNull();
       expect(service.getRawStatus(featureName, "02-build")).not.toBeNull();
       expect(service.getRawStatus(featureName, "01-run-verification")).toBeNull();
+    });
+  });
+
+  describe("sync() - unfinished stored dependency graph", () => {
+    const featureName = "test-feature";
+    const featurePath = () => path.join(TEST_DIR, ".hive", "features", featureName);
+    const writePlan = (content: string) => fs.writeFileSync(path.join(featurePath(), "plan.md"), content);
+
+    function snapshotTasks(): Record<string, string | null> {
+      const tasksPath = path.join(featurePath(), "tasks");
+      const snapshot: Record<string, string | null> = {};
+      const walk = (dir: string) => {
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+          const full = path.join(dir, entry.name);
+          const relative = path.relative(tasksPath, full);
+          if (entry.isDirectory()) {
+            snapshot[relative] = null;
+            walk(full);
+          } else {
+            snapshot[relative] = fs.readFileSync(full, "utf-8");
+          }
+        }
+      };
+      if (fs.existsSync(tasksPath)) walk(tasksPath);
+      return snapshot;
+    }
+
+    beforeEach(() => {
+      setupFeature(featureName);
+    });
+
+    it("rejects removing a plan task that an unfinished manual task still depends on, leaving task files unchanged", () => {
+      writePlan(`# Plan\n\n## Tasks\n\n### 1. Producer\n\n**Depends on**: none\n\nProduce.\n\n### 2. Independent\n\n**Depends on**: none\n\nIndependent.\n`);
+      service.sync(featureName);
+      const consumer = service.create(featureName, "consumer", undefined, { dependsOn: ["01-producer"] });
+      expect(consumer).toBe("03-consumer");
+
+      writePlan(`# Plan\n\n## Tasks\n\n### 2. Independent\n\n**Depends on**: none\n\nIndependent.\n`);
+      const before = snapshotTasks();
+
+      let message = "";
+      try {
+        service.sync(featureName, { refreshPending: true });
+      } catch (error) {
+        message = (error as Error).message;
+      }
+      expect(message).toContain("no task files were changed");
+      expect(message).toContain('"03-consumer" (pending) depends on "01-producer", which this sync would remove');
+      expect(message).toContain('add a "### 1. <title>" task to plan.md');
+      expect(message).toMatch(/cancel it with hive_task_update.*does not stop a running worker or rewire/);
+      expect(message).not.toContain("refreshPending");
+      expect(snapshotTasks()).toEqual(before);
+    });
+
+    it("rejects a cycle formed between a retained unfinished task and a refreshed pending task", () => {
+      writePlan(`# Plan\n\n## Tasks\n\n### 1. Alpha\n\n**Depends on**: 2\n\nAlpha.\n\n### 2. Beta\n\n**Depends on**: none\n\nBeta.\n`);
+      service.sync(featureName);
+      service.update(featureName, "01-alpha", { status: "in_progress" });
+
+      writePlan(`# Plan\n\n## Tasks\n\n### 1. Alpha\n\n**Depends on**: none\n\nAlpha.\n\n### 2. Beta\n\n**Depends on**: 1\n\nBeta.\n`);
+      const before = snapshotTasks();
+
+      expect(() => service.sync(featureName, { refreshPending: true })).toThrow(
+        /cycle: 01-alpha -> 02-beta -> 01-alpha.*"01-alpha" keeps its stored dependencies.*"02-beta" takes its dependencies from plan\.md/,
+      );
+      expect(snapshotTasks()).toEqual(before);
+    });
+
+    it("names refreshPending for a stale pending plan edge and accepts the refreshed graph", () => {
+      writePlan(`# Plan\n\n## Tasks\n\n### 1. Setup\n\n**Depends on**: none\n\nSetup.\n\n### 2. Build\n\n**Depends on**: 1\n\nBuild.\n`);
+      service.sync(featureName);
+      setupTask(featureName, "02-build", { status: "pending", origin: "plan", planTitle: "Build", dependsOn: ["09-gone"] });
+      const before = snapshotTasks();
+
+      expect(() => service.sync(featureName)).toThrow(
+        /"02-build" \(pending\) depends on "09-gone", which does not exist.*refreshPending: true/,
+      );
+      expect(snapshotTasks()).toEqual(before);
+
+      expect(service.sync(featureName, { refreshPending: true }).kept).toEqual(["01-setup", "02-build"]);
+      expect(service.getRawStatus(featureName, "02-build")?.dependsOn).toEqual(["01-setup"]);
+    });
+
+    it("validates the proposed graph, so restoring a missing predecessor repairs an old dangling edge", () => {
+      writePlan(`# Plan\n\n## Tasks\n\n### 2. Independent\n\n**Depends on**: none\n\nIndependent.\n`);
+      service.sync(featureName);
+      setupTask(featureName, "03-consumer", { status: "blocked", origin: "manual", dependsOn: ["01-producer"] });
+
+      expect(() => service.sync(featureName)).toThrow(/"03-consumer" \(blocked\) depends on "01-producer", which does not exist/);
+
+      writePlan(`# Plan\n\n## Tasks\n\n### 1. Producer\n\n**Depends on**: none\n\nProduce.\n\n### 2. Independent\n\n**Depends on**: none\n\nIndependent.\n`);
+      expect(service.sync(featureName).created).toEqual(["01-producer"]);
+    });
+
+    it("uses a manual record's stored edges even when a plan heading has the same folder", () => {
+      setupTask(featureName, "02-build", { status: "pending", origin: "manual", dependsOn: ["01-setup"] });
+      writePlan(`# Plan\n\n## Tasks\n\n### 1. Setup\n\n**Depends on**: 2\n\nSetup.\n\n### 2. Build\n\n**Depends on**: none\n\nBuild.\n`);
+      const before = snapshotTasks();
+
+      expect(() => service.sync(featureName)).toThrow(
+        /cycle: 02-build -> 01-setup -> 02-build.*"02-build" keeps its stored dependencies.*"01-setup" takes its dependencies from plan\.md/,
+      );
+      expect(snapshotTasks()).toEqual(before);
+      expect(service.getRawStatus(featureName, "02-build")?.origin).toBe("manual");
+    });
+
+    it("ignores done and cancelled tasks' historical edges when validating the stored graph", () => {
+      writePlan(`# Plan\n\n## Tasks\n\n### 1. History\n\n**Depends on**: none\n\nHistory.\n\n### 2. Consumer\n\n**Depends on**: 1\n\nConsumer.\n`);
+      service.sync(featureName);
+      setupTask(featureName, "01-history", { status: "done", origin: "plan", planTitle: "History", dependsOn: ["02-consumer", "09-gone"] });
+      setupTask(featureName, "03-abandoned", { status: "cancelled", origin: "manual", dependsOn: ["03-abandoned", "08-gone"] });
+
+      expect(service.sync(featureName, { refreshPending: true })).toMatchObject({
+        removed: [],
+        kept: ["01-history", "02-consumer"],
+        manual: ["03-abandoned"],
+      });
+      expect(service.getRawStatus(featureName, "01-history")?.dependsOn).toEqual(["02-consumer", "09-gone"]);
+    });
+
+    it("releases a cancelled source's edges without rewiring its consumers, and keeps cancelled records across syncs", () => {
+      writePlan(`# Plan\n\n## Tasks\n\n### 1. Producer\n\n**Depends on**: none\n\nProduce.\n\n### 2. Obsolete\n\n**Depends on**: none\n\nObsolete.\n`);
+      service.sync(featureName);
+      const middle = service.create(featureName, "middle", undefined, { dependsOn: ["01-producer"] });
+      const consumer = service.create(featureName, "consumer", undefined, { dependsOn: [middle] });
+      service.update(featureName, "02-obsolete", { status: "cancelled", report: "Superseded.", handoff: "Do not resume." });
+
+      writePlan(`# Plan\n\n## Tasks\n\n### 2. Obsolete\n\n**Depends on**: none\n\nObsolete.\n`);
+      expect(() => service.sync(featureName)).toThrow(/"03-middle" \(pending\) depends on "01-producer"/);
+
+      service.update(featureName, middle, { status: "cancelled" });
+      writePlan(`# Plan\n\n## Tasks\n\nNo remaining plan tasks.\n`);
+      const first = service.sync(featureName);
+      const artifacts = snapshotTasks();
+      const second = service.sync(featureName);
+
+      for (const result of [first, second]) {
+        expect(result.kept).toContain("02-obsolete");
+        expect(result.manual).toEqual(["03-middle", "04-consumer"]);
+      }
+      expect(first.removed).toEqual(["01-producer"]);
+      expect(second.removed).toEqual([]);
+      expect(snapshotTasks()).toEqual(artifacts);
+      expect(artifacts[path.join("02-obsolete", "report.md")]).toBe("Superseded.");
+      expect(artifacts[path.join("02-obsolete", "handoff.md")]).toBe("Do not resume.");
+      expect(service.getRawStatus(featureName, "02-obsolete")?.status).toBe("cancelled");
+      expect(service.getRawStatus(featureName, middle)).toMatchObject({ status: "cancelled", dependsOn: ["01-producer"] });
+      expect(service.getRawStatus(featureName, consumer)).toMatchObject({ status: "pending", dependsOn: [middle] });
+    });
+
+    it("rejects duplicate plan task numbers before any task file is written", () => {
+      writePlan(`# Plan\n\n## Tasks\n\n### 1. Setup\n\nSetup.\n\n### 1. Other\n\nOther.\n`);
+
+      expect(() => service.sync(featureName)).toThrow(/task number 1 is used by both "Setup" and "Other"/);
+      expect(snapshotTasks()).toEqual({});
+    });
+
+    it("leaves task updates ungated but detects a reopened task's invalid edge at the next sync or manual creation", () => {
+      writePlan(`# Plan\n\n## Tasks\n\n### 1. Setup\n\n**Depends on**: none\n\nSetup.\n`);
+      service.sync(featureName);
+      setupTask(featureName, "01-setup", { status: "done", origin: "plan", planTitle: "Setup", dependsOn: ["09-gone"] });
+      service.sync(featureName);
+
+      expect(service.update(featureName, "01-setup", { status: "pending" }).status).toBe("pending");
+      expect(() => service.sync(featureName)).toThrow(/"01-setup" \(pending\) depends on "09-gone"/);
+      expect(() => service.create(featureName, "follow-up")).toThrow(
+        /Manual task creation rejected.*"01-setup" \(pending\) depends on "09-gone"/,
+      );
     });
   });
 });
