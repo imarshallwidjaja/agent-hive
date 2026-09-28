@@ -28,7 +28,9 @@ Static skill tests prove trigger, schema, and wording consistency. They are not 
 
 For a bound feature-task Forager, follow the Hive task brief's `hive_context_read` pointer to list the current durable catalog and read matching `read_when` entries. Follow the selection and continuation rules above; the brief contains no document bodies.
 
-Omitted `scope` is feature scope. Project requires `scope: "project"` and rejects `feature` and `task`. Review lanes stay isolated from live metadata and bodies.
+When shared contracts, repository-wide conventions, or cross-feature decisions matter, non-isolated agents also inspect the project catalog alongside relevant feature context and read selected matching documents. Use an entry's `task` association as a relevance hint alongside `description` and `read_when`, not as an exclusive filter or proof of priority, freshness, or authority.
+
+Omitted `scope` is feature scope. Project requires `scope: "project"` and rejects `feature` and `task`. Tool availability and assignment scope govern access; isolated review lanes do not fetch live context metadata or bodies.
 
 ## Frontmatter
 
@@ -108,7 +110,7 @@ Re-review project knowledge against evidence, then whole-document hash-guarded r
 
 Task reports and `handoff.md` are task records, not managed context. Do not copy report history into context. When a report surfaces reusable knowledge, write that knowledge to durable context deliberately; raw logs belong in evidence context.
 
-Changed project knowledge does not update a running assignment. Adopting a binding decision requires plan amendment or a new assignment. Surface conflicts with the fixed assignment; newer notes do not override instructions.
+Changed project knowledge does not update a running assignment. Newer notes cannot override standing constraints or an approved task contract. Adopting a binding decision requires plan amendment or a new assignment; surface conflicts with the fixed assignment.
 
 ## Hygiene, units, ceilings
 

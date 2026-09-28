@@ -244,6 +244,8 @@ Omitted `scope` retains feature-default behavior. Use `scope: "project"` explici
 
 With no `name`, `hive_context_read` defaults to `view: "summary"`. Use `view: "catalog"` with optional literal `query`, `limit`, and returned `cursor` for durable metadata discovery. Named reads accept `cursor` and `maxBytes`, return `range: { startByte, endByte, totalBytes }`, `complete`, and `nextCursor`. `maxBytes` defaults to 16 KiB and cannot exceed 64 KiB.
 
+For shared contracts, repository-wide conventions, or cross-feature decisions, permitted non-isolated agents consult the project catalog alongside relevant feature context. Catalog `task` associations are relevance hints, not filters or authority. See [context-engineering](../skills/context-engineering/SKILL.md) for selective reads and review isolation.
+
 Call `hive_context_read` before replacement, append, or archive. Existing-content mutations require the current revision and actual SHA-256 `contentHash`. Non-reserved files default to `durable`. Mark raw logs and historical verification material as `evidence`. Feature hygiene warnings begin above 8 durable files or 40,000 UTF-16 code units; project warnings begin above 32 files or 160,000 units. These are review signals, not aggregate admission limits.
 
 `overview`, `draft`, and `execution-decisions` are reserved and excluded from the durable catalog and durable-context hygiene counts. They remain readable by name. They do not accept a caller-provided `kind`; the per-document size limit still applies. Plan approval does not archive `draft`. Archive an obsolete draft explicitly after approval.

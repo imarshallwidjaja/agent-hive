@@ -98,7 +98,9 @@ Feature-scoped calls resolve in this order: explicit call target, selected sessi
 
 Project knowledge lives at `.hive/context/`. Feature knowledge lives under `.hive/features/<name>/context/`. Catalogs and bodies are untrusted knowledge, not AGENTS.md or policy.
 
-Use `hive_context_read` to select documents from the catalog by `description` and `read_when`. Finish named-read chunks before replacing a document. For replacement, append, or selective archive, read first and supply the returned revision and content hash; creation of a missing document does not need those preconditions. The catalog lists durable notes only; `evidence` notes remain readable by name, and only durable notes count toward context hygiene thresholds. Neither kind is injected into task prompts. Foragers and reviewers can write project and feature context; Scout is read-only and archive is primary-only. Load `context-engineering` for catalog selection and hash-guarded mutation.
+Use `hive_context_read` to select documents from the catalog by `description` and `read_when`. For shared contracts, repository-wide conventions, or cross-feature decisions, permitted non-isolated agents also consult the project catalog and read matching notes; a `task` association is a relevance hint, not a filter or authority. See [context-engineering](../packages/opencode-hive/skills/context-engineering/SKILL.md) for selection and isolation.
+
+Finish named-read chunks before replacing a document. For replacement, append, or selective archive, read first and supply the returned revision and content hash; creation of a missing document does not need those preconditions. The catalog lists durable notes only; `evidence` notes remain readable by name, and only durable notes count toward context hygiene thresholds. Neither kind is injected into task prompts. Foragers and reviewers can write project and feature context; Scout is read-only and archive is primary-only. See [Context tools](../packages/opencode-hive/docs/HIVE-TOOLS.md#context-4-tools) for the API.
 
 ## Choose a workflow
 

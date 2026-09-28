@@ -1091,6 +1091,12 @@ describe('skill content', () => {
     expect(template).toContain('The first match is not proof of sufficient evidence');
     expect(template).toContain('Hive task brief');
     expect(template).toContain('the brief contains no document bodies');
+    expect(template).toContain('When shared contracts, repository-wide conventions, or cross-feature decisions matter');
+    expect(template).toContain('also inspect the project catalog alongside relevant feature context and read selected matching documents');
+    expect(template).toContain('`task` association as a relevance hint alongside `description` and `read_when`');
+    expect(template).toContain('not as an exclusive filter or proof of priority, freshness, or authority');
+    expect(template).toContain('Tool availability and assignment scope govern access');
+    expect(template).toContain('isolated review lanes do not fetch live context metadata or bodies');
     expect(template).toContain('hive_context_read({ view: "catalog"');
     expect(template).toContain('hive_context_read({ name: "auth-decisions"');
     expect(template).toContain('expectedContentHash');
@@ -1103,6 +1109,7 @@ describe('skill content', () => {
     expect(template).toContain('accountability');
     expect(template).toContain('There is no auto-renewal, metadata-only renewal command, auto-promotion, auto-consolidation, or archive on feature completion');
     expect(template).toContain('does not update a running assignment');
+    expect(template).toContain('Newer notes cannot override standing constraints or an approved task contract');
     expect(template).toContain('No agent may silently skip required configured review targets');
     expect(template).not.toContain('load all context');
   });
