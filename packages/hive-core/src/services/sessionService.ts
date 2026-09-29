@@ -1,5 +1,6 @@
+import * as fs from 'fs';
 import * as path from 'path';
-import { getFeaturePath, getGlobalSessionsPath, ensureDir, fileExists, readJson, writeJson, acquireLockSync, writeJsonAtomic } from '../utils/paths.js';
+import { getFeaturePath, getGlobalSessionsPath, ensureDir, fileExists, readJson, writeJson, acquireLockSync, writeJsonAtomic, syncFile, syncDirectory } from '../utils/paths.js';
 import type { SessionInfo, SessionsJson, StandingConstraintEntry } from '../types.js';
 import {
   addConstraint,
@@ -124,7 +125,42 @@ export class SessionService {
 
   private getGlobalSessions(): SessionsJson {
     const globalPath = getGlobalSessionsPath(this.projectRoot);
-    return readJson<SessionsJson>(globalPath) || { sessions: [] };
+    try {
+      return readJson<SessionsJson>(globalPath) || { sessions: [] };
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
+    }
+    // Another writer may have replaced the index since the unlocked read, so recovery re-reads under the lock.
+    const release = acquireLockSync(globalPath);
+    try {
+      return this.readOrResetGlobalSessions(globalPath);
+    } finally {
+      release();
+    }
+  }
+
+  /**
+   * Reads the global index while the caller holds its lock. Unparseable bytes
+   * are copied to a new sibling `sessions.json.corrupt-<timestamp>` file before
+   * an empty index replaces them, which discards every saved session route and
+   * standing constraint. I/O errors propagate without a reset.
+   */
+  private readOrResetGlobalSessions(globalPath: string): SessionsJson {
+    try {
+      return readJson<SessionsJson>(globalPath) || { sessions: [] };
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
+    }
+    const backupPath = `${globalPath}.corrupt-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+    fs.copyFileSync(globalPath, backupPath, fs.constants.COPYFILE_EXCL);
+    syncFile(backupPath);
+    syncDirectory(path.dirname(globalPath));
+    const empty: SessionsJson = { sessions: [] };
+    writeJsonAtomic(globalPath, empty);
+    console.warn(
+      `[hive:sessions] ${globalPath} was not valid JSON. Preserved it as ${backupPath} and started an empty index; saved session routes and standing constraints were reset.`,
+    );
+    return empty;
   }
 
   private saveGlobalSessions(data: SessionsJson): void {
@@ -139,7 +175,7 @@ export class SessionService {
     const release = acquireLockSync(globalPath);
 
     try {
-      const data = readJson<SessionsJson>(globalPath) || { sessions: [] };
+      const data = this.readOrResetGlobalSessions(globalPath);
       const session = mutator(data);
       writeJsonAtomic(globalPath, data);
       return session;

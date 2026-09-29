@@ -344,6 +344,8 @@ Canonical session bindings and session-scoped constraint entries live in project
 
 `standingConstraintEntries` holds independently addressable verbatim directives. `standingConstraintsRevision` provides optimistic concurrency for targeted edits and explicit whole-register clears. `standingConstraints` is the rendered aggregate injected into delegated task and worker prompts, capped at 8000 UTF-16 code units. String-only records written by earlier versions are read as one deterministic `legacy` entry and migrate on the next mutation.
 
+When `.hive/sessions.json` exists but does not parse as JSON (including an empty or all-NUL file), the next session read or update reads it again while holding `sessions.json.lock` and, if it is still invalid, copies it unchanged to a new sibling `sessions.json.corrupt-<UTC timestamp>` file before replacing it with `{ "sessions": [] }`. A warning names both paths. Saved session routes and session constraints start fresh; feature-scoped constraints are separate files and are unaffected. Other read errors, such as permissions or a directory at that path, are reported without a reset.
+
 Task `status.json` records status, summary, and blocker from `hive_task_update`; report history and the latest report are Markdown files under the task directory. Stale generated-assignment keys in older JSON are ignored.
 
 The session register and the feature register are separate. The runtime captures both registers for child dispatch and labels each in the prompt; it stores the session snapshot in the child's canonical session entry.

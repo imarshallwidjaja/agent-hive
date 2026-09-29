@@ -1,4 +1,5 @@
-import { describe, expect, it, beforeEach, afterEach } from 'bun:test';
+import { describe, expect, it, beforeEach, afterEach, setSystemTime, spyOn } from 'bun:test';
+import { spawn } from 'node:child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import { SessionService, SessionContinuityError, STANDING_CONSTRAINTS_MAX_CHARS } from './sessionService.js';
@@ -524,6 +525,197 @@ describe('SessionService', () => {
       const found = service.findFeatureBySession('sess-local-only');
 
       expect(found).toBeNull();
+    });
+  });
+
+  describe('corrupt global index recovery', () => {
+    let warn: ReturnType<typeof spyOn>;
+    const globalPath = () => getGlobalSessionsPath(PROJECT_ROOT);
+    const writeIndex = (bytes: Buffer) => {
+      fs.mkdirSync(path.dirname(globalPath()), { recursive: true });
+      fs.writeFileSync(globalPath(), bytes);
+    };
+    const backups = () => fs.readdirSync(path.dirname(globalPath()))
+      .filter((name) => name.startsWith('sessions.json.corrupt-'))
+      .map((name) => path.join(path.dirname(globalPath()), name));
+
+    beforeEach(() => {
+      warn = spyOn(console, 'warn').mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+      warn.mockRestore();
+      setSystemTime();
+    });
+
+    const fixtures = [
+      ['all-NUL', Buffer.alloc(4096)],
+      ['malformed', Buffer.from('{"sessions": [{"sessionId": "cut')],
+      ['empty', Buffer.alloc(0)],
+    ] as const;
+
+    for (const [name, bytes] of fixtures) {
+      for (const [operation, run] of [
+        ['read', (s: SessionService) => expect(s.getGlobal('after-reset')).toBeUndefined()],
+        ['update', (s: SessionService) => expect(s.trackGlobal('after-reset', { agent: 'hive-master' }).agent).toBe('hive-master')],
+      ] as const) {
+        it(`preserves ${name} bytes, resets the index, and continues a ${operation}`, () => {
+          writeIndex(bytes);
+
+          run(service);
+
+          const [backup, ...extra] = backups();
+          expect(extra).toEqual([]);
+          expect(fs.readFileSync(backup!)).toEqual(bytes);
+          expect(JSON.parse(fs.readFileSync(globalPath(), 'utf8')).sessions.map((s: { sessionId: string }) => s.sessionId))
+            .toEqual(operation === 'update' ? ['after-reset'] : []);
+          expect(warn).toHaveBeenCalledTimes(1);
+          const message = String(warn.mock.calls[0]![0]);
+          expect(message).toContain(globalPath());
+          expect(message).toContain(backup!);
+          expect(message).toContain('session routes and standing constraints were reset');
+          if (bytes.length > 0) expect(message).not.toContain(bytes.toString('utf8'));
+          expect(fs.existsSync(`${globalPath()}.lock`)).toBe(false);
+        });
+      }
+    }
+
+    it('serves routes and constraints from the new register without further backups', () => {
+      setupFeature('feature-after-reset');
+      writeIndex(Buffer.alloc(64));
+
+      expect(service.readStandingConstraints('owner')).toMatchObject({ entries: [], revision: 0 });
+      expect(service.addStandingConstraint('owner', 'Fresh directive')).toMatchObject({ constraints: 'Fresh directive', revision: 1 });
+      service.setFeatureRoute('owner', 'feature-after-reset');
+
+      expect(service.findFeatureBySession('owner')).toBe('feature-after-reset');
+      expect(backups()).toHaveLength(1);
+      expect(warn).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the reset when the requested mutation fails its own validation', () => {
+      writeIndex(Buffer.from('not json'));
+
+      expect(() => service.editStandingConstraint('owner', 'constraint-missing', 7, 'x')).toThrow();
+
+      expect(JSON.parse(fs.readFileSync(globalPath(), 'utf8'))).toEqual({ sessions: [] });
+      expect(service.readStandingConstraints('owner').revision).toBe(0);
+      expect(backups()).toHaveLength(1);
+      expect(warn).toHaveBeenCalledTimes(1);
+    });
+
+    it('re-reads under the lock so a healthy index written after the unlocked read survives', () => {
+      writeIndex(Buffer.alloc(64));
+      const healthy = { sessions: [{ sessionId: 'written-meanwhile', startedAt: 's', lastActiveAt: 's' }] };
+      const originalRead = fs.readFileSync;
+      let raced = false;
+      const readSpy = spyOn(fs, 'readFileSync').mockImplementation(((file: fs.PathOrFileDescriptor, ...args: unknown[]) => {
+        const value = (originalRead as (...input: unknown[]) => unknown)(file, ...args);
+        if (!raced && String(file) === globalPath()) {
+          raced = true;
+          fs.writeFileSync(globalPath(), JSON.stringify(healthy));
+        }
+        return value;
+      }) as typeof fs.readFileSync);
+
+      try {
+        expect(service.getGlobal('written-meanwhile')).toMatchObject({ sessionId: 'written-meanwhile' });
+      } finally {
+        readSpy.mockRestore();
+      }
+
+      expect(raced).toBe(true);
+      expect(JSON.parse(fs.readFileSync(globalPath(), 'utf8'))).toEqual(healthy);
+      expect(backups()).toEqual([]);
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('serializes concurrent recovery across processes without losing tracked sessions', async () => {
+      const bytes = Buffer.alloc(1 << 20);
+      writeIndex(bytes);
+      const serviceModule = new URL('./sessionService.ts', import.meta.url).href;
+      const script = `
+        import { SessionService } from ${JSON.stringify(serviceModule)};
+        console.warn = () => {};
+        new SessionService(process.env.PROJECT_ROOT).trackGlobal(process.env.SESSION_ID);
+      `;
+      const ids = ['a', 'b', 'c', 'd'].map((id) => `concurrent-${id}`);
+
+      await Promise.all(ids.map((id) => new Promise<void>((resolve, reject) => {
+        const child = spawn(process.execPath, ['-e', script], {
+          env: { ...process.env, PROJECT_ROOT, SESSION_ID: id },
+          stdio: ['ignore', 'ignore', 'pipe'],
+        });
+        let stderr = '';
+        child.stderr.on('data', (chunk) => { stderr += chunk; });
+        child.on('error', reject);
+        child.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`${id} exited ${code}: ${stderr}`))));
+      })));
+
+      const [backup, ...extra] = backups();
+      expect(extra).toEqual([]);
+      expect(fs.readFileSync(backup!)).toEqual(bytes);
+      expect(service.listGlobal().map((s) => s.sessionId).sort()).toEqual(ids);
+    }, 20000);
+
+    it('refuses to overwrite an existing backup and leaves the corrupt index in place', () => {
+      const bytes = Buffer.from('{oops');
+      writeIndex(bytes);
+      setSystemTime(new Date('2026-01-02T03:04:05.678Z'));
+      const earlier = `${globalPath()}.corrupt-2026-01-02T03-04-05-678Z`;
+      fs.writeFileSync(earlier, 'earlier evidence');
+
+      expect(() => service.trackGlobal('blocked')).toThrow(expect.objectContaining({ code: 'EEXIST' }));
+
+      expect(fs.readFileSync(earlier, 'utf8')).toBe('earlier evidence');
+      expect(fs.readFileSync(globalPath())).toEqual(bytes);
+      expect(fs.existsSync(`${globalPath()}.lock`)).toBe(false);
+      expect(warn).not.toHaveBeenCalled();
+
+      setSystemTime(new Date('2026-01-02T03:04:06.000Z'));
+      service.trackGlobal('retried');
+
+      expect(fs.readFileSync(earlier, 'utf8')).toBe('earlier evidence');
+      expect(fs.readFileSync(`${globalPath()}.corrupt-2026-01-02T03-04-06-000Z`)).toEqual(bytes);
+      expect(service.listGlobal().map((s) => s.sessionId)).toEqual(['retried']);
+    });
+
+    it('retains the preserved copy and the original when the empty replacement cannot be published', () => {
+      const bytes = Buffer.alloc(256);
+      writeIndex(bytes);
+      const originalRename = fs.renameSync;
+      const renameSpy = spyOn(fs, 'renameSync').mockImplementation(((source: fs.PathLike, destination: fs.PathLike) => {
+        if (String(destination) === globalPath()) throw Object.assign(new Error('injected publish failure'), { code: 'EIO' });
+        originalRename(source, destination);
+      }) as typeof fs.renameSync);
+
+      try {
+        expect(() => service.getGlobal('any')).toThrow('injected publish failure');
+      } finally {
+        renameSpy.mockRestore();
+      }
+
+      const [backup, ...extra] = backups();
+      expect(extra).toEqual([]);
+      expect(fs.readFileSync(backup!)).toEqual(bytes);
+      expect(fs.readFileSync(globalPath())).toEqual(bytes);
+      expect(fs.existsSync(`${globalPath()}.lock`)).toBe(false);
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it('does not reset for a missing index or a non-parse read error', () => {
+      expect(service.getGlobal('absent')).toBeUndefined();
+      service.trackGlobal('created');
+      expect(service.listGlobal().map((s) => s.sessionId)).toEqual(['created']);
+
+      fs.rmSync(globalPath());
+      fs.mkdirSync(globalPath());
+      expect(() => service.getGlobal('any')).toThrow(expect.objectContaining({ code: 'EISDIR' }));
+      expect(() => service.trackGlobal('any')).toThrow(expect.objectContaining({ code: 'EISDIR' }));
+
+      expect(fs.statSync(globalPath()).isDirectory()).toBe(true);
+      expect(backups()).toEqual([]);
+      expect(warn).not.toHaveBeenCalled();
     });
   });
 });
