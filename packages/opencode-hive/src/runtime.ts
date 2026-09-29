@@ -804,7 +804,12 @@ const plugin: Plugin = async (ctx) => {
       const agent = (input as { agent?: string }).agent ?? output.message.agent;
       if (agent) {
         runtimeSessionAgents.set(input.sessionID, agent);
-        sessionService.trackGlobal(input.sessionID, { agent, projectRoot });
+        try {
+          sessionService.trackGlobal(input.sessionID, { agent, projectRoot });
+        } catch (error) {
+          const reason = error instanceof Error ? (error as NodeJS.ErrnoException).code ?? error.name : 'unknown error';
+          console.warn(`[hive:sessions] Could not track session ${input.sessionID} in ${path.join(projectRoot, '.hive', 'sessions.json')} (${reason}); continuing reply.`);
+        }
       }
       await createVariantHook(configService)(input, output);
     }) as any,

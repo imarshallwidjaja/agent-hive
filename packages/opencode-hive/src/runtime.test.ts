@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it, spyOn } from 'bun:test';
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -68,6 +68,46 @@ afterEach(() => {
 });
 
 describe('coordinated runtime hard cut', () => {
+  it('continues the chat.message variant hook when the global session index cannot be read', async () => {
+    for (const [name, bytes] of [
+      ['nul', Buffer.alloc(64)],
+      ['malformed', Buffer.from('{broken')],
+      ['empty', Buffer.alloc(0)],
+      ['unreadable', null],
+    ] as const) {
+      const { root, hooks } = createRuntime({ hiveConfig: { agents: { 'forager-worker': { variant: 'high' } } } });
+      const loaded = await hooks;
+      const indexPath = path.join(root, '.hive', 'sessions.json');
+      if (bytes) fs.writeFileSync(indexPath, bytes);
+      else fs.mkdirSync(indexPath);
+      const warn = spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const output: any = { message: { agent: 'forager-worker' }, parts: [] };
+        await loaded['chat.message']!({ sessionID: `session-${name}`, agent: 'forager-worker' } as any, output);
+        expect(output.message.variant).toBe('high');
+        if (bytes) expect(fs.readFileSync(indexPath)).toEqual(bytes);
+        else expect(fs.statSync(indexPath).isDirectory()).toBe(true);
+        expect(warn).toHaveBeenCalledTimes(1);
+        expect(warn.mock.calls[0][0]).toContain(indexPath);
+        expect(warn.mock.calls[0][0]).toContain(`session-${name}`);
+        expect(warn.mock.calls[0][0]).toContain(bytes === null ? 'EISDIR' : 'SyntaxError');
+        expect(warn.mock.calls[0][0]).not.toContain('{broken');
+        expect(() => new SessionService(root).getGlobal(`session-${name}`)).toThrow();
+      } finally {
+        warn.mockRestore();
+      }
+    }
+  });
+
+  it('tracks healthy chat.message sessions and still applies the configured variant', async () => {
+    const { root, hooks } = createRuntime({ hiveConfig: { agents: { 'forager-worker': { variant: 'high' } } } });
+    const loaded = await hooks;
+    const output: any = { message: { agent: 'forager-worker' }, parts: [] };
+    await loaded['chat.message']!({ sessionID: 'healthy-session', agent: 'forager-worker' } as any, output);
+    expect(output.message.variant).toBe('high');
+    expect(new SessionService(root).getGlobal('healthy-session')).toMatchObject({ agent: 'forager-worker', projectRoot: root });
+  });
+
   it('exposes exactly the canonical public tool inventory', async () => {
     const { hooks } = createRuntime();
     const loaded = await hooks;
