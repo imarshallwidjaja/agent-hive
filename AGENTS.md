@@ -245,6 +245,8 @@ For qualifying ad-hoc work, `orchestrating-ad-hoc-work` owns outcome-first decom
 
 Configured reviewer descriptions guide selection. Explicit operator-required review targets must be honored. No agent may silently skip required configured review targets.
 
+For `/dash-review`, use the understanding-led review and independent challenge method in `packages/opencode-hive/src/agents/dash-reviewer.ts`.
+
 `/dash-review` and `/vuln-review` are ordinary orchestrators over natural folders, inline text, or the current checkout. Optional `hive_git_snapshot({ directory })` and an ad-hoc worktree cover a foreign PR or ref. Lanes are adaptive. Methods and prior-finding comparison remain.
 
 **After task() Returns:**

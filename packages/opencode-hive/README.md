@@ -101,7 +101,7 @@ Use `/interview <idea>` to clarify an idea toward a reliable implementation-brie
 
 Use `/dash-review` for one read-only Git, process/concept, or local-artifact review. It does not edit source, create Hive tasks, or start a fix. See [Reviews in the Operator Guide](../../docs/OPERATOR-GUIDE.md#reviews).
 
-`/dash-review` is a read-only orchestrator over a folder, inline text, or the current checkout. An optional `hive_git_snapshot({ directory })` or operator-selected worktree covers foreign Git evidence. The primary chooses the smallest useful configured reviewer set and includes explicitly requested reviewers. It does not edit source, create Hive tasks, or start a fix; findings remain review context.
+`/dash-review` is a read-only orchestrator over a folder, inline text, or the current checkout. An optional `hive_git_snapshot({ directory })` or operator-selected worktree covers foreign Git evidence. The primary understands the change and consumers before assigning evidence-linked questions to best-fit reviewers, honors required participation, and independently tries to disprove material candidates. Useful, authorized tests and source evidence determine whether findings survive; unresolved material gaps remain visible. It does not edit source, create Hive tasks, or start a fix; findings remain review context. Use `pr-writing` to draft grounded PR titles, descriptions, and review comments without posting them.
 
 For an ad-hoc run, review the existing run or branch, then give a later fix instruction to the ad-hoc orchestrator. For a Hive feature run, review the task, feature, or branch, then give the active planner or orchestrator a later fix instruction.
 
@@ -485,6 +485,7 @@ Generated/managed shape (for inspection) at `<project>/.hive/repositories.json`:
 | `grilling` | Question supplied context until material decisions and evidence are aligned |
 | `orchestrating-ad-hoc-work` | Coordinate qualifying ad-hoc work for Hive Builder or unified Hive |
 | `parallel-exploration` | Researcher fan-out for read-only research |
+| `pr-writing` | Draft PR titles, descriptions, and general or inline review comments |
 | `systematic-debugging` | Root-cause investigation before fixes |
 | `test-driven-development` | Strict red-green-refactor when TDD is the selected testing strategy |
 | `verification` | Applicable command/tool evidence before completion or verification claims |

@@ -120,4 +120,34 @@ describe('HIVE_COMMANDS', () => {
     expect(output).toContain('Read the report a bound worker published, then record status, summary, or blocker with hive_task_update');
     expect(output).not.toContain('Persist worker outcomes with hive_task_update');
   });
+
+  it('keeps dash-review steering and ordered challenge in the command handoff', () => {
+    const commands = buildHiveCommandMap(hiveCommandRenderers, () => ({
+      agentMode: 'unified',
+      backgroundGuidance: { available: false },
+      council: {} as never,
+      agents: {},
+      dashReviewLanes: [{
+        sourceAgent: 'reviewer-contract',
+        baseAgent: 'code-reviewer',
+        model: 'provider/model',
+        description: 'Review API contract changes',
+        taskTarget: 'reviewer-contract',
+      }],
+      vulnerabilityReviewLanes: [],
+    }));
+    const output = commands['dash-review'].run('Check callers of src/api.ts; exclude formatting');
+
+    expect(output).toContain('Review input: Check callers of src/api.ts; exclude formatting');
+    expect(output).toContain('reviewer-contract');
+    const understand = output.indexOf('understand the material change');
+    const dispatch = output.indexOf('Dispatch best-fit reviewers');
+    const challenge = output.indexOf('Independently challenge material candidates');
+    expect(understand).toBeGreaterThanOrEqual(0);
+    expect(understand).toBeLessThan(dispatch);
+    expect(dispatch).toBeLessThan(challenge);
+    expect(output).toContain('preserve explicitly requested reviewer scope');
+    expect(output).toContain('required configured reviewer or claim a clean review while that obligation or material challenge is open');
+    expect(output).toContain('Review Basis');
+  });
 });

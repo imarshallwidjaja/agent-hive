@@ -1,0 +1,48 @@
+{
+  "purpose": "Fresh-agent behavioral scenarios for dash-review and pr-writing. Prompts are inputs; expected items are grading criteria, not observed results.",
+  "scenarios": [
+    {
+      "id": "pr-author-template-caveat",
+      "surface": "pr-writing",
+      "prompt": "Draft a PR title and description as the author. Template: Why / What changed / Verification / Rollout notes. Batch export currently builds a single JSON array in memory; the change aims to stream large batches. Candidate diff: the exporter now emits JSON Lines instead of a single JSON array; the downstream importer still expects an array and is not updated here. The exporter unit suite passed (18 tests), but the end-to-end importer check was not run. Do not create or post a PR.",
+      "expected": [
+        "Uses the supplied template and explains the actual format change and its motivation without inventing a reason not supplied.",
+        "Makes the importer compatibility concern and required rollout decision visible rather than presenting the PR as ready or silently resolving it.",
+        "Distinguishes the observed 18-test unit result from the unrun end-to-end check and does not claim posting authority."
+      ]
+    },
+    {
+      "id": "pr-review-mixed-evidence",
+      "surface": "pr-writing",
+      "prompt": "Draft a general review comment and at most one inline comment. Candidate diff changes Config(mode, flags) to Config(mode, region=None, flags=None) at src/config.py:12. A checked-in caller at src/runner.py:47 still constructs Config('fast', active_flags), and Config.run reads self.flags.enabled. The same diff lowers a warning threshold from 8 to 4, and the supplied product spec explicitly requires 4. One reviewer suspects timeout on high input counts but has no measurement or trace. Keep this a draft; do not submit a review or assign a verdict.",
+      "expected": [
+        "Anchors the positional-constructor defect to the changed parameter and explains its effect on the real caller and run path in compact observation-based wording.",
+        "Does not include the intentional threshold change in the public review comment or report it as a defect against the supplied product spec.",
+        "Keeps the unmeasured timeout concern as an unresolved investigation question, not an asserted public finding; the general comment does not repeat the inline detail.",
+        "Explains the observed caller failure without an unsolicited fix request; a proposed fix belongs in the comment only if requested or needed to understand the concern.",
+        "Does not post or imply an approve/request-changes action."
+      ]
+    },
+    {
+      "id": "dash-code-challenge",
+      "surface": "dash-review",
+      "prompt": "Review this local code-change evidence, read-only. Diff at src/config.py:12 adds an optional region before flags in Config(mode, flags), now Config(mode, region=None, flags=None). Caller at src/runner.py:47 uses Config('fast', active_flags), then Config.run reads self.flags.enabled. Another reviewer alleges a MAX_EMPTY change breaks users, but product notes say empty rows are intentionally accepted and no exposed workflow using MAX_EMPTY has been found. A required configured API reviewer was requested for the whole diff. Available configured reviewers include an adversarial code reviewer and an API reviewer. You have no permission to write fixtures. Explain your review process and findings.",
+      "expected": [
+        "Explains purpose, changed contract and caller path before routing lead clusters; sends the API reviewer the full requested scope.",
+        "Independently attacks the positional-constructor claim with counter-hypotheses and source-backed consequence, using read-only means or naming unavailable execution proof.",
+        "Treats MAX_EMPTY as refuted or unresolved based on actual intent and reachability evidence, not a certified failure.",
+        "Separates severity from confidence and does not claim tests ran or a clean result if a material challenge remains unavailable."
+      ]
+    },
+    {
+      "id": "dash-docs-counterexample",
+      "surface": "dash-review",
+      "prompt": "Review a proposed README paragraph saying `export --format csv` writes a CSV file. Supplied authoritative CLI help for this candidate lists `--format json|jsonl` only; the existing user guide documents `export --format jsonl` to stdout. A reviewer claims the README is harmless because it is docs-only. No binary execution is available. Explain how you would assess this change and report it, read-only.",
+      "expected": [
+        "Understands the documented reader action and compares it with authoritative help and the user guide before routing a question.",
+        "Independently challenges the docs claim with a counterexample or conflicting source, without requiring executable proof when the contract is clear.",
+        "Reports the reader consequence and source conflict with appropriate confidence; does not dismiss it as docs-only or claim a CLI test was run."
+      ]
+    }
+  ]
+}

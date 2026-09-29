@@ -327,8 +327,14 @@ describe('Review grounding contract', () => {
     }
   });
 
-  it('keeps grounding out of dispatchers, workers, and researchers and the handoff out of reviewers', () => {
-    for (const [name, prompt] of [...reviewDispatchers, ['Forager', FORAGER_BEE_PROMPT], ['Scout', SCOUT_BEE_PROMPT], ['Hive Helper', HIVE_HELPER_PROMPT]] as const) {
+  it('grounds Dash before its review sequence and includes its review basis', () => {
+    expect(countOccurrences(DASH_REVIEWER_PROMPT, REVIEW_GROUNDING_PROMPT)).toBe(1);
+    expect(DASH_REVIEWER_PROMPT.indexOf(REVIEW_GROUNDING_PROMPT)).toBeLessThan(DASH_REVIEWER_PROMPT.indexOf('## Review Sequence'));
+    expect(DASH_REVIEWER_PROMPT.replace(REVIEW_GROUNDING_PROMPT, '')).toContain('**Review Basis**');
+  });
+
+  it('keeps grounding out of other dispatchers, workers, and researchers and the handoff out of specialists', () => {
+    for (const [name, prompt] of [...reviewDispatchers.filter(([name]) => name !== 'Dash Reviewer'), ['Forager', FORAGER_BEE_PROMPT], ['Scout', SCOUT_BEE_PROMPT], ['Hive Helper', HIVE_HELPER_PROMPT]] as const) {
       expect(prompt, name).not.toContain(REVIEW_GROUNDING_PROMPT);
     }
     for (const [name, prompt] of [...groundedReviewers.map(([n, p]) => [n, p] as const), ['Forager', FORAGER_BEE_PROMPT], ['Scout', SCOUT_BEE_PROMPT]] as const) {
@@ -385,6 +391,27 @@ describe('Review grounding contract', () => {
       'coverage gap',
       'Compact metadata may precede findings; keep substantive findings first',
     ]) expect(REVIEW_GROUNDING_PROMPT).toContain(term);
+  });
+});
+
+describe('Dash review investigation and challenge', () => {
+  it('orders understanding, lead routing, independent challenge, and evidence-led synthesis', () => {
+    const sequence = sectionBetween(DASH_REVIEWER_PROMPT, '## Review Sequence', '## Engineering Judgment');
+    const steps = [
+      'Resolve the target', 'Notice tentative leads', 'Delegate coherent clusters',
+      'Challenge every material candidate', 'Deduplicate by root cause',
+    ].map((phrase) => sequence.indexOf(phrase));
+    expect(steps.every((index) => index >= 0)).toBe(true);
+    expect(steps).toEqual([...steps].sort((a, b) => a - b));
+    expect(sequence).toContain('relevant consumers or reader actions');
+    expect(sequence).toContain('reviewer is unavailable or fails');
+    expect(sequence).toContain('operator explicitly waives it');
+    expect(sequence).toContain('fresh reviewer session that did not propose it');
+    expect(sequence).toContain('those first raised by a reviewer or follow-up');
+    expect(sequence).toContain('evidence-linked potential consequence separately from confidence');
+    expect(sequence).toContain('discriminating reproduction or test');
+    expect(sequence).toContain('source path or authoritative contract can suffice without execution');
+    expect(sequence).toContain('no material gap remains');
   });
 });
 
@@ -1171,7 +1198,7 @@ describe('Specialized reviewer prompts', () => {
     expect(DASH_REVIEWER_PROMPT).toContain('review orchestrator');
     expect(DASH_REVIEWER_PROMPT).toContain('untrusted data');
     expect(DASH_REVIEWER_PROMPT).toContain('Do not edit implementation files');
-    expect(DASH_REVIEWER_PROMPT).toContain('Do not silently skip');
+    expect(DASH_REVIEWER_PROMPT).toContain('do not silently skip a required reviewer');
   });
 
   it('keeps provider-specific workflow details out of the dash reviewer prompt', () => {
@@ -1225,7 +1252,7 @@ describe('Specialized reviewer prompts', () => {
     expect(VULNERABILITY_REVIEWER_PROMPT).toContain('No confirmed vulnerabilities found in reviewed scope');
     expect(VULNERABILITY_REVIEWER_PROMPT).toContain('A concrete material unresolved security acceptance question needs evidence or a decision');
     expect(VULNERABILITY_REVIEWER_PROMPT).toContain('Do not propose or apply a patch');
-    expect(DASH_REVIEWER_PROMPT).toContain('deduplicate by root cause');
+    expect(DASH_REVIEWER_PROMPT).toContain('Deduplicate by root cause');
     expect(VULNERABILITY_REVIEW_PRIMARY_PROMPT).toContain('unresolved leads with missing evidence and coverage gaps');
   });
 

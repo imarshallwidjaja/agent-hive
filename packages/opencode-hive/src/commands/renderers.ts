@@ -365,16 +365,16 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
         `Configured reviewer candidates:\n${configuredDashReviewCandidates(context)}`,
       ],
       doItems: [
-        'Resolve natural paths, inline material, the current checkout, or an operator-selected snapshot/worktree with ordinary tools.',
-        'Dispatch the smallest useful reviewer set and include every explicitly requested reviewer.',
-        'Lead with severity-ordered findings and source locations.',
+        'Resolve the target and operator steering; understand the material change, governing requirements, and relevant consumers before delegation.',
+        'Dispatch best-fit reviewers for evidence-linked leads and applicable obligations; preserve explicitly requested reviewer scope.',
+        'Independently challenge material candidates, run discriminating tests when useful and authorized, then adjudicate by evidence.',
       ],
       doNotItems: [
         'Do not edit source or create an automatic review workspace.',
-        'Do not silently skip an explicitly requested or configured reviewer.',
+        'Do not silently skip a required configured reviewer or claim a clean review while that obligation or material challenge is open.',
       ],
       outputItems: [
-        'Findings, open questions, and a brief verification scope statement.',
+        'Severity-ordered findings with confidence and source locations; a compact Review Basis, unresolved questions, and required-review or proof gaps.',
       ],
     });
   },

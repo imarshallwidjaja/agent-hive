@@ -42,6 +42,27 @@ function expectInSessionDesignDocumentationPolicy(content: string) {
 }
 
 describe('skill content', () => {
+  it('discovers pr-writing for author and reviewer drafts without publication authority', () => {
+    const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'pr-writing');
+
+    expect(skill).toBeDefined();
+    expect(skill!.description).toMatch(/^Use when /);
+    for (const trigger of ['title', 'description', 'general code review comment', 'inline review comment']) {
+      expect(skill!.description).toContain(trigger);
+    }
+    for (const requirement of [
+      'applicable template', 'current candidate', 'For an author title or description',
+      'tradeoffs, migrations, and verification', 'For reviewer comments',
+      'relevant consumer or reader consequence', 'tradeoff or question',
+      'unresolved material concerns', 'current source anchor',
+      'When the operator asks for findings or comments without requesting solutions, finish each finding at the observed condition and consequence',
+      'resolved or nonissue investigation notes out of public comments unless they answer an existing discussion',
+    ]) expect(skill!.template).toContain(requirement);
+    expect(skill!.template).toContain('a full `/dash-review` is not a prerequisite');
+    expect(skill!.template).toContain('does not authorize posting');
+    expect(skill!.template).toContain('only when the operator explicitly selects one');
+  });
+
   it('bundles grilling as a general-purpose dependency-aware alignment engine', () => {
     const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'grilling');
 
