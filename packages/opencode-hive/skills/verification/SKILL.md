@@ -44,6 +44,7 @@ Use this mode when the task is explicitly to independently verify work. Be falsi
 - A source-backed trace can expose tool output, but it does not attest the tested Git candidate, current integration, or mutable live/artifact inputs and is not a result cache.
 - Session recency neither proves nor invalidates evidence. Establish whether the tested candidate and relevant inputs still apply.
 - Verify the claim being made, not a nearby claim. Build proves build. Lint proves lint. Tests prove only what they exercise.
+- Check the real thing, not a proxy: read the written value, exercise the changed flow, or inspect the delivered artifact. If an observation is suspicious, investigate the observation method while preserving the original failure; do not explain a failed check away.
 
 ## Evidence Protocol
 
@@ -74,6 +75,7 @@ For each coherent claim group:
 | API, tool, or public interface | Build/typecheck plus tests or consumer-style invocation |
 | Bug fix | Reproduce original symptom when practical, then verify fix and regression coverage |
 | Refactor with no behavior change | Existing behavior tests unchanged; check public API surface if exposed |
+| Performance | Compare baseline and treatment on the same workload and measurement surface; report noise and invalidation assumptions |
 | Config or infrastructure | Syntax validation, dry-run, or command that exercises the config |
 | Frontend behavior | Start app when practical, inspect rendered state or browser automation, and check console/network if available |
 | Data or migration | Verify schema/data shape, empty/boundary inputs, and data preservation where relevant |
@@ -85,7 +87,7 @@ Scale up when the change touches persistence, auth, public APIs, deployment, con
 For non-trivial behavior changes, run at least one probe that tries to break the implementation:
 - Boundary input: empty, zero, negative, long string, unicode, max value
 - Malformed input or missing required fields
-- Idempotency: same request or command twice
+- Idempotency: same request or command twice; interruption and retry from a safely isolated partial run
 - Orphan operation: missing or deleted ID
 - Concurrency: parallel operations against shared state
 - Browser interaction beyond page load

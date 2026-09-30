@@ -51,7 +51,7 @@ digraph when_to_use {
 ```
 
 **Use when:**
-- 3+ test files failing with different root causes
+- Independently diagnosable failures with different root causes
 - Multiple subsystems broken independently
 - Each problem can be understood without context from others
 - No shared state between investigations
@@ -178,49 +178,12 @@ Return: Summary of what you found and what you fixed.
 **Exploratory debugging:** You don't know what's broken yet
 **Shared state:** Agents would interfere (editing same files, using same resources)
 
-## Real Example from Session
+## Method selection
 
-**Scenario:** 6 test failures across 3 files after major refactoring
+A deterministic lever can beat fan-out. Prefer an existing codemod, script, or check when it can safely process the units together. Build a rerunnable transformation when repetition or reviewability warrants it; do not require a new script for every nontrivial task. The placement policy still governs who writes and runs it.
 
-**Failures:**
-- agent-tool-abort.test.ts: 3 failures (timing issues)
-- batch-completion-behavior.test.ts: 2 failures (tools not executing)
-- tool-approval-race-conditions.test.ts: 1 failure (execution count = 0)
-
-**Decision:** Independent domains - abort logic separate from batch completion separate from race conditions
-
-**Dispatch:**
-```
-Agent 1 → Fix agent-tool-abort.test.ts
-Agent 2 → Fix batch-completion-behavior.test.ts
-Agent 3 → Fix tool-approval-race-conditions.test.ts
-```
-
-**Results:**
-- Agent 1: Replaced timeouts with event-based waiting
-- Agent 2: Fixed event structure bug (threadId in wrong place)
-- Agent 3: Added wait for async tool execution to complete
-
-**Integration:** All fixes independent, no conflicts, full suite green
-
-**Time saved:** 3 problems solved in parallel vs sequentially
-
-## Key Benefits
-
-1. **Parallelization** - Multiple investigations happen simultaneously
-2. **Focus** - Each agent has narrow scope, less context to track
-3. **Independence** - Agents don't interfere with each other
-4. **Speed** - 3 problems solved in time of 1
+For an explicitly requested race, state the selection rule before dispatch, isolate writable outputs, and report dropouts as gaps. Coverage work partitions evidence or ownership; competing solutions compare the same brief. Neither requires a fixed worker count.
 
 ## Verification by Mode
 
 In feature-task mode, follow binding repository/operator checks and the plan's task and final-verification gates. Keep required early and pre-merge checks at their approved boundary, and resolve each named integrated deferral against its `## Final Verification` owner and prerequisite. In ad-hoc mode, return result and resource state to `orchestrating-ad-hoc-work`; it owns per-lane gates and selected integrated acceptance after the accepted batch is merged.
-
-## Real-World Impact
-
-From debugging session (2025-10-03):
-- 6 failures across 3 files
-- 3 agents dispatched in parallel
-- All investigations completed concurrently
-- All fixes integrated successfully
-- Zero conflicts between agent changes

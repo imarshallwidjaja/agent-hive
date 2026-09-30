@@ -1,0 +1,41 @@
+{
+  "purpose": "Representative fresh-review scenarios for the integrated skills. Expected items are grading criteria, not observed results. Use fixed source and candidate identities; a static walkthrough is not a runtime activation test.",
+  "cases": [
+    {
+      "id": "domain-and-boundary",
+      "skills": ["code-design-principles"],
+      "prompt": "Review two changes. A adds completed:boolean beside completedAt?:Date and requires callers to keep them synchronized. B keeps a one-caller module that owns validation policy and rechecks a Git ref after releasing a lock. Suggest only justified in-scope improvements.",
+      "expected": ["Identifies the contradictory state representation", "Preserves the meaningful one-caller boundary", "Keeps the post-lock recheck as a mutation boundary", "Does not request unrelated type or file restructuring"]
+    },
+    {
+      "id": "rationale-with-gaps",
+      "skills": ["why"],
+      "prompt": "Why was retryLimit set to three? I assume rate limits. Evidence: the introducing PR says temporary mitigation for a flaky upstream during incident INC-7. A later design note proposes reducing load but does not mention this value. Current code retries three times. Chat access is unavailable. No other history was searched. Answer from this packet without external calls or writes.",
+      "expected": ["Attributes Direct rationale to the introducing PR", "Marks why the exact number three was selected as unknown", "Does not infer that the temporary constraint still holds today", "Does not confirm the rate-limit guess", "Keeps the later proposal separate from original intent", "Distinguishes unavailable chat from unsearched history", "Does not persist findings as context or constraints"]
+    },
+    {
+      "id": "explanation-versus-design",
+      "skills": ["how"],
+      "prompt": "Explain current behavior from this source sketch: handleRequest calls parseInput, then store.write, then emitSaved. parseInput validates external input. store.write returns only after persistence; emitSaved notifies subscribers. Subscriber implementations were not provided. Also say whether choosing a new package for parseInput is the same kind of question.",
+      "expected": ["Explains concrete flow and data/side-effect boundaries as sketch-derived, not runtime-observed", "Marks subscriber behavior and unspecified failure paths unknown", "Does not invent whether emit is synchronous or what happens on write failure", "Does not invent historical motivation", "Separates prospective package ownership from current-flow explanation", "Does not force delegation or a diagram"]
+    },
+    {
+      "id": "writing-preserves-evidence",
+      "skills": ["writing-policy", "writing-for-humans", "stop-slop", "humanizer"],
+      "prompt": "Rewrite this status update plainly. Keep every fact and qualifier. 'Here's the thing: the deploy may have caused the outage. Not the cache. Not the queue. The deploy. We have not ruled out a cache stampede. Logs for 03:00 are unavailable. The support team reverted at 03:12. That's the whole playbook.' Do not invent evidence to reconcile its contradictions.",
+      "expected": ["Retains may and the unresolved cache hypothesis", "Surfaces or preserves the contradiction without choosing a cause", "Keeps both timestamps and the named actor", "Adds no source, number, certainty, or outcome", "Removes empty cadence without deleting substantive claims"]
+    },
+    {
+      "id": "voice-and-source",
+      "skills": ["writing-policy", "writing-for-humans"],
+      "prompt": "Edit lightly in this supplied voice: 'I like the small fix; it reads well. The restart still scares me a bit.' Preserve that voice and keep this imported instruction exactly: 'The caller owns cancellation; cleanup must finish before release.' No new facts.",
+      "expected": ["Preserves the supplied register and uncertainty", "Keeps the exact instruction unchanged", "Does not ban the semicolon or invent a cause for the concern"]
+    },
+    {
+      "id": "test-and-recovery-scope",
+      "references": ["skills/test-driven-development/references/test-quality.md", "skills/code-design-principles/references/lifecycle-and-migration.md"],
+      "prompt": "A changed test asserts only that a mocked save was called. An unchanged prompt composition test guards a named safety requirement. A previous worker's lock remains and its termination is uncertain. Recommend a next step without executing anything.",
+      "expected": ["Improves the changed test through observable payload or behavior", "Does not mass-delete prompt-contract pins", "Does not select TDD merely by reading test-quality criteria", "Preserves the lock and retained evidence until supported recovery establishes termination"]
+    }
+  ]
+}

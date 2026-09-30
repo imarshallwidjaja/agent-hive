@@ -52,6 +52,7 @@
     "plugin.json",
     "schema/",
     "skills/",
+    "docs/SKILL-OWNERSHIP.md",
     "README.md"
   ]
 }

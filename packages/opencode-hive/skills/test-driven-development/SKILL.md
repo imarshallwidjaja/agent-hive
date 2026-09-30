@@ -48,6 +48,8 @@ Search for tests that assert the same invariant. Keep the strongest owned locati
 - Mock only boundaries that cannot be exercised directly; do not test the mock's script instead of product behavior.
 - Do not require one test per function. Coverage follows behavior, risk, and contract ownership.
 
+Read [test quality](references/test-quality.md) when choosing assertions or assessing a weak regression test. Reviewers may read that reference directly without loading this skill or selecting TDD.
+
 ## Legacy and Refactor Work
 
 For uncertain legacy behavior, first add characterization tests around the behavior that must remain stable, then perform preparatory refactoring under that coverage before changing behavior. For a pure refactor with trustworthy existing public-contract coverage, keep that coverage green; a new failing test is neither possible nor required.

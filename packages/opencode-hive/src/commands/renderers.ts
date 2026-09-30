@@ -256,7 +256,7 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
     return renderHybridCommand('start-execution', context, {
       details: args.trim() ? [`Context: ${args.trim()}`] : undefined,
       doItems: [
-        'Confirm parallel vs sequential execution strategy with the operator before proceeding.',
+        'Follow explicit operator execution direction; otherwise sequence from dependencies, owned paths, and shared resources. Ask only when a material scheduling or authority decision remains unresolved.',
         'Use todos to track task progress and transitions.',
         'Create or inspect the task worktree with an explicit feature target when isolation is needed, call hive_feature_select for that feature immediately before dispatch, then issue the native Forager task() call with that path in its authored prompt.',
         'Read the report a bound worker published, then record status, summary, or blocker with hive_task_update under Task Report Ownership; do not retranscribe the report.',

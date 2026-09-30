@@ -128,6 +128,8 @@ If external validation is not available or not safe, say it was skipped and cont
 
 Deduplicate by root cause. Keep the clearest evidence and report severity separately from certainty. Drop concerns that are merely stylistic, unsupported, or outside the host review's scope.
 
+Read [impact and finding judgment](references/impact-and-findings.md) for a shared-contract safety assumption or a noisy finding set. Other ordinary reviewers may read this reference without adopting the full adversarial workflow. The reference does not expand scope, permissions, or the host's finding bar.
+
 Severity:
 
 - Critical: breaks correctness, data integrity, security, public contract, or the stated task.

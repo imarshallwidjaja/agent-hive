@@ -132,6 +132,7 @@ Task status and reports are the execution record. There is no attempt ledger. Ol
 2. Add `SKILL.md` with skill instructions
 3. The native materializer discovers packaged `SKILL.md` files from the filesystem; no registry or loader entry is required
 4. Document triggers in skill description
+5. Keep one owner for each instruction domain; use `packages/opencode-hive/docs/SKILL-OWNERSHIP.md` for the design, explanation, and writing boundaries. Edit packaged sources, not generated caches. Preserve imported decision-changing wording, applicability, and license/provenance notices; do not add a second overlapping policy or synchronize local skill copies.
 
 ### Adding a Service
 

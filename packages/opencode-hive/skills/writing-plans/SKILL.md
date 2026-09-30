@@ -42,7 +42,7 @@ Record each required gate once, under its owning task's `Verify` or under `## Fi
 Expected cost guides sequencing. It becomes a pass/fail limit only when a binding requirement sets one. Run independent cheap gates before expensive ones when prerequisites allow. Keep legitimate stateful order: a consumer that destroys shared state runs last among that state's consumers, or each later gate owns an independent fixture. When an expensive gate stays `not run` behind slower gates, plan an earlier feasibility run on its own fixture if its prerequisites allow.
 
 Boundaries:
-- `local iteration`: a worker's diagnostic loop. It is never acceptance evidence.
+- `local iteration`: a worker's diagnostic loop. It does not establish acceptance merely because a command passed; reuse requires the approved gate, candidate, inputs, and boundary to match.
 - `task acceptance`: required checks on the task candidate before merge (the existing "pre-merge" gate).
 - `integration checkpoint`: a cross-owner gate on a named candidate that discharges named deferrals without certifying a release.
 - `release certification`: the complete-release gate set for a changed release boundary, run on a settled candidate. That is the task candidate when the task owns the release-boundary change, and otherwise the integrated candidate.

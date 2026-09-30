@@ -44,6 +44,7 @@ Apply Engineering Judgment to the changed scope while preserving this review's d
 - Remove duplicated checks, repeated parsing, repeated validation, and repeated formatting introduced by the change.
 - Prefer one boundary validation point over defensive internal fallbacks.
 - Remove commented-out code and comments that explain obvious code without carrying contracts, invariants, units, side effects, or rationale.
+- When a suppression or a \`do not remove\` comment claims a constraint, inspect the rule and evidence. Recommend an in-scope type, check, or clearer representation when it actually replaces the constraint. Doubt does not authorize deleting a useful comment or weakening a safety check.
 - Reuse existing local helpers only when that reduces net complexity.
 - Fold or delete weaker tests that repeat an invariant already owned by the canonical suite.
 

@@ -194,13 +194,11 @@ You MUST complete each phase before proceeding to the next.
    - Issue actually resolved?
 
 5. **If Fix Doesn't Work**
-   - STOP
-   - Count: How many fixes have you tried?
-   - If < 3: Return to Phase 1, re-analyze with new information
-   - **If ≥ 3: STOP and question the architecture (step 6 below)**
-   - DON'T attempt Fix #4 without architectural discussion
+   - Preserve the failure and return to Phase 1 with the new evidence
+   - Do not stack another speculative fix on the failed experiment
+   - If recurring failures share a premise or reveal coupling symptoms, reassess that premise in step 6 before another equivalent attempt
 
-6. **If 3+ Fixes Failed: Question Architecture**
+6. **Recurring Failures: Question the Shared Premise**
 
    **Pattern indicating architectural problem:**
    - Each fix reveals new shared state/coupling/problem in different place
@@ -212,9 +210,9 @@ You MUST complete each phase before proceeding to the next.
    - Are we "sticking with it through sheer inertia"?
    - Should we refactor architecture vs. continue fixing symptoms?
 
-   **Discuss with your human partner before attempting more fixes**
+   When two or more fixes share a premise and fail the same gate, suspect the premise, not the fixes. The premise is the one sentence that every failed fix assumed. State it and choose evidence that could disprove it. For a load-imbalance problem, a per-actor census can distinguish the shared premise from an isolated symptom; it is not required for unrelated defects.
 
-   This is NOT a failed hypothesis - this is a wrong architecture.
+   Repeated failure is a reason to question architecture, not proof that architecture is wrong. Ask the operator only when a material scope, authority, or product decision remains; subagents return that clarification to their parent.
 
 ## Red Flags - STOP and Follow Process
 
@@ -228,12 +226,12 @@ If you catch yourself thinking:
 - "Pattern says X but I'll adapt it differently"
 - "Here are the main problems: [lists fixes without investigation]"
 - Proposing solutions before tracing data flow
-- **"One more fix attempt" (when already tried 2+)**
+- **"One more fix attempt" without new evidence about the shared premise**
 - **Each fix reveals new problem in different place**
 
 **ALL of these mean: STOP. Return to Phase 1.**
 
-**If 3+ fixes failed:** Question the architecture (see Phase 4.6)
+Repeated failures sharing a premise trigger the architecture reassessment in Phase 4.6; do not count attempts as proof of a cause.
 
 ## your human partner's Signals You're Doing It Wrong
 
@@ -257,7 +255,7 @@ If you catch yourself thinking:
 | "Multiple fixes at once saves time" | Can't isolate what worked. Causes new bugs. |
 | "Reference too long, I'll adapt the pattern" | Partial understanding guarantees bugs. Read it completely. |
 | "I see the problem, let me fix it" | Seeing symptoms ≠ understanding root cause. |
-| "One more fix attempt" (after 2+ failures) | 3+ failures = architectural problem. Question pattern, don't fix again. |
+| "One more fix attempt" after repeated failures | Name the shared premise and the new discriminating evidence before another equivalent attempt. |
 
 ## Quick Reference
 
@@ -277,21 +275,19 @@ If systematic investigation reveals issue is truly environmental, timing-depende
 3. Implement appropriate handling (retry, timeout, error message)
 4. Add monitoring/logging for future investigation
 
-**But:** 95% of "no root cause" cases are incomplete investigation.
+Before calling the cause external, state which local hypotheses were tested and what evidence excludes them. Missing evidence remains an open question.
 
 ## Supporting Techniques
 
-- After finding root cause, add defense in depth: validate at multiple layers so the same class of failure cannot pass a later boundary silently.
+- Validate at each actual trust or mutation boundary. Avoid rechecking an established invariant inside one boundary; retain checks after another actor, lock release, or await could have invalidated the observation.
 - Prefer condition-based waiting: poll a condition instead of arbitrary timeouts.
+- Restart bugs: suspect stale persistent state as well as code. Inspect or reproduce on an isolated copy; do not clear user or Hive-managed files, break locks, or discard retained evidence to test the hypothesis.
+- When evidence refutes a hypothesis, reverse only the isolated experimental change it motivated. Preserve the failure evidence and unrelated work. Belt-and-suspenders that "might help" is a hypothesis, not a fix.
+- Check for the pattern, not just the instance. Fix other instances only within the authorized scope; report those outside it.
+- For measured slowness, use the same workload and measurement surface before and after. Name cache invalidation before claiming a caching win. A trace without source attribution supports a hypothesis, not a confirmed cause.
 
 **Related skills:**
 - **test-driven-development** - Load only when strict TDD is the selected strategy
 - **skill({ name: "verification" })** - Verify fix worked before claiming success
 
-## Real-World Impact
-
-From debugging sessions:
-- Systematic approach: 15-30 minutes to fix
-- Random fixes approach: 2-3 hours of thrashing
-- First-time fix rate: 95% vs 40%
-- New bugs introduced: Near zero vs common
+The premise, restart-state, and hypothesis-reversal guidance is adapted from pstack; see `UPSTREAM.md` and `LICENSE.pstack` in this skill. These additions do not replace Hive's source/candidate evidence or recovery contracts.

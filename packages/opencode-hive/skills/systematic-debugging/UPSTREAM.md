@@ -1,0 +1,3 @@
+# Selective pstack material
+
+Shared-premise, restart-state, and hypothesis-reversal guidance draws on Lauren Tan's `principle-attack-the-premise`, `principle-fix-root-causes`, and diagnostic passages of `poteto-mode/playbooks/bug-fix.md` and `perf-issue.md` in pstack 0.15.5, `cursor/plugins` revision `fae2c6ed95821bd85f614a73e4842e13229fa5e5`. Source: https://github.com/cursor/plugins/tree/fae2c6ed95821bd85f614a73e4842e13229fa5e5/pstack/skills . `LICENSE.pstack` covers those passages. This does not import poteto-mode, its playbook workflow, automatic PRs, or autonomy policy. Tests of state hypotheses use isolated copies; retained-state recovery remains governed by Hive.

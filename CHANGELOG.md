@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Packaged `code-design-principles`, `how`, and `why` skills add conditional construction guidance, current-code explanation, and historical rationale investigation with upstream provenance.
+- Packaged `writing-policy`, `writing-for-humans`, `stop-slop`, and `humanizer` provide one maintained writing family, with documented local-copy cutover and native override behavior.
 - Selected-feature Forager dispatches with `Hive task: <task-folder>` as the first non-empty prompt line now receive a bounded path-only brief after the route snapshot. Task updates can persist a successor `handoff.md`; status exposes spec freshness, reasons, and handoff presence.
 - Project-local `.hive/agent-hive.override.json` can set `model` and `variant` for matching built-in and configured custom agents. Other runtime settings remain in the global config.
 - Project and feature context now have scoped catalogs, bounded reads, and hash-guarded writes. VS Code can browse and archive scoped context and show numeric task report history.
@@ -18,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Planning and execution instructions distinguish material decisions from routine dialogue and scheduling. Debugging, test quality, and review guidance gain scoped pstack-derived recognition tests while preserving Hive evidence, recovery, and authority contracts.
 - Planning guidance now records candidate-bound gate evidence, reconciles verification changes in amendments, and checks costly reruns against affected inputs before approval.
 - Agent guidance now orients workers from live task records, refreshes stale pending specs, repairs unowned plan task headings, and promotes accepted forward obligations into successor plan tasks. Planning and review guidance assigns shared-contract consumer updates explicitly.
 - Task status and immutable report history replace execution attempts. Feature or ad-hoc Hive worktrees are the default for tracked Git writes, with narrow direct-checkout exceptions; workers commit the source and primaries inspect, merge, and clean up. Background job tracking remains observational.

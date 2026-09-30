@@ -42,6 +42,60 @@ function expectInSessionDesignDocumentationPolicy(content: string) {
 }
 
 describe('skill content', () => {
+  it('packages the design, explanation, and writing families with self-contained references and provenance', () => {
+    const root = resolvePackagedSkillsDir();
+    const names = ['code-design-principles', 'how', 'why', 'writing-policy', 'writing-for-humans', 'stop-slop', 'humanizer'];
+    for (const name of names) {
+      const skill = BUILTIN_SKILLS.find((entry) => entry.name === name);
+      expect(skill, name).toBeDefined();
+      expect(skill!.description, name).toMatch(/^Use when /);
+      const directory = path.join(root, name);
+      expect(existsSync(path.join(directory, 'UPSTREAM.md')), name).toBe(true);
+      for (const relative of readdirSync(directory, { recursive: true, encoding: 'utf8' })) {
+        if (!relative.endsWith('.md')) continue;
+        const file = path.join(directory, relative);
+        const content = readFileSync(file, 'utf8');
+        for (const match of content.matchAll(/\[[^\]]*\]\(([^)]+)\)/g)) {
+          const target = match[1];
+          if (/^https?:|^#/.test(target)) continue;
+          const resolved = path.resolve(path.dirname(file), target.split('#')[0]);
+          expect(path.relative(directory, resolved).startsWith('..'), `${name}/${relative}: ${target}`).toBe(false);
+          expect(existsSync(resolved), `${name}/${relative}: ${target}`).toBe(true);
+        }
+      }
+    }
+  });
+
+  it('gives writing routing and its overlays distinct ownership without compulsory cleanup', () => {
+    const get = (name: string) => BUILTIN_SKILLS.find((entry) => entry.name === name)!.template;
+    expect(get('writing-policy')).toContain('Load depth skills only when the case matches');
+    expect(get('writing-policy')).toContain('Parent-loaded skills do not imply child loading');
+    expect(get('writing-policy')).toContain('does not authorize delegation');
+    expect(get('writing-for-humans')).toContain('A rewrite adds nothing');
+    expect(get('writing-for-humans')).toContain('This is not an absolute ban');
+    expect(get('stop-slop')).toContain('never add, merge, or remove list items for cadence');
+    expect(get('humanizer')).toContain('Do not invent personality');
+    expect(get('humanizer')).toContain('sample outranks these defaults');
+    for (const name of ['stop-slop', 'humanizer']) expect(get(name)).toContain('Load with `writing-for-humans`');
+  });
+
+  it('separates design depth, present behavior, and historical rationale from execution authority', () => {
+    const design = BUILTIN_SKILLS.find((entry) => entry.name === 'code-design-principles')!;
+    const how = BUILTIN_SKILLS.find((entry) => entry.name === 'how')!;
+    const why = BUILTIN_SKILLS.find((entry) => entry.name === 'why')!;
+    expect(design.description).toContain('Not for mechanical edits');
+    expect(design.template).toContain('existing scope, authority, and output contract');
+    expect(how.template).toContain('primary owns the explanation');
+    expect(how.template).toContain('"Where should this live?"');
+    expect(why.description).toContain('explicitly asks for historical design rationale');
+    expect(why.template).toContain('not operator constraints');
+    expect(why.template).toContain('unavailable source is not a negative search result');
+    expect(why.template).toContain('does not authorize code changes or external writes');
+    const lifecycle = readFileSync(path.join(resolvePackagedSkillsDir(), 'code-design-principles/references/lifecycle-and-migration.md'), 'utf8');
+    expect(lifecycle).toContain('No external users depend on backward compatibility');
+    expect(lifecycle).toContain('does not authorize deleting a lock');
+  });
+
   it('discovers pr-writing for author and reviewer drafts without publication authority', () => {
     const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'pr-writing');
 
@@ -201,15 +255,10 @@ describe('skill content', () => {
     expect(template).toMatch(
       /^- \*\*One question at a time\*\* - Don't overwhelm with multiple questions during ordinary brainstorming$/m
     );
-    expect(template).toMatch(
-      /^- \*\*Explore alternatives\*\* - Propose 2-3 approaches during ordinary brainstorming or when the operator explicitly requests alternatives$/m
-    );
-    expect(template).toMatch(
-      /^- \*\*Incremental validation\*\* - Present ordinary brainstorming designs in sections and validate each$/m
-    );
-    expect(template).toMatch(
-      /^- After ordinary brainstorming, ask: "Ready to set up for implementation\?"$/m
-    );
+    expect(template).toContain('Compare genuinely different shapes at material uncertain decisions');
+    expect(template).toContain('not after every paragraph');
+    expect(template).toContain('without asking for the same authority again');
+    expect(template).not.toContain('200-300 words');
     expect(template).not.toMatch(
       /^- \*\*Explore alternatives\*\* - Always propose 2-3 approaches before settling$/m
     );
@@ -701,7 +750,8 @@ describe('skill content', () => {
     expect(skill!.template).toContain('In gate-closed sessions use blocking native `task()`');
     expect(skill!.template).toContain('Risk-Tier Review Routing');
     expect(skill!.template).toContain('Post-Batch Code Review');
-    expect(skill!.template).toContain('recommended review path');
+    expect(skill!.template).toContain('explicit operator direction');
+    expect(skill!.template).toContain('A test failure is evidence to investigate');
     expect(skill!.template).toContain('One implementation assignment normally maps to one numbered task');
     expect(skill!.template).toContain('Never reconstruct blocker details from worker prose or task traces');
     expect(skill!.template).toContain('explicit status leaving blocked');
@@ -733,7 +783,8 @@ describe('skill content', () => {
     const adhoc = BUILTIN_SKILLS.find((entry) => entry.name === 'orchestrating-ad-hoc-work')!.template;
     expect(executing).toContain('Collect required reviews on the settled candidate and assess findings before routing work');
     expect(executing).toContain('Route accepted work through this decision tree');
-    expect(executing).toContain('| Accepted local correction to the completed batch | **Inline fix**');
+    expect(executing).toContain('| Accepted local correction to the completed batch | **Same implementation lane**');
+    expect(executing).toContain('fresh worker when delegated');
     expect(executing).not.toContain('| Minor / local to the completed batch | **Inline fix**');
     expect(adhoc).toContain("Apply the primary's Review Follow-Up guidance to settled lane reviews before remediation and closure");
     expect(adhoc).toContain('preserve usable unaffected review coverage');

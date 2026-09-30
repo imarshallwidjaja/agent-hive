@@ -477,19 +477,26 @@ Generated/managed shape (for inspection) at `<project>/.hive/repositories.json`:
 | `agents-md-mastery` | Bootstrap, review, or prune AGENTS.md by placing rules next to the code they govern |
 | `background-delegation` | Env-gated background wait-mode and board protocol |
 | `brainstorming` | Explore intent and design before implementation |
+| `code-design-principles` | Conditional depth for state, types, boundaries, shared writers, retries, and internal migration |
 | `complexity-audit` | Read-only complexity audit of named roots or the current worktree |
 | `complexity-review` | Read-only complexity review of an explicit diff or bounded scope |
 | `context-engineering` | Select, retrieve, and update managed context with revision and hash checks |
 | `dispatching-parallel-agents` | Coordinate independent subagent work |
 | `executing-plans` | Execute an approved plan with review checkpoints |
 | `grilling` | Question supplied context until material decisions and evidence are aligned |
+| `how` | Explain current source-grounded behavior and subsystem flow |
+| `humanizer` | Repair vocabulary, register, attribution, and formatting in existing prose |
 | `orchestrating-ad-hoc-work` | Coordinate qualifying ad-hoc work for Hive Builder or unified Hive |
 | `parallel-exploration` | Researcher fan-out for read-only research |
 | `pr-writing` | Draft PR titles, descriptions, and general or inline review comments |
+| `stop-slop` | Repair formulaic cadence and structure in existing prose |
 | `systematic-debugging` | Root-cause investigation before fixes |
 | `test-driven-development` | Strict red-green-refactor when TDD is the selected testing strategy |
 | `verification` | Applicable command/tool evidence before completion or verification claims |
+| `why` | Investigate explicitly requested historical rationale with calibrated source evidence |
 | `writing-for-agents` | Reference for authoring documents agents consume: skills, subagent prompts, instructions, and pointer architecture |
+| `writing-for-humans` | Draft substantial reader-centered prose and apply the non-invention finish pass |
+| `writing-policy` | Select writing depth skills and propagate the writing contract to permitted delegates |
 | `writing-plans` | Turn requirements into an implementation plan |
 
 ### Per-Agent Skills
@@ -505,6 +512,12 @@ Skills are loaded through OpenCode's native `skill` tool, not through a Hive plu
 | `disableSkills` (global) | Disables Hive bundled materialization and Hive bundled autoload only. User or native skills with the same name are not blocked. |
 
 **User file skills** should be configured through OpenCode's native `.opencode`, `.claude`, `.agents`, `skills.paths`, or `skills.urls` discovery. They can be loaded manually with the native `skill` tool or advertised to an agent by adding the skill's frontmatter `name` to `autoLoadSkills`. Native/user skills take precedence over Hive bundled skills with the same name.
+
+The writing family is maintained in oc-arkive: `writing-policy` routes, `writing-for-humans` owns drafting and the finish pass, `stop-slop` owns cadence/structure repair, and `humanizer` owns vocabulary/register/attribution/formatting repair. The base prompt points to the policy; depth skills load only on their triggers. These pointers do not change `autoLoadSkills` defaults or override explicitly disabled skills. `pr-writing` retains its artifact and publication contract, and `writing-for-agents` retains instruction-authoring ownership.
+
+`code-design-principles` deepens the existing Engineering Judgment block at material design decisions without another workflow or finding bar. `how` and `why` serve explicit explanation and historical-rationale requests; ordinary debugging, future design selection, and routine implementation orientation retain their existing owners.
+
+To replace local writing-skill copies with the package-managed versions, follow [Skill ownership and cutover](docs/SKILL-OWNERSHIP.md), included in the package. Leaving a same-name local or URL copy in discovery keeps that copy authoritative; reinstalling oc-arkive alone does not replace it.
 
 **URL-scan conservative behavior:** If configured `skills.urls` cannot be scanned for conflicts (invalid response, network error), Hive skips bundled skill materialization and Hive bundled autoload guidance for that run and logs a warning rather than risking a native conflict. Local native skills discovered before the URL failure can still be advertised in guidance; partially scanned URL skills are not advertised.
 

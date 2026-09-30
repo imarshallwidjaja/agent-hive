@@ -78,6 +78,13 @@ describe('Engineering judgment prompt reach', () => {
     expect(Buffer.byteLength(ENGINEERING_JUDGMENT_PROMPT, 'utf8')).toBeLessThanOrEqual(3_000);
   });
 
+  it('routes material design choices to one depth skill without selecting it for routine edits', () => {
+    expect(ENGINEERING_JUDGMENT_PROMPT).toContain('load the native skill `code-design-principles`');
+    expect(ENGINEERING_JUDGMENT_PROMPT).toContain('not another workflow or finding bar');
+    expect(ENGINEERING_JUDGMENT_PROMPT).toContain('Routine typed or mechanical edits do not trigger it');
+    expect(ENGINEERING_JUDGMENT_PROMPT).toContain('If disabled or unavailable, retain this guidance');
+  });
+
   it('starts from present need and preserves meaningful safety and ownership boundaries', () => {
     for (const requirement of [
       'present need before adding machinery',
@@ -139,6 +146,30 @@ describe('Engineering judgment prompt reach', () => {
 });
 
 describe('Process judgment prompt reach', () => {
+  it('routes writing and explanations without resurrecting mandatory interview or review-consent rituals', () => {
+    expect(HIVE_SYSTEM_PROMPT).toContain('load `writing-policy`');
+    expect(HIVE_SYSTEM_PROMPT).toContain('rather than activating every overlay');
+    expect(HIVE_SYSTEM_PROMPT).toContain('If this supplemental skill is unavailable');
+    expect(QUEEN_BEE_PROMPT).not.toContain('Ask user before consulting plan-reviewer');
+    expect(QUEEN_BEE_PROMPT).not.toContain('Load one skill at a time');
+    expect(SWARM_BEE_PROMPT).not.toContain('confidence ≈ 50%');
+    expect(ARCHITECT_BEE_PROMPT).not.toContain('after every planning response');
+    expect(ARCHITECT_BEE_PROMPT).toContain('Save material planning state to the draft when it needs to persist');
+    expect(SWARM_BEE_PROMPT).toContain('run paired correctness + simplicity review');
+    expect(SWARM_BEE_PROMPT).not.toContain('recommend paired correctness + simplicity review');
+    for (const prompt of [QUEEN_BEE_PROMPT, SWARM_BEE_PROMPT]) {
+      expect(prompt).toContain('without automatic persistence or constraint registration');
+      expect(prompt).not.toContain('If Scout returns substantial findings');
+      expect(prompt).not.toMatch(/ask[^\n]*which recommended review path|Would you like me to consult plan-reviewer|delegate by default/i);
+      expect(prompt).toContain('explicit operator');
+    }
+    expect(CODE_REVIEWER_PROMPT).toContain('do not load TDD merely to locate it');
+    for (const prompt of [CODE_REVIEWER_PROMPT, DASH_REVIEWER_PROMPT]) {
+      expect(prompt).toContain('native override or disabled bundle may omit');
+      expect(prompt).toContain('suppressed caches');
+      expect(prompt).toContain('not a required-review gap');
+    }
+  });
   const primaryPrompts = [
     ['Hive', QUEEN_BEE_PROMPT],
     ['Architect', ARCHITECT_BEE_PROMPT],
@@ -191,7 +222,7 @@ describe('Process judgment prompt reach', () => {
     expect(ARCHITECT_BEE_PROMPT).toContain('Advice, comparison, explanation, and retrieval requests remain conversation-scoped');
     expect(ARCHITECT_BEE_PROMPT).toContain('For implementation requests, "Do X" means "create plan for X"');
     expect(ARCHITECT_BEE_PROMPT).not.toContain('PLANNER, NOT IMPLEMENTER. "Do X" means');
-    expect(ARCHITECT_BEE_PROMPT).toContain('| Trivial implementation | Single file, <10 lines | Quick assessment | Create a concise plan; never implement |');
+    expect(ARCHITECT_BEE_PROMPT).toContain('| Bounded implementation | Clear contract and established pattern | Focused discovery | Create a concise plan; never implement |');
     expect(ARCHITECT_BEE_PROMPT).toContain('| Retrieval | Source facts, code/context tracing, external data | Retrieve bounded evidence | Return findings without creating planning state |');
     expect(ARCHITECT_BEE_PROMPT).toContain('Complete the requested advice, comparison, explanation, or retrieval');
     expect(ARCHITECT_BEE_PROMPT).toContain('During planning, NEVER end with:');
@@ -216,12 +247,10 @@ describe('Process judgment prompt reach', () => {
     expect(QUEEN_BEE_PROMPT.slice(phaseStart, intentStart)).toContain(
       'Direct work never bypasses plan-first routing',
     );
-    expect(tableRow(intentSection, 'Trivial')).toMatch(
+    expect(tableRow(intentSection, 'Bounded')).toMatch(
       /After phase routing.*direct work or delegation.*featureless implementation enters Planning first/
     );
-    expect(tableRow(intentSection, 'Simple')).toMatch(
-      /After phase routing.*direct work or delegation.*featureless implementation enters Planning first/
-    );
+    expect(intentSection).not.toMatch(/<10 lines|<30 min|3\+ files/);
     expect(tableRow(intentSection, '"Quick change"')).toMatch(/After phase routing/);
     expect(boundarySection).toMatch(
       /After phase routing.*Feature implementation can use direct work only after an approved plan has selected the work; it never selects or bypasses feature planning\./,
@@ -295,7 +324,7 @@ describe('Review follow-up contract', () => {
 
     for (const prompt of [QUEEN_BEE_PROMPT, SWARM_BEE_PROMPT]) {
       expect(prompt).toContain('only accepted work reaches this table');
-      expect(prompt).toContain('| Accepted local correction to the completed batch | **Inline fix**');
+      expect(prompt).toContain('| Accepted local correction to the completed batch | **Same implementation lane**');
       expect(prompt).not.toContain('| Minor / local to the completed batch | **Inline fix**');
     }
   });
@@ -1378,7 +1407,7 @@ describe('Hive (Hybrid) prompt', () => {
     });
 
     it('routes plan review through Architect', () => {
-      expect(QUEEN_BEE_PROMPT).toContain('delegate the review request to Architect');
+      expect(QUEEN_BEE_PROMPT).toMatch(/delegate the review request to Architect/i);
       expect(QUEEN_BEE_PROMPT).toContain('best-fit permitted plan-reviewer');
     });
 
@@ -1486,7 +1515,7 @@ describe('Architect (Planner) prompt', () => {
 
     it('permits research and review delegation via task()', () => {
       expect(ARCHITECT_BEE_PROMPT).toContain('one terminal layer of permitted Scout, plan-reviewer, or approach-advisor planning help');
-      expect(ARCHITECT_BEE_PROMPT).toContain('Never use task() to delegate implementation or coding work.');
+      expect(ARCHITECT_BEE_PROMPT).toContain('Never invoke Architect recursively or use this path for Forager, implementation, or coding workers.');
       expect(ARCHITECT_BEE_PROMPT).toContain('Never invoke Architect recursively');
     });
 
@@ -1523,7 +1552,7 @@ describe('Architect (Planner) prompt', () => {
     it('documents simplicity-reviewer boundaries for planner awareness', () => {
       expect(ARCHITECT_BEE_PROMPT).toContain('simplicity-reviewer');
       expect(ARCHITECT_BEE_PROMPT).toContain('post-implementation cleanup pass');
-      expect(ARCHITECT_BEE_PROMPT).toContain('Architect should not invoke it during planning');
+      expect(ARCHITECT_BEE_PROMPT).toContain('Do not use `simplicity-reviewer` while planning');
     });
 
     it('tells planners to hand Scouts known findings instead of rediscovery', () => {
@@ -1784,7 +1813,7 @@ describe('Swarm (Orchestrator) prompt', () => {
     });
 
     it('includes task() guidance for research fan-out', () => {
-      expect(SWARM_BEE_PROMPT).toContain('task() for research fan-out');
+      expect(SWARM_BEE_PROMPT).toContain('For useful independent research slices');
     });
 
     it('documents scout researcher routing by closest task fit', () => {

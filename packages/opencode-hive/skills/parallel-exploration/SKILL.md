@@ -28,13 +28,13 @@ Select Scouts by the retrieval output needed, not by whether the overall request
 - User asks for an exploration that likely spans multiple files/packages
 - The work is read-only and the questions can be investigated independently
 
-**Only skip this skill when:**
+**Use direct or serial investigation when:**
 - Investigation requires shared state or context between questions
 - It's a focused question that the primary agent can answer with a bounded direct lookup
 - Questions are dependent (answer A materially changes what to ask for B)
 - Work involves file edits (use the feature workflow or Hive Builder's `orchestrating-ad-hoc-work` route instead)
 
-**Important:** Do not treat "this is exploratory" as a reason to avoid delegation. This skill is specifically for exploratory research when fan-out makes it faster and cleaner.
+Exploratory work can benefit from delegation, but only when independent evidence slices justify it. This skill owns retrieval scheduling. `how` owns an operator-facing explanation and `why` owns explicitly requested historical rationale; neither changes Scout's evidence-only boundary.
 
 ## The Pattern
 
@@ -186,44 +186,6 @@ Return:
 - Similarities and differences the caller can use to decide applicability
 ```
 
-## Real Example
-
-**Investigation:** "How does the API routing system work?"
-
-**Decomposition:**
-1. Implementation: Where are API routes defined?
-2. Routing: How does route registration work?
-3. Notifications: How are errors surfaced to the caller?
-
-**Fan-out:**
-```typescript
-// Parallelize by issuing multiple task() calls in the same assistant message.
-task({
-  subagent_type: '<chosen-researcher>',
-  description: 'Find API route implementation',
-  prompt: 'Where are API routes implemented? Find tool definition and registration.',
-});
-
-task({
-  subagent_type: '<chosen-researcher>',
-  description: 'Analyze concurrency model',
-  prompt: 'How does background task concurrency work? Find the manager/scheduler.',
-});
-
-task({
-  subagent_type: '<chosen-researcher>',
-  description: 'Find notification mechanism',
-  prompt: 'How are parent sessions notified of task completion?',
-});
-```
-
-**Results:**
-- Task 1: Found `background-tools.ts` (tool definition), `index.ts` (registration)
-- Task 2: Found `manager.ts` with concurrency=3 default, queue-based scheduling
-- Task 3: Found `session.prompt()` call in manager for parent notification
-
-**Synthesis:** Complete picture of background task lifecycle in ~1/3 the time of sequential investigation.
-
 ## Common Mistakes
 
 **Spawning sequentially (defeats the purpose):**
@@ -247,13 +209,6 @@ task({ ... });
 **Using for edits:**
 - Scout is read-only; use Forager for implementation
 - This skill is for exploration, not execution
-
-## Key Benefits
-
-1. **Speed** - 3 investigations in time of 1
-2. **Focus** - Each Scout has narrow scope
-3. **Independence** - No interference between tasks
-4. **Flexibility** - Ignore irrelevant returned findings and dispatch follow-up tasks only after synthesis
 
 ## Verification
 

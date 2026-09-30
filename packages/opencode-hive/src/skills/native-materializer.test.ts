@@ -250,6 +250,57 @@ describe('resolvePackagedSkillsDir', () => {
 });
 
 describe('prepareNativeHiveSkills - materialization behavior', () => {
+  it('supports the writing-family cutover without overriding native copies and copies the complete packaged families', async () => {
+    const worktree = createTempDir();
+    const home = path.join(worktree, 'home');
+    const names = ['writing-policy', 'writing-for-humans', 'stop-slop', 'humanizer'];
+    const localFiles = names.map((name) => createNativeSkill(home, `.agents/skills/${name}/SKILL.md`, name));
+    const options = {
+      directory: worktree,
+      worktree,
+      packagedSkillsDir: resolvePackagedSkillsDir(),
+      env: { HOME: home, OPENCODE_CONFIG_DIR: path.join(home, '.config/opencode'), OPENCODE_DISABLE_EXTERNAL_SKILLS: '0' },
+    };
+    const before = await prepareNativeHiveSkills(options);
+    for (const [index, name] of names.entries()) {
+      expect(before.nativeSkillsByName.has(name)).toBe(true);
+      expect(before.skillsByName.has(name)).toBe(false);
+      expect(fs.readFileSync(localFiles[index], 'utf8')).toContain(`description: Native ${name}`);
+      fs.rmSync(path.dirname(localFiles[index]), { recursive: true });
+    }
+    const after = await prepareNativeHiveSkills(options);
+    expect(after.materializedPath).toBeDefined();
+    for (const name of [...names, 'code-design-principles', 'how', 'why']) {
+      expect(after.nativeSkillsByName.has(name)).toBe(false);
+      expect(after.skillsByName.has(name)).toBe(true);
+      const source = path.join(options.packagedSkillsDir, name);
+      const installed = path.join(after.materializedPath!, name);
+      const files = listRelativeFiles(source);
+      expect(listRelativeFiles(installed)).toEqual(files);
+      for (const file of files) {
+        expect(fs.readFileSync(path.join(installed, file))).toEqual(fs.readFileSync(path.join(source, file)));
+      }
+    }
+  });
+
+  it('does not require bundled reviewer support files from a minimal override or disabled skill', async () => {
+    const worktree = createTempDir();
+    const home = path.join(worktree, 'home');
+    const native = createNativeSkill(home, '.agents/skills/test-driven-development/SKILL.md', 'test-driven-development');
+    const result = await prepareNativeHiveSkills({
+      directory: worktree,
+      worktree,
+      packagedSkillsDir: resolvePackagedSkillsDir(),
+      disableSkills: ['adversarial-review'],
+      env: { HOME: home, OPENCODE_CONFIG_DIR: path.join(home, '.config/opencode'), OPENCODE_DISABLE_EXTERNAL_SKILLS: '0' },
+    });
+    expect(result.nativeSkillsByName.has('test-driven-development')).toBe(true);
+    expect(result.skillsByName.has('test-driven-development')).toBe(false);
+    expect(result.skillsByName.has('adversarial-review')).toBe(false);
+    expect(fs.existsSync(path.join(path.dirname(native), 'references/test-quality.md'))).toBe(false);
+    expect(listRelativeFiles(result.materializedPath!).some((file) => file.startsWith('test-driven-development/') || file.startsWith('adversarial-review/'))).toBe(false);
+  });
+
   it('copies whole eligible skill directories, including support files', async () => {
     const worktree = createTempDir();
     const directory = worktree;

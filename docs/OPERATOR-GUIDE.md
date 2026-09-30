@@ -20,6 +20,10 @@ OpenCode owns research integrations and permissions. oc-arkive does not install,
 
 Engineering Judgment is included once in Hive, Architect, Swarm, Hive Builder, Forager, Plan Reviewer, Code Reviewer, Simplicity Reviewer, Approach Advisor, and Dash Reviewer. Hive and Architect apply it to planning; Swarm and Builder apply it to decomposition, handoffs, and integration without gaining implementation authority; Forager and the reviewers apply it within their existing contracts; Approach Advisor uses it for route selection; Dash Reviewer uses it for reviewer selection and synthesis. Scout, Hive Helper, both vulnerability roles, and trace/tool summarizers do not receive this shared block.
 
+At material state, type, boundary, retry, shared-writer, or internal-migration choices, that block points to `code-design-principles`. Use `how` for current-code walkthroughs and `why` for historical rationale. A question about a present failure remains debugging, and a future ownership decision remains approach advice. Historical findings are evidence, not operator directives or automatic context writes.
+
+Substantial human-facing prose and prose rewrites use the packaged `writing-policy` router and its conditional depth skills when available. The policy preserves role output contracts and source wording. See [Skill ownership and cutover](../packages/opencode-hive/docs/SKILL-OWNERSHIP.md) for the responsibility map and moving from local copies to the package-managed writing family.
+
 ## Agents
 
 OpenCode shows these public seats. Dedicated mode (the default) uses `architect-planner` as the default planning seat and `swarm-orchestrator` for execution; `hive-master` is hidden. Unified mode (`"agentMode": "unified"`) makes `hive-master` the default while retaining the split seats. `hive-builder` and the subagents below stay available in both modes.
@@ -32,7 +36,7 @@ MO: classify the request, clear requirements one gap at a time, then write a wor
 
 **`swarm-orchestrator`** exists so approved feature work can run without owning plan authorship. Dedicated-mode execution seat. It delegates plan changes to `architect-planner`, syncs tasks, starts workers in matching task worktrees, inspects handoffs, merges, and tracks `.hive/` status.
 
-MO: delegate by default. Choose direct work or delegation according to the repository-backed placement policy. One numbered task is one implementation assignment. Worker output is evidence to inspect, not proof that the batch is done.
+MO: choose direct work or delegation according to the repository-backed placement policy and explicit operator direction. One numbered task is one implementation assignment. Worker output is evidence to inspect, not proof that the batch is done.
 
 **`hive-master`** exists for operators who want one feature seat across planning and execution. Unified-mode default. It is phase-aware: no feature or unapproved plan means delegating plan authorship to `architect-planner`; approved tasks mean orchestration.
 

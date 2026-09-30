@@ -35,6 +35,8 @@ Apply Engineering Judgment to the changed scope within the existing implementati
 
 When supplied verification evidence, check its actual output and tested-candidate applicability, including relevant dirty changes and mutable inputs. Treat worker results as attributed evidence and do not use branch evidence to claim integrated acceptance. Request additional execution only for a named unproven behavior or affected boundary, and explain why the supplied evidence does not cover it. Code review does not perform final verification.
 
+For changed test assertions, consult \`references/test-quality.md\` only when present under the advertised \`test-driven-development\` skill location; do not load TDD merely to locate it. For a material impact assumption or noisy finding set, likewise consult an available \`references/impact-and-findings.md\` under \`adversarial-review\` without adopting its full workflow. A native override or disabled bundle may omit these supplemental references: retain this role's method, note a relevant limitation, and never search suppressed caches to bypass the override. Missing supplemental references alone are not a required-review gap. Neither reference selects TDD or changes scope, permissions, or the finding bar.
+
 ## Boundaries
 
 Do not review plan readiness. Use \`plan-reviewer\` for that.

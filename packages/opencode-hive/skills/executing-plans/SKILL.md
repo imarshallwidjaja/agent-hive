@@ -13,11 +13,9 @@ Execution and Forager lanes are managed/heavy background lanes under the gate. T
 
 ## Overview
 
-Load plan, review critically, execute tasks in batches, report for review between batches.
+Load the approved plan, review its contracts and prerequisites, execute from dependencies, and report evidence at meaningful checkpoints.
 
-**Core principle:** Batch execution with checkpoints for architect review.
-
-**Announce at start:** "I'm using the executing-plans skill to implement this plan."
+**Core principle:** Preserve approved outcomes and gates while adapting implementation from evidence within the assigned scope.
 
 ## The Process
 
@@ -37,7 +35,7 @@ When the operator gives an explicit direction (parallel, sequential, or a subset
 
 For each task in the batch:
 1. For feature tasks, follow the primary prompt's freshness and assignment rules. Create tracked-write task worktrees with `hive_worktree_create` and an explicit feature target; select that feature immediately before dispatch. Start the Forager assignment's first non-empty line with `Hive task: <task-folder>`. Require the topology-aware source pin. Non-Git or report-only work follows the direct-work exceptions. Independent worktrees may be dispatched under one parent. In gate-closed sessions use blocking native `task()`; in gate-open sessions use `background: true` only when independent foreground work can continue. Inspect unresolved board lanes on `hive_background_status`; `hive_status` is not that surface.
-2. Follow each step exactly (plan has bite-sized steps)
+2. Follow the approved scope, contracts, dependencies, and verification boundaries. Adapt implementation details when evidence warrants it; material scope or gate changes require the existing amendment procedure.
 3. Run verifications as specified
 4. After the worker returns, read the report it published and record status and a compact summary under the primary prompt's Task Report Ownership rules; do not retranscribe the report, and leave its successor handoff alone unless integration changed its facts. When a worker run ends without a usable result, follow the primary prompt's Interrupted Worker Recovery rules; a failed run does not fail the task. Inspect result and destination. Pass its topology-aware source pin and unchanged inspected `expectedTarget` or complete `expectedTargets` map to `hive_worktree_merge`. Merge tracked Git work before marking the task done. If destination drift is relevant, overlapping, or uncertain, reconcile in the same worktree with a fresh worker after the prior writer is terminal; merge the pinned target commit normally, adapt and review the combined delta, verify, and return fresh pins. If a dirty destination blocks merge, retain the committed worktree; either set `status: 'blocked'` with a structured blocker and use the question/continuation flow, or keep `status: 'in_progress'` with pending-integration detail in `summary` or `report` and no blocker. Record non-Git or report-only results after target verification. Promote accepted Forward obligations after producer integration using the primary prompt's amendment and approval procedure, before recipient dispatch.
 
@@ -55,11 +53,11 @@ For delegated execution, use Forager-derived workers or the explicitly admitted 
 When batch complete:
 - Show what was implemented
 - Show verification output
-- Say: "Ready for feedback."
+- Name any actual operator decision or blocker. Continue independent authorized work when none requires a pause.
 
 ### Step 4.5: Post-Batch Code Review
 
-After the batch report, apply Risk-Tier Review Routing, then ask the operator which recommended review path to run. No agent may silently skip required configured review targets.
+After the batch report, apply Risk-Tier Review Routing and explicit operator direction. Ask only when a material review-scope or authority decision remains unresolved. No agent may silently skip required configured review targets.
 
 - High-risk surfaces — public contracts, persistence/state, branch/worktree/merge lifecycle, background scheduler semantics, auth/security, or broad prompt/tool behavior — should get paired correctness + simplicity review.
 - bounded docs/tests can use a single or batched review unless the diff spans broader workflow behavior.
@@ -73,7 +71,7 @@ Collect required reviews on the settled candidate and assess findings before rou
 
 | Feedback type | Action |
 |---------------|--------|
-| Accepted local correction to the completed batch | **Inline fix** — apply directly, no new task |
+| Accepted local correction to the completed batch | **Same implementation lane** — fresh worker when delegated, existing task/worktree, no new task solely for remediation |
 | New isolated work that does not affect downstream sequencing | **Manual task** — `hive_task_create()` for non-blocking ad-hoc work |
 | Changes downstream sequencing, dependencies, or scope | **Plan amendment** — update `plan.md`, then `hive_tasks_sync({ refreshPending: true })` to rewrite pending tasks from the amended plan |
 
@@ -88,7 +86,6 @@ After applying review feedback (or if none):
 ### Step 6: Complete Development
 
 After all tasks complete:
-- Announce: "I'm using the verification skill to complete this work."
 - **REQUIRED SUB-SKILL:** Use `skill({ name: "verification" })`
 - Verify with evidence from that skill
 - For worktree placement, integrate through Hive merge (`hive_worktree_merge`, typically via `hive-helper` squash batch); do not use raw `git merge` / `git worktree remove` as the Hive finish path
@@ -98,12 +95,14 @@ After all tasks complete:
 ## When to Stop and Ask for Help
 
 **STOP executing immediately when:**
-- Hit a blocker mid-batch (missing dependency, test fails, instruction unclear)
+- A prerequisite is unavailable or an unresolved instruction changes correctness, scope, safety, or authority
 - Plan has critical gaps preventing starting
 - You don't understand an instruction
-- Verification fails repeatedly
+- Repeated verification failures leave a material decision unresolved after authorized diagnosis
 
 **Ask for clarification rather than guessing.**
+
+A test failure is evidence to investigate, not an automatic request for operator help. Preserve it, use `systematic-debugging`, and diagnose within the assigned scope. A subagent returns a required clarification to its parent rather than asking the operator directly.
 
 ## When to Revisit Earlier Steps
 
@@ -115,8 +114,8 @@ After all tasks complete:
 
 ## Remember
 - Review plan critically first
-- Follow plan steps exactly
+- Preserve approved contracts and gates
 - Don't skip verifications
 - Reference skills when plan says to
-- Between batches: just report and wait
+- Between batches: report evidence and continue unless an explicit checkpoint or real blocker requires waiting
 - Stop when blocked, don't guess

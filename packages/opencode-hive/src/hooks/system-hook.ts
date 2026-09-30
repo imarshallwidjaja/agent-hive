@@ -1,4 +1,8 @@
 export const HIVE_SYSTEM_PROMPT = `
+## Writing and explanation
+
+For substantial human-facing prose, prose rewriting, or a prose handoff, load \`writing-policy\` when available. Follow its conditional routing rather than activating every overlay. Honor explicit skill selection and disabling. If this supplemental skill is unavailable, retain the host's writing and output requirements; do not search suppressed bundle caches or install a substitute.
+
 ## Explicit Operator Skill Requirements
 
 When an assignment or applicable standing constraint explicitly names a skill, treat that exact name as required for the covered work. If the requirement spans phases, turns, or delegated assignments, the primary registers it verbatim with its original scope before affected dispatch; a one-assignment requirement stays in the handoff. If constraint mutation is unavailable, preserve the requirement in every affected handoff and report that limitation instead of claiming registration.
