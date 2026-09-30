@@ -517,7 +517,7 @@ The writing family is maintained in oc-arkive: `writing-policy` routes, `writing
 
 `code-design-principles` deepens the existing Engineering Judgment block at material design decisions without another workflow or finding bar. `how` and `why` serve explicit explanation and historical-rationale requests; ordinary debugging, future design selection, and routine implementation orientation retain their existing owners.
 
-To replace local writing-skill copies with the package-managed versions, follow [Skill ownership and cutover](docs/SKILL-OWNERSHIP.md), included in the package. Leaving a same-name local or URL copy in discovery keeps that copy authoritative; reinstalling oc-arkive alone does not replace it.
+See [Skill ownership](docs/SKILL-OWNERSHIP.md) for the responsibility map and source-preserving maintenance guidance.
 
 **URL-scan conservative behavior:** If configured `skills.urls` cannot be scanned for conflicts (invalid response, network error), Hive skips bundled skill materialization and Hive bundled autoload guidance for that run and logs a warning rather than risking a native conflict. Local native skills discovered before the URL failure can still be advertised in guidance; partially scanned URL skills are not advertised.
 

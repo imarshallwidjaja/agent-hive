@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Packaged `code-design-principles`, `how`, and `why` skills add conditional construction guidance, current-code explanation, and historical rationale investigation with upstream provenance.
-- Packaged `writing-policy`, `writing-for-humans`, `stop-slop`, and `humanizer` provide one maintained writing family, with documented local-copy cutover and native override behavior.
+- Packaged `writing-policy`, `writing-for-humans`, `stop-slop`, and `humanizer` provide one maintained writing family with conditional routing and source provenance.
 - Selected-feature Forager dispatches with `Hive task: <task-folder>` as the first non-empty prompt line now receive a bounded path-only brief after the route snapshot. Task updates can persist a successor `handoff.md`; status exposes spec freshness, reasons, and handoff presence.
 - Project-local `.hive/agent-hive.override.json` can set `model` and `variant` for matching built-in and configured custom agents. Other runtime settings remain in the global config.
 - Project and feature context now have scoped catalogs, bounded reads, and hash-guarded writes. VS Code can browse and archive scoped context and show numeric task report history.

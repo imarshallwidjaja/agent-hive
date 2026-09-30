@@ -22,7 +22,7 @@ Engineering Judgment is included once in Hive, Architect, Swarm, Hive Builder, F
 
 At material state, type, boundary, retry, shared-writer, or internal-migration choices, that block points to `code-design-principles`. Use `how` for current-code walkthroughs and `why` for historical rationale. A question about a present failure remains debugging, and a future ownership decision remains approach advice. Historical findings are evidence, not operator directives or automatic context writes.
 
-Substantial human-facing prose and prose rewrites use the packaged `writing-policy` router and its conditional depth skills when available. The policy preserves role output contracts and source wording. See [Skill ownership and cutover](../packages/opencode-hive/docs/SKILL-OWNERSHIP.md) for the responsibility map and moving from local copies to the package-managed writing family.
+Substantial human-facing prose and prose rewrites use the packaged `writing-policy` router and its conditional depth skills when available. The policy preserves role output contracts and source wording. See [Skill ownership](../packages/opencode-hive/docs/SKILL-OWNERSHIP.md) for the responsibility map.
 
 ## Agents
 
