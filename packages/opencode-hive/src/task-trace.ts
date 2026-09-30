@@ -5,10 +5,26 @@ import type { TaskTraceSummarizerConfig } from 'hive-core';
 export const TASK_TRACE_SUMMARIZER_AGENT = '__hive_task_trace_summarizer';
 
 const SOFT_TARGET_BYTES = 24 * 1024;
+const INDEX_PAGE_BUDGET_BYTES = 24 * 1024;
 const CONTENT_CHUNK_BYTES = 8 * 1024;
 const INITIAL_TEXT_INLINE_BYTES = 512;
-const INITIAL_TOOL_INLINE_BYTES = 160;
 const INITIAL_ERROR_INLINE_BYTES = 256;
+const INDEX_EXCERPT_BYTES = 240;
+const INDEX_INPUT_EXCERPT_BYTES = 320;
+const INDEX_INPUT_KEY_EXCERPT_BYTES = 160;
+const CONTEXT_EXCERPT_BYTES = 480;
+const NAME_DISPLAY_BYTES = 128;
+const TITLE_DISPLAY_BYTES = 240;
+const CURSOR_RESERVE_BYTES = 160;
+const MAX_TOKEN_LENGTH = 2048;
+const ABBREVIATION_MARKER = ' [...] ';
+const DIGEST_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+// Native IDs outside visible ASCII or 256 bytes are treated as missing so refs stay bounded.
+const NATIVE_ID_PATTERN = /^[\x21-\x7e]{1,256}$/;
+// Recorded input keys that identify an action when the whole input is too large to show.
+const IDENTIFYING_INPUT_KEYS = ['description', 'command', 'filePath', 'path', 'pattern', 'name', 'url', 'query', 'subagent_type'];
+const EVENT_FIELD_NAMES = ['text', 'input', 'output', 'error', 'files'] as const;
+const COVERAGE_LIMITATIONS = ['compacted_source', 'compacted_tool_output', 'unsupported_parts', 'positional_identity'] as const;
 const MIN_MAP_BATCH_BYTES = 20 * 1024;
 const FALLBACK_MAP_BATCH_BYTES = 256 * 1024;
 const MAP_INPUT_CONTEXT_RATIO = 0.7;
@@ -167,11 +183,58 @@ interface TraceIR {
   latestMessage: { index: number; role?: string; closed: boolean; summary: boolean } | undefined;
 }
 
-interface ExternalizationCandidate {
-  container: RecordValue | unknown[];
-  key: string | number;
-  source: SourceValue;
+type EventKind = 'text' | 'tool' | 'retry' | 'assistant_error' | 'patch' | 'compaction' | 'unsupported';
+type EventFieldName = typeof EVENT_FIELD_NAMES[number];
+
+const EVENT_FIELDS: Record<EventKind, readonly EventFieldName[]> = {
+  text: ['text'],
+  tool: ['input', 'output', 'error'],
+  retry: ['error'],
+  assistant_error: ['error'],
+  patch: ['files'],
+  compaction: [],
+  unsupported: [],
+};
+
+// native: unique message and part IDs. positional: no native IDs but content unique in the source.
+// ambiguous: no native IDs and byte-identical to another event, so no selector can tell them apart.
+type EventIdentity = 'native' | 'positional' | 'ambiguous';
+
+interface TraceEvent {
+  seq: number;
+  kind: EventKind;
+  actor: 'user' | 'assistant' | 'unknown';
+  messageIndex: number;
+  partIndex: number;
+  messageID?: string;
+  partID?: string;
+  identity: EventIdentity;
+  callID?: string;
+  tool?: string;
+  status?: string;
+  title?: string;
+  type?: string;
+  synthetic?: true;
+  summary?: true;
+  compacted?: true;
+  fields: Partial<Record<EventFieldName, unknown>>;
+  guard: string;
+  chain: string;
 }
+
+interface EventIndex {
+  events: TraceEvent[];
+  reasoningParts: number;
+  structuralParts: number;
+  asOf: string;
+}
+
+type EventSelector =
+  | { native: true; messageID: string; partID: string | null; guard: string }
+  | { native: false; seq: number; guard: string; asOf: string };
+
+// prefix: the first seq events are unchanged (native prefixes only). source: the whole eligible source is unchanged.
+type IndexCursor = { seq: number; scope: 'prefix' | 'source'; digest: string };
 
 function record(value: unknown): RecordValue | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -331,6 +394,453 @@ function normalizeTrace(messages: unknown[]): TraceIR {
   };
 }
 
+function nativeID(value: unknown): string | undefined {
+  return typeof value === 'string' && NATIVE_ID_PATTERN.test(value) ? value : undefined;
+}
+
+function withoutUndefined(value: RecordValue): RecordValue {
+  return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined));
+}
+
+// Builds the chronological index of non-reasoning events. Reasoning parts are counted only;
+// their text, metadata, and IDs never enter an event, guard, chain, ref, or cursor. Refs and
+// cursors carry native IDs or eligible-event seq, never raw part positions that count reasoning.
+function indexEvents(messages: unknown[]): EventIndex {
+  type Draft = Omit<TraceEvent, 'seq' | 'identity' | 'guard' | 'chain'>;
+  const drafts: Draft[] = [];
+  let reasoningParts = 0;
+  let structuralParts = 0;
+
+  messages.forEach((rawMessage, messageIndex) => {
+    const message = record(rawMessage) ?? {};
+    const info = record(message.info) ?? {};
+    const parts = Array.isArray(message.parts) ? message.parts : [];
+    const actor: TraceEvent['actor'] = info.role === 'user' || info.role === 'assistant' ? info.role : 'unknown';
+    const base = {
+      actor,
+      messageIndex,
+      messageID: nativeID(info.id),
+      ...(info.summary === true ? { summary: true as const } : {}),
+    };
+
+    parts.forEach((rawPart, partIndex) => {
+      const part = record(rawPart) ?? {};
+      const type = typeof part.type === 'string' ? part.type : undefined;
+      if (type === 'step-start' || type === 'step-finish') {
+        structuralParts += 1;
+        return;
+      }
+      if (type === 'reasoning') {
+        reasoningParts += 1;
+        return;
+      }
+      const at = { ...base, partIndex, partID: nativeID(part.id) };
+      if (type === 'text' && typeof part.text === 'string') {
+        drafts.push({ ...at, kind: 'text', fields: { text: part.text }, ...(part.synthetic === true ? { synthetic: true as const } : {}) });
+      } else if (type === 'tool') {
+        const state = record(part.state) ?? {};
+        const fields: TraceEvent['fields'] = {};
+        for (const field of EVENT_FIELDS.tool) if (state[field] !== undefined) fields[field] = state[field];
+        drafts.push({
+          ...at,
+          kind: 'tool',
+          tool: typeof part.tool === 'string' ? part.tool : typeof part.name === 'string' ? part.name : 'unknown',
+          status: typeof state.status === 'string' ? state.status : 'unknown',
+          callID: typeof part.callID === 'string' ? part.callID : undefined,
+          title: typeof state.title === 'string' ? state.title : undefined,
+          ...(typeof record(state.time)?.compacted === 'number' ? { compacted: true as const } : {}),
+          fields,
+        });
+      } else if (type === 'retry') {
+        drafts.push({ ...at, kind: 'retry', fields: part.error === undefined ? {} : { error: part.error } });
+      } else if (type === 'patch') {
+        drafts.push({ ...at, kind: 'patch', fields: Array.isArray(part.files) ? { files: part.files } : {} });
+      } else if (type === 'compaction' || type === 'summary') {
+        drafts.push({ ...at, kind: 'compaction', fields: {} });
+      } else {
+        drafts.push({ ...at, kind: 'unsupported', type: type ?? 'unknown', fields: {} });
+      }
+    });
+
+    if (info.error !== undefined && actor === 'assistant') {
+      drafts.push({ ...base, partIndex: -1, kind: 'assistant_error', fields: { error: info.error } });
+    }
+  });
+
+  const nativeKey = (draft: Draft): string | undefined => (
+    draft.messageID && (draft.partIndex === -1 || draft.partID)
+      ? JSON.stringify([draft.messageID, draft.partIndex === -1 ? null : draft.partID])
+      : undefined
+  );
+  const keyCounts = new Map<string, number>();
+  for (const draft of drafts) {
+    const key = nativeKey(draft);
+    if (key) keyCounts.set(key, (keyCounts.get(key) ?? 0) + 1);
+  }
+
+  let chain = '';
+  const guardCounts = new Map<string, number>();
+  const events = drafts.map((draft, index) => {
+    const key = nativeKey(draft);
+    const native = key !== undefined && keyCounts.get(key) === 1;
+    const guard = digest(stableJson(withoutUndefined({
+      kind: draft.kind,
+      actor: draft.actor,
+      message_id: draft.messageID,
+      part_id: draft.partID,
+      call_id: draft.callID,
+      tool: draft.tool,
+      status: draft.status,
+      title: draft.title,
+      type: draft.type,
+      synthetic: draft.synthetic,
+      summary: draft.summary,
+      compacted: draft.compacted,
+      fields: draft.fields,
+    })));
+    chain = digest(`${chain}\n${guard}`);
+    guardCounts.set(guard, (guardCounts.get(guard) ?? 0) + 1);
+    return { ...draft, seq: index + 1, native, guard, chain };
+  }).map(({ native, ...event }): TraceEvent => ({
+    ...event,
+    identity: native ? 'native' : guardCounts.get(event.guard) === 1 ? 'positional' : 'ambiguous',
+  }));
+
+  return { events, reasoningParts, structuralParts, asOf: chain || digest('') };
+}
+
+function coverageLimitations(index: EventIndex, ir: TraceIR): string[] {
+  const present = new Set<string>();
+  if (ir.compactionCount > 0) present.add('compacted_source');
+  for (const event of index.events) {
+    if (event.compacted) present.add('compacted_tool_output');
+    if (event.kind === 'unsupported') present.add('unsupported_parts');
+    if (event.identity !== 'native') present.add('positional_identity');
+  }
+  return COVERAGE_LIMITATIONS.filter((limitation) => present.has(limitation));
+}
+
+function jsonStringBytes(value: string): number {
+  return Buffer.byteLength(JSON.stringify(value)) - 2;
+}
+
+// Keeps a head and tail within a serialized-JSON byte budget so values that share a long
+// prefix stay distinguishable. Splits only on code point boundaries.
+function boundText(value: string, maxBytes: number): { text: string; abbreviated: boolean } {
+  if (jsonStringBytes(value) <= maxBytes) return { text: value, abbreviated: false };
+  const available = maxBytes - jsonStringBytes(ABBREVIATION_MARKER);
+  const headBudget = Math.ceil(available * 0.6);
+  const tailBudget = available - headBudget;
+  let head = '';
+  let headBytes = 0;
+  for (const character of value) {
+    const bytes = jsonStringBytes(character);
+    if (headBytes + bytes > headBudget) break;
+    head += character;
+    headBytes += bytes;
+  }
+  let tailStart = value.length;
+  let tailBytes = 0;
+  while (tailStart > 0) {
+    let start = tailStart - 1;
+    const code = value.charCodeAt(start);
+    if (code >= 0xdc00 && code <= 0xdfff && start > 0) {
+      const high = value.charCodeAt(start - 1);
+      if (high >= 0xd800 && high <= 0xdbff) start -= 1;
+    }
+    const bytes = jsonStringBytes(value.slice(start, tailStart));
+    if (tailBytes + bytes > tailBudget) break;
+    tailBytes += bytes;
+    tailStart = start;
+  }
+  return { text: `${head}${ABBREVIATION_MARKER}${value.slice(tailStart)}`, abbreviated: true };
+}
+
+function excerptValue(value: unknown, maxBytes: number): { value: unknown; abbreviated: boolean } {
+  if (typeof value === 'string') {
+    const bounded = boundText(value, maxBytes);
+    return { value: bounded.text, abbreviated: bounded.abbreviated };
+  }
+  const text = stableJson(value);
+  if (Buffer.byteLength(text) <= maxBytes) return { value, abbreviated: false };
+  return { value: boundText(text, maxBytes).text, abbreviated: true };
+}
+
+function excerptInput(value: unknown): { value: unknown; abbreviated: boolean } {
+  const complete = excerptValue(value, INDEX_INPUT_EXCERPT_BYTES);
+  const input = record(value);
+  if (!complete.abbreviated || !input) return complete;
+  const identifying: RecordValue = {};
+  for (const key of IDENTIFYING_INPUT_KEYS) {
+    const entry = input[key];
+    if (typeof entry === 'string') identifying[key] = boundText(entry, INDEX_INPUT_KEY_EXCERPT_BYTES).text;
+    else if (typeof entry === 'number' || typeof entry === 'boolean') identifying[key] = entry;
+  }
+  return Object.keys(identifying).length > 0 ? { value: identifying, abbreviated: true } : complete;
+}
+
+function encodeToken(value: unknown[]): string {
+  return Buffer.from(JSON.stringify(value)).toString('base64url');
+}
+
+function decodeToken(value: unknown): unknown[] | undefined {
+  if (typeof value !== 'string' || value.length === 0 || value.length > MAX_TOKEN_LENGTH) return undefined;
+  try {
+    const parsed = JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) as unknown;
+    return Array.isArray(parsed) && encodeToken(parsed) === value ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function eventRef(index: EventIndex, event: TraceEvent): string | undefined {
+  if (event.identity === 'native') {
+    return encodeToken([3, 'n', event.messageID, event.partIndex === -1 ? null : event.partID, event.guard]);
+  }
+  return event.identity === 'positional' ? encodeToken([3, 'p', event.seq, event.guard, index.asOf]) : undefined;
+}
+
+function decodeEventRef(value: unknown): EventSelector | undefined {
+  const parsed = decodeToken(value);
+  if (!parsed || parsed[0] !== 3) return undefined;
+  if (parsed[1] === 'n' && parsed.length === 5) {
+    const [, , messageID, partID, guard] = parsed;
+    if (
+      typeof messageID === 'string' && NATIVE_ID_PATTERN.test(messageID)
+      && (partID === null || (typeof partID === 'string' && NATIVE_ID_PATTERN.test(partID)))
+      && typeof guard === 'string' && DIGEST_PATTERN.test(guard)
+    ) return { native: true, messageID, partID: partID as string | null, guard };
+  }
+  if (parsed[1] === 'p' && parsed.length === 5) {
+    const [, , seq, guard, asOf] = parsed;
+    if (
+      Number.isSafeInteger(seq) && (seq as number) >= 1
+      && typeof guard === 'string' && DIGEST_PATTERN.test(guard)
+      && typeof asOf === 'string' && DIGEST_PATTERN.test(asOf)
+    ) return { native: false, seq: seq as number, guard, asOf };
+  }
+  return undefined;
+}
+
+function cursorToken(index: EventIndex, seq: number): string {
+  return index.events.slice(0, seq).every((event) => event.identity === 'native')
+    ? encodeToken([3, 'c', seq, index.events[seq - 1].chain])
+    : encodeToken([3, 's', seq, index.asOf]);
+}
+
+function decodeCursor(value: unknown): IndexCursor | undefined {
+  const parsed = decodeToken(value);
+  if (!parsed || parsed.length !== 4 || parsed[0] !== 3 || (parsed[1] !== 'c' && parsed[1] !== 's')) return undefined;
+  const [, scope, seq, guard] = parsed;
+  return Number.isSafeInteger(seq) && (seq as number) >= 1 && typeof guard === 'string' && DIGEST_PATTERN.test(guard)
+    ? { seq: seq as number, scope: scope === 'c' ? 'prefix' : 'source', digest: guard }
+    : undefined;
+}
+
+// Native selectors ignore unrelated source movement. Without native IDs, content equality is not
+// identity: a positional selector requires the whole eligible source unchanged and the selected
+// content to be unique in it, so a deleted, replaced, or duplicated action is never substituted.
+function resolveEvent(index: EventIndex, selector: EventSelector): { event: TraceEvent } | { reason: string } {
+  if (selector.native === true) {
+    const { messageID, partID } = selector;
+    const matches = index.events.filter((event) => event.messageID === messageID
+      && (partID === null ? event.partIndex === -1 : event.partIndex !== -1 && event.partID === partID));
+    if (matches.length === 0) return { reason: 'event_not_found' };
+    if (matches.length > 1) return { reason: 'event_ambiguous' };
+    return matches[0].identity === 'native' && matches[0].guard === selector.guard ? { event: matches[0] } : { reason: 'event_changed' };
+  }
+  if (index.asOf !== selector.asOf) return { reason: 'source_changed' };
+  const event = index.events[selector.seq - 1];
+  if (!event) return { reason: 'event_not_found' };
+  if (event.guard !== selector.guard) return { reason: 'event_changed' };
+  return event.identity === 'positional' ? { event } : { reason: 'identity_unavailable' };
+}
+
+function describeEvent(event: TraceEvent, target: RecordValue, abbreviated: string[]): void {
+  const show = (key: string, value: string | undefined, maxBytes: number) => {
+    if (value === undefined) return;
+    const bounded = boundText(value, maxBytes);
+    target[key] = bounded.text;
+    if (bounded.abbreviated) abbreviated.push(key);
+  };
+  show('tool', event.tool, NAME_DISPLAY_BYTES);
+  show('status', event.status, NAME_DISPLAY_BYTES);
+  show('call_id', event.callID, NAME_DISPLAY_BYTES);
+  show('title', event.title, TITLE_DISPLAY_BYTES);
+  show('type', event.type, NAME_DISPLAY_BYTES);
+  if (event.synthetic) target.synthetic = true;
+  if (event.summary) target.summary = true;
+  if (event.compacted) target.compacted = true;
+}
+
+function indexRow(index: EventIndex, event: TraceEvent): RecordValue {
+  const row: RecordValue = { seq: event.seq, kind: event.kind, actor: event.actor };
+  if (event.identity !== 'native') row.identity = event.identity;
+  const abbreviated: string[] = [];
+  describeEvent(event, row, abbreviated);
+  const fieldNames = EVENT_FIELDS[event.kind];
+  if (fieldNames.length > 0) {
+    const bytes: RecordValue = {};
+    for (const field of fieldNames) {
+      if (!(field in event.fields)) continue;
+      const value = event.fields[field];
+      bytes[field] = Buffer.byteLength(fieldText(value));
+      const excerpt = field === 'input' ? excerptInput(value) : excerptValue(value, INDEX_EXCERPT_BYTES);
+      row[field] = excerpt.value;
+      if (excerpt.abbreviated) abbreviated.push(field);
+    }
+    row.bytes = bytes;
+  }
+  if (abbreviated.length > 0) row.abbreviated = abbreviated;
+  const ref = eventRef(index, event);
+  if (ref !== undefined) row.ref = ref;
+  return row;
+}
+
+function contextEntry(index: EventIndex, event: TraceEvent, extra: RecordValue = {}): RecordValue {
+  const text = fieldText(event.fields.text);
+  const bounded = boundText(text, CONTEXT_EXCERPT_BYTES);
+  const ref = eventRef(index, event);
+  return {
+    seq: event.seq,
+    text: bounded.text,
+    bytes: Buffer.byteLength(text),
+    ...(bounded.abbreviated ? { abbreviated: true } : {}),
+    ...extra,
+    ...(event.identity === 'native' ? {} : { identity: event.identity }),
+    ...(ref === undefined ? {} : { ref }),
+  };
+}
+
+function indexContext(index: EventIndex, ir: TraceIR, lifecycle: RecordValue): RecordValue {
+  const assignment = index.events.find((event) => event.kind === 'text' && event.actor === 'user');
+  const terminal = recoveryTerminalText(ir, lifecycle);
+  const final = terminal
+    ? index.events.find((event) => event.kind === 'text'
+      && event.messageIndex === terminal.text.source.message
+      && event.partIndex === terminal.text.source.part)
+    : undefined;
+  return {
+    assignment: assignment ? contextEntry(index, assignment) : null,
+    final: final ? contextEntry(index, final, { provenance: 'child_self_report', untrusted: true }) : null,
+  };
+}
+
+function withExactRenderBytes(report: RecordValue): string {
+  const render = record(report.render)!;
+  let serialized = JSON.stringify(report);
+  let bytes = Buffer.byteLength(serialized);
+  while (render.bytes !== bytes) {
+    render.bytes = bytes;
+    serialized = JSON.stringify(report);
+    bytes = Buffer.byteLength(serialized);
+  }
+  return serialized;
+}
+
+// Fills one page in source order under the byte budget and always includes at least one event.
+function renderIndexPage(
+  taskID: string,
+  relationship: TargetRelationship,
+  ir: TraceIR,
+  lifecycle: RecordValue,
+  index: EventIndex,
+  start: IndexCursor | undefined,
+): string {
+  if (start && (
+    start.seq > index.events.length
+    || (start.scope === 'prefix' ? index.events[start.seq - 1].chain : index.asOf) !== start.digest
+  )) {
+    return JSON.stringify({ ok: false, reason: 'cursor_stale' });
+  }
+  const from = start?.seq ?? 0;
+  const total = index.events.length;
+  const reserve = Number.MAX_SAFE_INTEGER;
+  const coverage: RecordValue = {
+    events: total,
+    from_seq: reserve,
+    to_seq: reserve,
+    complete: false,
+    next_cursor: 'x'.repeat(CURSOR_RESERVE_BYTES),
+    limitations: coverageLimitations(index, ir),
+  };
+  const rows: RecordValue[] = [];
+  const page: RecordValue = {
+    ok: true,
+    version: 3,
+    task_id: taskID,
+    target: { id: taskID, relationship },
+    lifecycle,
+    source: {
+      messages: ir.messageCount,
+      parts: ir.partCount,
+      events: total,
+      reasoning_parts: index.reasoningParts,
+      structural_parts: index.structuralParts,
+      fidelity: ir.compactionCount > 0 ? 'compacted_surviving_source' : 'surviving_source',
+      compactions: ir.compactionCount,
+      as_of: index.asOf,
+    },
+    coverage,
+    context: indexContext(index, ir, lifecycle),
+    reasoning: reasoningReport(ir.steps),
+    events: rows,
+    render: { bytes: reserve, budget_bytes: INDEX_PAGE_BUDGET_BYTES },
+  };
+  let used = Buffer.byteLength(JSON.stringify(page));
+  for (let position = from; position < total; position += 1) {
+    const row = indexRow(index, index.events[position]);
+    const rowBytes = Buffer.byteLength(JSON.stringify(row)) + (rows.length > 0 ? 1 : 0);
+    if (rows.length > 0 && used + rowBytes > INDEX_PAGE_BUDGET_BYTES) break;
+    rows.push(row);
+    used += rowBytes;
+  }
+  const last = from + rows.length;
+  coverage.from_seq = rows.length > 0 ? from + 1 : null;
+  coverage.to_seq = rows.length > 0 ? last : null;
+  coverage.next_cursor = last < total ? cursorToken(index, last) : null;
+  coverage.complete = coverage.next_cursor === null;
+  return withExactRenderBytes(page);
+}
+
+function fieldDetail(event: TraceEvent, field: EventFieldName): RecordValue {
+  if (!(field in event.fields)) return { state: 'absent' };
+  const value = event.fields[field];
+  const text = fieldText(value);
+  const format = typeof value === 'string' ? 'text' : 'json';
+  const bytes = Buffer.byteLength(text);
+  if (Buffer.byteLength(JSON.stringify(value) ?? 'null') <= CONTENT_CHUNK_BYTES) return { state: 'value', format, bytes, value };
+  const chunk = utf8Chunk(Buffer.from(text), 0)!;
+  return { state: 'chunked', format, bytes, sha256: digest(text), content: chunk.content, offset: 0, next_offset: chunk.nextOffset };
+}
+
+function eventDetail(event: TraceEvent): RecordValue {
+  const detail: RecordValue = {
+    seq: event.seq,
+    kind: event.kind,
+    actor: event.actor,
+    identity: event.identity,
+  };
+  if (event.identity === 'native') {
+    detail.message_id = event.messageID;
+    if (event.partIndex !== -1) detail.part_id = event.partID;
+  }
+  const abbreviated: string[] = [];
+  describeEvent(event, detail, abbreviated);
+  if (abbreviated.length > 0) detail.abbreviated = abbreviated;
+  detail.fields = Object.fromEntries(EVENT_FIELDS[event.kind].map((field) => [field, fieldDetail(event, field)]));
+  return detail;
+}
+
+function utf8Chunk(bytes: Buffer, offset: number): { content: string; nextOffset: number | null } | undefined {
+  if (!Number.isSafeInteger(offset) || offset < 0 || offset > bytes.length || (offset < bytes.length && (bytes[offset] & 0xc0) === 0x80)) {
+    return undefined;
+  }
+  let end = Math.min(bytes.length, offset + CONTENT_CHUNK_BYTES);
+  while (end > offset && end < bytes.length && (bytes[end] & 0xc0) === 0x80) end -= 1;
+  return { content: bytes.subarray(offset, end).toString('utf8'), nextOffset: end < bytes.length ? end : null };
+}
+
 async function resolveTargetSession(
   client: TaskTraceClient,
   directory: string,
@@ -416,23 +926,6 @@ function decodeLocator(contentID: string): ContentLocator | undefined {
   }
 }
 
-function assignValue(
-  container: RecordValue | unknown[],
-  key: string | number,
-  source: SourceValue,
-  inlineBytes: number,
-  candidates: ExternalizationCandidate[],
-  contentDictionary: string[],
-): void {
-  if (source.bytes > inlineBytes) {
-    const index = contentDictionary.push(encodeLocator(source));
-    container[key as never] = { r: index } as never;
-    return;
-  }
-  container[key as never] = source.value as never;
-  candidates.push({ container, key, source });
-}
-
 function reasoningReport(steps: IRStep[]): RecordValue {
   const parts = steps.flatMap((step) => step.reasoning);
   const plaintext = parts.filter((part) => part.plaintext !== undefined);
@@ -451,25 +944,11 @@ function reasoningReport(steps: IRStep[]): RecordValue {
   };
 }
 
-function stepReasoningReport(step: IRStep): RecordValue | undefined {
-  if (step.reasoning.length === 0) return undefined;
-  const plaintext = step.reasoning.some((part) => part.plaintext !== undefined);
-  const opaque = step.reasoning.some((part) => part.opaque);
-  const unknown = step.reasoning.some((part) => part.tokens === undefined);
-  return {
-    presence: plaintext && opaque ? 'mixed' : plaintext ? 'plaintext' : 'opaque',
-    parts: step.reasoning.length,
-    tokens: unknown ? null : step.reasoning.reduce((total, part) => total + (part.tokens ?? 0), 0),
-  };
-}
-
-function traceTextSelections(ir: TraceIR) {
-  const all = ir.steps.flatMap((step) => step.texts.map((text, index) => ({ step, text, index: index + 1 })));
-  const instructions = all.filter((entry) => entry.step.actor === 'user');
-  const assistant = all.filter((entry) => entry.step.actor === 'assistant');
-  const final = [...assistant].reverse().find((entry) => entry.text.messageClosed);
-  const progress = [...assistant].reverse().find((entry) => entry !== final);
-  return { instruction: instructions.at(-1), final, progress };
+function latestInstruction(ir: TraceIR) {
+  return ir.steps
+    .filter((step) => step.actor === 'user')
+    .flatMap((step) => step.texts.map((text) => ({ step, text })))
+    .at(-1);
 }
 
 function recoveryTerminalText(ir: TraceIR, lifecycle: RecordValue) {
@@ -479,121 +958,6 @@ function recoveryTerminalText(ir: TraceIR, lifecycle: RecordValue) {
   ));
   const text = terminalStep?.texts.at(-1);
   return terminalStep && text?.messageClosed ? { step: terminalStep, text } : undefined;
-}
-
-function projectReport(taskID: string, relationship: TargetRelationship, ir: TraceIR, lifecycle: RecordValue): {
-  report: RecordValue;
-  candidates: ExternalizationCandidate[];
-} {
-  const candidates: ExternalizationCandidate[] = [];
-  const contentDictionary: string[] = [];
-  const toolDictionary: string[] = [];
-  const toolIndexes = new Map<string, number>();
-  const toolStatuses = new Map<number, Record<string, number>>();
-  const errors: RecordValue[] = [];
-  const files: string[] = [];
-  const fileIndexes = new Map<string, number>();
-  const openTools: RecordValue[] = [];
-  const timeline: RecordValue[] = [];
-  let latestTool: RecordValue | undefined;
-  let latestError: RecordValue | undefined;
-
-  const toolIndex = (name: string): number => {
-    const known = toolIndexes.get(name);
-    if (known) return known;
-    toolDictionary.push(name);
-    const index = toolDictionary.length;
-    toolIndexes.set(name, index);
-    return index;
-  };
-
-  for (const step of ir.steps) {
-    const projected: RecordValue = { step: step.number, actor: step.actor, state: step.state };
-    if (step.texts.length > 0) {
-      const text: unknown[] = [];
-      step.texts.forEach((entry, index) => assignValue(text, index, entry.source, INITIAL_TEXT_INLINE_BYTES, candidates, contentDictionary));
-      projected.text = text;
-    }
-    if (step.tools.length > 0) {
-      const calls: RecordValue[] = [];
-      step.tools.forEach((entry, callIndex) => {
-        const index = toolIndex(entry.name);
-        const call: RecordValue = { tool: index, status: entry.status };
-        if (entry.input) assignValue(call, 'input', entry.input, INITIAL_TOOL_INLINE_BYTES, candidates, contentDictionary);
-        if (entry.output) assignValue(call, 'output', entry.output, INITIAL_TOOL_INLINE_BYTES, candidates, contentDictionary);
-        calls.push(call);
-        const statuses = toolStatuses.get(index) ?? {};
-        statuses[entry.status] = (statuses[entry.status] ?? 0) + 1;
-        toolStatuses.set(index, statuses);
-        latestTool = { step: step.number, call: callIndex + 1 };
-        if (entry.status === 'pending' || entry.status === 'running') {
-          openTools.push({ step: step.number, call: callIndex + 1, tool: index, status: entry.status });
-        }
-      });
-      projected.tool_calls = calls;
-    }
-    if (step.errors.length > 0) {
-      const indexes: number[] = [];
-      step.errors.forEach((entry) => {
-        const error: RecordValue = { kind: entry.kind, step: step.number };
-        assignValue(error, 'error', entry.source, INITIAL_ERROR_INLINE_BYTES, candidates, contentDictionary);
-        errors.push(error);
-        indexes.push(errors.length);
-        latestError = { step: step.number, error: errors.length };
-      });
-      projected.errors = indexes;
-    }
-    if (step.files.length > 0) {
-      const indexes = step.files.map((file) => {
-        const known = fileIndexes.get(file);
-        if (known) return known;
-        files.push(file);
-        const index = files.length;
-        fileIndexes.set(file, index);
-        return index;
-      });
-      projected.files = [...new Set(indexes)];
-    }
-    const reasoning = stepReasoningReport(step);
-    if (reasoning) projected.reasoning = reasoning;
-    if (step.unknownParts > 0) projected.unknown_parts = step.unknownParts;
-    timeline.push(projected);
-  }
-
-  const selections = traceTextSelections(ir);
-  const latest: RecordValue = {};
-  if (selections.final) latest.final = { step: selections.final.step.number, text: selections.final.index };
-  if (selections.progress) latest.progress = { step: selections.progress.step.number, text: selections.progress.index };
-  if (latestTool) latest.tool = latestTool;
-  if (latestError) latest.error = latestError;
-
-  const report: RecordValue = {
-    ok: true,
-    version: 2,
-    task_id: taskID,
-    target: { id: taskID, relationship },
-    lifecycle,
-    source: {
-      messages: ir.messageCount,
-      parts: ir.partCount,
-      steps: ir.steps.length,
-      fidelity: ir.compactionCount > 0 ? 'compacted_surviving_source' : 'surviving_source',
-      compactions: ir.compactionCount,
-      as_of: ir.digest,
-    },
-    ...(selections.instruction ? { instruction: { step: selections.instruction.step.number, text: selections.instruction.index } } : {}),
-    latest,
-    reasoning: reasoningReport(ir.steps),
-    content_dictionary: contentDictionary,
-    tool_dictionary: toolDictionary,
-    tool_rollup: [...toolStatuses.entries()].map(([tool, statuses]) => ({ tool, statuses })),
-    changed_files: { files, exhaustive: false },
-    errors,
-    open_tools: openTools,
-    timeline,
-    render: { actual_bytes: 0, soft_target_bytes: SOFT_TARGET_BYTES, externalized_count: 0 },
-  };
-  return { report, candidates };
 }
 
 function splitUtf8(value: string, maxBytes: number): string[] {
@@ -1649,7 +2013,7 @@ function recoveryProjection(
   recovery: RecordValue,
   semantic: RecordValue | null,
 ): RecordValue {
-  const selections = traceTextSelections(ir);
+  const instruction = latestInstruction(ir);
   const final = recoveryTerminalText(ir, lifecycle);
   const files: string[] = [];
   const seenFiles = new Set<string>();
@@ -1672,10 +2036,10 @@ function recoveryProjection(
       compactions: ir.compactionCount,
       as_of: ir.digest,
     },
-    ...(selections.instruction ? {
+    ...(instruction ? {
       task_instruction: {
-        step: selections.instruction.step.number,
-        text: recoverySourceValue(selections.instruction.text.source, INITIAL_TEXT_INLINE_BYTES),
+        step: instruction.step.number,
+        text: recoverySourceValue(instruction.text.source, INITIAL_TEXT_INLINE_BYTES),
       },
     } : {}),
     final_response: final
@@ -1706,40 +2070,6 @@ function finalizeRecoveryProjection(report: RecordValue): string {
     render.actual_bytes = bytes;
     serialized = JSON.stringify(report);
     bytes = Buffer.byteLength(serialized);
-  }
-  return serialized;
-}
-
-function finalizeReport(report: RecordValue, candidates: ExternalizationCandidate[]): string {
-  const render = record(report.render)!;
-  const contentDictionary = report.content_dictionary as string[];
-  const remaining = [...candidates].sort((left, right) => right.source.bytes - left.source.bytes);
-
-  const renderFixedPoint = (): string => {
-    render.externalized_count = contentDictionary.length;
-    let serialized = JSON.stringify(report);
-    let bytes = Buffer.byteLength(serialized);
-    while (render.actual_bytes !== bytes) {
-      render.actual_bytes = bytes;
-      serialized = JSON.stringify(report);
-      bytes = Buffer.byteLength(serialized);
-    }
-    return serialized;
-  };
-
-  let serialized = renderFixedPoint();
-  for (const candidate of remaining) {
-    if (Number(render.actual_bytes) <= SOFT_TARGET_BYTES) break;
-    const before = Number(render.actual_bytes);
-    const prior = candidate.container[candidate.key as never];
-    const index = contentDictionary.push(encodeLocator(candidate.source));
-    candidate.container[candidate.key as never] = { r: index } as never;
-    serialized = renderFixedPoint();
-    if (Number(render.actual_bytes) >= before) {
-      candidate.container[candidate.key as never] = prior as never;
-      contentDictionary.pop();
-      serialized = renderFixedPoint();
-    }
   }
   return serialized;
 }
@@ -1788,13 +2118,20 @@ export function createTaskTraceTools(options: TaskTraceOptions) {
 
   return {
     hive_task_trace: tool({
-      description: 'Inspect any explicitly identified OpenCode session visible to the connected runtime when its result failed, blocked, timed out, was cancelled, is empty, or is unclear. Returns a read-only forensic v2 report with lifecycle, relationship, structured errors, changed files, tool activity, timeline, and latest/final response; optional recovery observes a finished turn and returns an untrusted semantic projection with runtime-safe next actions.',
+      description: 'Inspect any explicitly identified OpenCode session visible to the connected runtime when its result failed, blocked, timed out, was cancelled, is empty, or is unclear. Returns a read-only paged forensic v3 index of surviving non-reasoning events in source order, with lifecycle, assignment and final self-report context, bounded excerpts, event refs, and coverage; follow coverage.next_cursor with cursor for the next page. Optional recovery observes a finished turn and returns an untrusted semantic projection with runtime-safe next actions.',
       args: {
         task_id: tool.schema.string().describe('OpenCode session ID visible through the connected runtime.'),
+        cursor: tool.schema.string().optional().describe('coverage.next_cursor from the previous index page. Omit for the first page; not valid with recovery.'),
         recovery: tool.schema.boolean().optional().describe('Request semantic map/reduce recovery for an observed idle-and-closed turn. Defaults to false forensic output; non-direct-child targets are inspect-only.'),
       },
-      async execute({ task_id, recovery = false }, context) {
+      async execute({ task_id, cursor, recovery = false }, context) {
         if (recovery && context.abort.aborted) throw cancellationReason(context.abort);
+        let start: IndexCursor | undefined;
+        if (cursor !== undefined) {
+          if (recovery) return JSON.stringify({ ok: false, reason: 'invalid_selector' });
+          start = decodeCursor(cursor);
+          if (!start) return JSON.stringify({ ok: false, reason: 'invalid_cursor' });
+        }
         const unavailable = JSON.stringify({ ok: false, reason: 'unavailable_or_unauthorized' });
         const target = await resolveTargetSession(
           options.client,
@@ -1877,50 +2214,97 @@ export function createTaskTraceTools(options: TaskTraceOptions) {
             recovered.semantic,
           ));
         }
-        const projected = projectReport(task_id, target.relationship, ir, lifecycle);
-        return finalizeReport(projected.report, projected.candidates);
+        return renderIndexPage(task_id, target.relationship, ir, lifecycle, indexEvents(messages), start);
       },
     }),
     hive_task_trace_content: tool({
-      description: 'Re-read one runtime-visible source-backed non-reasoning session trace field by v2 content ID using UTF-8-safe byte chunks.',
+      description: 'Read one runtime-visible non-reasoning session trace source by exactly one selector. With event (a ref from the hive_task_trace v3 index), return that guarded event with its tool input, output, and error together; add field and offset to continue an oversized field in UTF-8-safe 8 KiB chunks. With content_id (a v2 content ID from recovery output), re-read that field in chunks. Every read reauthorizes and rechecks the source; a stale event or cursor means re-index.',
       args: {
         task_id: tool.schema.string().describe('OpenCode session ID visible through the connected runtime.'),
-        content_id: tool.schema.string().describe('Opaque v2 source locator returned by hive_task_trace.'),
-        offset: tool.schema.number().optional().describe('UTF-8 byte offset. Defaults to zero.'),
+        event: tool.schema.string().optional().describe('Event ref from a hive_task_trace v3 index row or context entry. Not valid with content_id.'),
+        field: tool.schema.enum(EVENT_FIELD_NAMES).optional().describe('Field of the selected event to read in chunks. Requires event.'),
+        content_id: tool.schema.string().optional().describe('v2 content ID returned by recovery output. Not valid with event or field.'),
+        offset: tool.schema.number().optional().describe('UTF-8 byte offset for content_id or event+field reads. Defaults to zero.'),
       },
-      async execute({ task_id, content_id, offset = 0 }, context) {
-        const locator = decodeLocator(content_id);
-        if (!locator) return JSON.stringify({ ok: false, reason: 'invalid_content_id' });
-        if (!(await resolveTargetSession(options.client, options.directory, task_id, context.sessionID))) {
-          return JSON.stringify({ ok: false, reason: 'unavailable_or_unauthorized' });
-        }
-        try {
+      async execute({ task_id, event, field, content_id, offset }, context) {
+        const reply = (value: RecordValue) => JSON.stringify(value);
+        if (
+          (content_id === undefined) === (event === undefined)
+          || (content_id !== undefined && field !== undefined)
+          || (event !== undefined && field === undefined && offset !== undefined)
+        ) return reply({ ok: false, reason: 'invalid_selector' });
+        const unavailable = reply({ ok: false, reason: 'unavailable_or_unauthorized' });
+        const readMessages = async (): Promise<unknown[] | undefined> => {
           const response = await options.client.session.messages({ path: { id: task_id }, query: { directory: options.directory } });
-          if (response.error !== undefined || !Array.isArray(response.data)) throw new Error('missing');
-          const value = readLocatedValue(response.data, locator);
-          if (value === undefined) throw new Error('missing');
-          const text = fieldText(value);
-          const bytes = Buffer.from(text);
-          if (bytes.length !== locator[4] || digest(text) !== locator[5]) throw new Error('stale');
-          if (!Number.isSafeInteger(offset) || offset < 0 || offset > bytes.length || (offset < bytes.length && (bytes[offset] & 0xc0) === 0x80)) {
-            return JSON.stringify({ ok: false, reason: 'invalid_offset' });
+          return response.error === undefined && Array.isArray(response.data) ? response.data : undefined;
+        };
+
+        if (content_id !== undefined) {
+          const locator = decodeLocator(content_id);
+          if (!locator) return reply({ ok: false, reason: 'invalid_content_id' });
+          if (!(await resolveTargetSession(options.client, options.directory, task_id, context.sessionID))) return unavailable;
+          try {
+            const messages = await readMessages();
+            if (!messages) throw new Error('missing');
+            const value = readLocatedValue(messages, locator);
+            if (value === undefined) throw new Error('missing');
+            const text = fieldText(value);
+            const bytes = Buffer.from(text);
+            if (bytes.length !== locator[4] || digest(text) !== locator[5]) throw new Error('stale');
+            const chunk = utf8Chunk(bytes, offset ?? 0);
+            if (!chunk) return reply({ ok: false, reason: 'invalid_offset' });
+            return reply({
+              ok: true,
+              version: 2,
+              task_id,
+              content: chunk.content,
+              offset: offset ?? 0,
+              next_offset: chunk.nextOffset,
+              bytes: bytes.length,
+              sha256: locator[5],
+            });
+          } catch {
+            return reply({ ok: false, reason: 'stale_or_not_found' });
           }
-          let end = Math.min(bytes.length, offset + CONTENT_CHUNK_BYTES);
-          while (end > offset && end < bytes.length && (bytes[end] & 0xc0) === 0x80) end -= 1;
-          const content = bytes.subarray(offset, end).toString('utf8');
-          return JSON.stringify({
-            ok: true,
-            version: 2,
-            task_id,
-            content,
-            offset,
-            next_offset: end < bytes.length ? end : null,
-            bytes: bytes.length,
-            sha256: locator[5],
-          });
-        } catch {
-          return JSON.stringify({ ok: false, reason: 'stale_or_not_found' });
         }
+
+        const selector = decodeEventRef(event);
+        if (!selector) return reply({ ok: false, reason: 'invalid_event' });
+        if (field !== undefined && !(EVENT_FIELD_NAMES as readonly string[]).includes(field)) return reply({ ok: false, reason: 'invalid_field' });
+        if (!(await resolveTargetSession(options.client, options.directory, task_id, context.sessionID))) return unavailable;
+        let messages: unknown[] | undefined;
+        try {
+          messages = await readMessages();
+        } catch {
+          messages = undefined;
+        }
+        if (!messages) return unavailable;
+        const index = indexEvents(messages);
+        const resolved = resolveEvent(index, selector);
+        if ('reason' in resolved) return reply({ ok: false, reason: resolved.reason });
+        const selected = resolved.event;
+        if (field === undefined) {
+          return reply({ ok: true, version: 3, task_id, source: { events: index.events.length, as_of: index.asOf }, event: eventDetail(selected) });
+        }
+        if (!EVENT_FIELDS[selected.kind].includes(field)) return reply({ ok: false, reason: 'invalid_field' });
+        if (!(field in selected.fields)) return reply({ ok: false, reason: 'field_absent' });
+        const value = selected.fields[field];
+        const text = fieldText(value);
+        const bytes = Buffer.from(text);
+        const chunk = utf8Chunk(bytes, offset ?? 0);
+        if (!chunk) return reply({ ok: false, reason: 'invalid_offset' });
+        return reply({
+          ok: true,
+          version: 3,
+          task_id,
+          field,
+          format: typeof value === 'string' ? 'text' : 'json',
+          content: chunk.content,
+          offset: offset ?? 0,
+          next_offset: chunk.nextOffset,
+          bytes: bytes.length,
+          sha256: digest(text),
+        });
       },
     }),
   };
@@ -1940,7 +2324,7 @@ function taskTraceContinuationHint(
   taskID: string,
   leadIn = `[hive task trace] If this child failed, blocked, timed out, was cancelled, returned empty output, or its result is unclear, inspect it with hive_task_trace({ task_id: ${JSON.stringify(taskID)} }).`,
 ): string {
-  return `${leadIn} Read errors, changed_files, tool activity, and the latest/final response first. Every returned task result is terminal; launch a fresh child session for follow-up and reuse the same Hive task/worktree where appropriate. Pass task_id only when an explicit operator instruction or an explicit runtime-owned interruption-recovery mechanism authorizes continuation; otherwise launch fresh. If the child may still be active or its lifecycle is uncertain, inspect, wait, or reattach as supported; do not send another prompt or launch an overlapping writer.`;
+  return `${leadIn} Read lifecycle, context, and the chronological event index first; follow coverage.next_cursor for more events and use hive_task_trace_content for guarded event detail. Every returned task result is terminal; launch a fresh child session for follow-up and reuse the same Hive task/worktree where appropriate. Pass task_id only when an explicit operator instruction or an explicit runtime-owned interruption-recovery mechanism authorizes continuation; otherwise launch fresh. If the child may still be active or its lifecycle is uncertain, inspect, wait, or reattach as supported; do not send another prompt or launch an overlapping writer.`;
 }
 
 export async function injectTaskTraceHint(

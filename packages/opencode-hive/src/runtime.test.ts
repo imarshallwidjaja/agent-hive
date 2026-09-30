@@ -23,15 +23,19 @@ function createRuntime(options: { detectedFeature?: string; hiveConfig?: Record<
     : root;
   fs.mkdirSync(workTarget, { recursive: true });
   const sessions = new Map<string, { id: string; parentID?: string }>();
+  const transcripts = new Map<string, unknown[]>();
   const client = {
     session: {
       get: async ({ path: inputPath }: { path: { id: string } }) => ({ data: sessions.get(inputPath.id) ?? { id: inputPath.id } }),
+      messages: async ({ path: inputPath }: { path: { id: string } }) => ({ data: transcripts.get(inputPath.id) ?? [] }),
+      status: async () => ({ data: {} }),
       abort: async () => ({ data: true }),
     },
   };
   return {
     root,
     sessions,
+    transcripts,
     hooks: createPluginWithHome(home, () => plugin({ directory: workTarget, worktree: workTarget, project: { id: 'test', worktree: workTarget }, client } as any)),
   };
 }
@@ -730,6 +734,44 @@ describe('coordinated runtime hard cut', () => {
     await expect(edit.execute({ id: read.entries[0].id, expectedRevision: read.revision }, caller)).rejects.toThrow(/exactly one/);
     await expect(edit.execute({ id: read.entries[0].id, expectedRevision: read.revision, constraints: 'x', remove: true }, caller)).rejects.toThrow(/exactly one/);
     await expect(edit.execute({ id: read.entries[0].id, expectedRevision: read.revision, constraints: '  ' }, caller)).rejects.toThrow(/nonblank/);
+  });
+
+  it('serves the paged trace index and guarded event reads through the registered trace tools', async () => {
+    const { sessions, transcripts, hooks } = createRuntime();
+    const loaded = await hooks;
+    const output = `start-${'🙂'.repeat(4_000)}-end`;
+    sessions.set('child', { id: 'child', parentID: 'parent' });
+    transcripts.set('child', [
+      { info: { id: 'msg_u', role: 'user', time: { created: 1 } }, parts: [{ id: 'prt_u', type: 'text', text: 'Run the suite.' }] },
+      {
+        info: { id: 'msg_a', role: 'assistant', time: { created: 2, completed: 3 } },
+        parts: [{ id: 'prt_a', type: 'tool', tool: 'bash', callID: 'call-a', state: { status: 'completed', title: 'Run suite', input: { command: 'bun test' }, output } }],
+      },
+    ]);
+    const trace = loaded.tool!.hive_task_trace;
+    const content = loaded.tool!.hive_task_trace_content;
+
+    expect(Object.keys(trace.args).sort()).toEqual(['cursor', 'recovery', 'task_id']);
+    expect(Object.keys(content.args).sort()).toEqual(['content_id', 'event', 'field', 'offset', 'task_id']);
+    expect((content.args.field as any).safeParse('output').success).toBe(true);
+    expect((content.args.field as any).safeParse('reasoning').success).toBe(false);
+
+    const page = JSON.parse(await trace.execute({ task_id: 'child' }, context('parent')));
+    expect(page).toMatchObject({
+      ok: true,
+      version: 3,
+      target: { id: 'child', relationship: 'direct_child' },
+      coverage: { complete: true, next_cursor: null },
+      context: { assignment: { text: 'Run the suite.' } },
+    });
+    expect(page.events[1]).toMatchObject({ kind: 'tool', tool: 'bash', call_id: 'call-a', input: { command: 'bun test' }, abbreviated: ['output'] });
+
+    const ref = page.events[1].ref;
+    const event = JSON.parse(await content.execute({ task_id: 'child', event: ref }, context('parent')));
+    expect(event.event).toMatchObject({ message_id: 'msg_a', part_id: 'prt_a', fields: { input: { value: { command: 'bun test' } }, output: { state: 'chunked' } } });
+    const rest = JSON.parse(await content.execute({ task_id: 'child', event: ref, field: 'output', offset: event.event.fields.output.next_offset }, context('parent')));
+    expect(`${event.event.fields.output.content}${rest.content}`).toBe(output);
+    expect(rest.next_offset).toBeNull();
   });
 
   it('configures role-specific static tool and recursion boundaries', async () => {

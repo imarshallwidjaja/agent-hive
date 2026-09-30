@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test';
+import { createHash } from 'node:crypto';
 import {
   appendTaskTraceHint,
   createTaskTraceTools,
@@ -310,96 +311,568 @@ function realisticTrace() {
   return messages;
 }
 
-describe('compact task trace v2', () => {
-  it('returns every realistic source step once with compact indexes and no v1 fields', async () => {
-    const source = realisticTrace();
-    const setup = clientFor(source);
-    const serialized = await executeRaw(toolsFor(setup), 'hive_task_trace', { task_id: 'child' });
-    const explicitSetup = clientFor(source);
-    const explicitForensic = await executeRaw(toolsFor(explicitSetup), 'hive_task_trace', { task_id: 'child', recovery: false });
-    const result = JSON.parse(serialized);
+function token(value: unknown): string {
+  return Buffer.from(JSON.stringify(value)).toString('base64url');
+}
 
-    expect(result).toMatchObject({ ok: true, version: 2, task_id: 'child' });
-    expect(result.source).toMatchObject({ messages: 59, parts: 291, steps: 59, fidelity: 'surviving_source' });
-    expect(result.timeline.map((step: any) => step.step)).toEqual(Array.from({ length: 59 }, (_, index) => index + 1));
-    expect(result.timeline.filter((step: any) => step.actor === 'user')).toHaveLength(1);
-    expect(result.instruction).toEqual({ step: 1, text: 1 });
-    expect(result.latest.final).toEqual({ step: 59, text: 1 });
-    expect(result.changed_files).toEqual({ files: ['src/final.ts', 'src/shared.ts'], exhaustive: false });
-    expect(result.errors.some((entry: any) => JSON.stringify(entry).includes('middle retry'))).toBe(true);
-    expect(result.tool_dictionary).toEqual(['bash', 'read']);
-    expect(result.tool_rollup).toEqual([
-      { tool: 1, statuses: { completed: 29 } },
-      { tool: 2, statuses: { completed: 28 } },
-    ]);
-    expect(setup.calls.map((call) => call.method)).toEqual(['get', 'messages', 'status']);
-    expect(Buffer.byteLength(serialized)).toBe(result.render.actual_bytes);
-    expect(result.render).toMatchObject({ soft_target_bytes: 24_576, externalized_count: expect.any(Number) });
-    expect(explicitForensic).toBe(serialized);
-    expect(explicitSetup.calls.map((call) => call.method)).toEqual(['get', 'messages', 'status']);
+function decodeToken(value: string): unknown {
+  return JSON.parse(Buffer.from(value, 'base64url').toString('utf8'));
+}
 
-    const forbidden = new Set([
-      'mode', 'evidence', 'message_id', 'part_id', 'message_ordinal', 'part_ordinal', 'step_id',
-      'reasoning_part_ids', 'provenance', 'truncation', 'bounded', 'incomplete', 'trace_truncated', 'result_size_limit',
-      'soft_target', 'over_soft_target',
-    ]);
-    expect(allKeys(result).filter((key) => forbidden.has(key))).toEqual([]);
-    expect(result).not.toHaveProperty('messages');
-    expect(serialized).not.toContain('private reasoning');
-    expect(serialized).not.toContain('assistant-57-part');
-  });
+function bareMessage(parts: Array<Record<string, unknown>>) {
+  return { info: { role: 'assistant', time: { created: 1, completed: 2 } }, parts };
+}
 
-  it('preserves robust malformed/open boundaries and closes implicit steps with their message', async () => {
-    const source = [message('m1', 'assistant', [
-      { type: 'text', text: 'before' },
-      { type: 'step-start' },
-      { type: 'text', text: 'nested' },
-      { type: 'step-start' },
-      { type: 'step-finish' },
-      { type: 'step-finish' },
-      { type: 'step-start' },
-    ], { completed: false })];
-    const result = await execute(toolsFor(clientFor(source)), 'hive_task_trace', { task_id: 'child' });
+async function indexPages(tools: ReturnType<typeof createTaskTraceTools>) {
+  const pages: any[] = [];
+  const serialized: string[] = [];
+  let cursor: string | undefined;
+  do {
+    const raw = await executeRaw(tools, 'hive_task_trace', { task_id: 'child', ...(cursor ? { cursor } : {}) });
+    const page = JSON.parse(raw);
+    expect(page.ok).toBe(true);
+    pages.push(page);
+    serialized.push(raw);
+    cursor = page.coverage.next_cursor ?? undefined;
+  } while (cursor && pages.length < 50);
+  return { pages, serialized, events: pages.flatMap((page) => page.events) };
+}
 
-    expect(result.timeline.map((step: any) => step.state)).toEqual(['closed', 'malformed', 'closed', 'malformed', 'open']);
-    expect(result.timeline.map((step: any) => step.text?.length ?? 0)).toEqual([1, 1, 0, 0, 0]);
-  });
+async function readEvent(tools: ReturnType<typeof createTaskTraceTools>, event: string) {
+  return execute(tools, 'hive_task_trace_content', { task_id: 'child', event });
+}
 
-  it('derives only structured errors, patch files, tool status, open tools, and honest reasoning totals', async () => {
-    const source = [
-      message('user', 'user', [{ type: 'text', text: 'Run it.' }]),
-      message('m1', 'assistant', [
-        { type: 'reasoning', text: 'secret', tokens: 4 },
-        { type: 'reasoning', metadata: { providerItemId: 'opaque', encrypted: 'ciphertext' } },
-        { type: 'tool', tool: 'bash', state: { status: 'running', input: { command: 'sleep' }, output: 'incidental error text' } },
-        { type: 'tool', tool: 'read', state: { status: 'error', error: { message: 'tool failed' } } },
-        { type: 'retry', error: 'retry failed' },
-        { type: 'patch', files: ['a.ts'], patch: 'not a source of files b.ts' },
-        { type: 'unknown', error: 'not structured' },
-      ], { completed: false, error: { message: 'assistant failed' } }),
-    ];
-    const setup = clientFor(source, { status: { child: { type: 'busy' } } });
-    const result = await execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: false });
-    const serialized = JSON.stringify(result);
+async function readField(tools: ReturnType<typeof createTaskTraceTools>, event: string, field: string, first: any) {
+  const chunks: string[] = [first.content];
+  let offset = first.next_offset;
+  while (offset !== null) {
+    const chunk = await execute(tools, 'hive_task_trace_content', { task_id: 'child', event, field, offset });
+    expect(chunk).toMatchObject({ ok: true, version: 3, field, offset, bytes: first.bytes, sha256: first.sha256 });
+    chunks.push(chunk.content);
+    offset = chunk.next_offset;
+  }
+  return { text: chunks.join(''), chunks };
+}
 
-    expect(result.reasoning).toEqual({
-      availability: 'mixed', parts: 2, plaintext_parts: 1, plaintext_bytes: 6, opaque_parts: 1,
-      tokens: null, known_tokens: 4, unknown_token_parts: 1,
+describe('forensic task trace v3 index', () => {
+  it('lists every surviving non-reasoning event once in source order across readable bounded pages', async () => {
+    const setup = clientFor(realisticTrace());
+    const tools = toolsFor(setup);
+    const { pages, serialized, events } = await indexPages(tools);
+
+    expect(pages.length).toBeGreaterThan(1);
+    expect(events.map((event: any) => event.seq)).toEqual(sourceSteps(1, 118));
+    for (const [index, page] of pages.entries()) {
+      expect(page).toMatchObject({ ok: true, version: 3, task_id: 'child', target: { id: 'child', relationship: 'direct_child' } });
+      expect(page.lifecycle).toEqual({ state: 'terminal', terminal: true, reason: 'idle_and_closed' });
+      expect(page.source).toMatchObject({
+        messages: 59, parts: 291, events: 118, reasoning_parts: 57, structural_parts: 116,
+        fidelity: 'surviving_source', compactions: 0, as_of: expect.any(String),
+      });
+      expect(page.events.length).toBeGreaterThan(1);
+      expect(page.render).toEqual({ bytes: Buffer.byteLength(serialized[index]), budget_bytes: 24_576 });
+      expect(page.render.bytes).toBeLessThanOrEqual(24_576);
+      expect(page.coverage).toMatchObject({ events: 118, from_seq: page.events[0].seq, to_seq: page.events.at(-1).seq, limitations: [] });
+      expect(page.context).toEqual({
+        assignment: { seq: 1, text: 'Implement every requested invariant.', bytes: 36, ref: events[0].ref },
+        final: { seq: 117, text: 'All requested work succeeded.', bytes: 29, provenance: 'child_self_report', untrusted: true, ref: events[116].ref },
+      });
+      expect(page.reasoning).toMatchObject({ availability: 'plaintext', parts: 57 });
+    }
+    expect(pages.slice(0, -1).every((page) => page.coverage.complete === false && typeof page.coverage.next_cursor === 'string')).toBe(true);
+    expect(pages.at(-1).coverage).toMatchObject({ complete: true, next_cursor: null, to_seq: 118 });
+
+    expect(events[0]).toEqual({ seq: 1, kind: 'text', actor: 'user', text: 'Implement every requested invariant.', bytes: { text: 36 }, ref: expect.any(String) });
+    expect(events[2]).toEqual({
+      seq: 3, kind: 'tool', actor: 'assistant', tool: 'bash', status: 'completed',
+      input: { index: 1 }, output: 'output 1', bytes: { input: 11, output: 8 }, ref: expect.any(String),
     });
-    expect(result.timeline[1].reasoning).toEqual({ presence: 'mixed', parts: 2, tokens: null });
-    expect(result.timeline[1].unknown_parts).toBe(1);
-    expect(result.changed_files).toEqual({ files: ['a.ts'], exhaustive: false });
-    expect(result.errors.map((entry: any) => entry.kind)).toEqual(['assistant', 'tool', 'retry']);
-    expect(result.open_tools).toEqual([{ step: 2, call: 1, tool: 1, status: 'running' }]);
-    expect(result.lifecycle.state).toBe('active');
-    expect(result).not.toHaveProperty('recovery');
-    expect(serialized).not.toContain('secret');
-    expect(serialized).not.toContain('ciphertext');
-    expect(serialized).not.toContain('not structured');
-    expect(serialized).not.toContain('b.ts');
-    expect(setup.calls.filter((call) => call.method === 'create')).toHaveLength(0);
+    expect(events.find((event: any) => event.kind === 'retry')).toMatchObject({ seq: 60, actor: 'assistant', error: { name: 'ProviderError', message: 'middle retry' } });
+    expect(events.at(-1)).toMatchObject({ seq: 118, kind: 'patch', files: ['src/final.ts', 'src/shared.ts'] });
+
+    const allowed = new Set(['seq', 'kind', 'actor', 'identity', 'tool', 'status', 'call_id', 'title', 'synthetic', 'summary', 'compacted', 'type', 'text', 'input', 'output', 'error', 'files', 'bytes', 'abbreviated', 'ref']);
+    expect(events.flatMap((event: any) => Object.keys(event)).filter((key: string) => !allowed.has(key))).toEqual([]);
+    const keys = serialized.flatMap((raw) => allKeys(JSON.parse(raw)));
+    for (const excluded of ['timeline', 'content_dictionary', 'tool_dictionary', 'tool_rollup', 'r']) expect(keys).not.toContain(excluded);
+    const tokens = [...events.map((event: any) => decodeToken(event.ref)), decodeToken(pages[0].coverage.next_cursor)];
+    expect(JSON.stringify([serialized, tokens])).not.toContain('private reasoning');
+    expect(setup.calls.map((call) => call.method)).toEqual(pages.flatMap(() => ['get', 'messages', 'status']));
   });
 
+  it('shows recorded identifying inputs and head-and-tail excerpts that distinguish repeated command prefixes', async () => {
+    const prefix = `cd /workspace/${'nested/'.repeat(40)}project && bun test --timeout 60000 `;
+    const alphaInput = { command: `${prefix}src/alpha.test.ts`, description: 'Run suite A', workdir: '/workspace' };
+    const betaInput = { command: `${prefix}src/beta.test.ts`, description: 'Run suite B', workdir: '/workspace' };
+    const alphaOutput = `${'noise\n'.repeat(400)}alpha: 3 pass 0 fail`;
+    const betaError = `${'trace\n'.repeat(400)}beta: 1 fail`;
+    const source = [
+      message('instruction', 'user', [{ type: 'text', text: 'Verify both suites.' }]),
+      message('work', 'assistant', [
+        { type: 'tool', tool: 'skill', callID: 'call-skill', state: { status: 'completed', title: 'Loaded skill: verification', input: { name: 'verification' }, output: 'skill body' } },
+        { type: 'tool', tool: 'bash', callID: 'call-a', state: { status: 'completed', title: 'Run suite A', input: alphaInput, output: alphaOutput } },
+        { type: 'tool', tool: 'bash', callID: 'call-b', state: { status: 'error', title: 'Run suite B', input: betaInput, error: betaError } },
+        { type: 'tool', tool: 'read', callID: 'call-read', state: { status: 'completed', title: 'src/alpha.ts', input: { filePath: 'src/alpha.ts' }, output: 'export {}' } },
+      ]),
+    ];
+    const { events } = await indexPages(toolsFor(clientFor(source)));
+    const [, skill, alpha, beta, read] = events;
+
+    expect(skill).toMatchObject({ tool: 'skill', call_id: 'call-skill', title: 'Loaded skill: verification', input: { name: 'verification' }, output: 'skill body' });
+    expect(skill).not.toHaveProperty('abbreviated');
+    expect(read).toMatchObject({ tool: 'read', input: { filePath: 'src/alpha.ts' }, output: 'export {}' });
+    for (const [event, suite, input] of [[alpha, 'alpha', alphaInput], [beta, 'beta', betaInput]] as const) {
+      expect(event).toMatchObject({ kind: 'tool', tool: 'bash', input: { description: input.description } });
+      expect(Object.keys(event.input).sort()).toEqual(['command', 'description']);
+      expect(event.input.command.startsWith('cd /workspace/nested/')).toBe(true);
+      expect(event.input.command.endsWith(`src/${suite}.test.ts`)).toBe(true);
+      expect(event.input.command).toContain(' [...] ');
+      expect(event.bytes.input).toBe(Buffer.byteLength(JSON.stringify(input)));
+    }
+    expect(alpha.input.command).not.toBe(beta.input.command);
+    expect(alpha).toMatchObject({ status: 'completed', title: 'Run suite A', abbreviated: ['input', 'output'], bytes: { output: Buffer.byteLength(alphaOutput) } });
+    expect(alpha.output.startsWith('noise\n')).toBe(true);
+    expect(alpha.output.endsWith('alpha: 3 pass 0 fail')).toBe(true);
+    expect(beta).toMatchObject({ status: 'error', title: 'Run suite B', abbreviated: ['input', 'error'] });
+    expect(beta.bytes).toEqual({ input: Buffer.byteLength(JSON.stringify(betaInput)), error: Buffer.byteLength(betaError) });
+    expect(beta).not.toHaveProperty('output');
+    expect(beta.error.endsWith('beta: 1 fail')).toBe(true);
+  });
+
+  it('bounds every page by serialized bytes with forward progress for escaped and Unicode-heavy values and names', async () => {
+    const hostile = '"\\\u0000\n🙂\u2028';
+    const source = Array.from({ length: 40 }, (_, index) => message(`m${index}`, 'assistant', [
+      { type: 'tool', tool: `${hostile.repeat(2_000)}-${index}`, callID: `call-${hostile.repeat(100)}`, state: { status: 'completed', title: hostile.repeat(3_000), input: { command: hostile.repeat(3_000) }, output: hostile.repeat(3_000) } },
+      { type: `${hostile.repeat(500)}-${index}` },
+      { type: 'text', text: hostile.repeat(5_000) },
+    ]));
+    const { pages, serialized, events } = await indexPages(toolsFor(clientFor(source)));
+
+    expect(pages.length).toBeGreaterThan(1);
+    expect(events.map((event: any) => event.seq)).toEqual(sourceSteps(1, 120));
+    for (const [index, page] of pages.entries()) {
+      expect(page.events.length).toBeGreaterThan(0);
+      expect(page.render.bytes).toBe(Buffer.byteLength(serialized[index]));
+      expect(page.render.bytes).toBeLessThanOrEqual(24_576);
+    }
+    for (const event of events) expect(Buffer.byteLength(JSON.stringify(event))).toBeLessThan(4_096);
+    const tools = events.filter((event: any) => event.kind === 'tool');
+    expect(tools.every((event: any) => ['tool', 'title', 'call_id', 'input', 'output'].every((key) => event.abbreviated.includes(key)))).toBe(true);
+    expect(tools[7].tool.endsWith('-7')).toBe(true);
+    expect(events.filter((event: any) => event.kind === 'unsupported').every((event: any) => event.abbreviated.includes('type'))).toBe(true);
+    expect(pages[0].coverage.limitations).toEqual(['unsupported_parts']);
+    expect(serialized.join('')).not.toContain('\uFFFD');
+    expect(serialized.join('')).not.toMatch(/\\ud[89ab]/i);
+  });
+
+  it('indexes active, uncertain, and terminal sessions and reads their live actions', async () => {
+    const instruction = message('instruction', 'user', [{ type: 'text', text: 'Run the suite.' }]);
+    const running = [
+      instruction,
+      message('work', 'assistant', [{ type: 'tool', tool: 'bash', callID: 'call-run', state: { status: 'running', input: { command: 'bun test' } } }], { completed: false }),
+    ];
+    const finished = [instruction, message('work', 'assistant', [{ type: 'text', text: 'Suite passed.' }])];
+    const cases: Array<[unknown[], Record<string, unknown>, Record<string, unknown>]> = [
+      [running, { status: { child: { type: 'busy' } } }, { state: 'active', terminal: false, reason: 'runtime_active' }],
+      [running, { statusError: new Error('unavailable') }, { state: 'uncertain', terminal: false, reason: 'status_unavailable' }],
+      [finished, { status: {} }, { state: 'terminal', terminal: true, reason: 'idle_and_closed' }],
+    ];
+    for (const [source, options, lifecycle] of cases) {
+      const tools = toolsFor(clientFor(source, options as any));
+      const { pages, events } = await indexPages(tools);
+      const read = await readEvent(tools, events[1].ref);
+
+      expect(pages[0].lifecycle).toEqual(lifecycle);
+      expect(read.ok).toBe(true);
+      if (lifecycle.terminal) {
+        expect(pages[0].context.final).toMatchObject({ seq: 2, text: 'Suite passed.', provenance: 'child_self_report', untrusted: true });
+      } else {
+        expect(pages[0].context.final).toBeNull();
+        expect(events[1]).toMatchObject({ kind: 'tool', status: 'running', call_id: 'call-run', input: { command: 'bun test' } });
+        expect(read.event.fields).toEqual({
+          input: { state: 'value', format: 'json', bytes: Buffer.byteLength('{"command":"bun test"}'), value: { command: 'bun test' } },
+          output: { state: 'absent' },
+          error: { state: 'absent' },
+        });
+      }
+    }
+  });
+
+  it('makes compaction, compacted tool output, unsupported parts, and missing native identity visible coverage limits', async () => {
+    const source = [
+      message('summary', 'assistant', [{ type: 'text', text: 'Summary of earlier work.' }], { summary: true }),
+      message('work', 'assistant', [
+        { type: 'compaction' },
+        { type: 'tool', tool: 'read', callID: 'call-read', state: { status: 'completed', input: { filePath: 'a.ts' }, output: '[Old tool result content cleared]', time: { start: 1, end: 2, compacted: 3 } } },
+        { type: 'file', mime: 'text/plain', filename: 'a.txt', url: 'data:text/plain;base64,SECRET_FILE_BODY' },
+        { type: 'mystery', error: 'NOT_STRUCTURED' },
+      ]),
+      bareMessage([{ type: 'text', text: 'No native identity.' }]),
+    ];
+    const tools = toolsFor(clientFor(source));
+    const { pages, serialized, events } = await indexPages(tools);
+
+    expect(pages[0].source).toMatchObject({ fidelity: 'compacted_surviving_source', compactions: 2, events: 6 });
+    expect(pages[0].coverage).toMatchObject({
+      complete: true,
+      limitations: ['compacted_source', 'compacted_tool_output', 'unsupported_parts', 'positional_identity'],
+    });
+    expect(events.map((event: any) => [event.kind, event.type ?? null])).toEqual([
+      ['text', null], ['compaction', null], ['tool', null], ['unsupported', 'file'], ['unsupported', 'mystery'], ['text', null],
+    ]);
+    expect(events[0]).toMatchObject({ summary: true, text: 'Summary of earlier work.' });
+    expect(events[2]).toMatchObject({ compacted: true, output: '[Old tool result content cleared]' });
+    expect(events[5]).toMatchObject({ identity: 'positional', text: 'No native identity.' });
+    expect(events.slice(0, 5).every((event: any) => event.identity === undefined)).toBe(true);
+
+    const positional = await readEvent(tools, events[5].ref);
+    const unsupported = await readEvent(tools, events[3].ref);
+    expect(positional.event).toMatchObject({ seq: 6, kind: 'text', identity: 'positional', fields: { text: { state: 'value', value: 'No native identity.' } } });
+    expect(positional.event).not.toHaveProperty('message_id');
+    expect(unsupported.event).toMatchObject({ seq: 4, kind: 'unsupported', type: 'file', identity: 'native', fields: {} });
+    for (const secret of ['SECRET_FILE_BODY', 'NOT_STRUCTURED']) expect(JSON.stringify([serialized, unsupported])).not.toContain(secret);
+  });
+
+  it('reads one tool action with paired input, output, and error and keeps absent distinct from empty', async () => {
+    const source = [message('work', 'assistant', [
+      { type: 'tool', tool: 'bash', callID: 'call-empty', state: { status: 'completed', title: 'Quiet command', input: { command: 'true', description: 'Quiet command' }, output: '' } },
+      { type: 'tool', tool: 'bash', callID: 'call-error', state: { status: 'error', input: { command: 'false' }, error: 'exit 1' } },
+      { type: 'tool', tool: 'bash', callID: 'call-pending', state: { status: 'pending' } },
+      { type: 'text', text: '' },
+    ])];
+    const tools = toolsFor(clientFor(source));
+    const { events } = await indexPages(tools);
+    const quietInput = { command: 'true', description: 'Quiet command' };
+
+    expect(events[0]).toMatchObject({ output: '', bytes: { input: Buffer.byteLength(JSON.stringify(quietInput)), output: 0 } });
+    expect(events[2].bytes).toEqual({});
+    for (const key of ['input', 'output', 'error']) expect(events[2]).not.toHaveProperty(key);
+    expect(await readEvent(tools, events[0].ref)).toEqual({
+      ok: true,
+      version: 3,
+      task_id: 'child',
+      source: { events: 4, as_of: expect.any(String) },
+      event: {
+        seq: 1, kind: 'tool', actor: 'assistant', identity: 'native',
+        message_id: 'work', part_id: 'work-part-0', call_id: 'call-empty',
+        tool: 'bash', status: 'completed', title: 'Quiet command',
+        fields: {
+          input: { state: 'value', format: 'json', bytes: Buffer.byteLength(JSON.stringify(quietInput)), value: quietInput },
+          output: { state: 'value', format: 'text', bytes: 0, value: '' },
+          error: { state: 'absent' },
+        },
+      },
+    });
+    expect((await readEvent(tools, events[1].ref)).event.fields).toEqual({
+      input: { state: 'value', format: 'json', bytes: Buffer.byteLength('{"command":"false"}'), value: { command: 'false' } },
+      output: { state: 'absent' },
+      error: { state: 'value', format: 'text', bytes: 6, value: 'exit 1' },
+    });
+    expect((await readEvent(tools, events[2].ref)).event).toMatchObject({
+      status: 'pending',
+      fields: { input: { state: 'absent' }, output: { state: 'absent' }, error: { state: 'absent' } },
+    });
+    expect((await readEvent(tools, events[3].ref)).event).toMatchObject({ kind: 'text', fields: { text: { state: 'value', format: 'text', bytes: 0, value: '' } } });
+  });
+
+  it('continues oversized fields from exact canonical text across UTF-8 chunk boundaries', async () => {
+    const input = { command: `printf '${'🙂'.repeat(3_000)}'`, description: 'Emit emoji', nested: { values: Array.from({ length: 200 }, (_, index) => `v${index}-é`) } };
+    const output = `head-${'🙂é\n'.repeat(6_000)}-tail`;
+    const setup = clientFor([message('work', 'assistant', [{ type: 'tool', tool: 'bash', callID: 'call-big', state: { status: 'completed', input, output } }])]);
+    const tools = toolsFor(setup);
+    const { events } = await indexPages(tools);
+    const ref = events[0].ref;
+    const read = await readEvent(tools, ref);
+
+    expect(events[0].abbreviated).toEqual(['input', 'output']);
+    for (const [field, expected, format] of [['input', JSON.stringify(input), 'json'], ['output', output, 'text']] as const) {
+      const first = read.event.fields[field];
+      expect(first).toMatchObject({ state: 'chunked', format, bytes: Buffer.byteLength(expected), offset: 0 });
+      expect(typeof first.next_offset).toBe('number');
+      expect(first.sha256).toBe(createHash('sha256').update(expected).digest('base64url'));
+      const { text, chunks } = await readField(tools, ref, field, first);
+      expect(text).toBe(expected);
+      expect(chunks.length).toBeGreaterThan(1);
+      expect(chunks.every((chunk) => Buffer.byteLength(chunk) <= 8_192 && !chunk.includes('\uFFFD'))).toBe(true);
+    }
+    expect(await execute(tools, 'hive_task_trace_content', { task_id: 'child', event: ref, field: 'output', offset: 6 })).toEqual({ ok: false, reason: 'invalid_offset' });
+    expect(await execute(tools, 'hive_task_trace_content', { task_id: 'child', event: ref, field: 'error' })).toEqual({ ok: false, reason: 'field_absent' });
+    const gets = setup.calls.filter((call) => call.method === 'get').length;
+    expect(gets).toBe(setup.calls.filter((call) => call.method === 'messages').length);
+    expect(gets).toBeGreaterThan(4);
+  });
+
+  it('keeps unchanged action reads valid across unrelated appends and rejects a changed selected action', async () => {
+    const instruction = message('instruction', 'user', [{ type: 'text', text: 'Read and test.' }]);
+    const done = { type: 'tool', tool: 'read', callID: 'call-done', state: { status: 'completed', input: { filePath: 'a.ts' }, output: `alpha-${'a'.repeat(9_000)}` } };
+    const running = { type: 'tool', tool: 'bash', callID: 'call-running', state: { status: 'running', input: { command: 'bun test' } } };
+    const before = [instruction, message('work', 'assistant', [done, running], { completed: false })];
+    const after = [
+      instruction,
+      message('work', 'assistant', [done, { ...running, state: { status: 'completed', input: { command: 'bun test' }, output: '1 pass' } }]),
+      message('later', 'assistant', [{ type: 'text', text: 'Appended progress.' }], { completed: false }),
+    ];
+    const setup = clientFor(before, { mutateMessages: (reads) => reads === 1 ? before : after, status: { child: { type: 'busy' } } });
+    const tools = toolsFor(setup);
+    const { pages, events } = await indexPages(tools);
+    const doneRead = await readEvent(tools, events[1].ref);
+    const continued = await execute(tools, 'hive_task_trace_content', {
+      task_id: 'child', event: events[1].ref, field: 'output', offset: doneRead.event.fields.output.next_offset,
+    });
+
+    expect(pages[0].lifecycle.state).toBe('active');
+    expect(doneRead).toMatchObject({ ok: true, source: { events: 4 }, event: { seq: 2, call_id: 'call-done', status: 'completed' } });
+    expect(doneRead.source.as_of).not.toBe(pages[0].source.as_of);
+    expect(continued).toMatchObject({ ok: true, field: 'output', next_offset: null });
+    expect(await readEvent(tools, events[2].ref)).toEqual({ ok: false, reason: 'event_changed' });
+  });
+
+  it('never attributes a duplicate command to another action after deletion, insertion, replacement, or mutation', async () => {
+    const duplicate = (id: string, output = '1 fail') => message(id, 'assistant', [
+      { type: 'tool', tool: 'bash', callID: `call-${id}`, state: { status: 'completed', input: { command: 'bun test' }, output } },
+    ]);
+    const readWith = (source: unknown[], ref: string) => readEvent(toolsFor(clientFor(source)), ref);
+    const indexWith = async (source: unknown[]) => (await indexPages(toolsFor(clientFor(source)))).pages[0];
+    const nativeRefs = (await indexWith([duplicate('first'), duplicate('second')])).events.map((event: any) => event.ref);
+
+    expect(await readWith([duplicate('second')], nativeRefs[0])).toEqual({ ok: false, reason: 'event_not_found' });
+    expect(await readWith([duplicate('second')], nativeRefs[1])).toMatchObject({ ok: true, event: { seq: 1, part_id: 'second-part-0', call_id: 'call-second' } });
+    expect(await readWith([duplicate('first', '0 fail'), duplicate('second')], nativeRefs[0])).toEqual({ ok: false, reason: 'event_changed' });
+    expect(await readWith([duplicate('first', '0 fail'), duplicate('second')], nativeRefs[1])).toMatchObject({ ok: true, event: { seq: 2, part_id: 'second-part-0' } });
+    expect(await readWith([duplicate('second'), duplicate('first'), duplicate('third')], nativeRefs[1])).toMatchObject({ ok: true, event: { seq: 1, part_id: 'second-part-0' } });
+
+    // Without native IDs, byte-identical actions cannot be told apart, so none of them gets a ref.
+    const bashPart = (output = '1 fail') => ({ type: 'tool', tool: 'bash', state: { status: 'completed', input: { command: 'bun test' }, output } });
+    const bare = (output = '1 fail') => bareMessage([bashPart(output)]);
+    const failed = () => ({ info: { role: 'assistant', time: { created: 1 }, error: { name: 'ProviderError', message: 'overloaded' } }, parts: [] });
+    for (const ambiguous of [[bare(), bare()], [bareMessage([bashPart(), bashPart()])], [failed(), failed()]]) {
+      const page = await indexWith(ambiguous);
+      expect(page.events.map((event: any) => event.identity)).toEqual(['ambiguous', 'ambiguous']);
+      expect(page.events.some((event: any) => 'ref' in event)).toBe(false);
+      expect(page.coverage.limitations).toEqual(['positional_identity']);
+    }
+
+    // A positional ref names one event of an unchanged eligible source; any source change fails closed.
+    const distinct = [bare('1 fail'), bare('0 fail')];
+    const positional = (await indexWith(distinct)).events;
+    expect(positional.map((event: any) => event.identity)).toEqual(['positional', 'positional']);
+    expect(await readWith(distinct, positional[1].ref)).toMatchObject({ ok: true, event: { seq: 2, identity: 'positional', fields: { output: { value: '0 fail' } } } });
+    for (const changed of [
+      [bare('0 fail')],
+      [bare('0 fail'), bare('1 fail')],
+      [bare('1 fail'), bare('0 fail'), bare('1 fail')],
+      [bareMessage([{ type: 'text', text: 'inserted' }]), ...distinct],
+      [bare('1 fail'), bare('2 fail')],
+    ]) {
+      for (const event of positional) expect(await readWith(changed, event.ref)).toEqual({ ok: false, reason: 'source_changed' });
+    }
+
+    // Deleting one of two identical actions and appending an identical one leaves the same eligible source;
+    // a forged selector for either copy still fails closed instead of choosing one.
+    const replaced = [bare(), bare()];
+    const [, , , guard] = decodeToken((await indexWith([bare(), bare('0 fail')])).events[0].ref) as unknown[];
+    const forged = token([3, 'p', 1, guard, (await indexWith(replaced)).source.as_of]);
+    expect(await readWith(replaced, forged)).toEqual({ ok: false, reason: 'identity_unavailable' });
+  });
+
+  it.each(['partial', 'duplicated'])('rejects positional reads after recorded %s IDs change with the same fields', async (identity) => {
+    const sourceFor = (id: string, partID = 'shared-part') => identity === 'partial'
+      ? [{ info: { id, role: 'assistant' }, parts: [{ type: 'text', text: 'unchanged' }] }]
+      : ['first', 'second'].map((output) => message(id, 'assistant', [
+        { id: partID, type: 'tool', tool: 'bash', state: { status: 'completed', input: { command: 'bun test' }, output } },
+      ]));
+    const before = await execute(toolsFor(clientFor(sourceFor('old-message'))), 'hive_task_trace', { task_id: 'child' });
+    const replacement = sourceFor('new-message');
+    const after = await execute(toolsFor(clientFor(replacement)), 'hive_task_trace', { task_id: 'child' });
+
+    expect(before.events.every((event: any) => event.identity === 'positional')).toBe(true);
+    expect(after.source.as_of).not.toBe(before.source.as_of);
+    for (const event of before.events) {
+      expect(await readEvent(toolsFor(clientFor(replacement)), event.ref)).toEqual({ ok: false, reason: 'source_changed' });
+    }
+    if (identity === 'partial') {
+      const partOnly = (id: string) => [bareMessage([{ id, type: 'text', text: 'unchanged' }])];
+      const original = await execute(toolsFor(clientFor(partOnly('old-part'))), 'hive_task_trace', { task_id: 'child' });
+      expect(await readEvent(toolsFor(clientFor(partOnly('new-part'))), original.events[0].ref)).toEqual({ ok: false, reason: 'source_changed' });
+    } else {
+      const unique = await execute(toolsFor(clientFor(sourceFor('old-message').slice(0, 1))), 'hive_task_trace', { task_id: 'child' });
+      expect(await readEvent(toolsFor(clientFor(sourceFor('old-message'))), unique.events[0].ref)).toEqual({ ok: false, reason: 'event_ambiguous' });
+      for (const changed of [sourceFor('old-message', 'new-part'), sourceFor('new-message', 'new-part')]) {
+        for (const event of before.events) {
+          expect(await readEvent(toolsFor(clientFor(changed)), event.ref)).toEqual({ ok: false, reason: 'source_changed' });
+        }
+      }
+    }
+  });
+
+  it('continues pagination across appends and requires a restart after earlier source changes', async () => {
+    const text = (index: number) => message(`m${index}`, 'assistant', [{ type: 'text', text: `${index}:${'x'.repeat(300)}` }]);
+    const source = Array.from({ length: 150 }, (_, index) => text(index));
+    const first = await execute(toolsFor(clientFor(source)), 'hive_task_trace', { task_id: 'child' });
+    const cursor = first.coverage.next_cursor;
+    const continueWith = (messages: unknown[]) => execute(toolsFor(clientFor(messages)), 'hive_task_trace', { task_id: 'child', cursor });
+
+    expect(typeof cursor).toBe('string');
+    const appendedTools = toolsFor(clientFor([...source, text(150), text(151)]));
+    const pages = [first];
+    for (let next = cursor; next;) {
+      const page = await execute(appendedTools, 'hive_task_trace', { task_id: 'child', cursor: next });
+      pages.push(page);
+      next = page.coverage.next_cursor;
+    }
+    expect(pages[1].coverage.from_seq).toBe(first.coverage.to_seq + 1);
+    expect(pages.flatMap((page) => page.events.map((event: any) => event.seq))).toEqual(sourceSteps(1, 152));
+    expect(pages.at(-1).coverage).toMatchObject({ complete: true, events: 152 });
+
+    expect((await continueWith(source.map((entry, index) => index === 149 ? text(999) : entry))).ok).toBe(true);
+    for (const changed of [[text(999), ...source.slice(1)], source.slice(1), [text(999), ...source]]) {
+      expect(await continueWith(changed)).toEqual({ ok: false, reason: 'cursor_stale' });
+    }
+  });
+
+  it('continues a cursor over events without native identity only while the whole eligible source is unchanged', async () => {
+    const bare = (label = 'same') => bareMessage([{ type: 'text', text: `${label}:${'x'.repeat(300)}` }]);
+    const source = Array.from({ length: 150 }, () => bare());
+    const { pages, events } = await indexPages(toolsFor(clientFor(source)));
+    const cursor = pages[0].coverage.next_cursor;
+    const continueWith = (messages: unknown[]) => execute(toolsFor(clientFor(messages)), 'hive_task_trace', { task_id: 'child', cursor });
+
+    expect(pages.length).toBeGreaterThan(1);
+    expect(events.map((event: any) => event.seq)).toEqual(sourceSteps(1, 150));
+    expect(events.every((event: any) => event.identity === 'ambiguous')).toBe(true);
+    expect(pages.at(-1).coverage).toMatchObject({ complete: true, events: 150 });
+    for (const changed of [
+      source.slice(1),
+      [...source.slice(1), bare('replacement')],
+      [...source, bare()],
+      [bare('changed'), ...source.slice(1)],
+    ]) {
+      expect(await continueWith(changed)).toEqual({ ok: false, reason: 'cursor_stale' });
+    }
+
+    const partial = Array.from({ length: 150 }, (_, index) => ({ ...bare(`${index}`), info: { id: `m${index}`, role: 'assistant' } }));
+    const first = await execute(toolsFor(clientFor(partial)), 'hive_task_trace', { task_id: 'child' });
+    expect(typeof first.coverage.next_cursor).toBe('string');
+    const replaced = [{ ...partial[0], info: { id: 'replacement', role: 'assistant' } }, ...partial.slice(1)];
+    expect(await execute(toolsFor(clientFor(replaced)), 'hive_task_trace', { task_id: 'child', cursor: first.coverage.next_cursor })).toEqual({ ok: false, reason: 'cursor_stale' });
+
+    const mixed = [bare('early'), ...Array.from({ length: 149 }, (_, index) => message(`native${index}`, 'assistant', [{ type: 'text', text: `${index}:${'x'.repeat(300)}` }]))];
+    const mixedFirst = await execute(toolsFor(clientFor(mixed)), 'hive_task_trace', { task_id: 'child' });
+    expect(mixedFirst.events[0].identity).toBe('positional');
+    expect(decodeToken(mixedFirst.events.at(-1).ref)[1]).toBe('n');
+    expect(typeof mixedFirst.coverage.next_cursor).toBe('string');
+    expect(await execute(toolsFor(clientFor([...mixed, message('appended', 'assistant', [{ type: 'text', text: 'later' }])])), 'hive_task_trace', { task_id: 'child', cursor: mixedFirst.coverage.next_cursor })).toEqual({ ok: false, reason: 'cursor_stale' });
+  });
+
+  it('keeps reasoning out of events, refs, cursors, and read errors while reporting reasoning metadata', async () => {
+    const sentinel = 'REASONING_SENTINEL';
+    const source = [
+      message('instruction', 'user', [{ type: 'text', text: 'Go.' }]),
+      message('work', 'assistant', [
+        { type: 'reasoning', id: `${sentinel}-part`, text: `${sentinel} plaintext`, tokens: 5 },
+        { type: 'reasoning', id: `${sentinel}-opaque`, metadata: { encrypted: sentinel } },
+        { type: 'text', text: 'visible' },
+      ]),
+      ...Array.from({ length: 120 }, (_, index) => message(`pad${index}`, 'assistant', [{ type: 'text', text: 'y'.repeat(300) }])),
+    ];
+    const tools = toolsFor(clientFor(source));
+    const { pages, serialized, events } = await indexPages(tools);
+    const reads = [await readEvent(tools, events[0].ref), await readEvent(tools, events[1].ref)];
+    const forged = [
+      await readEvent(tools, token([3, 'n', 'work', `${sentinel}-part`, 'a'.repeat(43)])),
+      await readEvent(tools, token([3, 'p', 2, 'a'.repeat(43), 'a'.repeat(43)])),
+    ];
+    const tokens = [
+      ...events.map((event: any) => decodeToken(event.ref)),
+      ...pages.flatMap((page) => page.coverage.next_cursor ? [decodeToken(page.coverage.next_cursor)] : []),
+    ];
+
+    expect(pages.length).toBeGreaterThan(1);
+    expect(events[1]).toMatchObject({ seq: 2, actor: 'assistant', text: 'visible' });
+    expect(forged).toEqual([{ ok: false, reason: 'event_not_found' }, { ok: false, reason: 'source_changed' }]);
+    expect(pages[0].reasoning).toMatchObject({ availability: 'mixed', parts: 2, opaque_parts: 1 });
+    expect(pages[0].source.reasoning_parts).toBe(2);
+    expect(JSON.stringify([serialized, reads, tokens, forged])).not.toContain(sentinel);
+  });
+
+  it('reauthorizes and applies one runtime-visible target policy to index pages, event reads, and field chunks', async () => {
+    const large = 'x'.repeat(9_000);
+    for (const [parentID, relationship] of [
+      ['parent', 'direct_child'],
+      ['other-parent', 'other_session'],
+      [null, 'other_session'],
+    ] as const) {
+      const setup = clientFor([message('m1', 'assistant', [{ type: 'text', text: large }])], { parentID });
+      const tools = toolsFor(setup);
+      const { pages, events } = await indexPages(tools);
+      const read = await readEvent(tools, events[0].ref);
+      const { text } = await readField(tools, events[0].ref, 'text', read.event.fields.text);
+
+      expect(pages[0].target).toEqual({ id: 'child', relationship });
+      expect(text).toBe(large);
+      expect(setup.calls.filter((call) => call.method === 'get')).toHaveLength(3);
+      expect(setup.calls.filter((call) => call.method === 'messages')).toHaveLength(3);
+    }
+  });
+
+  it('returns opaque unavailability for unresolved targets before messages or status reads', async () => {
+    const locator = token([2, 0, 0, 1, 1, 'a'.repeat(43)]);
+    const cursor = token([3, 'c', 1, 'a'.repeat(43)]);
+    const event = token([3, 'n', 'm1', 'p1', 'a'.repeat(43)]);
+    const cases = [
+      { getResponse: { data: undefined } },
+      { getResponse: { error: 'not found' } },
+      { getResponse: { data: [] } },
+      { getResponse: { data: { id: 'different', parentID: 'parent' } } },
+      { getResponse: { data: { id: 'child', parentID: 42 } } },
+      { getError: new Error('api unavailable') },
+    ];
+    for (const options of cases) {
+      const setup = clientFor([], options);
+      const tools = toolsFor(setup);
+      for (const [name, args] of [
+        ['hive_task_trace', {}],
+        ['hive_task_trace', { cursor }],
+        ['hive_task_trace_content', { content_id: locator }],
+        ['hive_task_trace_content', { event }],
+        ['hive_task_trace_content', { event, field: 'text', offset: 0 }],
+      ] as const) {
+        expect(await execute(tools, name, { task_id: 'child', ...args })).toEqual({ ok: false, reason: 'unavailable_or_unauthorized' });
+      }
+      expect(setup.calls.filter((call) => call.method === 'messages')).toHaveLength(0);
+      expect(setup.calls.filter((call) => call.method === 'status')).toHaveLength(0);
+    }
+  });
+
+  it('rejects invalid or mixed selectors and cursors before authorization', async () => {
+    const setup = clientFor([message('m1', 'assistant', [
+      { type: 'text', text: 'visible' },
+      { type: 'tool', tool: 'bash', state: { status: 'completed', input: { command: 'true' }, output: '' } },
+    ])]);
+    const tools = toolsFor(setup);
+    const [textRef, toolRef] = (await indexPages(tools)).events.map((event: any) => event.ref);
+    const locator = token([2, 0, 0, 1, 7, 'a'.repeat(43)]);
+    const cursor = token([3, 'c', 1, 'a'.repeat(43)]);
+    const before = setup.calls.length;
+
+    for (const args of [{}, { content_id: locator, event: textRef }, { field: 'text' }, { content_id: locator, field: 'text' }, { event: textRef, offset: 0 }]) {
+      expect(await execute(tools, 'hive_task_trace_content', { task_id: 'child', ...args })).toEqual({ ok: false, reason: 'invalid_selector' });
+    }
+    expect(await readEvent(tools, 'not-a-ref')).toEqual({ ok: false, reason: 'invalid_event' });
+    expect(await execute(tools, 'hive_task_trace_content', { task_id: 'child', event: textRef, field: 'bogus' })).toEqual({ ok: false, reason: 'invalid_field' });
+    expect(await execute(tools, 'hive_task_trace', { task_id: 'child', cursor: 'not-a-cursor' })).toEqual({ ok: false, reason: 'invalid_cursor' });
+    expect(await execute(tools, 'hive_task_trace', { task_id: 'child', cursor, recovery: true })).toEqual({ ok: false, reason: 'invalid_selector' });
+    expect(setup.calls.length).toBe(before);
+
+    expect(await execute(tools, 'hive_task_trace', { task_id: 'child', cursor })).toEqual({ ok: false, reason: 'cursor_stale' });
+    expect(await execute(tools, 'hive_task_trace_content', { task_id: 'child', event: textRef, field: 'output' })).toEqual({ ok: false, reason: 'invalid_field' });
+    expect(await execute(tools, 'hive_task_trace_content', { task_id: 'child', event: toolRef, field: 'error' })).toEqual({ ok: false, reason: 'field_absent' });
+    expect(await execute(tools, 'hive_task_trace_content', { task_id: 'child', event: toolRef, field: 'output' })).toMatchObject({
+      ok: true, field: 'output', format: 'text', content: '', offset: 0, next_offset: null, bytes: 0,
+    });
+  });
+});
+
+describe('task trace semantic recovery', () => {
   it('returns semantic recovery unavailable for active and invalid or unavailable status maps without model sessions', async () => {
     const source = realisticTrace();
     const active = clientFor(source, { status: { child: { type: 'busy' } } });
@@ -445,125 +918,6 @@ describe('compact task trace v2', () => {
       untrusted: true,
     });
     expect(setup.calls.filter((call) => call.method === 'create').length).toBeGreaterThan(0);
-  });
-
-  it('externalizes realistic large values toward the soft target without losing steps', async () => {
-    const source = Array.from({ length: 59 }, (_, index) => message(`m${index}`, index === 0 ? 'user' : 'assistant', [
-      { type: 'step-start' },
-      { type: 'text', text: `${index}:${'x'.repeat(700)}` },
-      { type: 'tool', tool: 'bash', state: { status: 'completed', input: { command: 'x'.repeat(500) }, output: 'y'.repeat(500) } },
-      { type: 'step-finish' },
-    ]));
-    const serialized = await executeRaw(toolsFor(clientFor(source)), 'hive_task_trace', { task_id: 'child' });
-    const result = JSON.parse(serialized);
-
-    expect(result.timeline).toHaveLength(59);
-    expect(Buffer.byteLength(JSON.stringify(source))).toBeGreaterThan(90 * 1024);
-    expect(Buffer.byteLength(serialized)).toBeLessThanOrEqual(24_576);
-    expect(result.render.actual_bytes).toBeLessThanOrEqual(result.render.soft_target_bytes);
-    expect(result.render.externalized_count).toBeGreaterThan(100);
-  });
-
-  it('externalizes instruction and latest text only at their timeline positions', async () => {
-    const source = [
-      message('instruction', 'user', [{ type: 'text', text: `instruction:${'i'.repeat(600)}` }]),
-      message('final', 'assistant', [{ type: 'text', text: `final:${'f'.repeat(600)}` }]),
-    ];
-    const result = await execute(toolsFor(clientFor(source)), 'hive_task_trace', { task_id: 'child' });
-
-    expect(result.instruction).toEqual({ step: 1, text: 1 });
-    expect(result.latest.final).toEqual({ step: 2, text: 1 });
-    expect(result.timeline.map((step: any) => step.text)).toEqual([[{ r: 1 }], [{ r: 2 }]]);
-    expect(result.content_dictionary).toHaveLength(2);
-    expect(result.render.externalized_count).toBe(2);
-  });
-
-  it('keeps render bytes exact at the soft target and actual-byte digit transitions', async () => {
-    const renderNear = async (target: number) => {
-      const probeTool = 'x';
-      const probe = await executeRaw(
-        toolsFor(clientFor([message('m1', 'assistant', [{ type: 'tool', tool: probeTool, state: { status: 'completed' } }])])),
-        'hive_task_trace',
-        { task_id: 'child' },
-      );
-      const estimatedLength = Math.max(1, target - Buffer.byteLength(probe) + probeTool.length);
-      const samples: Array<{ bytes: number; result: any }> = [];
-      for (let length = Math.max(1, estimatedLength - 24); length <= estimatedLength + 24; length += 1) {
-        const serialized = await executeRaw(
-          toolsFor(clientFor([message('m1', 'assistant', [{ type: 'tool', tool: 'x'.repeat(length), state: { status: 'completed' } }])])),
-          'hive_task_trace',
-          { task_id: 'child' },
-        );
-        samples.push({ bytes: Buffer.byteLength(serialized), result: JSON.parse(serialized) });
-      }
-      return samples;
-    };
-
-    const softTargetSamples = await renderNear(24_576);
-    const exactSoftTarget = softTargetSamples.find(({ bytes }) => bytes === 24_576);
-    expect(exactSoftTarget).toBeDefined();
-    for (const { bytes, result } of softTargetSamples) {
-      expect(result.render).toEqual({
-        actual_bytes: bytes,
-        soft_target_bytes: 24_576,
-        externalized_count: 0,
-      });
-    }
-
-    const digitTransitionSamples = await renderNear(10_000);
-    expect(digitTransitionSamples.some(({ bytes }) => bytes < 10_000)).toBe(true);
-    expect(digitTransitionSamples.some(({ bytes }) => bytes >= 10_000)).toBe(true);
-    for (const { bytes, result } of digitTransitionSamples) {
-      expect(result.render.actual_bytes).toBe(bytes);
-    }
-  });
-
-  it('returns pathological reports complete and ok when mandatory structure exceeds the target', async () => {
-    const source = Array.from({ length: 900 }, (_, index) => message(`m${index}`, 'assistant', [
-      { type: 'step-start' }, { type: `unknown-${index}` }, { type: 'step-finish' },
-    ]));
-    const serialized = await executeRaw(toolsFor(clientFor(source)), 'hive_task_trace', { task_id: 'child' });
-    const result = JSON.parse(serialized);
-
-    expect(result.ok).toBe(true);
-    expect(result.timeline).toHaveLength(900);
-    expect(result.render.actual_bytes).toBeGreaterThan(result.render.soft_target_bytes);
-    expect(result.render.actual_bytes).toBe(Buffer.byteLength(serialized));
-  });
-
-  it('does not externalize short values when their locator dictionary makes the report larger', async () => {
-    const source = Array.from({ length: 900 }, (_, index) => message(`m${index}`, 'assistant', [
-      { type: 'text', text: `${index}:${'x'.repeat(80)}` },
-    ]));
-    const serialized = await executeRaw(toolsFor(clientFor(source)), 'hive_task_trace', { task_id: 'child' });
-    const result = JSON.parse(serialized);
-
-    expect(result.render.actual_bytes).toBeGreaterThan(result.render.soft_target_bytes);
-    expect(result.render.externalized_count).toBe(0);
-    expect(result.content_dictionary).toEqual([]);
-    expect(result.timeline).toHaveLength(900);
-  });
-
-  it('externalizes remaining candidates when final render metadata alone exceeds the soft target', async () => {
-    const candidate = 'c'.repeat(487);
-    const source = [message('u', 'user', [{ type: 'text', text: 'go' }]), message('a0', 'assistant', [{ type: 'text', text: candidate }])];
-    for (let index = 0; index < 344; index += 1) {
-      source.push(message(`p${index}`, 'assistant', [
-        { type: 'step-start' },
-        { type: `unk${index}` },
-        { type: 'step-finish' },
-      ]));
-    }
-    const serialized = await executeRaw(toolsFor(clientFor(source)), 'hive_task_trace', { task_id: 'child' });
-    const result = JSON.parse(serialized);
-
-    expect(serialized.includes(candidate)).toBe(false);
-    expect(result.render.externalized_count).toBeGreaterThanOrEqual(1);
-    expect(result.content_dictionary).toHaveLength(result.render.externalized_count);
-    expect(Buffer.byteLength(serialized)).toBeLessThanOrEqual(24_576);
-    expect(result.render.actual_bytes).toBeLessThanOrEqual(result.render.soft_target_bytes);
-    expect(result.render.actual_bytes).toBe(Buffer.byteLength(serialized));
-    expect(result.timeline).toHaveLength(346);
   });
 
   it('maps all 59 source steps into meaningful coverage-gated phases and returns only the semantic projection', async () => {
@@ -998,7 +1352,7 @@ describe('compact task trace v2', () => {
       .find((request) => request.kind === 'reduce');
     const reducerText = JSON.stringify(reducer);
 
-    expect(forensic.latest.final).toEqual({ step: 1, text: 1 });
+    expect(forensic.context.final).toBeNull();
     expect(result.final_response).toBeNull();
     expect(result.errors[0].error).toMatchObject({ content_id: expect.any(String), bytes: Buffer.byteLength(JSON.stringify(error)), sha256: expect.any(String) });
     expect(reducer.cards.find((card: any) => card.step === 2).source).toBe('fallback');
@@ -1766,15 +2120,18 @@ describe('compact task trace v2', () => {
     }
   });
 
-  it('reauthorizes v2 content, detects staleness, and returns UTF-8-safe 8 KiB chunks', async () => {
+  it('keeps recovery v2 content IDs readable with reauthorization, staleness checks, and UTF-8-safe 8 KiB chunks', async () => {
     const large = `start-${'🙂'.repeat(5000)}-end`;
-    const source = [message('m1', 'assistant', [{ type: 'text', text: large }, { type: 'reasoning', text: 'private' }])];
+    const source = [
+      message('m1', 'user', [{ type: 'text', text: large }, { type: 'reasoning', text: 'private' }]),
+      message('m2', 'assistant', [{ type: 'text', text: 'done' }]),
+    ];
     const setup = clientFor(source, {
-      mutateMessages: (reads) => reads <= 3 ? source : [message('m1', 'assistant', [{ type: 'text', text: `${large}changed` }])],
+      mutateMessages: (reads) => reads <= 4 ? source : [message('m1', 'user', [{ type: 'text', text: `${large}changed` }])],
     });
     const tools = toolsFor(setup);
-    const trace = await execute(tools, 'hive_task_trace', { task_id: 'child' });
-    const contentID = trace.content_dictionary[trace.timeline[0].text[0].r - 1];
+    const recovered = await execute(tools, 'hive_task_trace', { task_id: 'child', recovery: true });
+    const contentID = recovered.task_instruction.text.content_id;
     const first = await execute(tools, 'hive_task_trace_content', { task_id: 'child', content_id: contentID });
     const second = await execute(tools, 'hive_task_trace_content', { task_id: 'child', content_id: contentID, offset: first.next_offset });
     const stale = await execute(tools, 'hive_task_trace_content', { task_id: 'child', content_id: contentID });
@@ -1785,7 +2142,7 @@ describe('compact task trace v2', () => {
     expect(second.offset).toBe(first.next_offset);
     expect(second.content).not.toContain('�');
     expect(stale).toEqual({ ok: false, reason: 'stale_or_not_found' });
-    expect(setup.calls.filter((call) => call.method === 'messages')).toHaveLength(4);
+    expect(setup.calls.filter((call) => call.method === 'messages')).toHaveLength(5);
     expect(setup.calls.filter((call) => call.method === 'get')).toHaveLength(4);
 
     const decoded = JSON.parse(Buffer.from(contentID, 'base64url').toString('utf8'));
@@ -1793,60 +2150,23 @@ describe('compact task trace v2', () => {
     const reasoningLocator = Buffer.from(JSON.stringify([2, 0, 1, 7, 7, 'a'.repeat(43)])).toString('base64url');
     expect(await execute(tools, 'hive_task_trace_content', { task_id: 'child', content_id: reasoningLocator })).toEqual({ ok: false, reason: 'invalid_content_id' });
   });
-
-  it('uses the same runtime-visible target policy for trace and content reads', async () => {
-    const large = 'x'.repeat(600);
-    for (const [parentID, relationship] of [
-      ['parent', 'direct_child'],
-      ['other-parent', 'other_session'],
-      [null, 'other_session'],
-    ] as const) {
-      const setup = clientFor([message('m1', 'assistant', [{ type: 'text', text: large }])], { parentID });
-      const tools = toolsFor(setup);
-      const trace = await execute(tools, 'hive_task_trace', { task_id: 'child' });
-      const contentID = trace.content_dictionary[trace.timeline[0].text[0].r - 1];
-      const content = await execute(tools, 'hive_task_trace_content', { task_id: 'child', content_id: contentID });
-
-      expect(trace.target).toEqual({ id: 'child', relationship });
-      expect(content).toMatchObject({ ok: true, task_id: 'child', content: large });
-    }
-  });
-
-  it('returns opaque unavailability for unresolved targets before messages or status reads', async () => {
-    const locator = Buffer.from(JSON.stringify([2, 0, 0, 1, 1, 'a'.repeat(43)])).toString('base64url');
-    const cases = [
-      { getResponse: { data: undefined } },
-      { getResponse: { error: 'not found' } },
-      { getResponse: { data: [] } },
-      { getResponse: { data: { id: 'different', parentID: 'parent' } } },
-      { getResponse: { data: { id: 'child', parentID: 42 } } },
-      { getError: new Error('api unavailable') },
-    ];
-    for (const options of cases) {
-      const setup = clientFor([], options);
-      const tools = toolsFor(setup);
-      expect(await execute(tools, 'hive_task_trace', { task_id: 'child' })).toEqual({ ok: false, reason: 'unavailable_or_unauthorized' });
-      expect(await execute(tools, 'hive_task_trace_content', { task_id: 'child', content_id: locator })).toEqual({ ok: false, reason: 'unavailable_or_unauthorized' });
-      expect(setup.calls.filter((call) => call.method === 'messages')).toHaveLength(0);
-      expect(setup.calls.filter((call) => call.method === 'status')).toHaveLength(0);
-    }
-  });
 });
 
 describe('task trace lifecycle hints', () => {
-  it('describes concrete failure triggers and forensic fields', () => {
-    const description = toolsFor(clientFor([])).hive_task_trace.description;
+  it('describes concrete failure triggers and the paged forensic index', () => {
+    const tools = toolsFor(clientFor([]));
+    const description = tools.hive_task_trace.description;
     expect(description).toContain('failed');
     expect(description).toContain('blocked');
     expect(description).toContain('timed out');
     expect(description).toContain('cancelled');
     expect(description).toContain('empty');
     expect(description).toContain('unclear');
-    expect(description).toContain('structured errors');
-    expect(description).toContain('changed files');
-    expect(description).toContain('tool activity');
-    expect(description).toContain('latest/final response');
+    expect(description).toContain('paged forensic v3 index');
+    expect(description).toContain('cursor');
     expect(description).toContain('read-only');
+    expect(tools.hive_task_trace_content.description).toContain('guarded event');
+    expect(tools.hive_task_trace_content.description).toContain('v2 content ID');
     expect(description).toContain('visible to the connected runtime');
     expect(description).toContain('finished turn');
   });
@@ -1857,7 +2177,7 @@ describe('task trace lifecycle hints', () => {
     appendTaskTraceHint({ tool: 'task' }, output);
     expect(output.output).toContain('hive_task_trace({ task_id: "child" })');
     expect(output.output).toContain('failed, blocked, timed out');
-    expect(output.output).toContain('errors, changed_files, tool activity');
+    expect(output.output).toContain('Read lifecycle, context, and the chronological event index first; follow coverage.next_cursor');
     expect(output.output).toContain('Every returned task result is terminal; launch a fresh child session for follow-up');
     expect(output.output).toContain('Pass task_id only when an explicit operator instruction or an explicit runtime-owned interruption-recovery mechanism authorizes continuation');
     expect(output.output).toContain('otherwise launch fresh');
