@@ -2,7 +2,7 @@
   "name": "vscode-arkive",
   "displayName": "Arkive",
   "description": "View and review Agent Hive .hive workspaces",
-  "version": "2.5.0",
+  "version": "3.0.0",
   "publisher": "arkive",
   "license": "MIT WITH Commons-Clause",
   "icon": "icon.png",
@@ -274,6 +274,6 @@
     "typescript": "^5.0.0"
   },
   "dependencies": {
-    "hive-core": "2.5.0"
+    "hive-core": "3.0.0"
   }
 }

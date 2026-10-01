@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-10-01
+
+### Breaking
+
+- OpenCode >= 1.18.30 is required, up from >= 1.14.48 in v2.5.0. Upgrade the OpenCode host before updating the plugin.
+- Managed execution and private review tools are retired in favor of direct worktree lifecycle tools, native task dispatch, worker-owned Git commits, and explicit task reports. See the removed tools and upgrade instructions below.
+- Worktree merges require the inspected `expectedTarget` or complete `expectedTargets` destination identity as well as the exact source commit pin.
+- Docker sandboxing and bundled research MCP integrations are removed; existing global configuration must omit their retired keys.
+- Non-recovery `hive_task_trace` now returns a paged forensic v3 index. Follow `coverage.next_cursor` and use `hive_task_trace_content` event selectors for guarded source reads.
+- `hive_git_snapshot` always returns a `hive-git-snapshot/v1` envelope, replacing the old bare or composite result. Check `status === 'ready'` before reading `snapshots[n].snapshot`; failed captures return `failures`.
+
 ### Added
 
 - Packaged `code-design-principles`, `how`, and `why` skills add conditional construction guidance, current-code explanation, and historical rationale investigation with upstream provenance.
@@ -38,6 +49,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed `hive_worktree_start`, `hive_worktree_commit`, `hive_worktree_discard`, `hive_merge`, `hive_adhoc_worktree_commit`, `hive_adhoc_merge`, and `hive_adhoc_cleanup`. Private review tools were also removed: `hive_review_evidence_resolve`, `hive_review_workspace_create`, `hive_review_workspace_claim`, `hive_review_workspace_inspect`, `hive_review_workspace_cleanup`, and `hive_vulnerability_compare_report_read`.
 - oc-arkive no longer bundles or configures research MCP integrations or the provider-specific structural-search skill. Configure research tools through OpenCode and its other installed integrations.
 - Removed the opt-in Docker sandbox (`"sandbox": "docker"`), which ran bash commands with a Hive worktree `workdir` inside a container, along with the `HOST:` command prefix and the bundled `docker-mastery` skill.
+- Removed the deprecated packaged skills `code-reviewer`, `verification-before-completion`, and `verification-reviewer`. Use the `code-reviewer` subagent for implementation reviews and the `verification` skill for completion checks and independent verification reports.
 
 ### Fixed
 
@@ -51,10 +63,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Upgrade
 
-- Before upgrading, remove `disableMcps`, `sandbox`, `dockerImage`, and `persistentContainers` from `~/.config/opencode/agent_hive.json`. Strict validation rejects those removed keys. Versions up to 2.5.0 wrote `disableMcps` and `sandbox` when they created the file. While any of those keys remain, Hive ignores the whole global configuration, including agent model overrides and custom agents. In projects without `.hive/repositories.json` or a generated `workspace.json`, repository and worktree tools also fail with an invalid-config error that names the file but not the key.
+- Before upgrading, remove `disableMcps`, `sandbox`, `dockerImage`, and `persistentContainers` from `~/.config/opencode/agent_hive.json`. Strict validation rejects those removed keys. Versions up to 2.5.0 wrote `disableMcps` and `sandbox` when they created the file. While any of those keys remain, Hive ignores the whole global configuration, including agent model overrides and custom agents. In projects without `.hive/repositories.json` or a generated `workspace.json`, including ordinary single-root repositories, repository and worktree tools also fail with an invalid-config error that names the file but not the key.
 - Rename custom agent IDs containing `*` or `?` and update their references; the config schema now rejects those characters.
-- Update scripts and copied agent instructions: replace `hive_worktree_start` with `hive_worktree_create` followed by native `task()` dispatch. `hive_worktree_create` now creates a task worktree without changing task state; in 2.5.0 it launched blocked-task continuation. Replace `hive_worktree_commit` and `hive_adhoc_worktree_commit` with a worker commit followed by `hive_worktree_merge` or `hive_adhoc_worktree_merge`, passing the worker's exact `sourceCommit` (or complete `sourceCommits` map) and the inspected `expectedTarget` (or complete `expectedTargets` map). Use `hive_task_update` for task status and reports, and `/dash-review` or `/vuln-review` for reviews.
-- Read context with `hive_context_read` before replacing, appending, or archiving it. Pass `expectedRevision` and `expectedContentHash` for replacement or append; archive requires `expectedRevision` and per-name `expectedContentHashes`.
+- Update scripts and copied agent instructions: replace `hive_worktree_start` with `hive_worktree_create` followed by native `task()` dispatch. Create no longer changes task state or accepts `continueFrom`/`decision`. To continue a blocked task, use `hive_task_update` with an explicit status leaving blocked, then dispatch a fresh native `task()` with the operator decision in its prompt. `hive_adhoc_worktree_create` no longer accepts `autoSpawnWorker`/`workerInstructions` or prepares a worker launch; explicitly dispatch native `task()` after creating the worktree.
+- Replace `hive_worktree_commit` and `hive_adhoc_worktree_commit` with worker-owned Git commits. Replace `hive_merge` with `hive_worktree_merge`, `hive_adhoc_merge` with `hive_adhoc_worktree_merge`, and `hive_adhoc_cleanup` with `hive_adhoc_worktree_cleanup`. Pass the worker's exact `sourceCommit` (or complete `sourceCommits` map) and the inspected `expectedTarget` (or complete `expectedTargets` map) to merge. Replace `hive_worktree_discard` with `hive_worktree_cleanup({ discard: true })` only when intentionally discarding unintegrated work; use cleanup without `discard: true` after successful integration. Use `hive_task_update` for task status and reports, and `/dash-review` or `/vuln-review` for reviews.
+- Replace `verification-before-completion` and `verification-reviewer` in copied skill instructions and `autoLoadSkills` entries with `verification`. Use its Completion Gate Mode for completion checks and Verification Report Mode for independent verification. Remove `code-reviewer` skill loads and `autoLoadSkills` entries; dispatch the `code-reviewer` subagent for implementation reviews.
+- Read context with `hive_context_read` before replacing, appending, or archiving it. Map the returned `revision` to `expectedRevision` and `file.contentHash` to `expectedContentHash` for replacement or append; archive requires `expectedRevision` and per-name `expectedContentHashes`. Named reads default to 16 KiB chunks, but the hash covers the entire file. Follow `nextCursor` as `cursor` until `complete: true` and reconstruct the full document before whole-document replacement; writing only the first chunk would truncate it despite a valid hash.
 - Restart OpenCode after upgrade. Finish or abandon old live workers first. Remove stale copied user-authored workflow instructions yourself; Hive does not silently overwrite global settings. Old attempt and lease files are left unread; plans, tasks, context, reports, and workspace files remain readable.
 
 ## [2.5.0] - 2026-09-08
@@ -843,3 +857,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.8.2] - 2026-01-11
 
 - See the GitHub release/tag `v0.8.2` for details.
+
+[Unreleased]: https://github.com/imarshallwidjaja/agent-hive/compare/v3.0.0...HEAD
+[3.0.0]: https://github.com/imarshallwidjaja/agent-hive/compare/v2.5.0...v3.0.0
+[2.5.0]: https://github.com/imarshallwidjaja/agent-hive/releases/tag/v2.5.0
