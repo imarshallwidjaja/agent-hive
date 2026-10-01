@@ -9,7 +9,7 @@ export const COMMAND_BEHAVIOR: Record<HiveCommandKey, string> = {
 
   'hive-plan': `Create or revise one Hive plan from verified requirements and repository evidence. Preserve explicit non-goals and rejected alternatives. Make tasks independently executable with concrete dependencies, files, outcomes, and verification. Do not implement code.`,
 
-  'approve-sync-plan': `Read the current plan and comments, approve only when review issues are resolved, sync tasks, then read back status. Report exact blockers instead of continuing on partial state.`,
+  'approve-sync-plan': `Read the current plan and comments, approve only when review issues are resolved, sync tasks, then read back status. Suggest DAG-backed target task milestones and copy-paste run/continue prompts in Session Strategy. Report exact blockers instead of continuing on partial state.`,
 
   'start-execution': `Execute the approved plan through explicit tasks and ordinary native subagents. Create or inspect a task worktree when isolation is needed, put its returned path and source identity in the authored task prompt, and persist outcomes with hive_task_update. Verify before hive_worktree_merge and clean up explicitly. After every returned native task result, launch a fresh child session for follow-up and reuse the same Hive task/worktree where appropriate. Pass task_id only when an explicit operator instruction or runtime-owned interruption-recovery mechanism authorizes continuation. Every invocation receives the current route snapshot.`,
 

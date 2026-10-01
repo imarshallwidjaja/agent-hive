@@ -778,6 +778,56 @@ describe('skill content', () => {
     expect(skill!.template).toContain('Missing output or uncertain applicability means run the required check on the current target');
   });
 
+  it('owns milestone closure, resumption, and stopping semantics for canonical consumers', () => {
+    const executing = BUILTIN_SKILLS.find((entry) => entry.name === 'executing-plans')!.template;
+    expect(executing).toContain('hive_status({ feature })');
+    expect(executing).toContain('one unique task folder/title within that feature');
+    expect(executing).toContain('Ask for clarification if the feature, target, or any companion is ambiguous or missing');
+    expect(executing).toContain('A bare target request has no companions; never infer them from task numbers, readiness, or topic');
+    expect(executing).toContain('Only if all requested roots are already `done`');
+    expect(executing).toContain('an already-done target does not short-circuit unfinished companions');
+    expect(executing).toContain('milestone satisfied without dispatch');
+    expect(executing).toContain("union of each requested root's own stored `dependsOn` edges recursively, including each root");
+    expect(executing).toContain('Deduplicate roots and shared prerequisites');
+    expect(executing).toContain('Include companion prerequisites even when numbered beyond the target');
+    expect(executing).toContain('resolved implicit sequential shorthand');
+    expect(executing).toContain('never infer edges from numbering or follow reverse dependents');
+    expect(executing).toContain('Stop traversal at `done` tasks: their outgoing edges are historical');
+    expect(executing).toContain('Only `done` satisfies a dependency');
+    expect(executing).toContain('Cancelled or missing prerequisites are blockers');
+    expect(executing).toContain('`pending`, `in_progress`, `blocked`, `failed`, and `partial` are unfinished, not satisfied');
+    expect(executing).toContain('A cancelled requested root is a blocker');
+    expect(executing).toContain('Companions expand requested scope, not dependency edges');
+    expect(executing).toContain('Schedule only the combined unfinished closure by actual dependencies and existing ownership/resource rules');
+    expect(executing).toContain('Inspect live or uncertain workers before dispatch; do not launch overlapping replacements');
+    expect(executing).toContain('Exclude unrelated tasks and descendants unless the operator explicitly expands scope');
+    expect(executing).toContain('Re-read status between batches and on each new run/continue request');
+    expect(executing).toContain('recompute the union for all requested roots from updated stored edges each time, including approved and synced dependency amendments');
+    expect(executing).toContain('target AND every explicitly named companion verified, integrated where applicable, and marked `done`');
+    expect(executing).toContain('Wait for a slower independent companion even if the target finishes first');
+    expect(executing).toContain('applicable checks, required review, and cleanup completed');
+    expect(executing).toContain('call `hive_feature_complete` merely because the milestone was achieved while other tasks remain');
+    expect(executing).toContain('completed and remaining combined closure scope, other remaining feature tasks');
+    expect(executing).toContain('concrete continuation prompt');
+    expect(executing).toContain('When no unfinished feature tasks remain after achievement, emit `Run final verification for feature "<feature>" and complete it only after the required checks pass.` with the exact feature substituted');
+    expect(executing).toContain('Stop at the requested milestone and hand off final verification instead of executing it in that request');
+    expect(executing).toContain('Apply the primary prompt\'s existing full-feature verification/completion procedure');
+    expect(executing).toContain('including every `## Final Verification` obligation and deferred check, required review, and applicable cleanup');
+    expect(executing).toContain('Call `hive_feature_complete` only after the required checks pass');
+    expect(executing).toContain('milestone completion does not waive whole-feature final verification');
+    expect(executing).toContain('repeat only within its combined unfinished prerequisite closure until all requested roots are done');
+    expect(executing).toContain('For whole-feature execution, after all tasks complete');
+
+    const hiveTemplate = readRepoFile('packages/hive-core/templates/skills/hive.md');
+    const dispatch = BUILTIN_SKILLS.find((entry) => entry.name === 'dispatching-parallel-agents')!.template;
+    for (const consumer of [hiveTemplate, dispatch]) {
+      expect(consumer).toContain('run/continue a feature until a target task is complete/done');
+      expect(consumer).toContain('executing-plans');
+      expect(consumer).toContain('apply Target Task Milestones before');
+      expect(consumer).toContain('Explicit companion suffixes use the same procedure');
+    }
+  });
+
   it('routes accepted review work without promoting optional feedback to automatic fixes', () => {
     const executing = BUILTIN_SKILLS.find((entry) => entry.name === 'executing-plans')!.template;
     const adhoc = BUILTIN_SKILLS.find((entry) => entry.name === 'orchestrating-ad-hoc-work')!.template;

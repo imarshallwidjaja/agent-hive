@@ -596,6 +596,17 @@ describe('Primary agent subagent concurrency guidance', () => {
 });
 
 describe('Multi-plan feature routing guidance', () => {
+  it('routes run/continue target requests to the milestone execution owner in both modes', () => {
+    for (const [name, prompt] of [
+      ['Hive', QUEEN_BEE_PROMPT],
+      ['Swarm', SWARM_BEE_PROMPT],
+    ] as const) {
+      expect(prompt, name).toContain('When asked to run/continue a feature until a target task is complete/done');
+      expect(prompt, name).toContain('load the native skill "executing-plans" and apply Target Task Milestones before dispatch and on resumption');
+      expect(prompt, name).toContain('Explicit companion suffixes use the same procedure');
+      expect(prompt, name).toContain('retain existing review, verification, integration, and cleanup rules');
+    }
+  });
   it('uses one selected-before-detected route for omitted tools and child dispatch', () => {
     for (const [name, prompt] of [
       ['Hive', QUEEN_BEE_PROMPT],

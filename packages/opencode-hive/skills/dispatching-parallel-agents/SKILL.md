@@ -30,6 +30,8 @@ In feature-task mode, use `hive_status()` for dependencies and the runnable list
 
 When the operator gives an explicit direction (parallel, sequential, or a subset), follow it. Otherwise sequence from dependencies and disjoint worktrees. Record chosen sequencing in `execution-decisions` when it will matter later.
 
+When direction is run/continue a feature until a target task is complete/done, load `executing-plans` and apply Target Task Milestones before fan-out. Explicit companion suffixes use the same procedure. Its current-status combined prerequisite closure bounds eligible work; this skill's independence and ownership checks still govern dispatch within that scope.
+
 ## When to Use
 
 ```dot

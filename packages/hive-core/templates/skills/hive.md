@@ -298,6 +298,8 @@ If a dirty destination blocks merge, retain the committed worktree; either set `
 
 Dependencies guide sequencing; they are not a dispatch admission gate. When the operator gives an explicit direction (parallel, sequential, or a subset), follow it. Otherwise sequence from dependencies and disjoint worktrees.
 
+When asked to run/continue a feature until a target task is complete/done, load the native skill "executing-plans" and apply Target Task Milestones before dispatch and on resumption. Explicit companion suffixes use the same procedure. That procedure owns prerequisite closure, current-status scope, and the milestone stopping boundary; retain existing review, verification, integration, and cleanup rules.
+
 Independent tasks may be created and dispatched under one parent.
 
 ```

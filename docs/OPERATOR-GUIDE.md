@@ -157,6 +157,49 @@ After a correction, retain the original failure and verify the owning regression
 
 ## Tasks and reports
 
+### Session milestones
+
+After approval and sync, `/approve-sync-plan` produces a **Recommended Execution Order** table. Each row names the exact target task number/folder/title, any explicitly named independent companions needed for the stated approved plan outcome (or companions: none), expected observable behavior, a projected NEW unfinished task count, and the actual task folders counted. Companion folders/titles and their plan justification appear with the target or scope list, distinct from dependency edges. Behavior describes what the operator or system can do and a relevant verifiable signal, with its source task or plan section. These are expected capabilities, not claims of proven readiness before execution. **Session Strategy** links copy-paste run/continue prompts to those targets and companions.
+
+Counts are projected incremental counts assuming the prior listed milestones completed. For each row, take the union of the current unfinished prerequisite closures of its target and explicit companions, including those roots, and stop traversal at done tasks. The first row counts that set; later rows count that set minus the union of earlier suggested sets. Shared prerequisites count once, and an already-covered or done root adds no new work. Scope can be non-contiguous; task-number intervals do not determine counts. Companion selection must be justified by the approved outcome, not earlier numbering, readiness, or related topics. Other desired branches can have separate milestones. Cancelled or missing roots/prerequisites are blockers.
+
+Small illustrative example, not a claim about an existing project: all nine tasks are unfinished. `05-api-ready` depends on `02-contract`, `03-storage`, and `04-write-api`. `06-client` depends on task 5; `07-persistence-check` depends on task 2; `08-client-ready` depends on tasks 6 and 7, so its recursive prerequisites are tasks 2-7. `01-access-guide` and `09-diagnostics-guide` are independent tasks. Suppose the approved client-delivery outcome requires both a working client round trip and setup instructions that a new operator can follow. Task 1 is therefore an explicit companion for that outcome; task 9 is outside it. The approved acceptance criteria support these stopping points:
+
+| Target number / folder / title | Expected behavior at stopping point (source acceptance criteria) | Projected NEW unfinished tasks | Task folders counted |
+| --- | --- | --- | --- |
+| 5 / `05-api-ready` / API ready; companions: none | An operator can create and retrieve a record; the API round-trip check returns the saved record (`05-api-ready`). | 4 | Target/prerequisites: `02-contract`, `03-storage`, `04-write-api`, `05-api-ready` |
+| 8 / `08-client-ready` / Client ready; companion: `01-access-guide` / Access guide | A new operator can follow setup instructions and save a record through the client, then see it after reload; the setup walkthrough and client round-trip check succeed (client-delivery outcome, tasks 1 and 8). | 4 | Target/prerequisites: `06-client`, `07-persistence-check`, `08-client-ready`; companion: `01-access-guide` |
+| 9 / `09-diagnostics-guide` / Diagnostics guide; companions: none | An operator can collect the required diagnostic bundle by following the guide; its walkthrough produces the listed files (`09-diagnostics-guide`). | 1 | Target: `09-diagnostics-guide` |
+
+The second milestone's combined closure contains tasks 1-8, but tasks 2-5 were already counted in the first row. If the operator omits the first stopping point and starts with client delivery plus its companion, the projected count is 8. A bare request until task 8 has a count of 7 and includes tasks 2-8 only. Operators can combine or omit stopping points; omitted milestones or changed order can change counts. Each execution request recomputes scope from live status.
+
+Copy the suggested prompt to Swarm in dedicated mode or Hive in unified mode. For example:
+
+```text
+Run feature "api-delivery" until task "05-api-ready" (API ready) is complete.
+```
+
+After that milestone, continue with the explicitly scoped client-delivery outcome:
+
+```text
+Continue feature "api-delivery" until task "08-client-ready" (Client ready) is done.
+Also complete companion task "01-access-guide" (Access guide) before stopping.
+```
+
+Each request includes the target, explicitly named companions, and each root's recursive prerequisites, working only on unfinished tasks and deduplicating shared dependencies. Companion prerequisites can be numbered beyond the target. The companion suffix carries scope into a fresh session using the prompt and status, without a new persistent manifest. A bare target request includes only its own closure; companions are never inferred. Execution re-reads status and recomputes the combined closure between batches and on each new request, including approved and synced dependency amendments. Only `done` satisfies a dependency; cancelled or missing roots/prerequisites block the milestone. Ambiguous or missing targets or companions require clarification within the same feature. Unrelated tasks and descendants stay outside the request. Only when all requested roots are already done is the milestone reported satisfied without dispatch.
+
+The session stops after the target AND every named companion are verified, integrated where applicable, marked done, and applicable checks, required review, and cleanup are complete. It waits for a slower companion even if the target finishes first; an already-done target still leaves unfinished companion work to execute. Its report names achieved or blocked scope, remaining work, and a continuation prompt. Reaching a milestone does not close the feature while other tasks remain or waive final verification.
+
+Session Strategy also includes a terminal verification handoff. When the achieved milestone leaves no unfinished feature tasks, the session stops and supplies this separate continuation with the exact feature name:
+
+```text
+Run final verification for feature "api-delivery" and complete it only after the required checks pass.
+```
+
+That request follows `executing-plans` Step 6 and the existing full-feature verification/completion procedure. It carries deferred checks and their owners, all `## Final Verification` obligations, required review, and applicable cleanup. Feature completion follows only after the required checks pass.
+
+### Task records
+
 `hive_task_update` takes optional `status` (task status enum), `summary`, `report`, and successor `handoff` strings, and `blocker` (object or `null`). Omissions are preserved. A report is stored unchanged as the next numbered `reports/{N}.md` and mirrored to `report.md`; a bounded successor handoff replaces `handoff.md`. An explicit status leaving blocked clears the blocker. See [Hive Tools](../packages/opencode-hive/docs/HIVE-TOOLS.md) for input types and limits.
 
 An implementation Forager bound to a feature task writes its own report and successor handoff in one update after its final checks and source commit. It leaves status to the primary and returns the numbered `reportPath` with its source pin. The report is the durable account of the work: goal and constraints, root cause when evidence supports one, what changed and why, failed approaches and how they were resolved, tradeoffs, verification with observed output and the tested candidate, and risks with owners. It opens with an author and basis line. The primary reads the report, records status and a compact summary, writes one decision report when review produced material findings, and appends a closure report after merge, or after target verification for non-Git, report-only, or no-change results, with the merge identity or verified target and integrated evidence. Diagnosis-only, read-only, and ad-hoc workers write no task records; the primary persists their narrative only when the work belongs to a feature task. Worker reports are attributed evidence and never prove integrated acceptance. `report.md` is the latest successful write, not a maintained summary, and report numbers record write order only. Handoffs, reports, `execution-decisions`, and managed context stay separate; report history is not copied into context.

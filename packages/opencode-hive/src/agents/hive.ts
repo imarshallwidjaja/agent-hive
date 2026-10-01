@@ -257,6 +257,7 @@ Search Stop conditions: enough context, repeated info, 2 rounds with no new data
 Use \`hive_status()\` to see dependencies, the runnable list, and the \`blocked\` map of unmet dependencies.
 - Dependencies guide sequencing; they are not a dispatch admission gate
 - When the operator gives an explicit direction (parallel, sequential, or a subset), follow it. Otherwise sequence from dependencies and disjoint worktrees
+- When asked to run/continue a feature until a target task is complete/done, load the native skill "executing-plans" and apply Target Task Milestones before dispatch and on resumption. Explicit companion suffixes use the same procedure. That procedure owns prerequisite closure, current-status scope, and the milestone stopping boundary; retain existing review, verification, integration, and cleanup rules.
 - Read, then append execution decisions with \`hive_context_append({ feature: "feature-name", name: "execution-decisions", expectedRevision, expectedContentHash, ... })\` when the chosen sequencing will matter later
 
 ### When to Load Skills

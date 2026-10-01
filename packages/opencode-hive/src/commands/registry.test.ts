@@ -119,6 +119,67 @@ describe('HIVE_COMMANDS', () => {
     expect(output).not.toContain('confirmed-stopped interruption recovery');
     expect(output).toContain('Read the report a bound worker published, then record status, summary, or blocker with hive_task_update');
     expect(output).not.toContain('Persist worker outcomes with hive_task_update');
+    expect(output).toContain('load executing-plans and apply its Target Task Milestones procedure before dispatch and on resumption');
+    expect(output).toContain('including an explicit companion suffix');
+    expect(output).toContain('Preserve the exact feature, target, and explicitly named companions from the suggested prompt');
+  });
+
+  it('suggests DAG-backed milestone prompts after approval and synced readback', () => {
+    const commands = buildHiveCommandMap(hiveCommandRenderers, () => ({
+      agentMode: 'dedicated',
+      backgroundGuidance: { available: false },
+      council: {} as never,
+      agents: {},
+      dashReviewLanes: [],
+      vulnerabilityReviewLanes: [],
+    }));
+    const output = commands['approve-sync-plan'].run('api-delivery');
+    expect(output).toContain('Approve and sync that same explicit feature');
+    expect(output).toContain('Stop with exact blockers if plan approval, task sync, or readback fails');
+    expect(output.indexOf('read back its status and tasks')).toBeLessThan(output.indexOf('Build ## Recommended Execution Order'));
+    expect(output).toContain('synced stored dependsOn graph');
+    expect(output).toContain('resolved implicit sequential shorthand');
+    expect(output).toContain('meaningful outcome or join tasks');
+    expect(output).toContain('own dependsOn recursively');
+    expect(output).toContain('exact feature name and task folder/title, not numerical A-to-B ranges');
+    expect(output).toContain('Require a table under ## Recommended Execution Order');
+    expect(output).toContain('exact target task number/folder/title');
+    expect(output).toContain('expected observable behavior at that stopping point');
+    expect(output).toContain('projected NEW unfinished task count');
+    expect(output).toContain('actual task folders counted (inline or bounded per-row accompanying lists)');
+    expect(output).toContain('Ground behavior in approved plan outcomes/acceptance criteria');
+    expect(output).toContain('what the operator or system can do and the relevant verifiable signal');
+    expect(output).toContain('citing the source task or plan section rather than subsystem/topic labels');
+    expect(output).toContain('expected capability, not proven readiness before execution');
+    expect(output).toContain('do not invent capabilities or evidence');
+    expect(output).toContain('Companions are explicit requested scope, not dependsOn edges');
+    expect(output).toContain('exact folders/titles and their source justification; show companions: none when unnecessary');
+    expect(output).toContain('Distinguish target/prerequisites from named companions and their prerequisites');
+    expect(output).toContain('U_i is the current unfinished union of the prerequisite closures of suggested target i and its explicitly listed companions');
+    expect(output).toContain('including every requested root; traversal stops at done tasks');
+    expect(output).toContain('First projected work is U_1');
+    expect(output).toContain('U_i minus the union of preceding suggested U_j');
+    expect(output).toContain('Deduplicate shared prerequisites and count every requested root unless already covered or done');
+    expect(output).toContain('Show the exact task folders in each counted set');
+    expect(output).toContain('never calculate counts from numerical intervals');
+    expect(output).toContain('cancelled or missing roots/prerequisites and invalid graphs as blockers');
+    expect(output).toContain('projected incremental counts assuming prior listed milestones completed');
+    expect(output).toContain('operator can combine or omit stopping points');
+    expect(output).toContain('omitted milestones or changed order can change counts');
+    expect(output).toContain('Execution must re-read current status');
+    expect(output).toContain('recompute scope on every request');
+    expect(output).toContain('In ## Session Strategy, link copy-paste run/continue prompts to the table targets without duplicating the detailed table');
+    expect(output).toContain('suggest separate branch milestones');
+    expect(output).toContain('Never fabricate dependencies');
+    expect(output).toContain('Run feature "<feature>" until task "<task-folder>" (<task-title>) is complete');
+    expect(output).toContain('Continue feature "<feature>" until task "<next-task-folder>" (<next-task-title>) is done');
+    expect(output).toContain('Also complete companion task "<companion-folder>" (<companion-title>) before stopping');
+    expect(output).toContain('for each listed companion, omitting that suffix when none');
+    expect(output).toContain('Bare target requests include only the target closure');
+    expect(output).toContain('stop only after the target AND every named companion are done with their gates complete');
+    expect(output).toContain('excludes unrelated and descendant tasks');
+    expect(output).toContain('terminal verification handoff in Session Strategy with the concrete feature name: Run final verification for feature "<feature>" and complete it only after the required checks pass');
+    expect(output).toContain('a separate continuation after no unfinished feature tasks remain, routed to executing-plans Step 6 and the existing full-feature verification/completion procedure, carrying deferred checks and applicable cleanup');
   });
 
   it('keeps dash-review steering and ordered challenge in the command handoff', () => {
