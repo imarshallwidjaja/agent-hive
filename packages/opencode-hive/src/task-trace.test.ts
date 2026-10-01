@@ -99,12 +99,16 @@ function semanticMap(request: any, cardOverrides: Record<number, Record<string, 
 function clientFor(messages: unknown[], options: {
   parentID?: string | null;
   childID?: string;
+  directory?: unknown;
+  // Native session records by requested ID; IDs not listed fall back to the traced target record.
+  sessions?: Record<string, unknown | ((reads: number) => unknown)>;
   getResponse?: { data?: unknown; error?: unknown };
   getError?: unknown;
   status?: Record<string, unknown>;
   statusResponse?: { data?: unknown; error?: unknown };
   statusError?: unknown;
   mutateStatus?: (reads: number) => { data?: unknown; error?: unknown };
+  statusByDirectory?: (directory: unknown) => { data?: unknown; error?: unknown };
   mutateMessages?: (reads: number) => unknown[];
   prompt?: (request: any, call: number) => unknown | Promise<unknown>;
   promptError?: (request: any, call: number) => unknown;
@@ -120,14 +124,25 @@ function clientFor(messages: unknown[], options: {
   let promptCalls = 0;
   let abortCalls = 0;
   let deleteCalls = 0;
+  const sessionReads = new Map<string, number>();
   const session = {
-    get: async (input: unknown) => {
+    get: async (input: any) => {
       calls.push({ method: 'get', input });
       if (options.getError) throw options.getError;
+      const requested = input?.path?.id;
+      const known = options.sessions?.[requested];
+      if (known !== undefined) {
+        const reads = (sessionReads.get(requested) ?? 0) + 1;
+        sessionReads.set(requested, reads);
+        const value = typeof known === 'function' ? (known as (reads: number) => unknown)(reads) : known;
+        if (value instanceof Error) throw value;
+        return value as { data?: unknown; error?: unknown };
+      }
       if (options.getResponse) return options.getResponse;
       return {
         data: {
           id: options.childID ?? 'child',
+          directory: 'directory' in options ? options.directory : '/repo',
           ...(options.parentID === null ? {} : { parentID: options.parentID ?? 'parent' }),
         },
       };
@@ -137,10 +152,11 @@ function clientFor(messages: unknown[], options: {
       messageReads += 1;
       return { data: options.mutateMessages?.(messageReads) ?? messages };
     },
-    status: async (input: unknown) => {
+    status: async (input: any) => {
       calls.push({ method: 'status', input });
       statusReads += 1;
       if (options.statusError) throw options.statusError;
+      if (options.statusByDirectory) return options.statusByDirectory(input?.query?.directory);
       return options.mutateStatus?.(statusReads)
         ?? options.statusResponse
         ?? { data: options.status ?? {} };
@@ -311,6 +327,46 @@ function realisticTrace() {
   return messages;
 }
 
+// Native task tool part shapes: OpenCode records the child in state.metadata while running, on
+// error, and on completion; part.metadata holds provider metadata and may mirror the key.
+function nativeTask(
+  callID: string,
+  status: 'pending' | 'running' | 'completed' | 'error',
+  metadata: { state?: Record<string, unknown>; part?: Record<string, unknown> } = {},
+  input: Record<string, unknown> = { description: `Task ${callID}`, prompt: 'Do the work.', subagent_type: 'forager-worker' },
+) {
+  const state = status === 'pending'
+    ? { status }
+    : {
+        status,
+        input,
+        title: input.description,
+        ...(metadata.state ? { metadata: metadata.state } : {}),
+        ...(status === 'completed' ? { output: 'Child finished.' } : {}),
+        ...(status === 'error' ? { error: 'Tool execution aborted' } : {}),
+        time: status === 'running' ? { start: 1 } : { start: 1, end: 2 },
+      };
+  return { type: 'tool', tool: 'task', callID, state, ...(metadata.part ? { metadata: metadata.part } : {}) };
+}
+
+function childRecord(id: string, parentID = 'child', directory = '/repo') {
+  return { data: { id, parentID, directory, projectID: 'project', title: id, version: '1', time: { created: 1, updated: 1 } } };
+}
+
+// A worker whose foreground tool never recorded a result, followed by a closed later exchange.
+function interruptedTrace() {
+  return [
+    message('instruction', 'user', [{ type: 'text', text: 'Implement the fix.' }]),
+    message('work', 'assistant', [
+      { type: 'step-start' },
+      { type: 'text', text: 'Running the suite.' },
+      { type: 'tool', tool: 'bash', callID: 'call-suite', state: { status: 'running', input: { command: 'bun test' }, time: { start: 1 } } },
+    ], { completed: false }),
+    message('later', 'user', [{ type: 'text', text: 'Status?' }]),
+    message('later-reply', 'assistant', [{ type: 'text', text: 'Still waiting on the suite.' }]),
+  ];
+}
+
 function token(value: unknown): string {
   return Buffer.from(JSON.stringify(value)).toString('base64url');
 }
@@ -364,7 +420,7 @@ describe('forensic task trace v3 index', () => {
     expect(events.map((event: any) => event.seq)).toEqual(sourceSteps(1, 118));
     for (const [index, page] of pages.entries()) {
       expect(page).toMatchObject({ ok: true, version: 3, task_id: 'child', target: { id: 'child', relationship: 'direct_child' } });
-      expect(page.lifecycle).toEqual({ state: 'terminal', terminal: true, reason: 'idle_and_closed' });
+      expect(page.lifecycle).toEqual({ state: 'terminal', terminal: true, reason: 'idle_and_closed', runtime: 'idle' });
       expect(page.source).toMatchObject({
         messages: 59, parts: 291, events: 118, reasoning_parts: 57, structural_parts: 116,
         fidelity: 'surviving_source', compactions: 0, as_of: expect.any(String),
@@ -472,9 +528,9 @@ describe('forensic task trace v3 index', () => {
     ];
     const finished = [instruction, message('work', 'assistant', [{ type: 'text', text: 'Suite passed.' }])];
     const cases: Array<[unknown[], Record<string, unknown>, Record<string, unknown>]> = [
-      [running, { status: { child: { type: 'busy' } } }, { state: 'active', terminal: false, reason: 'runtime_active' }],
-      [running, { statusError: new Error('unavailable') }, { state: 'uncertain', terminal: false, reason: 'status_unavailable' }],
-      [finished, { status: {} }, { state: 'terminal', terminal: true, reason: 'idle_and_closed' }],
+      [running, { status: { child: { type: 'busy' } } }, { state: 'active', terminal: false, reason: 'runtime_active', runtime: 'busy', unresolved_tools: { latest_message: 1, earlier_messages: 0 } }],
+      [running, { statusError: new Error('unavailable') }, { state: 'uncertain', terminal: false, reason: 'status_unavailable', runtime: 'unavailable', unresolved_tools: { latest_message: 1, earlier_messages: 0 } }],
+      [finished, { status: {} }, { state: 'terminal', terminal: true, reason: 'idle_and_closed', runtime: 'idle' }],
     ];
     for (const [source, options, lifecycle] of cases) {
       const tools = toolsFor(clientFor(source, options as any));
@@ -870,6 +926,155 @@ describe('forensic task trace v3 index', () => {
       ok: true, field: 'output', format: 'text', content: '', offset: 0, next_offset: null, bytes: 0,
     });
   });
+
+  it('projects a confirmed child_session_id for native task calls from state or part metadata only', async () => {
+    const provider = { anthropic: { cacheControl: 'ephemeral', trace: 'PROVIDER_METADATA_SECRET' } };
+    const source = [message('dispatch', 'assistant', [
+      nativeTask('call-running', 'running', { state: { sessionId: 'ses_running', model: { modelID: 'm' } }, part: provider }),
+      nativeTask('call-error', 'error', { state: { sessionId: 'ses_error' } }),
+      nativeTask('call-mirrored', 'completed', { state: {}, part: { ...provider, sessionId: 'ses_mirrored' } }),
+      nativeTask('call-pending', 'pending'),
+      { type: 'tool', tool: 'bash', callID: 'call-bash', state: { status: 'completed', input: { command: 'true' }, output: '', metadata: { sessionId: 'ses_not_a_task' } } },
+    ], { completed: false })];
+    const setup = clientFor(source, {
+      sessions: Object.fromEntries(['ses_running', 'ses_error', 'ses_mirrored', 'ses_not_a_task'].map((id) => [id, childRecord(id)])),
+    });
+    const tools = toolsFor(setup);
+    const { serialized, events } = await indexPages(tools);
+
+    expect(events.map((event: any) => [event.call_id, event.child_session_id ?? null])).toEqual([
+      ['call-running', 'ses_running'], ['call-error', 'ses_error'], ['call-mirrored', 'ses_mirrored'], ['call-pending', null], ['call-bash', null],
+    ]);
+    expect(setup.calls.filter((call) => call.method === 'get').map((call) => call.input.path.id).sort())
+      .toEqual(['child', 'ses_error', 'ses_mirrored', 'ses_running']);
+    const detail = await readEvent(tools, events[0].ref);
+    expect(detail.event).toMatchObject({ call_id: 'call-running', status: 'running', child_session_id: 'ses_running' });
+    const keys = [...serialized.flatMap((raw) => allKeys(JSON.parse(raw))), ...allKeys(detail)];
+    expect(keys).not.toContain('metadata');
+    expect(JSON.stringify([serialized, detail])).not.toContain('PROVIDER_METADATA_SECRET');
+  });
+
+  it('fails closed for unconfirmed, invalid, and conflicting recorded child identities', async () => {
+    const source = [message('dispatch', 'assistant', [
+      nativeTask('call-good', 'running', { state: { sessionId: 'ses_good' } }),
+      nativeTask('call-foreign', 'running', { state: { sessionId: 'ses_foreign' } }),
+      nativeTask('call-missing', 'running', { state: { sessionId: 'ses_missing' } }),
+      nativeTask('call-alias', 'running', { state: { sessionId: 'ses_alias' } }),
+      nativeTask('call-throws', 'running', { state: { sessionId: 'ses_throws' } }),
+      nativeTask('call-spaced', 'running', { state: { sessionId: 'ses spaced' } }),
+      nativeTask('call-number', 'running', { state: { sessionId: 42 } }),
+      nativeTask('call-long', 'running', { state: { sessionId: `ses_${'x'.repeat(300)}` } }),
+      nativeTask('call-conflict', 'running', { state: { sessionId: 'ses_state' }, part: { sessionId: 'ses_part' } }),
+      nativeTask('call-half-invalid', 'running', { state: { sessionId: 'ses_valid_half' }, part: { sessionId: '' } }),
+    ], { completed: false })];
+    const setup = clientFor(source, {
+      sessions: {
+        ses_good: childRecord('ses_good'),
+        ses_foreign: childRecord('ses_foreign', 'another-parent'),
+        ses_missing: { error: { name: 'NotFoundError' } },
+        ses_alias: childRecord('ses_real'),
+        ses_throws: new Error('lookup failed'),
+      },
+    });
+    const { events } = await indexPages(toolsFor(setup));
+
+    expect(events.filter((event: any) => event.child_session_id).map((event: any) => event.child_session_id)).toEqual(['ses_good']);
+    expect(setup.calls.filter((call) => call.method === 'get').map((call) => call.input.path.id).sort())
+      .toEqual(['child', 'ses_alias', 'ses_foreign', 'ses_good', 'ses_missing', 'ses_throws']);
+  });
+
+  it('reauthorizes child disclosure on every read and guards the recorded child identity', async () => {
+    const recorded = (state: Record<string, unknown>, part?: Record<string, unknown>) => [message('dispatch', 'assistant', [
+      nativeTask('call-a', 'running', { state, ...(part ? { part } : {}) }),
+    ], { completed: false })];
+    const original = recorded({ sessionId: 'ses_a' }, { openai: { itemId: 'item' } });
+    const setup = clientFor(original, {
+      sessions: { ses_a: (reads: number) => childRecord('ses_a', reads === 1 ? 'child' : 'elsewhere') },
+    });
+    const tools = toolsFor(setup);
+    const first = (await indexPages(tools)).events[0];
+    const detail = await readEvent(tools, first.ref);
+    const second = (await indexPages(tools)).events[0];
+
+    expect(first.child_session_id).toBe('ses_a');
+    expect(detail.ok).toBe(true);
+    expect(detail.event).not.toHaveProperty('child_session_id');
+    expect(second).not.toHaveProperty('child_session_id');
+    expect(setup.calls.filter((call) => call.method === 'get' && call.input.path.id === 'ses_a')).toHaveLength(3);
+
+    for (const changed of [
+      recorded({ sessionId: 'ses_b' }, { openai: { itemId: 'item' } }),
+      recorded({ sessionId: 'ses_a' }, { openai: { itemId: 'item' }, sessionId: 'ses_b' }),
+      recorded({}, { openai: { itemId: 'item' } }),
+    ]) {
+      expect(await readEvent(toolsFor(clientFor(changed)), first.ref)).toEqual({ ok: false, reason: 'event_changed' });
+    }
+  });
+
+  it('checks each distinct child candidate once and only for displayed rows', async () => {
+    const parts = Array.from({ length: 300 }, (_, index) => nativeTask(
+      `call-${index}`, 'completed', { state: { sessionId: `ses_c${Math.floor(index / 2)}` } },
+    ));
+    const setup = clientFor([message('dispatch', 'assistant', parts)], {
+      sessions: Object.fromEntries(Array.from({ length: 150 }, (_, index) => [`ses_c${index}`, childRecord(`ses_c${index}`)])),
+    });
+    const raw = await executeRaw(toolsFor(setup), 'hive_task_trace', { task_id: 'child' });
+    const page = JSON.parse(raw);
+    const shown = page.events.map((event: any) => event.child_session_id);
+    const childGets = setup.calls.filter((call) => call.method === 'get' && call.input.path.id !== 'child');
+
+    expect(page.coverage.complete).toBe(false);
+    expect(shown.every((id: unknown) => typeof id === 'string')).toBe(true);
+    expect(childGets.map((call) => call.input.path.id).sort()).toEqual([...new Set<string>(shown)].sort());
+    expect(childGets.length).toBeLessThan(150);
+    expect(Buffer.byteLength(raw)).toBe(page.render.bytes);
+    expect(page.render.bytes).toBeLessThanOrEqual(24_576);
+  });
+
+  it('reads source and status where the target is placed and never treats a missing placement as idle', async () => {
+    const source = [message('m1', 'assistant', [{ type: 'text', text: 'Working in a worktree.' }])];
+    const placed = clientFor(source, {
+      directory: '/worktree',
+      statusByDirectory: (directory) => ({ data: directory === '/worktree' ? { child: { type: 'busy' } } : {} }),
+    });
+    const placedTools = toolsFor(placed);
+    const { pages, events } = await indexPages(placedTools);
+    await readEvent(placedTools, events[0].ref);
+
+    expect(pages[0].lifecycle).toEqual({ state: 'active', terminal: false, reason: 'runtime_active', runtime: 'busy' });
+    for (const method of ['messages', 'status']) {
+      expect(placed.calls.filter((call) => call.method === method).map((call) => call.input.query.directory))
+        .toEqual(method === 'messages' ? ['/worktree', '/worktree'] : ['/worktree']);
+    }
+    expect(placed.calls.filter((call) => call.method === 'get').every((call) => call.input.query.directory === '/repo')).toBe(true);
+
+    for (const directory of [undefined, '', 'relative/worktree', 42]) {
+      const setup = clientFor(source, { directory, status: {} });
+      const tools = toolsFor(setup);
+      const page = (await indexPages(tools)).pages[0];
+      const recovered = await execute(tools, 'hive_task_trace', { task_id: 'child', recovery: true });
+
+      expect(page.lifecycle).toEqual({ state: 'uncertain', terminal: false, reason: 'placement_unavailable', runtime: 'unavailable' });
+      expect(page.context.final).toBeNull();
+      expect(recovered.recovery).toMatchObject({ status: 'unavailable', scope: null, failures: [{ stage: 'eligibility', reasons: ['placement_unavailable'] }] });
+      expect(setup.calls.filter((call) => call.method === 'status')).toHaveLength(0);
+      expect(setup.calls.filter((call) => call.method === 'create')).toHaveLength(0);
+    }
+  });
+
+  it('keeps an idle runtime with historical open tool records non-terminal and counts them', async () => {
+    const setup = clientFor(interruptedTrace(), { status: {} });
+    const page = (await indexPages(toolsFor(setup))).pages[0];
+
+    expect(page.lifecycle).toEqual({
+      state: 'uncertain',
+      terminal: false,
+      reason: 'tool_pending_or_running',
+      runtime: 'idle',
+      unresolved_tools: { latest_message: 0, earlier_messages: 1 },
+    });
+    expect(page.context.final).toBeNull();
+  });
 });
 
 describe('task trace semantic recovery', () => {
@@ -889,6 +1094,7 @@ describe('task trace semantic recovery', () => {
       expect(result.source).toMatchObject({ steps: 59, fidelity: 'surviving_source', compactions: 0 });
       expect(result.recovery).toEqual({
         status: 'unavailable',
+        scope: null,
         failures: [{ stage: 'eligibility', reasons: [reason] }],
         model: { requested: { model: 'requested/model', variant: 'high' } },
         cards_source: null,
@@ -908,8 +1114,8 @@ describe('task trace semantic recovery', () => {
     const setup = clientFor(source, { status: {} });
     const result = await execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true });
 
-    expect(result.lifecycle).toEqual({ state: 'terminal', terminal: true, reason: 'idle_and_closed' });
-    expect(result.recovery.status).toBe('complete');
+    expect(result.lifecycle).toEqual({ state: 'terminal', terminal: true, reason: 'idle_and_closed', runtime: 'idle' });
+    expect(result.recovery).toMatchObject({ status: 'complete', scope: 'closed_turn' });
     expect(result.semantic).not.toBeNull();
     expect(result.final_response).toEqual({
       step: 1,
@@ -918,6 +1124,94 @@ describe('task trace semantic recovery', () => {
       untrusted: true,
     });
     expect(setup.calls.filter((call) => call.method === 'create').length).toBeGreaterThan(0);
+  });
+
+  it('returns an inspect-only evidence snapshot when an idle runtime leaves tool or message records open', async () => {
+    const openMessage = [
+      message('instruction', 'user', [{ type: 'text', text: 'Implement the fix.' }]),
+      message('work', 'assistant', [{ type: 'text', text: 'Editing the parser.' }], { completed: false }),
+    ];
+    for (const [source, reason] of [
+      [interruptedTrace(), 'tool_pending_or_running'],
+      [openMessage, 'latest_assistant_open'],
+    ] as const) {
+      const setup = clientFor([...source], {
+        status: {},
+        prompt: (request) => request.kind === 'reduce'
+          ? {
+              kind: 'reduce',
+              semantic: semanticReduction(request.step_count, {
+                completed: [],
+                unfinished: [{ claim: 'Finish the fix.', source_steps: [request.step_count] }],
+                safest_next_action: { action: 'launch_fresh_task', context: 'Resume the fix.', source_steps: [request.step_count] },
+              }),
+            }
+          : undefined,
+      });
+      const result = await execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true });
+
+      expect(result.lifecycle).toMatchObject({ state: 'uncertain', terminal: false, reason, runtime: 'idle' });
+      expect(result.recovery).toMatchObject({ status: 'complete', scope: 'evidence_only', failures: [] });
+      expect(result.final_response).toBeNull();
+      expect(result.semantic.untrusted).toBe(true);
+      expect(result.semantic.unfinished).toEqual([{ claim: 'Finish the fix.', source_steps: [expect.any(Number)] }]);
+      expect(result.semantic.safest_next_action).toMatchObject({ action: 'inspect', context: null });
+      for (const call of setup.calls.filter((entry) => ['prompt', 'abort', 'delete'].includes(entry.method))) {
+        expect(call.input.path?.id).not.toBe('child');
+      }
+    }
+  });
+
+  it('refuses recovery for active, unknown, self, empty, and other non-evidence lifecycles without model sessions', async () => {
+    const cases: Array<[unknown[], Record<string, unknown>, string, string?]> = [
+      [interruptedTrace(), { status: { child: { type: 'busy' } } }, 'runtime_active'],
+      [interruptedTrace(), { status: { child: { type: 'retry', attempt: 1, message: 'rate limited', next: 2 } } }, 'runtime_active'],
+      [interruptedTrace(), { statusError: new Error('unavailable') }, 'status_unavailable'],
+      [interruptedTrace(), { status: {} }, 'self_recovery_not_allowed', 'child'],
+      [[], { status: {} }, 'empty_trace'],
+      [[message('instruction', 'user', [{ type: 'text', text: 'Start.' }])], { status: {} }, 'latest_message_not_assistant'],
+    ];
+    for (const [source, options, reason, caller] of cases) {
+      const setup = clientFor(source, options as any);
+      const result = JSON.parse(await executeRaw(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true }, undefined, caller));
+
+      expect(result.recovery).toMatchObject({ status: 'unavailable', scope: null, failures: [{ stage: 'eligibility', reasons: [reason] }] });
+      expect(result.semantic).toBeNull();
+      expect(result.lifecycle.terminal).toBe(false);
+      expect(setup.calls.filter((call) => call.method === 'create')).toHaveLength(0);
+    }
+  });
+
+  it('invalidates an evidence-only snapshot when authorization, parent, placement, status, or source changes during summary', async () => {
+    const source = interruptedTrace();
+    const target = (change: Record<string, unknown> | Error | { error: unknown }) => (reads: number) => (
+      reads === 1 ? childRecord('child', 'parent') : change instanceof Error || 'error' in change ? change : { data: { ...childRecord('child', 'parent').data, ...change } }
+    );
+    // Both reads are other_session for the caller, so only the exact parent comparison can see the move.
+    const reparented = (first: string | undefined, second: string) => (reads: number) => (
+      { data: { ...childRecord('child').data, parentID: reads === 1 ? first : second } }
+    );
+    const cases: Array<[Record<string, unknown>, string]> = [
+      [{ sessions: { child: target({ error: { name: 'NotFoundError' } }) } }, 'target_unavailable_after_recovery'],
+      [{ sessions: { child: target(new Error('lookup failed')) } }, 'target_unavailable_after_recovery'],
+      [{ sessions: { child: target({ id: 'renamed' }) } }, 'target_unavailable_after_recovery'],
+      [{ sessions: { child: target({ parentID: 'elsewhere' }) } }, 'target_changed_after_recovery'],
+      [{ sessions: { child: reparented('foreign-a', 'foreign-b') } }, 'target_changed_after_recovery'],
+      [{ sessions: { child: reparented(undefined, 'foreign-a') } }, 'target_changed_after_recovery'],
+      [{ sessions: { child: target({ directory: '/moved' }) } }, 'target_changed_after_recovery'],
+      [{ mutateStatus: (reads: number) => ({ data: reads === 1 ? {} : { child: { type: 'busy' } } }) }, 'runtime_active_after_recovery'],
+      [{ mutateStatus: (reads: number) => (reads === 1 ? { data: {} } : { error: 'unavailable' }) }, 'status_unavailable_after_recovery'],
+      [{ status: {}, mutateMessages: (reads: number) => (reads === 1 ? source : [...source, message('newer', 'assistant', [{ type: 'text', text: 'Suite output arrived.' }])]) }, 'source_changed_after_recovery'],
+    ];
+    for (const [options, reason] of cases) {
+      const setup = clientFor(source, { status: {}, ...options } as any);
+      const result = await execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true });
+
+      expect(result.recovery).toMatchObject({ status: 'unavailable', scope: null, failures: [{ stage: 'freshness', reasons: [reason] }] });
+      expect(result.semantic).toBeNull();
+      expect(result.final_response).toBeNull();
+      expect(setup.calls.filter((call) => call.method === 'create').length).toBeGreaterThan(0);
+    }
   });
 
   it('maps all 59 source steps into meaningful coverage-gated phases and returns only the semantic projection', async () => {
@@ -2083,7 +2377,7 @@ describe('task trace semantic recovery', () => {
     });
     const result = await execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true });
 
-    expect(result.lifecycle).toEqual({ state: 'terminal', terminal: true, reason: 'idle_and_closed' });
+    expect(result.lifecycle).toEqual({ state: 'terminal', terminal: true, reason: 'idle_and_closed', runtime: 'idle' });
     expect(result.recovery.status).toBe('complete');
     expect(result.semantic).not.toBeNull();
     expect(setup.calls.filter((call) => call.method === 'status')).toHaveLength(2);
@@ -2143,7 +2437,7 @@ describe('task trace semantic recovery', () => {
     expect(second.content).not.toContain('�');
     expect(stale).toEqual({ ok: false, reason: 'stale_or_not_found' });
     expect(setup.calls.filter((call) => call.method === 'messages')).toHaveLength(5);
-    expect(setup.calls.filter((call) => call.method === 'get')).toHaveLength(4);
+    expect(setup.calls.filter((call) => call.method === 'get')).toHaveLength(5);
 
     const decoded = JSON.parse(Buffer.from(contentID, 'base64url').toString('utf8'));
     expect(decoded).toEqual([2, 0, 0, 1, Buffer.byteLength(large), expect.any(String)]);
@@ -2196,9 +2490,8 @@ describe('task trace lifecycle hints', () => {
       parts: [{ id: 'task-part', type: 'tool', tool: 'task', state: { status: 'completed', output: '' }, metadata: { sessionId: 'child' } }],
     }];
     const authorize = async (child: string, parent: string) => child === 'child' && parent === 'parent';
-    const seen = new Set<string>();
-    await injectTaskTraceHint(messages, authorize, seen);
-    await injectTaskTraceHint(messages, authorize, seen);
+    await injectTaskTraceHint(messages, authorize);
+    await injectTaskTraceHint(messages, authorize);
     expect(messages[0].parts.filter((part: any) => part.type === 'text' && part.synthetic)).toHaveLength(1);
     expect(messages[0].parts.at(-1).text).toContain('hive_task_trace({ task_id: "child" })');
     expect(messages[0].parts.at(-1).text).toContain('This task result is empty or terminally unsuccessful');
@@ -2217,6 +2510,118 @@ describe('task trace lifecycle hints', () => {
     await injectTaskTraceHint(messages, async (child) => child === 'failed-child');
     expect(messages[0].parts.filter((part: any) => part.hiveTaskTraceHint)).toHaveLength(1);
     expect(messages[0].parts.at(-1).text).toContain('"failed-child"');
+  });
+
+  // Mirrors what the runtime transform receives after a host restart: a freshly loaded array per turn
+  // whose earlier foreground task calls never recorded a result.
+  function interruptedParent(extraParts: Array<Record<string, unknown>> = []) {
+    return [
+      {
+        info: { id: 'dispatch', sessionID: 'parent', role: 'assistant' },
+        parts: [
+          { id: 'task-a', ...nativeTask('call-a', 'running', { state: { sessionId: 'ses_a' }, part: { anthropic: { cache: 'x' } } }) },
+          { id: 'task-b', ...nativeTask('call-b', 'pending', { part: { sessionId: 'ses_b' } }) },
+          ...extraParts,
+        ],
+      },
+      { info: { id: 'after-restart', sessionID: 'parent', role: 'user' }, parts: [{ id: 'ask', type: 'text', text: 'What happened?' }] },
+    ];
+  }
+
+  it('replays in-flight hints for every unresolved foreground call on each fresh message array', async () => {
+    const authorized: string[] = [];
+    const authorize = async (child: string, parent: string) => {
+      authorized.push(child);
+      return parent === 'parent';
+    };
+    for (let turn = 0; turn < 2; turn += 1) {
+      const messages: any[] = interruptedParent();
+      await injectTaskTraceHint(messages, authorize);
+      await injectTaskTraceHint(messages, authorize);
+      const hints = messages[0].parts.filter((part: any) => part.hiveTaskTraceHint);
+
+      expect(hints.map((part: any) => part.hiveTaskTraceChild).sort()).toEqual(['ses_a', 'ses_b']);
+      for (const hint of hints) {
+        expect(hint).toMatchObject({ type: 'text', synthetic: true, sessionID: 'parent', messageID: 'dispatch' });
+        expect(hint.text).toContain(`hive_task_trace({ task_id: "${hint.hiveTaskTraceChild}" })`);
+        expect(hint.text).toContain('has no recorded result; the child may still be in flight');
+        expect(hint.text).toContain('do not send another prompt or launch an overlapping writer');
+        expect(hint.text).not.toMatch(/interrupted|killed|stopped/);
+      }
+      expect(messages[1].parts).toHaveLength(1);
+    }
+    expect(authorized.sort()).toEqual(['ses_a', 'ses_a', 'ses_b', 'ses_b']);
+  });
+
+  it('does not hint a live latest call, background calls, unauthorized children, or a child twice', async () => {
+    const live: any[] = [{
+      info: { id: 'dispatch', sessionID: 'parent', role: 'assistant' },
+      parts: [{ id: 'task-live', ...nativeTask('call-live', 'running', { state: { sessionId: 'ses_live' } }) }],
+    }];
+    // Native task records `background: true` in state.metadata; every hint branch must honor it.
+    const nativeBackground = (callID: string, status: 'running' | 'completed' | 'error', sessionId: string) => {
+      const task: any = nativeTask(callID, status, { state: { parentSessionId: 'parent', sessionId, background: true } });
+      if (status === 'completed') task.state.output = '';
+      return { id: `task-${callID}`, ...task };
+    };
+    const background: any[] = interruptedParent([
+      { id: 'task-bg', ...nativeTask('call-bg', 'running', { state: { sessionId: 'ses_bg' } }, { description: 'bg', prompt: 'p', subagent_type: 'forager-worker', background: true }) },
+      nativeBackground('bg-running', 'running', 'ses_bg_running'),
+      nativeBackground('bg-error', 'error', 'ses_bg_error'),
+      nativeBackground('bg-empty', 'completed', 'ses_bg_empty'),
+      { id: 'task-bg-part', ...nativeTask('call-bg-part', 'error', { part: { sessionId: 'ses_bg_part', background: true } }) },
+      { id: 'task-dup', ...nativeTask('call-dup', 'running', { state: { sessionId: 'ses_a' } }) },
+    ]);
+    const asked: string[] = [];
+    await injectTaskTraceHint(live, async (child) => { asked.push(child); return true; });
+    await injectTaskTraceHint(background, async (child) => { asked.push(child); return child !== 'ses_b'; });
+
+    expect(live[0].parts.filter((part: any) => part.hiveTaskTraceHint)).toHaveLength(0);
+    expect(background[0].parts.filter((part: any) => part.hiveTaskTraceHint).map((part: any) => part.hiveTaskTraceChild)).toEqual(['ses_a']);
+    expect(asked.sort()).toEqual(['ses_a', 'ses_b']);
+  });
+
+  it('bounds replay authorization to the newest eligible children', async () => {
+    const messages: any[] = Array.from({ length: 12 }, (_, index) => ({
+      info: { id: `dispatch-${index}`, sessionID: 'parent', role: 'assistant' },
+      parts: [{ id: `task-${index}`, ...nativeTask(`call-${index}`, 'running', { state: { sessionId: `ses_${index}` } }) }],
+    }));
+    messages.push({ info: { id: 'later', sessionID: 'parent', role: 'user' }, parts: [{ type: 'text', text: 'next' }] });
+    const asked: string[] = [];
+    await injectTaskTraceHint(messages, async (child) => { asked.push(child); return true; });
+
+    expect(asked).toEqual(['ses_11', 'ses_10', 'ses_9', 'ses_8', 'ses_7', 'ses_6', 'ses_5', 'ses_4']);
+    expect(messages.flatMap((entry) => entry.parts).filter((part: any) => part.hiveTaskTraceHint)).toHaveLength(8);
+  });
+
+  it('lets each child\'s newest recorded call decide its hint and spends the cap only on hinted calls', async () => {
+    const dispatch = (id: string, parts: unknown[]) => ({ info: { id, sessionID: 'parent', role: 'assistant' }, parts });
+    const messages: any[] = [
+      dispatch('first', [
+        { id: 'redo-old', ...nativeTask('redo-old', 'running', { state: { sessionId: 'ses_redo' } }) },
+        { id: 'stuck', ...nativeTask('stuck', 'running', { state: { sessionId: 'ses_stuck' } }) },
+      ]),
+      // Later results that need no hint must not exhaust the eight lookups before the stuck call.
+      ...Array.from({ length: 10 }, (_, index) => dispatch(`settled-${index}`, [
+        { id: `settled-${index}`, ...nativeTask(`settled-${index}`, 'completed', { state: { sessionId: `ses_settled_${index}` } }) },
+      ])),
+      dispatch('continued', [{ id: 'redo-new', ...nativeTask('redo-new', 'completed', { state: { sessionId: 'ses_redo' } }) }]),
+      // Within one message the later part is the newer call.
+      dispatch('same-message', [
+        { id: 'resolved-old', ...nativeTask('resolved-old', 'running', { state: { sessionId: 'ses_resolved' } }) },
+        { id: 'resolved-new', ...nativeTask('resolved-new', 'completed', { state: { sessionId: 'ses_resolved' } }) },
+        { id: 'reopened-old', ...nativeTask('reopened-old', 'completed', { state: { sessionId: 'ses_reopened' } }) },
+        { id: 'reopened-new', ...nativeTask('reopened-new', 'running', { state: { sessionId: 'ses_reopened' } }) },
+      ]),
+      { info: { id: 'later', sessionID: 'parent', role: 'user' }, parts: [{ type: 'text', text: 'next' }] },
+    ];
+    const asked: string[] = [];
+    await injectTaskTraceHint(messages, async (child) => { asked.push(child); return true; });
+    await injectTaskTraceHint(messages, async (child) => { asked.push(child); return true; });
+    const hints = messages.flatMap((entry) => entry.parts).filter((part: any) => part.hiveTaskTraceHint);
+
+    expect(hints.map((part: any) => [part.messageID, part.hiveTaskTraceChild])).toEqual([['first', 'ses_stuck'], ['same-message', 'ses_reopened']]);
+    expect(asked).toEqual(['ses_reopened', 'ses_stuck']);
   });
 
   it('keeps the recovery agent name reserved for hidden internal use', () => {

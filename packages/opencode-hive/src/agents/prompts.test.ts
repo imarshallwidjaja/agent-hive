@@ -1016,6 +1016,8 @@ describe('Task report reliability', () => {
       'Confirm the prior writer is truly terminal, along with any in-flight subprocess or shared-resource effect',
       'do not add polling',
       'a cancellation acknowledgement, a stale board entry, or closed assistant text alone does not establish termination',
+      'Treat an idle runtime after a host restart and an `evidence_only` recovery snapshot as records of what survived, not as proof that the old writer or its subprocesses stopped',
+      'find its child through the parent\'s replay hint or the `child_session_id` on that call in a `hive_task_trace` of the parent session; the background board lists only background launches',
       'Inspect before any cleanup and preserve the failure evidence',
       'not proof of completion',
       'A HEAD you discover is not a returned, verified pin',

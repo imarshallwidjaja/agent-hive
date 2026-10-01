@@ -65,7 +65,7 @@ import { HIVE_COMMANDS } from './commands/registry.js';
 import { hiveCommandRenderers } from './commands/renderers.js';
 import { isReadOnlyCouncilEligibleBase } from './commands/council.js';
 import type { HiveCommandAgentDescriptor, HiveCommandContext } from './commands/types.js';
-import { createTaskTraceTools, injectTaskTraceHint, TASK_TRACE_SUMMARIZER_AGENT } from './task-trace.js';
+import { createTaskTraceTools, injectTaskTraceHint, isDirectChildSession, TASK_TRACE_SUMMARIZER_AGENT } from './task-trace.js';
 import { composeTaskBrief, TASK_BRIEF_BLOCK } from './task-brief.js';
 
 type ToolContext = { sessionID?: string; agent?: string };
@@ -271,7 +271,6 @@ const plugin: Plugin = async (ctx) => {
   const runtimeSessionAgents = new Map<string, string>();
   const runtimeTaskChildren = new Set<string>();
   const dispatchSnapshots = new Map<string, RouteSnapshot>();
-  const taskTraceHintIDs = new Set<string>();
   const namedCursorSecret = randomBytes(32);
   const ephemeralSessionIDs = new Set<string>();
   const taskTraceConfig = configService.get().taskTraceSummarizer ?? { temperature: 0 };
@@ -283,8 +282,9 @@ const plugin: Plugin = async (ctx) => {
       || client.notification?.create?.({ type: 'warning', level: 'warning', title: 'Agent Hive Config Warning', message });
     if (!notified) console.warn(message);
   }
+  const taskTraceClient = ctx.client as unknown as Parameters<typeof createTaskTraceTools>[0]['client'];
   const taskTraceTools = createTaskTraceTools({
-    client: ctx.client as unknown as Parameters<typeof createTaskTraceTools>[0]['client'],
+    client: taskTraceClient,
     directory: projectRoot,
     summarizer: taskTraceConfig,
     ephemeralSessionIDs,
@@ -824,10 +824,9 @@ const plugin: Plugin = async (ctx) => {
       const sessionID = output.messages?.[0]?.info?.sessionID;
       if (!sessionID) return;
       await backgroundAdapter['experimental.chat.messages.transform'](_input, output);
-      await injectTaskTraceHint(output.messages, async (childID, parentID) => {
-        const response = await ctx.client.session.get({ path: { id: childID }, query: { directory: projectRoot } }).catch(() => ({ data: undefined }));
-        return response.data?.parentID === parentID;
-      }, taskTraceHintIDs);
+      await injectTaskTraceHint(output.messages, (childID, parentID) => (
+        isDirectChildSession(taskTraceClient, projectRoot, childID, parentID)
+      ));
     },
     'tool.execute.before': async (input, output) => {
       if (input.tool === 'task' && input.sessionID && input.callID) {

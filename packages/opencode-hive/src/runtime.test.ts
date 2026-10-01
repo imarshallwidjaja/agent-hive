@@ -22,11 +22,15 @@ function createRuntime(options: { detectedFeature?: string; hiveConfig?: Record<
     ? path.join(root, '.hive', '.worktrees', options.detectedFeature, '01-task')
     : root;
   fs.mkdirSync(workTarget, { recursive: true });
-  const sessions = new Map<string, { id: string; parentID?: string }>();
+  // An Error entry stands for a session lookup that returns an error response.
+  const sessions = new Map<string, { id: string; parentID?: string } | Error>();
   const transcripts = new Map<string, unknown[]>();
   const client = {
     session: {
-      get: async ({ path: inputPath }: { path: { id: string } }) => ({ data: sessions.get(inputPath.id) ?? { id: inputPath.id } }),
+      get: async ({ path: inputPath }: { path: { id: string } }) => {
+        const known = sessions.get(inputPath.id);
+        return known instanceof Error ? { error: { name: known.message } } : { data: known ?? { id: inputPath.id } };
+      },
       messages: async ({ path: inputPath }: { path: { id: string } }) => ({ data: transcripts.get(inputPath.id) ?? [] }),
       status: async () => ({ data: {} }),
       abort: async () => ({ data: true }),
@@ -1077,6 +1081,37 @@ describe('coordinated runtime hard cut', () => {
     await loaded['tool.execute.before']!({ tool: 'task', sessionID: 'brief-unselected', callID: 'call-null' } as any, explicitNull);
     expect(explicitNull.args.prompt).toContain('"featureRoute":{"selected":true,"feature":null}');
     expect(explicitNull.args.prompt).not.toContain('hive-task-brief');
+  });
+
+  it('replays task trace hints on each transformed turn only for children the runtime confirms', async () => {
+    const { sessions, hooks } = createRuntime();
+    const loaded = await hooks;
+    sessions.set('ses_confirmed', { id: 'ses_confirmed', parentID: 'parent' });
+    sessions.set('ses_foreign', { id: 'ses_foreign', parentID: 'other-parent' });
+    sessions.set('ses_alias', { id: 'ses_other', parentID: 'parent' });
+    sessions.set('ses_errored', new Error('NotFoundError'));
+    const taskCall = (child: string) => ({
+      id: `part-${child}`,
+      type: 'tool',
+      tool: 'task',
+      callID: `call-${child}`,
+      state: { status: 'running', input: { description: child, prompt: 'Work.', subagent_type: 'forager-worker' }, metadata: { sessionId: child }, time: { start: 1 } },
+      metadata: { anthropic: { cacheControl: 'ephemeral' } },
+    });
+    const turn = () => ({
+      messages: [
+        { info: { id: 'dispatch', sessionID: 'parent', role: 'assistant' }, parts: ['ses_confirmed', 'ses_foreign', 'ses_alias', 'ses_errored', 'ses_unknown'].map(taskCall) },
+        { info: { id: 'after-restart', sessionID: 'parent', role: 'user' }, parts: [{ id: 'ask', type: 'text', text: 'Status?' }] },
+      ],
+    });
+
+    for (let index = 0; index < 2; index += 1) {
+      const output: any = turn();
+      await loaded['experimental.chat.messages.transform']!({} as any, output);
+      const hints = output.messages[0].parts.filter((part: any) => part.hiveTaskTraceHint);
+      expect(hints.map((part: any) => part.hiveTaskTraceChild)).toEqual(['ses_confirmed']);
+      expect(hints[0].text).toContain('the child may still be in flight');
+    }
   });
 
   it('ignores malformed legacy execution-attempt state during startup and status', async () => {
