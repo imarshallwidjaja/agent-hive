@@ -425,6 +425,8 @@ export const DEFAULT_ROUTING_AGENT_DESCRIPTIONS: Record<CustomAgentBase, string>
 
 export const CUSTOM_AGENT_RESERVED_NAMES = [
   ...BUILT_IN_AGENT_NAMES,
+  'dash-reviewer',
+  'vulnerability-review-primary',
   '__hive_task_trace_summarizer',
   'hive',
   'architect',
@@ -442,6 +444,8 @@ export const CUSTOM_AGENT_RESERVED_NAMES = [
   'builder',
   'plan',
   'code',
+  'general',
+  'explore',
 ] as const;
 
 export interface CustomAgentConfig {

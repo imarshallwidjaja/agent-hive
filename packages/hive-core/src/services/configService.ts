@@ -300,7 +300,7 @@ export class ConfigService {
       }
 
       if (this.isReservedCustomAgentName(agentName)) {
-        console.warn(`[hive:config] Skipping custom agent \"${agentName}\": reserved name`);
+        console.warn(`[hive:config] Skipping custom agent \"${agentName}\": reserved name (managed agent identity; custom replacement could change its tool permissions). Rename the custom agent.`);
         continue;
       }
 

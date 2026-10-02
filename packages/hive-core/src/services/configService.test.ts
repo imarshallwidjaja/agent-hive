@@ -644,10 +644,11 @@ describe("ConfigService defaults", () => {
     expect(config.autoLoadSkills).toEqual(["verification", "parallel-exploration", "custom-skill"]);
   });
 
-  it("preserves legacy custom dash-reviewer while skipping reserved custom agent names", () => {
+  it("preserves named reviewer overlays and warns why managed custom-agent identities are skipped", () => {
     const service = new ConfigService();
     const configPath = service.getPath();
     const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+    const reservedNames = ["hive-builder", "builder", "general", "explore", "dash-reviewer", "vulnerability-review-primary"];
 
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
     fs.writeFileSync(
@@ -655,20 +656,16 @@ describe("ConfigService defaults", () => {
       JSON.stringify(
         {
           customAgents: {
-            "dash-reviewer": {
+            "reviewer-dashboard": {
               baseAgent: "code-reviewer",
               description: "Existing custom reviewer.",
               model: "provider/custom-reviewer",
               variant: "high",
             },
-            "hive-builder": {
+            ...Object.fromEntries(reservedNames.map((name) => [name, {
               baseAgent: "forager-worker",
               description: "Should be skipped as reserved.",
-            },
-            builder: {
-              baseAgent: "forager-worker",
-              description: "Should be skipped as reserved.",
-            },
+            }])),
           },
         },
         null,
@@ -677,30 +674,24 @@ describe("ConfigService defaults", () => {
     );
 
     const custom = service.getCustomAgentConfigs();
-    expect(custom).toHaveProperty("dash-reviewer");
-    expect(service.getAgentConfig("dash-reviewer")).toMatchObject({
+    expect(custom).toHaveProperty("reviewer-dashboard");
+    expect(service.getAgentConfig("reviewer-dashboard")).toMatchObject({
       model: "provider/custom-reviewer",
       variant: "high",
     });
-    expect(custom).not.toHaveProperty("hive-builder");
-    expect(custom).not.toHaveProperty("builder");
-
     const warnedLines = warnSpy.mock.calls.map((call) => call.join(" "));
     expect(
       warnedLines.some(
-        (line) => line.includes("reserved") && line.includes('"dash-reviewer"'),
+        (line) => line.includes("reserved") && line.includes('"reviewer-dashboard"'),
       ),
     ).toBe(false);
-    expect(
-      warnedLines.some(
-        (line) => line.includes("reserved") && line.includes('"hive-builder"'),
-      ),
-    ).toBe(true);
-    expect(
-      warnedLines.some(
-        (line) => line.includes("reserved") && line.includes('"builder"'),
-      ),
-    ).toBe(true);
+    for (const name of reservedNames) {
+      expect(custom).not.toHaveProperty(name);
+      expect(warnedLines).toContain(
+        `[hive:config] Skipping custom agent "${name}": reserved name (managed agent identity; custom replacement could change its tool permissions). Rename the custom agent.`,
+      );
+    }
+    expect(warnedLines).toHaveLength(reservedNames.length);
 
     warnSpy.mockRestore();
   });

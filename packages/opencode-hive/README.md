@@ -31,11 +31,11 @@ Before upgrading, remove `disableMcps`, `sandbox`, `dockerImage`, and `persisten
 The config hook intentionally mutates these OpenCode fields:
 
 - `default_agent`: selects `hive-master` in unified mode or `architect-planner` in dedicated mode.
-- `agent`: Shipped agent IDs are replaced; unrelated agent entries remain. In dedicated mode, the registered `hive-master` seat is hidden from the agent picker.
+- `agent`: Shipped agent IDs are replaced; unrelated agent entries remain. Hive/task/question/skill permission overrides on native `general`/`explore`, plus `explore` edit overrides, are replaced with managed boundaries; warnings name the dropped keys and reason. In dedicated mode, the registered `hive-master` seat is hidden from the agent picker.
 - `command`: Shipped command keys replace same-key user command definitions; unrelated command keys remain.
 - `subagent_depth`: sets the OpenCode value to `2`.
 - `skills.paths`: when Hive skills are materialized, registers the generated Hive skill path first, followed by resolved user-configured paths.
-- `experimental.primary_tools`: ensures one `question` entry while preserving the existing entries.
+- `experimental.primary_tools`: preserves existing entries and adds `question` and the primary-only Hive operations in the [access matrix](docs/HIVE-TOOLS.md#agent-tool-access).
 
 ### Research integrations
 
@@ -140,6 +140,14 @@ When an operator explicitly requires a skill, include the exact name in the assi
 - Bounded direct reads remain acceptable whether or not the path was known before inspection. Delegate additional retrieval when it closes a named evidence gap.
 
 ## Tools
+
+### Enforced agent access
+
+Hive registers ordered OpenCode `agent.permission` rules: `'hive_*': 'deny'` first, then each role's exact allows. Agent rules override global `{"*":"allow"}`. Custom variants inherit their base role. `experimental.primary_tools` adds child-session denials for integration/cleanup, ad-hoc creation, feature routing/completion, approval/sync/task creation, constraint mutation, context archive, parent-owned background tools, and `question`. Architect keeps feature creation, repository registration, and bounded planning-helper delegation as a child and hands primary-only requests back to its parent.
+
+All Hive roles can read context, constraints, plans, status, repository scope, and Git snapshots. Scout adds repository discovery. Forager adds context write/append, feature/ad-hoc inspection, recovery traces, assigned feature-worktree creation, and its own report/handoff update. Helper's Hive tools are limited to state/worktree/trace inspection. Reviewers and advisors add authorized context write/append. Hive, Swarm, and Builder have the full Hive set; Architect has planning and primary-control tools; review primaries have metadata/context, inspection/trace, constraints, routing/background, and authorized ad-hoc review placement/cleanup. The [complete access matrix](docs/HIVE-TOOLS.md#agent-tool-access) names every grant and native boundary.
+
+Native `general`/`explore` have no Hive tools, recursion, or questions. Helper/reviewer role-specific Hive-tool denials and native edit denial are enforced, while shell and research integrations remain available under operator permissions. Their inspection-only scope for shell and external effects is instruction-bound, an operator-accepted risk; these capabilities must not substitute for denied Hive operations. Use Helper first for session-trace retrieval; it returns evidence and mutation requests to the primary. Changes take effect after the OpenCode host reloads; use fresh child sessions so OpenCode applies the creation-time primary-tool denials.
 
 ### Feature Management
 | Tool | Description |
@@ -282,7 +290,7 @@ Moving a project root does not continue old task or ad-hoc work. At the new root
 
 Manual tasks created with `hive_task_create()` follow the same DAG model as plan-backed tasks. The `goal`, `description`, `acceptanceCriteria`, `files`, and `references` fields are recorded in the task's `spec.md`. The primary's `task()` prompt must carry what the worker needs. To change downstream sequencing or scope after review feedback, update `plan.md` and run `hive_tasks_sync({ refreshPending: true })`.
 
-`hive-helper` is a runtime-only bounded assistant for merge recovery, state clarification, interrupted-state wrap-up, and safe manual-follow-up assistance. It stays within the current approved DAG boundary and is not a selectable custom base agent.
+`hive-helper` is a runtime-only investigator for feature/ad-hoc state, worktree identities, and session traces. Use it for evidence during merge recovery, state clarification, and interrupted-state investigation. It returns merge, cleanup, and manual-follow-up requests to the primary, which owns those mutations. Its Hive inspection tools and native edit denial are enforced; shell/external inspection-only scope is instruction-bound. It is not a selectable custom base agent.
 
 `simplicity-reviewer` is a built-in read-only reviewer for final post-implementation cleanup and a supported `customAgents` base for specialized cleanup passes. It reviews completed diffs for YAGNI, dead code, duplication, unnecessary abstractions, redundant defensive code, and safe deletion-biased simplification.
 
@@ -634,11 +642,11 @@ The same seven built-in bases allow an optional routing-description override und
 
 Primary orchestrators, `hive-builder`, `hive-helper`, `architect-planner`, private `__hive_*` identities, and generated review lanes do not expose description overrides.
 
-`hive-helper` is not a custom base agent. It stays runtime-only for bounded merge recovery, state clarification, interrupted-state wrap-up, and safe manual-follow-up assistance.
+`hive-helper` is not a custom base agent. Its runtime-only investigation role covers both feature and ad-hoc work; primaries own integration, cleanup, and follow-up task creation.
 
 `simplicity-reviewer` is a custom base agent for specialized cleanup passes. Primary agents still use the built-in `simplicity-reviewer` when no configured simplicity-reviewer-derived custom description is a closer match.
 
-`vulnerability-reviewer` is a custom base agent for selectable `/vuln-review` specialist lenses. It preserves the configured description, model, variant, and temperature while enforcing the vulnerability workflow's read-only tool policy. Configured reviewer descriptions guide selection.
+`vulnerability-reviewer` is a custom base agent for selectable `/vuln-review` specialist lenses. It preserves the configured description, model, variant, and temperature and inherits restricted Hive permissions and native edit denial. Its shell/external review-only scope is instruction-bound. Configured reviewer descriptions guide selection.
 
 Published example (validated by `src/e2e/custom-agent-docs-example.test.ts`):
 
@@ -688,6 +696,7 @@ Inheritance rules when a custom agent field is omitted:
 ID guardrails:
 
 - `customAgents` keys cannot reuse built-in Hive agent IDs
+- native `general`/`explore` and review primaries `dash-reviewer`/`vulnerability-review-primary` are reserved; rename a colliding custom reviewer (for example to `reviewer-dashboard`) while retaining its supported base
 - custom agent IDs cannot contain native permission wildcard characters (`*` or `?`)
 - plugin-reserved aliases are blocked (`hive`, `architect`, `swarm`, `scout`, `forager`, `hygienic`, `hygienic-reviewer`, `receiver`)
 - operational IDs are blocked (`build`, `builder`, `plan`, `code`)

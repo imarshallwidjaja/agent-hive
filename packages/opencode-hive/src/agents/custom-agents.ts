@@ -1,5 +1,7 @@
 import type { CustomAgentBase, ResolvedCustomAgentConfig } from 'hive-core';
 
+type PermissionAction = 'allow' | 'ask' | 'deny';
+
 export type RuntimeSubagentConfig = {
   model?: string;
   variant?: string;
@@ -7,8 +9,7 @@ export type RuntimeSubagentConfig = {
   mode: 'subagent';
   description: string;
   prompt?: string;
-  tools?: Record<string, boolean>;
-  permission?: Record<string, string>;
+  permission?: Record<string, PermissionAction | Record<string, PermissionAction>>;
 };
 
 type BuildCustomSubagentsInput = {
@@ -50,7 +51,6 @@ export function buildCustomSubagents({
       mode: 'subagent',
       description: customConfig.description,
       ...(prompt !== undefined ? { prompt } : {}),
-      tools: baseAgent.tools,
       permission: baseAgent.permission,
     };
   }

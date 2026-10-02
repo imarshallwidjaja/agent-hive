@@ -192,10 +192,11 @@ describe('agent_hive schema customAgents contract', () => {
     expectReservedNameToFail('builder');
   });
 
-  it('keeps dash-reviewer exclusively available to existing custom agents', () => {
-    const reservedNames = schema.properties?.customAgents?.propertyNames?.not?.enum;
-
-    expect(reservedNames).not.toContain('dash-reviewer');
+  it('reserves review primaries and ordinary native subagents against custom replacement', () => {
+    for (const name of ['dash-reviewer', 'vulnerability-review-primary', 'general', 'explore']) {
+      expectReservedNameToFail(name);
+      expect(validateConfigShape({ customAgents: { [name]: { baseAgent: 'forager-worker', description: 'Cannot replace a managed identity.' } } })).toBe(false);
+    }
     expect(schema.properties.agents.properties).not.toHaveProperty('dash-reviewer');
   });
 

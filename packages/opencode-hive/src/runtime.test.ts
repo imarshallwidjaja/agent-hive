@@ -3,9 +3,49 @@ import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import plugin from './index.js';
-import { SessionService } from 'hive-core';
+import { CUSTOM_AGENT_BASES, SessionService } from 'hive-core';
 import { HIVE_TOOL_NAMES } from './utils/plugin-manifest.js';
 import { createPluginWithHome } from './e2e/plugin-test-home.js';
+import { TASK_TRACE_SUMMARIZER_AGENT } from './task-trace.js';
+
+type PermissionAction = 'allow' | 'ask' | 'deny';
+type PermissionConfig = Record<string, PermissionAction | Record<string, PermissionAction>>;
+type PermissionRule = { permission: string; pattern: string; action: PermissionAction };
+
+// OpenCode v1.18.30: core/util/wildcard.ts and opencode/src/permission/index.ts.
+function wildcardMatch(input: string, pattern: string): boolean {
+  let escaped = pattern.replaceAll('\\', '/').replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.');
+  if (escaped.endsWith(' .*')) escaped = escaped.slice(0, -3) + '( .*)?';
+  return new RegExp(`^${escaped}$`, 's').test(input.replaceAll('\\', '/'));
+}
+
+function permissionRules(config: PermissionConfig): PermissionRule[] {
+  return Object.entries(config).flatMap(([permission, value]) => (
+    typeof value === 'string'
+      ? [{ permission, pattern: '*', action: value }]
+      : Object.entries(value).map(([pattern, action]) => ({ permission, pattern, action }))
+  ));
+}
+
+function evaluatePermission(permission: string, pattern: string, ...rulesets: (PermissionConfig | PermissionRule[])[]): PermissionAction {
+  const rules = rulesets.flatMap((ruleset) => Array.isArray(ruleset) ? ruleset : permissionRules(ruleset));
+  return rules.findLast((rule) => wildcardMatch(permission, rule.permission) && wildcardMatch(pattern, rule.pattern))?.action ?? 'ask';
+}
+
+// Model OpenCode v1.18.30 agent/subagent-permissions.ts and tool/task.ts for fresh sessions.
+// Parent *agent* rules are not inherited; parent *session* denies and external-directory rules are.
+function spawnSubagentSessionPermission(parentSession: PermissionRule[], subagent: PermissionConfig, primaryTools: string[]): PermissionRule[] {
+  const ownRules = permissionRules(subagent);
+  const derived = [
+    ...parentSession.filter((rule) => rule.permission === 'external_directory' || rule.action === 'deny'),
+    ...['todowrite', 'task'].filter((name) => !ownRules.some((rule) => rule.permission === name))
+      .map((permission): PermissionRule => ({ permission, pattern: '*', action: 'deny' })),
+  ];
+  const primaryDenies = primaryTools.map((permission): PermissionRule => ({ permission, pattern: '*', action: 'deny' }));
+  return [...derived, ...primaryDenies.filter((deny) => !derived.some((rule) => (
+    rule.permission === deny.permission && rule.pattern === deny.pattern && rule.action === deny.action
+  )))];
+}
 
 const roots: string[] = [];
 
@@ -862,55 +902,200 @@ describe('coordinated runtime hard cut', () => {
     expect(rest.next_offset).toBeNull();
   });
 
-  it('configures role-specific static tool and recursion boundaries', async () => {
-    const { hooks } = createRuntime();
+  for (const agentMode of ['dedicated', 'unified']) it(`enforces the complete role matrix against global allow in ${agentMode} mode`, async () => {
+    const { hooks } = createRuntime({ hiveConfig: {
+      agentMode,
+      customAgents: {
+        ...Object.fromEntries(CUSTOM_AGENT_BASES.map((baseAgent) => [`audit-${baseAgent}`, {
+          baseAgent, description: `Audit variant of ${baseAgent}.`, autoLoadSkills: ['verification'],
+        }])),
+        ...Object.fromEntries(['general', 'explore', 'dash-reviewer', 'vulnerability-review-primary'].map((name) => [name, {
+          baseAgent: 'forager-worker', description: 'Attempted managed-agent replacement.',
+        }])),
+      },
+    } });
     const loaded = await hooks;
-    const config: any = {};
+    const config: any = {
+      permission: { '*': 'allow' },
+      experimental: { primary_tools: ['operator_tool', 'question'], mcp_timeout: 1234 },
+      agent: Object.fromEntries(['general', 'explore'].map((name) => [name, {
+        description: `Operator ${name}`,
+        permission: { 'hive_*': 'allow', hive_status: 'allow', task: 'allow', question: 'allow', skill: 'deny', edit: 'allow', '*': 'allow', read: { '*': 'allow', '*.env': 'deny' } },
+      }])),
+    };
     await loaded.config!(config);
-    const allowed = (agent: string, name: string) => config.agent[agent].tools[name] !== false;
+
+    const reads = ['hive_context_read', 'hive_constraints_read', 'hive_plan_read', 'hive_status', 'hive_repositories_status', 'hive_git_snapshot'];
+    const contextWrites = ['hive_context_write', 'hive_context_append'];
+    const traces = ['hive_task_trace', 'hive_task_trace_content'];
+    const inspections = ['hive_worktree_inspect', 'hive_adhoc_worktree_inspect'];
+    const constraints = ['hive_constraints_add', 'hive_constraints_edit', 'hive_constraints_clear'];
+    const background = ['hive_background_status', 'hive_background_reconcile', 'hive_background_reconcile_batch', 'hive_background_cancel'];
+    const primaryOnly = [
+      'hive_feature_complete', 'hive_feature_select', 'hive_plan_approve', 'hive_tasks_sync', 'hive_task_create',
+      'hive_worktree_merge', 'hive_worktree_cleanup', 'hive_adhoc_worktree_create', 'hive_adhoc_worktree_merge', 'hive_adhoc_worktree_cleanup',
+      ...constraints, 'hive_context_archive', ...background,
+    ];
+    const reviewPrimaries = [...reads, ...contextWrites, ...traces, ...inspections, ...constraints, ...background,
+      'hive_feature_select', 'hive_adhoc_worktree_create', 'hive_adhoc_worktree_cleanup'];
+    const matrix: Record<string, readonly string[]> = {
+      'hive-master': HIVE_TOOL_NAMES,
+      'swarm-orchestrator': HIVE_TOOL_NAMES,
+      'hive-builder': HIVE_TOOL_NAMES,
+      'architect-planner': [...reads, ...contextWrites, ...traces, ...inspections, ...constraints, ...background,
+        'hive_feature_create', 'hive_feature_select', 'hive_plan_write', 'hive_plan_patch', 'hive_plan_approve', 'hive_tasks_sync',
+        'hive_repositories_discover', 'hive_repositories_update', 'hive_context_archive'],
+      'scout-researcher': [...reads, 'hive_repositories_discover'],
+      'forager-worker': [...reads, ...contextWrites, ...inspections, ...traces, 'hive_task_update', 'hive_worktree_create'],
+      'hive-helper': [...reads, ...inspections, ...traces],
+      'plan-reviewer': [...reads, ...contextWrites],
+      'code-reviewer': [...reads, ...contextWrites],
+      'simplicity-reviewer': [...reads, ...contextWrites],
+      'approach-advisor': [...reads, ...contextWrites],
+      'vulnerability-reviewer': [...reads, ...contextWrites],
+      'dash-reviewer': reviewPrimaries,
+      'vulnerability-review-primary': reviewPrimaries,
+      general: [], explore: [], [TASK_TRACE_SUMMARIZER_AGENT]: [],
+    };
+    for (const base of CUSTOM_AGENT_BASES) matrix[`audit-${base}`] = matrix[base]!;
 
     expect(HIVE_TOOL_NAMES).toHaveLength(37);
-    expect(allowed('hive-master', 'hive_worktree_merge')).toBe(true);
-    expect(allowed('architect-planner', 'hive_worktree_merge')).toBe(false);
-    expect(allowed('architect-planner', 'hive_worktree_create')).toBe(false);
-    expect(allowed('architect-planner', 'hive_plan_write')).toBe(true);
-    for (const name of ['architect-planner', 'dash-reviewer', 'vulnerability-review-primary']) {
-      for (const tool of ['hive_task_trace', 'hive_task_trace_content']) {
-        expect(allowed(name, tool), `${name}:${tool}`).toBe(true);
-      }
-    }
-    for (const name of ['plan-reviewer', 'code-reviewer', 'simplicity-reviewer', 'approach-advisor', 'vulnerability-reviewer']) {
-      for (const tool of ['hive_task_trace', 'hive_task_trace_content']) {
-        expect(allowed(name, tool), `${name}:${tool}`).toBe(false);
-      }
-    }
+    expect(config.experimental.primary_tools.toSorted()).toEqual(['operator_tool', 'question', ...primaryOnly].toSorted());
+    expect(config.experimental.mcp_timeout).toBe(1234);
     expect(config.subagent_depth).toBe(2);
-    expect(config.agent['architect-planner'].permission.task).toMatchObject({
-      '*': 'deny',
-      'scout-researcher': 'allow',
-      'plan-reviewer': 'allow',
-      'approach-advisor': 'allow',
-    });
-    expect(config.agent['architect-planner'].permission.task['architect-planner']).toBeUndefined();
-    expect(config.agent['architect-planner'].permission.task['forager-worker']).toBeUndefined();
-    expect(config.agent['architect-planner'].permission.task['hive-master']).toBeUndefined();
-    expect(allowed('forager-worker', 'hive_task_update')).toBe(true);
-    expect(allowed('forager-worker', 'hive_constraints_add')).toBe(false);
-    expect(allowed('forager-worker', 'hive_context_archive')).toBe(false);
-    expect(config.agent['forager-worker'].permission.task).toBe('deny');
-    expect(allowed('scout-researcher', 'hive_git_snapshot')).toBe(true);
-    expect(allowed('scout-researcher', 'hive_context_write')).toBe(false);
-    expect(config.agent['scout-researcher'].permission.task).toBe('deny');
-    expect(config.agent['plan-reviewer'].permission.task).toBe('deny');
-    expect(config.agent['approach-advisor'].permission.task).toBe('deny');
-    expect(allowed('code-reviewer', 'hive_context_write')).toBe(true);
-    expect(allowed('code-reviewer', 'hive_task_update')).toBe(false);
-    expect(allowed('dash-reviewer', 'hive_worktree_merge')).toBe(false);
-    expect(config.agent['dash-reviewer'].permission.task).toBe('allow');
-    expect(allowed('hive-helper', 'hive_worktree_merge')).toBe(true);
-    expect(allowed('hive-helper', 'hive_task_create')).toBe(true);
-    expect(allowed('hive-helper', 'hive_adhoc_worktree_merge')).toBe(false);
-    expect(allowed('hive-helper', 'hive_plan_write')).toBe(false);
+    expect(Object.keys(config.agent).toSorted()).toEqual(Object.keys(matrix).toSorted());
+    const childDenies: PermissionConfig = Object.fromEntries(config.experimental.primary_tools.map((name: string) => [name, 'deny']));
+    const action = (agent: string, tool: string, child = false, pattern = '*') => evaluatePermission(
+      tool, pattern, config.permission, config.agent[agent].permission, ...(child ? [childDenies] : []),
+    );
+    for (const [agent, allowed] of Object.entries(matrix)) {
+      expect(config.agent[agent].tools, agent).toBeUndefined();
+      if (agent !== TASK_TRACE_SUMMARIZER_AGENT) {
+        const keys = Object.keys(config.agent[agent].permission);
+        expect(config.agent[agent].permission['hive_*'], agent).toBe('deny');
+        for (const tool of allowed) {
+          expect(keys.indexOf(tool), `${agent}: deny must precede ${tool}`).toBeGreaterThan(keys.indexOf('hive_*'));
+        }
+      }
+      for (const tool of [...HIVE_TOOL_NAMES, 'hive_future_tool']) {
+        expect(action(agent, tool), `${agent}:${tool}`).toBe(allowed.includes(tool) ? 'allow' : 'deny');
+        expect(action(agent, tool, true), `child ${agent}:${tool}`).toBe(allowed.includes(tool) && !primaryOnly.includes(tool) ? 'allow' : 'deny');
+      }
+      expect(action(agent, 'question', true), agent).toBe('deny');
+      expect(action(agent, 'operator_tool', true), agent).toBe('deny');
+      expect(action(agent, 'skill'), agent).toBe(agent === TASK_TRACE_SUMMARIZER_AGENT ? 'deny' : 'allow');
+      expect(action(agent, 'read'), agent).toBe(agent === TASK_TRACE_SUMMARIZER_AGENT ? 'deny' : 'allow');
+      expect(action(agent, 'bash'), agent).toBe(agent === TASK_TRACE_SUMMARIZER_AGENT ? 'deny' : 'allow');
+    }
+
+    const planningHelpers = ['scout-researcher', 'plan-reviewer', 'approach-advisor'];
+    const reviewHelpers = CUSTOM_AGENT_BASES.filter((base) => base !== 'forager-worker');
+    const executors = ['hive-master', 'swarm-orchestrator', 'hive-builder'];
+    const reviewOrchestrators = ['dash-reviewer', 'vulnerability-review-primary'];
+    for (const agent of Object.keys(matrix)) {
+      const targets = agent === 'architect-planner'
+        ? [...planningHelpers, ...planningHelpers.map((base) => `audit-${base}`)]
+        : executors.includes(agent)
+          ? [...CUSTOM_AGENT_BASES, ...CUSTOM_AGENT_BASES.map((base) => `audit-${base}`), 'architect-planner', 'hive-helper', 'general', 'explore']
+          : reviewOrchestrators.includes(agent)
+            ? [...reviewHelpers, ...reviewHelpers.map((base) => `audit-${base}`), 'hive-helper']
+            : [];
+      for (const target of [...Object.keys(matrix), 'unknown-agent']) {
+        expect(action(agent, 'task', false, target), `${agent} -> ${target}`).toBe(targets.includes(target) ? 'allow' : 'deny');
+        // task is deliberately absent from primary_tools: delegated Architect keeps its one terminal helper layer.
+        expect(action(agent, 'task', true, target), `child ${agent} -> ${target}`).toBe(targets.includes(target) ? 'allow' : 'deny');
+      }
+      expect(action(agent, 'edit'), agent).toBe([...executors, 'forager-worker', 'audit-forager-worker', 'general'].includes(agent) ? 'allow' : 'deny');
+      expect(action(agent, 'question'), agent).toBe([...executors, 'architect-planner', ...reviewOrchestrators].includes(agent) ? 'allow' : 'deny');
+    }
+    for (const agent of ['general', 'explore']) {
+      expect(config.agent[agent].description).toBe(`Operator ${agent}`);
+      expect(action(agent, 'read', false, 'private.env')).toBe('deny');
+    }
+    for (const base of CUSTOM_AGENT_BASES) expect(config.agent[`audit-${base}`].permission).toEqual(config.agent[base].permission);
+    expect(wildcardMatch('audit-code-reviewer', 'audit-*-reviewe?')).toBe(true);
+  });
+
+  it('warns with the native permission keys dropped and the managed boundary reason', async () => {
+    const { hooks } = createRuntime();
+    const loaded = await hooks;
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await loaded.config!({});
+      expect(warn).not.toHaveBeenCalled();
+      const config: any = {
+        agent: Object.fromEntries(['general', 'explore'].map((name) => [name, {
+          permission: { hive_status: 'allow', 'hive_*': 'allow', task: { '*': 'allow' }, question: 'allow', skill: 'deny',
+            edit: 'allow', read: { '*.env': 'deny' }, bash: 'allow' },
+        }])),
+      };
+      await loaded.config!(config);
+      const warnings = warn.mock.calls.map((call) => call.join(' '));
+      expect(warnings).toHaveLength(2);
+      for (const agent of ['general', 'explore']) {
+        const droppedKeys = ['hive_status', 'hive_*', 'task', 'question', 'skill', ...(agent === 'explore' ? ['edit'] : [])];
+        expect(warnings).toContain(
+          `[hive:config] Dropping agent.${agent}.permission overrides for ${droppedKeys.join(', ')}: Hive owns native subagent boundaries (Hive tools, task and question denied; skill allowed${agent === 'explore' ? '; edit denied' : ''}). Other permission rules are preserved.`,
+        );
+        expect(config.agent[agent].permission.read).toEqual({ '*.env': 'deny' });
+        expect(config.agent[agent].permission.bash).toBe('allow');
+      }
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('inherits session denials through child Architect while preserving terminal helper allowlists', async () => {
+    const planningHelpers = ['scout-researcher', 'plan-reviewer', 'approach-advisor'];
+    const { hooks } = createRuntime({ hiveConfig: {
+      customAgents: Object.fromEntries(planningHelpers.map((baseAgent) => [`nested-${baseAgent}`, {
+        baseAgent, description: `Nested ${baseAgent} specialist.`,
+      }])),
+    } });
+    const loaded = await hooks;
+    const config: any = { permission: { '*': 'allow' } };
+    await loaded.config!(config);
+    expect(config.subagent_depth).toBe(2);
+
+    const parentSession: PermissionRule[] = [
+      { permission: 'read', pattern: 'private-*', action: 'deny' },
+      { permission: 'external_directory', pattern: '/allowed/*', action: 'allow' },
+      { permission: 'external_directory', pattern: '/private/*', action: 'deny' },
+      { permission: 'parent_allow_only', pattern: '*', action: 'allow' },
+    ];
+    const architect = config.agent['architect-planner'].permission;
+    const architectSession = spawnSubagentSessionPermission(parentSession, architect, config.experimental.primary_tools);
+    expect(evaluatePermission('hive_feature_create', '*', config.permission, architect, architectSession)).toBe('allow');
+    expect(evaluatePermission('hive_repositories_update', '*', config.permission, architect, architectSession)).toBe('allow');
+    expect(architectSession.some((rule) => rule.permission === 'task')).toBe(false);
+    for (const name of config.experimental.primary_tools) {
+      expect(architectSession).toContainEqual({ permission: name, pattern: '*', action: 'deny' });
+    }
+
+    const reads = ['hive_context_read', 'hive_constraints_read', 'hive_plan_read', 'hive_status', 'hive_repositories_status', 'hive_git_snapshot'];
+    for (const base of planningHelpers) for (const target of [base, `nested-${base}`]) {
+      expect(evaluatePermission('task', target, config.permission, architect, architectSession), target).toBe('allow');
+      const helper = config.agent[target].permission;
+      const grandchildSession = spawnSubagentSessionPermission(architectSession, helper, config.experimental.primary_tools);
+      for (const rule of architectSession) expect(grandchildSession, target).toContainEqual(rule);
+      expect(grandchildSession.some((rule) => rule.permission === 'parent_allow_only'), target).toBe(false);
+      const allowed = [...reads, ...(base === 'scout-researcher'
+        ? ['hive_repositories_discover'] : ['hive_context_write', 'hive_context_append'])];
+      for (const tool of [...HIVE_TOOL_NAMES, 'hive_future_tool']) {
+        expect(evaluatePermission(tool, '*', config.permission, helper, grandchildSession), `${target}:${tool}`)
+          .toBe(allowed.includes(tool) ? 'allow' : 'deny');
+      }
+      expect(evaluatePermission('read', 'public-source.ts', config.permission, helper, grandchildSession), target).toBe('allow');
+      expect(evaluatePermission('read', 'private-source.ts', config.permission, helper, grandchildSession), target).toBe('deny');
+      expect(evaluatePermission('external_directory', '/allowed/source.ts', config.permission, helper, grandchildSession), target).toBe('allow');
+      expect(evaluatePermission('external_directory', '/private/source.ts', config.permission, helper, grandchildSession), target).toBe('deny');
+      for (const tool of ['task', 'question', 'edit']) {
+        expect(evaluatePermission(tool, '*', config.permission, helper, grandchildSession), `${target}:${tool}`).toBe('deny');
+      }
+      for (const tool of ['skill', 'bash']) {
+        expect(evaluatePermission(tool, '*', config.permission, helper, grandchildSession), `${target}:${tool}`).toBe('allow');
+      }
+    }
   });
 
   it('allows primary and delegated architects to dispatch planning helpers with the same route snapshot', async () => {

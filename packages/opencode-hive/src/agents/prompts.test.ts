@@ -2375,7 +2375,9 @@ describe('README.md documentation', () => {
       expect(readmeContent).toContain('runtime-only');
       expect(readmeContent).toContain('merge recovery');
       expect(readmeContent).toContain('state clarification');
-      expect(readmeContent).toContain('safe manual-follow-up assistance');
+      expect(readmeContent).toContain('runtime-only investigator');
+      expect(readmeContent).toContain('shell/external inspection-only scope is instruction-bound');
+      expect(readmeContent).toContain('primary, which owns those mutations');
     });
 
     it('documents hive-helper in the built-in agent defaults table', () => {

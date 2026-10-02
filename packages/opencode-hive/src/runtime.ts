@@ -49,6 +49,7 @@ import { VULNERABILITY_REVIEWER_PROMPT } from './agents/vulnerability-reviewer.j
 import { DASH_REVIEWER_PROMPT } from './agents/dash-reviewer.js';
 import { VULNERABILITY_REVIEW_PRIMARY_PROMPT } from './agents/vulnerability-review-primary.js';
 import { buildCustomSubagents } from './agents/custom-agents.js';
+import type { RuntimeSubagentConfig } from './agents/custom-agents.js';
 import {
   prepareNativeHiveSkills,
   type PreparedHiveSkill,
@@ -872,13 +873,23 @@ const plugin: Plugin = async (ctx) => {
       mutableConfig.skills = { ...existingSkills, paths: prepared.skillPaths };
       mutableConfig.subagent_depth = 2;
       runtimeAgentPrompts.clear();
-      const falseTools = (allowed: string[]) => Object.fromEntries(HIVE_TOOL_NAMES.filter((name) => !allowed.includes(name)).map((name) => [name, false]));
-      const contextRW = ['hive_context_read', 'hive_context_write', 'hive_context_append'];
+      const readTools = ['hive_context_read', 'hive_constraints_read', 'hive_plan_read', 'hive_status', 'hive_repositories_status', 'hive_git_snapshot'];
+      const contextWrites = ['hive_context_write', 'hive_context_append'];
       const primaryTools = [...HIVE_TOOL_NAMES];
-      const constraintTools = ['hive_constraints_read', 'hive_constraints_add', 'hive_constraints_edit', 'hive_constraints_clear'];
-      const repositoryTools = ['hive_repositories_status', 'hive_repositories_discover', 'hive_repositories_update'];
-      const reviewTools = [...contextRW, 'hive_git_snapshot'];
+      const constraintMutations = ['hive_constraints_add', 'hive_constraints_edit', 'hive_constraints_clear'];
+      const reviewTools = [...readTools, ...contextWrites];
       const taskTraceTools = ['hive_task_trace', 'hive_task_trace_content'];
+      const inspectionTools = ['hive_worktree_inspect', 'hive_adhoc_worktree_inspect'];
+      const backgroundTools = ['hive_background_status', 'hive_background_reconcile', 'hive_background_reconcile_batch', 'hive_background_cancel'];
+      const primaryOnlyTools = [
+        'question', 'hive_feature_complete', 'hive_feature_select',
+        'hive_plan_approve', 'hive_tasks_sync', 'hive_task_create',
+        'hive_worktree_merge', 'hive_worktree_cleanup',
+        'hive_adhoc_worktree_create', 'hive_adhoc_worktree_merge', 'hive_adhoc_worktree_cleanup',
+        ...constraintMutations, 'hive_context_archive', ...backgroundTools,
+      ];
+      const reviewPrimaryTools = [...reviewTools, ...taskTraceTools, ...inspectionTools, ...constraintMutations, ...backgroundTools,
+        'hive_feature_select', 'hive_adhoc_worktree_create', 'hive_adhoc_worktree_cleanup'];
       const custom = configService.getCustomAgentConfigs();
       const skipped = new Map(prepared.skipped.map((entry) => [entry.name, entry]));
       const routingBases = ['scout-researcher', 'forager-worker', 'plan-reviewer', 'code-reviewer', 'simplicity-reviewer', 'approach-advisor', 'vulnerability-reviewer'] as const;
@@ -886,15 +897,16 @@ const plugin: Plugin = async (ctx) => {
       const routingAppendix = (bases: readonly CustomAgentBase[]) => buildSubagentRoutingAppendix(bases, custom, descriptions);
       const autoLoadAppendix = (name: string, override?: string[]) => buildAutoLoadSkillsPromptAppendix(name, configService, prepared.nativeSkillsByName, prepared.skillsByName, skipped, override);
       const backgroundAppendix = (name: string) => buildBackgroundDelegationPromptAppendix(name, prepared.nativeSkillsByName, prepared.skillsByName, skipped);
-      const architectTaskPermission = {
+      const taskPermission = (bases: readonly CustomAgentBase[], extra: string[] = []): NonNullable<RuntimeSubagentConfig['permission']>['task'] => ({
         '*': 'deny',
-        'scout-researcher': 'allow',
-        'plan-reviewer': 'allow',
-        'approach-advisor': 'allow',
+        ...Object.fromEntries([...bases, ...extra].map((name) => [name, 'allow'])),
         ...Object.fromEntries(Object.entries(custom)
-          .filter(([, config]) => ['scout-researcher', 'plan-reviewer', 'approach-advisor'].includes(config.baseAgent))
+          .filter(([, config]) => bases.includes(config.baseAgent))
           .map(([name]) => [name, 'allow'])),
-      };
+      });
+      const architectTaskPermission = taskPermission(['scout-researcher', 'plan-reviewer', 'approach-advisor']);
+      const primaryTaskPermission = taskPermission(routingBases, ['architect-planner', 'hive-helper', 'general', 'explore']);
+      const reviewTaskPermission = taskPermission(routingBases.filter((base) => base !== 'forager-worker'), ['hive-helper']);
       const agentMode = configService.get().agentMode ?? 'dedicated';
       const prompts: Record<string, string> = {
         'hive-master': QUEEN_BEE_PROMPT + HIVE_SYSTEM_PROMPT + autoLoadAppendix('hive-master') + backgroundAppendix('hive-master') + (agentMode === 'unified' ? routingAppendix(routingBases) : ''),
@@ -913,26 +925,29 @@ const plugin: Plugin = async (ctx) => {
         'vulnerability-review-primary': VULNERABILITY_REVIEW_PRIMARY_PROMPT + HIVE_SYSTEM_PROMPT,
       };
       const runtimePromptAgents = new Set(['hive-master', 'swarm-orchestrator', 'hive-builder', 'forager-worker']);
-      const mk = (name: string, mode: 'primary' | 'subagent' | 'all', allowed: string[], description: string, permission: Record<string, any> = {}) => {
+      const mk = (name: string, mode: 'primary' | 'subagent' | 'all', allowed: string[], description: string, permission: NonNullable<RuntimeSubagentConfig['permission']> = {}) => {
         const settings = configService.getAgentConfig(name);
         if (runtimePromptAgents.has(name)) runtimeAgentPrompts.set(name, prompts[name]!);
-        return { model: settings.model, variant: settings.variant, temperature: settings.temperature, mode, description, ...(runtimePromptAgents.has(name) ? {} : { prompt: prompts[name] }), tools: falseTools(allowed), permission };
+        // Config hooks run after OpenCode's deprecated tools normalization. Ordered permissions are enforced at agent construction.
+        return { model: settings.model, variant: settings.variant, temperature: settings.temperature, mode, description, ...(runtimePromptAgents.has(name) ? {} : { prompt: prompts[name] }), permission: { 'hive_*': 'deny', ...Object.fromEntries(allowed.map((tool) => [tool, 'allow'])), ...permission } };
       };
       const agents: Record<string, any> = {
-        'hive-master': mk('hive-master', 'primary', primaryTools, hiveBeeAgent.description, { question: 'allow', task: 'allow', skill: 'allow' }),
-        'architect-planner': mk('architect-planner', 'all', ['hive_feature_create', 'hive_feature_select', 'hive_plan_write', 'hive_plan_patch', 'hive_plan_read', ...constraintTools, ...repositoryTools, ...contextRW, 'hive_context_archive', 'hive_worktree_inspect', 'hive_status', 'hive_git_snapshot', ...taskTraceTools], architectBeeAgent.description, { question: 'allow', task: architectTaskPermission, edit: 'deny', skill: 'allow' }),
-        'swarm-orchestrator': mk('swarm-orchestrator', 'primary', primaryTools, swarmBeeAgent.description, { question: 'allow', task: 'allow', skill: 'allow' }),
-        'hive-builder': mk('hive-builder', 'primary', primaryTools, hiveBuilderAgent.description, { question: 'allow', task: 'allow', skill: 'allow' }),
-        'scout-researcher': mk('scout-researcher', 'subagent', ['hive_context_read', 'hive_status', 'hive_git_snapshot', 'hive_repositories_status', 'hive_repositories_discover'], descriptions['scout-researcher'], { edit: 'deny', question: 'deny', task: 'deny', skill: 'allow' }),
-        'forager-worker': mk('forager-worker', 'subagent', [...contextRW, 'hive_task_update', 'hive_worktree_create', 'hive_worktree_inspect', 'hive_status'], descriptions['forager-worker'], { question: 'deny', task: 'deny', skill: 'allow' }),
-        'hive-helper': mk('hive-helper', 'subagent', ['hive_task_create', 'hive_task_update', 'hive_worktree_inspect', 'hive_worktree_merge', 'hive_worktree_cleanup', 'hive_status'], hiveHelperAgent.description, { edit: 'deny', question: 'deny', task: 'deny', skill: 'allow' }),
-        'plan-reviewer': mk('plan-reviewer', 'subagent', ['hive_plan_read', ...reviewTools, 'hive_status'], descriptions['plan-reviewer'], { edit: 'deny', question: 'deny', task: 'deny', skill: 'allow' }),
+        'hive-master': mk('hive-master', 'primary', primaryTools, hiveBeeAgent.description, { question: 'allow', task: primaryTaskPermission, skill: 'allow' }),
+        'architect-planner': mk('architect-planner', 'all', [...reviewTools, ...constraintMutations, ...inspectionTools, ...backgroundTools, ...taskTraceTools,
+          'hive_feature_create', 'hive_feature_select', 'hive_plan_write', 'hive_plan_patch', 'hive_plan_approve', 'hive_tasks_sync',
+          'hive_repositories_discover', 'hive_repositories_update', 'hive_context_archive'], architectBeeAgent.description, { question: 'allow', task: architectTaskPermission, edit: 'deny', skill: 'allow' }),
+        'swarm-orchestrator': mk('swarm-orchestrator', 'primary', primaryTools, swarmBeeAgent.description, { question: 'allow', task: primaryTaskPermission, skill: 'allow' }),
+        'hive-builder': mk('hive-builder', 'primary', primaryTools, hiveBuilderAgent.description, { question: 'allow', task: primaryTaskPermission, skill: 'allow' }),
+        'scout-researcher': mk('scout-researcher', 'subagent', [...readTools, 'hive_repositories_discover'], descriptions['scout-researcher'], { edit: 'deny', question: 'deny', task: 'deny', skill: 'allow' }),
+        'forager-worker': mk('forager-worker', 'subagent', [...reviewTools, ...inspectionTools, ...taskTraceTools, 'hive_task_update', 'hive_worktree_create'], descriptions['forager-worker'], { question: 'deny', task: 'deny', skill: 'allow' }),
+        'hive-helper': mk('hive-helper', 'subagent', [...readTools, ...inspectionTools, ...taskTraceTools], hiveHelperAgent.description, { edit: 'deny', question: 'deny', task: 'deny', skill: 'allow' }),
+        'plan-reviewer': mk('plan-reviewer', 'subagent', reviewTools, descriptions['plan-reviewer'], { edit: 'deny', question: 'deny', task: 'deny', skill: 'allow' }),
         'code-reviewer': mk('code-reviewer', 'subagent', reviewTools, descriptions['code-reviewer'], { edit: 'deny', question: 'deny', task: 'deny', skill: 'allow' }),
         'simplicity-reviewer': mk('simplicity-reviewer', 'subagent', reviewTools, descriptions['simplicity-reviewer'], { edit: 'deny', question: 'deny', task: 'deny', skill: 'allow' }),
         'approach-advisor': mk('approach-advisor', 'subagent', reviewTools, descriptions['approach-advisor'], { edit: 'deny', question: 'deny', task: 'deny', skill: 'allow' }),
         'vulnerability-reviewer': mk('vulnerability-reviewer', 'subagent', reviewTools, descriptions['vulnerability-reviewer'], { edit: 'deny', question: 'deny', task: 'deny', skill: 'allow' }),
-        'dash-reviewer': mk('dash-reviewer', 'primary', [...reviewTools, ...taskTraceTools, 'hive_background_status', 'hive_background_reconcile', 'hive_background_reconcile_batch', 'hive_background_cancel'], 'Dash Reviewer - Read-only implementation review orchestrator.', { edit: 'deny', question: 'allow', task: 'allow', skill: 'allow' }),
-        'vulnerability-review-primary': mk('vulnerability-review-primary', 'primary', [...reviewTools, ...taskTraceTools, 'hive_background_status', 'hive_background_reconcile', 'hive_background_reconcile_batch', 'hive_background_cancel'], 'Private vulnerability review orchestrator.', { edit: 'deny', question: 'allow', task: 'allow', skill: 'allow' }),
+        'dash-reviewer': mk('dash-reviewer', 'primary', reviewPrimaryTools, 'Dash Reviewer - Read-only implementation review orchestrator.', { edit: 'deny', question: 'allow', task: reviewTaskPermission, skill: 'allow' }),
+        'vulnerability-review-primary': mk('vulnerability-review-primary', 'primary', reviewPrimaryTools, 'Private vulnerability review orchestrator.', { edit: 'deny', question: 'allow', task: reviewTaskPermission, skill: 'allow' }),
       };
       agents['dash-reviewer'].hidden = true;
       agents['vulnerability-review-primary'].hidden = true;
@@ -950,12 +965,26 @@ const plugin: Plugin = async (ctx) => {
       });
       Object.assign(agents, customAgents);
       runtimeCommandAgents = Object.fromEntries(Object.entries(agents).map(([name, value]) => [name, { baseAgent: custom[name]?.baseAgent ?? name, available: true, description: custom[name]?.description ?? value.description ?? 'Registered Hive agent', readOnlyCouncilEligible: isReadOnlyCouncilEligibleBase(custom[name]?.baseAgent ?? name), model: value.model, variant: value.variant }]));
-      mutableConfig.agent = { ...(mutableConfig.agent ?? {}), ...agents, [TASK_TRACE_SUMMARIZER_AGENT]: { mode: 'primary', hidden: true, tools: { '*': false }, permission: { '*': 'deny' }, prompt: 'Summarize only supplied non-reasoning session evidence as strict JSON.' } };
+      const nativeAgents = Object.fromEntries(['general', 'explore'].map((name) => {
+        const existing = mutableConfig.agent?.[name] ?? {};
+        const droppedKeys: string[] = [];
+        const permission = Object.fromEntries(Object.entries(existing.permission ?? {})
+          .filter(([key]) => {
+            const drop = key.startsWith('hive_') || ['task', 'question', 'skill'].includes(key) || (name === 'explore' && key === 'edit');
+            if (drop) droppedKeys.push(key);
+            return !drop;
+          }));
+        if (droppedKeys.length > 0) {
+          console.warn(`[hive:config] Dropping agent.${name}.permission overrides for ${droppedKeys.join(', ')}: Hive owns native subagent boundaries (Hive tools, task and question denied; skill allowed${name === 'explore' ? '; edit denied' : ''}). Other permission rules are preserved.`);
+        }
+        return [name, { ...existing, permission: { ...permission, 'hive_*': 'deny', task: 'deny', question: 'deny', skill: 'allow', ...(name === 'explore' ? { edit: 'deny' } : {}) } }];
+      }));
+      mutableConfig.agent = { ...(mutableConfig.agent ?? {}), ...nativeAgents, ...agents, [TASK_TRACE_SUMMARIZER_AGENT]: { mode: 'primary', hidden: true, permission: { '*': 'deny' }, prompt: 'Summarize only supplied non-reasoning session evidence as strict JSON.' } };
       const commandConfig = Object.fromEntries(await Promise.all(HIVE_COMMANDS.map(async (command) => [command.key, { description: command.description, ...('agent' in command ? { agent: command.agent } : {}), template: await hiveCommandRenderers[command.key]('$ARGUMENTS', createCommandContext()) }])));
       mutableConfig.command = { ...(mutableConfig.command ?? {}), ...commandConfig };
       mutableConfig.default_agent = configService.get().agentMode === 'unified' ? 'hive-master' : 'architect-planner';
       const experimental = typeof mutableConfig.experimental === 'object' && mutableConfig.experimental ? mutableConfig.experimental : {};
-      mutableConfig.experimental = { ...experimental, primary_tools: [...new Set([...(experimental.primary_tools ?? []), 'question'])] };
+      mutableConfig.experimental = { ...experimental, primary_tools: [...new Set([...(experimental.primary_tools ?? []), ...primaryOnlyTools])] };
     },
   };
 };

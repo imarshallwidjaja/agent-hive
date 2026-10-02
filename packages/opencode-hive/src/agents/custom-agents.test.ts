@@ -8,6 +8,7 @@ import { APPROACH_ADVISOR_PROMPT } from './approach-advisor';
 import { VULNERABILITY_REVIEWER_PROMPT } from './vulnerability-reviewer';
 import { SCOUT_BEE_PROMPT } from './scout';
 import { buildCustomSubagents } from './custom-agents';
+import type { RuntimeSubagentConfig } from './custom-agents';
 import { CUSTOM_AGENT_RESERVED_NAMES } from 'hive-core';
 import { ENGINEERING_JUDGMENT_PROMPT } from './engineering-judgment';
 
@@ -17,19 +18,22 @@ function countOccurrences(content: string, needle: string): number {
 
 describe('buildCustomSubagents', () => {
   it('builds derived subagents for scout, forager, and reviewer bases', () => {
-    const scoutPermission = {
+    const scoutPermission: RuntimeSubagentConfig['permission'] = {
+      'hive_*': 'deny',
+      hive_context_read: 'allow',
       edit: 'deny',
       task: 'deny',
       delegate: 'deny',
       skill: 'allow',
       webfetch: 'allow',
+      bash: { '*': 'ask', 'git status*': 'allow' },
     };
-    const foragerPermission = {
+    const foragerPermission: RuntimeSubagentConfig['permission'] = {
       task: 'deny',
       delegate: 'deny',
       skill: 'allow',
     };
-    const reviewerPermission = {
+    const reviewerPermission: RuntimeSubagentConfig['permission'] = {
       edit: 'deny',
       task: 'deny',
       delegate: 'deny',
@@ -44,9 +48,6 @@ describe('buildCustomSubagents', () => {
         mode: 'subagent' as const,
         description: 'Base Scout',
         prompt: SCOUT_BEE_PROMPT,
-        tools: {
-          hive_merge: false,
-        },
         permission: scoutPermission,
       },
       'forager-worker': {
@@ -56,10 +57,6 @@ describe('buildCustomSubagents', () => {
         mode: 'subagent' as const,
         description: 'Base Forager',
         prompt: FORAGER_BEE_PROMPT,
-        tools: {
-          hive_merge: false,
-          hive_status: false,
-        },
         permission: foragerPermission,
       },
       'plan-reviewer': {
@@ -69,10 +66,6 @@ describe('buildCustomSubagents', () => {
         mode: 'subagent' as const,
         description: 'Base Plan Reviewer',
         prompt: PLAN_REVIEWER_PROMPT,
-        tools: {
-          hive_merge: false,
-          hive_status: false,
-        },
         permission: reviewerPermission,
       },
       'code-reviewer': {
@@ -82,10 +75,6 @@ describe('buildCustomSubagents', () => {
         mode: 'subagent' as const,
         description: 'Base Code Reviewer',
         prompt: CODE_REVIEWER_PROMPT,
-        tools: {
-          hive_merge: false,
-          hive_status: false,
-        },
         permission: reviewerPermission,
       },
       'simplicity-reviewer': {
@@ -95,10 +84,6 @@ describe('buildCustomSubagents', () => {
         mode: 'subagent' as const,
         description: 'Base Simplicity Reviewer',
         prompt: SIMPLICITY_REVIEWER_PROMPT,
-        tools: {
-          hive_merge: false,
-          hive_status: false,
-        },
         permission: reviewerPermission,
       },
       'approach-advisor': {
@@ -108,10 +93,6 @@ describe('buildCustomSubagents', () => {
         mode: 'subagent' as const,
         description: 'Base Approach Advisor',
         prompt: APPROACH_ADVISOR_PROMPT,
-        tools: {
-          hive_merge: false,
-          hive_status: false,
-        },
         permission: reviewerPermission,
       },
       'vulnerability-reviewer': {
@@ -121,7 +102,6 @@ describe('buildCustomSubagents', () => {
         mode: 'subagent' as const,
         description: 'Base Vulnerability Reviewer',
         prompt: VULNERABILITY_REVIEWER_PROMPT,
-        tools: { hive_status: false },
         permission: reviewerPermission,
       },
     };
@@ -182,7 +162,8 @@ describe('buildCustomSubagents', () => {
     expect(derived['scout-docs'].prompt).not.toContain('Use for documentation-heavy research tasks.');
     expect(derived['scout-docs'].prompt).toContain('# scout-docs auto-load guidance');
     expect(derived['scout-docs'].permission).toEqual(baseAgents['scout-researcher'].permission);
-    expect(derived['scout-docs'].tools).toEqual(baseAgents['scout-researcher'].tools);
+    expect(Object.keys(derived['scout-docs'].permission!)).toEqual(Object.keys(scoutPermission));
+    expect(derived['scout-docs'].permission!.bash).toEqual({ '*': 'ask', 'git status*': 'allow' });
     expect(derived['scout-docs'].description).toBe('Use for documentation-heavy research tasks.');
     expect(derived['scout-docs'].model).toBe('custom/scout-model');
     expect(derived['scout-docs'].temperature).toBe(0.4);
@@ -192,7 +173,6 @@ describe('buildCustomSubagents', () => {
     expect(derived['forager-ui'].prompt).toContain(FORAGER_BEE_PROMPT);
     expect(derived['forager-ui'].prompt).toContain('# forager-ui auto-load guidance');
     expect(derived['forager-ui'].permission).toEqual(baseAgents['forager-worker'].permission);
-    expect(derived['forager-ui'].tools).toEqual(baseAgents['forager-worker'].tools);
     expect(derived['forager-ui'].description).toBe('Use for UI-heavy implementation tasks.');
     expect(derived['forager-ui'].model).toBe('custom/model');
     expect(derived['forager-ui'].temperature).toBe(0.2);
@@ -202,7 +182,6 @@ describe('buildCustomSubagents', () => {
     expect(derived['reviewer-security'].mode).toBe('subagent');
     expect(derived['reviewer-security'].prompt).toContain(CODE_REVIEWER_PROMPT);
     expect(derived['reviewer-security'].permission).toEqual(baseAgents['code-reviewer'].permission);
-    expect(derived['reviewer-security'].tools).toEqual(baseAgents['code-reviewer'].tools);
     expect(derived['reviewer-security'].description).toBe('Use for security-focused review passes.');
     expect(derived['reviewer-security'].model).toBe('base/code-model');
     expect(countOccurrences(derived['reviewer-security'].prompt!, ENGINEERING_JUDGMENT_PROMPT)).toBe(1);
@@ -211,7 +190,6 @@ describe('buildCustomSubagents', () => {
     expect(derived['reviewer-minimalist'].prompt).toContain(SIMPLICITY_REVIEWER_PROMPT);
     expect(derived['reviewer-minimalist'].prompt).toContain('# reviewer-minimalist auto-load guidance');
     expect(derived['reviewer-minimalist'].permission).toEqual(baseAgents['simplicity-reviewer'].permission);
-    expect(derived['reviewer-minimalist'].tools).toEqual(baseAgents['simplicity-reviewer'].tools);
     expect(derived['reviewer-minimalist'].description).toBe('Use for adversarial deletion-biased cleanup passes.');
     expect(derived['reviewer-minimalist'].model).toBe('base/simplicity-model');
     expect(derived['security-supply-chain']).toMatchObject({
@@ -220,7 +198,6 @@ describe('buildCustomSubagents', () => {
       model: 'custom/security-model',
       temperature: 0.2,
       variant: 'xhigh',
-      tools: baseAgents['vulnerability-reviewer'].tools,
       permission: baseAgents['vulnerability-reviewer'].permission,
     });
     expect(derived['security-supply-chain'].prompt).toContain(VULNERABILITY_REVIEWER_PROMPT);
@@ -237,7 +214,6 @@ describe('buildCustomSubagents', () => {
       'forager-worker': {
         mode: 'subagent' as const,
         description: 'Base Forager',
-        tools: { hive_merge: false },
         permission: { task: 'deny', delegate: 'deny', skill: 'allow' },
       },
       'plan-reviewer': {

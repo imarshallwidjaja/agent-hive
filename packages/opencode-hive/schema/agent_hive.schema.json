@@ -129,7 +129,7 @@
     },
     "customAgents": {
       "type": "object",
-      "description": "Global custom Hive subagent definitions derived from scout-researcher, forager-worker, plan-reviewer, code-reviewer, simplicity-reviewer, approach-advisor, or vulnerability-reviewer. Project-local model and variant overrides may target matching declarations through .hive/agent-hive.override.json. IDs cannot reuse built-in or plugin-reserved names or contain native permission wildcard characters '*' or '?'. dash-reviewer remains available for existing custom configuration because the command uses a private runtime identity.",
+      "description": "Global custom Hive subagent definitions derived from scout-researcher, forager-worker, plan-reviewer, code-reviewer, simplicity-reviewer, approach-advisor, or vulnerability-reviewer. Project-local model and variant overrides may target matching declarations through .hive/agent-hive.override.json. IDs cannot reuse built-in, review-primary, ordinary native subagent, or plugin-reserved names or contain native permission wildcard characters '*' or '?'.",
       "propertyNames": {
         "pattern": "^[^*?]*$",
         "not": {
@@ -146,6 +146,8 @@
             "approach-advisor",
             "vulnerability-reviewer",
             "hive-builder",
+            "dash-reviewer",
+            "vulnerability-review-primary",
             "__hive_dash_review_primary",
             "__hive_vulnerability_review_primary",
             "__hive_task_trace_summarizer",
@@ -160,7 +162,9 @@
             "build",
             "builder",
             "plan",
-            "code"
+            "code",
+            "general",
+            "explore"
           ]
         }
       },

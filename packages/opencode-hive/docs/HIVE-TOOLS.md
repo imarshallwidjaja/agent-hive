@@ -2,6 +2,71 @@
 
 Tool availability plus instructions govern action. Each tool validates its own operation.
 
+## Agent Tool Access
+
+Hive registers ordered `agent.permission` rules in OpenCode. Each Hive role starts with `'hive_*': 'deny'`, followed by exact allows and native permissions. OpenCode v1.18.30 appends these rules after global permissions and evaluates the last matching wildcard rule, so a global `{"*":"allow"}` cannot reopen a role-denied Hive tool. The rule also covers future `hive_*` names. Custom agents inherit their base role's permissions.
+
+OpenCode's `experimental.primary_tools` adds session-level deny rules when native `task()` creates a child. These come after agent rules, including for delegated Architect. Hive preserves operator-supplied entries and adds `question` plus these primary-only Hive operations:
+
+- Feature control: `hive_feature_complete`, `hive_feature_select`.
+- Plan/task control: `hive_plan_approve`, `hive_tasks_sync`, `hive_task_create`.
+- Integration/placement: `hive_worktree_merge`, `hive_worktree_cleanup`, `hive_adhoc_worktree_create`, `hive_adhoc_worktree_merge`, `hive_adhoc_worktree_cleanup`.
+- Constraints/archive: `hive_constraints_add`, `hive_constraints_edit`, `hive_constraints_clear`, `hive_context_archive`.
+- Parent-owned board: `hive_background_status`, `hive_background_reconcile`, `hive_background_reconcile_batch`, `hive_background_cancel`.
+
+Delegated Architect retains its inherited route and uses explicit feature arguments for planning. It may register discovered repositories through `hive_repositories_update`; other subagent roles' Hive allowlists exclude that tool. It returns approval, sync, archive, and board requests to the parent. Its `task` permission allows one terminal layer of Scout, plan-reviewer, approach-advisor, and their custom variants; `task` is deliberately absent from `primary_tools`. Other subagents cannot delegate or ask questions. Primary orchestrators can dispatch registered workers, reviewers, Architect, Helper, and ordinary native subagents, but cannot dispatch another primary or an unknown target. Review primaries dispatch inspection-only specialists and Helper.
+
+`hive_feature_create` stays available to delegated Architect so it can create the feature that owns its plan without changing the inherited session route.
+
+### Access matrix
+
+Abbreviations enumerate exact tools:
+
+- **R**: `hive_context_read`, `hive_constraints_read`, `hive_plan_read`, `hive_status`, `hive_repositories_status`, `hive_git_snapshot`.
+- **C**: `hive_context_write`, `hive_context_append`.
+- **I**: `hive_worktree_inspect`, `hive_adhoc_worktree_inspect`.
+- **T**: `hive_task_trace`, `hive_task_trace_content`.
+- **B**: all four `hive_background_*` tools listed above; still experiment-gated.
+- **M**: `hive_constraints_add`, `hive_constraints_edit`, `hive_constraints_clear`.
+- **P**: `hive_feature_create`, `hive_feature_select`, `hive_plan_write`, `hive_plan_patch`, `hive_plan_approve`, `hive_tasks_sync`, `hive_repositories_discover`, `hive_repositories_update`, `hive_context_archive`.
+- **V**: `hive_feature_select`, `hive_adhoc_worktree_create`, `hive_adhoc_worktree_cleanup` for operator-authorized isolated review placement.
+
+| Agent | Hive tools | Native boundary / usage |
+|-------|------------|-------------------------|
+| `hive-master` | All 37 registered Hive tools | Primary; integration and cleanup owner |
+| `swarm-orchestrator` | All 37 | Primary; integration and cleanup owner |
+| `hive-builder` | All 37 | Primary; ad-hoc integration and cleanup owner |
+| `architect-planner` (primary) | R + C + I + T + B + M + P | Planning only; edit denied |
+| `architect-planner` (task child) | R + C + I + T + `hive_feature_create`, `hive_plan_write`, `hive_plan_patch`, `hive_repositories_discover`, `hive_repositories_update` | Feature/plan/context authoring, repository registration, and bounded planning-helper delegation; edit and question denied |
+| `scout-researcher` | R + `hive_repositories_discover` | Read-only retrieval; edit/task/question denied; trace retrieval goes to Helper |
+| `forager-worker` | R + C + I + T + `hive_task_update`, `hive_worktree_create` | Assigned implementation/recovery; task/question denied; own report/handoff only |
+| `hive-helper` | R + I + T | Feature/ad-hoc investigator; edit/task/question denied; shell/external inspection-only scope is instruction-bound |
+| `plan-reviewer` | R + C | Authorized hash-guarded context only; edit/task/question denied |
+| `code-reviewer` | R + C | Same; trace-dependent review needs supplied evidence or primary/Helper investigation |
+| `simplicity-reviewer` | R + C | Same |
+| `approach-advisor` | R + C | Same |
+| `vulnerability-reviewer` | R + C | Same; shell/scanners/external probing additionally forbidden by its instructions |
+| `dash-reviewer` | R + C + I + T + B + M + V | Hidden review primary; edit and plan/task/integration mutations denied |
+| `vulnerability-review-primary` | R + C + I + T + B + M + V | Hidden review primary; same |
+| Custom derivatives of all seven supported bases | Exactly their base's set | Inherit base prompt and permissions; extra skills do not expand authority |
+| Native `general`, `explore` | None (`'hive_*': 'deny'`) | Ordinary tools; task/question denied; native `skill` allowed; explore edit denied |
+| Hidden `__hive_task_trace_summarizer` | None (`'*': 'deny'`) | Supplied evidence only; all tools denied |
+
+`hive_task_update` access is tool-level, not field-level authorization: Forager's own-report/handoff restriction and task ownership remain instructions. Helper/reviewer Hive-tool denials and native edit denial are enforced by OpenCode. These roles retain shell and research integrations under operator permissions; their inspection-only scope for shell and external effects is instruction-bound, an operator-accepted risk. Helper must return mutation requests to the primary and must not substitute shell or external calls for denied Hive operations. Forager's feature-worktree creation is retained for explicitly assigned placement; ad-hoc creation and new-lane orchestration stay with the primary. Its trace tools support assigned recovery, not worker lifecycle control.
+
+Reserved custom-agent IDs, including `general`, `explore`, `dash-reviewer`, and `vulnerability-review-primary`, are skipped with warnings naming the managed identity and the reason. Native `agent.general`/`agent.explore` Hive/task/question/skill overrides and `explore` edit overrides are dropped with a warning listing the replaced permission keys; unrelated rules remain intact.
+
+The Scout prompt and its managed-context skill do not require session traces. Review prompts and packaged review skills, including `adversarial-review`, do not instruct reviewers to call either trace tool; they retain their host's role boundary. Shared system, routing, and skill-auto-load appendices require native `skill`, which is allowed for every ordinary role. Arbitrary operator-installed skills and external tools remain subject to their exposed capabilities and the host role; report a conflict rather than expanding authority or improvising a substitute.
+
+Implementation references for the supported OpenCode baseline, all at `v1.18.30`:
+
+- [Agent config normalization](https://github.com/anomalyco/opencode/blob/v1.18.30/packages/core/src/v1/config/agent.ts): deprecated `tools` converts only during decoding. Hive uses the enforced permission shape in its post-decode config hook.
+- [Agent construction](https://github.com/anomalyco/opencode/blob/v1.18.30/packages/opencode/src/agent/agent.ts) and [plugin config hooks](https://github.com/anomalyco/opencode/blob/v1.18.30/packages/opencode/src/plugin/index.ts): per-agent rules append after global rules, including plugin-set rules for native `general`/`explore`.
+- [Permission evaluation/filtering](https://github.com/anomalyco/opencode/blob/v1.18.30/packages/opencode/src/permission/index.ts) and [tool selection](https://github.com/anomalyco/opencode/blob/v1.18.30/packages/opencode/src/session/llm/request.ts): ordered wildcard matching removes denied tools from the model's callable set.
+- [Native task creation](https://github.com/anomalyco/opencode/blob/v1.18.30/packages/opencode/src/tool/task.ts) and [child permission derivation](https://github.com/anomalyco/opencode/blob/v1.18.30/packages/opencode/src/agent/subagent-permissions.ts): child-session denials are retained through nested delegation. Existing sessions reused with `task_id` do not get new creation-time rules; after a plugin change, reload the host and launch fresh child sessions.
+
+The canonical permission regression suite is `src/runtime.test.ts`: both agent modes, all Hive tools, every supported custom base, hostile global/native allows, future tool names, wildcard key order, child/grandchild-session denials, dropped native permission warnings, managed-agent ID collisions, and Architect's terminal helper layer. `packages/hive-core/src/services/configService.test.ts` owns reserved-name warning coverage. Agent permissions bound OpenCode tool calls; direct plugin/service invocation is still governed by that API's own validation.
+
 ## Feature Management (3 tools)
 
 | Tool | Purpose |
