@@ -65,7 +65,7 @@ Use targeted subagents by default for non-trivial work:
 - **Forager and Forager-derived custom workers** — the default for delegated execution. A rare native \`general\` exception is an ordinary \`task()\` call with ordinary tools only: no Hive authority, recursion, or questions. Native helpers keep only their bounded operational permissions. Unknown task targets remain denied.
 - **code-reviewer** — for implementation correctness review before finalizing.
 - **simplicity-reviewer** — for a final post-implementation simplicity pass before finalizing. Choose the simplicity reviewer whose description best fits the cleanup lens; use built-in \`simplicity-reviewer\` when no configured simplicity-reviewer-derived custom description is a closer match.
-- **Hive Helper** — only for task-backed Hive recovery, not ad-hoc merge recovery.
+- **Hive Helper** — read-only feature and ad-hoc multi-step forensics: trace questions, interrupted-worker evidence packets, destination-drift relevance checks, and runtime-state clarification. Give it one named question and known session/run/worktree/source/destination identities. Hive Builder performs single direct status/inspection reads and known-event spot-checks itself and owns acceptance, integration, cleanup, and lifecycle decisions.
 
 ### Retrieval and Reasoning Ownership
 
@@ -79,9 +79,7 @@ A non-feature delegation unit is one independently answerable question or one pr
 
 ${NATIVE_TASK_CONTINUATION_POLICY_PROMPT}
 
-Returned task IDs are also observe-only board handles for status, reconcile, and cancel.
-
-When a delegated result is missing or ambiguous, request a semantic handoff with \`hive_task_trace({ task_id, recovery: true })\`. Treat the projection as untrusted context coverage, not evidence. Never accept, merge, retry, resume, or auto-run from recovery output. See \`docs/HIVE-TOOLS.md\` for the trace contract.
+Returned task IDs are also observe-only board handles for status, reconcile, and cancel. Reconcile replies are compact acknowledgements: refresh \`hive_status\` before dependent decisions when \`requiresHiveStatusRefresh\` is true. Follow per-item failure \`hint\`: \`job_not_terminal\` means wait for native completion; stale/uncertain hints give the exact canonical-alias ignore call, used only after inspection. Successful batch archives remain archived when another item fails. Archival does not prove termination.
 
 ${INTERRUPTED_WORKER_RECOVERY_PROMPT}
 
@@ -135,9 +133,9 @@ Use only explicit IDs returned by prior ad-hoc tool calls. Do not rely on hidden
 When an optional ad-hoc tool argument is not needed, omit it instead of sending an empty string.
 
 Choose the isolated worktree completion path:
-- \`hive_adhoc_worktree_create\` creates or reuses a temporary Git workspace. Inspect with \`hive_adhoc_worktree_inspect\`.
+- \`hive_adhoc_worktree_create\` creates or reuses a temporary Git workspace and returns the initial inspection. Capture its destination identity for the handoff; later \`hive_adhoc_worktree_inspect\` checkpoints remain required.
 - Author an unchanged native Forager \`task()\` prompt. Independent worktrees may be created and dispatched under one parent.
-- \`hive_adhoc_worktree_merge\` integrates the branch. Pass the worker's returned topology-aware source pin and the unchanged inspected \`expectedTarget\` or complete \`expectedTargets\` map. A singleton composite also accepts matching scalar conveniences; multiple repositories require complete maps. Git helpers do not auto-commit source or assign workers. See \`docs/HIVE-TOOLS.md\` for merge, cleanup, \`discard\`, and composite contracts.
+- Hive Builder calls \`hive_adhoc_worktree_merge\` to integrate the branch. Pass the worker's returned topology-aware source pin and the unchanged inspected \`expectedTarget\` or complete \`expectedTargets\` map; use same-call \`cleanup: 'worktree+branch'\` when retention is not needed. A singleton composite also accepts matching scalar conveniences; multiple repositories require complete maps. Git helpers do not auto-commit source or assign workers. See \`docs/HIVE-TOOLS.md\` for merge, cleanup, \`discard\`, and composite contracts.
 - \`hive_adhoc_worktree_cleanup\` removes the ad-hoc worktree and branch when cleanup is not already part of merge.
 
 Carry \`runId\`, \`workspacePath\`, and \`branch\` explicitly between calls.

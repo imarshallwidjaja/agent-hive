@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Hive Helper is a read-only investigator for feature and ad-hoc traces, interrupted-worker evidence, destination drift, and runtime state. Primaries own integration and lifecycle decisions and spot-check decisive cited evidence.
+- Agent prompts and workflow skills reuse matching feature selections, batch independent Hive calls, use merge's same-call cleanup, and reflect guarded approval/sync and compact status/reconciliation outputs. Delegated Architect keeps blocking planning-helper calls and returns primary-control requests to its parent.
+
 ## [3.0.0] - 2026-10-01
 
 ### Breaking

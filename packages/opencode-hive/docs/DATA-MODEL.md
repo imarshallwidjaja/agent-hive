@@ -191,7 +191,7 @@ Some notes:
 
 ## Pending-task refresh path
 
-Within execution, `plan.md` stays authoritative for the plan-backed DAG. When the operator amends `plan.md` and wants pending plan tasks to match the new graph, run:
+Within execution, `plan.md` stays authoritative for the plan-backed DAG. When the operator amends `plan.md` and wants pending plan tasks to match the new graph, the primary approves and syncs the reviewed revision with `refreshPending: true`. While approval remains successful, standalone sync can run or retry the same refresh:
 
 ```ts
 hive_tasks_sync({ refreshPending: true })
@@ -209,7 +209,7 @@ hive_tasks_sync({ refreshPending: true })
 
 Ad-hoc orchestration uses `hive_adhoc_worktree_create`, `hive_adhoc_worktree_merge`, and `hive_adhoc_worktree_cleanup` for Git worktree placement. Manual tasks remain for full Hive DAG follow-ups. Route sequencing or scope changes back through `plan.md`, then refresh pending tasks from that graph.
 
-For interrupted work, treat live worktree and task state as the bounded truth surface: ask for a locally testable state or interrupted-state wrap-up summary first, create a safe manual follow-up only when it can append after the approved DAG, and amend `plan.md` instead of inventing intermediate numbering. An interrupted worker run leaves the task `in_progress` for retry; the primary appends an attributed interruption report, and a report written before the failure is that worker's narrative, not proof of completion.
+For interrupted work, the primary sends Helper one named trace/lifecycle question or interrupted-worker evidence packet request with known native session/call and worktree/source/destination identities. Helper returns cited evidence, observed HEADs, dirty/untracked state, and existing report/handoff paths, not verified pins or lifecycle decisions. The primary spot-checks decisive refs, confirms termination before overlapping execution, and owns any follow-up creation or plan amendment. An interrupted worker run leaves the task `in_progress` for retry; the primary appends an attributed interruption report, and a report written before the failure is that worker's narrative, not proof of completion. Ad-hoc runs have no task records.
 
 ## Status Values
 

@@ -69,10 +69,10 @@ Cross-process process supervision, exactly-once execution across independent Ope
 1. User creates feature via `hive_feature_create`
 2. Agent writes plan via `hive_plan_write`
 3. User reviews `plan.md`; VS Code stores review threads in `comments/plan.json`
-4. After user approval, the agent calls `hive_plan_approve`
-5. Tasks synced via `hive_tasks_sync` (generates spec.md for each)
+4. After user approval, the owning primary calls `hive_plan_approve({ feature, expectedRevision, sync: true })` with the reviewed revision, adding `refreshPending: true` when needed, and inspects both outcomes
+5. Approval's sync generates task specs; standalone `hive_tasks_sync` can run or retry while approval remains successful
 6. Each tracked Git task executes via `hive_worktree_create` and a native Forager `task()`
-7. The worker commits assigned work and returns its exact source pin; the primary merges it using the inspected target identity
+7. The worker commits assigned work and returns its exact source pin; the primary merges it using the inspected target identity and same-call cleanup when retention is not needed
 8. A bound implementation worker publishes its own task report; after a successful merge, or target verification for non-Git or report-only work, the primary records status and a closure report with `hive_task_update`, then cleans up any worktree
 
 ## Prompt Management
@@ -87,7 +87,7 @@ Cross-process process supervision, exactly-once execution across independent Ope
 
 Feature-scoped tools use logical feature names even when storage folders are indexed (`01_feature-name`). Explicit feature arguments target one call without changing the selected session route. Omitted feature arguments resolve from session state and local context: explicit call argument, selected session route (including explicit null), detected feature path, then the sole live feature. A route snapshot and session and feature constraints are attached to each native child dispatch.
 
-When no feature can be resolved, feature-required tools report that a feature is required; select one with `hive_feature_select` or pass the explicit `feature` argument (`name` for `hive_feature_complete`). Only `hive_feature_select` changes the selected session route. That route, including explicit null, takes precedence over worktree-path detection and suppresses detected-context and sole-live fallback when explicitly null. Explicit targets remain call-local, so select the child's feature immediately before dispatch.
+When no feature can be resolved, feature-required tools report that a feature is required; select one with `hive_feature_select` or pass the explicit `feature` argument (`name` for `hive_feature_complete`). Only `hive_feature_select` changes the selected session route. That route, including explicit null, takes precedence over worktree-path detection and suppresses detected-context and sole-live fallback when explicitly null. Explicit targets remain call-local. Before dispatch, call `hive_feature_select` only when the selected route is unset or differs from the dispatch target, or the selection evidence below is missing or uncertain. Reuse a matching selection across a same-feature batch only when this session's most recent route-changing call visible in context is `hive_feature_select` for that same feature, with no later explicit-null or other-feature selection. When that evidence is not visible (for example after compaction or a summary, at session start, or in mixed ad-hoc/feature batches), or you are uncertain, call `hive_feature_select` for the dispatch target. Explicit null stays featureless unless the dispatch intentionally targets a feature.
 
 ## Session Tracking
 
@@ -106,6 +106,8 @@ Tool availability plus instructions govern action. Each tool validates its own o
 ### Session inspection and follow-ups
 
 `hive_task_trace` inspects a runtime-visible OpenCode session, including one with compacted surviving messages. Its optional semantic recovery projection is untrusted context coverage, not authority to accept, merge, retry, or resume work. A returned native `task()` call is terminal; subsequent assignments use fresh child sessions unless the operator or explicit runtime-owned interruption recovery authorizes continuation. Child dispatch captures the current feature route and standing constraints.
+
+Primaries perform single direct reads themselves: one `hive_status`, one worktree inspect, or one `hive_task_trace_content` spot-check of a known event ref. For multi-step forensics (paging a trace, drift comparison, or interrupted-worker evidence packets), route one named question with known identities to the read-only `hive-helper`. It returns cited observations, hypotheses, limits, and observed HEADs, never verified pins or lifecycle decisions. The primary spot-checks decisive event refs before deciding acceptance, termination, retry, integration, or cleanup. A task-spawned Architect may call Helper for trace/evidence questions within its blocking terminal helper layer and returns board/control requests to its parent.
 
 ## Todo Alignment
 
@@ -212,7 +214,7 @@ When `.hive/repositories.json` defines project repositories, every task with tra
 
 **Task Repos annotation:**
 - Plan tasks with tracked writes on manifest-backed projects MUST declare `**Repos**: api` or `**Repos**: api, web` before task sync or worktree creation
-- For a plan-backed task with missing or incorrect metadata, amend the plan and run `hive_tasks_sync({ refreshPending: true })` before worktree creation
+- For a plan-backed task with missing or incorrect metadata, amend the plan and have the primary approve/sync the reviewed revision with `refreshPending: true` before worktree creation
 - For an incorrectly scoped manual task, automatically replace and cancel it only when no work has started and no existing task depends on it; the replacement mirrors incoming `dependsOn` and supplies corrected `repos` via `hive_task_create(...)`. If work started or reverse dependents exist, retain the incorrect task as blocked with a structured blocker and escalate; do not rewrite dependencies
 - Missing, empty, or unknown repo IDs fail before worktree creation
 - Legacy single-root tasks omit `Repos:` and keep implicit root behavior
@@ -241,9 +243,9 @@ Hive uses file-based state with clear ownership boundaries:
 
 | File | Owner | Other Access |
 |------|-------|--------------| 
-| `feature.json` | Primary agent | VS Code (read-only) |
+| `feature.json` | Feature/plan tools, including delegated Architect's feature creation | VS Code (read-only) |
 | `status.json` (task) | `TaskService` sync/create and `hive_task_update` | Worker (read), VS Code watcher (read-only) |
-| `plan.md` | Primary agent | VS Code (read + comment, execution source of truth) |
+| `plan.md` | Architect through plan tools, as primary or planning child | VS Code (read + comment, execution source of truth) |
 | `comments/plan.json` | VS Code writes threads; `PlanService` clears them on plan write or patch | Primary agent (read-only) |
 | `spec.md` | `TaskService.sync` / `TaskService.create` | Worker (read-only) |
 | `report.md` / `reports/*.md` | `hive_task_update` | All (read-only) |
@@ -306,7 +308,7 @@ Manual tasks are first-class task records, not loose notes.
 - Manual tasks always persist an explicit `dependsOn` array. Omitting it means `[]`, not "infer the previous task". A stored record without the field also reads as `[]`.
 - Dependencies of unfinished tasks (`pending`, `in_progress`, `blocked`, `failed`, `partial`) are active constraints: sync and manual creation reject missing targets, self-references, and cycles among them. Dependencies of `done` and `cancelled` tasks are history and are not revalidated. Cancelled tasks are retained and never satisfy a prerequisite. [Hive Tools](../packages/opencode-hive/docs/HIVE-TOOLS.md#task-dependency-graph) lists the repair routes.
 - Structured manual-task `metadata` can carry `goal`, `description`, `acceptanceCriteria`, `references`, `files`, `reason`, and `source` so Hive can generate a worker-ready `spec.md`.
-- Review-sourced manual tasks are for isolated follow-up only. If feedback changes sequencing, dependencies, or scope, update `plan.md` and run `hive_tasks_sync({ refreshPending: true })` so pending plan tasks match the amended DAG.
+- Review-sourced manual tasks are for primary-created isolated follow-up only. If feedback changes sequencing, dependencies, or scope, delegate the plan amendment to Architect, then have the primary approve/sync the reviewed revision with `refreshPending: true` so pending plan tasks match the amended DAG.
 
 ### Recovery Patterns
 

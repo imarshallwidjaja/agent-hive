@@ -116,13 +116,20 @@ merge, cleanup, approval/sync, constraints, and other control mutations; child
 sessions receive explicit denials. Workers retain the metadata and report tools
 their assignments need, reviewers can read plans/status/constraints and write
 authorized context, and native `general`/`explore` have no Hive authority.
-Use runtime-only `hive-helper` for state and session-trace investigation
-during helper recovery; it returns mutation requests to the primary. Custom agents
+Use runtime-only `hive-helper` for feature and ad-hoc trace questions,
+interrupted-worker evidence, destination-drift relevance, and runtime-state
+clarification when multi-step forensics are needed. Primaries perform single direct
+status/inspection reads and known-event spot-checks themselves and own acceptance,
+lifecycle decisions, integration, and cleanup. Helper returns cited evidence. Custom agents
 inherit their base role's permissions. Helper and reviewer shell/research access
 remains available under operator permissions; inspection-only scope for shell and
 external effects is instruction-bound, an operator-accepted risk. Native edit and
-role-denied Hive mutations are enforced. Delegated Architect retains feature
-creation and repository registration for planning. See the [tool-access matrix](packages/opencode-hive/docs/HIVE-TOOLS.md#agent-tool-access).
+role-denied Hive mutations are enforced. A failed Hive tool is reported rather
+than reproduced through shell. Delegated Architect retains feature creation,
+repository registration, and blocking terminal calls to Scout, plan-reviewer,
+approach-advisor, their configured derivatives, and `hive-helper`. Architect as
+primary or child routes multi-step trace/evidence questions to Helper and returns
+board/control requests to its parent when delegated. See the [tool-access matrix](packages/opencode-hive/docs/HIVE-TOOLS.md#agent-tool-access).
 
 Runtime configuration lives in `~/.config/opencode/agent_hive.json`. A project
 may override `model` and/or `variant` for matching built-in or configured custom

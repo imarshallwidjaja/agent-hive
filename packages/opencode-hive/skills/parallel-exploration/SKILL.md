@@ -11,7 +11,9 @@ When you need to answer "where/how does X work?" across multiple domains (codeba
 
 **Core principle:** Use one independently answerable, non-overlapping, context-bounded question per fresh Scout session. Launch every currently known, necessary, non-duplicative independent question in the same assistant message, then synthesize the bounded results.
 
-**Delegation kind:** This is exploratory/read-only lightweight delegation. For kind-based scheduling under the gate, load `background-delegation` and let it govern foreground/blocking vs background wait mode.
+**Delegation kind:** This is exploratory/read-only lightweight delegation. When running as a primary under the gate, load `background-delegation` for kind-based scheduling and foreground/blocking vs background wait mode.
+
+When Architect is task-spawned, its permitted terminal planning-helper layer includes `hive-helper` and uses blocking calls, including same-message independent fan-out. Child-role rules take precedence over an inherited background appendix: board tools are unavailable, so return board/control requests to the parent without loading the primary-only `background-delegation` skill. Scout has no session-trace tools. Architect as primary or child routes multi-step trace/evidence questions and known native session/call identities to `hive-helper`; Helper is read-only and terminal. Primaries and Architect perform single direct reads themselves: one `hive_status`, one worktree inspect, or one `hive_task_trace_content` spot-check of a known event ref. Paging a trace, drift comparison, and interrupted-worker evidence packets belong to Helper.
 
 **Safe in Planning mode:** This is read-only exploration. It is OK to use during exploratory research even when there is no feature, no plan, and no approved tasks.
 
@@ -118,7 +120,7 @@ task({
 - Give each task a clear, focused `description`
 - Make prompts specific about what evidence to return, including known facts and expected output
 - Dispatch dependency-independent slices together, even though normal `task()` is blocking
-- When the env-gated appendix is present, follow `background-delegation` for wait mode; otherwise use the normal blocking return flow
+- When running as a primary with the env-gated appendix present, follow `background-delegation` for wait mode; a task-spawned Architect uses the blocking child-role branch above
 
 ### 4. Collect Results
 

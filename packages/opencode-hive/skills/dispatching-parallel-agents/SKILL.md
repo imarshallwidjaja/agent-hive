@@ -94,20 +94,22 @@ The example below is feature-task mode. In ad-hoc mode, consume the ready wave f
 
 ```typescript
 // Gate-open only: use background: true when independent foreground work can continue.
+// Issue independent creates together; capture each destination from its create result.
 hive_worktree_create({ feature: "feature-name", task: "01-fix-abort-tests" })
-hive_feature_select({ feature: "feature-name" })
-task({ subagent_type: "forager-worker", description: "Fix abort tests", prompt: "Hive task: 01-fix-abort-tests\n\nImplement and commit assigned changes; return sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present.", background: true })
 hive_worktree_create({ feature: "feature-name", task: "02-fix-batch-tests" })
+// When the route is unset/different or matching selection evidence is missing/uncertain:
 hive_feature_select({ feature: "feature-name" })
+// Issue independent task calls together; reuse this selection for both.
+task({ subagent_type: "forager-worker", description: "Fix abort tests", prompt: "Hive task: 01-fix-abort-tests\n\nImplement and commit assigned changes; return sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present.", background: true })
 task({ subagent_type: "forager-worker", description: "Fix batch tests", prompt: "Hive task: 02-fix-batch-tests\n\nImplement and commit assigned changes; return sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present.", background: true })
 
 // Blocking alternative, including every gate-closed session:
 hive_worktree_create({ feature: "feature-name", task: "03-fix-cleanup-tests" })
-hive_feature_select({ feature: "feature-name" })
+// Capture the create result; reuse only a visible same-feature selection (see below).
 await task({ subagent_type: "forager-worker", description: "Fix cleanup tests", prompt: "Hive task: 03-fix-cleanup-tests\n\nImplement and commit assigned changes; return sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present." })
 ```
 
-Independent Forager worktrees may be created and dispatched under one parent. In feature-task mode, pass the feature explicitly to `hive_worktree_create`, then select that feature immediately before its native `task()` call. For ad-hoc work, call `hive_adhoc_worktree_create`, then issue the next native `task()` call unchanged with a Forager or Forager-derived agent. Treat installs, builds, formatters, generators, and tests as mutations. Distinct worktrees do not isolate fixed-path fixtures, ports, databases, containers, generated outputs, or external mutable resources; consume the owning workflow's resource sequencing. Ordinary Scout, advisor, and reviewer launches remain eligible for same-message parallel dispatch.
+Independent Forager worktrees may be created and dispatched under one parent. In feature-task mode, pass the feature explicitly to `hive_worktree_create` and capture the destination from its inspection-shaped result; later checkpoints remain required. Before native `task()` dispatch, call `hive_feature_select` only when the selected route is unset or differs from the dispatch target, or the selection evidence below is missing or uncertain. Reuse a matching selection across a same-feature batch only when this session's most recent route-changing call visible in context is `hive_feature_select` for that same feature, with no later explicit-null or other-feature selection. When that evidence is not visible (for example after compaction or a summary, at session start, or in mixed ad-hoc/feature batches), or you are uncertain, call `hive_feature_select` for the dispatch target. Explicit null suppresses fallback and stays featureless unless the dispatch intentionally targets a feature. For ad-hoc work, call `hive_adhoc_worktree_create`, then issue the next native `task()` call unchanged with a Forager or Forager-derived agent. Batch independent Hive calls in one response/step, while sequencing dependent calls and mutations sharing a destination or state register. Treat installs, builds, formatters, generators, and tests as mutations. Distinct worktrees do not isolate fixed-path fixtures, ports, databases, containers, generated outputs, or external mutable resources; consume the owning workflow's resource sequencing. Ordinary Scout, advisor, and reviewer launches remain eligible for same-message parallel dispatch.
 
 In feature-task mode, follow the primary prompt's binding and assignment rules. Keep the worker's successor handoff; when a terminal report names accepted Forward obligations, follow the primary prompt's post-merge promotion procedure before recipient dispatch.
 
@@ -128,7 +130,7 @@ Choose the best-fit available descriptor for the requested output. Scout is for 
 When agents return:
 - Read each summary
 - Verify fixes don't conflict
-- In feature-task mode, pass each returned topology-aware pin unchanged through the feature workflow's verification and `hive_worktree_merge` lifecycle. Use the complete map when persisted `repos` are present; a singleton composite scalar is accepted, while multiple repositories require the complete map.
+- In feature-task mode, pass each returned topology-aware pin unchanged through the feature workflow's verification and primary-owned `hive_worktree_merge` lifecycle with the unchanged inspected target expectation. Use same-call `cleanup: 'worktree+branch'` when retention is not needed. Use the complete map when persisted `repos` are present; a singleton composite scalar is accepted, while multiple repositories require the complete map.
 - In ad-hoc mode, return result state and its exact pin to `orchestrating-ad-hoc-work`, which owns review gates, deterministic integration, selected integrated acceptance, and `hive_adhoc_worktree_merge`.
 
 ## Agent Prompt Structure

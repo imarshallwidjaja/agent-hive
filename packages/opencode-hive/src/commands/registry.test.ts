@@ -122,6 +122,12 @@ describe('HIVE_COMMANDS', () => {
     expect(output).toContain('load executing-plans and apply its Target Task Milestones procedure before dispatch and on resumption');
     expect(output).toContain('including an explicit companion suffix');
     expect(output).toContain('Preserve the exact feature, target, and explicitly named companions from the suggested prompt');
+    expect(output).toContain('call hive_feature_select only when the selected route is unset or differs from the dispatch target');
+    expect(output).toContain('initial destination identity from the inspection-shaped create result');
+    expect(output).toContain('Explicit null stays featureless unless the dispatch intentionally changes target');
+    expect(output).toContain("only when this session's most recent route-changing call visible in context is `hive_feature_select` for that same feature");
+    expect(output).toContain('no later explicit-null or other-feature selection');
+    expect(output).toContain('When that evidence is not visible (for example after compaction or a summary, at session start, or in mixed ad-hoc/feature batches), or you are uncertain, call `hive_feature_select` for the dispatch target');
   });
 
   it('suggests DAG-backed milestone prompts after approval and synced readback', () => {
@@ -136,7 +142,16 @@ describe('HIVE_COMMANDS', () => {
     const output = commands['approve-sync-plan'].run('api-delivery');
     expect(output).toContain('Approve and sync that same explicit feature');
     expect(output).toContain('Stop with exact blockers if plan approval, task sync, or readback fails');
-    expect(output.indexOf('read back its status and tasks')).toBeLessThan(output.indexOf('Build ## Recommended Execution Order'));
+    const readback = output.indexOf('Then read back status and its single top-level tasks list');
+    expect(readback).toBeGreaterThanOrEqual(0);
+    expect(readback).toBeLessThan(output.indexOf('Build ## Recommended Execution Order'));
+    expect(output).toContain('hive_plan_approve({ feature, expectedRevision, sync: true })');
+    for (const field of ['approvalPersisted', 'reason/stage', 'alreadyApproved: true', 'approval_superseded_during_sync', 'approval_verification_failed']) {
+      expect(output).toContain(field);
+    }
+    expect(output).toContain('When approval remains successful and only sync failed');
+    expect(output).toContain('retry hive_tasks_sync alone');
+    expect(output).toContain('status: null integrity entries need inspection and repair, never execution');
     expect(output).toContain('synced stored dependsOn graph');
     expect(output).toContain('resolved implicit sequential shorthand');
     expect(output).toContain('meaningful outcome or join tasks');

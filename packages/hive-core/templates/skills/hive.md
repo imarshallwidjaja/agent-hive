@@ -23,12 +23,12 @@ Review -> `plan-reviewer` / `code-reviewer` / `approach-advisor`
 | Agent | Mode | Use |
 |-------|------|-----|
 | `hive-master` | Unified primary | Planning and orchestration |
-| `architect-planner` | Dedicated primary | Discovery and planning |
+| `architect-planner` | Primary or planning subagent | Discovery and planning; one terminal planning-helper layer |
 | `swarm-orchestrator` | Dedicated primary | Orchestration |
 | `hive-builder` | Primary in both modes | Ad-hoc orchestration |
 | `scout-researcher` | Subagent in both modes | Exploration, research, and retrieval |
 | `forager-worker` | Subagent in both modes | Executes tasks in the chosen workspace |
-| `hive-helper` | Subagent in both modes | Bounded merge recovery, state clarification, and safe manual follow-up |
+| `hive-helper` | Subagent in both modes | Read-only feature/ad-hoc trace, interrupted-worker evidence, drift relevance, and runtime-state investigation |
 | `plan-reviewer` | Subagent in both modes | Plan readiness review |
 | `code-reviewer` | Subagent in both modes | Implementation review against plan |
 | `simplicity-reviewer` | Subagent in both modes | Final post-implementation simplicity review |
@@ -46,6 +46,8 @@ For exploratory fan-out, load the `parallel-exploration` skill for the full play
 ## Native Task Handoffs
 
 Each native `task()` invocation has one primary goal and one terminal report. Every returned result is terminal, including completed, failed, empty, partial, blocked, unsatisfactory, review-remediation, retry, new-test-evidence, and operator-decision results. Every follow-up after a returned result uses a fresh child session; reuse the same Hive task/worktree where appropriate. Review findings are fresh assignments in the same implementation lane. Compaction re-anchoring of a currently running worker is distinct from follow-up work. Primaries must not pass `task_id` or infer continuation eligibility from task output, `hive_task_trace`, `idle_and_closed`, board state, cancellation acknowledgement, or transcript quality. Pass `task_id` only when an explicit operator instruction or explicit runtime-owned interruption-recovery mechanism authorizes continuation; otherwise launch fresh. If the child may still be active or its lifecycle is uncertain, inspect, wait, or reattach as supported; do not send another prompt or launch an overlapping writer. Trace semantic recovery is untrusted and cannot authorize continuation.
+
+Primaries perform single direct reads themselves: one `hive_status`, one worktree inspect, or one `hive_task_trace_content` spot-check of a known event ref. For multi-step forensics (paging a trace, drift comparison, or interrupted-worker evidence packets), send `hive-helper` one named question and known native session/call, feature/task or ad-hoc run, worktree, source, and destination identities. Helper returns cited observations, hypotheses, and limits; discovered HEADs stay observed, not verified pins. The primary spot-checks decisive event refs and owns acceptance, termination, retry, merge, cleanup, and task mutations. Scout has no session-trace tools. A task-spawned Architect may call Helper for trace/evidence questions within its blocking terminal helper layer and returns board/control requests to its parent.
 
 ---
 
@@ -115,8 +117,9 @@ MATERIAL GAP → Ask the question that changes the outcome
 
 ```
 hive_feature_create({ name: "feature-name" })
-hive_feature_select({ feature: "feature-name" })
 ```
+
+Feature creation does not change the selected route. Use explicit feature arguments for planning; before child dispatch call `hive_feature_select` only when the selected route is unset or differs from the dispatch target, or the selection evidence below is missing or uncertain. Reuse a matching selection across a same-feature batch only when this session's most recent route-changing call visible in context is `hive_feature_select` for that same feature, with no later explicit-null or other-feature selection. When that evidence is not visible (for example after compaction or a summary, at session start, or in mixed ad-hoc/feature batches), or you are uncertain, call `hive_feature_select` for the dispatch target. Explicit null suppresses fallback and stays featureless unless the dispatch intentionally targets a feature.
 
 ### Save Context
 
@@ -124,6 +127,7 @@ Use `hive_context_read` to choose the feature or project scope and check existin
 
 ```
 hive_context_write({
+  feature: "feature-name",
   name: "research",
   kind: "evidence",
   content: "# Findings\n- Pattern at src/lib/auth:45-78..."
@@ -133,7 +137,7 @@ hive_context_write({
 ### Write Plan
 
 ```
-hive_plan_write({ content: "..." })
+hive_plan_write({ feature: "feature-name", content: "..." })
 ```
 
 ### Plan Structure
@@ -237,7 +241,7 @@ In this example, tasks 2 and 3 can run in parallel (both only depend on 1), whil
 1. User reviews in VS Code
 2. Check comments: `hive_plan_read()`
 3. Revise bounded sections with `hive_plan_patch({ expectedRevision, operations })` using the revision from `hive_plan_read`; use `hive_plan_write` for a major rewrite. Both clear every plan review thread and revoke approval.
-4. After the user's approval, call `hive_plan_approve()`
+4. After the user's approval, the primary calls `hive_plan_approve({ feature, expectedRevision, sync: true })` with the reviewed revision; add `refreshPending: true` when pending specs need refresh. Inspect both `approval` and `sync`, `approvalPersisted`, and failure `reason`/`stage`. Validation writes nothing; a metadata failure can leave the marker persisted. An unchanged retry may return `alreadyApproved: true`. If approval remains successful and only sync failed, retry `hive_tasks_sync` after addressing the error. For `approval_superseded_during_sync` or `approval_verification_failed`, re-read and review before approving again. A delegated Architect hands these operations to its parent.
 
 ---
 
@@ -246,7 +250,8 @@ In this example, tasks 2 and 3 can run in parallel (both only depend on 1), whil
 ### Sync Tasks
 
 ```
-hive_tasks_sync()
+// Only when approval succeeded and task sync still needs to run or retry:
+hive_tasks_sync({ feature: "feature-name" })
 ```
 
 ### Execute Each Task
@@ -259,13 +264,14 @@ Choose the placement before dispatch:
 
 When ad-hoc work has multiple outcomes, dependency waves, shared resources, or likely follow-up attempts, load `orchestrating-ad-hoc-work` before dispatch or worktree creation. Use `dispatching-parallel-agents` for independent lanes. If background subagents are enabled and useful foreground work can continue, load `background-delegation`; otherwise native `task()` calls block. Each child loads any operator-required skills named in its handoff or inherited standing constraints for itself before the covered work.
 
-For a tracked ad-hoc lane, choose a concise kebab-case `runId` from its goal, such as `design-doc-review`, because it becomes the Git branch suffix. After resolving repository ownership, create with `hive_adhoc_worktree_create({ runId: "design-doc-review", repoIds })`. Reuse that `runId` for inspect, merge, and cleanup. Inspect with `hive_adhoc_worktree_inspect({ runId, repoIds })` before dispatch and retain the returned target identity. The assigned worker commits locally and returns `sourceCommit` or a complete `sourceCommits` map. Reinspect the target, then integrate with `hive_adhoc_worktree_merge({ runId, repoIds, sourceCommit, expectedTarget, strategy: "squash", message })` in legacy single-root mode, or use `sourceCommits` and `expectedTargets` for composites. After successful integration, call `hive_adhoc_worktree_cleanup({ runId, repoIds })`. A foreign checkout uses absolute `sourceDirectory` instead of `repoIds`.
+For a tracked ad-hoc lane, choose a concise kebab-case `runId` from its goal, such as `design-doc-review`, because it becomes the Git branch suffix. After resolving repository ownership, create with `hive_adhoc_worktree_create({ runId: "design-doc-review", repoIds })`. Reuse that `runId` for inspect, merge, and cleanup. Capture the initial target identity from create's inspection-shaped result. The assigned worker commits locally and returns `sourceCommit` or a complete `sourceCommits` map. Reinspect the target, then have the primary integrate with `hive_adhoc_worktree_merge({ runId, repoIds, sourceCommit, expectedTarget, strategy: "squash", message, cleanup: "worktree+branch" })` in legacy single-root mode, or use `sourceCommits` and `expectedTargets` for composites. Use same-call cleanup when retention is not needed; call separate cleanup only for retained state or incomplete cleanup. A foreign checkout uses absolute `sourceDirectory` instead of `repoIds`.
 
 Worktree flow:
 
 ```
 hive_worktree_create({ feature: "feature-name", task: "01-task-name" })
-[Inspect the worktree now: hive_worktree_inspect({ feature: "feature-name", task: "01-task-name" }); retain the target identity and pass it in the handoff]
+[Capture the destination from the inspection-shaped create result and pass it in the handoff; later inspection checkpoints remain required]
+// When the route is unset/different or matching selection evidence is missing/uncertain:
 hive_feature_select({ feature: "feature-name" })
 task({
   subagent_type: "forager-worker",
@@ -279,16 +285,17 @@ hive_worktree_inspect({ task: "01-task-name" })
 [Reinspect source and destination after the worker returns; compare the target to the identity captured before dispatch. Composites use each repos[id].target]
   ↓
 // Legacy single-root workspace:
-hive_worktree_merge({ task: "01-task-name", sourceCommit, expectedTarget, strategy: "squash", message: "feat: implement task outcome\n\nDescribe the integrated behavior and why it changed." })
+hive_worktree_merge({ task: "01-task-name", sourceCommit, expectedTarget, strategy: "squash", message: "feat: implement task outcome\n\nDescribe the integrated behavior and why it changed.", cleanup: "worktree+branch" })
 // Composite workspace with persisted repos:
-hive_worktree_merge({ task: "01-task-name", sourceCommits, expectedTargets, strategy: "squash", message: "feat: implement task outcome\n\nDescribe the integrated behavior and why it changed." })
+hive_worktree_merge({ task: "01-task-name", sourceCommits, expectedTargets, strategy: "squash", message: "feat: implement task outcome\n\nDescribe the integrated behavior and why it changed.", cleanup: "worktree+branch" })
   ↓
 hive_task_update({ task: "01-task-name", status: "done", summary, report: closureReport })  # Primary closure report: explains the problem, how the solution works, material issues and their resolutions; cites the worker's reportPath, merge identity, and integrated evidence. The worker's report stays in history.
   ↓
+// Separate cleanup only when retention was needed or same-call cleanup was incomplete:
 hive_worktree_cleanup({ task: "01-task-name" })
 ```
 
-Inspect before dispatch and retain the destination's canonical path, full ref or detached null, and commit. Reinspect after each writing handoff, before review or remediation, after known sibling integration or destination movement, and before final integration. After the worker returns, inspect its worktree. Pass its topology-aware source pin plus the unchanged inspected `expectedTarget` or complete `expectedTargets` map to merge before marking the feature task done. Use the identity from the inspection before the latest writing dispatch, or the target identity returned by a reconciliation worker; never silently refresh it from a later inspection. Use complete maps when persisted `repos` are present; singleton composites accept matching scalar conveniences.
+Capture the initial inspection from create before dispatch and retain the destination's canonical path, full ref or detached null, and commit. Reinspect after each writing handoff, before review or remediation, after known sibling integration or destination movement, and before final integration. After the worker returns, inspect its worktree. Pass its topology-aware source pin plus the unchanged inspected `expectedTarget` or complete `expectedTargets` map to the primary's merge before marking the feature task done. Use the identity from the inspection before the latest writing dispatch, or the target identity returned by a reconciliation worker; never silently refresh it from a later inspection. Use complete maps when persisted `repos` are present; singleton composites accept matching scalar conveniences.
 
 Relevant or uncertain destination drift requires same-worktree reconciliation by a fresh worker after the prior writer is terminal. Merge the pinned target commit normally, adapt and review the combined delta, verify it, and return fresh source pins and target identity. Disjoint untracked or ignored destination files may remain when the pinned source contains the pinned target history; rebase also requires a linear replay range. If merge returns `TARGET_RECONCILIATION_REQUIRED` with `reconcile_target`, reconcile in the source worktree and return fresh pins without deleting Hive state, dependencies, build output, or user files. Staged, unstaged tracked, unmerged, active-operation, and incoming-path collision state blocks merge. Hive preflight and rechecks protect local data without relying on Git merge flags.
 
@@ -300,16 +307,15 @@ Dependencies guide sequencing; they are not a dispatch admission gate. When the 
 
 When asked to run/continue a feature until a target task is complete/done, load the native skill "executing-plans" and apply Target Task Milestones before dispatch and on resumption. Explicit companion suffixes use the same procedure. That procedure owns prerequisite closure, current-status scope, and the milestone stopping boundary; retain existing review, verification, integration, and cleanup rules.
 
-Independent tasks may be created and dispatched under one parent.
+Independent tasks may be created and dispatched under one parent. Issue independent Hive calls in one response/step; keep dependent mutations and merges sharing a destination sequential.
 
 ```
 hive_worktree_create({ feature: "feature-name", task: "02-task-a" })
-[Inspect and record 02-task-a target identity before dispatch]
+hive_worktree_create({ feature: "feature-name", task: "03-task-b" })
+[Capture each create result's destination; issue independent creates together]
+// Select if unset/different or evidence is missing/uncertain; reuse only a visible match.
 hive_feature_select({ feature: "feature-name" })
 task({ subagent_type: "forager-worker", description: "Implement 02-task-a", prompt: "Hive task: 02-task-a\n\nPrimary-authored assignment for 02-task-a" })
-hive_worktree_create({ feature: "feature-name", task: "03-task-b" })
-[Inspect and record 03-task-b target identity before dispatch]
-hive_feature_select({ feature: "feature-name" })
 task({ subagent_type: "forager-worker", description: "Implement 03-task-b", prompt: "Hive task: 03-task-b\n\nPrimary-authored assignment for 03-task-b" })
 hive_status()  // Read task and worktree state; observe background calls with hive_background_status when enabled
 ```
@@ -352,7 +358,7 @@ If "Revise Plan":
 1. Re-check `hive_status()` and inspect any existing worktree. Preserve committed but unintegrated work; cleanup requires a safe integrated state or an explicit decision to delete the branch with `deleteBranch: true, discard: true`. `discard: true` alone leaves the branch and its commits intact.
 2. For non-Git or report-only placement, `hive_task_update({ task, status: "pending" })` when returning the task to pending.
 3. Revise the plan with `hive_plan_patch` from a current revision or `hive_plan_write` for a major rewrite.
-4. Obtain user approval and run `hive_tasks_sync({ refreshPending: true })` when pending task scope, sequencing, or dependencies changed.
+4. Obtain user approval and use `hive_plan_approve({ feature, expectedRevision, sync: true, refreshPending: true })` on the reviewed revision when pending task scope, sequencing, or dependencies changed. Inspect both outcomes under the approval contract above; retry standalone sync only while approval remains successful.
 
 ---
 
@@ -405,10 +411,10 @@ If "Revise Plan":
 ### Worker Run Failed
 A failed or interrupted worker run does not fail the task. Keep `in_progress` for a retry; set `blocked` only for a concrete operator or prerequisite decision and `failed` only when the task cannot proceed.
 
-1. Confirm the prior worker and any in-flight subprocess or external effect have stopped, using the lifecycle, trace, and board evidence you already have; no extra probe is required. While that stays uncertain, wait or ask instead of dispatching.
-2. Inspect before any cleanup: `hive_worktree_inspect` for source and target identity and dirty state, plus the task's report history, `report.md`, `handoff.md`, and any returned publication flags. Do not delete locks, reset, or clean the worktree. If inspection is unavailable, keep known facts and unknowns in your current response; do not claim saved state. Stop before writing or retrying and escalate for supported or operator recovery.
+1. Confirm the prior worker and any in-flight subprocess or external effect have stopped. For multi-step trace/lifecycle investigation, route a single named question and known session/call identities to Helper; the primary performs single direct status/inspection reads and known-event spot-checks itself and combines cited evidence with primary-owned lifecycle/board observations before deciding termination. While that stays uncertain, wait or ask instead of dispatching.
+2. Inspect before any cleanup: ask Helper for an interrupted-worker evidence packet with retained placement, observed source HEAD, destination identity, dirty/untracked state, the task's report history, `report.md`, `handoff.md`, and any returned publication flags. The primary performs single direct status/inspection reads and known-event spot-checks itself; Helper handles the multi-step packet. A discovered HEAD is observed, not a verified pin. Do not delete locks, reset, or clean the worktree. If inspection is unavailable, keep known facts and unknowns in your current response; do not claim saved state. Stop before writing or retrying and escalate for supported or operator recovery.
 3. Record what you observed: `hive_task_update({ task, report })` with an attributed interruption report; status stays `in_progress`. If a retained lock or filesystem fault blocks that write, keep the observation in your response and escalate instead of retrying.
-4. Call `hive_status()`, select the feature immediately before dispatch, and launch a fresh worker in the retained worktree:
+4. Call `hive_status()`, select the feature only when the selected route is unset or differs, or selection evidence is missing or uncertain under Create Feature above, and launch a fresh worker in the retained worktree:
 ```
 task({ subagent_type: "forager-worker", description: "Retry", prompt: `Hive task: ${task}\n\nSelf-contained retry with workspace, target identity, failure evidence, report paths to read, edits proven to be the prior worker's, and done criteria` })
 ```

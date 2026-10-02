@@ -311,6 +311,14 @@ describe('config hook autoLoadSkills guidance', () => {
       expect(prompt).not.toContain('task_status');
       expect(prompt).not.toContain(backgroundSkill.template);
     }
+    expect(architectPrompt).toContain('This appendix applies only when running as a primary');
+    expect(architectPrompt).toContain('When Architect is task-spawned, use blocking calls');
+    expect(architectPrompt).toContain('return board/control requests to the parent');
+    expect(architectPrompt).toContain('child sessions cannot use background board tools');
+    const architectAppendix = architectPrompt.slice(architectPrompt.indexOf('## Background-First Orchestration'));
+    expect(architectAppendix).toContain('Child-role rules take precedence over this appendix');
+    expect(architectAppendix).toContain('including hive-helper');
+    expect(architectAppendix).toContain('return board/control requests to the parent without loading the primary-only background-delegation skill');
     for (const prompt of [scoutPrompt, foragerPrompt, hiveHelperPrompt, codeReviewerPrompt]) {
       expect(prompt).not.toContain('skill({ name: "background-delegation" })');
       expect(prompt).not.toContain('task({ background: true');

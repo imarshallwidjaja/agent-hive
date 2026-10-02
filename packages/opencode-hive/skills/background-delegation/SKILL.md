@@ -17,6 +17,10 @@ Default: When `## Background-First Orchestration` is present, background-delegat
 
 Gate-closed sessions use normal blocking `task()` wait mode. Do not simulate background orchestration from this skill alone.
 
+### Architect child boundary
+
+When Architect runs as a primary, the gate-open scheduling and board protocol below apply. When Architect is task-spawned, use blocking `task()` calls for its one terminal layer of permitted Scout, plan-reviewer, or approach-advisor helpers, including configured derivatives, and `hive-helper`. Emit independent permitted calls together, then wait for their results. Background board tools and primary-control operations are denied in children; return board/control requests and parent-owned lifecycle decisions with known identities to the parent. Trace/evidence investigation may go directly to Helper, which remains read-only and terminal. Keep the inherited feature route and use explicit feature arguments for planning. This branch takes precedence over an inherited Background-First Orchestration heading.
+
 For Hive Builder or unified Hive ad-hoc work, `orchestrating-ad-hoc-work` supplies the already-defined lanes and owns lane-level recovery and integration. This skill owns background observation, reconciliation, cancellation, and wait-mode protocol, then returns those outcomes to the ad-hoc workflow.
 
 ## Direct vs Delegated Work
@@ -76,7 +80,9 @@ Orchestrator owns final confidence, not every verification action. Workers and r
 
 Before any dependent decision, merge, cleanup, final report, or new overlapping writing/execution lane, inspect scoped `hive_background_status`; `hive_status` is not that surface. Waiting, pending, terminal-unreconciled, stale, or ownership-overlapping lanes need a board action: wait, cancel, reconcile, ignore, or explicit sequencing. Reconcile and ignore are bookkeeping only; they archive the board row and do not stop execution. The board observes the originating native parent and call, not the current feature or agent. Stale and unknown observations stay visible. Multiple launch observations may exist for one native task identity when explicit runtime-owned interruption recovery is used. If completion lacks a call ID or its identity is ambiguous, record unknown and hint `hive_task_trace`; never guess the latest child. Missing or ambiguous completion identity must not block unrelated dispatch, but ownership-overlapping work still requires inspection or waiting; do not send another prompt or launch another writer. Treat installs, builds, formatters, generators, and tests as mutations. Unrelated worktrees may continue.
 
-## Protocol
+The board protocol is primary-owned. Primaries perform single direct reads themselves: one `hive_status`, one worktree inspect, or one `hive_task_trace_content` spot-check of a known event ref. For multi-step forensics (paging a trace, drift comparison, or interrupted-worker evidence packets), send `hive-helper` one named question and known session/call/worktree/source/destination identities, then spot-check decisive cited event refs. Helper returns evidence, not a termination or replacement-writer decision. A delegated Architect may call Helper for trace/evidence investigation but hands board/control and lifecycle decisions to its parent.
+
+## Protocol (Primary Sessions)
 
 1. Consume the owning workflow's ready lanes, delegation kinds, ownership boundaries, and safe independent foreground work.
 2. Build the context packet for each supplied lane without changing its boundary.
@@ -208,7 +214,7 @@ Result: wait for final native task evidence, then refresh `hive_background_statu
 
 - Using background when the next step depends on the result.
 - Launching speculative work without a clear decision point.
-- Nested delegation from any subagent session.
+- Nested delegation outside Architect's permitted blocking terminal planning-helper layer.
 - Forgotten terminal jobs: treating a prompt-acknowledged terminal result as reconciled, or forgetting to wait for native completion, refresh, reconcile, or cancel before using background results or ending the turn.
 - Empty-board false negatives: treating `jobs: []` as proof that no native background work exists while completion evidence is unresolved.
 - Wait-only polling: repeatedly calling `hive_background_status` while `schedulerGuidance.reason` is `wait_for_native_completion_notification`.

@@ -153,7 +153,7 @@ function buildBackgroundDelegationPromptAppendix(
 ): string {
   const availability = resolveBackgroundDelegationAvailability(nativeSkillsByName, eligibleHiveSkills, skippedHiveSkills);
   if (availability.available) {
-    return '\n\n## Background-First Orchestration\nOpenCode background subagents are enabled for this session. Delegation-first orchestration is the baseline; this appendix only opens background wait mode and the Hive board protocol. When this heading is present, background-delegation governs scheduling and wait mode; other loaded skills govern domain workflow and safety. Before launching or managing background lanes, load/use skill({ name: "background-delegation" }). Background mode is available only when useful unrelated foreground work can continue; otherwise use blocking. Detailed safety overrides and board protocol live in that skill. Gate-closed sessions keep normal blocking task() wait mode and must launch returned blocking task calls rather than working directly in delegated worktrees.';
+    return '\n\n## Background-First Orchestration\nThis appendix applies only when running as a primary. When Architect is task-spawned, use blocking calls for its permitted terminal planning-helper layer, including hive-helper. Child-role rules take precedence over this appendix: child sessions cannot use background board tools, so return board/control requests to the parent without loading the primary-only background-delegation skill. OpenCode background subagents are enabled for primary sessions. Delegation-first orchestration is the baseline; this appendix only opens background wait mode and the Hive board protocol. When this heading is present in a primary session, background-delegation governs scheduling and wait mode; other loaded skills govern domain workflow and safety. Before launching or managing background lanes, load/use skill({ name: "background-delegation" }). Background mode is available only when useful unrelated foreground work can continue; otherwise use blocking. Detailed safety overrides and board protocol live in that skill. Gate-closed sessions keep normal blocking task() wait mode and must launch returned blocking task calls rather than working directly in delegated worktrees.';
   }
   if (availability.reason === 'experiment-disabled') return '';
   const reason = availability.reason === 'skill-disabled'
@@ -938,7 +938,7 @@ const plugin: Plugin = async (ctx) => {
           .filter(([, config]) => bases.includes(config.baseAgent))
           .map(([name]) => [name, 'allow'])),
       });
-      const architectTaskPermission = taskPermission(['scout-researcher', 'plan-reviewer', 'approach-advisor']);
+      const architectTaskPermission = taskPermission(['scout-researcher', 'plan-reviewer', 'approach-advisor'], ['hive-helper']);
       const primaryTaskPermission = taskPermission(routingBases, ['architect-planner', 'hive-helper', 'general', 'explore']);
       const reviewTaskPermission = taskPermission(routingBases.filter((base) => base !== 'forager-worker'), ['hive-helper']);
       const agentMode = configService.get().agentMode ?? 'dedicated';

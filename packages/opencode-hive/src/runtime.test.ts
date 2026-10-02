@@ -1026,7 +1026,7 @@ describe('coordinated runtime hard cut', () => {
     const reviewOrchestrators = ['dash-reviewer', 'vulnerability-review-primary'];
     for (const agent of Object.keys(matrix)) {
       const targets = agent === 'architect-planner'
-        ? [...planningHelpers, ...planningHelpers.map((base) => `audit-${base}`)]
+        ? [...planningHelpers, ...planningHelpers.map((base) => `audit-${base}`), 'hive-helper']
         : executors.includes(agent)
           ? [...CUSTOM_AGENT_BASES, ...CUSTOM_AGENT_BASES.map((base) => `audit-${base}`), 'architect-planner', 'hive-helper', 'general', 'explore']
           : reviewOrchestrators.includes(agent)
@@ -1085,7 +1085,7 @@ describe('coordinated runtime hard cut', () => {
       }])),
     } });
     const loaded = await hooks;
-    const config: any = { permission: { '*': 'allow' } };
+    const config: any = { permission: { '*': 'allow' }, experimental: { primary_tools: ['operator_tool'] } };
     await loaded.config!(config);
     expect(config.subagent_depth).toBe(2);
 
@@ -1105,15 +1105,19 @@ describe('coordinated runtime hard cut', () => {
     }
 
     const reads = ['hive_context_read', 'hive_constraints_read', 'hive_plan_read', 'hive_status', 'hive_repositories_status', 'hive_git_snapshot'];
-    for (const base of planningHelpers) for (const target of [base, `nested-${base}`]) {
+    const helperTargets = [...planningHelpers.flatMap((base) => [base, `nested-${base}`]), 'hive-helper'];
+    for (const target of helperTargets) {
+      const base = target.replace(/^nested-/, '');
       expect(evaluatePermission('task', target, config.permission, architect, architectSession), target).toBe('allow');
       const helper = config.agent[target].permission;
       const grandchildSession = spawnSubagentSessionPermission(architectSession, helper, config.experimental.primary_tools);
       for (const rule of architectSession) expect(grandchildSession, target).toContainEqual(rule);
       expect(grandchildSession.some((rule) => rule.permission === 'parent_allow_only'), target).toBe(false);
-      const allowed = [...reads, ...(base === 'scout-researcher'
-        ? ['hive_repositories_discover'] : ['hive_context_write', 'hive_context_append'])];
-      for (const tool of [...HIVE_TOOL_NAMES, 'hive_future_tool']) {
+      const allowed = [...reads, ...(base === 'hive-helper'
+        ? ['hive_worktree_inspect', 'hive_adhoc_worktree_inspect', 'hive_task_trace', 'hive_task_trace_content']
+        : base === 'scout-researcher'
+          ? ['hive_repositories_discover'] : ['hive_context_write', 'hive_context_append'])];
+      for (const tool of [...HIVE_TOOL_NAMES, 'hive_future_tool', 'operator_tool']) {
         expect(evaluatePermission(tool, '*', config.permission, helper, grandchildSession), `${target}:${tool}`)
           .toBe(allowed.includes(tool) ? 'allow' : 'deny');
       }

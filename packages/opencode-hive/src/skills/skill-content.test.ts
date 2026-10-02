@@ -543,6 +543,10 @@ describe('skill content', () => {
     expect(template).toContain('There is no numeric direct-read quota and no mandatory delegation');
     expect(template).toContain('Do not use recursive Scout verification as a substitute for reasoning');
     expect(template).toContain('No numeric quota or artificial fan-out applies');
+    expect(template).toContain('Architect as primary or child routes multi-step trace/evidence questions and known native session/call identities to `hive-helper`');
+    expect(template).toContain('Helper is read-only and terminal');
+    expect(template).toContain('without loading the primary-only `background-delegation` skill');
+    expect(template).toContain('Paging a trace, drift comparison, and interrupted-worker evidence packets belong to Helper');
   });
 
   it('bounds Scout slices before researcher selection and selects custom Scouts by descriptor match', () => {
@@ -598,7 +602,7 @@ describe('skill content', () => {
 
     expect(skill).toBeDefined();
     expect(skill!.template).toContain('exploratory/read-only lightweight delegation');
-    expect(skill!.template).toContain('For kind-based scheduling under the gate, load `background-delegation`');
+    expect(skill!.template).toContain('When running as a primary under the gate, load `background-delegation`');
     expect(skill!.template).toContain('Context Packet');
     expect(skill!.template).toContain('known facts');
     expect(skill!.template).toContain('constraints and non-goals');
@@ -755,13 +759,16 @@ describe('skill content', () => {
     expect(skill!.template).toContain('One implementation assignment normally maps to one numbered task');
     expect(skill!.template).toContain('Never reconstruct blocker details from worker prose or task traces');
     expect(skill!.template).toContain('explicit status leaving blocked');
-    expect(skill!.template).toContain('explicitly admitted native general/helper exceptions');
+    expect(skill!.template).toContain('explicitly admitted native general exception');
+    expect(skill!.template).toContain('Helper is read-only investigation, not an execution lane');
     expect(skill!.template).toContain('Other mutation-capable or unknown task targets are denied');
     expect(skill!.template).toContain('Architect retains its bounded planning lane');
     expect(skill!.template).not.toContain('Non-Hive mutation-capable or unknown task targets are denied');
     expect(skill!.template).toContain('execution-decisions');
     expect(skill!.template).toContain('Dependencies guide sequencing');
-    expect(skill!.template).toContain('immediately before dispatch');
+    expect(skill!.template).toContain('Explicit null suppresses fallback');
+    expect(skill!.template).toContain('primary calls merge itself');
+    expect(skill!.template).toContain('For multi-step forensics (paging a trace, drift comparison, or interrupted-worker evidence packets)');
     expect(skill!.template).toContain('Hive task: <task-folder>');
     expect(skill!.template).toContain('Promote accepted Forward obligations');
     expect(skill!.template).toContain('explicit feature target');
@@ -854,11 +861,13 @@ describe('skill content', () => {
       '1. Confirm the prior worker and any in-flight subprocess or external effect have stopped',
       '2. Inspect before any cleanup',
       '3. Record what you observed',
-      '4. Call `hive_status()`, select the feature immediately before dispatch, and launch a fresh worker in the retained worktree',
+      '4. Call `hive_status()`, select the feature only when the selected route is unset or differs, or selection evidence is missing or uncertain under Create Feature above, and launch a fresh worker in the retained worktree',
     ].map((step) => hiveSkill.indexOf(step));
     expect(recoverySteps.every((index) => index >= 0)).toBe(true);
     expect(recoverySteps).toEqual([...recoverySteps].sort((a, b) => a - b));
     expect(hiveSkill).toContain('Do not delete locks, reset, or clean the worktree');
+    expect(hiveSkill).toContain('ask Helper for an interrupted-worker evidence packet');
+    expect(hiveSkill).toContain('A discovered HEAD is observed, not a verified pin');
     expect(hiveSkill).toContain('If inspection is unavailable, keep known facts and unknowns in your current response; do not claim saved state. Stop before writing or retrying and escalate for supported or operator recovery');
   });
 
@@ -873,7 +882,9 @@ describe('skill content', () => {
     expect(skill).toBeDefined();
     expect(completeDevelopment).toContain('skill({ name: "verification" })');
     expect(completeDevelopment).toContain('hive_worktree_merge');
-    expect(completeDevelopment).toContain('hive-helper');
+    expect(completeDevelopment).toContain('the primary calls `hive_worktree_merge`');
+    expect(completeDevelopment).toContain('same-call cleanup');
+    expect(completeDevelopment).not.toContain('via `hive-helper`');
     expect(completeDevelopment).toContain('For worktree placement');
     expect(completeDevelopment).toContain('For non-Git or report-only placement');
     expect(completeDevelopment).toContain('skip Hive merge and cleanup');
@@ -948,6 +959,10 @@ describe('skill content', () => {
     expect(skill!.template).not.toMatch(/Treat unresolved lanes as blockers/i);
     expect(skill!.template).toContain('execution-decisions');
     expect(skill!.template).toContain('Dependencies guide sequencing');
+    expect(skill!.template).toContain('Explicit null suppresses fallback');
+    expect(skill!.template.match(/hive_feature_select\(\{ feature: "feature-name" \}\)/g)).toHaveLength(1);
+    expect(skill!.template).toContain('Batch independent Hive calls in one response/step');
+    expect(skill!.template).toContain("same-call `cleanup: 'worktree+branch'`");
     expect(skill!.template).not.toContain('Only dispatch tasks that are runnable');
     expect(skill!.template).not.toContain('Proceed only after operator approval');
   });
@@ -1077,7 +1092,11 @@ describe('skill content', () => {
     expect(skill!.template).not.toContain('hive_adhoc_worktree_create({});');
     expect(skill!.template).toContain('Reconcile each board row exactly once');
     expect(skill!.template).toContain("subagent_type: 'forager-worker'");
-    expect(skill!.template).toContain('Nested delegation from any subagent session');
+    expect(skill!.template).toContain("Nested delegation outside Architect's permitted blocking terminal planning-helper layer");
+    expect(skill!.template).toContain('When Architect runs as a primary');
+    expect(skill!.template).toContain('When Architect is task-spawned');
+    expect(skill!.template).toContain('Background board tools and primary-control operations are denied in children');
+    expect(skill!.template).toContain('return board/control requests');
     expect(skill!.template).toContain('Treat prompt acknowledgment as notification only');
     expect(skill!.template).toContain('waitingForNativeCompletion');
     expect(skill!.template).toContain('completionNotificationsPending > 0');
