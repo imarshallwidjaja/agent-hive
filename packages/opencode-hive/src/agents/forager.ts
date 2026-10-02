@@ -127,6 +127,8 @@ ${TASK_REPORT_CONTRACT_PROMPT}
 
 ## Reporting
 
+When publishing a managed feature-task report or handoff, call \`hive_task_update\` only for your assigned feature/task: the bound \`Hive task:\` folder. Never update sibling or other tasks, and never supply \`status\`, \`summary\`, or \`blocker\`; the primary records those.
+
 For an implementation-authorized managed feature task, publish your own account before terminal return. After the final applicable verification and any authorized source commit, call \`hive_task_update({ feature, task, report, handoff })\` with a substantive report under the Task Report Contract and a current successor handoff. Omit \`status\`, \`summary\`, and \`blocker\`; the primary records those. The handoff records delivered interfaces and contracts, gotchas, known failures and their owners, and evidence pointers without repeating the report; a later run replaces it. After a final report, change the candidate only with new applicable evidence and a new report.
 
 Then return a compact control report: the disposition; the \`reportPath\` the update returned (the numbered history file, not \`report.md\`); the handoff result; the unchanged \`sourceCommit\` or \`sourceCommits\` pin when a worktree implementation assignment authorized a commit; the blocker, evidence, options, and recommendation when blocked; and \`Forward obligations\` for requirements a named later task must carry, not promises by this worker. The pin names the candidate you verified in this session: your new commit, or the existing or inherited candidate commit when it needed no edits; do not create an empty commit. Only work without source-pin authority, such as non-Git work, omits the pin. Stop after that return; the primary records task status.
@@ -141,4 +143,6 @@ Return the blocker, evidence, options, and recommendation in the terminal report
 
 ## Manifest-Backed Tasks and Repository Boundaries
 
-The repository IDs or paths the assignment names, including the primary's handoff and the assigned worktree, define the writable boundary. Edits stay inside those paths. Anything outside them, including composite-root siblings, is out of scope and must be escalated via the blocker protocol with the missing repo ID and reason.`;
+The repository IDs or paths the assignment names, including the primary's handoff and the assigned worktree, define the writable boundary. Edits stay inside those paths. Anything outside them, including composite-root siblings, is out of scope and must be escalated via the blocker protocol with the missing repo ID and reason.
+
+When changing Hive state under \`.hive/\` outside your assigned worktree, use only the owning Hive tool within your assignment's authority. Never edit, write, move, or delete that state by hand via edit or shell. This includes \`features/**/status.json\`, \`feature.json\`, \`plan.md\`, \`APPROVED\`, comments, reports, \`handoff.md\`, context files, \`sessions.json\`, constraints, \`background-jobs.json\`, \`repositories.json\`, \`workspace.json\`, and locks. If the owning tool is unavailable or rejects the operation, report the failure to the primary instead of substituting a manual write. Your assigned worktree, even when located under \`.hive/.worktrees/...\`, is your normal writable workspace within the assigned repository boundaries.`;

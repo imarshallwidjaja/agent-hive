@@ -167,6 +167,12 @@ const TASK_STATUSES: ReadonlySet<string> = new Set([
   'pending', 'in_progress', 'done', 'cancelled', 'blocked', 'failed', 'partial',
 ]);
 
+export function validateStoredTaskStatus(status: TaskStatus | null, taskFolder: string): void {
+  if (!status || typeof status !== 'object' || !TASK_STATUSES.has(status.status)) {
+    throw new Error(`Task '${taskFolder}' has a corrupt status file`);
+  }
+}
+
 export class TaskService {
   private readonly subtaskService: SubtaskService;
 
@@ -843,12 +849,6 @@ export class TaskService {
     }
   }
 
-  private validateStoredTaskStatus(status: TaskStatus, taskFolder: string): void {
-    if (!status || typeof status !== 'object' || !TASK_STATUSES.has(status.status)) {
-      throw new Error(`Task '${taskFolder}' has a corrupt status file`);
-    }
-  }
-
   private readValidatedTaskStatus(statusPath: string, taskFolder: string): TaskStatus | null {
     let status: TaskStatus | null;
     try {
@@ -856,7 +856,7 @@ export class TaskService {
     } catch (cause) {
       throw new Error(`Task '${taskFolder}' has a corrupt status file at '${statusPath}'`, { cause });
     }
-    if (status) this.validateStoredTaskStatus(status, taskFolder);
+    if (status) validateStoredTaskStatus(status, taskFolder);
     return status;
   }
 
@@ -937,7 +937,7 @@ export class TaskService {
           if (!fileExists(statusPath)) return { ...identity, status: null, integrity: { reason: 'status_missing' } };
           throw new Error(`Task '${folder}' has a corrupt status file`);
         }
-        this.validateStoredTaskStatus(status, folder);
+        validateStoredTaskStatus(status, folder);
         return {
           ...identity,
           status: status.status,

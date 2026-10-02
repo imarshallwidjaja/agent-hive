@@ -2,8 +2,9 @@ import * as fs from "fs/promises";
 import * as path from "path";
 import simpleGit, { SimpleGit } from "simple-git";
 import type { ResolvedRepository, TaskStatus } from "../types.js";
-import { acquireLock, resolveFeatureDirectoryName } from "../utils/paths.js";
+import { acquireLock, readJson, resolveFeatureDirectoryName } from "../utils/paths.js";
 import { projectRootsMatch } from '../utils/repositoryConfig.js';
+import { validateStoredTaskStatus } from './taskService.js';
 import { createHash } from 'crypto';
 import type {
   TaskWorkspaceManifest as WorkspaceManifest,
@@ -548,6 +549,14 @@ export class WorktreeService {
 
   async create(feature: string, step: string, baseBranch?: string, attemptSlot?: string): Promise<WorktreeInfo> {
     const composite = await this.isCompositeTask(feature, step);
+    if (!composite) {
+      const statusPath = await this.getStepStatusPath(feature, step);
+      try {
+        validateStoredTaskStatus(readJson<TaskStatus>(statusPath), step);
+      } catch (error) {
+        throw new Error(`Task ${feature}/${step} has no readable task status at ${statusPath}: ${(error as Error).message}`);
+      }
+    }
     const targetPath = composite
       ? this.getCompositeRoot(feature, step, attemptSlot)
       : this.getWorktreePath(feature, step, attemptSlot);

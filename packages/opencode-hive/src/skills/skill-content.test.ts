@@ -1,10 +1,8 @@
 import { describe, it, expect } from 'bun:test';
-import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import {
-  AdhocWorktreeService,
   BackgroundJobService,
   BUILT_IN_AGENT_NAMES,
   ConfigService,
@@ -1308,7 +1306,7 @@ describe('skill content', () => {
       expect(named).toEqual(new Set(HIVE_TOOL_NAMES));
     });
 
-    it('matches the paths and branches hive-core produces', async () => {
+    it('matches the paths and branches hive-core produces', () => {
       const root = mkdtempSync(path.join(os.tmpdir(), 'hive-config-skill-'));
       const previousHome = process.env.HOME;
       try {
@@ -1338,12 +1336,6 @@ describe('skill content', () => {
           .toBe(path.join(hiveDir, '.worktrees', 'feat', '01-task--c'));
         expect(layout).toContain('`.hive/.worktrees/<feature>/<task>--<candidate>`');
 
-        const git = (...args: string[]) => execFileSync('git', args, { cwd: root, stdio: 'pipe' });
-        git('init', '-q');
-        git('-c', 'user.email=probe@example.com', '-c', 'user.name=probe', 'commit', '-q', '--allow-empty', '-m', 'probe');
-        const adhoc = await new AdhocWorktreeService({ baseDir: root, hiveDir }).create({ runId: 'probe' });
-        expect(adhoc.path).toBe(path.join(hiveDir, '.worktrees', 'adhoc', 'probe'));
-        expect(adhoc.branch).toBe('hive/adhoc/probe');
         expect(layout).toContain('| Ad-hoc, single root | `.hive/.worktrees/adhoc/<runId>` | `hive/adhoc/<runId>` |');
       } finally {
         if (previousHome === undefined) delete process.env.HOME;

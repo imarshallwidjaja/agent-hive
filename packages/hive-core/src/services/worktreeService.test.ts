@@ -90,7 +90,7 @@ afterEach(async () => {
   );
 });
 
-async function createTempRepo(): Promise<{ repoPath: string; repoGit: SimpleGit }> {
+async function createTempRepo(seedTask = true): Promise<{ repoPath: string; repoGit: SimpleGit }> {
   const repoPath = await fs.mkdtemp(path.join(os.tmpdir(), "hive-core-worktree-service-test-"));
   tempDirs.push(repoPath);
 
@@ -110,6 +110,12 @@ async function createTempRepo(): Promise<{ repoPath: string; repoGit: SimpleGit 
   await fs.writeFile(path.join(repoPath, ".gitignore"), ".hive/\n", "utf-8");
   await fs.writeFile(path.join(repoPath, "tracked.txt"), "base\n", "utf-8");
   await repoGit.add([".gitignore", "tracked.txt"]);
+
+  if (seedTask) {
+    const taskPath = path.join(repoPath, '.hive', 'features', 'test-feature', 'tasks', '01-test-task');
+    await fs.mkdir(taskPath, { recursive: true });
+    await fs.writeFile(path.join(taskPath, 'status.json'), JSON.stringify({ status: 'pending', origin: 'plan' }));
+  }
   await repoGit.commit("chore: base commit");
 
   return { repoPath, repoGit };
@@ -125,6 +131,8 @@ async function createFixture(): Promise<TestFixture> {
   });
 
   const worktree = await service.create(feature, task);
+  // These Git merge fixtures isolate integration behavior; Hive local-data protection has its own test.
+  await fs.rm(path.join(repoPath, '.hive', 'features', feature, 'tasks', task), { recursive: true });
 
   return {
     repoPath,
@@ -294,8 +302,48 @@ async function installPrepareCommitMessageHook(repoPath: string, body: string): 
 }
 
 describe("WorktreeService merge and commit messages", () => {
+  it.each(['missing-folder', 'missing-status', 'unreadable-status', 'null-record', 'null-status', 'invalid-string-status', 'boolean-status', 'number-status', 'object-status', 'array-status'])('rejects a legacy task with %s before creating Git state', async (integrity) => {
+    const { repoPath, repoGit } = await createTempRepo(false);
+    const service = new WorktreeService({ baseDir: repoPath, hiveDir: path.join(repoPath, '.hive') });
+    const taskPath = path.join(repoPath, '.hive', 'features', 'test-feature', 'tasks', '01-test-task');
+    if (integrity !== 'missing-folder') {
+      await fs.mkdir(taskPath, { recursive: true });
+      if (integrity !== 'missing-status') {
+        const content = {
+          'unreadable-status': '{',
+          'null-record': 'null',
+          'null-status': '{"status":null}',
+          'invalid-string-status': '{"status":"completed"}',
+          'boolean-status': '{"status":true}',
+          'number-status': '{"status":1}',
+          'object-status': '{"status":{}}',
+          'array-status': '{"status":[]}',
+        }[integrity]!;
+        await fs.writeFile(path.join(taskPath, 'status.json'), content);
+      }
+    }
+    const before = await repoGit.raw(['worktree', 'list', '--porcelain']);
+    await expect(service.create('test-feature', '01-test-task')).rejects.toThrow('has no readable task status');
+    expect(await repoGit.raw(['worktree', 'list', '--porcelain'])).toBe(before);
+    expect(await branchExists(repoGit, 'hive/test-feature/01-test-task')).toBe(false);
+    expect(await pathExists(service.getWorktreePath('test-feature', '01-test-task'))).toBe(false);
+  });
+
+  it.each(['pending', 'in_progress', 'blocked', 'failed', 'partial', 'done', 'cancelled'])('creates a legacy worktree for recognized task status %s', async (status) => {
+    const { repoPath, repoGit } = await createTempRepo(false);
+    const service = new WorktreeService({ baseDir: repoPath, hiveDir: path.join(repoPath, '.hive') });
+    const taskPath = path.join(repoPath, '.hive', 'features', 'test-feature', 'tasks', '01-test-task');
+    await fs.mkdir(taskPath, { recursive: true });
+    await fs.writeFile(path.join(taskPath, 'status.json'), JSON.stringify({ status }));
+
+    const worktree = await service.create('test-feature', '01-test-task');
+    expect(await branchExists(repoGit, worktree.branch)).toBe(true);
+    expect(await pathExists(worktree.path)).toBe(true);
+    expect(await service.get('test-feature', '01-test-task')).toMatchObject({ path: worktree.path, branch: worktree.branch });
+  });
+
   it("uses logical feature names for indexed worktree storage and branch naming", async () => {
-    const { repoPath } = await createTempRepo();
+    const { repoPath } = await createTempRepo(false);
     const service = new WorktreeService({
       baseDir: repoPath,
       hiveDir: path.join(repoPath, ".hive"),
@@ -1906,6 +1954,11 @@ describe("WorktreeService composite workspaces", () => {
     const service = kind === 'legacy'
       ? new WorktreeService({ baseDir: fx.repos.api.path, hiveDir: path.join(fx.projectRoot, '.hive-legacy') })
       : fx.service;
+    if (kind === 'legacy') {
+      const taskPath = path.join(fx.projectRoot, '.hive-legacy', 'features', fx.feature, 'tasks', fx.task);
+      await fs.mkdir(taskPath, { recursive: true });
+      await fs.writeFile(path.join(taskPath, 'status.json'), JSON.stringify({ status: 'pending', origin: 'plan' }));
+    }
     const created = await service.create(fx.feature, fx.task);
     const selected = created.repos?.api.path ?? created.path;
     const pointer = await fs.readFile(path.join(selected, '.git'), 'utf8');
@@ -2111,6 +2164,9 @@ describe("WorktreeService composite workspaces", () => {
       baseDir: repoPath,
       hiveDir: path.join(repoPath, ".hive"),
     });
+    const taskPath = path.join(repoPath, '.hive', 'features', 'legacy-feature', 'tasks', '01-legacy');
+    await fs.mkdir(taskPath, { recursive: true });
+    await fs.writeFile(path.join(taskPath, 'status.json'), JSON.stringify({ status: 'pending', origin: 'plan' }));
     const wt = await service.create('legacy-feature', '01-legacy');
     expect(wt.mode ?? 'legacy').toBe('legacy');
     expect(wt.path).toBe(path.join(repoPath, '.hive', '.worktrees', 'legacy-feature', '01-legacy'));
@@ -2595,6 +2651,9 @@ describe("WorktreeService composite diff aggregation", () => {
     });
     const feature = 'legacy-diff';
     const task = '01-legacy';
+    const taskPath = path.join(repoPath, '.hive', 'features', feature, 'tasks', task);
+    await fs.mkdir(taskPath, { recursive: true });
+    await fs.writeFile(path.join(taskPath, 'status.json'), JSON.stringify({ status: 'pending', origin: 'plan' }));
     const wt = await service.create(feature, task);
     await fs.writeFile(path.join(wt.path, 'legacy-change.txt'), 'legacy\n', 'utf-8');
 

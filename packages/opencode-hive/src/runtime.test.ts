@@ -1000,6 +1000,15 @@ describe('coordinated runtime hard cut', () => {
     const action = (agent: string, tool: string, child = false, pattern = '*') => evaluatePermission(
       tool, pattern, config.permission, config.agent[agent].permission, ...(child ? [childDenies] : []),
     );
+    const taskSpawnableRoles = Object.keys(config.agent).filter((target) =>
+      Object.keys(config.agent).some((parent) => action(parent, 'task', false, target) === 'allow'),
+    );
+    for (const tool of HIVE_TOOL_NAMES) {
+      // Default role denials alone must not leave a future tool unclassified for child sessions.
+      if (!taskSpawnableRoles.some((agent) => action(agent, tool, true) === 'allow')) {
+        expect(config.experimental.primary_tools, `unclassified child-denied tool: ${tool}`).toContain(tool);
+      }
+    }
     for (const [agent, allowed] of Object.entries(matrix)) {
       expect(config.agent[agent].tools, agent).toBeUndefined();
       if (agent !== TASK_TRACE_SUMMARIZER_AGENT) {

@@ -9,6 +9,8 @@ import { FORAGER_BEE_PROMPT } from './forager';
 import { SCOUT_BEE_PROMPT } from './scout';
 import { HIVE_HELPER_PROMPT } from './hive-helper';
 import { COMMAND_BEHAVIOR } from '../commands/command-bodies';
+import { buildHiveCommandMap } from '../commands/runtime.js';
+import { hiveCommandRenderers } from '../commands/renderers.js';
 import { HIVE_BUILDER_PROMPT } from './hive-builder';
 import { PLAN_REVIEWER_PROMPT } from './plan-reviewer';
 import { CODE_REVIEWER_PROMPT } from './code-reviewer';
@@ -625,10 +627,16 @@ describe('Multi-plan feature routing guidance', () => {
 
   it('reuses route selection only with visible same-session evidence and selects when uncertain', () => {
     const workspaceRoot = path.resolve(import.meta.dir, '..', '..', '..', '..');
+    const commands = buildHiveCommandMap(hiveCommandRenderers, () => ({
+      agentMode: 'unified', backgroundGuidance: { available: false }, council: {} as never,
+      agents: {}, dashReviewLanes: [], vulnerabilityReviewLanes: [],
+    }));
+    const startExecution = commands['start-execution'].run('');
+    expect(countOccurrences(startExecution, 'Reuse a matching selection')).toBe(1);
     const surfaces = [
       ['Hive', QUEEN_BEE_PROMPT],
       ['Swarm', SWARM_BEE_PROMPT],
-      ['Start execution command', COMMAND_BEHAVIOR['start-execution']],
+      ['Start execution command', startExecution],
       ...[
         'AGENTS.md',
         'docs/DESIGN.md',
@@ -1056,6 +1064,13 @@ describe('Task report reliability', () => {
 
   it('has the bound Forager author its report and handoff while the primary keeps status', () => {
     for (const requirement of [
+      'call `hive_task_update` only for your assigned feature/task: the bound `Hive task:` folder',
+      'Never update sibling or other tasks, and never supply `status`, `summary`, or `blocker`; the primary records those',
+      'When changing Hive state under `.hive/` outside your assigned worktree, use only the owning Hive tool',
+      'Never edit, write, move, or delete that state by hand via edit or shell',
+      '`features/**/status.json`, `feature.json`, `plan.md`, `APPROVED`, comments, reports, `handoff.md`, context files, `sessions.json`, constraints, `background-jobs.json`, `repositories.json`, `workspace.json`, and locks',
+      'report the failure to the primary instead of substituting a manual write',
+      'Your assigned worktree, even when located under `.hive/.worktrees/...`, is your normal writable workspace',
       'After the final applicable verification and any authorized source commit, call `hive_task_update({ feature, task, report, handoff })`',
       'Omit `status`, `summary`, and `blocker`; the primary records those',
       'After a final report, change the candidate only with new applicable evidence and a new report',
