@@ -37,6 +37,39 @@ interface ParsedHeading extends PlanHeadingOutline {
   start: number;
 }
 
+export interface PlanApprovalResult {
+  success: true;
+  feature: string;
+  approvalPersisted: true;
+  revision: string;
+  alreadyApproved?: true;
+}
+
+export type PlanApprovalStage = 'validation' | 'approval_marker' | 'feature_metadata';
+export type PlanApprovalFailureReason =
+  | 'plan_missing'
+  | 'stale_revision'
+  | 'unresolved_comments'
+  | 'unowned_task_headings'
+  | 'plan_layout_unreadable'
+  | 'plan_approval_failed'
+  | 'approval_marker_write_failed'
+  | 'feature_metadata_write_failed';
+
+export class PlanApprovalError extends Error {
+  constructor(
+    message: string,
+    public readonly reason: PlanApprovalFailureReason,
+    public readonly stage: PlanApprovalStage,
+    public readonly approvalPersisted: boolean,
+    public readonly revision?: string,
+    options?: { cause: unknown },
+  ) {
+    super(message, options);
+    this.name = 'PlanApprovalError';
+  }
+}
+
 function getContentHash(content: string): string {
   return createHash('sha256').update(content).digest('hex');
 }
@@ -574,44 +607,69 @@ export class PlanService {
     }
   }
 
-  approve(featureName: string): void {
-    this.withPlanStateLock(featureName, () => {
-      if (!fileExists(getPlanPath(this.projectRoot, featureName))) {
-        throw new Error(`No plan.md found for feature '${featureName}'`);
-      }
+  approve(featureName: string, expectedRevision?: string): PlanApprovalResult {
+    const progress: { stage: PlanApprovalStage } = { stage: 'validation' };
+    let revision: string | undefined;
+    const reject = (reason: PlanApprovalFailureReason, message: string): never => {
+      throw new PlanApprovalError(message, reason, progress.stage, this.isApproved(featureName), revision);
+    };
+    try {
+      return this.withPlanStateLock(featureName, () => {
+        const assertReviewedRevision = () => {
+          const current = this.read(featureName);
+          if (!current) return reject('plan_missing', `No plan.md found for feature '${featureName}'`);
+          // An unchanged retry can carry the revision from before the approval marker was written.
+          const unchangedApproval = current.status === 'approved'
+            && expectedRevision === getRevision(current.contentHash, current.comments, false);
+          if (expectedRevision !== undefined && current.revision !== expectedRevision && !unchangedApproval) {
+            reject('stale_revision', `Stale plan revision: expected ${expectedRevision}, current ${current.revision}`);
+          }
+          return current;
+        };
+        assertReviewedRevision();
 
-      if (this.getReviewService().hasUnresolvedThreads(featureName, 'plan')) {
-        throw new Error(`Cannot approve feature '${featureName}' with unresolved review comments`);
-      }
+        if (this.getReviewService().hasUnresolvedThreads(featureName, 'plan')) {
+          reject('unresolved_comments', `Cannot approve feature '${featureName}' with unresolved review comments`);
+        }
 
-      let unownedTaskHeadings: PlanUnownedTaskHeading[];
-      try {
-        unownedTaskHeadings = listUnownedTaskHeadings(readPlanTaskLayout(readText(getPlanPath(this.projectRoot, featureName)) ?? ''));
-      } catch (error) {
-        // An unreadable task layout (for example two Tasks sections) makes the plan unexecutable.
-        throw new Error(`Cannot approve feature '${featureName}': ${error instanceof Error ? error.message : String(error)}`);
-      }
+        let unownedTaskHeadings: PlanUnownedTaskHeading[];
+        try {
+          unownedTaskHeadings = listUnownedTaskHeadings(readPlanTaskLayout(readText(getPlanPath(this.projectRoot, featureName)) ?? ''));
+        } catch (error) {
+          reject('plan_layout_unreadable', `Cannot approve feature '${featureName}': ${error instanceof Error ? error.message : String(error)}`);
+        }
+        if (unownedTaskHeadings.length > 0) {
+          reject('unowned_task_headings',
+            `Cannot approve feature '${featureName}': ## Tasks contains heading(s) that are not numbered tasks: `
+            + `${formatUnownedTaskHeadings(unownedTaskHeadings)}. ${APPROVAL_TASK_SECTION_HEADING_GUIDANCE}`);
+        }
 
-      if (unownedTaskHeadings.length > 0) {
-        throw new Error(
-          `Cannot approve feature '${featureName}': ## Tasks contains heading(s) that are not numbered tasks: `
-          + `${formatUnownedTaskHeadings(unownedTaskHeadings)}. ${APPROVAL_TASK_SECTION_HEADING_GUIDANCE}`,
-        );
-      }
+        // Editors can write outside the plan lock; recheck after validation before approving.
+        const current = assertReviewedRevision();
+        const alreadyApproved = current.status === 'approved';
+        const timestamp = new Date().toISOString();
+        revision = getRevision(current.contentHash, current.comments, true);
+        if (!alreadyApproved) {
+          progress.stage = 'approval_marker';
+          fs.writeFileSync(getApprovedPath(this.projectRoot, featureName), `Approved at ${timestamp}\n`);
+        }
 
-      const approvedPath = getApprovedPath(this.projectRoot, featureName);
-      const timestamp = new Date().toISOString();
-      fs.writeFileSync(approvedPath, `Approved at ${timestamp}\n`);
-
-      // Also update feature.json for backwards compatibility
-      const featurePath = getFeatureJsonPath(this.projectRoot, featureName);
-      const feature = readJson<FeatureJson>(featurePath);
-      if (feature) {
-        feature.status = 'approved';
-        feature.approvedAt = timestamp;
-        writeJson(featurePath, feature);
-      }
-    });
+        progress.stage = 'feature_metadata';
+        const featurePath = getFeatureJsonPath(this.projectRoot, featureName);
+        const feature = readJson<FeatureJson>(featurePath);
+        if (feature && (!alreadyApproved || feature.status !== 'approved')) {
+          feature.status = 'approved';
+          feature.approvedAt = timestamp;
+          writeJson(featurePath, feature);
+        }
+        return { success: true, feature: featureName, approvalPersisted: true, revision, ...(alreadyApproved ? { alreadyApproved: true as const } : {}) };
+      });
+    } catch (error) {
+      if (error instanceof PlanApprovalError) throw error;
+      const reason = progress.stage === 'approval_marker' ? 'approval_marker_write_failed'
+        : progress.stage === 'feature_metadata' ? 'feature_metadata_write_failed' : 'plan_approval_failed';
+      throw new PlanApprovalError(error instanceof Error ? error.message : String(error), reason, progress.stage, this.isApproved(featureName), revision, { cause: error });
+    }
   }
 
   isApproved(featureName: string): boolean {

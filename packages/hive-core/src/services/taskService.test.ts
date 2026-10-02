@@ -63,6 +63,31 @@ describe("TaskService", () => {
     cleanup();
   });
 
+  it("inspects retained folders with missing, malformed, and unreadable status without inventing pending state", () => {
+    const featureName = "status-integrity";
+    setupFeature(featureName);
+    for (const folder of ["01-missing", "02-malformed", "03-unreadable", "04-null", "05-valid"]) setupTask(featureName, folder);
+    const taskPath = (folder: string) => path.join(TEST_DIR, ".hive", "features", featureName, "tasks", folder);
+    fs.writeFileSync(path.join(taskPath("01-missing"), "spec.md"), "Retained spec.\n");
+    fs.writeFileSync(path.join(taskPath("01-missing"), "handoff.md"), "Retained handoff.\n");
+    fs.rmSync(path.join(taskPath("01-missing"), "status.json"));
+    fs.writeFileSync(path.join(taskPath("02-malformed"), "status.json"), "{bad json");
+    fs.rmSync(path.join(taskPath("03-unreadable"), "status.json"));
+    fs.mkdirSync(path.join(taskPath("03-unreadable"), "status.json"));
+    fs.writeFileSync(path.join(taskPath("04-null"), "status.json"), "null");
+
+    const entries = service.listStatusEntries(featureName);
+    expect(entries.map(entry => entry.folder)).toEqual(["01-missing", "02-malformed", "03-unreadable", "04-null", "05-valid"]);
+    expect(entries[0]).toEqual({ folder: "01-missing", name: "missing", status: null, integrity: { reason: "status_missing" } });
+    for (const entry of entries.slice(1, 4)) {
+      expect(entry).toMatchObject({ status: null, integrity: { reason: "status_unreadable", error: expect.any(String) } });
+      expect(entry).not.toHaveProperty("dependsOn");
+    }
+    expect(entries[4]).toMatchObject({ status: "pending", dependsOn: [] });
+    expect(fs.readFileSync(path.join(taskPath("01-missing"), "spec.md"), "utf8")).toBe("Retained spec.\n");
+    expect(fs.readFileSync(path.join(taskPath("01-missing"), "handoff.md"), "utf8")).toBe("Retained handoff.\n");
+  });
+
   it("delegates the subtask lifecycle while preserving both public slug contracts", () => {
     const featureName = "subtask-lifecycle";
     setupFeature(featureName);

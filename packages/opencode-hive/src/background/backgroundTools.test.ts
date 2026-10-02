@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, afterEach } from 'bun:test';
+import { describe, expect, it, beforeEach, afterEach, spyOn } from 'bun:test';
 import * as fs from 'fs';
 import * as path from 'path';
 import { BackgroundJobService } from 'hive-core';
@@ -302,7 +302,7 @@ describe('background management tools', () => {
 
   it('hive_background_reconcile reconciles or ignores terminal jobs without changing runtime result', async () => {
     registerScopedJob(service, { taskId: 'completed-task', sessionId: 'completed-session' });
-    service.markTerminal('completed-task', 'completed', { resultSummary: 'runtime result stays' });
+    service.markTerminal('completed-task', 'completed', { resultSummary: 'runtime result stays'.repeat(2_000) });
     registerScopedJob(service, { taskId: 'errored-task', sessionId: 'errored-session' });
     service.markTerminal('errored-task', 'error', { resultSummary: 'runtime failed' });
 
@@ -316,27 +316,22 @@ describe('background management tools', () => {
       { identifier: 'completed-task', decision: 'reconciled', summary: 'Task report was reviewed.' },
       createToolContext(),
     );
-    const reconciled = parseToolJson<{ success?: boolean; archive?: { archived: boolean; message: string }; recommendedNextAction?: { action: string; reasonCode: string; requiresHiveStatusRefresh: boolean }; job?: { runtime: { state: string; resultSummary?: string }; coordination: { terminalUnreconciled?: boolean; reconciliationSummary?: string; visibility?: string; actionRequired?: boolean; archivedAt?: string; archiveReason?: string } } }>(reconciledRaw);
-    expect(reconciled.success).toBe(true);
-    expect(reconciled.archive).toEqual({
+    const reconciled = parseToolJson(reconciledRaw);
+    expect(reconciled).toEqual({
+      identifier: 'completed-task',
+      decision: 'reconciled',
+      success: true,
       archived: true,
-      message: 'The background job is archived and hidden from normal status output. Do not edit .hive/background-jobs.json directly.',
-    });
-    expect(reconciled.job?.runtime).toMatchObject({ state: 'completed', resultSummary: 'runtime result stays' });
-    expect(reconciled.job?.coordination).toMatchObject({
-      terminalUnreconciled: false,
-      reconciliationSummary: 'Task report was reviewed.',
-      visibility: 'archived_after_reconcile',
-      actionRequired: false,
-      archiveReason: 'reconciled',
-    });
-    expect(reconciled.recommendedNextAction).toMatchObject({
-      action: 'reconcile_terminal_job',
-      reasonCode: 'terminal_unreconciled_job_visible',
-      taskId: 'errored-task',
+      state: 'archived_after_reconcile',
       requiresHiveStatusRefresh: true,
     });
-    expect(JSON.stringify(reconciled)).not.toContain('task_status');
+    expect(service.resolve('completed-task')).toMatchObject({
+      runtimeState: 'completed',
+      resultSummary: 'runtime result stays'.repeat(2_000),
+      terminalUnreconciled: false,
+      reconciliationSummary: 'Task report was reviewed.',
+      archiveReason: 'reconciled',
+    });
 
     const statusAfterReconcile = parseToolJson<{ jobs?: Array<{ taskId: string }> }>(
       await tools.hive_background_status.execute({}, createToolContext()),
@@ -347,18 +342,11 @@ describe('background management tools', () => {
       { identifier: 'errored-task', decision: 'ignored', summary: 'Known stale failure already handled.' },
       createToolContext(),
     );
-    const ignored = parseToolJson<{ success?: boolean; recommendedNextAction?: { action: string; reasonCode: string; requiresHiveStatusRefresh: boolean }; job?: { runtime: { state: string; resultSummary?: string }; coordination: { ignoreReason?: string; visibility?: string; archiveReason?: string } } }>(ignoredRaw);
-    expect(ignored.success).toBe(true);
-    expect(ignored.job?.runtime).toMatchObject({ state: 'error', resultSummary: 'runtime failed' });
-    expect(ignored.job?.coordination).toMatchObject({
+    expect(parseToolJson(ignoredRaw)).toEqual({ identifier: 'errored-task', decision: 'ignored', success: true, archived: true, state: 'ignored_archived', requiresHiveStatusRefresh: true });
+    expect(service.resolve('errored-task')).toMatchObject({
+      runtimeState: 'error', resultSummary: 'runtime failed',
       ignoreReason: 'Known stale failure already handled.',
-      visibility: 'ignored_archived',
       archiveReason: 'ignored',
-    });
-    expect(ignored.recommendedNextAction).toMatchObject({
-      action: 'inspect_hive_status',
-      reasonCode: 'reconciled_job_has_hive_scope',
-      requiresHiveStatusRefresh: true,
     });
 
     const statusAfterIgnore = parseToolJson<{ jobs?: Array<{ taskId: string }>; recommendedNextAction?: { action: string; reasonCode: string; requiresHiveStatusRefresh: boolean }; requiresHiveStatusRefresh?: boolean }>(
@@ -390,15 +378,13 @@ describe('background management tools', () => {
     ));
     expect(missingSummary).toMatchObject({ success: false, reason: 'summary_required' });
 
-    const nonTerminal = parseToolJson<{ success?: boolean; reason?: string; nextAction?: { reason?: string; command?: string } }>(await tools.hive_background_reconcile.execute(
+    const nonTerminal = parseToolJson<{ success?: boolean; reason?: string; error?: string; hint?: string }>(await tools.hive_background_reconcile.execute(
       { identifier: 'running-task', decision: 'ignored', summary: 'Not done yet.' },
       createToolContext(),
     ));
-    expect(nonTerminal).toMatchObject({ success: false, reason: 'job_not_terminal' });
-    expect(nonTerminal.nextAction).toEqual(expect.objectContaining({
-      reason: 'native_completion_pending',
-    }));
-    expect(nonTerminal.nextAction?.command).toBeUndefined();
+    expect(nonTerminal).toMatchObject({ identifier: 'running-task', decision: 'ignored', success: false, reason: 'job_not_terminal' });
+    expect(nonTerminal.error).toContain('not terminal');
+    expect(nonTerminal.hint).toContain('Wait until OpenCode injects the native background completion notification');
     expect(service.resolve('running-task')?.runtimeState).toBe('running');
   });
 
@@ -412,23 +398,18 @@ describe('background management tools', () => {
       isEnabled: () => true,
     });
 
-    const ignored = parseToolJson<{
-      success?: boolean;
-      decision?: string;
-      job?: { runtime: { state: string }; coordination: { archiveReason?: string; ignoreReason?: string; staleAt?: string; visibility?: string } };
-    }>(await tools.hive_background_reconcile.execute(
+    const ignored = parseToolJson(await tools.hive_background_reconcile.execute(
       { identifier: 'stale-running-task', decision: 'ignored', summary: 'Native runtime died before completion.' },
       createToolContext(),
     ));
 
-    expect(ignored).toMatchObject({ success: true, decision: 'ignored' });
-    expect(ignored.job?.runtime.state).toBe('running');
-    expect(ignored.job?.coordination).toMatchObject({
+    expect(ignored).toEqual({ identifier: 'stale-running-task', decision: 'ignored', success: true, archived: true, state: 'ignored_archived', requiresHiveStatusRefresh: true });
+    expect(service.resolve('stale-running-task')).toMatchObject({
+      runtimeState: 'running',
       archiveReason: 'ignored',
       ignoreReason: 'Native runtime died before completion.',
-      visibility: 'ignored_archived',
     });
-    expect(ignored.job?.coordination.staleAt).toBeDefined();
+    expect(service.resolve('stale-running-task')?.staleAt).toBeDefined();
   });
 
   it('hive_background_reconcile rejects stale non-terminal reconcile with stale recovery guidance', async () => {
@@ -441,7 +422,7 @@ describe('background management tools', () => {
       isEnabled: () => true,
     });
 
-    const result = parseToolJson<{ success?: boolean; reason?: string; nextAction?: { reason?: string; command?: string; message?: string } }>(
+    const result = parseToolJson<{ success?: boolean; reason?: string; error?: string; hint?: string }>(
       await tools.hive_background_reconcile.execute(
         { identifier: 'stale-reconcile-task', decision: 'reconciled', summary: 'Trying to reconcile stale lane.' },
         createToolContext(),
@@ -449,12 +430,9 @@ describe('background management tools', () => {
     );
 
     expect(result).toMatchObject({ success: false, reason: 'stale_job_requires_ignore' });
-    expect(result.nextAction).toMatchObject({
-      reason: 'stale_recovery_pending',
-      command: 'hive_background_reconcile({ identifier: "parent-1:job-1", decision: "ignored", summary: "<why the stale lane was archived>" })',
-    });
-    expect(result.nextAction?.message).toContain('archive it with decision "ignored"');
-    expect(result.nextAction?.message).not.toContain('native completion');
+    expect(result.error).toContain('decision "ignored"');
+    expect(result.error).not.toContain('native completion');
+    expect(result.hint).toBe(`hive_background_reconcile({ identifier: ${JSON.stringify(service.resolve('stale-reconcile-task')!.alias)}, decision: "ignored", summary: "<why the stale lane was archived>" })`);
   });
 
   it('keeps unresolved stale jobs visible in default recommendations after ignoring one stale lane', async () => {
@@ -469,20 +447,13 @@ describe('background management tools', () => {
       isEnabled: () => true,
     });
 
-    const ignored = parseToolJson<{
-      success?: boolean;
-      recommendedNextAction?: { action?: string; reasonCode?: string; taskIds?: string[] };
-    }>(await tools.hive_background_reconcile.execute(
+    const ignored = parseToolJson<{ success?: boolean }>(await tools.hive_background_reconcile.execute(
       { identifier: 'stale-task-a', decision: 'ignored', summary: 'Archived stale lane A.' },
       createToolContext(),
     ));
 
     expect(ignored.success).toBe(true);
-    expect(ignored.recommendedNextAction).toMatchObject({
-      action: 'recover_stale_background_jobs',
-      reasonCode: 'stale_background_jobs_visible',
-      taskIds: ['stale-task-b'],
-    });
+    expect(ignored).not.toHaveProperty('recommendedNextAction');
 
     const status = parseToolJson<{ jobs?: Array<{ taskId: string }>; recommendedNextAction?: { action?: string; reasonCode?: string; taskIds?: string[] } }>(
       await tools.hive_background_status.execute({}, createToolContext()),
@@ -530,8 +501,8 @@ describe('background management tools', () => {
 
     const result = parseToolJson<{
       success?: boolean;
-      recommendedNextAction?: { action: string; reasonCode: string; requiresHiveStatusRefresh: boolean };
-      results?: Array<{ identifier: string; success: boolean; reason?: string; job?: { taskId: string; coordination: { terminalUnreconciled?: boolean; reconciliationSummary?: string } } }>;
+      requiresHiveStatusRefresh?: boolean;
+      results?: Array<{ identifier: string; decision: string; success: boolean; reason?: string; error?: string; hint?: string }>;
     }>(await tools.hive_background_reconcile_batch.execute({
       items: [
         { identifier: 'completed-task', decision: 'reconciled', summary: 'Consumed worker output.' },
@@ -543,26 +514,21 @@ describe('background management tools', () => {
 
     expect(result.success).toBe(false);
     expect(result.results).toHaveLength(4);
-    expect(result.results?.[0]).toMatchObject({
+    expect(result.results?.[0]).toEqual({
       identifier: 'completed-task',
+      decision: 'reconciled',
       success: true,
-      job: {
-        taskId: 'completed-task',
-        coordination: {
-          terminalUnreconciled: false,
-          reconciliationSummary: 'Consumed worker output.',
-        },
-      },
-    });
-    expect(result.recommendedNextAction).toMatchObject({
-      action: 'wait_for_native_completion',
-      reasonCode: 'native_completion_wait_only',
-      taskId: 'running-task',
+      archived: true,
+      state: 'archived_after_reconcile',
       requiresHiveStatusRefresh: true,
     });
+    expect(Object.keys(result).sort()).toEqual(['requiresHiveStatusRefresh', 'results', 'success']);
+    expect(result.requiresHiveStatusRefresh).toBe(true);
     expect(result.results?.[1]).toMatchObject({ identifier: 'running-task', success: false, reason: 'job_not_terminal' });
     expect(result.results?.[2]).toMatchObject({ identifier: 'missing-task', success: false, reason: 'job_not_found' });
     expect(result.results?.[3]).toMatchObject({ identifier: 'other-parent-task', success: false, reason: 'job_not_in_scope' });
+    expect(result.results?.slice(1).every(item => item.decision === 'ignored' && !!item.error && !!item.hint)).toBe(true);
+    expect(service.resolve('completed-task')).toMatchObject({ runtimeState: 'completed', resultSummary: 'runtime result stays', terminalUnreconciled: false, reconciliationSummary: 'Consumed worker output.' });
     expect(service.resolve('running-task')?.runtimeState).toBe('running');
     expect(service.resolve('other-parent-task')?.terminalUnreconciled).toBe(true);
   });
@@ -664,25 +630,23 @@ describe('background management tools', () => {
     expect(ambiguous.error).toContain(first.alias);
     expect(ambiguous.error).toContain(resumed.alias);
 
-    const exact = parseToolJson<{ success?: boolean; job?: { alias: string } }>(
+    const exact = parseToolJson(
       await tools.hive_background_reconcile.execute(
         { identifier: first.alias, decision: 'reconciled', summary: 'consumed exact result' },
         createToolContext(),
       ),
     );
-    expect(exact).toMatchObject({ success: true, job: { alias: first.alias } });
+    expect(exact).toEqual({ identifier: first.alias, decision: 'reconciled', success: true, archived: true, state: 'archived_after_reconcile', requiresHiveStatusRefresh: true });
 
     service.updateRuntimeState(resumed.alias, 'unknown', { statusUncertain: true, lastStatusError: 'ambiguous callback' });
-    const ignored = parseToolJson<{ success?: boolean; job?: { alias: string; runtime: { state: string }; coordination: { archiveReason: string } } }>(
+    const ignored = parseToolJson(
       await tools.hive_background_reconcile.execute(
         { identifier: resumed.alias, decision: 'ignored', summary: 'Retired ambiguous observation only.' },
         createToolContext(),
       ),
     );
-    expect(ignored).toMatchObject({
-      success: true,
-      job: { alias: resumed.alias, runtime: { state: 'unknown' }, coordination: { archiveReason: 'ignored' } },
-    });
+    expect(ignored).toEqual({ identifier: resumed.alias, decision: 'ignored', success: true, archived: true, state: 'ignored_archived', requiresHiveStatusRefresh: true });
+    expect(service.resolve(resumed.alias)).toMatchObject({ runtimeState: 'unknown', archiveReason: 'ignored' });
   });
 
   it('explains when one confirmed native abort affects reused live board rows', async () => {
@@ -791,7 +755,7 @@ describe('background management tools', () => {
     expect(status.waitingForNativeCompletion).toBeDefined();
     expect(status.schedulerGuidance).toBeUndefined();
 
-    const rejected = parseToolJson<{ reason?: string; nextAction?: { reason?: string; diagnostic?: string; message?: string } }>(
+    const rejected = parseToolJson<{ reason?: string; error?: string; hint?: string }>(
       await tools.hive_background_reconcile.execute(
         { identifier: uncertain.alias, decision: 'reconciled', summary: 'not terminal' },
         createToolContext(),
@@ -799,10 +763,10 @@ describe('background management tools', () => {
     );
     expect(rejected).toMatchObject({
       reason: 'uncertain_job_requires_ignore',
-      nextAction: { reason: 'uncertain_observation_pending' },
     });
-    expect(rejected.nextAction?.diagnostic).toContain('hive_task_trace');
-    expect(rejected.nextAction?.message).not.toContain('stale');
+    expect(rejected.error).toContain('decision "ignored"');
+    expect(rejected.error).not.toContain('Stale');
+    expect(rejected.hint).toBe(`hive_background_reconcile({ identifier: ${JSON.stringify(uncertain.alias)}, decision: "ignored", summary: "<why the uncertain observation was archived>" })`);
   });
 
   it('hive_background_reconcile cannot act on archived jobs by direct identifier', async () => {
@@ -1026,67 +990,46 @@ describe('background management tools', () => {
     });
   });
 
-  it('single reconcile does not false-idle with two unscoped terminal jobs', async () => {
-    registerUnscopedJob(service, { taskId: 'done-a', sessionId: 'done-a-session' });
-    service.markTerminal('done-a', 'completed', { resultSummary: 'done a' });
-    registerUnscopedJob(service, { taskId: 'done-b', sessionId: 'done-b-session' });
-    service.markTerminal('done-b', 'error', { resultSummary: 'done b' });
-
+  it('batch acknowledgement retains completed items and continues after malformed summary and persistence failures', async () => {
+    for (const taskId of ['done-a', 'failed-write', 'done-b']) {
+      registerScopedJob(service, { taskId, sessionId: `${taskId}-session` });
+      service.markTerminal(taskId, 'completed', { resultSummary: 'retained result' });
+    }
+    const markReconciled = service.markReconciled.bind(service);
+    const persistence = spyOn(service, 'markReconciled').mockImplementation((identifier, options) => {
+      if (service.resolve(identifier)?.taskId === 'failed-write') throw new Error('Injected archive write failure');
+      return markReconciled(identifier, options);
+    });
     const tools = createBackgroundTools({
       backgroundJobService: service,
       projectRoot: TEST_DIR,
       isEnabled: () => true,
     });
-
-    const reconciledRaw = await tools.hive_background_reconcile.execute(
-      { identifier: 'done-a', decision: 'reconciled', summary: 'consumed' },
-      createToolContext(),
-    );
-    const reconciled = parseToolJson<{
-      success?: boolean;
-      recommendedNextAction?: { action: string; reasonCode: string; taskId?: string; requiresHiveStatusRefresh: boolean };
-    }>(reconciledRaw);
-
-    expect(reconciled.success).toBe(true);
-    expect(reconciled.recommendedNextAction).toMatchObject({
-      action: 'reconcile_terminal_job',
-      reasonCode: 'terminal_unreconciled_job_visible',
-      taskId: 'done-b',
-      requiresHiveStatusRefresh: false,
-    });
+    try {
+      const result = parseToolJson(await tools.hive_background_reconcile_batch.execute({ items: [
+        { identifier: 'done-a', decision: 'reconciled', summary: 'Consumed.' },
+        { identifier: 'bad-summary', decision: 'reconciled', summary: 123 as unknown as string },
+        { identifier: 'failed-write', decision: 'reconciled', summary: 'Consumed.' },
+        { identifier: 'done-b', decision: 'reconciled', summary: 'Consumed.' },
+      ] }, createToolContext()));
+      expect(result).toEqual({
+        success: false,
+        requiresHiveStatusRefresh: true,
+        results: [
+          { identifier: 'done-a', decision: 'reconciled', success: true, archived: true, state: 'archived_after_reconcile', requiresHiveStatusRefresh: true },
+          { identifier: 'bad-summary', decision: 'reconciled', success: false, reason: 'reconciliation_failed', error: expect.stringContaining('trim'), hint: 'Inspect hive_background_status({ includeArchived: true }) before retrying; a failed persistence write may have published.' },
+          { identifier: 'failed-write', decision: 'reconciled', success: false, reason: 'reconciliation_failed', error: 'Injected archive write failure', hint: 'Inspect hive_background_status({ includeArchived: true }) before retrying; a failed persistence write may have published.' },
+          { identifier: 'done-b', decision: 'reconciled', success: true, archived: true, state: 'archived_after_reconcile', requiresHiveStatusRefresh: true },
+        ],
+      });
+      expect(service.resolve('failed-write')?.terminalUnreconciled).toBe(true);
+      expect(service.resolve('done-b')?.archiveReason).toBe('reconciled');
+    } finally {
+      persistence.mockRestore();
+    }
   });
 
-  it('single reconcile of Hive-scoped job while unscoped terminal job remains', async () => {
-    registerScopedJob(service, { taskId: 'scoped-done', sessionId: 'scoped-done-session' });
-    service.markTerminal('scoped-done', 'completed', { resultSummary: 'scoped done' });
-    registerUnscopedJob(service, { taskId: 'unscoped-done', sessionId: 'unscoped-done-session' });
-    service.markTerminal('unscoped-done', 'completed', { resultSummary: 'unscoped done' });
-
-    const tools = createBackgroundTools({
-      backgroundJobService: service,
-      projectRoot: TEST_DIR,
-      isEnabled: () => true,
-    });
-
-    const reconciledRaw = await tools.hive_background_reconcile.execute(
-      { identifier: 'scoped-done', decision: 'reconciled', summary: 'consumed scoped' },
-      createToolContext(),
-    );
-    const reconciled = parseToolJson<{
-      success?: boolean;
-      recommendedNextAction?: { action: string; reasonCode: string; taskId?: string; requiresHiveStatusRefresh: boolean };
-    }>(reconciledRaw);
-
-    expect(reconciled.success).toBe(true);
-    expect(reconciled.recommendedNextAction).toMatchObject({
-      action: 'reconcile_terminal_job',
-      reasonCode: 'terminal_unreconciled_job_visible',
-      taskId: 'unscoped-done',
-      requiresHiveStatusRefresh: true,
-    });
-  });
-
-  it('hive_background_reconcile_batch detects Hive-scoped reconciled job with whitespace-padded identifier', async () => {
+  it('hive_background_reconcile_batch preserves the requested whitespace-padded identifier in its acknowledgement', async () => {
     registerScopedJob(service, { taskId: 'padded-job', sessionId: 'padded-session' });
     service.markTerminal('padded-job', 'completed', { resultSummary: 'done' });
 
@@ -1098,7 +1041,7 @@ describe('background management tools', () => {
 
     const result = parseToolJson<{
       success?: boolean;
-      recommendedNextAction?: { action: string; reasonCode: string; requiresHiveStatusRefresh: boolean };
+      requiresHiveStatusRefresh?: boolean;
       results?: Array<{ identifier: string; success: boolean }>;
     }>(await tools.hive_background_reconcile_batch.execute({
       items: [
@@ -1107,11 +1050,8 @@ describe('background management tools', () => {
     }, createToolContext()));
 
     expect(result.success).toBe(true);
-    expect(result.recommendedNextAction).toMatchObject({
-      action: 'inspect_hive_status',
-      reasonCode: 'reconciled_job_has_hive_scope',
-      requiresHiveStatusRefresh: true,
-    });
+    expect(result.results).toEqual([{ identifier: '  padded-job  ', decision: 'reconciled', success: true, archived: true, state: 'archived_after_reconcile', requiresHiveStatusRefresh: true }]);
+    expect(result.requiresHiveStatusRefresh).toBe(true);
   });
 
   it('batch reconcile omits visible terminal job', async () => {
@@ -1128,7 +1068,7 @@ describe('background management tools', () => {
 
     const result = parseToolJson<{
       success?: boolean;
-      recommendedNextAction?: { action: string; reasonCode: string; taskId?: string; requiresHiveStatusRefresh: boolean };
+      requiresHiveStatusRefresh?: boolean;
       results?: Array<{ identifier: string; success: boolean }>;
     }>(await tools.hive_background_reconcile_batch.execute({
       items: [
@@ -1137,9 +1077,13 @@ describe('background management tools', () => {
     }, createToolContext()));
 
     expect(result.success).toBe(true);
+    expect(result.requiresHiveStatusRefresh).toBe(false);
     expect(result.results).toHaveLength(1);
     expect(result.results?.[0]).toMatchObject({ identifier: 'done-a', success: true });
-    expect(result.recommendedNextAction).toMatchObject({
+    expect(result).not.toHaveProperty('recommendedNextAction');
+    const status = parseToolJson<{ jobs: Array<{ taskId: string }>; recommendedNextAction?: unknown }>(await tools.hive_background_status.execute({}, createToolContext()));
+    expect(status.jobs.map(job => job.taskId)).toEqual(['done-b']);
+    expect(status.recommendedNextAction).toMatchObject({
       action: 'reconcile_terminal_job',
       reasonCode: 'terminal_unreconciled_job_visible',
       taskId: 'done-b',

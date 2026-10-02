@@ -159,6 +159,10 @@ export interface SyncOptions {
   refreshPending?: boolean;
 }
 
+export type TaskStatusEntry =
+  | (TaskInfo & { dependsOn: string[]; blocker?: TaskStatus['blocker'] })
+  | { folder: string; name: string; status: null; integrity: { reason: 'status_missing' | 'status_unreadable'; error?: string } };
+
 const TASK_STATUSES: ReadonlySet<string> = new Set([
   'pending', 'in_progress', 'done', 'cancelled', 'blocked', 'failed', 'partial',
 ]);
@@ -389,7 +393,12 @@ export class TaskService {
     }
 
     return this.listFolders(featureName).map((folder): TaskSpecFreshness => {
-      const status = readJson<TaskStatus>(getTaskStatusPath(this.projectRoot, featureName, folder));
+      let status: TaskStatus | null = null;
+      try {
+        status = readJson<TaskStatus>(getTaskStatusPath(this.projectRoot, featureName, folder));
+      } catch {
+        // Integrity entries can still be compared with the plan by folder identity.
+      }
       if (status?.origin === 'manual') return { folder, specStale: null, specStaleReason: 'manual_task' };
       if (!planContent) return { folder, specStale: null, specStaleReason: 'plan_missing' };
       if (!plan) return { folder, specStale: null, specStaleReason: 'plan_invalid' };
@@ -915,6 +924,34 @@ export class TaskService {
     return folders
       .map(folder => this.get(featureName, folder))
       .filter((t): t is TaskInfo => t !== null);
+  }
+
+  /** Inspect every retained folder without treating missing or corrupt status as pending. */
+  listStatusEntries(featureName: string): TaskStatusEntry[] {
+    return this.listFolders(featureName).map((folder): TaskStatusEntry => {
+      const identity = { folder, name: folder.replace(/^\d+-/, '') };
+      const statusPath = getTaskStatusPath(this.projectRoot, featureName, folder);
+      try {
+        const status = readJson<TaskStatus>(statusPath);
+        if (!status) {
+          if (!fileExists(statusPath)) return { ...identity, status: null, integrity: { reason: 'status_missing' } };
+          throw new Error(`Task '${folder}' has a corrupt status file`);
+        }
+        this.validateStoredTaskStatus(status, folder);
+        return {
+          ...identity,
+          status: status.status,
+          origin: status.origin,
+          planTitle: status.planTitle,
+          summary: status.summary,
+          repoIds: status.repoIds,
+          dependsOn: status.dependsOn ?? [],
+          ...(status.blocker ? { blocker: status.blocker } : {}),
+        };
+      } catch (error) {
+        return { ...identity, status: null, integrity: { reason: 'status_unreadable', error: error instanceof Error ? error.message : String(error) } };
+      }
+    });
   }
 
   private listFolders(featureName: string): string[] {

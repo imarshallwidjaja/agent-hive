@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import plugin from './index.js';
-import { CUSTOM_AGENT_BASES, SessionService } from 'hive-core';
+import { CUSTOM_AGENT_BASES, PlanService, SessionService, TaskService } from 'hive-core';
 import { HIVE_TOOL_NAMES } from './utils/plugin-manifest.js';
 import { createPluginWithHome } from './e2e/plugin-test-home.js';
 import { TASK_TRACE_SUMMARIZER_AGENT } from './task-trace.js';
@@ -274,9 +274,12 @@ describe('coordinated runtime hard cut', () => {
     expect(selected()).toBe('feature-a');
     const task = await loaded.tool!.hive_task_create.execute({ feature: 'feature-b', name: 'B task' }, caller);
     expect(selected()).toBe('feature-a');
-    await loaded.tool!.hive_worktree_create.execute({ feature: 'feature-b', task }, caller);
+    const created = JSON.parse(await loaded.tool!.hive_worktree_create.execute({ feature: 'feature-b', task }, caller));
     expect(selected()).toBe('feature-a');
-    await loaded.tool!.hive_worktree_inspect.execute({ feature: 'feature-b', task }, caller);
+    expect(created).toEqual(JSON.parse(await loaded.tool!.hive_worktree_inspect.execute({ feature: 'feature-b', task }, caller)));
+    expect(created.clean).toBe(true);
+    expect(created.target).toEqual({ path: root, ref: git(root, ['symbolic-ref', 'HEAD']), commit: git(root, ['rev-parse', 'HEAD']) });
+    expect(created.comparison).toEqual({ status: 'ok', targetIsAncestorOfSource: true });
     expect(selected()).toBe('feature-a');
     await loaded.tool!.hive_worktree_cleanup.execute({ feature: 'feature-b', task, discard: true }, caller);
     expect(selected()).toBe('feature-a');
@@ -566,6 +569,9 @@ describe('coordinated runtime hard cut', () => {
       runId: 'singleton-adhoc',
       repoIds: ['api'],
     }, {}));
+    expect(created).toEqual(JSON.parse(await loaded.tool!.hive_adhoc_worktree_inspect.execute({ runId: created.runId }, {})));
+    expect(created.clean).toBe(true);
+    expect(created.repos.api).toMatchObject({ clean: true, target: { path: path.join(runtime.root, 'api'), ref: git(path.join(runtime.root, 'api'), ['symbolic-ref', 'HEAD']), commit: created.repos.api.commit }, comparison: { status: 'ok', targetIsAncestorOfSource: true } });
     const sourcePath = created.repos.api.path;
     fs.writeFileSync(path.join(sourcePath, 'tracked.txt'), 'changed\n');
     git(sourcePath, ['add', '.']);
@@ -594,6 +600,9 @@ describe('coordinated runtime hard cut', () => {
     const task = await loaded.tool!.hive_task_create.execute({ feature: 'singleton-feature', name: 'Change source', repos: ['api'] }, caller);
 
     const created = JSON.parse(await loaded.tool!.hive_worktree_create.execute({ feature: 'singleton-feature', task }, caller));
+    expect(created).toEqual(JSON.parse(await loaded.tool!.hive_worktree_inspect.execute({ feature: 'singleton-feature', task }, caller)));
+    expect(created.clean).toBe(true);
+    expect(created.repos.api).toMatchObject({ clean: true, target: { path: path.join(runtime.root, 'api'), ref: git(path.join(runtime.root, 'api'), ['symbolic-ref', 'HEAD']), commit: created.repos.api.commit }, comparison: { status: 'ok', targetIsAncestorOfSource: true } });
     const sourcePath = created.repos.api.path;
     fs.writeFileSync(path.join(sourcePath, 'tracked.txt'), 'feature changed\n');
     git(sourcePath, ['add', '.']);
@@ -685,6 +694,14 @@ describe('coordinated runtime hard cut', () => {
       path: created.path,
       reason: expect.stringContaining('Composite workspace manifest not found'),
     }]);
+    expect(status.feature).not.toHaveProperty('tasks');
+    const written = JSON.parse(await loaded.tool!.hive_plan_write.execute({ content: '# Plan\n\n## Tasks\n\n### 1. Change source\n\nChange source.\n' }, child));
+    fs.rmSync(path.join(path.dirname(written.path), 'tasks', task, 'status.json'));
+    const degraded = JSON.parse(await loaded.tool!.hive_status.execute({}, child));
+    expect(degraded.tasks.find((entry: any) => entry.folder === task)).toMatchObject({ status: null, integrity: { reason: 'status_missing' } });
+    expect(degraded.worktreeErrors).toEqual(status.worktreeErrors);
+    expect(degraded.worktrees.map((entry: any) => entry.path)).toEqual([healthy.path]);
+    expect(degraded.runnable).toEqual([healthyTask]);
     expect(fs.readFileSync(residualFile, 'utf8')).toBe('retained\n');
     expect(git(api, ['rev-parse', 'HEAD'])).toBe(head);
   });
@@ -729,6 +746,8 @@ describe('coordinated runtime hard cut', () => {
     writeRepositoryManifest(runtime.root, ['api', 'web']);
     const loaded = await runtime.hooks;
     const created = JSON.parse(await loaded.tool!.hive_adhoc_worktree_create.execute({ runId: 'multi-pin', repoIds: ['api', 'web'] }, {}));
+    expect(created).toEqual(JSON.parse(await loaded.tool!.hive_adhoc_worktree_inspect.execute({ runId: created.runId }, {})));
+    expect(Object.values(created.repos).every((repo: any) => repo.clean && repo.target && repo.comparison.status === 'ok')).toBe(true);
     const targetBefore = { api: git(api, ['rev-parse', 'HEAD']), web: git(web, ['rev-parse', 'HEAD']) };
 
     await expect(loaded.tool!.hive_adhoc_worktree_merge.execute({
@@ -760,6 +779,19 @@ describe('coordinated runtime hard cut', () => {
     git(runtime.root, ['commit', '-m', 'test: legacy base']);
     const loaded = await runtime.hooks;
     const created = JSON.parse(await loaded.tool!.hive_adhoc_worktree_create.execute({ runId: 'legacy-pin' }, {}));
+    expect(created).toEqual(JSON.parse(await loaded.tool!.hive_adhoc_worktree_inspect.execute({ runId: created.runId }, {})));
+    expect(created.clean).toBe(true);
+    expect(created.target).toEqual({ path: runtime.root, ref: git(runtime.root, ['symbolic-ref', 'HEAD']), commit: created.commit });
+    expect(created.comparison).toEqual({ status: 'ok', targetIsAncestorOfSource: true });
+
+    // Reuse must inspect current dirt and detached targets, not report the original creation state.
+    fs.writeFileSync(path.join(created.path, 'untracked.txt'), 'retained work\n');
+    git(runtime.root, ['checkout', '--detach']);
+    const reused = JSON.parse(await loaded.tool!.hive_adhoc_worktree_create.execute({ runId: created.runId }, {}));
+    expect(reused).toEqual(JSON.parse(await loaded.tool!.hive_adhoc_worktree_inspect.execute({ runId: created.runId }, {})));
+    expect(reused.clean).toBe(false);
+    expect(reused.target).toEqual({ path: runtime.root, ref: null, commit: created.commit });
+    fs.rmSync(path.join(created.path, 'untracked.txt'));
 
     await expect(loaded.tool!.hive_adhoc_worktree_merge.execute({ runId: 'legacy-pin', sourceCommits: { root: created.commit } }, {})).rejects.toThrow(/require a composite candidate/);
     fs.writeFileSync(path.join(created.path, 'tracked.txt'), 'legacy changed\n');
@@ -1162,7 +1194,166 @@ describe('coordinated runtime hard cut', () => {
     await expect(loaded.tool!.hive_context_write.execute({ name: 'notes', content: 'body', task: 'missing' }, caller)).rejects.toThrow(/does not exist/);
   });
 
-  it('reports task-section heading integrity, spec freshness, and successor handoffs through plan, task, and status tools', async () => {
+  it('guards approval plus sync and refreshes pending specs using the standalone sync contract', async () => {
+    const { root, hooks } = createRuntime();
+    const loaded = await hooks;
+    const caller = context('approve-sync');
+    await loaded.tool!.hive_feature_create.execute({ name: 'approve-sync' }, caller);
+    await loaded.tool!.hive_plan_write.execute({ content: '# Plan\n\n## Tasks\n\n### 1. Setup\n\nSetup.\n\n### 2. Build\n\nBuild.\n' }, caller);
+    const reviewed = JSON.parse(await loaded.tool!.hive_plan_read.execute({}, caller));
+    const result = JSON.parse(await loaded.tool!.hive_plan_approve.execute({ sync: true, expectedRevision: reviewed.revision }, caller));
+    const approved = JSON.parse(await loaded.tool!.hive_plan_read.execute({}, caller));
+    expect(result).toEqual({ approval: { success: true, feature: 'approve-sync', approvalPersisted: true, revision: approved.revision }, sync: { success: true, created: ['01-setup', '02-build'], removed: [], kept: [], manual: [] } });
+    const retry = JSON.parse(await loaded.tool!.hive_plan_approve.execute({ sync: true, expectedRevision: reviewed.revision }, caller));
+    expect(retry.approval).toEqual({ ...result.approval, alreadyApproved: true });
+    expect(retry.sync).toEqual({ success: true, created: [], removed: [], kept: ['01-setup', '02-build'], manual: [] });
+    expect(new PlanService(root).isApproved('approve-sync')).toBe(true);
+    expect(JSON.parse(await loaded.tool!.hive_tasks_sync.execute({}, caller))).toEqual({ created: [], removed: [], kept: ['01-setup', '02-build'], manual: [] });
+
+    await loaded.tool!.hive_plan_write.execute({ content: reviewed.content.replace('Build.', 'Build again.') }, caller);
+    const revised = JSON.parse(await loaded.tool!.hive_plan_read.execute({}, caller));
+    expect(JSON.parse(await loaded.tool!.hive_status.execute({}, caller)).tasks[1].specStale).toBe(true);
+    const refreshed = JSON.parse(await loaded.tool!.hive_plan_approve.execute({ sync: true, expectedRevision: revised.revision, refreshPending: true }, caller));
+    expect(refreshed.sync).toMatchObject({ success: true, kept: ['01-setup', '02-build'] });
+    expect(JSON.parse(await loaded.tool!.hive_status.execute({}, caller)).tasks[1].specStale).toBe(false);
+
+    await loaded.tool!.hive_feature_create.execute({ name: 'approve-only' }, caller);
+    await loaded.tool!.hive_plan_write.execute({ feature: 'approve-only', content: reviewed.content }, caller);
+    expect(JSON.parse(await loaded.tool!.hive_plan_approve.execute({ feature: 'approve-only' }, caller))).toEqual({ success: true, feature: 'approve-only', approvalPersisted: true, revision: JSON.parse(await loaded.tool!.hive_plan_read.execute({ feature: 'approve-only' }, caller)).revision });
+    expect(JSON.parse(await loaded.tool!.hive_status.execute({ feature: 'approve-only' }, caller)).tasks).toEqual([]);
+  });
+
+  it('skips sync on missing or stale review revisions and reports sync failure without revoking approval', async () => {
+    const { root, hooks } = createRuntime();
+    const loaded = await hooks;
+    const caller = context('approve-failure');
+    await loaded.tool!.hive_feature_create.execute({ name: 'approve-failure' }, caller);
+    const written = JSON.parse(await loaded.tool!.hive_plan_write.execute({ content: '# Plan\n\n## Tasks\n\n### 1. Setup\n\nSetup.\n' }, caller));
+    const reviewed = JSON.parse(await loaded.tool!.hive_plan_read.execute({}, caller));
+    const missing = JSON.parse(await loaded.tool!.hive_plan_approve.execute({ sync: true }, caller));
+    const refreshOnly = JSON.parse(await loaded.tool!.hive_plan_approve.execute({ refreshPending: true }, caller));
+    expect(refreshOnly).toMatchObject({ success: false, reason: 'refresh_pending_requires_sync', stage: 'validation', approvalPersisted: false });
+    expect(missing).toMatchObject({ approval: { success: false, reason: 'expected_revision_required' }, sync: { success: false, skipped: true, reason: 'approval_failed' } });
+    expect(new PlanService(root).isApproved('approve-failure')).toBe(false);
+
+    fs.writeFileSync(written.path, reviewed.content.replace('Setup.', 'Changed outside the tool.'));
+    const stale = JSON.parse(await loaded.tool!.hive_plan_approve.execute({ sync: true, expectedRevision: reviewed.revision }, caller));
+    expect(stale).toMatchObject({ approval: { success: false, reason: 'stale_revision', stage: 'validation', approvalPersisted: false }, sync: { success: false, skipped: true, reason: 'approval_failed' } });
+    expect(stale.approval.error).toContain('Stale plan revision');
+    expect(new PlanService(root).isApproved('approve-failure')).toBe(false);
+    expect(JSON.parse(await loaded.tool!.hive_status.execute({}, caller)).tasks).toEqual([]);
+
+    await loaded.tool!.hive_plan_write.execute({ content: '# Plan\n\n## Tasks\n\n### 1. Setup\n\n**Depends on**: 99\n\nSetup.\n' }, caller);
+    const invalid = JSON.parse(await loaded.tool!.hive_plan_read.execute({}, caller));
+    const failed = JSON.parse(await loaded.tool!.hive_plan_approve.execute({ sync: true, expectedRevision: invalid.revision }, caller));
+    expect(failed).toMatchObject({ approval: { success: true, feature: 'approve-failure' }, sync: { success: false, reason: 'task_sync_failed' } });
+    expect(failed.sync.error).toMatch(/99|dependency/i);
+    expect(new PlanService(root).isApproved('approve-failure')).toBe(true);
+    expect(JSON.parse(await loaded.tool!.hive_status.execute({}, caller)).tasks).toEqual([]);
+  });
+
+  it('returns persisted approval and the failed metadata stage while skipping sync', async () => {
+    const { root, hooks } = createRuntime();
+    const loaded = await hooks;
+    const caller = context('approval-partial');
+    await loaded.tool!.hive_feature_create.execute({ name: 'approval-partial' }, caller);
+    const written = JSON.parse(await loaded.tool!.hive_plan_write.execute({ content: '# Plan\n\n## Tasks\n\n### 1. Setup\n\nSetup.\n' }, caller));
+    const reviewed = JSON.parse(await loaded.tool!.hive_plan_read.execute({}, caller));
+    const write = fs.writeFileSync;
+    const failure = spyOn(fs, 'writeFileSync').mockImplementation((...args: Parameters<typeof fs.writeFileSync>) => {
+      if (args[0] === path.join(path.dirname(written.path), 'feature.json')) throw new Error('Injected metadata write failure');
+      return write(...args);
+    });
+    try {
+      const result = JSON.parse(await loaded.tool!.hive_plan_approve.execute({ sync: true, expectedRevision: reviewed.revision }, caller));
+      expect(result).toMatchObject({ approval: { success: false, reason: 'feature_metadata_write_failed', stage: 'feature_metadata', approvalPersisted: true, revision: expect.any(String) }, sync: { success: false, skipped: true, reason: 'approval_failed' } });
+      expect(new PlanService(root).isApproved('approval-partial')).toBe(true);
+      expect(JSON.parse(await loaded.tool!.hive_status.execute({}, caller)).tasks).toEqual([]);
+    } finally {
+      failure.mockRestore();
+    }
+  });
+
+  it('detects plan writes, patches, and comments across the approve-to-sync boundary', async () => {
+    for (const mutation of ['write', 'patch', 'comment'] as const) {
+      const { root, hooks } = createRuntime();
+      const loaded = await hooks;
+      const caller = context(`sync-${mutation}`);
+      await loaded.tool!.hive_feature_create.execute({ name: `sync-${mutation}` }, caller);
+      await loaded.tool!.hive_plan_write.execute({ content: '# Plan\n\n## Tasks\n\n### 1. Setup\n\nSetup.\n' }, caller);
+      const reviewed = JSON.parse(await loaded.tool!.hive_plan_read.execute({}, caller));
+      const service = new PlanService(root);
+      const sync = TaskService.prototype.sync;
+      const concurrent = spyOn(TaskService.prototype, 'sync').mockImplementation(function (feature, options) {
+        // Exercise a write before sync reads and a patch/comment after it has written.
+        if (mutation === 'write') service.write(feature, reviewed.content.replace('Setup.', 'Concurrent setup.'));
+        const result = sync.call(this, feature, options);
+        if (mutation === 'patch') service.patch(feature, service.read(feature)!.revision, [{ type: 'replace_task', taskNumber: 1, content: '### 1. Setup\n\nConcurrent patch.\n' }]);
+        if (mutation === 'comment') service.addComment(feature, { line: 7, body: 'Concurrent review comment.', replies: [] });
+        return result;
+      });
+      try {
+        const result = JSON.parse(await loaded.tool!.hive_plan_approve.execute({ sync: true, expectedRevision: reviewed.revision }, caller));
+        expect(result).toMatchObject({ approval: { success: false, reason: 'approval_superseded_during_sync', stage: 'sync_verification', approvalPersisted: mutation === 'comment', revision: expect.any(String), currentRevision: service.read(`sync-${mutation}`)!.revision }, sync: { success: true, created: ['01-setup'] } });
+        expect(result.approval.currentRevision).not.toBe(result.approval.revision);
+      } finally {
+        concurrent.mockRestore();
+      }
+    }
+  });
+
+  it('warns on completion about missing and unreadable task statuses alongside incomplete healthy tasks', async () => {
+    const { hooks } = createRuntime();
+    const loaded = await hooks;
+    const caller = context('completion-integrity');
+    await loaded.tool!.hive_feature_create.execute({ name: 'completion-integrity' }, caller);
+    const written = JSON.parse(await loaded.tool!.hive_plan_write.execute({ content: '# Plan\n\n## Tasks\n\n### 1. Missing\n\nWork.\n\n### 2. Unreadable\n\nWork.\n\n### 3. Pending\n\nWork.\n\n### 4. Done\n\nWork.\n\n### 5. Cancelled\n\nWork.\n' }, caller));
+    await loaded.tool!.hive_tasks_sync.execute({}, caller);
+    await loaded.tool!.hive_task_update.execute({ task: '04-done', status: 'done' }, caller);
+    await loaded.tool!.hive_task_update.execute({ task: '05-cancelled', status: 'cancelled' }, caller);
+    const tasksPath = path.join(path.dirname(written.path), 'tasks');
+    fs.rmSync(path.join(tasksPath, '01-missing', 'status.json'));
+    fs.writeFileSync(path.join(tasksPath, '02-unreadable', 'status.json'), '{ malformed');
+
+    const result = JSON.parse(await loaded.tool!.hive_feature_complete.execute({}, caller));
+    expect(result).toMatchObject({ success: true, feature: { status: 'completed' } });
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0].incompleteTasks).toHaveLength(3);
+    expect(result.warnings[0].incompleteTasks).toMatchObject([
+      { folder: '01-missing', status: null, integrity: { reason: 'status_missing' } },
+      { folder: '02-unreadable', status: null, integrity: { reason: 'status_unreadable', error: expect.any(String) } },
+      { folder: '03-pending', status: 'pending' },
+    ]);
+  });
+
+  it('keeps retained task folders with no readable status visible as non-runnable integrity entries', async () => {
+    const { hooks } = createRuntime();
+    const loaded = await hooks;
+    const caller = context('task-integrity');
+    await loaded.tool!.hive_feature_create.execute({ name: 'task-integrity' }, caller);
+    const written = JSON.parse(await loaded.tool!.hive_plan_write.execute({ content: '# Plan\n\n## Tasks\n\n### 1. Setup\n\nSetup.\n\n### 2. Build\n\nBuild.\n' }, caller));
+    await loaded.tool!.hive_tasks_sync.execute({}, caller);
+    await loaded.tool!.hive_task_update.execute({ task: '01-setup', handoff: 'Retained successor contract.' }, caller);
+    const taskPath = path.join(path.dirname(written.path), 'tasks', '01-setup');
+    const spec = fs.readFileSync(path.join(taskPath, 'spec.md'), 'utf8');
+    fs.rmSync(path.join(taskPath, 'status.json'));
+
+    const missing = JSON.parse(await loaded.tool!.hive_status.execute({}, caller));
+    expect(missing.tasks).toHaveLength(2);
+    expect(missing.tasks[0]).toEqual({ folder: '01-setup', name: 'setup', status: null, integrity: { reason: 'status_missing' }, specStale: false, specStaleReason: 'matches_plan', hasHandoff: true });
+    expect(missing.runnable).toEqual([]);
+    expect(missing.blocked).toEqual({ '02-build': ['01-setup'] });
+    expect(fs.readFileSync(path.join(taskPath, 'spec.md'), 'utf8')).toBe(spec);
+    expect(fs.readFileSync(path.join(taskPath, 'handoff.md'), 'utf8')).toBe('Retained successor contract.');
+
+    fs.writeFileSync(path.join(taskPath, 'status.json'), '{bad json');
+    const unreadable = JSON.parse(await loaded.tool!.hive_status.execute({}, caller));
+    expect(unreadable.tasks[0]).toMatchObject({ folder: '01-setup', status: null, integrity: { reason: 'status_unreadable', error: expect.any(String) }, hasHandoff: true });
+    expect(unreadable.runnable).toEqual([]);
+    expect(unreadable.blocked).toEqual({ '02-build': ['01-setup'] });
+  });
+
+  it('reports one task list with heading integrity, blockers, spec freshness, and successor handoffs', async () => {
     const { hooks } = createRuntime();
     const loaded = await hooks;
     const caller = context('task-state');
@@ -1175,7 +1366,9 @@ describe('coordinated runtime hard cut', () => {
     expect(written.unownedTaskHeadings).toEqual([{ line: 9, title: 'Setup amendment' }]);
     const read = JSON.parse(await loaded.tool!.hive_plan_read.execute({}, caller));
     expect(read.unownedTaskHeadings).toEqual([{ line: 9, title: 'Setup amendment' }]);
-    await expect(loaded.tool!.hive_plan_approve.execute({}, caller)).rejects.toThrow(/not numbered tasks: line 9: ### Setup amendment/);
+    const rejected = JSON.parse(await loaded.tool!.hive_plan_approve.execute({}, caller));
+    expect(rejected).toMatchObject({ success: false, reason: 'unowned_task_headings', stage: 'validation', approvalPersisted: false });
+    expect(rejected.error).toMatch(/not numbered tasks: line 9: ### Setup amendment/);
     await expect(loaded.tool!.hive_plan_patch.execute({
       expectedRevision: read.revision,
       operations: [{ type: 'insert_after_section', headingPath: ['Tasks', '2. Build'], content: '### Build notes\n\nMore.\n' }],
@@ -1207,7 +1400,7 @@ describe('coordinated runtime hard cut', () => {
       { folder: '01-setup', dependsOn: [], specStale: false, specStaleReason: 'matches_plan', hasHandoff: true },
       { folder: '02-build', dependsOn: ['01-setup'], specStale: true, specStaleReason: 'differs_from_plan', hasHandoff: false },
     ]);
-    expect(projected(status.feature.tasks)).toEqual(projected(status.tasks));
+    expect(status.feature).toEqual({ name: 'task-state', status: 'approved', hasPlan: true, commentCount: 0 });
     expect(status).not.toHaveProperty('specFreshnessError');
     expect(status.runnable).toEqual(['01-setup']);
     expect(status.blocked).toEqual({ '02-build': ['01-setup'] });
@@ -1223,9 +1416,18 @@ describe('coordinated runtime hard cut', () => {
       { folder: '01-setup', status: 'pending', dependsOn: [] },
       { folder: '02-build', status: 'done', dependsOn: ['01-setup'] },
     ]);
-    expect(dependencyView(edges.feature.tasks)).toEqual(dependencyView(edges.tasks));
+    expect(edges.feature).not.toHaveProperty('tasks');
     expect(edges.runnable).toEqual(['01-setup']);
     expect(edges.blocked).toEqual({});
+
+    const blocker = { reason: 'Operator decision needed.', options: ['Keep', 'Replace'], recommendation: 'Keep' };
+    await loaded.tool!.hive_task_update.execute({ task: '01-setup', status: 'blocked', blocker }, caller);
+    fs.writeFileSync(written.path, plan.content.replace('### 2. Build', '### Shared notes\n\nUnowned.\n\n### 2. Build'));
+    const blocked = JSON.parse(await loaded.tool!.hive_status.execute({}, caller));
+    expect(blocked.tasks[0]).toMatchObject({ status: 'blocked', blocker, specStale: null, specStaleReason: 'unowned_heading_after_task_section' });
+    expect(blocked.unownedTaskHeadings).toEqual([{ line: 13, title: 'Shared notes' }]);
+    expect(blocked.runnable).toEqual([]);
+    expect(blocked.worktrees).toEqual([]);
 
     fs.rmSync(path.join(tasksPath, '02-build', 'spec.md'));
     fs.mkdirSync(path.join(tasksPath, '02-build', 'spec.md'));
@@ -1235,7 +1437,7 @@ describe('coordinated runtime hard cut', () => {
       { folder: '01-setup', dependsOn: [], specStale: null, specStaleReason: 'freshness_unavailable', hasHandoff: true },
       { folder: '02-build', dependsOn: ['01-setup'], specStale: null, specStaleReason: 'freshness_unavailable', hasHandoff: false },
     ]);
-    expect(projected(degraded.feature.tasks)).toEqual(projected(degraded.tasks));
+    expect(degraded.feature).not.toHaveProperty('tasks');
   });
 
   it('appends a task brief after the unchanged route snapshot only for bound Forager dispatches', async () => {

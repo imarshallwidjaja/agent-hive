@@ -76,9 +76,8 @@ describe('plugin hard-cut surface', () => {
 
     const approval = await hooks.tool!.hive_plan_approve.execute({}, context);
     expect(approval).not.toBeUndefined();
-    expect(JSON.parse(approval)).toEqual({ success: true, feature: 'approval-response' });
-
     const plan = JSON.parse(await hooks.tool!.hive_plan_read.execute({}, context));
+    expect(JSON.parse(approval)).toEqual({ success: true, feature: 'approval-response', approvalPersisted: true, revision: plan.revision });
     expect(plan.status).toBe('approved');
   });
 

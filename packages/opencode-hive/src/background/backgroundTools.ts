@@ -24,9 +24,10 @@ export interface CreateBackgroundToolsOptions {
 type ReconcileDecision = 'reconciled' | 'ignored';
 type RecommendedNextAction = Record<string, string | string[] | boolean | undefined>;
 
-interface VisibleBackgroundBoard {
-  activeJobs: BackgroundJobRecord[];
-}
+type ReconcileResult = { identifier: string; decision: ReconcileDecision } & (
+  | { success: true; archived: true; state: 'archived_after_reconcile' | 'ignored_archived'; requiresHiveStatusRefresh: boolean }
+  | { success: false; reason: string; error: string; hint: string }
+);
 
 export function createBackgroundTools(options: CreateBackgroundToolsOptions): Record<string, ToolDefinition> {
   const cancelRuntimeTask = options.cancelRuntimeTask ?? (async () => ({
@@ -102,20 +103,7 @@ export function createBackgroundTools(options: CreateBackgroundToolsOptions): Re
           return json(disabledResponse());
         }
 
-        const result = reconcileVisibleJob(options.backgroundJobService, options.projectRoot, toolContext as ToolContext, { identifier, decision: decision as ReconcileDecision, summary });
-        if (!result.success) {
-          return json(result);
-        }
-
-        const { activeJobs } = buildVisibleBackgroundBoard(options.backgroundJobService, options.projectRoot, toolContext as ToolContext);
-        const resultJob = (result as { job?: { alias?: string } }).job;
-        const reconciledJob = resultJob?.alias ? options.backgroundJobService.resolve(resultJob.alias) : undefined;
-        const reconciledJobs = reconciledJob ? [reconciledJob] : [];
-
-        return json({
-          ...result,
-          recommendedNextAction: buildRecommendedNextAction(activeJobs, reconciledJobs),
-        });
+        return json(reconcileVisibleJob(options.backgroundJobService, options.projectRoot, toolContext as ToolContext, { identifier, decision, summary }));
       },
     }),
 
@@ -139,26 +127,10 @@ export function createBackgroundTools(options: CreateBackgroundToolsOptions): Re
         const results = items.map((item: { identifier: string; decision: ReconcileDecision; summary: string }) =>
           reconcileVisibleJob(options.backgroundJobService, options.projectRoot, toolContext as ToolContext, item));
 
-        const reconciledJobs = results
-          .filter(r => r.success === true)
-          .map(r => {
-            const resultJob = (r as Record<string, unknown>).job as Record<string, unknown> | undefined;
-            const alias = resultJob && typeof resultJob.alias === 'string' ? resultJob.alias : null;
-            if (alias) {
-              return options.backgroundJobService.resolve(alias);
-            }
-            const rawId = (r as Record<string, unknown>).identifier;
-            const trimmed = typeof rawId === 'string' ? rawId.trim() : '';
-            return trimmed ? options.backgroundJobService.resolve(trimmed) : undefined;
-          })
-          .filter((j): j is BackgroundJobRecord => j !== undefined);
-
-        const { activeJobs } = buildVisibleBackgroundBoard(options.backgroundJobService, options.projectRoot, toolContext as ToolContext);
-
         return json({
           success: results.every(result => result.success === true),
           results,
-          recommendedNextAction: buildRecommendedNextAction(activeJobs, reconciledJobs),
+          requiresHiveStatusRefresh: results.some(result => result.success && result.requiresHiveStatusRefresh),
         });
       },
     }),
@@ -279,65 +251,66 @@ function reconcileVisibleJob(
   projectRoot: string,
   toolContext: ToolContext,
   item: { identifier: string; decision: ReconcileDecision; summary: string },
-): Record<string, unknown> {
-  const trimmedSummary = item.summary.trim();
-  if (!trimmedSummary) {
-    return { identifier: item.identifier, ...failure('summary_required', 'A non-empty summary is required to reconcile or ignore a background job.') };
-  }
-  const resolved = resolveVisibleJob(backgroundJobService, item.identifier, projectRoot, toolContext);
-  if (!resolved.success) {
-    return { identifier: item.identifier, ...resolved };
-  }
+): ReconcileResult {
+  const acknowledgement = { identifier: item.identifier, decision: item.decision };
+  try {
+    const trimmedSummary = item.summary.trim();
+    if (!trimmedSummary) {
+      return { ...acknowledgement, ...failure('summary_required', 'A non-empty summary is required to reconcile or ignore a background job.'), hint: 'Supply a non-empty summary of what was done with the result or why it is ignored.' };
+    }
+    const resolved = resolveVisibleJob(backgroundJobService, item.identifier, projectRoot, toolContext);
+    if (resolved.success === false) {
+      const hints: Record<string, string> = {
+        identifier_required: 'Supply a task ID, session ID, or canonical scoped alias from hive_background_status.',
+        job_identifier_ambiguous: 'Use the exact canonical scoped alias from the error or hive_background_status.',
+        job_not_found: 'Inspect hive_background_status for the correct identifier before retrying.',
+        job_not_in_scope: 'Use the originating parent session to inspect and reconcile this observation.',
+        job_archived: 'Inspect hive_background_status({ includeArchived: true }); this observation is already archived.',
+      };
+      return { ...acknowledgement, ...resolved, hint: hints[resolved.reason] ?? 'Inspect hive_background_status and the reported error before retrying with the correct identifier.' };
+    }
 
-  if (!isTerminalRuntimeState(resolved.job.runtimeState)) {
-    if (resolved.job.staleAt || resolved.job.statusUncertain) {
-      const stale = !!resolved.job.staleAt;
-      if (item.decision !== 'ignored') {
-        const reason = stale ? 'stale_job_requires_ignore' : 'uncertain_job_requires_ignore';
-        return {
-          identifier: item.identifier,
-          ...failure(reason, `${stale ? 'Stale' : 'Uncertain'} background job ${resolved.job.alias} is ${resolved.job.runtimeState}, not terminal. Inspect it or archive the observation with decision "ignored".`),
-          nextAction: stale ? staleRecoveryPendingAction(resolved.job) : uncertainRecoveryPendingAction(resolved.job),
-        };
+    if (!isTerminalRuntimeState(resolved.job.runtimeState)) {
+      if (resolved.job.staleAt || resolved.job.statusUncertain) {
+        const stale = !!resolved.job.staleAt;
+        if (item.decision !== 'ignored') {
+          const reason = stale ? 'stale_job_requires_ignore' : 'uncertain_job_requires_ignore';
+          return {
+            ...acknowledgement,
+            ...failure(reason, `${stale ? 'Stale' : 'Uncertain'} background job ${resolved.job.alias} is ${resolved.job.runtimeState}, not terminal. Inspect it or archive the observation with decision "ignored".`),
+            hint: (stale ? staleRecoveryPendingAction(resolved.job) : uncertainRecoveryPendingAction(resolved.job)).command,
+          };
+        }
+
+        backgroundJobService.markIgnored(resolved.job.alias, trimmedSummary);
+        return { ...acknowledgement, success: true, archived: true, state: 'ignored_archived', requiresHiveStatusRefresh: hasHiveFeatureOrTaskScope(resolved.job) };
       }
-
-      const ignored = backgroundJobService.markIgnored(resolved.job.alias, trimmedSummary);
       return {
-        identifier: item.identifier,
-        success: true,
-        decision: item.decision,
-        archive: {
-          archived: true,
-          message: `The ${stale ? 'stale' : 'uncertain'} background observation is archived and hidden from normal status output. Archiving does not claim the worker stopped.`,
-        },
-        job: formatJob(ignored),
+        ...acknowledgement,
+        ...failure('job_not_terminal', `Background job ${resolved.job.taskId} is ${resolved.job.runtimeState}, not terminal.`),
+        hint: nativeCompletionPendingWait(resolved.job).message,
       };
     }
 
-    return {
-      identifier: item.identifier,
-      ...failure('job_not_terminal', `Background job ${resolved.job.taskId} is ${resolved.job.runtimeState}, not terminal.`),
-      nextAction: nativeCompletionPendingWait(resolved.job),
-    };
-  }
-
-  const reconciled = item.decision === 'reconciled'
-    ? backgroundJobService.markReconciled(resolved.job.alias, {
+    if (item.decision === 'reconciled') {
+      backgroundJobService.markReconciled(resolved.job.alias, {
         reconciledBy: toolContext.sessionID,
         reconciliationSummary: trimmedSummary,
-      })
-    : backgroundJobService.markIgnored(resolved.job.alias, trimmedSummary);
+      });
+    } else {
+      backgroundJobService.markIgnored(resolved.job.alias, trimmedSummary);
+    }
 
-  return {
-    identifier: item.identifier,
-    success: true,
-    decision: item.decision,
-    archive: {
+    return {
+      ...acknowledgement,
+      success: true,
       archived: true,
-      message: 'The background job is archived and hidden from normal status output. Do not edit .hive/background-jobs.json directly.',
-    },
-    job: formatJob(reconciled),
-  };
+      state: item.decision === 'reconciled' ? 'archived_after_reconcile' : 'ignored_archived',
+      requiresHiveStatusRefresh: hasHiveFeatureOrTaskScope(resolved.job),
+    };
+  } catch (error) {
+    return { ...acknowledgement, ...failure('reconciliation_failed', error instanceof Error ? error.message : String(error)), hint: 'Inspect hive_background_status({ includeArchived: true }) before retrying; a failed persistence write may have published.' };
+  }
 }
 
 function isJobVisible(job: BackgroundJobRecord, toolContext: ToolContext): boolean {
@@ -384,7 +357,6 @@ function buildOrchestrationBurden(jobs: BackgroundJobRecord[]): Record<string, n
 
 function buildRecommendedNextAction(
   jobs: BackgroundJobRecord[],
-  reconciledJobs: BackgroundJobRecord[] = [],
 ): RecommendedNextAction {
   const staleJobs = jobs.filter(isNonTerminalStaleJob);
   if (staleJobs.length > 0) {
@@ -399,7 +371,7 @@ function buildRecommendedNextAction(
       reasonCode: 'terminal_unreconciled_jobs_visible',
       taskIds: terminalJobs.map(job => job.taskId),
       message: 'Multiple visible background jobs are terminal and unreconciled. Reconcile or ignore each board item, then inspect Hive status for scoped feature/task work.',
-      requiresHiveStatusRefresh: terminalJobs.some(hasHiveFeatureOrTaskScope) || reconciledJobs.some(hasHiveFeatureOrTaskScope),
+      requiresHiveStatusRefresh: terminalJobs.some(hasHiveFeatureOrTaskScope),
     };
   }
 
@@ -410,7 +382,7 @@ function buildRecommendedNextAction(
       reasonCode: 'terminal_unreconciled_job_visible',
       taskId: job.taskId,
       message: 'A visible background job is terminal and unreconciled. Reconcile or ignore the board item, then inspect Hive status if it belongs to scoped feature/task work.',
-      requiresHiveStatusRefresh: hasHiveFeatureOrTaskScope(job) || reconciledJobs.some(hasHiveFeatureOrTaskScope),
+      requiresHiveStatusRefresh: hasHiveFeatureOrTaskScope(job),
     };
   }
 
@@ -434,36 +406,11 @@ function buildRecommendedNextAction(
       taskId: taskIds.length === 1 ? taskIds[0] : undefined,
       taskIds: taskIds.length > 1 ? taskIds : undefined,
       message: 'Every visible background lane is still waiting on the native OpenCode completion notification. Do not refresh the board repeatedly.',
-      requiresHiveStatusRefresh: reconciledJobs.some(hasHiveFeatureOrTaskScope),
-    });
-  }
-
-  const hiveScopedReconciled = reconciledJobs.filter(hasHiveFeatureOrTaskScope);
-  if (hiveScopedReconciled.length > 0) {
-    const taskIds = hiveScopedReconciled.map(job => job.taskId);
-    return pruneUndefined({
-      action: 'inspect_hive_status',
-      reasonCode: 'reconciled_job_has_hive_scope',
-      taskId: taskIds.length === 1 ? taskIds[0] : undefined,
-      taskIds: taskIds.length > 1 ? taskIds : undefined,
-      message: 'One or more background board items were archived for Hive feature/task work. Inspect Hive status to decide the next orchestration step.',
-      requiresHiveStatusRefresh: true,
+      requiresHiveStatusRefresh: false,
     });
   }
 
   return idleRecommendedNextAction();
-}
-
-function buildVisibleBackgroundBoard(
-  backgroundJobService: BackgroundJobService,
-  projectRoot: string,
-  toolContext: ToolContext,
-): VisibleBackgroundBoard {
-  const allJobs = backgroundJobService
-    .listScoped({ projectRoot })
-    .filter(job => isJobVisible(job, toolContext));
-  const activeJobs = allJobs.filter(job => !isBackgroundJobArchived(job));
-  return { activeJobs };
 }
 
 function buildStaleRecoveryAction(staleJobs: BackgroundJobRecord[]): RecommendedNextAction {

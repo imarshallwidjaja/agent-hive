@@ -47,41 +47,6 @@ describe('FeatureService', () => {
     cleanup();
   });
 
-  it('reports plan-only review state and does not expose overview-specific feature info', () => {
-    const featureName = 'test-feature';
-    const featurePath = setupFeature(featureName);
-
-    fs.writeFileSync(path.join(featurePath, 'context', 'overview.md'), '# Overview\n');
-    fs.mkdirSync(path.join(featurePath, 'comments'), { recursive: true });
-    fs.writeFileSync(
-      path.join(featurePath, 'comments', 'plan.json'),
-      JSON.stringify({
-        threads: [
-          { id: 'plan-1', line: 1, body: 'Plan thread', replies: [] },
-          { id: 'plan-2', line: 2, body: 'Plan thread 2', replies: ['reply'] },
-        ],
-      })
-    );
-    fs.writeFileSync(
-      path.join(featurePath, 'comments', 'overview.json'),
-      JSON.stringify({
-        threads: [{ id: 'overview-1', line: 3, body: 'Overview thread', replies: [] }],
-      })
-    );
-
-    const info = service.getInfo(featureName);
-
-    expect(info).toMatchObject({
-      name: featureName,
-      hasPlan: true,
-      commentCount: 2,
-      reviewCounts: {
-        plan: 2,
-      },
-    });
-    expect(info).not.toHaveProperty('hasOverview');
-  });
-
   it('creates new features in the next indexed folder without writing project-global selection state', () => {
     setupFeature('legacy-feature');
     setupIndexedFeature('02_existing-feature', 'existing-feature');

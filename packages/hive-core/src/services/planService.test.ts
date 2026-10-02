@@ -1,7 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import * as fs from 'fs';
 import * as path from 'path';
-import { PlanService } from './planService';
+import { PlanApprovalError, PlanService } from './planService';
+import { ReviewService } from './reviewService';
 
 const TEST_DIR = `/tmp/hive-core-planservice-test-${process.pid}`;
 
@@ -146,6 +147,89 @@ describe('PlanService', () => {
     service.addComment(featureName, { line: 7, body: 'Needs update', replies: [] });
     expect(service.read(featureName)?.contentHash).toBe(firstRead?.contentHash);
     expect(service.read(featureName)?.revision).not.toBe(firstRead?.revision);
+  });
+
+  it('guarded approval rejects unseen content or comments without mutation', () => {
+    for (const change of ['content', 'comments'] as const) {
+      const featureName = `guarded-approval-${change}`;
+      const featurePath = setupFeature(featureName);
+      writePatchablePlan(service, featureName);
+      const reviewed = service.read(featureName)!;
+      if (change === 'content') fs.appendFileSync(path.join(featurePath, 'plan.md'), '\nExternal edit.\n');
+      if (change === 'comments') service.addComment(featureName, { line: 7, body: 'Unseen comment.', replies: [] });
+      const before = service.read(featureName)!;
+
+      expect(() => service.approve(featureName, reviewed.revision)).toThrow(/Stale plan revision/);
+      expect(service.read(featureName)).toEqual(before);
+      expect(service.isApproved(featureName)).toBe(false);
+    }
+  });
+
+  it('reports an unchanged pre-approval revision retry as already approved without rewriting either file', () => {
+    const featureName = 'approval-retry';
+    const featurePath = setupFeature(featureName);
+    writePatchablePlan(service, featureName);
+    const reviewed = service.read(featureName)!;
+    const approved = service.approve(featureName, reviewed.revision);
+    const marker = fs.readFileSync(path.join(featurePath, 'APPROVED'), 'utf8');
+    const metadata = fs.readFileSync(path.join(featurePath, 'feature.json'), 'utf8');
+
+    expect(service.approve(featureName, reviewed.revision)).toEqual({ ...approved, alreadyApproved: true });
+    expect(approved.revision).toBe(service.read(featureName)!.revision);
+    expect(fs.readFileSync(path.join(featurePath, 'APPROVED'), 'utf8')).toBe(marker);
+    expect(fs.readFileSync(path.join(featurePath, 'feature.json'), 'utf8')).toBe(metadata);
+    fs.appendFileSync(path.join(featurePath, 'plan.md'), '\nExternal edit after approval.\n');
+    expect(() => service.approve(featureName, reviewed.revision)).toThrow(/Stale plan revision/);
+  });
+
+  it('distinguishes validation rejection from a persisted marker with a failed metadata write and repairs that retry', () => {
+    const featureName = 'approval-partial-write';
+    const featurePath = setupFeature(featureName);
+    writePatchablePlan(service, featureName);
+    const revision = service.read(featureName)!.revision;
+    try {
+      service.approve(featureName, 'stale');
+      throw new Error('Expected validation rejection');
+    } catch (error) {
+      expect(error).toBeInstanceOf(PlanApprovalError);
+      expect(error).toMatchObject({ reason: 'stale_revision', stage: 'validation', approvalPersisted: false });
+    }
+    const write = fs.writeFileSync;
+    const failure = spyOn(fs, 'writeFileSync').mockImplementation((...args: Parameters<typeof fs.writeFileSync>) => {
+      if (args[0] === path.join(featurePath, 'feature.json')) throw new Error('Injected metadata write failure');
+      return write(...args);
+    });
+    try {
+      service.approve(featureName, revision);
+      throw new Error('Expected metadata write failure');
+    } catch (error) {
+      expect(error).toBeInstanceOf(PlanApprovalError);
+      expect(error).toMatchObject({ reason: 'feature_metadata_write_failed', stage: 'feature_metadata', approvalPersisted: true, revision: service.read(featureName)!.revision });
+      expect(fs.readFileSync(path.join(featurePath, 'APPROVED'), 'utf8')).toStartWith('Approved at ');
+      expect(JSON.parse(fs.readFileSync(path.join(featurePath, 'feature.json'), 'utf8')).status).toBe('planning');
+    } finally {
+      failure.mockRestore();
+    }
+    expect(service.approve(featureName, revision)).toMatchObject({ success: true, alreadyApproved: true, approvalPersisted: true });
+    expect(JSON.parse(fs.readFileSync(path.join(featurePath, 'feature.json'), 'utf8')).status).toBe('approved');
+  });
+
+  it('rechecks the reviewed revision after approval validation before persisting approval', () => {
+    const featureName = 'approval-external-edit';
+    const featurePath = setupFeature(featureName);
+    writePatchablePlan(service, featureName);
+    const revision = service.read(featureName)!.revision;
+    const validation = spyOn(ReviewService.prototype, 'hasUnresolvedThreads').mockImplementation(() => {
+      fs.appendFileSync(path.join(featurePath, 'plan.md'), '\nEdit during validation.\n');
+      return false;
+    });
+    try {
+      expect(() => service.approve(featureName, revision)).toThrow(/Stale plan revision/);
+      expect(service.isApproved(featureName)).toBe(false);
+      expect(service.read(featureName)?.status).toBe('planning');
+    } finally {
+      validation.mockRestore();
+    }
   });
 
   it('read outline returns headings and task list without full content', () => {

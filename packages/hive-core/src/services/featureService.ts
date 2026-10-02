@@ -1,36 +1,21 @@
-import * as fs from 'fs';
 import * as path from 'path';
 import {
-  getFeaturePath,
   getFeaturesPath,
   getNextIndexedFeatureDirectoryName,
   getFeatureJsonPath,
   getTasksPath,
-  getPlanPath,
   listFeatureDirectories,
   ensureDir,
   readJson,
   writeJson,
-  fileExists,
   assertValidFeatureName,
 } from '../utils/paths.js';
-import type { FeatureJson, FeatureStatusType, TaskInfo, FeatureInfo, TaskStatus } from '../types.js';
-import { ReviewService } from './reviewService.js';
+import type { FeatureJson, FeatureStatusType } from '../types.js';
 
 export { FEATURE_NAME_PATTERN, assertValidFeatureName } from '../utils/paths.js';
 
 export class FeatureService {
-  private reviewService: ReviewService;
-
   constructor(private projectRoot: string) {}
-
-  private getReviewService(): ReviewService {
-    if (!this.reviewService) {
-      this.reviewService = new ReviewService(this.projectRoot);
-    }
-
-    return this.reviewService;
-  }
 
   create(name: string, ticket?: string): FeatureJson {
     assertValidFeatureName(name);
@@ -93,50 +78,6 @@ export class FeatureService {
 
     writeJson(getFeatureJsonPath(this.projectRoot, name), feature);
     return feature;
-  }
-
-  getInfo(name: string): FeatureInfo | null {
-    const feature = this.get(name);
-    if (!feature) return null;
-
-    const tasks = this.getTasks(name);
-    const hasPlan = fileExists(getPlanPath(this.projectRoot, name));
-    const reviewCounts = this.getReviewService().countByDocument(name);
-    const commentCount = reviewCounts.plan;
-
-    return {
-      name: feature.name,
-      status: feature.status,
-      tasks,
-      hasPlan,
-      commentCount,
-      reviewCounts,
-    };
-  }
-
-  private getTasks(featureName: string): TaskInfo[] {
-    const tasksPath = getTasksPath(this.projectRoot, featureName);
-    if (!fileExists(tasksPath)) return [];
-
-    const folders = fs.readdirSync(tasksPath, { withFileTypes: true })
-      .filter(d => d.isDirectory())
-      .map(d => d.name)
-      .sort();
-
-    return folders.map(folder => {
-      const statusPath = `${tasksPath}/${folder}/status.json`;
-      const status = readJson<TaskStatus>(statusPath);
-      const name = folder.replace(/^\d+-/, '');
-      
-      return {
-        folder,
-        name,
-        status: status?.status || 'pending',
-        origin: status?.origin || 'plan',
-        planTitle: status?.planTitle,
-        summary: status?.summary,
-      };
-    });
   }
 
   complete(name: string): FeatureJson {

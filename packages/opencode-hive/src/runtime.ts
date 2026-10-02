@@ -11,6 +11,7 @@ import {
   DEFAULT_COUNCIL_CONFIG,
   FeatureConstraintService,
   FeatureService,
+  PlanApprovalError,
   PlanService,
   RepositoryManifestService,
   SessionService,
@@ -22,6 +23,7 @@ import {
   canonicalProjectRoot,
   computeRunnableAndBlocked,
   detectContext,
+  getPlanPath,
   getTaskHandoffPath,
   projectRootsMatch,
   readCompositeWorkspaceManifest,
@@ -29,10 +31,11 @@ import {
   type CustomAgentBase,
   type AdhocMergeOptions,
   type MergeOptions,
+  type PlanApprovalResult,
+  type PlanUnownedTaskHeading,
   type ResolvedCustomAgentConfig,
   type StandingConstraintEntry,
   type TaskSpecFreshness,
-  type TaskSpecFreshnessReason,
 } from 'hive-core';
 import { QUEEN_BEE_PROMPT, hiveBeeAgent } from './agents/hive.js';
 import { ARCHITECT_BEE_PROMPT, architectBeeAgent } from './agents/architect.js';
@@ -433,7 +436,7 @@ const plugin: Plugin = async (ctx) => {
       args: { name: tool.schema.string().optional() },
       execute: async ({ name }, context) => {
         const feature = requireFeature(name, context);
-        const incompleteTasks = taskService.list(feature).filter((task) => task.status !== 'done' && task.status !== 'cancelled');
+        const incompleteTasks = taskService.listStatusEntries(feature).filter((task) => task.status !== 'done' && task.status !== 'cancelled');
         const result = featureService.complete(feature);
         return json({ success: true, feature: result, warnings: incompleteTasks.length ? [{ incompleteTasks }] : [] });
       },
@@ -468,12 +471,43 @@ const plugin: Plugin = async (ctx) => {
       },
     }),
     hive_plan_approve: tool({
-      description: 'Approve the plan.',
-      args: { feature: tool.schema.string().optional() },
-      execute: async ({ feature }, context) => {
+      description: 'Approve the plan with explicit persistence-stage outcomes. Optional sync requires the reviewed expectedRevision, returns separate approval and task-sync outcomes, and rechecks approval after sync.',
+      args: { feature: tool.schema.string().optional(), expectedRevision: tool.schema.string().optional(), sync: tool.schema.boolean().optional(), refreshPending: tool.schema.boolean().optional() },
+      execute: async ({ feature, expectedRevision, sync, refreshPending }, context) => {
         const selected = requireFeature(feature, context);
-        planService.approve(selected);
-        return json({ success: true, feature: selected });
+        if (sync !== true && refreshPending !== undefined) {
+          return json({ success: false, reason: 'refresh_pending_requires_sync', stage: 'validation', approvalPersisted: planService.isApproved(selected), error: 'refreshPending requires sync: true.' });
+        }
+        const skippedSync = { success: false, skipped: true, reason: 'approval_failed' };
+        if (sync === true && !expectedRevision?.trim()) {
+          return json({ approval: { success: false, reason: 'expected_revision_required', stage: 'validation', approvalPersisted: planService.isApproved(selected), error: 'sync: true requires the expectedRevision returned by hive_plan_read.' }, sync: skippedSync });
+        }
+        let approval: PlanApprovalResult;
+        try {
+          approval = planService.approve(selected, expectedRevision);
+        } catch (error) {
+          const failed = error instanceof PlanApprovalError
+            ? { success: false, reason: error.reason, stage: error.stage, approvalPersisted: error.approvalPersisted, ...(error.revision ? { revision: error.revision } : {}), error: error.message }
+            : { success: false, reason: 'plan_approval_failed', stage: 'validation', approvalPersisted: planService.isApproved(selected), error: error instanceof Error ? error.message : String(error) };
+          return json(sync === true ? { approval: failed, sync: skippedSync } : failed);
+        }
+        if (sync !== true) return json(approval);
+        let syncResult;
+        try {
+          syncResult = { success: true, ...taskService.sync(selected, { refreshPending }) };
+        } catch (error) {
+          syncResult = { success: false, reason: 'task_sync_failed', error: error instanceof Error ? error.message : String(error) };
+        }
+        // Approval releases its lock before sync; another writer can invalidate this outcome.
+        try {
+          const current = planService.read(selected);
+          if (current?.status !== 'approved' || current.revision !== approval.revision) {
+            return json({ approval: { success: false, reason: 'approval_superseded_during_sync', stage: 'sync_verification', approvalPersisted: planService.isApproved(selected), revision: approval.revision, currentRevision: current?.revision, error: 'Plan approval changed during task sync. Read and review the current plan before approving and syncing again.' }, sync: syncResult });
+          }
+        } catch (error) {
+          return json({ approval: { success: false, reason: 'approval_verification_failed', stage: 'sync_verification', approvalPersisted: planService.isApproved(selected), revision: approval.revision, error: error instanceof Error ? error.message : String(error) }, sync: syncResult });
+        }
+        return json({ approval, sync: syncResult });
       },
     }),
     hive_tasks_sync: tool({
@@ -511,9 +545,16 @@ const plugin: Plugin = async (ctx) => {
       },
     }),
     hive_worktree_create: tool({
-      description: 'Create a task worktree without changing task state.',
+      description: 'Create a task worktree without changing task state and return its initial inspection, including source cleanliness and destination identity/comparison; later checkpoints still require hive_worktree_inspect.',
       args: { feature: tool.schema.string().optional(), task: tool.schema.string(), baseRef: tool.schema.string().optional(), repoIds: tool.schema.array(tool.schema.string()).optional(), candidate: tool.schema.string().optional() },
-      execute: async ({ feature, task, baseRef, repoIds, candidate }, context) => { const selected = requireFeature(feature, context); assertTaskRepoIds(selected, task, repoIds); return json(await worktreeService.create(selected, task, baseRef, candidate)); },
+      execute: async ({ feature, task, baseRef, repoIds, candidate }, context) => {
+        const selected = requireFeature(feature, context);
+        assertTaskRepoIds(selected, task, repoIds);
+        await worktreeService.create(selected, task, baseRef, candidate);
+        const inspected = await worktreeService.inspect(selected, task, candidate);
+        if (!inspected) throw new Error('Created task worktree not found during initial inspection');
+        return json(inspected);
+      },
     }),
     hive_worktree_inspect: tool({
       description: 'Inspect a task worktree.',
@@ -544,7 +585,7 @@ const plugin: Plugin = async (ctx) => {
       execute: async ({ feature, task, repoIds, candidate, deleteBranch, discard }, context) => { const selected = requireFeature(feature, context); assertTaskRepoIds(selected, task, repoIds); return json(await worktreeService.remove(selected, task, deleteBranch, { discard }, candidate)); },
     }),
     hive_adhoc_worktree_create: tool({
-      description: 'Create the matching ad-hoc Hive worktree for tracked Git writes after repository scope is resolved. An absolute sourceDirectory resolving to the active project root is treated as omitted; foreign sourceDirectory cannot be combined with repoIds.',
+      description: 'Create the matching ad-hoc Hive worktree and return its initial inspection, including source cleanliness and destination identity/comparison; later checkpoints still require hive_adhoc_worktree_inspect. An absolute sourceDirectory resolving to the active project root is treated as omitted; foreign sourceDirectory cannot be combined with repoIds.',
       args: { runId: tool.schema.string().optional(), repoIds: tool.schema.array(tool.schema.string()).optional(), sourceDirectory: tool.schema.string().optional() },
       execute: async ({ sourceDirectory, ...options }) => {
         let normalizedSourceDirectory = sourceDirectory;
@@ -558,7 +599,11 @@ const plugin: Plugin = async (ctx) => {
           const status = repositoryManifestService.getStatus();
           if (status.mode === 'legacy-root' && repoIds[0] === status.repositories[0]?.id) repoIds = undefined;
         }
-        return json(await adhocService(normalizedSourceDirectory, repoIds).create({ ...options, repoIds }));
+        const service = adhocService(normalizedSourceDirectory, repoIds);
+        const created = await service.create({ ...options, repoIds });
+        const inspected = await service.inspect(created.runId);
+        if (!inspected) throw new Error('Created ad-hoc worktree not found during initial inspection');
+        return json(inspected);
       },
     }),
     hive_adhoc_worktree_inspect: tool({
@@ -697,49 +742,38 @@ const plugin: Plugin = async (ctx) => {
       execute: async ({ expectedRevision, ...input }, context) => { const target = constraintTarget(input, context as ToolContext); return json(target.scope === 'session' ? sessionService.clearStandingConstraints(target.sessionID, expectedRevision) : featureConstraintService.clear(target.feature, expectedRevision)); },
     }),
     hive_status: tool({
-      description: 'Get feature status from task, dependency, and worktree state.',
+      description: 'Get feature metadata, one top-level task list with integrity entries/blockers/freshness/handoffs, dependency readiness, and worktree state. Integrity entries are never runnable.',
       args: { feature: tool.schema.string().optional() },
       execute: async ({ feature }, context) => {
         const selected = requireFeature(feature, context);
-        const tasks = taskService.list(selected);
+        const tasks = taskService.listStatusEntries(selected);
         const { worktrees, errors: worktreeErrors } = await worktreeService.list(selected);
-        const info = featureService.getInfo(selected);
+        const info = featureService.get(selected);
         let freshness = new Map<string, TaskSpecFreshness>();
         let specFreshnessError: string | undefined;
+        let unownedTaskHeadings: PlanUnownedTaskHeading[] | undefined;
         try {
+          unownedTaskHeadings = planService.read(selected)?.unownedTaskHeadings;
           freshness = new Map(taskService.getSpecFreshness(selected).map((entry) => [entry.folder, entry]));
         } catch (error) {
           specFreshnessError = error instanceof Error ? error.message : String(error);
         }
-        // One projection for both task lists and readiness so they cannot disagree.
-        type TaskStateProjection = {
-          /** Stored dependency folders; a legacy status without the field reads as []. */
-          dependsOn: string[];
-          specStale: boolean | null;
-          specStaleReason: TaskSpecFreshnessReason | 'freshness_unavailable';
-          hasHandoff: boolean;
-        };
-        const taskState = new Map<string, TaskStateProjection>();
-        const projectedFolders = new Set([
-          ...tasks.map(task => task.folder),
-          ...(info?.tasks.map(task => task.folder) ?? []),
-        ]);
-        for (const folder of projectedFolders) {
-          taskState.set(folder, {
-            dependsOn: taskService.getRawStatus(selected, folder)?.dependsOn ?? [],
-            specStale: freshness.get(folder)?.specStale ?? null,
-            specStaleReason: freshness.get(folder)?.specStaleReason ?? 'freshness_unavailable',
-            hasHandoff: fs.existsSync(getTaskHandoffPath(projectRoot, selected, folder)),
-          });
-        }
-        const graph = computeRunnableAndBlocked(tasks.map((task) => ({ folder: task.folder, status: task.status, dependsOn: taskState.get(task.folder)!.dependsOn })));
-        const withTaskState = <T extends { folder: string }>(task: T) => ({ ...task, ...taskState.get(task.folder) });
+        const projectedTasks = tasks.map(task => {
+          return {
+            ...task,
+            specStale: freshness.get(task.folder)?.specStale ?? null,
+            specStaleReason: freshness.get(task.folder)?.specStaleReason ?? 'freshness_unavailable',
+            hasHandoff: fs.existsSync(getTaskHandoffPath(projectRoot, selected, task.folder)),
+          };
+        });
+        const graph = computeRunnableAndBlocked(projectedTasks.filter(task => task.status !== null));
         return json({
-          feature: info ? { ...info, tasks: info.tasks.map(withTaskState) } : info,
-          tasks: tasks.map(withTaskState),
+          feature: info ? { name: info.name, status: info.status, hasPlan: fs.existsSync(getPlanPath(projectRoot, selected)), commentCount: planService.getComments(selected).length } : null,
+          tasks: projectedTasks,
           runnable: graph.runnable,
           blocked: graph.blocked,
           worktrees,
+          ...(unownedTaskHeadings ? { unownedTaskHeadings } : {}),
           ...(worktreeErrors.length ? { worktreeErrors } : {}),
           ...(specFreshnessError ? { specFreshnessError } : {}),
           ...(configFallbackWarning ? { warning: configFallbackWarning } : {}),

@@ -53,6 +53,8 @@ Single-repo projects use the git root directly. Multi-repo topology is stored in
 
 `feature.json` stores required `name`, `status`, and `createdAt`, with optional `ticket`, `sessionId`, `approvedAt`, `completedAt`, `archivedAt`, and `archiveReason`. New features start in `planning` and use an indexed directory such as `01_example`; callers address them by logical name `example`. Existing unindexed or differently separated indexed feature directories remain resolvable by the logical name in `feature.json`.
 
+`APPROVED` is the approval marker. Approval writes it before updating `feature.json`, so the marker can exist while feature metadata remains `planning` after a failed write. `hive_plan_approve` exposes `approvalPersisted` and a failure `stage` (`validation`, `approval_marker`, or `feature_metadata`) instead of treating partial persistence as pre-write rejection. Success includes the approved `revision`; an unchanged retry of the pre-approval revision adds `alreadyApproved: true` and repairs an incomplete metadata update. With optional task sync, a post-sync revision/approval recheck can return `approval_superseded_during_sync` or `approval_verification_failed` at `sync_verification`, alongside the actual sync outcome. Inspect both outcomes and current state; the operation does not roll back task writes. Exact shapes and reasons: [Plan Management](HIVE-TOOLS.md#plan-management-4-tools).
+
 ## Execution records
 
 Task status and reports are the execution record. `hive_task_update({ report })` writes `reports/{N}.md`, mirrors it to `report.md`, then publishes `status.json`. The report body is not stored in `status.json`; inspect the three locations if publication fails before retrying. `N` is write order; the Markdown attribution line, not the number, names the author. `report.md` is the latest successful write, not a maintained synthesis. There is no attempt ledger. Old `execution-attempts.json` and lease files are left unread. Useful plans, tasks, context, reports, and workspace files remain readable.
@@ -62,6 +64,8 @@ Task status and reports are the execution record. `hive_task_update({ report })`
 `.hive/background-jobs.json` is the background board: acknowledgement, archive, and notification bookkeeping. It observes the originating native parent and call, not the current feature or agent. Stale and unknown observations stay visible. It does not couple to execution, worktree, or task status. Archive, reconcile, and ignore do not stop execution.
 
 The board file has `schemaVersion: 1`, `jobs: BackgroundJobRecord[]`, and optional `updatedAt`. Each job stores native `taskId` and `sessionId`, required `alias`, agent identity, timestamps, `runtimeState` (`running`, `completed`, `error`, `cancelled`, or `unknown`), and optional `callId`, scope, notification, cancellation, reconciliation, and archive fields. Reconciled and ignored jobs remain stored but are hidden from the default background status view.
+
+Reconcile tools return compact acknowledgements, not stored job bodies: successful items include `archived`, `state`, and boolean `requiresHiveStatusRefresh`; failures include `reason`, `error`, and an actionable `hint`. Refresh is true for successfully archived feature/task-scoped jobs. Batch output is `{ success, results, requiresHiveStatusRefresh }`, with refresh true when any successful item requires it, even if another item failed. A non-terminal hint asks for native completion; stale/uncertain hints supply an exact ignore call using the canonical alias. These signals do not establish native termination or merge readiness. See [Background Orchestration](HIVE-TOOLS.md#background-orchestration-4-tools).
 
 Ad-hoc worktrees are temporary workspace metadata only: no run history, evidence ledgers, or reports.
 
@@ -231,29 +235,33 @@ Feature statuses (FeatureStatusType):
 
 ### Top-Level Objects
 
-- `feature`: `{ name, status, tasks, hasPlan, commentCount, reviewCounts: { plan } }` from `FeatureService.getInfo`, or `null` for an unknown feature or missing `feature.json`. This is a summary, not the full `feature.json` (which also stores `ticket`, `createdAt`, and optional lifecycle timestamps).
-- `tasks`: task summaries from `TaskService.list`.
+- `feature`: `{ name, status, hasPlan, commentCount }`, or `null` for an unknown feature or missing `feature.json`. This is a summary, not the full `feature.json` (which also stores `ticket`, `createdAt`, and optional lifecycle timestamps).
+- `tasks`: the sole task list from `TaskService.listStatusEntries`, including every retained task folder.
 - `runnable`: pending task folders whose stored dependencies are all `done`.
 - `blocked`: pending task folders mapped to their unmet stored dependencies.
 - `worktrees`: healthy feature-task workspace state from `WorktreeService.list`.
 - `worktreeErrors` (optional): invalid workspace or namespace entries as `{ path, reason }`; one bad entry does not prevent other worktrees or task summaries from being read.
 - `warning` (optional): config fallback warning.
 - `specFreshnessError` (optional): freshness check failure; every task entry reports `specStale: null` and `specStaleReason: 'freshness_unavailable'`.
+- `unownedTaskHeadings` (optional): unnumbered task-section headings as `{ line, title }` entries.
 
 With `feature: null`, the other summaries may be empty.
 
 ### Task List Fields
 
-Each entry in `tasks` includes:
+Each entry with readable task status includes:
 - `folder` (string)
 - `name` (string)
 - `status` (string)
 - `origin` (string)
 - `planTitle`, `summary`, and `repoIds` (optional)
-- `dependsOn` (string[]), in both `tasks` and `feature.tasks`: the stored dependency folders, `[]` when the field is missing. Done and cancelled tasks keep theirs as history.
-- `specStale` (true/false/null), `specStaleReason`, and `hasHandoff` (boolean), in both `tasks` and `feature.tasks`. `differs_from_plan` compares the stored spec with current generated text for that task; unrelated plan edits do not make it stale. Null reasons cover manual tasks, missing/invalid plans, missing plan task or spec, and unowned headings after the task section.
+- `dependsOn` (string[]): the stored dependency folders, `[]` when the field is missing. Done and cancelled tasks keep theirs as history.
+- `specStale` (true/false/null), `specStaleReason`, and `hasHandoff` (boolean). `differs_from_plan` compares the stored spec with current generated text for that task; unrelated plan edits do not make it stale. Null reasons cover manual tasks, missing/invalid plans, missing plan task or spec, and unowned headings after the task section.
+- `blocker` (`TaskBlocker`, optional and present only while `status` is `blocked`): the stored operator-decision blocker, with `reason` and optional `options`, `recommendation`, and `context`.
 
-The full `status.json` may contain a `blocker` (`TaskBlocker`, optional and present only while `status` is `blocked`). `TaskBlocker` contains a required nonblank `reason` and optional `options`, `recommendation`, and `context`. An explicit status leaving blocked clears the blocker. Read `report.md` and `reports/{N}.md` for report bodies.
+An explicit status leaving blocked clears the blocker. Read `status.json` for other task metadata, and `report.md` and `reports/{N}.md` for report bodies.
+
+Missing or unreadable/corrupt status produces `{ folder, name, status: null, integrity: { reason: 'status_missing' | 'status_unreadable', error? }, specStale, specStaleReason, hasHandoff }`. `error` is present for unreadable/corrupt status. These integrity entries preserve visibility and derive freshness/handoff state when possible; they do not invent origin or dependencies, appear in readiness lists, or satisfy dependencies. Repair the task records before execution. Retained spec/handoff files remain untouched.
 
 ### Runnable and Blocked
 
@@ -264,18 +272,14 @@ blocked    # map: pending task folder -> array of unmet dependency folders
 
 Rules:
 - Only `done` satisfies dependencies.
-- Only pending tasks appear in `runnable` or `blocked`. Both are computed from the same `dependsOn` values the task lists report.
+- Only pending tasks appear in `runnable` or `blocked`. Both are computed from the same `dependsOn` values the task list reports.
 - These arrays describe dependency readiness; they are not a dispatch-admission gate.
 
 Example:
 
 ```json
 {
-  "feature": { "name": "example", "status": "executing", "tasks": [
-    { "folder": "01-setup", "name": "setup", "status": "done", "origin": "plan", "dependsOn": [] },
-    { "folder": "02-core", "name": "core", "status": "pending", "origin": "plan", "dependsOn": ["01-setup"] },
-    { "folder": "03-ui", "name": "ui", "status": "pending", "origin": "plan", "dependsOn": ["02-core"] }
-  ], "hasPlan": true, "commentCount": 1, "reviewCounts": { "plan": 1 } },
+  "feature": { "name": "example", "status": "executing", "hasPlan": true, "commentCount": 1 },
   "tasks": [
     { "folder": "01-setup", "name": "setup", "status": "done", "origin": "plan", "dependsOn": [] },
     { "folder": "02-core", "name": "core", "status": "pending", "origin": "plan", "dependsOn": ["01-setup"] },

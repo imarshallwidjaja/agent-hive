@@ -6,7 +6,7 @@ import {
   getTaskHandoffPath,
   getTaskSpecPath,
   type ContextService,
-  type TaskInfo,
+  type TaskStatusEntry,
   type TaskService,
   type TaskSpecFreshness,
 } from 'hive-core';
@@ -34,7 +34,7 @@ export const TASK_BRIEF_BLOCK = /(?:\n\n)?<!-- hive-task-brief:start -->\n## Hiv
 
 export type TaskBriefSources = {
   projectRoot: string;
-  taskService: Pick<TaskService, 'list' | 'getRawStatus' | 'getSpecFreshness'>;
+  taskService: Pick<TaskService, 'listStatusEntries' | 'getSpecFreshness'>;
   contextService: Pick<ContextService, 'readSummary'>;
 };
 
@@ -91,9 +91,12 @@ function firstNonEmptyLine(prompt: string): string | undefined {
   return prompt.split(/\r?\n/).map((line) => line.trim()).find((line) => line.length > 0);
 }
 
-function composeBoundLines(sources: TaskBriefSources, featureName: string, tasks: Map<string, TaskInfo>, folder: string): string[] {
+function composeBoundLines(sources: TaskBriefSources, featureName: string, tasks: Map<string, TaskStatusEntry>, folder: string): string[] {
   const { projectRoot, taskService, contextService } = sources;
   const task = tasks.get(folder)!;
+  if ('integrity' in task) {
+    return [fitMessage('Task status integrity: "', inline(folder), `" has missing/unreadable status (${task.integrity.reason}); do not execute; the primary must inspect and repair the task status.`)];
+  }
   let freshness: TaskSpecFreshness | undefined;
   try {
     freshness = taskService.getSpecFreshness(featureName).find((entry) => entry.folder === folder);
@@ -128,10 +131,11 @@ function composeBoundLines(sources: TaskBriefSources, featureName: string, tasks
       : []),
     ...(fs.existsSync(handoffPath) ? [`Handoff: ${inline(handoffPath)}`] : []),
   ];
-  const dependencies = (taskService.getRawStatus(featureName, folder)?.dependsOn ?? []).map((dependency) => {
+  const dependencies = task.dependsOn.map((dependency) => {
     const known = tasks.get(dependency);
     const dependencyHandoff = known ? getTaskHandoffPath(projectRoot, featureName, dependency) : undefined;
-    return `- ${inline(dependency)} (${inline(known?.status ?? 'unknown')})${dependencyHandoff && fs.existsSync(dependencyHandoff) ? ` handoff: ${inline(dependencyHandoff)}` : ''}`;
+    const status = known && 'integrity' in known ? known.integrity.reason : known?.status ?? 'unknown';
+    return `- ${inline(dependency)} (${inline(status)})${dependencyHandoff && fs.existsSync(dependencyHandoff) ? ` handoff: ${inline(dependencyHandoff)}` : ''}`;
   });
   let durableCount = 'unknown';
   try {
@@ -168,7 +172,7 @@ export function composeTaskBrief(sources: TaskBriefSources, featureName: string,
       return cappedBlock([`No Hive task binding: the first line was not "Hive task: <folder>" for a task in feature ${inline(featureName)}; no task brief attached.`]);
     }
     const folder = binding[1]!;
-    const tasks = new Map(sources.taskService.list(featureName).map((task) => [task.folder, task]));
+    const tasks = new Map(sources.taskService.listStatusEntries(featureName).map((task) => [task.folder, task]));
     if (!tasks.has(folder)) {
       return cappedBlock([fitMessage('No Hive task binding: "', inline(folder), `" is not a task in feature ${inline(featureName)}; no task brief attached.`)]);
     }

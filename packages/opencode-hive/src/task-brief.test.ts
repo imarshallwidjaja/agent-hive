@@ -29,8 +29,7 @@ const PLAN = '# Plan\n\n## Tasks\n\n### 1. Setup\n\nSetup.\n\n### 2. Build\n\nDe
 const stubSources = (overrides: Partial<TaskBriefSources> = {}): TaskBriefSources => ({
   projectRoot: '/project',
   taskService: {
-    list: () => [],
-    getRawStatus: () => null,
+    listStatusEntries: () => [],
     getSpecFreshness: () => [],
   },
   contextService: { readSummary: () => ({ durable: { fileCount: 0 } }) as any },
@@ -129,8 +128,7 @@ describe('task dispatch brief', () => {
     const featureName = `near${'x'.repeat(1200)}`;
     const sources = stubSources({
       taskService: {
-        list: () => [{ folder: '01-task', name: 'task', planTitle: 'Fix', status: 'pending', origin: 'plan' }] as any,
-        getRawStatus: () => ({ dependsOn: ['01-other'] }) as any,
+        listStatusEntries: () => [{ folder: '01-task', name: 'task', planTitle: 'Fix', status: 'pending', origin: 'plan', dependsOn: ['01-other'] }] as any,
         getSpecFreshness: () => [],
       },
     });
@@ -154,8 +152,7 @@ describe('task dispatch brief', () => {
   it('reports an unknown dependency as (unknown)', () => {
     const sources = stubSources({
       taskService: {
-        list: () => [{ folder: '01-task', name: 'task', status: 'pending', origin: 'plan' }] as any,
-        getRawStatus: () => ({ dependsOn: ['09-ghost'] }) as any,
+        listStatusEntries: () => [{ folder: '01-task', name: 'task', status: 'pending', origin: 'plan', dependsOn: ['09-ghost'] }] as any,
         getSpecFreshness: () => [],
       },
     });
@@ -212,14 +209,31 @@ describe('task dispatch brief', () => {
     expect(generated.replace(TASK_BRIEF_BLOCK, '').replace(TASK_BRIEF_BLOCK, '')).toBe('Authored');
   });
 
-  it('reports a real malformed status.json as one unavailable line', () => {
-    const { featureDir, sources } = createProject('broken', PLAN);
-    fs.writeFileSync(path.join(featureDir, 'tasks', '01-setup', 'status.json'), '{ malformed');
-    const block = composeTaskBrief(sources, 'broken', 'Hive task: 01-setup');
+  for (const reason of ['status_missing', 'status_unreadable'] as const) {
+    it(`reports ${reason} for bound tasks and dependencies without hiding healthy tasks`, () => {
+      const { featureDir, sources } = createProject('broken', PLAN);
+      const statusPath = path.join(featureDir, 'tasks', '01-setup', 'status.json');
+      if (reason === 'status_missing') fs.rmSync(statusPath);
+      else fs.writeFileSync(statusPath, '{ malformed');
+      const block = composeTaskBrief(sources, 'broken', 'Hive task: 01-setup');
+      expect(Buffer.byteLength(block, 'utf8')).toBeLessThanOrEqual(TASK_BRIEF_MAX_BYTES);
+      expect(briefLines(block)).toEqual([
+        `Task status integrity: "01-setup" has missing/unreadable status (${reason}); do not execute; the primary must inspect and repair the task status.`,
+      ]);
+      const healthy = briefLines(composeTaskBrief(sources, 'broken', 'Hive task: 02-build'));
+      expect(healthy).toContain('Task: 02-build - Build (pending)');
+      expect(healthy).toContain(`- 01-setup (${reason})`);
+    });
+  }
+
+  it('keeps a long multibyte integrity notice actionable within the byte cap', () => {
+    const folder = '界'.repeat(1000);
+    const sources = stubSources({ taskService: {
+      listStatusEntries: () => [{ folder, name: folder, status: null, integrity: { reason: 'status_missing' } }],
+      getSpecFreshness: () => [],
+    } });
+    const block = composeTaskBrief(sources, 'broken', `Hive task: ${folder}`);
     expect(Buffer.byteLength(block, 'utf8')).toBeLessThanOrEqual(TASK_BRIEF_MAX_BYTES);
-    const lines = briefLines(block);
-    expect(lines).toHaveLength(1);
-    expect(lines[0]).toStartWith('Hive task brief unavailable: ');
-    expect(lines[0]).toMatch(/JSON/i);
+    expect(block).toContain('..." has missing/unreadable status (status_missing); do not execute; the primary must inspect and repair the task status.');
   });
 });

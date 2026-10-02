@@ -207,15 +207,6 @@ export interface TaskInfo {
   repoIds?: string[];
 }
 
-export interface FeatureInfo {
-  name: string;
-  status: FeatureStatusType;
-  tasks: TaskInfo[];
-  hasPlan: boolean;
-  commentCount: number;
-  reviewCounts: ReviewCounts;
-}
-
 export type ContextRole = 'human' | 'scratchpad' | 'operational' | 'durable' | 'evidence';
 export type ContextKind = 'durable' | 'evidence';
 export type ContextKindSource = 'index' | 'legacy_default';

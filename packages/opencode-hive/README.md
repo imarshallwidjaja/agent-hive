@@ -48,7 +48,7 @@ Default mode is dedicated (`architect-planner` + `swarm-orchestrator`). Set `"ag
 1. **Create feature** - planning flow or `hive_feature_create`; creation does not change the selected session route
 2. **Write plan** - target one feature with explicit `hive_plan_write` / `hive_plan_patch` calls
 3. **Human review** - comments and chat
-4. **Approve + sync** - `hive_plan_approve`, then `hive_tasks_sync`
+4. **Approve + sync** - `hive_plan_approve({ expectedRevision, sync: true })` using the reviewed plan revision; inspect both outcomes
 5. **Execute** - create and inspect the matching `hive_worktree_create` workspace with an explicit feature target, record the destination identity, select that feature immediately before dispatch, then issue one ordinary native Forager call
 6. **Integrate** - verify the committed source, pass its pin and the inspected destination identity to `hive_worktree_merge`, and clean up the integrated worktree
 7. **Record** - the primary calls `hive_task_update` for status, summary, blocker, or report; mark a task done only after integration succeeds
@@ -215,7 +215,7 @@ Use ad-hoc orchestration when you need delegation, verification, and a managed w
 | `hive_adhoc_worktree_merge` | Integrate the pinned source against the inspected destination |
 | `hive_adhoc_worktree_cleanup` | Remove the integrated workspace; `discard: true` explicitly retires unintegrated work |
 
-The ad-hoc orchestrator resolves repository ownership with `hive_repositories_status` unless scope is already explicit, then calls `hive_adhoc_worktree_create` with the owned `repoIds` and a meaningful kebab-case `runId` before an ordinary native Forager call. These runs do not create feature/task records and do not appear in `hive_status`. The response supplies the `runId` and placement. Inspect the worktree to record the destination identity before dispatch; integrate with `hive_adhoc_worktree_merge` using that identity and the committed source pin, then clean up with `hive_adhoc_worktree_cleanup`. Ad-hoc worktrees are temporary workspace metadata only. See [Hive Tools](docs/HIVE-TOOLS.md) for the full contracts.
+The ad-hoc orchestrator resolves repository ownership with `hive_repositories_status` unless scope is already explicit, then calls `hive_adhoc_worktree_create` with the owned `repoIds` and a meaningful kebab-case `runId` before an ordinary native Forager call. These runs do not create feature/task records and do not appear in `hive_status`. The response supplies the `runId`, placement, and initial inspection. Record its destination identity before dispatch; later inspection checkpoints remain required. Integrate with `hive_adhoc_worktree_merge` using the inspected identity and committed source pin, then clean up with `hive_adhoc_worktree_cleanup`. Ad-hoc worktrees are temporary workspace metadata only. See [Hive Tools](docs/HIVE-TOOLS.md) for the full contracts.
 
 Feature escalation is advisory. If the operator rejects it, continue ad-hoc only when material scope, contracts, and risks are otherwise resolved. Ask any remaining concrete blocking question before creating workers.
 
@@ -233,7 +233,7 @@ Gate-open orchestration uses lane kind to decide how much management is needed. 
 
 With the env gate set, primary agents can launch independent native background tasks when useful foreground work can continue, inspect the scoped board with `hive_background_status`, wait for OpenCode's native completion notification, refresh `hive_background_status`, reconcile terminal jobs with `hive_background_reconcile` or `hive_background_reconcile_batch`, and request cancellation with `hive_background_cancel`. Reconciliation archives terminal jobs and hides them from normal status output; agents should not edit `.hive/background-jobs.json` directly. Wait-only scheduler guidance from status means wait for the native notification instead of refreshing repeatedly.
 
-`hive_background_status` and reconcile responses may return `recommendedNextAction` and `requiresHiveStatusRefresh`. These are board-local scheduler outputs. They do not predict merge readiness; refresh `hive_status` before dependent task or merge decisions.
+`hive_background_status` returns board-local scheduler outputs such as `recommendedNextAction` and `requiresHiveStatusRefresh`. Reconciliation returns compact per-item acknowledgements with failure hints and a refresh flag when an archived job had feature/task scope; a batch requests refresh when any successful item does. Refresh `hive_status` when requested and before dependent task or merge decisions.
 
 Prompt acknowledgment only means Hive showed a terminal result to the parent session. It does not clear `terminalUnreconciled`; the primary agent still reconciles or ignores the job after consuming the result.
 
