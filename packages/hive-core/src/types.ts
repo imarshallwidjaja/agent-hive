@@ -631,7 +631,7 @@ export const DEFAULT_HIVE_CONFIG: HiveConfig = {
     'hive-helper': {
       model: DEFAULT_AGENT_MODELS['hive-helper'],
       temperature: 0.3,
-      autoLoadSkills: [],
+      autoLoadSkills: ['hive-config'],
     },
     'plan-reviewer': {
       model: DEFAULT_AGENT_MODELS['plan-reviewer'],

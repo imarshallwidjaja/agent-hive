@@ -64,7 +64,7 @@ describe("ConfigService defaults", () => {
     expect(config.agents?.['hive-helper']).toEqual({
       model: 'github-copilot/gpt-5.2-codex',
       temperature: 0.3,
-      autoLoadSkills: [],
+      autoLoadSkills: ['hive-config'],
     });
     expect(config.customAgents).toEqual({});
   });
@@ -525,28 +525,19 @@ describe("ConfigService defaults", () => {
     ]);
   });
 
-  it('keeps hive-helper autoLoadSkills empty even when user sets them', () => {
-    const service = new ConfigService();
-    const configPath = service.getPath();
+  it('keeps hive-helper autoLoadSkills at the default whether the user adds or clears them', () => {
+    for (const autoLoadSkills of [['test-driven-development'], []]) {
+      const service = new ConfigService();
+      const configPath = service.getPath();
 
-    fs.mkdirSync(path.dirname(configPath), { recursive: true });
-    fs.writeFileSync(
-      configPath,
-      JSON.stringify(
-        {
-          agents: {
-            'hive-helper': {
-              autoLoadSkills: ['test-driven-development'],
-            },
-          },
-        },
-        null,
-        2,
-      ),
-    );
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+      fs.writeFileSync(
+        configPath,
+        JSON.stringify({ agents: { 'hive-helper': { autoLoadSkills } } }, null, 2),
+      );
 
-    const config = service.getAgentConfig('hive-helper');
-    expect(config.autoLoadSkills).toEqual([]);
+      expect(service.getAgentConfig('hive-helper').autoLoadSkills).toEqual(['hive-config']);
+    }
   });
 
   it("keeps disabled names in autoLoadSkills so native skills can still shadow Hive bundles", () => {

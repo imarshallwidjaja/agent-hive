@@ -496,6 +496,7 @@ Generated/managed shape (for inspection) at `<project>/.hive/repositories.json`:
 | `dispatching-parallel-agents` | Coordinate independent subagent work |
 | `executing-plans` | Execute an approved plan with review checkpoints |
 | `grilling` | Question supplied context until material decisions and evidence are aligned |
+| `hive-config` | Hive runtime layout, state-tool ownership, read-only session forensics, and Agent Hive configuration reference |
 | `how` | Explain current source-grounded behavior and subsystem flow |
 | `humanizer` | Repair vocabulary, register, attribution, and formatting in existing prose |
 | `orchestrating-ad-hoc-work` | Coordinate qualifying ad-hoc work for Hive Builder or unified Hive |
@@ -565,7 +566,7 @@ See [Skill ownership](docs/SKILL-OWNERSHIP.md) for the responsibility map and so
 | `hive-master` | `parallel-exploration` |
 | `forager-worker` | `verification` |
 | `hive-builder` | `verification`, `parallel-exploration` |
-| `hive-helper` | (none) |
+| `hive-helper` | `hive-config` (fixed; operator `autoLoadSkills` is ignored, `disableSkills` removes it) |
 | `scout-researcher` | (none) |
 | `architect-planner` | `parallel-exploration` |
 | `swarm-orchestrator` | `parallel-exploration` |

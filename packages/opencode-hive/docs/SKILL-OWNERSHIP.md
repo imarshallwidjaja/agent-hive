@@ -20,6 +20,7 @@ oc-arkive ships the skill sources in `packages/opencode-hive/skills/`. OpenCode 
 | Vocabulary and presentation repair | `humanizer` | Existing prose with vocabulary, register, attribution, or formatting problems |
 | Agent-facing instructions | `writing-for-agents` | Instruction structure and invocation, not a competing human-prose policy |
 | Public PR/review writing | `pr-writing` | Artifact-specific content, source anchoring, and publication authority |
+| Hive runtime layout, state ownership, read-only forensics, and Agent Hive configuration | `hive-config` | Self-contained reference for where `.hive/` state lives, which tool owns each change, read-only task/Git/session-store recipes, and `agent_hive.json`/override editing. It points to owners rather than restating them: managed context selection and mutation stay with `context-engineering`, background board protocol with `background-delegation`, and tool input/output contracts with the tool schemas and `docs/HIVE-TOOLS.md`. `skill-content.test.ts` pins its config keys, agent names, reserved IDs, tool names, and paths to source |
 
 Planning, execution, concurrency, recovery, and managed context keep their established owners. New design guidance does not authorize clearing state, adopting live sessions, deleting public compatibility, bypassing checks, or promoting reviewer votes into acceptance.
 

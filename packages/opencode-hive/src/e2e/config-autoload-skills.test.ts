@@ -443,12 +443,16 @@ describe('config hook autoLoadSkills guidance', () => {
     expect(foragerPrompt).not.toContain(verificationSkill.template);
     expect(foragerGuidance).not.toContain(skillToolCall('parallel-exploration'));
     expect(foragerPrompt).not.toContain(parallelExplorationSkill.template);
+    const hiveHelperPrompt = getAgentPrompt(opencodeConfig, 'hive-helper');
+    expect(getAutoLoadSkillsGuidance(hiveHelperPrompt)).toContain(skillToolCall('hive-config'));
+    expect(hiveHelperPrompt).not.toContain(requireBuiltinSkill('hive-config').template);
 
     const skillPaths = getSkillPaths(opencodeConfig);
     expect(skillPaths).toHaveLength(1);
     expect(skillPaths[0]).toContain(HIVE_GENERATED_SEGMENT);
     expect(fs.existsSync(skillPaths[0])).toBe(true);
     expect(fs.existsSync(path.join(skillPaths[0], 'parallel-exploration', 'SKILL.md'))).toBe(true);
+    expect(fs.existsSync(path.join(skillPaths[0], 'hive-config', 'references', 'session-forensics.md'))).toBe(true);
     expect(fs.existsSync(path.join(skillPaths[0], 'orchestrating-ad-hoc-work', 'SKILL.md'))).toBe(true);
     expect(skillPaths).not.toContain(PACKAGED_SKILLS_DIR);
   });
@@ -596,7 +600,7 @@ describe('config hook autoLoadSkills guidance', () => {
   it('respects disableSkills for prompt guidance and generated skill directories', async () => {
     writeHiveConfig(testRoot, {
       agentMode: 'unified',
-      disableSkills: ['parallel-exploration'],
+      disableSkills: ['parallel-exploration', 'hive-config'],
     });
 
     const { result: opencodeConfig, warnings } = await captureWarnings(async () => applyConfigHook(testRoot));
@@ -608,6 +612,8 @@ describe('config hook autoLoadSkills guidance', () => {
     expect(hiveMasterGuidance).not.toContain(skillToolCall('parallel-exploration'));
     expect(hiveMasterPrompt).not.toContain(parallelExplorationSkill.template);
     expect(fs.existsSync(path.join(generatedPath, 'parallel-exploration'))).toBe(false);
+    expect(getAutoLoadSkillsGuidance(getAgentPrompt(opencodeConfig, 'hive-helper'))).not.toContain(skillToolCall('hive-config'));
+    expect(fs.existsSync(path.join(generatedPath, 'hive-config'))).toBe(false);
     expect(warnings).toContainEqual(
       expect.stringContaining('Auto-load skill "parallel-exploration" was not added to guidance'),
     );
@@ -697,6 +703,44 @@ describe('config hook autoLoadSkills guidance', () => {
     expect(hiveMasterGuidance).toContain(skillToolCall('parallel-exploration'));
     expect(hiveMasterPrompt).not.toContain(requireBuiltinSkill('brainstorming').template);
     expect(hiveMasterPrompt).not.toContain(requireBuiltinSkill('parallel-exploration').template);
+  });
+
+  it('points every skill load instruction in rendered agent prompts at a packaged skill', async () => {
+    // Prompts may name skills shipped outside this package only when listed here with the reason.
+    const externalSkillAllowlist = new Set<string>();
+    const loadInstructionPatterns = [
+      /skill\(\{\s*name:\s*"([a-z0-9][a-z0-9-]*)"/g,
+      /native skill [`"]([a-z0-9][a-z0-9-]*)[`"]/g,
+      /\bload (?:and (?:follow|use) )?(?:the )?`([a-z0-9][a-z0-9-]*)`/g,
+      /`([a-z0-9][a-z0-9-]*)` skill\b/g,
+    ];
+    const packaged = new Set(
+      fs.readdirSync(PACKAGED_SKILLS_DIR).filter((name) => fs.existsSync(path.join(PACKAGED_SKILLS_DIR, name, 'SKILL.md'))),
+    );
+    process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
+    const referenced = new Map<string, Set<string>>();
+
+    for (const agentMode of ['dedicated', 'unified'] as const) {
+      writeHiveConfig(testRoot, { agentMode });
+      const opencodeConfig = await applyConfigHook(testRoot);
+      const agents = opencodeConfig.agent as Record<string, { prompt?: string }>;
+      for (const agentName of Object.keys(agents).filter((name) => name !== 'general' && name !== 'explore')) {
+        const prompt = (agents[agentName]?.prompt ?? '') + await renderRuntimeSystemPrompt(testRoot, agentName, { trackMessage: false });
+        for (const pattern of loadInstructionPatterns) {
+          for (const match of prompt.matchAll(pattern)) {
+            const users = referenced.get(match[1]!) ?? new Set<string>();
+            referenced.set(match[1]!, users.add(`${agentMode}:${agentName}`));
+          }
+        }
+      }
+    }
+
+    expect(referenced.get('hive-config')).toContain('dedicated:hive-helper');
+    expect(referenced.get('background-delegation')).toContain('dedicated:swarm-orchestrator');
+    const dangling = [...referenced]
+      .filter(([skill]) => !packaged.has(skill) && !externalSkillAllowlist.has(skill))
+      .map(([skill, users]) => `${skill} <- ${[...users].join(', ')}`);
+    expect(dangling).toEqual([]);
   });
 });
 

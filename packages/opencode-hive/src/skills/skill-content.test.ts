@@ -1,6 +1,21 @@
 import { describe, it, expect } from 'bun:test';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
+import {
+  AdhocWorktreeService,
+  BackgroundJobService,
+  BUILT_IN_AGENT_NAMES,
+  ConfigService,
+  CUSTOM_AGENT_BASES,
+  CUSTOM_AGENT_RESERVED_NAMES,
+  DEFAULT_HIVE_CONFIG,
+  getNextIndexedFeatureDirectoryName,
+  RepositoryManifestService,
+  WorktreeService,
+} from 'hive-core';
+import { HIVE_TOOL_NAMES } from '../utils/plugin-manifest.js';
 import { parseNativeSkillMarkdown, resolvePackagedSkillsDir } from './native-materializer.js';
 
 type PackagedSkill = {
@@ -1159,6 +1174,183 @@ describe('skill content', () => {
     }
     expect(example!.indexOf('hive_adhoc_worktree_create')).toBeLessThan(example!.indexOf('hive_background_reconcile'));
     expect(example).toContain('background: true');
+  });
+
+  describe('hive-config', () => {
+    const skillDir = path.join(resolvePackagedSkillsDir(), 'hive-config');
+    const reference = (name: string) => readFileSync(path.join(skillDir, 'references', name), 'utf8');
+    const section = (content: string, heading: string) => {
+      const start = content.indexOf(`\n${heading}\n`);
+      expect(start, heading).toBeGreaterThan(-1);
+      const end = content.indexOf('\n## ', start + heading.length + 2);
+      return content.slice(start, end === -1 ? undefined : end);
+    };
+    const codeNames = (text: string) => [...text.matchAll(/`([^`]+)`/g)].map((match) => match[1]);
+    const firstCellNames = (table: string) => table.split('\n')
+      .filter((line) => line.startsWith('| `'))
+      .flatMap((line) => codeNames(line.split('|')[1]));
+    const lineStarting = (content: string, prefix: string) => {
+      const line = content.split('\n').find((entry) => entry.startsWith(prefix));
+      expect(line, prefix).toBeDefined();
+      return line!;
+    };
+    const jsonBlock = (text: string) => JSON.parse(text.match(/```json\n([\s\S]*?)\n```/)![1]);
+
+    it('is a self-contained skill whose references resolve inside the skill', () => {
+      const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'hive-config');
+      expect(skill).toBeDefined();
+      expect(skill!.description).toMatch(/^Use when /);
+      for (const trigger of ['.hive layout', 'which Hive tool owns', 'forensics', 'agent_hive.json', 'custom agents', 'auto-load', 'Not for implementing']) {
+        expect(skill!.description).toContain(trigger);
+      }
+      for (const file of ['runtime-layout.md', 'tool-ownership.md', 'session-forensics.md', 'configuration.md']) {
+        expect(skill!.template).toContain(`(references/${file})`);
+      }
+      for (const relative of readdirSync(skillDir, { recursive: true, encoding: 'utf8' })) {
+        if (!relative.endsWith('.md')) continue;
+        const file = path.join(skillDir, relative);
+        for (const match of readFileSync(file, 'utf8').matchAll(/\[[^\]]*\]\(([^)]+)\)/g)) {
+          if (/^https?:|^#/.test(match[1])) continue;
+          const resolved = path.resolve(path.dirname(file), match[1].split('#')[0]);
+          expect(path.relative(skillDir, resolved).startsWith('..'), `${relative}: ${match[1]}`).toBe(false);
+          expect(existsSync(resolved), `${relative}: ${match[1]}`).toBe(true);
+        }
+      }
+    });
+
+    it('documents exactly the config keys, agent names, and reserved IDs the runtime accepts', () => {
+      const schema = JSON.parse(readRepoFile('packages/opencode-hive/schema/agent_hive.schema.json'));
+      const overrideSchema = JSON.parse(readRepoFile('packages/opencode-hive/schema/agent_hive.override.schema.json'));
+      const configuration = reference('configuration.md');
+      const definitions = schema.definitions ?? schema.$defs;
+
+      expect(new Set(firstCellNames(section(configuration, '## Top-level keys')))).toEqual(new Set(Object.keys(schema.properties)));
+      expect(new Set(firstCellNames(section(configuration, '## Built-in agents (`agents.<name>`)')))).toEqual(new Set([
+        ...Object.keys(definitions.agentConfig.properties),
+        ...Object.keys(definitions.routingAgentConfig.properties),
+      ]));
+
+      const customSection = section(configuration, '## Custom agents (`customAgents.<id>`)');
+      const customExample = Object.values(jsonBlock(customSection).customAgents)[0] as Record<string, unknown>;
+      expect(new Set(Object.keys(customExample))).toEqual(new Set(Object.keys(definitions.customAgentConfig.properties)));
+      const baseLine = lineStarting(customSection, '- `baseAgent` (required)');
+      expect(new Set(codeNames(baseLine.slice(0, baseLine.indexOf('. Primaries'))).slice(1))).toEqual(new Set(CUSTOM_AGENT_BASES));
+      const reservedLine = lineStarting(customSection, '- IDs must not contain');
+      expect(new Set(codeNames(reservedLine.slice(reservedLine.indexOf('every built-in name'))))).toEqual(
+        new Set(CUSTOM_AGENT_RESERVED_NAMES.filter((name) => !(BUILT_IN_AGENT_NAMES as readonly string[]).includes(name))),
+      );
+
+      const builtInSection = section(configuration, '## Built-in agents (`agents.<name>`)');
+      expect(new Set(codeNames(lineStarting(builtInSection, 'Names: ')).filter((name) => !['dash-reviewer', 'vulnerability-review-primary'].includes(name))))
+        .toEqual(new Set(BUILT_IN_AGENT_NAMES));
+      const defaults = lineStarting(builtInSection, 'Defaults (shipped):');
+      for (const [agent, config] of Object.entries(DEFAULT_HIVE_CONFIG.agents!)) {
+        for (const skill of config?.autoLoadSkills ?? []) {
+          expect(defaults, `${agent} -> ${skill}`).toContain(`\`${agent}\``);
+          expect(defaults, `${agent} -> ${skill}`).toContain(`\`${skill}\``);
+        }
+      }
+      expect(DEFAULT_HIVE_CONFIG.agents!['hive-helper']!.autoLoadSkills).toEqual(['hive-config']);
+
+      const override = jsonBlock(section(configuration, '## Project override (`.hive/agent-hive.override.json`)'));
+      for (const key of Object.keys(override)) expect(Object.keys(overrideSchema.properties)).toContain(key);
+    });
+
+    it('documents the config validation and auto-load rules hive-core enforces', () => {
+      const root = mkdtempSync(path.join(os.tmpdir(), 'hive-config-validation-'));
+      const previousHome = process.env.HOME;
+      const previousWarn = console.warn;
+      try {
+        process.env.HOME = root;
+        console.warn = () => {};
+        const configDir = path.join(root, '.config', 'opencode');
+        mkdirSync(configDir, { recursive: true });
+        const load = (config: Record<string, unknown>) => {
+          writeFileSync(path.join(configDir, 'agent_hive.json'), JSON.stringify({ agentMode: 'unified', ...config }));
+          return new ConfigService();
+        };
+        const configuration = reference('configuration.md');
+
+        expect(load({}).get().agentMode).toBe('unified');
+        expect(load({ council: { groups: { review: { description: 'no members' } } } }).get().agentMode).toBe('dedicated');
+        expect(configuration).toContain('must include non-empty `members`');
+        expect(load({ taskTraceSummarizer: { model: 'a/b', extra: true } }).get().agentMode).toBe('dedicated');
+        expect(configuration).toContain('an unknown key inside `taskTraceSummarizer`');
+        expect(load({ agents: { 'forager-worker': { extra: true } } }).get().agentMode).toBe('unified');
+        expect(configuration).toContain('unknown keys inside an `agents.<name>` declaration (ignored)');
+
+        const onboarding = load({
+          agents: { 'forager-worker': { autoLoadSkills: ['onboarding'] }, 'architect-planner': { autoLoadSkills: ['onboarding'] } },
+        });
+        expect(onboarding.getAgentConfig('forager-worker').autoLoadSkills).not.toContain('onboarding');
+        expect(onboarding.getAgentConfig('architect-planner').autoLoadSkills).toContain('onboarding');
+        expect(configuration).toContain('`onboarding` is silently dropped for every agent except `hive-master` and `architect-planner`');
+      } finally {
+        console.warn = previousWarn;
+        if (previousHome === undefined) delete process.env.HOME;
+        else process.env.HOME = previousHome;
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it('lists every specStaleReason hive_status can report', () => {
+      const union = readRepoFile('packages/hive-core/src/services/taskService.ts')
+        .match(/export type TaskSpecFreshnessReason =([^;]+);/)![1];
+      const reasons = [...union.matchAll(/'([a-z_]+)'/g)].map((match) => match[1]);
+      expect(reasons.length).toBeGreaterThan(0);
+      expect(readRepoFile('packages/opencode-hive/src/runtime.ts')).toContain("specStaleReason ?? 'freshness_unavailable'");
+      const table = section(reference('runtime-layout.md'), '### Spec freshness (`specStaleReason`)');
+      expect(new Set(firstCellNames(table))).toEqual(new Set([...reasons, 'freshness_unavailable']));
+    });
+
+    it('names every registered Hive tool and no unregistered one in the ownership reference', () => {
+      const named = new Set(codeNames(reference('tool-ownership.md')).filter((name) => name.startsWith('hive_')));
+      expect(named).toEqual(new Set(HIVE_TOOL_NAMES));
+    });
+
+    it('matches the paths and branches hive-core produces', async () => {
+      const root = mkdtempSync(path.join(os.tmpdir(), 'hive-config-skill-'));
+      const previousHome = process.env.HOME;
+      try {
+        process.env.HOME = path.join(root, 'home');
+        const layout = reference('runtime-layout.md');
+        const configuration = reference('configuration.md');
+        const hiveDir = path.join(root, '.hive');
+
+        expect(new ConfigService().getPath()).toBe(path.join(root, 'home', '.config', 'opencode', 'agent_hive.json'));
+        expect(configuration).toContain('`~/.config/opencode/agent_hive.json`');
+        mkdirSync(hiveDir, { recursive: true });
+        writeFileSync(path.join(hiveDir, 'agent-hive.override.json'), JSON.stringify({ agents: { 'hive-helper': { model: 'probe/override' } } }));
+        expect(new ConfigService(root).getAgentConfig('hive-helper').model).toBe('probe/override');
+        expect(layout).toContain('agent-hive.override.json');
+
+        expect(new RepositoryManifestService(root).getStatus().configPath).toBe(path.join(root, '.hive', 'repositories.json'));
+        new BackgroundJobService(root).registerLaunch({ taskId: 'probe', sessionId: 'probe', agentName: 'forager-worker' });
+        expect(existsSync(path.join(hiveDir, 'background-jobs.json'))).toBe(true);
+        expect(layout).toContain('repositories.json');
+        expect(layout).toContain('background-jobs.json');
+
+        expect(getNextIndexedFeatureDirectoryName(root, 'my-feature')).toBe('01_my-feature');
+        expect(layout).toContain('<NN>_<feature-name>');
+        expect(reference('../SKILL.md')).toContain('`01_my-feature`');
+
+        expect(new WorktreeService({ baseDir: root, hiveDir }).getWorktreePath('feat', '01-task', 'c'))
+          .toBe(path.join(hiveDir, '.worktrees', 'feat', '01-task--c'));
+        expect(layout).toContain('`.hive/.worktrees/<feature>/<task>--<candidate>`');
+
+        const git = (...args: string[]) => execFileSync('git', args, { cwd: root, stdio: 'pipe' });
+        git('init', '-q');
+        git('-c', 'user.email=probe@example.com', '-c', 'user.name=probe', 'commit', '-q', '--allow-empty', '-m', 'probe');
+        const adhoc = await new AdhocWorktreeService({ baseDir: root, hiveDir }).create({ runId: 'probe' });
+        expect(adhoc.path).toBe(path.join(hiveDir, '.worktrees', 'adhoc', 'probe'));
+        expect(adhoc.branch).toBe('hive/adhoc/probe');
+        expect(layout).toContain('| Ad-hoc, single root | `.hive/.worktrees/adhoc/<runId>` | `hive/adhoc/<runId>` |');
+      } finally {
+        if (previousHome === undefined) delete process.env.HOME;
+        else process.env.HOME = previousHome;
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
   });
 
   it('bundled skill content does not contain removed Hive skill tool references', () => {

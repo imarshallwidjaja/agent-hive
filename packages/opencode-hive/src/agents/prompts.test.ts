@@ -2494,7 +2494,7 @@ describe('README.md documentation', () => {
     });
 
     it('documents hive-helper in the built-in agent defaults table', () => {
-      expect(readmeContent).toMatch(/^\| `hive-helper` \| .+ \|$/m);
+      expect(readmeContent).toContain('| `hive-helper` | `hive-config` (fixed; operator `autoLoadSkills` is ignored, `disableSkills` removes it) |');
     });
 
     it('keeps hive-helper out of custom derived subagent docs while documenting simplicity-reviewer as a custom base', () => {
