@@ -8,6 +8,7 @@ import type { ResolvedRepository } from "../types";
 import { WorktreeService as CoreWorktreeService } from "./worktreeService";
 import type { MergeOptions, MergeResult, WorktreeConfig } from "./worktreeService";
 import { WorktreeLinkageError } from "./worktreeOutcome";
+import { RepositoryService } from './repositoryService.js';
 import { inspectTargetMergeEligibility } from './worktreeIntegration.js';
 import { readWorktreeTargetIdentity } from './worktreeTarget.js';
 
@@ -2118,6 +2119,26 @@ describe("WorktreeService composite workspaces", () => {
     expect(wt.workspacePath).toBeUndefined();
   });
 
+  it.each([false, true])('reads declared-root legacy placement with a symlinked root: %s', async (symlinked) => {
+    const fx = await createFixture();
+    let baseDir = fx.repoPath;
+    if (symlinked) {
+      const aliases = await fs.mkdtemp(path.join(os.tmpdir(), 'hive-root-alias-'));
+      tempDirs.push(aliases);
+      baseDir = path.join(aliases, 'checkout');
+      await fs.symlink(fx.repoPath, baseDir);
+    }
+    const repositories = new RepositoryService(baseDir).resolveManifest([{ id: 'root', path: '.' }]);
+    const service = new WorktreeService({
+      baseDir,
+      hiveDir: path.join(fx.repoPath, '.hive'),
+      repositoryResolver: () => repositories,
+    });
+    const inspected = await service.inspect(fx.feature, fx.task);
+    expect(inspected).toMatchObject({ path: fx.worktreePath, mode: 'legacy', clean: true });
+    expect(inspected!.target!.path).toBe(fx.repoPath);
+  });
+
   it("create fails when manifest is missing a task-required repo", async () => {
     const projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), "hive-composite-test-"));
     tempDirs.push(projectRoot);
@@ -2274,35 +2295,78 @@ describe("WorktreeService composite workspaces", () => {
     const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
     const created = await fx.service.create(fx.feature, fx.task);
     const listed = await fx.service.list(fx.feature);
-    expect(listed).toHaveLength(1);
-    expect(listed[0].mode).toBe('composite');
-    expect(listed[0].path).toBe(created.path);
-    expect(listed[0].workspacePath).toBe(created.workspacePath);
-    expect(Object.keys(listed[0].repos!).sort()).toEqual(['api', 'web-ui']);
-    expect(listed[0].repos!['api'].branch).toBe(`hive/api/${fx.feature}/${fx.task}`);
+    expect(listed.errors).toEqual([]);
+    expect(listed.worktrees).toHaveLength(1);
+    expect(listed.worktrees[0].mode).toBe('composite');
+    expect(listed.worktrees[0].path).toBe(created.path);
+    expect(listed.worktrees[0].workspacePath).toBe(created.workspacePath);
+    expect(Object.keys(listed.worktrees[0].repos!).sort()).toEqual(['api', 'web-ui']);
+    expect(listed.worktrees[0].repos!['api'].branch).toBe(`hive/api/${fx.feature}/${fx.task}`);
   });
 
-  it("list propagates composite linkage failure instead of hiding it", async () => {
+  it('list reports a composite linkage failure alongside healthy worktrees', async () => {
     const fx = await createCompositeFixture({ repoIds: ['api'] });
     const created = await fx.service.create(fx.feature, fx.task);
+    const healthy = await fx.service.create(fx.feature, '02-healthy-task');
     const selectedPath = created.repos!.api.path;
     const siblingPath = path.join(fx.projectRoot, 'api-list-sibling');
     await fx.repos.api.git.raw(['worktree', 'add', '-b', 'list-sibling', siblingPath, 'HEAD']);
     const siblingPointer = await fs.readFile(path.join(siblingPath, '.git'), 'utf8');
     await fs.writeFile(path.join(selectedPath, '.git'), siblingPointer, 'utf8');
 
-    await expect(fx.service.list(fx.feature)).rejects.toThrow(/backlink does not select this exact worktree/);
+    const listed = await fx.service.list(fx.feature);
+    expect(listed.worktrees.map(worktree => worktree.path)).toEqual([healthy.path]);
+    expect(listed.errors).toEqual([{
+      path: created.path,
+      reason: expect.stringContaining('backlink does not select this exact worktree'),
+    }]);
   });
 
-  it("list propagates a namespace symlink integrity failure", async () => {
+  it('rejects an existing manifestless composite directory before Git and preserves its contents', async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api'] });
+    const created = await fx.service.create(fx.feature, fx.task);
+    const inspected = await fx.service.inspect(fx.feature, fx.task);
+    await fs.unlink(path.join(created.path, 'workspace.json'));
+    const pointer = await fs.readFile(path.join(created.repos!.api.path, '.git'));
+    const gitSpy = spyOn(fx.service as any, 'getGit');
+    try {
+      await expect(fx.service.get(fx.feature, fx.task)).rejects.toThrow(`Composite workspace manifest not found at ${path.join(created.path, 'workspace.json')}`);
+      await expect(fx.service.inspect(fx.feature, fx.task)).rejects.toThrow('Composite workspace manifest not found');
+      await expect(fx.service.remove(fx.feature, fx.task, true, { discard: true })).rejects.toThrow('Composite workspace manifest not found');
+      const merged = await fx.service.merge(fx.feature, fx.task, 'squash', mergeMessage, {
+        sourceCommits: { api: created.repos!.api.commit },
+        expectedTargets: { api: inspected!.repos!.api.target! },
+      });
+      expect(merged).toMatchObject({ success: false, reasonCode: 'WORKTREE_LINKAGE_INVALID', mutation: 'none' });
+      expect(merged.error).toContain('Composite workspace manifest not found');
+      expect(gitSpy).not.toHaveBeenCalled();
+    } finally {
+      gitSpy.mockRestore();
+    }
+    const listed = await fx.service.list(fx.feature);
+    expect(listed).toEqual({ worktrees: [], errors: [{
+      path: created.path,
+      reason: expect.stringContaining('Composite workspace manifest not found'),
+    }] });
+    expect(await fs.readFile(path.join(created.repos!.api.path, '.git'))).toEqual(pointer);
+    expect(await branchExists(fx.repos.api.git, created.repos!.api.branch)).toBe(true);
+  });
+
+  it('list reports a namespace symlink without blocking other features', async () => {
     const fx = await createCompositeFixture({ repoIds: ['api'] });
     await fx.service.create(fx.feature, fx.task);
+    const healthy = await fx.service.create('healthy-feature', fx.task);
     const featurePath = path.join(fx.projectRoot, '.hive', '.worktrees', fx.feature);
     const relocated = path.join(fx.projectRoot, 'relocated-feature');
     await fs.rename(featurePath, relocated);
     await fs.symlink(relocated, featurePath);
 
-    await expect(fx.service.list(fx.feature)).rejects.toThrow(/path contains a symlink/);
+    const listed = await fx.service.list();
+    expect(listed.worktrees.map(worktree => worktree.path)).toEqual([healthy.path]);
+    expect(listed.errors).toEqual([{
+      path: featurePath,
+      reason: expect.stringContaining('path contains a symlink'),
+    }]);
 
     await fs.unlink(featurePath);
     await fs.rename(relocated, featurePath);
@@ -2315,7 +2379,7 @@ describe("WorktreeService composite workspaces", () => {
       hiveDir: path.join(repoPath, '.hive'),
     });
 
-    await expect(service.list()).resolves.toEqual([]);
+    await expect(service.list()).resolves.toEqual({ worktrees: [], errors: [] });
   });
 
   it("list skips a step whose worktree directory is missing", async () => {
@@ -2323,7 +2387,51 @@ describe("WorktreeService composite workspaces", () => {
     const created = await fx.service.create(fx.feature, fx.task);
     await fs.rm(created.path, { recursive: true, force: true });
 
-    await expect(fx.service.list(fx.feature)).resolves.toEqual([]);
+    await expect(fx.service.list(fx.feature)).resolves.toEqual({ worktrees: [], errors: [] });
+  });
+
+  it.each([false, true])('bulk cleanup rejects manifestless placement before root Git with a feature selector: %s', async (selected) => {
+    const fx = await createCompositeFixture({ repoIds: ['api'] });
+    const created = await fx.service.create(fx.feature, fx.task);
+    await fs.unlink(path.join(created.path, 'workspace.json'));
+    const pointer = await fs.readFile(path.join(created.repos!.api.path, '.git'));
+    const gitSpy = spyOn(fx.service as any, 'getGit');
+    try {
+      await expect(fx.service.cleanup(selected ? fx.feature : undefined)).rejects.toThrow('Composite workspace manifest not found');
+      expect(gitSpy.mock.calls.every(([cwd]) => cwd === fx.repos.api.path)).toBe(true);
+    } finally {
+      gitSpy.mockRestore();
+    }
+    expect(await fs.readFile(path.join(created.repos!.api.path, '.git'))).toEqual(pointer);
+    expect(await branchExists(fx.repos.api.git, created.repos!.api.branch)).toBe(true);
+  });
+
+  it('bulk cleanup prunes declared repositories instead of the non-Git project root', async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
+    await fx.service.create(fx.feature, fx.task);
+    const getGit = (fx.service as any).getGit.bind(fx.service);
+    const pruned: string[] = [];
+    const gitSpy = spyOn(fx.service as any, 'getGit').mockImplementation((cwd?: string) => {
+      expect(cwd).toBeDefined();
+      expect(cwd).not.toBe(fx.projectRoot);
+      const git = getGit(cwd);
+      return new Proxy(git, {
+        get(target, key) {
+          if (key === 'raw') return (args: string[]) => {
+            if (args[0] === 'worktree' && args[1] === 'prune') pruned.push(cwd!);
+            return target.raw(args);
+          };
+          return Reflect.get(target, key);
+        },
+      });
+    });
+    try {
+      const cleaned = await fx.service.cleanup(fx.feature);
+      expect(cleaned).toEqual({ removed: [], pruned: true });
+      expect(pruned.sort()).toEqual(Object.values(fx.repos).map(repo => repo.path).sort());
+    } finally {
+      gitSpy.mockRestore();
+    }
   });
 
   it("cleanup removes a stale composite workspace whose per-repo worktree was destroyed", async () => {

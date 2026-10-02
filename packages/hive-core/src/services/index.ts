@@ -19,6 +19,8 @@ export { SubtaskService } from './subtaskService.js';
 export { WorktreeService, createWorktreeService } from './worktreeService.js';
 export type {
   WorktreeInfo,
+  WorktreeListError,
+  WorktreeListResult,
   WorktreeRepoInfo,
   WorktreeMode,
   DiffResult,

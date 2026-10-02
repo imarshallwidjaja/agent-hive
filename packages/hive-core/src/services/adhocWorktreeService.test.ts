@@ -5,6 +5,7 @@ import * as path from "path";
 import simpleGit, { type SimpleGit } from "simple-git";
 import type { ResolvedRepository } from "../types";
 import { AdhocWorktreeService as CoreAdhocWorktreeService } from "./adhocWorktreeService";
+import { RepositoryService } from './repositoryService.js';
 import type { AdhocMergeOptions, AdhocMergeResult, AdhocMergeStrategy, AdhocWorktreeConfig } from "./adhocWorktreeService";
 import { WorktreeLinkageError } from "./worktreeOutcome";
 import { readWorktreeTargetIdentity } from './worktreeTarget.js';
@@ -2211,6 +2212,63 @@ describe("AdhocWorktreeService cleanup observability", () => {
 });
 
 describe("AdhocWorktreeService linkage preflight", () => {
+  it.each([false, true])('reads declared-root legacy placement with a symlinked root: %s', async (symlinked) => {
+    const fx = await createFixture();
+    const created = await fx.service.create({ runId: 'declared-root' });
+    let baseDir = fx.repoPath;
+    if (symlinked) {
+      const aliases = await fs.mkdtemp(path.join(os.tmpdir(), 'hive-adhoc-root-alias-'));
+      tempDirs.push(aliases);
+      baseDir = path.join(aliases, 'checkout');
+      await fs.symlink(fx.repoPath, baseDir);
+    }
+    const repositories = new RepositoryService(baseDir).resolveManifest([{ id: 'root', path: '.' }]);
+    const service = new AdhocWorktreeService({
+      baseDir,
+      hiveDir: fx.hiveDir,
+      repositoryResolver: () => repositories,
+    });
+    const inspected = await service.inspect(created.runId);
+    expect(inspected).toMatchObject({ path: created.path, mode: 'adhoc-single', clean: true });
+    expect(inspected!.target!.path).toBe(fx.repoPath);
+  });
+
+  it.each(['omitted', 'empty'])('requires repoIds for manifest-backed creation before Git: %s', async (selection) => {
+    const fx = await createCompositeFixture();
+    const repoIds = selection === 'empty' ? [] : undefined;
+    const gitSpy = spyOn(fx.service as any, 'getGit');
+    try {
+      await expect(fx.service.create({ runId: 'missing-repos', repoIds })).rejects.toThrow('manifest-backed project requires repoIds');
+      expect(gitSpy).not.toHaveBeenCalled();
+    } finally {
+      gitSpy.mockRestore();
+    }
+    expect(await pathExists(path.join(fx.hiveDir, '.worktrees', 'adhoc', 'missing-repos'))).toBe(false);
+  });
+
+  it('rejects an existing manifestless composite directory before Git and preserves its contents', async () => {
+    const fx = await createCompositeFixture();
+    const created = await fx.service.create({ runId: 'missing-metadata', repoIds: ['api'] });
+    const inspected = await fx.service.inspect(created.runId);
+    await fs.unlink(path.join(created.path, 'workspace.json'));
+    const pointer = await fs.readFile(path.join(created.repos!.api.path, '.git'));
+    const gitSpy = spyOn(fx.service as any, 'getGit');
+    try {
+      await expect(fx.service.get(created.runId)).rejects.toThrow(`Composite workspace manifest not found at ${path.join(created.path, 'workspace.json')}`);
+      await expect(fx.service.inspect(created.runId)).rejects.toThrow('Composite workspace manifest not found');
+      await expect(fx.service.cleanup(created.runId, true, { discard: true })).rejects.toThrow('Composite workspace manifest not found');
+      await expect(fx.service.merge(created.runId, 'squash', mergeMessage, {
+        sourceCommits: { api: created.repos!.api.commit },
+        expectedTargets: { api: inspected!.repos!.api.target! },
+      })).rejects.toThrow('Composite workspace manifest not found');
+      expect(gitSpy).not.toHaveBeenCalled();
+    } finally {
+      gitSpy.mockRestore();
+    }
+    expect(await fs.readFile(path.join(created.repos!.api.path, '.git'))).toEqual(pointer);
+    expect(await branchExists(fx.apiGit, created.repos!.api.branch)).toBe(true);
+  });
+
   it("rejects a copied former-root pointer before use or mutation", async () => {
     const fixture = await createFixture();
     const created = await fixture.service.create({ runId: "former-root-run" });

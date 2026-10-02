@@ -235,7 +235,8 @@ Feature statuses (FeatureStatusType):
 - `tasks`: task summaries from `TaskService.list`.
 - `runnable`: pending task folders whose stored dependencies are all `done`.
 - `blocked`: pending task folders mapped to their unmet stored dependencies.
-- `worktrees`: feature-task workspace state from `WorktreeService.list`.
+- `worktrees`: healthy feature-task workspace state from `WorktreeService.list`.
+- `worktreeErrors` (optional): invalid workspace or namespace entries as `{ path, reason }`; one bad entry does not prevent other worktrees or task summaries from being read.
 - `warning` (optional): config fallback warning.
 - `specFreshnessError` (optional): freshness check failure; every task entry reports `specStale: null` and `specStaleReason: 'freshness_unavailable'`.
 

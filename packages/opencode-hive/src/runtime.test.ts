@@ -9,7 +9,7 @@ import { createPluginWithHome } from './e2e/plugin-test-home.js';
 
 const roots: string[] = [];
 
-function createRuntime(options: { detectedFeature?: string; hiveConfig?: Record<string, unknown> } = {}) {
+function createRuntime(options: { detectedFeature?: string; hiveConfig?: Record<string, unknown>; symlinkedRoot?: boolean } = {}) {
   const root = fs.mkdtempSync(`/tmp/hive-runtime-cutover-${process.pid}-`);
   const home = fs.mkdtempSync(`/tmp/hive-runtime-cutover-home-${process.pid}-`);
   roots.push(root, home);
@@ -18,10 +18,17 @@ function createRuntime(options: { detectedFeature?: string; hiveConfig?: Record<
     fs.mkdirSync(path.join(home, '.config', 'opencode'), { recursive: true });
     fs.writeFileSync(path.join(home, '.config', 'opencode', 'agent_hive.json'), JSON.stringify(options.hiveConfig));
   }
-  const workTarget = options.detectedFeature
+  let workTarget = options.detectedFeature
     ? path.join(root, '.hive', '.worktrees', options.detectedFeature, '01-task')
     : root;
   fs.mkdirSync(workTarget, { recursive: true });
+  if (options.symlinkedRoot) {
+    const aliases = fs.mkdtempSync(`/tmp/hive-runtime-root-alias-${process.pid}-`);
+    roots.push(aliases);
+    const alias = path.join(aliases, 'checkout');
+    fs.symlinkSync(workTarget, alias);
+    workTarget = alias;
+  }
   // An Error entry stands for a session lookup that returns an error response.
   const sessions = new Map<string, { id: string; parentID?: string } | Error>();
   const transcripts = new Map<string, unknown[]>();
@@ -38,6 +45,7 @@ function createRuntime(options: { detectedFeature?: string; hiveConfig?: Record<
   };
   return {
     root,
+    workTarget,
     sessions,
     transcripts,
     hooks: createPluginWithHome(home, () => plugin({ directory: workTarget, worktree: workTarget, project: { id: 'test', worktree: workTarget }, client } as any)),
@@ -563,6 +571,82 @@ describe('coordinated runtime hard cut', () => {
 
     expect(result.success).toBe(true);
     expect(fs.readFileSync(path.join(runtime.root, 'api', 'tracked.txt'), 'utf8')).toBe('feature changed\n');
+  });
+
+  it('normalizes symlinked active-project sourceDirectory before combining repoIds', async () => {
+    const { root, workTarget, hooks } = createRuntime({ symlinkedRoot: true });
+    createManifestRepository(root, 'api');
+    writeRepositoryManifest(root, ['api']);
+    const loaded = await hooks;
+    for (const [index, sourceDirectory] of [workTarget, root].entries()) {
+      const created = JSON.parse(await loaded.tool!.hive_adhoc_worktree_create.execute({
+        runId: `aliased-root-${index}`,
+        sourceDirectory,
+        repoIds: ['api'],
+      }, {}));
+      expect(created).toMatchObject({
+        mode: 'adhoc-composite',
+        path: path.join(root, '.hive', '.worktrees', 'adhoc', `aliased-root-${index}`),
+      });
+      expect(Object.keys(created.repos)).toEqual(['api']);
+    }
+  });
+
+  it('reports missing composite metadata on child worktree calls without selecting the non-Git project root', async () => {
+    const { root, hooks } = createRuntime();
+    const api = createManifestRepository(root, 'api');
+    createManifestRepository(root, 'web');
+    writeRepositoryManifest(root, ['api', 'web']);
+    expect(fs.existsSync(path.join(root, '.git'))).toBe(false);
+    const loaded = await hooks;
+    const parent = context('manifest-parent');
+    await loaded.tool!.hive_feature_create.execute({ name: 'manifest-feature' }, parent);
+    await loaded.tool!.hive_feature_create.execute({ name: 'other-feature' }, parent);
+    await loaded.tool!.hive_feature_select.execute({ feature: 'manifest-feature' }, parent);
+    const task = await loaded.tool!.hive_task_create.execute({ name: 'Change source', repos: ['api'] }, parent);
+    const created = JSON.parse(await loaded.tool!.hive_worktree_create.execute({ task }, parent));
+    const head = git(api, ['rev-parse', 'HEAD']);
+    const dispatch = { args: { subagent_type: 'hive-helper', prompt: 'Inspect the task worktree.' } };
+    await loaded['tool.execute.before']!({ tool: 'task', sessionID: 'manifest-parent', callID: 'manifest-call' } as any, dispatch);
+    await loaded.tool!.hive_feature_select.execute({ feature: 'other-feature' }, parent);
+    await loaded.event!({ event: { type: 'message.part.updated', properties: { part: {
+      type: 'tool', tool: 'task', sessionID: 'manifest-parent', callID: 'manifest-call',
+      metadata: { sessionId: 'manifest-child' }, state: { input: dispatch.args },
+    } } } } as any);
+    const child = context('manifest-child', 'hive-helper');
+    expect(new SessionService(root).getGlobal('manifest-child')).toMatchObject({ projectRoot: root, featureName: 'manifest-feature' });
+
+    for (const selectors of [{ task: '01' }, { task, repoIds: ['api'], candidate: task }]) {
+      await expect(loaded.tool!.hive_worktree_inspect.execute(selectors, child)).rejects.toThrow('Composite workspace manifest not found');
+      await expect(loaded.tool!.hive_worktree_merge.execute(selectors, child)).rejects.toThrow('Composite workspace manifest not found');
+      await expect(loaded.tool!.hive_worktree_cleanup.execute({ ...selectors, deleteBranch: true, discard: true }, child)).rejects.toThrow('Composite workspace manifest not found');
+    }
+    await expect(loaded.tool!.hive_adhoc_worktree_inspect.execute({ runId: 'missing-run' }, child)).rejects.toThrow('Composite workspace manifest not found');
+    const inspected = JSON.parse(await loaded.tool!.hive_worktree_inspect.execute({ task }, child));
+    expect(inspected).toMatchObject({ path: created.path, mode: 'composite', repos: { api: { commit: head } } });
+    expect(new SessionService(root).getGlobal('manifest-child')?.featureName).toBe('manifest-feature');
+
+    const cleaned = JSON.parse(await loaded.tool!.hive_worktree_cleanup.execute({ task, deleteBranch: true, discard: true }, child));
+    expect(cleaned.cleanup.outcome).toBe('complete');
+    await expect(loaded.tool!.hive_worktree_cleanup.execute({ task, deleteBranch: true }, child)).rejects.toThrow('Composite workspace manifest not found');
+
+    // A leftover generated directory is invalid placement, not a legacy Git worktree.
+    const residualFile = path.join(created.path, 'repos', 'api', '.tmp', 'retained.txt');
+    fs.mkdirSync(path.dirname(residualFile), { recursive: true });
+    fs.writeFileSync(residualFile, 'retained\n');
+    const healthyTask = await loaded.tool!.hive_task_create.execute({ name: 'Keep readable', repos: ['api'] }, child);
+    const healthy = JSON.parse(await loaded.tool!.hive_worktree_create.execute({ task: healthyTask }, child));
+    const status = JSON.parse(await loaded.tool!.hive_status.execute({}, child));
+    expect(status.feature.name).toBe('manifest-feature');
+    expect(status.tasks.map((entry: any) => entry.folder)).toEqual([task, healthyTask]);
+    expect(status.runnable).toEqual([task, healthyTask]);
+    expect(status.worktrees.map((entry: any) => entry.path)).toEqual([healthy.path]);
+    expect(status.worktreeErrors).toEqual([{
+      path: created.path,
+      reason: expect.stringContaining('Composite workspace manifest not found'),
+    }]);
+    expect(fs.readFileSync(residualFile, 'utf8')).toBe('retained\n');
+    expect(git(api, ['rev-parse', 'HEAD'])).toBe(head);
   });
 
   it('accepts singleton maps and rejects stale or ambiguous pins before mutation', async () => {

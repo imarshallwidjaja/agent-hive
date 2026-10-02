@@ -19,9 +19,11 @@ import {
   TaskUpdatePersistenceError,
   WorktreeService,
   assertValidFeatureName,
+  canonicalProjectRoot,
   computeRunnableAndBlocked,
   detectContext,
   getTaskHandoffPath,
+  projectRootsMatch,
   readCompositeWorkspaceManifest,
   type ContextScope,
   type CustomAgentBase,
@@ -255,7 +257,7 @@ function snapshotFailure(error: unknown, repositoryId?: string) {
 const plugin: Plugin = async (ctx) => {
   const workTarget = ctx.project?.id === 'global' && ctx.worktree === '/' ? ctx.directory : ctx.worktree || ctx.directory;
   const detected = detectContext(workTarget);
-  const projectRoot = fs.realpathSync(detected.projectRoot);
+  const projectRoot = canonicalProjectRoot(detected.projectRoot);
   const runtimeId = `pid-${process.pid}-${Date.now().toString(36)}`;
 
   const featureService = new FeatureService(projectRoot);
@@ -547,8 +549,8 @@ const plugin: Plugin = async (ctx) => {
         let normalizedSourceDirectory = sourceDirectory;
         if (sourceDirectory !== undefined) {
           if (!path.isAbsolute(sourceDirectory)) throw new Error('sourceDirectory must be absolute');
-          const resolvedSourceDirectory = fs.realpathSync(sourceDirectory);
-          normalizedSourceDirectory = resolvedSourceDirectory === projectRoot ? undefined : resolvedSourceDirectory;
+          const resolvedSourceDirectory = canonicalProjectRoot(sourceDirectory);
+          normalizedSourceDirectory = projectRootsMatch(resolvedSourceDirectory, projectRoot) ? undefined : resolvedSourceDirectory;
         }
         let repoIds = options.repoIds;
         if (!normalizedSourceDirectory && repoIds?.length === 1) {
@@ -699,7 +701,7 @@ const plugin: Plugin = async (ctx) => {
       execute: async ({ feature }, context) => {
         const selected = requireFeature(feature, context);
         const tasks = taskService.list(selected);
-        const worktrees = await worktreeService.list(selected);
+        const { worktrees, errors: worktreeErrors } = await worktreeService.list(selected);
         const info = featureService.getInfo(selected);
         let freshness = new Map<string, TaskSpecFreshness>();
         let specFreshnessError: string | undefined;
@@ -737,6 +739,7 @@ const plugin: Plugin = async (ctx) => {
           runnable: graph.runnable,
           blocked: graph.blocked,
           worktrees,
+          ...(worktreeErrors.length ? { worktreeErrors } : {}),
           ...(specFreshnessError ? { specFreshnessError } : {}),
           ...(configFallbackWarning ? { warning: configFallbackWarning } : {}),
         });

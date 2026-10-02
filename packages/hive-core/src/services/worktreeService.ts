@@ -3,6 +3,7 @@ import * as path from "path";
 import simpleGit, { SimpleGit } from "simple-git";
 import type { ResolvedRepository, TaskStatus } from "../types.js";
 import { acquireLock, resolveFeatureDirectoryName } from "../utils/paths.js";
+import { projectRootsMatch } from '../utils/repositoryConfig.js';
 import { createHash } from 'crypto';
 import type {
   TaskWorkspaceManifest as WorkspaceManifest,
@@ -76,6 +77,16 @@ export interface WorktreeInfo {
   candidate?: string;
   target?: WorktreeTargetIdentity | null;
   comparison?: WorktreeTargetComparison;
+}
+
+export interface WorktreeListError {
+  path: string;
+  reason: string;
+}
+
+export interface WorktreeListResult {
+  worktrees: WorktreeInfo[];
+  errors: WorktreeListError[];
 }
 
 export interface DiffResult {
@@ -392,6 +403,15 @@ export class WorktreeService {
       }
     }
     return trustedById;
+  }
+
+  private workspaceRepositoryPaths(manifest: WorkspaceManifest | null, workspacePath: string): string[] {
+    if (manifest) return [...this.trustedRepositoriesForManifest(manifest).values()].map(repository => repository.path);
+    const repositories = this.resolveRepositories();
+    if (repositories?.length && !repositories.some(repository => projectRootsMatch(repository.path, this.config.baseDir))) {
+      throw new WorktreeLinkageError(`Composite workspace manifest not found at ${path.join(workspacePath, 'workspace.json')}. Select an existing task and candidate; manifest-backed workspaces require persisted repository placement.`);
+    }
+    return [this.config.baseDir];
   }
 
   private getWorktreesDir(): string {
@@ -788,6 +808,7 @@ export class WorktreeService {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
       throw error;
     }
+    this.workspaceRepositoryPaths(null, worktreePath);
     await this.validateExactWorktreeRegistration(worktreePath, this.config.baseDir, 'legacy');
     await this.validateWorktreeBranch(worktreePath, branchName, 'legacy');
     const worktreeGit = this.getGit(worktreePath);
@@ -798,7 +819,7 @@ export class WorktreeService {
       || metadata.feature !== feature
       || metadata.task !== step
       || path.resolve(metadata.worktreePath) !== path.resolve(worktreePath)
-      || path.resolve(metadata.repositoryPath) !== path.resolve(this.config.baseDir)
+      || !projectRootsMatch(metadata.repositoryPath, this.config.baseDir)
       || metadata.branch !== branchName
     )) {
       throw new WorktreeLinkageError('Worktree linkage preflight failed: single workspace metadata does not match the requested task worktree');
@@ -818,9 +839,7 @@ export class WorktreeService {
   /** Inspect one explicit workspace candidate, including ignored-file dirt. */
   async inspect(feature: string, step: string, attemptSlot?: string): Promise<WorktreeInfo | null> {
     const manifest = await this.readWorkspaceManifest(feature, step, attemptSlot);
-    const repositories = manifest
-      ? [...this.trustedRepositoriesForManifest(manifest).values()].map((repository) => repository.path)
-      : [this.config.baseDir];
+    const repositories = this.workspaceRepositoryPaths(manifest, this.getWorktreePath(feature, step, attemptSlot));
     return this.withRepositoryLocks(repositories, async () => {
       const info = await this.get(feature, step, attemptSlot);
       if (!info) return null;
@@ -841,7 +860,9 @@ export class WorktreeService {
 
   /** Return every old/default/slotted candidate; callers must select one explicitly. */
   async listCandidates(feature: string, step: string): Promise<WorktreeInfo[]> {
-    return (await this.list(feature))
+    const { worktrees, errors } = await this.list(feature);
+    if (errors.length) throw new WorktreeLinkageError(errors.map(error => `${error.path}: ${error.reason}`).join('\n'));
+    return worktrees
       .filter((candidate) => candidate.step === step)
       .sort((left, right) => left.path.localeCompare(right.path));
   }
@@ -1073,9 +1094,7 @@ export class WorktreeService {
     attemptSlot?: string,
   ): Promise<{ worktreeRemoved: boolean; branchDeleted: boolean; pruned: boolean; cleanup: WorktreeCleanupOutcome }> {
     const manifest = await this.readWorkspaceManifest(feature, step, attemptSlot);
-    const repositories = manifest
-      ? [...this.trustedRepositoriesForManifest(manifest).values()].map((repository) => repository.path)
-      : [this.config.baseDir];
+    const repositories = this.workspaceRepositoryPaths(manifest, this.getWorktreePath(feature, step, attemptSlot));
     return this.withRepositoryLocks(repositories, () => this.removeUnlocked(
       feature,
       step,
@@ -1096,6 +1115,7 @@ export class WorktreeService {
     if (manifest) {
       return this.removeComposite(feature, step, manifest, deleteBranch, options, attemptSlot);
     }
+    this.workspaceRepositoryPaths(null, this.getWorktreePath(feature, step, attemptSlot));
     await this.get(feature, step, attemptSlot);
     return this.removeLegacy(feature, step, deleteBranch, options, attemptSlot);
   }
@@ -1224,9 +1244,9 @@ export class WorktreeService {
     }
   }
 
-  async list(feature?: string): Promise<WorktreeInfo[]> {
+  async list(feature?: string): Promise<WorktreeListResult> {
     const worktreesDir = this.getWorktreesDir();
-    const results: WorktreeInfo[] = [];
+    const results: WorktreeListResult = { worktrees: [], errors: [] };
 
     let features: string[];
     try {
@@ -1238,32 +1258,38 @@ export class WorktreeService {
 
     for (const feat of features) {
       const featurePath = path.join(worktreesDir, feat);
-      const stat = await fs.lstat(featurePath).catch((error: NodeJS.ErrnoException) => {
-        if (error.code === 'ENOENT') return null;
-        throw error;
-      });
-
-      if (stat?.isSymbolicLink()) throw new WorktreeLinkageError(`Worktree linkage preflight failed: path contains a symlink (${featurePath})`);
-      if (!stat?.isDirectory()) continue;
-
-      const steps = await fs.readdir(featurePath).catch((error: NodeJS.ErrnoException) => {
-        if (error.code === 'ENOENT') return [];
-        throw error;
-      });
-
-      for (const entry of steps) {
-        const entryPath = path.join(featurePath, entry);
-        const entryStat = await fs.lstat(entryPath).catch((error: NodeJS.ErrnoException) => {
+      try {
+        const stat = await fs.lstat(featurePath).catch((error: NodeJS.ErrnoException) => {
           if (error.code === 'ENOENT') return null;
           throw error;
         });
-        if (entryStat?.isSymbolicLink()) throw new WorktreeLinkageError(`Worktree linkage preflight failed: path contains a symlink (${entryPath})`);
-        if (!entryStat?.isDirectory()) continue;
-        const { step, attemptSlot } = this.parseWorktreeStepDirectory(entry);
-        const info = await this.get(feat, step, attemptSlot);
-        if (info) {
-          results.push(info);
+
+        if (stat?.isSymbolicLink()) throw new WorktreeLinkageError(`Worktree linkage preflight failed: path contains a symlink (${featurePath})`);
+        if (!stat?.isDirectory()) continue;
+
+        const steps = await fs.readdir(featurePath).catch((error: NodeJS.ErrnoException) => {
+          if (error.code === 'ENOENT') return [];
+          throw error;
+        });
+
+        for (const entry of steps) {
+          const entryPath = path.join(featurePath, entry);
+          try {
+            const entryStat = await fs.lstat(entryPath).catch((error: NodeJS.ErrnoException) => {
+              if (error.code === 'ENOENT') return null;
+              throw error;
+            });
+            if (entryStat?.isSymbolicLink()) throw new WorktreeLinkageError(`Worktree linkage preflight failed: path contains a symlink (${entryPath})`);
+            if (!entryStat?.isDirectory()) continue;
+            const { step, attemptSlot } = this.parseWorktreeStepDirectory(entry);
+            const info = await this.get(feat, step, attemptSlot);
+            if (info) results.worktrees.push(info);
+          } catch (error) {
+            results.errors.push({ path: entryPath, reason: error instanceof Error ? error.message : String(error) });
+          }
         }
+      } catch (error) {
+        results.errors.push({ path: featurePath, reason: error instanceof Error ? error.message : String(error) });
       }
     }
 
@@ -1271,11 +1297,12 @@ export class WorktreeService {
   }
 
   async cleanup(feature?: string): Promise<{ removed: string[]; pruned: boolean }> {
-    const repositories = this.resolveRepositories()?.map((repository) => repository.path) ?? [this.config.baseDir];
-    return this.withRepositoryLocks(repositories, () => this.cleanupUnlocked(feature));
+    const resolved = this.resolveRepositories();
+    const repositories = resolved?.length ? resolved.map(repository => repository.path) : [this.config.baseDir];
+    return this.withRepositoryLocks(repositories, () => this.cleanupUnlocked(feature, repositories));
   }
 
-  private async cleanupUnlocked(feature?: string): Promise<{ removed: string[]; pruned: boolean }> {
+  private async cleanupUnlocked(feature: string | undefined, repositories: string[]): Promise<{ removed: string[]; pruned: boolean }> {
     const removed: string[] = [];
 
     const worktreesDir = this.getWorktreesDir();
@@ -1328,6 +1355,7 @@ export class WorktreeService {
           continue;
         }
 
+        this.workspaceRepositoryPaths(null, worktreePath);
         await this.validateExactWorktreeRegistration(worktreePath, this.config.baseDir, 'legacy');
         try {
           const worktreeGit = this.getGit(worktreePath);
@@ -1339,10 +1367,12 @@ export class WorktreeService {
       }
     }
 
-    try {
-      await this.getGit().raw(["worktree", "prune"]);
-    } catch {
-      /* intentional */
+    for (const repositoryPath of repositories) {
+      try {
+        await this.getGit(repositoryPath).raw(["worktree", "prune"]);
+      } catch {
+        /* intentional */
+      }
     }
     return { removed, pruned: true };
   }
@@ -1419,9 +1449,7 @@ export class WorktreeService {
   ): Promise<MergeResult> {
     try {
       const manifest = await this.readWorkspaceManifest(feature, step, attemptSlot);
-      const repositories = manifest
-        ? [...this.trustedRepositoriesForManifest(manifest).values()].map((repository) => repository.path)
-        : [this.config.baseDir];
+      const repositories = this.workspaceRepositoryPaths(manifest, this.getWorktreePath(feature, step, attemptSlot));
       return await this.withRepositoryLocks(repositories, () => this.mergeUnlocked(
         feature,
         step,
@@ -1452,6 +1480,7 @@ export class WorktreeService {
     }
 
     const manifest = await this.readWorkspaceManifest(feature, step, attemptSlot);
+    this.workspaceRepositoryPaths(manifest, this.getWorktreePath(feature, step, attemptSlot));
     let targets: ReturnType<typeof validateTargetExpectations>;
     try {
       targets = validateTargetExpectations(manifest ? Object.keys(manifest.repos) : null, options.expectedTarget, options.expectedTargets);

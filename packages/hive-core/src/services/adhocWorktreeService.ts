@@ -4,6 +4,7 @@ import simpleGit, { type SimpleGit } from 'simple-git';
 import { createHash } from 'crypto';
 import type { ResolvedRepository } from '../types.js';
 import { acquireLock } from '../utils/paths.js';
+import { projectRootsMatch } from '../utils/repositoryConfig.js';
 import type {
   AdhocWorkspaceManifest as AdhocCompositeManifest,
   SingleWorkspaceMetadata,
@@ -64,7 +65,7 @@ export interface AdhocWorktreeConfig {
 export interface AdhocCreateOptions {
   /** Explicit run identifier. When omitted, a unique safe id is generated. */
   runId?: string;
-  /** Explicit repo IDs for composite ad-hoc workspaces. When omitted, single-root mode is used. */
+  /** Required in manifest mode to select composite repositories; omit for a single-root project. */
   repoIds?: string[];
 }
 
@@ -449,6 +450,15 @@ export class AdhocWorktreeService {
     return trustedById;
   }
 
+  private workspaceRepositoryPaths(manifest: AdhocCompositeManifest | null, workspacePath: string): string[] {
+    if (manifest) return [...this.trustedRepositoriesForManifest(manifest).values()].map(repository => repository.path);
+    const repositories = this.resolveRepositories();
+    if (repositories?.length && !repositories.some(repository => projectRootsMatch(repository.path, this.config.baseDir))) {
+      throw new WorktreeLinkageError(`Composite workspace manifest not found at ${path.join(workspacePath, 'workspace.json')}. Select an existing runId; manifest-backed workspaces require persisted repository placement.`);
+    }
+    return [this.config.baseDir];
+  }
+
   private async readCompositeManifest(runId: string): Promise<AdhocCompositeManifest | null> {
     const compositeRoot = this.getCompositeRoot(runId);
     await this.assertNoSymlinkComponents(path.parse(compositeRoot).root, path.join(compositeRoot, 'workspace.json'), true);
@@ -467,6 +477,7 @@ export class AdhocWorktreeService {
     await this.assertNoSymlinkComponents(path.parse(worktreePath).root, worktreePath, true);
     const stat = await this.lstatOrNull(worktreePath);
     if (!stat) return { path: worktreePath, exists: false };
+    this.workspaceRepositoryPaths(null, worktreePath);
     await this.validateExactWorktreeRegistration(worktreePath, this.config.baseDir, 'adhoc');
     return { path: worktreePath, exists: true };
   }
@@ -639,7 +650,10 @@ export class AdhocWorktreeService {
       await this.readCompositeManifest(runId);
     }
 
-    const resolved = options.repoIds?.length ? this.resolveRepositories() : undefined;
+    const resolved = this.resolveRepositories();
+    if (resolved?.length && !options.repoIds?.length) {
+      throw new WorktreeTopologyMismatchError('Ad-hoc worktree creation in a manifest-backed project requires repoIds; select the declared repositories for this run.');
+    }
     const missing = options.repoIds?.filter((repoId) => !resolved?.some((repository) => repository.id === repoId)) ?? [];
     if (missing.length > 0) {
       throw new Error(`Repository manifest is missing required repos for ad-hoc run ${runId}: ${missing.join(', ')}`);
@@ -894,7 +908,7 @@ export class AdhocWorktreeService {
       metadata.mode !== 'adhoc-single'
       || metadata.runId !== runId
       || path.resolve(metadata.worktreePath) !== path.resolve(worktreePath)
-      || path.resolve(metadata.repositoryPath) !== path.resolve(this.config.baseDir)
+      || !projectRootsMatch(metadata.repositoryPath, this.config.baseDir)
       || metadata.branch !== branchName
     )) {
       throw new WorktreeLinkageError('Worktree linkage preflight failed: single workspace metadata does not match the requested ad-hoc worktree');
@@ -912,9 +926,7 @@ export class AdhocWorktreeService {
   /** Inspect registration, branch, HEAD, and tracked/untracked/ignored dirt. */
   async inspect(runId: string): Promise<AdhocWorktreeInfo | null> {
     const manifest = await this.readCompositeManifest(runId);
-    const repositories = manifest
-      ? [...this.trustedRepositoriesForManifest(manifest).values()].map((repository) => repository.path)
-      : [this.config.baseDir];
+    const repositories = this.workspaceRepositoryPaths(manifest, this.getWorktreePath(runId));
     return this.withRepositoryLocks(repositories, async () => {
       const info = await this.get(runId);
       if (!info) return null;
@@ -940,9 +952,7 @@ export class AdhocWorktreeService {
     options: AdhocMergeOptions = {},
   ): Promise<AdhocMergeResult> {
     const manifest = await this.readCompositeManifest(runId);
-    const repositories = manifest
-      ? [...this.trustedRepositoriesForManifest(manifest).values()].map((repository) => repository.path)
-      : [this.config.baseDir];
+    const repositories = this.workspaceRepositoryPaths(manifest, this.getWorktreePath(runId));
     return this.withRepositoryLocks(repositories, () => this.mergeUnlocked(runId, strategy, message, options));
   }
 
@@ -962,6 +972,7 @@ export class AdhocWorktreeService {
     }
 
     const manifest = await this.readCompositeManifest(runId);
+    this.workspaceRepositoryPaths(manifest, this.getWorktreePath(runId));
     let targets: ReturnType<typeof validateTargetExpectations>;
     try {
       targets = validateTargetExpectations(manifest ? Object.keys(manifest.repos) : null, options.expectedTarget, options.expectedTargets);
@@ -1529,9 +1540,7 @@ export class AdhocWorktreeService {
 
   async cleanup(runId: string, deleteBranch = false, options: AdhocCleanupOptions = {}): Promise<AdhocCleanupResult> {
     const manifest = await this.readCompositeManifest(runId);
-    const repositories = manifest
-      ? [...this.trustedRepositoriesForManifest(manifest).values()].map((repository) => repository.path)
-      : [this.config.baseDir];
+    const repositories = this.workspaceRepositoryPaths(manifest, this.getWorktreePath(runId));
     return this.withRepositoryLocks(repositories, () => this.cleanupUnlocked(runId, deleteBranch, options));
   }
 
@@ -1543,6 +1552,7 @@ export class AdhocWorktreeService {
       return this.cleanupComposite(manifest, deleteBranch, options);
     }
 
+    this.workspaceRepositoryPaths(null, this.getWorktreePath(runId));
     return this.cleanupSingle(runId, deleteBranch, options);
   }
 
