@@ -27,7 +27,7 @@ Release note: the active release path publishes `oc-arkive` to npm and attaches 
 
 Worktrees start without installed dependencies. When running worktree verification, install dependencies there and confirm that `hive-core` resolves inside that worktree; build core before running OpenCode checks. A passing test against the canonical checkout’s `hive-core` does not verify worktree changes. If local verification is unavailable, report the limitation. Run full build and test verification on the canonical checkout after merge, along with affected integrated checks. A worktree build updates only its own plugin bundle; rebuild the canonical checkout before saying a restart will load plugin changes.
 
-A root build can refresh tracked `packages/vscode-hive/dist/extension.js` after `hive-core` changes even though `dist/` is ignored. Inspect and commit deterministic bundle changes with `git add -u -- packages/vscode-hive/dist/extension.js`; do not discard them as unrelated.
+A root build can refresh tracked `packages/vscode-hive/dist/extension.js` after `hive-core` changes even though `dist/` is ignored. Inspect and commit deterministic bundle changes with `git add -u -- packages/vscode-hive/dist/extension.js`; do not discard them as unrelated. When a merge or reconciliation touches this bundle from both sides, do not hand-merge it: take either side, rerun the root build, and stage the regenerated file.
 
 For manifest-backed projects with multiple repos, each task worktree is a composite workspace with a worktree per declared repo under `repos/<repoId>/`.
 
