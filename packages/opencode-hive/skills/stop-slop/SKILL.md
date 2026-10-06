@@ -17,13 +17,13 @@ Remove filler, formulaic structures, and mechanical cadence from prose while pre
 
 ## Ownership
 
-Load with `writing-for-humans`. That skill owns the finish pass, non-invention, punctuation policy, durable names, and rejected-alternative narration. This skill owns cadence and structure rewrites. `humanizer` owns vocabulary, register, attribution, and formatting tells; use it only when those defects also occur.
+Load with `writing-for-humans`. That skill owns the finish pass, non-invention, punctuation policy, durable names, and boundaries and alternatives. This skill owns cadence and structure rewrites. `humanizer` owns vocabulary, register, attribution, and formatting tells; use it only when those defects also occur.
 
 ## Checks
 
 - A run of sentences has mechanical length or every paragraph ends punchily: vary the rhythm without changing the claims.
 - One sentence per paragraph for emphasis: join related sentences.
-- "It's not X, and it's not Y, but Z": state Z. Keep X and Y if the reader was considering them or the denials are live constraints.
+- "It's not X, and it's not Y, but Z": state Z. X and Y stay only when they pass the boundaries test in `writing-for-humans`.
 - "The best X don't Y. They Z": state the claim without manufacturing authority.
 - "Stop X. Start Y": state the action, preserving both requirements when both matter.
 - "And that's okay": delete empty permission-giving; retain an answer to a real concern.

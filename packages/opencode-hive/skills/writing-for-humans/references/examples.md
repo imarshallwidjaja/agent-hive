@@ -44,6 +44,20 @@ Add a remedy only when requested or required by the review contract. Do not inve
 
 The rewrite preserves the supplied severity label. A correctness reviewer might challenge that label, but a prose edit alone does not silently reclassify the finding.
 
+## Boundaries
+
+**Source notes:**
+> The Billing Console shows invoices and payment status for each account. It does not issue refunds; the support team issues refunds in the Support Desk. Usage charts do not show forecasts; they show the last 90 days of metered usage. The screenshots are not final designs; they show layout direction, and their labels show intent. Release sign-off uses the QA checklist, not the screenshots. The tax and credit-note views reuse the invoice table and are not shown.
+
+**Design-direction page:**
+> The Billing Console shows invoices and payment status for each account. The support team issues refunds in the Support Desk. Usage charts show the last 90 days of metered usage. The screenshots show layout direction and their labels show intent; release sign-off uses the QA checklist.
+>
+> Open: the tax and credit-note views reuse the invoice table and have no screenshots.
+
+Each affirmative sentence carries the scope its exclusion stated. For a reader who would still expect a forecast, add "usage charts do not show forecasts" once, beside the chart.
+
+A runbook guard keeps its form. "Do not fail over while replication lag exceeds 30 s" stays as written, because "fail over when lag is under 30 s" turns a guard into a trigger.
+
 ## Rejected alternatives
 
 For a current-state update, "Catalogue reads now go through Redis. Writes still go to Postgres first; publishing invalidates the cache" is enough when those are the supplied facts. An ADR may also need the discarded stores and why they lost. The reader's job determines which account belongs.

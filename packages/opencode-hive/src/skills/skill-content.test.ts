@@ -86,7 +86,13 @@ describe('skill content', () => {
     expect(get('writing-policy')).toContain('does not authorize delegation');
     expect(get('writing-for-humans')).toContain('A rewrite adds nothing');
     expect(get('writing-for-humans')).toContain('This is not an absolute ban');
+    expect(get('writing-for-humans')).toContain('Stating what a thing covers preserves its scope');
+    expect(get('writing-for-humans')).toContain('A safety prohibition stays at each step where it applies');
+    expect(get('writing-for-humans')).toContain('every remaining exclusion meeting the boundaries test');
     expect(get('stop-slop')).toContain('never add, merge, or remove list items for cadence');
+    expect(get('stop-slop')).toContain('boundaries test in `writing-for-humans`');
+    expect(get('stop-slop')).not.toContain('denials are live constraints');
+    expect(get('writing-policy')).toContain("operator's stated reader outcome");
     expect(get('humanizer')).toContain('Do not invent personality');
     expect(get('humanizer')).toContain('sample outranks these defaults');
     for (const name of ['stop-slop', 'humanizer']) expect(get(name)).toContain('Load with `writing-for-humans`');

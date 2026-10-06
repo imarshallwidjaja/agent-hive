@@ -32,7 +32,7 @@ Do not manufacture importance or tension. Avoid antithesis frames such as "This 
 Before delivering, run one loop: draft, audit, fix.
 
 1. Draft with the principles above, then read it as the intended reader would.
-2. Audit with two questions. What makes this read as machine-written? Does it state any fact, name, number, date, quote, or citation not in the source or conversation?
+2. Audit with three questions. What makes this read as machine-written? Is each thing introduced by what it is or does, with every remaining exclusion meeting the boundaries test? Does it state any fact, name, number, date, quote, or citation not in the source or conversation?
 3. Fix the hits, then check again. Do not narrate the audit unless asked.
 
 A rewrite adds nothing that is not in the source or supplied by the user. Specificity comes from the source, not from the rewrite. If a sentence needs real detail to work, ask for it when necessary or write the plain version without it. Preserve all semantically distinct list items; rhythm is not a reason to add or delete one.
@@ -43,9 +43,13 @@ Em dash policy: limit them. Prefer a new sentence, a comma, a colon, or parenthe
 
 Exact quotations, public contracts, code, titles, required output formats, and imported agent instructions retain their meaning and required wording. A historical claim labelled Inferred stays inferred after a prose edit.
 
-## Rejected alternatives
+## Boundaries and alternatives
 
-Name a discarded option only when this reader would otherwise reopen it or misread the current state.
+Describe each thing by what it is, does, needs, or produces. Stating what a thing covers preserves its scope. When the source pairs a boundary with the affirmative fact behind it, such as which surface provides an excluded capability, state that fact. Mention an exclusion only when this reader would still expect the excluded behavior after reading the affirmative description, and then state it once, where the reader would act on that expectation. When the source supplies only the exclusion, keep it as written.
+
+Some facts are negative by nature and keep their form: prohibitions and guards in instructions, MUST NOT requirements, contract non-guarantees, out-of-scope statements in requirements and plans, evidence gaps, and hypotheses not yet ruled out. A safety prohibition stays at each step where it applies. Collect open decisions and missing coverage, such as workflows without mockups, in one place, with an owner or date only when the source names one.
+
+Apply the same test to rejected alternatives: name a discarded option only when this reader would otherwise reopen it or misread the current state.
 
 Keep alternatives in ADRs, design reviews, and answers to "why not X?" Keep a live operational contrast such as "writes still go to Postgres."
 
@@ -81,4 +85,4 @@ Scratch paths that will be deleted can be messy. Git-tracked and exported names 
 
 Read [examples](references/examples.md) when calibrating a rewrite or explaining a system. [Source notes](references/sources.md) record the influences and what not to import from them.
 
-`writing-policy` owns routing. This skill owns generative discipline, the finish pass, durable names, and artifact instincts. `stop-slop` owns cadence and structure rewrites. `humanizer` owns vocabulary, register, attribution, formatting tells, and chat artifacts. Ordinary drafting needs the finish pass, not automatic activation of both overlays.
+`writing-policy` owns routing. This skill owns generative discipline, the finish pass, boundaries and alternatives, durable names, and artifact instincts. `stop-slop` owns cadence and structure rewrites. `humanizer` owns vocabulary, register, attribution, formatting tells, and chat artifacts. Ordinary drafting needs the finish pass, not automatic activation of both overlays.

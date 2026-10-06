@@ -29,7 +29,7 @@ Other forms of the same move:
 | "No X, no Y, just Z." | Tricolon denial |
 | "X rather than Y" used as a punch | Contrast standing in for the fact |
 
-State the claim directly. Keep the denied item when the reader was considering it, or when the denial is a live operational constraint. An instruction, source quotation, or design trade-off can legitimately depend on contrast.
+State the claim directly, keeping the affirmative half of a collapsed contrast: "labels show intent rather than final copy" becomes "labels show intent". A denied item stays only when it passes the boundaries test in `writing-for-humans`. An instruction, source quotation, or design trade-off can legitimately depend on contrast.
 
 ## Dramatic fragmentation
 

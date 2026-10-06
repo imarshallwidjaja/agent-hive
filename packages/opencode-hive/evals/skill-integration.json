@@ -22,8 +22,32 @@
     {
       "id": "writing-preserves-evidence",
       "skills": ["writing-policy", "writing-for-humans", "stop-slop", "humanizer"],
-      "prompt": "Rewrite this status update plainly. Keep every fact and qualifier. 'Here's the thing: the deploy may have caused the outage. Not the cache. Not the queue. The deploy. We have not ruled out a cache stampede. Logs for 03:00 are unavailable. The support team reverted at 03:12. That's the whole playbook.' Do not invent evidence to reconcile its contradictions.",
-      "expected": ["Retains may and the unresolved cache hypothesis", "Surfaces or preserves the contradiction without choosing a cause", "Keeps both timestamps and the named actor", "Adds no source, number, certainty, or outcome", "Removes empty cadence without deleting substantive claims"]
+      "prompt": "Rewrite this status update plainly. Keep every fact and qualifier. 'Here's the thing: the deploy may have caused the outage. Not the cache. Not the queue. The deploy. We have not ruled out a cache stampede. Logs for 03:00 are unavailable. Who changed the feature flag at 02:55 is unknown. The support team reverted at 03:12. Recovery is unconfirmed. That's the whole playbook.' Do not invent evidence to reconcile its contradictions.",
+      "expected": ["Retains may and the unresolved cache hypothesis", "Surfaces or preserves the contradiction without choosing a cause", "Keeps every timestamp and the named actor", "Adds no source, number, certainty, or outcome", "Removes empty cadence without deleting substantive claims", "Keeps the unknown flag actor and unconfirmed recovery as stated gaps without inventing affirmative replacements"]
+    },
+    {
+      "id": "design-direction-boundaries",
+      "skills": ["writing-policy", "writing-for-humans"],
+      "prompt": "Write a short design-direction page for product designers from these engineering notes, with a caption per mockup. 'The Operator Control Panel (OCP) configures ingestion jobs and shows each run's quality flags. The OCP does not supply customer evidence packs; customers review them in the Investigation surface. Metadata discovery does not download dataset contents; it reads catalog metadata. Quality checks do not measure accuracy; they flag schema drift and missing fields. The lineage view holds no approval authority; it shows which run produced each artifact. Mockups 1-3 are not specifications; they show layout direction, and their labels show intent. Acceptance uses the checklist, not the mockups. Workflows C and D reuse the composer and are not illustrated. Export layout is undecided; no owner or date is set.'",
+      "expected": ["Introduces each surface and feature by what it does, using the affirmative facts in the notes", "States mockup status and the checklist's acceptance role once rather than under each caption", "Keeps labels as showing intent", "Keeps an exclusion only where a designer would still expect the excluded behavior, stated once", "Lists workflows C and D and the export decision once without inventing an owner, date, or commitment", "Adds no fact absent from the notes"]
+    },
+    {
+      "id": "refine-defensive-draft",
+      "skills": ["writing-policy", "writing-for-humans", "stop-slop"],
+      "prompt": "Refine this draft for product designers; its facts match the notes. Draft: 'The OCP is not the customer Investigation surface. It does not supply customer evidence packs. Images are illustrations of direction, not specifications. 1. Search composer. Images are illustrations of direction, not specifications. 2. Results list. Their labels show intent rather than final copy. 3. Run detail. Images are illustrations of direction, not specifications. Quality checks do not measure accuracy. Other workflows reuse the composer and are not illustrated yet.' Notes: the OCP configures ingestion jobs and shows each run's quality flags; customers review evidence packs in the Investigation surface; quality checks flag schema drift and missing fields; mockups show layout direction and their labels show intent; acceptance uses the checklist; workflows C and D reuse the composer and are not illustrated.",
+      "expected": ["Replaces exclusion-led descriptions with the affirmative facts from the notes", "States mockup status once", "Keeps 'labels show intent' rather than reversing it into 'labels are not final copy'", "Keeps a remaining exclusion only where a designer would still expect the excluded behavior", "Adds no fact, owner, or date absent from the notes"]
+    },
+    {
+      "id": "runbook-negatives-hold",
+      "skills": ["writing-policy", "writing-for-humans", "stop-slop"],
+      "prompt": "Tighten this runbook excerpt for on-call engineers; keep its meaning. 'Step 3. It is important to note that you should not fail over while replication lag exceeds 30 s. Step 4. Call the promote endpoint. Please be aware that the promote endpoint does not retry; a 504 may mean promotion succeeded, so check the replica role before calling it again. Step 5. Never run `reset --all` on production. Out of scope for this runbook: cross-region failover. Note: the status of the 02:00 backup job is unknown.'",
+      "expected": ["Keeps the failover guard as a prohibition with its 30 s threshold rather than a trigger", "Keeps the non-retry fact, the may-qualified 504 meaning, and the role check before another call", "Keeps the reset --all prohibition exact", "Keeps the out-of-scope statement and the unknown backup status", "Invents no caller obligation or outcome"]
+    },
+    {
+      "id": "prose-handoff-contract",
+      "skills": ["writing-policy", "writing-for-agents", "writing-for-humans"],
+      "prompt": "You will delegate a design-direction page to a documentation subagent and then its prose review to a reviewer; neither sees this conversation. Operator request: 'Convey the Operator Control Panel search experience through direction and examples. Make sure readers don't mistake the mockups for specs.' Notes: the OCP configures ingestion jobs and shows each run's quality flags; it does not supply customer evidence packs, which customers review in the Investigation surface; quality checks do not measure accuracy and flag schema drift and missing fields; mockups 1-3 are not specifications, show layout direction, and their labels show intent; acceptance uses the checklist, not the mockups. Write the authoring handoff and the review handoff.",
+      "expected": ["Carries the operator's reader outcome into both handoffs", "Gives boundaries as facts with their affirmative counterpart, such as the checklist governing acceptance", "Requires no disclaimer at every mockup and quotes no disclaimer sentence for verbatim reuse", "Asks the reviewer to check the prose against the reader outcome as well as the facts", "Names the writing skills each child loads itself"]
     },
     {
       "id": "voice-and-source",
