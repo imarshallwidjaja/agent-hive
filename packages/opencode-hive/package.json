@@ -1,6 +1,6 @@
 {
   "name": "oc-arkive",
-  "version": "3.0.0",
+  "version": "4.0.0",
   "type": "module",
   "description": "OpenCode plugin for Agent Hive - plan-first AI coding workflow",
   "license": "MIT WITH Commons-Clause",
@@ -44,7 +44,7 @@
     "@opencode-ai/sdk": "^0.13.0",
     "@types/bun": "^1.2.0",
     "@types/node": "^20.0.0",
-    "hive-core": "3.0.0",
+    "hive-core": "4.0.0",
     "typescript": "^5.0.0"
   },
   "files": [

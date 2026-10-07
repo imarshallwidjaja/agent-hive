@@ -7,10 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.0.0] - 2026-10-07
+
+### Breaking
+
+- `hive_status` returns one top-level `tasks` list, and `feature` contains only `{ name, status, hasPlan, commentCount }`. `feature.tasks` and `feature.reviewCounts` are removed; read plan comment counts from `feature.commentCount`. Missing or unreadable task status records remain visible as `status: null` integrity entries and cannot be executed or satisfy dependencies.
+- `hive_background_reconcile` and `hive_background_reconcile_batch` return compact acknowledgements instead of full job records. Consumers must handle per-item success/failure and `requiresHiveStatusRefresh`; use `hive_background_status` to read the board.
+- `hive_plan_approve` returns approval failures as `success: false` result objects instead of raising a tool error. Check `success === true` on calls without `sync`, or `approval.success === true` on calls with `sync: true`, and inspect `sync` separately. Feature routing and argument schema validation can still raise tool errors.
+- Hive role access now uses enforced OpenCode `agent.permission` rules and child-session denials for primary-only operations. Custom agents inherit their base role's permissions; native `general` and `explore` have no Hive tools. Workflows that relied on globally allowed tools must route operations through an authorized role.
+- The exported `FeatureInfo` type and `FeatureService.getInfo` are removed from `hive-core`; consumers must compose feature metadata and task records from their owning services.
+
+### Added
+
+- `hive_plan_approve({ expectedRevision, sync: true })` approves and syncs the reviewed revision with separate approval and sync outcomes, explicit persistence/failure details, and a post-sync revision check. Unchanged approval retries report `alreadyApproved`.
+- Feature and ad-hoc worktree creation return their initial inspection, including the destination identity needed for integration. Later inspection checkpoints remain required.
+- The packaged `hive-config` skill documents runtime layout, state ownership, read-only forensics, and global/project-override configuration.
+
 ### Changed
 
 - Hive Helper is a read-only investigator for feature and ad-hoc traces, interrupted-worker evidence, destination drift, and runtime state. Primaries own integration and lifecycle decisions and spot-check decisive cited evidence.
 - Agent prompts and workflow skills reuse matching feature selections, batch independent Hive calls, use merge's same-call cleanup, and reflect guarded approval/sync and compact status/reconciliation outputs. Delegated Architect keeps blocking planning-helper calls and returns primary-control requests to its parent.
+- Forager instructions restrict task reports and handoffs to the assigned task, leave status/summary/blocker changes to the primary, and require owning Hive tools for state outside the assigned worktree.
+- Writing guidance describes boundaries through what a system does, preserves meaningful guards and uncertainty, and carries the intended reader outcome into prose handoffs.
+
+### Fixed
+
+- Interrupted-worker traces expose freshly confirmed `child_session_id` values and rebuild bounded recovery hints each turn. Idle sessions with unresolved records can return an inspect-only `evidence_only` recovery snapshot; recovery rechecks identity, placement, source, and runtime state after summarization.
+- Composite worktree operations validate declared placement before invoking Git, require repository IDs for manifest-backed ad-hoc creation, and prune declared repositories during bulk cleanup. `hive_status.worktreeErrors` reports broken placements alongside healthy worktrees.
+- Legacy feature-worktree creation rejects missing, corrupt, or unrecognized task status before touching Git.
+
+### Upgrade
+
+- Adapt status/reconciliation consumers and copied role instructions to the v4 contracts. Handle approval and sync outcomes separately, refresh status when reconciliation requests it, and repair integrity entries before execution.
+- Retry a failed sync with `hive_tasks_sync` only while the same reviewed approval remains successful; after a plan edit or a superseded or unverifiable approval, review the current revision and approve and sync it again. Pass `refreshPending: true` when existing pending plan tasks must pick up amended specs. After `feature_metadata_write_failed` with `approvalPersisted: true`, approval did not succeed and sync was skipped; when plan content and comments are unchanged, retry `hive_plan_approve` with the same pre-approval `expectedRevision` to repair metadata. See [v4.0.0 release notes](docs/releases/v4.0.0.md) for the migration steps.
+- Finish or explicitly abandon live workers before upgrading, update `oc-arkive` to `4.0.0`, and restart the plugin-host process. For a long-lived server managed by `opencode.service`, restart that service and launch fresh child sessions; reload VS Code after installing the v4 companion.
 
 ## [3.0.0] - 2026-10-01
 
@@ -863,6 +893,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - See the GitHub release/tag `v0.8.2` for details.
 
-[Unreleased]: https://github.com/imarshallwidjaja/agent-hive/compare/v3.0.0...HEAD
+[Unreleased]: https://github.com/imarshallwidjaja/agent-hive/compare/v4.0.0...HEAD
+[4.0.0]: https://github.com/imarshallwidjaja/agent-hive/compare/v3.0.0...v4.0.0
 [3.0.0]: https://github.com/imarshallwidjaja/agent-hive/compare/v2.5.0...v3.0.0
 [2.5.0]: https://github.com/imarshallwidjaja/agent-hive/releases/tag/v2.5.0
