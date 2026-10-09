@@ -25,6 +25,8 @@ bun run release:check     # Install, build, and verify release artifacts and pac
 
 Release note: the active release path publishes `oc-arkive` to npm and attaches `vscode-arkive.vsix` to the GitHub Release. Prepare root/hive-core/opencode/vscode package version bumps, changelog entries, and `docs/releases/vX.Y.Z.md` manually before running the GitHub `workflow_dispatch` rehearsal and tagging. Set the OpenCode package's `devDependencies.hive-core` and the VS Code package's `dependencies.hive-core` to the same exact version, regenerate both root lockfiles, and rerun the release artifact checks for exact pins, local workspace linking, and packed dependency isolation; a stale pin can resolve `hive-core` from the registry instead. The pushed `vX.Y.Z` tag must point at a commit whose root package version is `X.Y.Z` and whose matching release-note file exists. If a tagged release partially fails, rerun the same workflow in tag-backed recovery mode and enable only the unfinished `oc-arkive` npm publish and/or GitHub Release target.
 
+Root `bun run test` takes several minutes; run it with a tool timeout of at least 10 minutes so a harness timeout is not mistaken for a test failure.
+
 Worktrees start without installed dependencies. When running worktree verification, install dependencies there and confirm that `hive-core` resolves inside that worktree; build core before running OpenCode checks. A passing test against the canonical checkout’s `hive-core` does not verify worktree changes. If local verification is unavailable, report the limitation. Run full build and test verification on the canonical checkout after merge, along with affected integrated checks. A worktree build updates only its own plugin bundle; rebuild the canonical checkout before saying a restart will load plugin changes.
 
 A root build can refresh tracked `packages/vscode-hive/dist/extension.js` after `hive-core` changes even though `dist/` is ignored. Inspect and commit deterministic bundle changes with `git add -u -- packages/vscode-hive/dist/extension.js`; do not discard them as unrelated. When a merge or reconciliation touches this bundle from both sides, do not hand-merge it: take either side, rerun the root build, and stage the regenerated file.
@@ -65,6 +67,7 @@ bun run build             # Build vscode-arkive VS Code extension
 - Place tests next to source files or in `__tests__/` directories
 - Use descriptive test names
 - Some `packages/opencode-hive` suites mutate the process cwd and temporary Git state. If a concurrent run fails in a worktree or lifecycle test, rerun the owning file and then `bun test --max-concurrency=1`; report the concurrent failure separately, and change production code only if isolated or serialized execution also fails.
+- Prompt and skill wording is pinned by substring assertions spread across `packages/opencode-hive/src/agents/prompts.test.ts` and `packages/opencode-hive/src/skills/skill-content.test.ts`, not only in the describe block named after the prompt. Before changing or removing a phrase, search both files for it and assign every hit to the lane making the change. When checking that removed wording is gone, exclude test files, because negative assertions name it.
 
 ## Commit Messages
 
@@ -252,6 +255,8 @@ For qualifying ad-hoc work, `orchestrating-ad-hoc-work` owns outcome-first decom
 4. Put the decision in the next worker prompt
 
 Configured reviewer descriptions guide selection. Explicit operator-required review targets must be honored. No agent may silently skip required configured review targets.
+
+The implementation-review method lives in `packages/opencode-hive/src/agents/review-investigation.ts`; review routing, the review packet, and review follow-up live in `packages/opencode-hive/src/agents/process-judgment.ts` and are composed into the primaries. Change review behavior there; primary prompts and skills point to those fragments rather than restating them.
 
 For `/dash-review`, use the understanding-led review and independent challenge method in `packages/opencode-hive/src/agents/dash-reviewer.ts`.
 
