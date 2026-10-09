@@ -7,7 +7,7 @@
     },
     "packages/hive-core": {
       "name": "hive-core",
-      "version": "4.0.0",
+      "version": "4.1.0",
       "dependencies": {
         "simple-git": "^3.27.0",
         "yaml": "^2.9.0",
@@ -20,7 +20,7 @@
     },
     "packages/opencode-hive": {
       "name": "oc-arkive",
-      "version": "4.0.0",
+      "version": "4.1.0",
       "dependencies": {
         "gray-matter": "^4.0.3",
       },
@@ -29,7 +29,7 @@
         "@opencode-ai/sdk": "^0.13.0",
         "@types/bun": "^1.2.0",
         "@types/node": "^20.0.0",
-        "hive-core": "4.0.0",
+        "hive-core": "4.1.0",
         "typescript": "^5.0.0",
       },
       "peerDependencies": {
@@ -38,9 +38,9 @@
     },
     "packages/vscode-hive": {
       "name": "vscode-arkive",
-      "version": "4.0.0",
+      "version": "4.1.0",
       "dependencies": {
-        "hive-core": "4.0.0",
+        "hive-core": "4.1.0",
       },
       "devDependencies": {
         "@types/vscode": "1.64.0",

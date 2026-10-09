@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.1.0] - 2026-10-10
+
+### Changed
+
+- Code and simplicity reviewers, including custom reviewers derived from them, follow a shared investigation method. They orient on the change's purpose and the boundaries it crosses, list leads before verifying (weighted to deletions, consumers of changed contracts, sibling implementations, silent behavior changes, and project rules), verify the strongest, and try to disprove each candidate before reporting it. Findings quote their anchor line and record what the disproof attempt checked; a `### Coverage` section lists cleared leads and areas not inspected. The simplicity reviewer's `### Not Worth Changing` section is replaced by `### Coverage`. Reviewer inspection stays read-only and names installs, builds, tests, or reproductions for the primary to run.
+- Review handoffs for implementation review carry a focused review packet: purpose, comparison base, touched boundaries with consumers and siblings, lenses, unverified leads, worker evidence, and re-review context.
+- Hive, Swarm, and Hive Builder share one Review Routing policy. Source changes get paired correctness and simplicity review by default; renames, formatting, one-line fixes, and bounded docs or tests get one review; high-risk surfaces add the companion passes configured reviewer descriptions call for. Hive Builder's lifecycle gains an explicit Review step before completion.
+- Review Follow-Up spot-checks quoted anchors, challenges contested material findings with the named check or a fresh reviewer that did not raise them, folds accepted minor fixes into one remediation round confirmed against the fix diff, re-reviews material work in a fresh session, and stops when no accepted material finding remains open.
+
+### Upgrade
+
+- Update `oc-arkive` to `4.1.0` and restart the plugin-host process (for a long-lived server, `opencode.service`). Consumers that parse reviewer output should read `### Coverage` instead of the simplicity reviewer's `### Not Worth Changing`. See [v4.1.0 release notes](docs/releases/v4.1.0.md).
+
 ## [4.0.0] - 2026-10-07
 
 ### Breaking
