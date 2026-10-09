@@ -30,9 +30,6 @@ State the content directly. "I used to think" survives when the change in the au
 - "At its core"
 - "In today's [X]"
 - "It's worth noting"
-- "Interestingly,"
-- "Importantly,"
-- "Crucially,"
 - "At the end of the day"
 - "When it comes to"
 - "In a world where"
@@ -45,6 +42,31 @@ State the content directly. "I used to think" survives when the change in the au
 - "To conclude,"
 
 A real causal explanation after "This matters because" may be necessary. Cut the crutch, not the explanation.
+
+## Pause-and-point
+
+- "Here's what matters" / "Here's why this matters" / "Here's the kicker"
+- "Let me explain" / "Let's break it down"
+- "One thing trips people up"
+- A one-line colon reveal: "The best part: it learns." / "The secret: ..."
+- A count announced before a list: "This hurts in four ways:" / "Three things changed:"
+
+The point is simply the next sentence. A label followed by its description ("Exports: CSV and PDF") is not a reveal.
+
+## Restating and engagement closers
+
+- "The bottom line" / "Key takeaway:"
+- "TL;DR" at the end of a short text
+- "That's the real win." / "That's the power of X"
+- "And that's why X is the future." / "The future is X"
+- "What do you think?" / "Thoughts?" / "Agree?"
+- "Read that again"
+
+End on the last concrete thing, or on one line of what the writer concludes. A question that asks the reader for a real decision or reply stays.
+
+## Filler transitions
+
+At the start of a sentence: Additionally, Furthermore, Moreover, However, Interestingly, Importantly, Crucially, Critically, Notably, Ultimately, Therefore, In fact, Lastly, That said, Needless to say, In other words, As we can see. Cut the word or restructure so the relationship is carried by the sentences. Plain "But", "So", and "And" are fine when they do work, and one transition word proves nothing on its own.
 
 ## Plain verbs
 

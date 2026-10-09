@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The packaged `humanizer` skill now follows the rewrite workflow from phuryn/work-humanizer (MIT). It lists every fact with its certainty before editing, writes AI-composed drafts fresh while keeping a writer's own sentences, and ends with a fact audit that checks strength words in both directions. When a draft lacks what only the writer knows, it interviews the writer with up to five questions; a delegated child returns those questions to its parent instead of inventing answers. It can also build a piece from the writer's notes or transcript. An optional `check.py` sweep counts dashes, semicolons, stock vocabulary, and sentence-length uniformity, skipping code. A "Shorter option:" note is offered only in conversation, never inside the artifact.
+- `stop-slop` adds a crafted-line budget of one per piece, a sentence-length rule that varies uniform rhythm in either direction, pause-and-point and colon-reveal lines, restating and engagement closers, fragment stacks, invented metaphor labels, and filler transitions. `writing-for-humans` keeps its em dash limit and adds context-based substitutes, a rule against rerouting a removed dash into a semicolon, and replacement of dashes when rewriting AI-composed prose. `writing-policy` routes notes, transcripts, and interview answers to `humanizer`.
+
 ## [4.1.0] - 2026-10-10
 
 ### Changed

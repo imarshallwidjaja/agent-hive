@@ -39,7 +39,7 @@ A rewrite adds nothing that is not in the source or supplied by the user. Specif
 
 Calibrate before cutting. Look for clusters of tells rather than single instances; one "however" or one short emphatic sentence proves nothing. Preserve specific detail, mixed feelings, unresolved tension, dated references, genuine asides, and varied sentence length. A user-supplied writing sample outranks these defaults.
 
-Em dash policy: limit them. Prefer a new sentence, a comma, a colon, or parentheses. A deliberate aside may keep one. Match the frequency of a user-supplied sample. This is not an absolute ban.
+Em dash policy: limit them, and pick the substitute by context: a colon for a label then its description, a period for two complete thoughts, parentheses for a real aside, a comma for a light pause. Never reroute a removed dash into a semicolon or a colon reveal. In a rewrite of AI-composed prose, replace em dashes and spaced en dashes unless the writer's own writing uses them. Elsewhere a deliberate aside may keep one, and a user-supplied sample sets the frequency. This is not an absolute ban.
 
 Exact quotations, public contracts, code, titles, required output formats, and imported agent instructions retain their meaning and required wording. A historical claim labelled Inferred stays inferred after a prose edit.
 
@@ -85,4 +85,4 @@ Scratch paths that will be deleted can be messy. Git-tracked and exported names 
 
 Read [examples](references/examples.md) when calibrating a rewrite or explaining a system. [Source notes](references/sources.md) record the influences and what not to import from them.
 
-`writing-policy` owns routing. This skill owns generative discipline, the finish pass, boundaries and alternatives, durable names, and artifact instincts. `stop-slop` owns cadence and structure rewrites. `humanizer` owns vocabulary, register, attribution, formatting tells, and chat artifacts. Ordinary drafting needs the finish pass, not automatic activation of both overlays.
+`writing-policy` owns routing. This skill owns generative discipline, the finish pass, boundaries and alternatives, durable names, and artifact instincts. `stop-slop` owns staging, cadence, and structure rewrites. `humanizer` owns the rewrite workflow for existing prose, including composing from a writer's notes or interview answers, and vocabulary, register, attribution, formatting, and chat-artifact tells. Ordinary drafting needs the finish pass, not automatic activation of both overlays.

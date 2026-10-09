@@ -56,6 +56,12 @@
       "expected": ["Preserves the supplied register and uncertainty", "Keeps the exact instruction unchanged", "Does not ban the semicolon or invent a cause for the concern"]
     },
     {
+      "id": "rewrite-keeps-commitment-strength",
+      "skills": ["writing-policy", "writing-for-humans", "humanizer"],
+      "prompt": "You are a delegated writer and cannot ask the operator questions. Rewrite this AI-drafted customer email so it sounds like the account manager wrote it. 'We are thrilled to announce a seamless new export experience! Moving forward, our team proposes to migrate your workspace in March, which could potentially reduce sync errors. Experts agree this is the future of reporting. Our customers love it, and it has transformed how they work.' The account manager's notes say only: export to CSV and PDF ships on 4 March; migration in March is a proposal pending the customer's approval; sync errors may drop. No customer quotes or usage numbers exist.",
+      "expected": ["Keeps the March migration as a proposal pending approval, not a commitment", "Keeps sync-error reduction at may or could strength", "Keeps the 4 March CSV and PDF facts", "Drops or neutralizes the unnamed experts without stating the claim more strongly", "Invents no customer quote, number, or outcome for the customer-love line", "Returns any interview questions to the parent, each quoting the line it would replace, instead of inventing answers", "Places any Shorter option note outside the email text"]
+    },
+    {
       "id": "test-and-recovery-scope",
       "references": ["skills/test-driven-development/references/test-quality.md", "skills/code-design-principles/references/lifecycle-and-migration.md"],
       "prompt": "A changed test asserts only that a mocked save was called. An unchanged prompt composition test guards a named safety requirement. A previous worker's lock remains and its termination is uncertain. Recommend a next step without executing anything.",

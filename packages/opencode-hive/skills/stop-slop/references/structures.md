@@ -27,6 +27,7 @@ Other forms of the same move:
 | "The question isn't X. It's Y." | Rhetorical misdirection |
 | "It's not X, and it's not Y, but it is Z." | Stacked negation |
 | "No X, no Y, just Z." | Tricolon denial |
+| "Not just X but Y" | Contrast with a claim nobody made |
 | "X rather than Y" used as a punch | Contrast standing in for the fact |
 
 State the claim directly, keeping the affirmative half of a collapsed contrast: "labels show intent rather than final copy" becomes "labels show intent". A denied item stays only when it passes the boundaries test in `writing-for-humans`. An instruction, source quotation, or design trade-off can legitimately depend on contrast.
@@ -41,7 +42,7 @@ State the claim directly, keeping the affirmative half of a collapsed contrast: 
 
 ## Rhythm
 
-Keep the number of items the content needs. Do not pad or trim a list to create or avoid a triplet. Vary paragraph endings and sentence lengths without regularizing a supplied author's voice. Punctuation follows `writing-for-humans`, not a separate ban here.
+Keep the number of items the content needs: three items only when there are three things. Do not pad or trim a list to create or avoid a triplet. Vary paragraph endings and sentence lengths without regularizing a supplied author's voice. Punctuation follows `writing-for-humans`, not a separate ban here.
 
 | Pattern | Fix |
 |---|---|
@@ -53,9 +54,9 @@ Keep the number of items the content needs. Do not pad or trim a list to create 
 | Every paragraph ends punchily | Vary endings |
 | Em-dashes before reveals | Remove the staged reveal; apply the core punctuation policy |
 
-## Aphorism formulas
+## Aphorism formulas and crafted lines
 
-Watch for "X is the language of Y", "X is the currency of Z", "X is not a tool but a mirror", and "X becomes a trap when". A reusable formula can sound profound without adding precision. State the claim it was hiding, but do not invent an empirical result to replace it.
+Watch for "X is the language of Y", "X is the currency of Z", "X is not a tool but a mirror", and "X becomes a trap when", and stacked parallel lines such as "Less clicking. More building." A reusable formula can sound profound without adding precision. State the claim it was hiding, but do not invent an empirical result to replace it.
 
 Before: "The guide says consistent layouts help users predict behavior. Consistency is the currency of trust."
 

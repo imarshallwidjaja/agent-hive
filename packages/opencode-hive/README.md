@@ -498,11 +498,11 @@ Generated/managed shape (for inspection) at `<project>/.hive/repositories.json`:
 | `grilling` | Question supplied context until material decisions and evidence are aligned |
 | `hive-config` | Hive runtime layout, state-tool ownership, read-only session forensics, and Agent Hive configuration reference |
 | `how` | Explain current source-grounded behavior and subsystem flow |
-| `humanizer` | Repair vocabulary, register, attribution, and formatting in existing prose |
+| `humanizer` | Rewrite existing prose without changing its facts or commitments, interview the writer or work from their notes, and repair vocabulary, register, attribution, and formatting |
 | `orchestrating-ad-hoc-work` | Coordinate qualifying ad-hoc work for Hive Builder or unified Hive |
 | `parallel-exploration` | Researcher fan-out for read-only research |
 | `pr-writing` | Draft PR titles, descriptions, and general or inline review comments |
-| `stop-slop` | Repair formulaic cadence and structure in existing prose |
+| `stop-slop` | Repair staging, formulaic cadence, and structure in existing prose |
 | `systematic-debugging` | Root-cause investigation before fixes |
 | `test-driven-development` | Strict red-green-refactor when TDD is the selected testing strategy |
 | `verification` | Applicable command/tool evidence before completion or verification claims |
@@ -526,7 +526,7 @@ Skills are loaded through OpenCode's native `skill` tool, not through a Hive plu
 
 **User file skills** should be configured through OpenCode's native `.opencode`, `.claude`, `.agents`, `skills.paths`, or `skills.urls` discovery. They can be loaded manually with the native `skill` tool or advertised to an agent by adding the skill's frontmatter `name` to `autoLoadSkills`. Native/user skills take precedence over Hive bundled skills with the same name.
 
-The writing family is maintained in oc-arkive: `writing-policy` routes, `writing-for-humans` owns drafting and the finish pass, `stop-slop` owns cadence/structure repair, and `humanizer` owns vocabulary/register/attribution/formatting repair. The base prompt points to the policy; depth skills load only on their triggers. These pointers do not change `autoLoadSkills` defaults or override explicitly disabled skills. `pr-writing` retains its artifact and publication contract, and `writing-for-agents` retains instruction-authoring ownership.
+The writing family is maintained in oc-arkive: `writing-policy` routes, `writing-for-humans` owns drafting and the finish pass, `stop-slop` owns staging/cadence/structure repair, and `humanizer` owns the rewrite workflow for existing prose (rewrite, interview, and notes modes, with a fact audit and an optional `check.py` sweep) plus vocabulary/register/attribution/formatting repair. The base prompt points to the policy; depth skills load only on their triggers. These pointers do not change `autoLoadSkills` defaults or override explicitly disabled skills. `pr-writing` retains its artifact and publication contract, and `writing-for-agents` retains instruction-authoring ownership.
 
 `code-design-principles` deepens the existing Engineering Judgment block at material design decisions without another workflow or finding bar. `how` and `why` serve explicit explanation and historical-rationale requests; ordinary debugging, future design selection, and routine implementation orientation retain their existing owners.
 

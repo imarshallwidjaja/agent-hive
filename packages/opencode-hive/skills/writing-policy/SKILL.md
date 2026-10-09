@@ -17,7 +17,7 @@ Load depth skills only when the case matches:
 
 - Substantial docs, plans, reports, reviews, or explanations: `writing-for-humans`.
 - Cadence or structure rewrite problems: `writing-for-humans` plus `stop-slop`.
-- Vocabulary, register, attribution, formatting, or chat-artifact rewrite problems: `writing-for-humans` plus `humanizer`.
+- Rewriting existing prose to remove AI tone (vocabulary, register, attribution, formatting, chat artifacts), or composing from a writer's notes, transcript, or interview answers: `writing-for-humans` plus `humanizer`, adding `stop-slop` when staging or cadence tells appear.
 - A broadly slop-heavy rewrite: `writing-for-humans` plus both overlays.
 - A personal voice overlay: load only the skill named by applicable instructions or the operator. Availability alone does not select a personal voice.
 - Agent-consumed instructions: `writing-for-agents` owns instructional structure and invocation. Human-facing explanations about those instructions still use this policy. Preserve source wording, examples, and exceptions when importing instructions; prose cleanup is not permission to weaken their force.
@@ -29,4 +29,4 @@ Domain-specific writing skills stay conditional on their own triggers. Exact quo
 
 Parent-loaded skills do not imply child loading. When delegation is permitted, a prose handoff names the artifact, audience, voice when specified, the operator's stated reader outcome when there is one, and required writing skills. Require the child to load those skills itself. Give boundaries as facts, with the affirmative fact behind each when known, and leave their wording and placement to `writing-for-humans`. Quote wording only when it must appear verbatim, since writers tend to reproduce quoted sentences, and check requested sections against the reader outcome before dispatch. A fresh follow-up or prose review receives the same writing contract; the reviewer checks the prose against the reader outcome alongside factual fidelity, within its role's finding bar. Where nested delegation is permitted, descendants preserve that contract rather than assuming the parent's loaded set. This rule does not authorize delegation or extend a child's role.
 
-The four packaged writing skills have one ownership chain: this policy selects; `writing-for-humans` guides drafting and the finish pass; `stop-slop` repairs cadence and structure; `humanizer` repairs vocabulary, register, attribution, and formatting. Neither overlay creates another writing policy.
+The four packaged writing skills have one ownership chain: this policy selects; `writing-for-humans` guides drafting and the finish pass; `stop-slop` repairs staging, cadence, and structure; `humanizer` owns the rewrite workflow for existing prose and repairs vocabulary, register, attribution, and formatting. Neither overlay creates another writing policy.

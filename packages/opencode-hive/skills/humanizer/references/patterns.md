@@ -1,6 +1,19 @@
 # Vocabulary, register, attribution, and formatting
 
-Use patterns in context. A cluster can reveal a writing problem; an isolated word is not a blacklist match. Every example below is constructed and its rewrite adds no facts.
+Use patterns in context. A cluster can reveal a writing problem; an isolated word is not a blacklist match. One hit is weak evidence; several together in one passage are the tell. Leave a word alone inside a quotation, a product name, or a passage that discusses the word. Every example below is constructed and its rewrite adds no facts.
+
+## Doing the reader's work
+
+Test each sentence by deleting it: if the reader can still recover the meaning, leave it deleted.
+
+1. Defining a word the reader knows ("Revoke the token, which invalidates the session.").
+2. Spelling out the implication ("This means that...", "In other words..."), including the trailing -ing rider (", highlighting the team's commitment to...", ", underscoring...", ", reflecting a broader shift").
+3. Stating the conclusion the facts already delivered ("So the lesson is...").
+4. Pointing ("Notice how...", "As you can see...", "What this shows is...").
+5. Telling the reader how to feel ("This is exciting.", "This should worry you.").
+6. Narrating transitions ("Now let's look at...", "Moving on to..."). One signpost per major section is fine in a long, sectioned document.
+
+A definition the likely reader needs stays; `writing-for-humans` asks for one in context.
 
 ## Inflated significance
 
@@ -14,6 +27,8 @@ After: "The institute was established in 1989."
 
 Do not invent its mission or institutional independence to replace the inflated clause.
 
+An adjective with no specific behind it ("significant", "seamless", "powerful", "robust", "game-changing") gets the number, name, or mechanism the source gives, or is cut. Never supply a number the source lacks.
+
 ## Promotional language
 
 Words to watch: boasts a, vibrant, rich (figurative), profound, enhancing its, showcasing, exemplifies, commitment to, natural beauty, nestled, in the heart of, groundbreaking (figurative), renowned, breathtaking, must-visit, stunning. These often advertise instead of explain. Keep a genuine attributed judgment or the user's selected promotional voice; otherwise describe only the supplied behavior.
@@ -21,6 +36,8 @@ Words to watch: boasts a, vibrant, rich (figurative), profound, enhancing its, s
 Before: "The tool offers a seamless way to export rows as CSV."
 
 After: "The tool exports rows as CSV."
+
+Marketing register is fine in an ad and a tell elsewhere. Outside ads, the marketing terms in the high-frequency list under "Vocabulary clusters and copula avoidance" (empower, unlock, seamless, and the like) count as marketing register, and so do these: streamline, revolutionize, transform (as hype), supercharge, harness the power of, best-in-class, world-class, in an ever-changing landscape, the landscape of, we're thrilled/excited to announce, take it to the next level.
 
 ## Notability as a substitute for substance
 
@@ -30,7 +47,7 @@ Words to watch: independent coverage, local/regional/national media outlets, wri
 
 ## Vague attribution
 
-Words to watch: Industry reports, Observers have cited, Experts argue, Some critics argue, several sources/publications. These name no retrievable source. Look up the source when authorized. If none is supplied or found, preserve the attribution's uncertainty or identify the gap instead of inventing an expert, survey, or institution.
+Words to watch: Industry reports, Observers have cited, Experts argue, Some critics argue, Studies show, many companies, several sources/publications. These name no retrievable source. Name who when the source does, and look up the source when authorized. If none is supplied or found, preserve the attribution's uncertainty or identify the gap instead of inventing an expert, survey, or institution.
 
 Before: "Experts believe this retry limit improves reliability."
 
@@ -46,6 +63,8 @@ Watch for "Despite its... faces several challenges", "Despite these challenges",
 
 High-frequency words to examine in clusters: Additionally, align with, crucial, cutting-edge, delve, elevate, emphasizing, empower, enduring, enhance, fostering, game-changer, garner, highlight (verb), highlighting, interplay, intricate/intricacies, journey (figurative), key (adjective), landscape (abstract noun), meticulous, next-level, pivotal, revolutionary (figurative), robust (figurative), seamless, showcase, showcasing, tapestry (abstract noun), testament, underscore (verb), unlock (figurative), valuable, vibrant.
 
+Stock AI vocabulary, rarely chosen by working writers, so a hit is drift rather than style: bolster, illuminate, elucidate, transcend, intertwine, espouse, exemplify, underpin, synergy, beacon, symphony, kaleidoscope, myriad, plethora, advancements, game-changing, unparalleled, commendable, indelible, poignant, tireless, unwavering, unyielding, timeless, ever-evolving. Phrases: shed light on, grapple with, rich tapestry, navigate the complexities, paving the way, look no further.
+
 Also examine superficially scientific vocabulary such as causal, empirical, and correlate when it dresses up an unsupported claim. Keep those words when they are the accurate technical term. This is not a model-specific diagnostic or an authorship claim.
 
 Words to watch: serves as/stands as/marks/represents/functions as/operates as [a], boasts/features/offers [a], refers to (when the sentence is about the thing, not the term). They can obscure a simple "is", "has", or concrete verb.
@@ -53,6 +72,10 @@ Words to watch: serves as/stands as/marks/represents/functions as/operates as [a
 Before: "The gateway serves as the entry point and boasts support for signed requests."
 
 After: "The gateway is the entry point and accepts signed requests."
+
+## Constructions nobody says out loud
+
+"The recommended approach is X" becomes "Do X". Nominalizations ("perform an evaluation of") become verbs ("evaluate"). Op-ed verbs for sources (posits, contends, asserts, maintains that, concedes, and argues that for a plain statement) become says, writes, found, or reports. The test: would you say this sentence to a smart friend over coffee? If you'd say something plainer, write that, keeping the claim and its strength.
 
 ## Superficial analysis and association
 
@@ -80,6 +103,16 @@ After: "The service may have failed during the deploy; the logs are unavailable.
 
 Do not turn missing logs into proof of either success or failure.
 
+## Hedge placement
+
+People state facts flatly and hedge their opinions. AI text does the reverse, or hedges everything.
+
+- Facts stay bare: add no hedge to a fact. A qualifier the writer chose ("typically", "about", "could") is part of the fact; keep one and cut the stack around it.
+- An opinion gets one marker ("I think", "probably", "in my experience"), never two in a sentence.
+- Cut filler hedges everywhere: arguably, it could potentially, it may be possible that, to some extent, in many ways, I think maybe. "It's worth noting" and "it's important to note" are emphasis crutches listed in `stop-slop`.
+- When a claim needs a qualifier the source supplies, name the case where it doesn't hold instead of softening it: "For regulated teams, a manual review still wins."
+- Never add an absolute ("everyone", "always", "nobody", "the first") the source cannot back.
+
 ## Actorless passive
 
 Name an actor when the source identifies one. Passive is appropriate when the actor is unknown, irrelevant, or deliberately withheld, or the object is the paragraph's subject.
@@ -101,11 +134,13 @@ After: "The dashboard opens the three cohorts you pinned last."
 ## Mechanical formatting
 
 - Use sentence case in headings, except required titles or the selected author's style. "Strategic Negotiations And Global Partnerships" becomes "Strategic negotiations and global partnerships".
-- Bold should mark useful emphasis, not every noun or acronym.
+- Bold should mark useful emphasis, not every noun or acronym. Bold-label paragraph starts ("**Speed.** The new engine...") become plain sentences outside reference documents a reader returns to.
 - Inline-header vertical lists such as `- **Thing:** sentence` can read like auto-generated changelogs. Convert unnecessary labels to sentences; vary structure. Preserve a required output schema or a list whose labels genuinely help scan distinct items.
-- Remove decorative emoji unless the audience expects them.
+- Labels that say nothing: when every item carries the same label ("Mitigation:", "Benefit:", "Impact:") or the label repeats its sentence, drop the labels and write the items as sentences. Keep lists and headings where the reader will scan or come back: release notes, specs, steps, options to compare, a reference page.
+- Remove decorative emoji and emoji bullets unless the audience expects them.
+- Exclamation marks: at most one, and only where a person would actually exclaim. Never to fake enthusiasm.
 - Convert to straight quotes for plain-text/code-adjacent writing; preserve exact quotations and explicitly selected authorial typography. Curly quotes alone are not evidence of AI authorship.
-- Punctuation follows `writing-for-humans`. There is no separate em-dash or semicolon ban.
+- Punctuation follows `writing-for-humans`.
 - Horizontal rules between every section, skipped heading levels, a dump of H1s, a heading whose only children are more headings, and tiny tables used only for layout can obscure hierarchy. Use the structure the content needs.
 - All-caps emphasis and clusters of scare quotes can manufacture urgency or distance. Preserve genuine quoted language and required normative words.
 
@@ -113,7 +148,7 @@ After: "The dashboard opens the three cohorts you pinned last."
 
 Remove "I hope this helps", "Certainly!", empty praise, and generic upbeat closers when they are pasted into the artifact. A real answer to a user's concern is not empty reassurance.
 
-Words to watch: Of course!, You're absolutely right!, Would you like..., let me know, here is a... . Sycophantic or servile tone substitutes praise for judgment. Be direct; agree or disagree with the substance. Generic conclusions such as "The future looks bright" and "exciting times ahead" add nothing unless the source supplies a concrete plan. End on the last useful claim rather than inventing a next step or metric.
+Words to watch: Great question!, Of course!, Absolutely!, You're absolutely right!, Happy to help, Would you like..., let me know, Feel free to reach out, I hope this email finds you well, Here's a revised version:, here is a..., As an AI, As of my last update. Remove the wrapper and keep the content. Sycophantic or servile tone substitutes praise for judgment. Be direct; agree or disagree with the substance. Generic conclusions such as "The future looks bright" and "exciting times ahead" add nothing unless the source supplies a concrete plan. End on the last useful claim rather than inventing a next step or metric.
 
 Fill placeholders only from supplied evidence. Replace leaked model citation markup with a real citation, or remove the unsupported claim. Do not remove a working native citation in a chat answer merely because the interface renders it specially.
 
@@ -132,8 +167,8 @@ Substitute only when the referent and meaning stay intact. Empty filler differs 
 
 ## Cadence handoff
 
-Antithesis, dramatic fragments, forced triplets, aphorism formulas, signposting announcements, fake-candid openers, and section restatements belong to `stop-slop`. When they are also present, load that overlay instead of maintaining another cadence policy here.
+Staging and rhythm belong to `stop-slop`: contrast with a claim nobody made, antithesis, pause-and-point lines and colon reveals, restating and engagement closers, the crafted-line budget and aphorism formulas, fragment stacks, invented metaphor labels, forced triplets, the sentence-length band, repeated openers, the shuffle test, filler transitions, signposting announcements, fake-candid openers, and section restatements. When they are also present, load that overlay instead of maintaining another cadence policy here.
 
 ## Sources
 
-The operator-maintained source used [Wikipedia: Signs of AI writing](https://en.wikipedia.org/wiki/Wikipedia:Signs_of_AI_writing) as a field guide. Later actor, passive, quotation, and register diagnostics were adapted from [anti-slop](https://github.com/miqdadbadjuber/anti-slop), Miqdad Badjuber, MIT. The license notice is bundled. The unsafe source examples that added facts during rewriting have been replaced with the constructed examples above.
+The operator-maintained source used [Wikipedia: Signs of AI writing](https://en.wikipedia.org/wiki/Wikipedia:Signs_of_AI_writing) as a field guide. Later actor, passive, quotation, and register diagnostics were adapted from [anti-slop](https://github.com/miqdadbadjuber/anti-slop), Miqdad Badjuber, MIT. Doing the reader's work, hedge placement, constructions nobody says out loud, the stock-vocabulary and marketing-register lists, labels that say nothing, exclamation marks, and the added chat residue are adapted from [work-humanizer](https://github.com/phuryn/work-humanizer), Pawel Huryn, MIT. The license notices are bundled. The unsafe source examples that added facts during rewriting have been replaced with the constructed examples above.

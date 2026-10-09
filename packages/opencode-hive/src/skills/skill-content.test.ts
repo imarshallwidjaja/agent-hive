@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'bun:test';
+import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -95,7 +96,55 @@ describe('skill content', () => {
     expect(get('writing-policy')).toContain("operator's stated reader outcome");
     expect(get('humanizer')).toContain('Do not invent personality');
     expect(get('humanizer')).toContain('sample outranks these defaults');
+    expect(get('humanizer')).toContain('returns the numbered questions');
+    expect(get('humanizer')).toContain('a proposal must not become a promise');
+    expect(get('humanizer')).toContain('never goes inside a file');
+    expect(get('humanizer')).toContain('Write it fresh when the draft is AI-composed');
+    expect(get('humanizer')).toContain("When the text is the writer's own prose, keep their sentences");
+    expect(get('stop-slop')).toContain('at most one crafted, quotable line per piece');
+    expect(get('stop-slop')).toContain('Uniformly short and choppy');
+    expect(get('writing-for-humans')).toContain('Never reroute a removed dash into a semicolon');
+    expect(get('writing-policy')).toContain("composing from a writer's notes");
     for (const name of ['stop-slop', 'humanizer']) expect(get(name)).toContain('Load with `writing-for-humans`');
+  });
+
+  it('sweeps prose mechanically with the packaged humanizer check script', () => {
+    const script = path.join(resolvePackagedSkillsDir(), 'humanizer', 'check.py');
+    const sweep = (text: string) => {
+      const result = spawnSync('python3', [script, '-'], { input: text, encoding: 'utf8' });
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr).toBe(0);
+      return result.stdout.trim();
+    };
+
+    const punctuation = sweep('The release \u2014 finally \u2014 shipped; users noticed.');
+    expect(punctuation).toContain('em/en dashes: 2');
+    expect(punctuation).toContain('semicolons: 1');
+
+    const vocabulary = sweep('We delve into a vibrant tapestry that will seamlessly empower your team.');
+    expect(vocabulary).toContain('AI words');
+    expect(vocabulary).toContain('delve');
+    expect(vocabulary).toContain('marketing words');
+
+    const plain = 'We cut no-shows from 18% to 7% in six months by switching to two-way texts. '
+      + 'Patients reschedule by replying, which saved the front desk about 11 hours a week. '
+      + 'Sopot only got to 12%, and nobody knows why yet.';
+    expect(sweep(plain)).toBe(`words: ${plain.split(/\s+/).length}`);
+
+    const code = sweep('Run the retry loop.\n\n```ts\nconst a = 1; const b = 2;\n```\n\nThen call `reset(); flush();` once.');
+    expect(code).not.toContain('semicolons');
+
+    const longerCloser = sweep('```js\nconst a = 1;\n````\nAfter the fence; prose counts.');
+    expect(longerCloser).toContain('semicolons: 1');
+
+    const tilde = sweep('~~~\nx; y;\n```\nz;\n~~~~\nAfter the fence; prose counts.');
+    expect(tilde).toContain('semicolons: 1');
+
+    const unterminated = sweep('Before the fence; prose counts.\n```\na; b; c;');
+    expect(unterminated).toContain('semicolons: 1');
+
+    const doubleBacktick = sweep('Call ``a ` b;`` first; then flush.');
+    expect(doubleBacktick).toContain('semicolons: 1');
   });
 
   it('separates design depth, present behavior, and historical rationale from execution authority', () => {
