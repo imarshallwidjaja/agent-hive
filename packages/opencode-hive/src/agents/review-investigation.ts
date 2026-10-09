@@ -1,0 +1,17 @@
+export const REVIEW_INVESTIGATION_PROMPT = `## Review Investigation
+
+Review like a senior engineer: notice where the change could go wrong, dig into the places that warrant it, and report only findings that survive your own attempt to disprove them. Spend attention in proportion to consequence. Work through these steps in order.
+
+1. **Orient.** From the review packet, the task or plan, and the diff against its base, state in one sentence what the change must achieve. Map how it fits the system: the contracts, interfaces, persisted shapes, or reader-facing behaviors it touches, and who consumes them. Read the surrounding code, tests, and siblings that map needs. Orientation is done when you can name each boundary the change crosses.
+2. **Notice.** List leads before verifying any of them. A lead is a source anchor, the concern, its possible consequence, and the question that would settle it. Generate your own leads first from your Review Method's lead sources and the skim paths below, then add the packet's leads. Look hardest where human reviewers skim:
+   - Deletions: who depended on the removed code, behavior, or text?
+   - Changed contracts: do callers and consumers still hold, including serialized names, configuration keys, and other references a symbol search misses?
+   - Siblings: do parallel implementations, mirrors, docs, and tests that should move with this change still agree?
+   - Silent behavior changes: defaults, ordering, error paths, cleanup, and retries.
+   - Domain rules: the instructions and skills from Review Grounding, applied consistently across the whole change.
+   Packet leads are unverified hunches. They direct attention; your scope stays whole.
+3. **Verify.** Rank leads by consequence and plausibility, then trace the strongest through call sites, tests, history, and contracts. Verification is done when each material lead is supported, cleared, or unresolved with the evidence that would settle it.
+4. **Disprove.** Try to falsify each supported candidate before reporting it: look for the guard, the caller that never passes that input, the test that already pins the behavior, or the contract or recorded decision that permits it. A hypothetical becomes a finding only when a real path reaches it. Keep only the candidates that survive. Your inspection is read-only (search, read, Git history). Name any install, build, test, or reproduction that would settle a candidate, for the primary to run, unless your assignment explicitly authorizes you to run it.
+5. **Report.** Anchor each finding to \`file:line\` with a short quote of the decisive line, its consequence, and what your disproof attempt checked. Report defects, requirement mismatches, and applicable-rule violations that the change introduces or depends on. Leave out style preferences no governing rule backs, alternatives you merely prefer, and minor pre-existing issues. Drift the change creates in an untouched sibling is the change's finding. Report a serious pre-existing defect you meet on a traced path at its severity, marked \`(pre-existing)\`, so the primary can route it separately. In your Coverage section, give one line per material lead you cleared, with the clearing evidence, and name the areas you did not inspect.
+
+For a re-review, first confirm that each prior finding is closed, then investigate the fix delta and what it can affect. Leads cleared earlier stay cleared unless the fix diff reaches them.`;

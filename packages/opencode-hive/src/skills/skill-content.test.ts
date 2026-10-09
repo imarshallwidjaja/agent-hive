@@ -685,7 +685,7 @@ describe('skill content', () => {
   it('records configured review gates and integrated verification before closure', () => {
     const template = BUILTIN_SKILLS.find((entry) => entry.name === 'orchestrating-ad-hoc-work')!.template;
 
-    expect(template).toContain("Lane changes receive the reviews required by the active primary's configured review policy");
+    expect(template).toContain("Lane changes receive the reviews required by the active primary's Review Routing");
     expect(template).toContain('this skill adds no separate reviewer-approval gate');
     expect(template).toContain('Required review, repository/operator checks, and lane verification each gate merge');
     expect(template).toContain('selected integrated acceptance');
@@ -771,7 +771,7 @@ describe('skill content', () => {
     expect(skill!.template).toContain('hive_worktree_create');
     expect(skill!.template).toContain('Forager assignment');
     expect(skill!.template).toContain('In gate-closed sessions use blocking native `task()`');
-    expect(skill!.template).toContain('Risk-Tier Review Routing');
+    expect(skill!.template).toContain("apply the primary's Review Routing");
     expect(skill!.template).toContain('Post-Batch Code Review');
     expect(skill!.template).toContain('explicit operator direction');
     expect(skill!.template).toContain('A test failure is evidence to investigate');
@@ -857,13 +857,18 @@ describe('skill content', () => {
   it('routes accepted review work without promoting optional feedback to automatic fixes', () => {
     const executing = BUILTIN_SKILLS.find((entry) => entry.name === 'executing-plans')!.template;
     const adhoc = BUILTIN_SKILLS.find((entry) => entry.name === 'orchestrating-ad-hoc-work')!.template;
-    expect(executing).toContain('Collect required reviews on the settled candidate and assess findings before routing work');
+    expect(executing).toContain("Apply the primary's Review Follow-Up before remediation and closure");
     expect(executing).toContain('Route accepted work through this decision tree');
     expect(executing).toContain('| Accepted local correction to the completed batch | **Same implementation lane**');
     expect(executing).toContain('fresh worker when delegated');
+    expect(executing).toContain("review packet from the primary's Review Handoffs");
+    expect(executing).toContain('feature/task identity, plan path and current section, spec path');
+    expect(executing).toContain('current `specStale`/`specStaleReason` from `hive_status`');
+    expect(executing).toContain('reviewers may query status but receive no task brief');
     expect(executing).not.toContain('| Minor / local to the completed batch | **Inline fix**');
     expect(adhoc).toContain("Apply the primary's Review Follow-Up guidance to settled lane reviews before remediation and closure");
     expect(adhoc).toContain('preserve usable unaffected review coverage');
+    expect(adhoc).toContain("reviews required by the active primary's Review Routing");
   });
 
   it('defers task report ownership and interruption recovery to the primary prompt', () => {

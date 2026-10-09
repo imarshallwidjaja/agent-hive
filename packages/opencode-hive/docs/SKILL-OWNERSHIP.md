@@ -13,7 +13,7 @@ oc-arkive ships the skill sources in `packages/opencode-hive/skills/`. OpenCode 
 | Diagnosis | `systematic-debugging` | Reproduce/investigate the cause, then fix within authority |
 | Selected red-green mechanics | `test-driven-development` | Loading selects TDD; its test-quality reference can be read independently |
 | Completion evidence | `verification` | Candidate/input applicability and observed evidence |
-| Review methods and acceptance | Existing reviewer roles | Impact/finding heuristics live in the conditional `adversarial-review` reference; roles keep their bars |
+| Review methods and acceptance | Shared `REVIEW_INVESTIGATION_PROMPT` for implementation reviewers; existing reviewer roles for acceptance | The shared prompt owns the lead -> verify -> disprove method; impact/finding depth lives in the conditional `adversarial-review` reference; roles keep their bars |
 | Writing routing and propagation | `writing-policy` | Select depth by artifact and defect; no universal overlay activation |
 | Human-facing drafting | `writing-for-humans` | Reader needs, factual preservation, boundaries, finish pass, naming |
 | Cadence and structure repair | `stop-slop` | Existing prose with demonstrated cadence/structure problems |

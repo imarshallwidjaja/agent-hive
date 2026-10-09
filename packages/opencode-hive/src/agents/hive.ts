@@ -1,5 +1,5 @@
 import { ENGINEERING_JUDGMENT_PROMPT } from './engineering-judgment.js';
-import { NATIVE_TASK_CONTINUATION_POLICY_PROMPT, PLAN_APPROVAL_SYNC_PROMPT, PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT, REVIEW_FOLLOW_UP_PROMPT, REVIEW_HANDOFF_PROMPT } from './process-judgment.js';
+import { NATIVE_TASK_CONTINUATION_POLICY_PROMPT, PLAN_APPROVAL_SYNC_PROMPT, PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT, REVIEW_FOLLOW_UP_PROMPT, REVIEW_HANDOFF_PROMPT, REVIEW_ROUTING_PROMPT } from './process-judgment.js';
 import { INTERRUPTED_WORKER_RECOVERY_PROMPT, TASK_REPORT_CONTRACT_PROMPT, TASK_REPORT_OWNERSHIP_PROMPT } from './task-reporting.js';
 
 /**
@@ -18,6 +18,8 @@ Tool availability plus these instructions govern action. Each Hive tool validate
 ${ENGINEERING_JUDGMENT_PROMPT}
 
 ${PROCESS_JUDGMENT_PROMPT}
+
+${REVIEW_ROUTING_PROMPT}
 
 ${REVIEW_HANDOFF_PROMPT}
 
@@ -324,15 +326,9 @@ When a merge fails, preserve the returned operation state and recovery fields. A
 
 ### Post-Batch Review
 After completing and merging a batch:
-1. Apply Risk-Tier Review Routing and explicit operator direction; ask only for a material unresolved decision or explicit operator gate.
-2. For high-risk surfaces — public contracts, persistence/state, branch/worktree/merge lifecycle, background scheduler semantics, auth/security, or broad prompt/tool behavior — run paired correctness + simplicity review.
-3. For bounded docs/tests, use a single or batched review unless the diff spans broader workflow behavior.
-4. For verification-only gates with no source changes and clear command evidence, skip extra review by default and record the evidence.
-5. Escalate to xhigh reviewer variants only after the default reviewer identifies a named high-risk concern.
-6. For implementation correctness review -> Choose the code reviewer whose description best fits the review lens. Use built-in \`code-reviewer\` when no configured code-reviewer-derived custom description is a closer match. For task-scoped review, pass feature/task identity, plan path and current section, spec path, and current \`specStale\`/\`specStaleReason\` from \`hive_status\` explicitly in the reviewer assignment; reviewers may query \`hive_status\` but get no task brief. Then run \`task({ subagent_type: "<chosen-reviewer>", prompt: "Review implementation changes from the latest batch and the supplied task references." })\`.
-7. For simplicity review -> Choose the simplicity reviewer whose description best fits the cleanup lens. Use built-in \`simplicity-reviewer\` when no configured simplicity-reviewer-derived custom description is a closer match. Then run \`task({ subagent_type: "<chosen-reviewer>", prompt: "Review implementation changes from the latest batch as a final post-implementation cleanup pass. Focus on YAGNI, dead code, duplicated logic, unnecessary abstractions, redundant defensive code, and safe deletion-biased simplification." })\`.
-8. Treat \`simplicity-reviewer\` as a post-implementation cleanup pass, not plan readiness, broad correctness review, architecture advice, or verification.
-9. Accept review feedback before routing any needed work through this decision tree:
+1. Apply Review Routing and explicit operator direction; ask only for a material unresolved decision or explicit operator gate.
+2. For task-scoped review, put the feature/task identity, plan path and current section, spec path, and current \`specStale\`/\`specStaleReason\` from \`hive_status\` in the review packet; reviewers may query \`hive_status\` but get no task brief.
+3. Accept review feedback under Review Follow-Up before routing any needed work through this decision tree:
 
 #### Review Follow-Up Routing
 

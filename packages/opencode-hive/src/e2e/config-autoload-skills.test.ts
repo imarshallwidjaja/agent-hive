@@ -562,6 +562,8 @@ describe('config hook autoLoadSkills guidance', () => {
       expect(prompt, name).not.toContain(REVIEW_GROUNDING_PROMPT);
     }
 
+    const { REVIEW_INVESTIGATION_PROMPT } = await import('../agents/review-investigation.js');
+    const investigationReviewers = ['code-reviewer', 'code-docs', 'simplicity-reviewer', 'simplicity-docs'];
     for (const name of [
       'approach-advisor', 'advisor-design',
       'plan-reviewer', 'plan-strict',
@@ -570,6 +572,8 @@ describe('config hook autoLoadSkills guidance', () => {
       'vulnerability-reviewer', 'security-authz',
     ]) {
       expect(countOccurrences(getAgentPrompt(opencodeConfig, name), REVIEW_GROUNDING_PROMPT), name).toBe(1);
+      expect(countOccurrences(getAgentPrompt(opencodeConfig, name), REVIEW_INVESTIGATION_PROMPT), name)
+        .toBe(investigationReviewers.includes(name) ? 1 : 0);
     }
   });
 

@@ -21,8 +21,9 @@ import { VULNERABILITY_REVIEW_PRIMARY_PROMPT } from './vulnerability-review-prim
 import { VULNERABILITY_REVIEWER_PROMPT } from './vulnerability-reviewer';
 import { HIVE_SYSTEM_PROMPT } from '../hooks/system-hook';
 import { ENGINEERING_JUDGMENT_PROMPT } from './engineering-judgment';
-import { NATIVE_TASK_CONTINUATION_POLICY_PROMPT, PLAN_APPROVAL_SYNC_PROMPT, PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT, REVIEW_FOLLOW_UP_PROMPT, REVIEW_HANDOFF_PROMPT } from './process-judgment';
+import { NATIVE_TASK_CONTINUATION_POLICY_PROMPT, PLAN_APPROVAL_SYNC_PROMPT, PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT, REVIEW_FOLLOW_UP_PROMPT, REVIEW_HANDOFF_PROMPT, REVIEW_ROUTING_PROMPT } from './process-judgment';
 import { REVIEW_GROUNDING_PROMPT } from './review-grounding';
+import { REVIEW_INVESTIGATION_PROMPT } from './review-investigation';
 import { INTERRUPTED_WORKER_RECOVERY_PROMPT, TASK_REPORT_CONTRACT_PROMPT, TASK_REPORT_OWNERSHIP_PROMPT } from './task-reporting';
 
 // The runtime route footer injects this heading; the parenthetical form was removed from the footer.
@@ -158,7 +159,7 @@ describe('Process judgment prompt reach', () => {
     expect(SWARM_BEE_PROMPT).not.toContain('confidence ≈ 50%');
     expect(ARCHITECT_BEE_PROMPT).not.toContain('after every planning response');
     expect(ARCHITECT_BEE_PROMPT).toContain('Save material planning state to the draft when it needs to persist');
-    expect(SWARM_BEE_PROMPT).toContain('run paired correctness + simplicity review');
+    expect(SWARM_BEE_PROMPT).toContain('get paired correctness and simplicity review');
     expect(SWARM_BEE_PROMPT).not.toContain('recommend paired correctness + simplicity review');
     for (const prompt of [QUEEN_BEE_PROMPT, SWARM_BEE_PROMPT]) {
       expect(prompt).toContain('without automatic persistence or constraint registration');
@@ -286,6 +287,48 @@ describe('Process judgment prompt reach', () => {
   });
 });
 
+describe('Review routing contract', () => {
+  it('composes routing once immediately before handoffs only in execution primaries', () => {
+    for (const [name, prompt] of [
+      ['Hive', QUEEN_BEE_PROMPT],
+      ['Swarm', SWARM_BEE_PROMPT],
+      ['Hive Builder', HIVE_BUILDER_PROMPT],
+    ] as const) {
+      expect(countOccurrences(prompt, REVIEW_ROUTING_PROMPT), name).toBe(1);
+      expect(prompt, name).toContain(`${REVIEW_ROUTING_PROMPT}\n\n${REVIEW_HANDOFF_PROMPT}`);
+    }
+    for (const [name, prompt] of [
+      ['Architect', ARCHITECT_BEE_PROMPT],
+      ['Forager', FORAGER_BEE_PROMPT],
+      ['Dash Reviewer', DASH_REVIEWER_PROMPT],
+      ['Vulnerability Review Primary', VULNERABILITY_REVIEW_PRIMARY_PROMPT],
+      ['Code Reviewer', CODE_REVIEWER_PROMPT],
+      ['Simplicity Reviewer', SIMPLICITY_REVIEWER_PROMPT],
+      ['Plan Reviewer', PLAN_REVIEWER_PROMPT],
+      ['Vulnerability Reviewer', VULNERABILITY_REVIEWER_PROMPT],
+      ['Approach Advisor', APPROACH_ADVISOR_PROMPT],
+      ['Scout', SCOUT_BEE_PROMPT],
+      ['Hive Helper', HIVE_HELPER_PROMPT],
+    ] as const) expect(prompt, name).not.toContain(REVIEW_ROUTING_PROMPT);
+  });
+
+  it('sizes reviews, selects lenses, and dispatches reviewers with real leads', () => {
+    for (const term of [
+      'Review each settled implementation candidate before merge for ad-hoc lanes, and after each merged batch for feature execution',
+      'Source changes get paired correctness and simplicity review except for the narrow cases below',
+      'public contracts, persistence/state, branch/worktree/merge lifecycle, background scheduler semantics, auth/security, or broad prompt/tool behavior',
+      'also get the companion passes that configured reviewer descriptions call for',
+      'Small mechanical edits such as renames, formatting, or one-line fixes get one correctness review, as do bounded docs or tests, alone or batched, unless the diff spans broader workflow behavior. When unsure, pair',
+      'Verification-only gates with no source changes and clear command evidence skip extra review; record the evidence',
+      'using built-in `code-reviewer` or `simplicity-reviewer` when no configured derived description is a closer match',
+      'Escalate to xhigh reviewer variants only after the default reviewer identifies a named high-risk concern',
+      'Treat simplicity review as a post-implementation cleanup pass, not plan readiness, broad correctness review, architecture advice, or verification',
+      'Read the diff before dispatch so the review packet carries real leads',
+      'launch independent reviewers of the same candidate together',
+    ]) expect(REVIEW_ROUTING_PROMPT).toContain(term);
+  });
+});
+
 describe('Review follow-up contract', () => {
   it('composes one shared fragment only in execution primaries', () => {
     for (const [name, prompt] of [
@@ -313,6 +356,16 @@ describe('Review follow-up contract', () => {
       'required reviews of the settled candidate before remediation',
       'Consolidate overlapping root causes',
       'Reviewer severity and votes do not decide acceptance',
+      'Spot-check the quoted anchor of each material finding',
+      'When a material finding is contested, rests on an unverified premise, or would expand scope, and its evidence does not settle it',
+      'run the discriminating check it names or have a fresh reviewer session that did not raise it try to disprove it before spending remediation on it',
+      'Fold accepted in-scope minor corrections into the same remediation round',
+      'decline other optional suggestions with a one-line reason',
+      'Neither declined suggestions nor minor-only results reopen review',
+      'The primary confirms a minor-only fix against its fix diff instead of re-reviewing',
+      'Re-review accepted unresolved material work',
+      'in a fresh reviewer session given the re-review packet',
+      'no accepted material finding remains open, and every folded minor correction is confirmed against its fix diff',
       'counter-evidence for a rejected material concern',
       'complete fix diff',
       'affected callers, consumers, error paths, and state transitions',
@@ -385,6 +438,17 @@ describe('Review grounding contract', () => {
       'a child given only the repository may stop its instruction chain there',
       'rather than pasted instruction bodies',
       'the child still discovers the instructions that apply to its target',
+      'Focused context beats more context',
+      '**Purpose**: what the change must achieve',
+      '**Base**: the comparison commit or range, so removed code and behavior stay visible',
+      '**Boundaries**: contracts, interfaces, or persisted shapes',
+      'known consumers, sibling implementations, and owning tests as paths or symbols',
+      '**Lenses**: skills or project rules',
+      '**Leads**: concerns you noticed in the worker report or diff',
+      'each with an anchor and the question that would settle it, marked unverified',
+      "Leads direct attention without narrowing the reviewer's scope",
+      "**Evidence**: the worker's verification commands and results, stated deviations, and known risks",
+      "**Re-review**: prior findings with your decision on each, the prior review's Coverage, the fix range (prior..current candidate), and what the fix can affect",
     ]) expect(REVIEW_HANDOFF_PROMPT).toContain(term);
   });
 
@@ -426,6 +490,93 @@ describe('Review grounding contract', () => {
   });
 });
 
+describe('Review investigation contract', () => {
+  const implementationReviewers = [CODE_REVIEWER_PROMPT, SIMPLICITY_REVIEWER_PROMPT];
+
+  it('composes the method exactly once after grounding and before role lead sources', () => {
+    for (const prompt of implementationReviewers) {
+      expect(countOccurrences(prompt, REVIEW_INVESTIGATION_PROMPT)).toBe(1);
+      expect(prompt.indexOf(REVIEW_GROUNDING_PROMPT)).toBeLessThan(prompt.indexOf(REVIEW_INVESTIGATION_PROMPT));
+      expect(prompt.indexOf(REVIEW_INVESTIGATION_PROMPT)).toBeLessThan(prompt.indexOf('## Review Method\n'));
+    }
+    for (const prompt of [
+      PLAN_REVIEWER_PROMPT, APPROACH_ADVISOR_PROMPT, VULNERABILITY_REVIEWER_PROMPT,
+      DASH_REVIEWER_PROMPT, VULNERABILITY_REVIEW_PRIMARY_PROMPT, QUEEN_BEE_PROMPT,
+      ARCHITECT_BEE_PROMPT, SWARM_BEE_PROMPT, HIVE_BUILDER_PROMPT, FORAGER_BEE_PROMPT,
+      SCOUT_BEE_PROMPT, HIVE_HELPER_PROMPT,
+    ]) expect(prompt).not.toContain(REVIEW_INVESTIGATION_PROMPT);
+  });
+
+  it('orients before noticing leads, verifying, disproving, and reporting', () => {
+    const steps = ['Orient', 'Notice', 'Verify', 'Disprove', 'Report']
+      .map((step) => REVIEW_INVESTIGATION_PROMPT.indexOf(`**${step}.**`));
+    expect(steps.every((index) => index >= 0)).toBe(true);
+    expect(steps).toEqual([...steps].sort((a, b) => a - b));
+    for (const phrase of [
+      'Spend attention in proportion to consequence',
+      'state in one sentence what the change must achieve',
+      'contracts, interfaces, persisted shapes, or reader-facing behaviors',
+      'who consumes them',
+      'Orientation is done when you can name each boundary the change crosses',
+      'List leads before verifying any of them',
+      'A lead is a source anchor, the concern, its possible consequence, and the question that would settle it',
+      "Generate your own leads first from your Review Method's lead sources and the skim paths below, then add the packet's leads",
+      'Look hardest where human reviewers skim',
+      'Deletions: who depended on the removed code, behavior, or text?',
+      'Changed contracts: do callers and consumers still hold',
+      'serialized names, configuration keys, and other references a symbol search misses',
+      'Siblings: do parallel implementations, mirrors, docs, and tests',
+      'Silent behavior changes: defaults, ordering, error paths, cleanup, and retries',
+      'Domain rules: the instructions and skills from Review Grounding',
+      'Packet leads are unverified hunches. They direct attention; your scope stays whole',
+      'Rank leads by consequence and plausibility',
+      'call sites, tests, history, and contracts',
+      'each material lead is supported, cleared, or unresolved with the evidence that would settle it',
+    ]) expect(REVIEW_INVESTIGATION_PROMPT).toContain(phrase);
+  });
+
+  it('requires real paths, disproof, quoted evidence, and bounded coverage before reporting', () => {
+    for (const phrase of [
+      'Try to falsify each supported candidate before reporting it',
+      'the guard, the caller that never passes that input, the test that already pins the behavior',
+      'the contract or recorded decision that permits it',
+      'A hypothetical becomes a finding only when a real path reaches it',
+      'Keep only the candidates that survive',
+      'Your inspection is read-only (search, read, Git history)',
+      'Name any install, build, test, or reproduction that would settle a candidate, for the primary to run, unless your assignment explicitly authorizes you to run it',
+      'Anchor each finding to `file:line` with a short quote of the decisive line',
+      'its consequence, and what your disproof attempt checked',
+      'Report defects, requirement mismatches, and applicable-rule violations that the change introduces or depends on',
+      'Leave out style preferences no governing rule backs, alternatives you merely prefer, and minor pre-existing issues',
+      "Drift the change creates in an untouched sibling is the change's finding",
+      'Report a serious pre-existing defect you meet on a traced path at its severity, marked `(pre-existing)`, so the primary can route it separately',
+      'In your Coverage section, give one line per material lead you cleared, with the clearing evidence',
+      'name the areas you did not inspect',
+      'For a re-review, first confirm that each prior finding is closed',
+      'then investigate the fix delta and what it can affect',
+      'Leads cleared earlier stay cleared unless the fix diff reaches them',
+    ]) expect(REVIEW_INVESTIGATION_PROMPT).toContain(phrase);
+  });
+
+  it('exposes survived findings and cleared or uninspected leads in both output contracts', () => {
+    for (const prompt of implementationReviewers) {
+      const output = prompt.slice(prompt.indexOf('## Output Format'));
+      expect(output).toContain('Survived:');
+      expect(output).toContain('### Coverage');
+      expect(output).toContain('- Cleared: None | [anchor] - [lead] - [evidence that cleared it]');
+      const findingLines = output.split('\n').filter((line) => line.includes('[file:line]'));
+      expect(findingLines.length).toBe(4);
+      for (const line of findingLines) expect(line).toContain('[file:line] `quoted line`');
+      expect(output).toContain('- Not inspected: None |');
+    }
+    expect(CODE_REVIEWER_PROMPT).toContain('[file:line] `quoted line` - [issue and consequence]');
+    expect(CODE_REVIEWER_PROMPT).toContain('[discriminating check that would settle it]');
+    expect(SIMPLICITY_REVIEWER_PROMPT).toContain('consumer, requirement, external constraint, or failure mode');
+    expect(SIMPLICITY_REVIEWER_PROMPT).toContain('A simplification survives only when none does and behavior stays equivalent');
+    expect(SIMPLICITY_REVIEWER_PROMPT).not.toContain('### Not Worth Changing');
+  });
+});
+
 describe('Dash review investigation and challenge', () => {
   it('orders understanding, lead routing, independent challenge, and evidence-led synthesis', () => {
     const sequence = sectionBetween(DASH_REVIEWER_PROMPT, '## Review Sequence', '## Engineering Judgment');
@@ -436,6 +587,7 @@ describe('Dash review investigation and challenge', () => {
     expect(steps.every((index) => index >= 0)).toBe(true);
     expect(steps).toEqual([...steps].sort((a, b) => a - b));
     expect(sequence).toContain('relevant consumers or reader actions');
+    expect(sequence).toContain("Give each child the pointers from Review Handoffs. Implementation targets also get the review packet; other targets get the change's purpose and known evidence. Every child gets your leads and uncertainties plus the specific question");
     expect(sequence).toContain('reviewer is unavailable or fails');
     expect(sequence).toContain('operator explicitly waives it');
     expect(sequence).toContain('fresh reviewer session that did not propose it');
@@ -1542,13 +1694,6 @@ describe('Hive (Hybrid) prompt', () => {
       expect(QUEEN_BEE_PROMPT).toContain('Architect may consult the best-fit permitted approach-advisor');
     });
 
-    it('documents simplicity-reviewer routing by closest cleanup fit', () => {
-      expect(QUEEN_BEE_PROMPT).toContain('simplicity reviewer whose description best fits the cleanup lens');
-      expect(QUEEN_BEE_PROMPT).toContain('Use built-in `simplicity-reviewer` when no configured simplicity-reviewer-derived custom description is a closer match');
-      expect(QUEEN_BEE_PROMPT).toContain('task({ subagent_type: "<chosen-reviewer>"');
-      expect(QUEEN_BEE_PROMPT).toContain('post-implementation cleanup pass');
-    });
-
     it('tells hybrid planners to split broad research earlier', () => {
       expect(QUEEN_BEE_PROMPT).toContain('split broad research earlier');
     });
@@ -1950,31 +2095,13 @@ describe('Swarm (Orchestrator) prompt', () => {
       expect(SWARM_BEE_PROMPT).toContain('task({ subagent_type: "<chosen-researcher>"');
     });
 
-    it('documents code-reviewer routing by closest review lens', () => {
-      expect(SWARM_BEE_PROMPT).toContain('the code reviewer whose description best fits the review lens');
-      expect(SWARM_BEE_PROMPT).toContain('Use built-in `code-reviewer` when no configured code-reviewer-derived custom description is a closer match');
-      expect(SWARM_BEE_PROMPT).toContain('task({ subagent_type: "<chosen-reviewer>"');
-    });
-
     it('routes strategic planning advice through Architect', () => {
       expect(SWARM_BEE_PROMPT).toContain('include it in the Architect assignment');
       expect(SWARM_BEE_PROMPT).toContain('Architect may consult the best-fit permitted approach-advisor');
     });
 
-    it('documents simplicity-reviewer routing by closest cleanup fit', () => {
-      expect(SWARM_BEE_PROMPT).toContain('simplicity reviewer whose description best fits the cleanup lens');
-      expect(SWARM_BEE_PROMPT).toContain('Use built-in `simplicity-reviewer` when no configured simplicity-reviewer-derived custom description is a closer match');
-      expect(SWARM_BEE_PROMPT).toContain('task({ subagent_type: "<chosen-reviewer>"');
-      expect(SWARM_BEE_PROMPT).toContain('post-implementation cleanup pass');
-    });
-
-    it('routes post-batch review by risk tier without fixed specialist tables', () => {
-      expect(SWARM_BEE_PROMPT).toContain('Risk-Tier Review Routing');
-      expect(SWARM_BEE_PROMPT).toContain('public contracts, persistence/state, branch/worktree/merge lifecycle, background scheduler semantics, auth/security, or broad prompt/tool behavior');
-      expect(SWARM_BEE_PROMPT).toContain('bounded docs/tests');
-      expect(SWARM_BEE_PROMPT).toContain('verification-only gates');
-      expect(SWARM_BEE_PROMPT).toContain('named high-risk concern');
-      expect(SWARM_BEE_PROMPT).toContain('description best fits');
+    it('routes post-batch review through the shared Review Routing policy', () => {
+      expect(SWARM_BEE_PROMPT).toContain('apply Review Routing');
     });
 
     it('tells orchestrators to split broad research earlier', () => {
@@ -2658,13 +2785,8 @@ describe('trimmed OpenCode runtime prompts', () => {
 });
 
 describe('Hive orchestration review policy', () => {
-  it('routes post-batch review by risk tier without fixed specialist tables', () => {
-    expect(QUEEN_BEE_PROMPT).toContain('Risk-Tier Review Routing');
-    expect(QUEEN_BEE_PROMPT).toContain('public contracts, persistence/state, branch/worktree/merge lifecycle, background scheduler semantics, auth/security, or broad prompt/tool behavior');
-    expect(QUEEN_BEE_PROMPT).toContain('bounded docs/tests');
-    expect(QUEEN_BEE_PROMPT).toContain('verification-only gates');
-    expect(QUEEN_BEE_PROMPT).toContain('named high-risk concern');
-    expect(QUEEN_BEE_PROMPT).toContain('description best fits');
+  it('routes post-batch review through the shared Review Routing policy', () => {
+    expect(QUEEN_BEE_PROMPT).toContain('Apply Review Routing');
   });
 });
 
@@ -2684,6 +2806,10 @@ describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
     expect(HIVE_BUILDER_PROMPT).toContain('inspect');
     expect(HIVE_BUILDER_PROMPT).toContain('delegate');
     expect(HIVE_BUILDER_PROMPT).toContain('verify');
+    expect(HIVE_BUILDER_PROMPT).toContain('7. **Review**');
+    expect(HIVE_BUILDER_PROMPT).toContain('8. **Complete**');
+    expect(HIVE_BUILDER_PROMPT).toContain('delegate, verify, review, and complete');
+    expect(HIVE_BUILDER_PROMPT).toContain("until Review Follow-Up's stop condition holds");
     expect(HIVE_BUILDER_PROMPT).toContain('commit');
     expect(HIVE_BUILDER_PROMPT).toContain('merge');
     expect(HIVE_BUILDER_PROMPT).toContain('cleanup');

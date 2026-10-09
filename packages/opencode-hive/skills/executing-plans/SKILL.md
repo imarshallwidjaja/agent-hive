@@ -73,17 +73,11 @@ When batch complete:
 
 ### Step 4.5: Post-Batch Code Review
 
-After the batch report, apply Risk-Tier Review Routing and explicit operator direction. Ask only when a material review-scope or authority decision remains unresolved. No agent may silently skip required configured review targets.
+After the batch report, apply the primary's Review Routing and explicit operator direction. Ask only when a material review-scope or authority decision remains unresolved. No agent may silently skip required configured review targets.
 
-- High-risk surfaces — public contracts, persistence/state, branch/worktree/merge lifecycle, background scheduler semantics, auth/security, or broad prompt/tool behavior — should get paired correctness + simplicity review.
-- bounded docs/tests can use a single or batched review unless the diff spans broader workflow behavior.
-- verification-only gates with no source changes and clear command evidence can skip extra review by default.
-- Escalate to xhigh reviewer variants only after the default reviewer identifies a named high-risk concern.
+Give each reviewer the review packet from the primary's Review Handoffs. For task-scoped review, include feature/task identity, plan path and current section, spec path, and current `specStale`/`specStaleReason` from `hive_status`; reviewers may query status but receive no task brief.
 
-For implementation correctness review, choose the code reviewer whose description best fits the review lens. Use built-in `code-reviewer` when no configured code-reviewer-derived custom description is a closer match. For task-scoped review, supply feature/task identity, plan path and current section, spec path, and current `specStale`/`specStaleReason` from `hive_status`; reviewers may query status but receive no task brief. Then run `task({ subagent_type: "<chosen-reviewer>", prompt: "Review implementation changes from the latest batch against the supplied task references." })`.
-For simplicity review, choose the simplicity reviewer whose description best fits the cleanup lens. Use built-in `simplicity-reviewer` when no configured simplicity-reviewer-derived custom description is a closer match. Treat it as a post-implementation cleanup pass, not plan readiness, broad correctness review, architecture advice, or verification.
-
-Collect required reviews on the settled candidate and assess findings before routing work. Consolidate overlapping root causes, accept supported material corrections, identify material unanswered questions, and leave optional suggestions to deliberate in-scope judgment. Keep required reviewer participation; re-review only affected coverage or unmet obligations, and stop once accepted blockers and questions are resolved with applicable evidence. Route accepted work through this decision tree before continuing:
+Apply the primary's Review Follow-Up before remediation and closure. Route accepted work through this decision tree before continuing:
 
 | Feedback type | Action |
 |---------------|--------|
