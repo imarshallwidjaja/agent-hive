@@ -71,7 +71,7 @@ import { HIVE_COMMANDS } from './commands/registry.js';
 import { hiveCommandRenderers } from './commands/renderers.js';
 import { isReadOnlyCouncilEligibleBase } from './commands/council.js';
 import type { HiveCommandAgentDescriptor, HiveCommandContext } from './commands/types.js';
-import { createTaskTraceTools, injectTaskTraceHint, isDirectChildSession, TASK_TRACE_SUMMARIZER_AGENT } from './task-trace.js';
+import { createTaskTraceTools, injectTaskTraceHint, isDirectChildSession, TASK_TRACE_SUMMARIZER_AGENT, TASK_TRACE_SUMMARIZER_PROMPT } from './task-trace.js';
 import { composeTaskBrief, TASK_BRIEF_BLOCK } from './task-brief.js';
 
 type ToolContext = { sessionID?: string; agent?: string };
@@ -1013,7 +1013,7 @@ const plugin: Plugin = async (ctx) => {
         }
         return [name, { ...existing, permission: { ...permission, 'hive_*': 'deny', task: 'deny', question: 'deny', skill: 'allow', ...(name === 'explore' ? { edit: 'deny' } : {}) } }];
       }));
-      mutableConfig.agent = { ...(mutableConfig.agent ?? {}), ...nativeAgents, ...agents, [TASK_TRACE_SUMMARIZER_AGENT]: { mode: 'primary', hidden: true, permission: { '*': 'deny' }, prompt: 'Summarize only supplied non-reasoning session evidence as strict JSON.' } };
+      mutableConfig.agent = { ...(mutableConfig.agent ?? {}), ...nativeAgents, ...agents, [TASK_TRACE_SUMMARIZER_AGENT]: { mode: 'primary', hidden: true, temperature: taskTraceConfig.temperature ?? 0, permission: { '*': 'deny' }, prompt: TASK_TRACE_SUMMARIZER_PROMPT } };
       const commandConfig = Object.fromEntries(await Promise.all(HIVE_COMMANDS.map(async (command) => [command.key, { description: command.description, ...('agent' in command ? { agent: command.agent } : {}), template: await hiveCommandRenderers[command.key]('$ARGUMENTS', createCommandContext()) }])));
       mutableConfig.command = { ...(mutableConfig.command ?? {}), ...commandConfig };
       mutableConfig.default_agent = configService.get().agentMode === 'unified' ? 'hive-master' : 'architect-planner';

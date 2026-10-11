@@ -79,20 +79,47 @@ function semanticReduction(stepCount: number, overrides: Record<string, unknown>
   };
 }
 
+// The only truthful reduction of steps whose source carries neither observed nor plaintext reasoning content.
+function noEvidenceReduction(stepCount: number) {
+  return semanticReduction(stepCount, {
+    phases: balancedRanges(stepCount).map(([start, end]) => ({
+      range: [start, end],
+      title: `Source steps ${start}-${end}`,
+      intent: null,
+      actions: [],
+      findings: [],
+      outcome: null,
+      unresolved: [],
+      source_steps: sourceSteps(start, end),
+    })),
+    completed: [],
+  });
+}
+
+// The host's prompt response: an assistant message record plus its parts.
+function assistantInfo(overrides: Record<string, unknown> = {}) {
+  return { role: 'assistant', providerID: 'observed-provider', modelID: 'observed-model', variant: 'observed-variant', finish: 'stop', ...overrides };
+}
+
 function semanticMap(request: any, cardOverrides: Record<number, Record<string, unknown>> = {}) {
+  const steps: number[] = [...new Set(request.fragments.map((fragment: any) => Number(fragment.step)))] as number[];
   return {
     kind: 'map',
     range: request.range,
-    cards: [...new Set<number>(request.fragments.map((fragment: any) => Number(fragment.step)))].map((step) => ({
-      step,
-      intent: step === 1 ? 'Understand the delegated task.' : 'Advance the delegated implementation.',
-      actions: [`Handled source step ${step}.`],
-      findings: [`Recovered the semantic result of source step ${step}.`],
-      outcome: `Source step ${step} completed.`,
-      unresolved: [],
-      basis: request.fragments.find((fragment: any) => fragment.step === step).source.basis,
-      ...cardOverrides[step],
-    })),
+    cards: steps.map((step) => {
+      const source = request.fragments.find((fragment: any) => fragment.step === step).source;
+      const empty = source.observed === undefined && source.reasoning === undefined;
+      return {
+        step,
+        intent: empty ? null : step === 1 ? 'Understand the delegated task.' : 'Advance the delegated implementation.',
+        actions: empty ? [] : [`Handled source step ${step}.`],
+        findings: empty ? [] : [`Recovered the semantic result of source step ${step}.`],
+        outcome: empty ? null : `Source step ${step} completed.`,
+        unresolved: [],
+        basis: source.basis,
+        ...cardOverrides[step],
+      };
+    }),
   };
 }
 
@@ -180,24 +207,12 @@ function clientFor(messages: unknown[], options: {
         && Array.isArray((supplied as { parts?: unknown }).parts)
         && !('kind' in (supplied as object))
       ) {
-        return {
-          data: {
-            model: { providerID: 'observed-provider', modelID: 'observed-model' },
-            variant: 'observed-variant',
-            ...(supplied as Record<string, unknown>),
-          },
-        };
+        return { data: { info: assistantInfo(), ...(supplied as Record<string, unknown>) } };
       }
       const response = supplied ?? (request.kind === 'map'
         ? semanticMap(request)
         : { kind: 'reduce', semantic: semanticReduction(request.step_count) });
-      return {
-        data: {
-          model: { providerID: 'observed-provider', modelID: 'observed-model' },
-          variant: 'observed-variant',
-          parts: [{ type: 'text', text: JSON.stringify(response) }],
-        },
-      };
+      return { data: { info: assistantInfo(), parts: [{ type: 'text', text: JSON.stringify(response) }] } };
     },
     abort: async (input: any) => {
       calls.push({ method: 'abort', input });
@@ -215,7 +230,7 @@ function clientFor(messages: unknown[], options: {
       calls.push({ method: 'providers', input });
       return await options.providers?.(input) ?? {
         data: {
-          providers: [{ id: 'requested', models: { model: { limit: { context: 10_000, output: 1_000 } } } }],
+          providers: [{ id: 'requested', models: { model: { limit: { context: 10_000, output: 1_000 }, variants: { high: {} } } } }],
         },
       };
     },
@@ -1217,7 +1232,11 @@ describe('task trace semantic recovery', () => {
   it('maps all 59 source steps into meaningful coverage-gated phases and returns only the semantic projection', async () => {
     const source = realisticTrace();
     const forensic = await executeRaw(toolsFor(clientFor(source)), 'hive_task_trace', { task_id: 'child', recovery: false });
-    const setup = clientFor(source);
+    const setup = clientFor(source, {
+      providers: () => ({
+        data: { providers: [{ id: 'requested', models: { model: { limit: { context: 50_000, output: 1_000 }, variants: { high: {} } } } }] },
+      }),
+    });
     const serialized = await executeRaw(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true });
     const result = JSON.parse(serialized);
     const requests = setup.calls.filter((call) => call.method === 'prompt').map((call) => JSON.parse(call.input.body.parts[0].text));
@@ -1358,7 +1377,7 @@ describe('task trace semantic recovery', () => {
     const setup = clientFor(source, {
       providers: () => ({
         data: {
-          providers: [{ id: 'requested', models: { model: { limit: { context: 500_000, output: 16_000 } } } }],
+          providers: [{ id: 'requested', models: { model: { limit: { context: 500_000, output: 16_000 }, variants: { high: {} } } } }],
         },
       }),
     });
@@ -1383,7 +1402,7 @@ describe('task trace semantic recovery', () => {
     const setup = clientFor(source, {
       providers: () => ({
         data: {
-          providers: [{ id: 'requested', models: { model: { limit: { context: 500_000, input: 20_000, output: 16_000 } } } }],
+          providers: [{ id: 'requested', models: { model: { limit: { context: 500_000, input: 20_000, output: 16_000 }, variants: { high: {} } } } }],
         },
       }),
       prompt: (request) => request.kind === 'map'
@@ -1443,8 +1462,8 @@ describe('task trace semantic recovery', () => {
     expect(maps.every((request) => Buffer.byteLength(JSON.stringify(request), 'utf8') <= 20_480)).toBe(true);
     expect(requests.filter((request) => request.kind === 'reduce')).toHaveLength(0);
     expect(result.recovery).toMatchObject({ status: 'partial', cards_source: 'fallback', phases_source: 'fallback' });
-    expect(result.recovery.failures).toContainEqual({ stage: 'map', range: [1, 1], reasons: ['summarizer_unavailable'] });
-    expect(result.recovery.failures).toContainEqual({ stage: 'reduce', reasons: ['no_successful_map_ranges'] });
+    expect(result.recovery.failures).toContainEqual(expect.objectContaining({ stage: 'map', range: [1, 1], reasons: ['summarizer_unavailable'] }));
+    expect(result.recovery.failures).toContainEqual(expect.objectContaining({ stage: 'reduce', reasons: ['no_successful_map_ranges'] }));
     expect(result.semantic.phases).toHaveLength(1);
     expect(result.semantic.phases[0]).toMatchObject({ range: [1, 1], source_steps: [1], basis: 'observed' });
     expect(result.semantic.safest_next_action).toEqual({ action: 'inspect', context: null, source_steps: [1] });
@@ -1466,7 +1485,7 @@ describe('task trace semantic recovery', () => {
       .find((request) => request.kind === 'reduce');
 
     expect(result.recovery).toMatchObject({ status: 'partial', cards_source: 'mixed', phases_source: 'generated' });
-    expect(result.recovery.failures).toContainEqual({ stage: 'map', range: [1, 2], reasons: ['invalid_map_output'] });
+    expect(result.recovery.failures).toContainEqual(expect.objectContaining({ stage: 'map', range: [1, 2], reasons: ['invalid_map_output'] }));
     expect(reducer.cards.map((card: any) => card.source)).toEqual(['fallback', 'generated']);
     expect(reducer.cards[0].findings).toEqual(['Observed source result one.']);
     expect(result.semantic.safest_next_action).toEqual({ action: 'inspect', context: null, source_steps: [1, 2] });
@@ -1538,21 +1557,182 @@ describe('task trace semantic recovery', () => {
         name: 'observed from opaque-only source',
         parts: [{ type: 'reasoning', metadata: { encrypted: 'opaque' } }],
         basis: 'observed',
-        cardsSource: 'fallback',
+        cardsSource: 'generated',
+        evidenceFree: true,
       },
     ] as const;
 
     for (const variant of cases) {
+      const evidenceFree = 'evidenceFree' in variant;
       const setup = clientFor([message(variant.name, 'assistant', [...variant.parts])], {
         prompt: (request) => request.kind === 'map'
           ? semanticMap(request, { 1: { basis: variant.basis } })
-          : undefined,
+          : evidenceFree ? { kind: 'reduce', semantic: noEvidenceReduction(1) } : undefined,
       });
       const result = await execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true });
 
       expect(result.recovery.cards_source, variant.name).toBe(variant.cardsSource);
       expect(result.recovery.status, variant.name).toBe(variant.cardsSource === 'generated' ? 'complete' : 'partial');
-      expect(result.semantic.safest_next_action.action, variant.name).toBe(variant.cardsSource === 'generated' ? 'review_completed_work' : 'inspect');
+      expect(result.semantic.safest_next_action.action, variant.name)
+        .toBe(variant.cardsSource === 'generated' && !evidenceFree ? 'review_completed_work' : 'inspect');
+      if (evidenceFree) expect(result.semantic).toMatchObject({ completed: [], unfinished: [] });
+    }
+  });
+
+  it('rejects completed and unfinished claims that cite only steps without observed or plaintext reasoning evidence', async () => {
+    const opaque = (id: string) => message(id, 'assistant', [{ type: 'reasoning', metadata: { encrypted: 'opaque' } }]);
+    const variants = [
+      {
+        name: 'completed claim on an evidence-free trace',
+        source: [opaque('m1')],
+        semantic: semanticReduction(1),
+      },
+      {
+        name: 'unfinished claim on an evidence-free trace',
+        source: [opaque('m1')],
+        semantic: semanticReduction(1, {
+          completed: [],
+          unfinished: [{ claim: 'Remaining implementation work.', source_steps: [1] }],
+          safest_next_action: { action: 'launch_fresh_task', context: 'Finish the remaining work.', source_steps: [1] },
+        }),
+      },
+      {
+        name: 'completed claim citing only the empty step of a substantive trace',
+        source: [opaque('m1'), message('m2', 'assistant', [{ type: 'text', text: 'visible evidence' }])],
+        semantic: semanticReduction(2, { completed: [{ claim: 'Implemented the requested change.', source_steps: [1] }] }),
+        fallbackSteps: [2],
+      },
+    ];
+
+    for (const variant of variants) {
+      const setup = clientFor(variant.source, {
+        prompt: (request) => request.kind === 'reduce' ? { kind: 'reduce', semantic: variant.semantic } : undefined,
+      });
+      const result = await execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true });
+
+      expect(result.recovery, variant.name).toMatchObject({ status: 'partial', cards_source: 'generated', phases_source: 'fallback' });
+      expect(result.recovery.failures, variant.name).toContainEqual(expect.objectContaining({
+        stage: 'reduce',
+        reasons: ['invalid_reducer_output'],
+        diagnostics: [expect.objectContaining({ code: 'claim_rule' })],
+      }));
+      const fallbackSteps = 'fallbackSteps' in variant ? variant.fallbackSteps : [];
+      expect(result.semantic.completed.map((claim: { source_steps: number[] }) => claim.source_steps), variant.name)
+        .toEqual(fallbackSteps.map((step) => [step]));
+      expect(result.semantic.unfinished, variant.name).toEqual([]);
+      expect(result.semantic.safest_next_action.action, variant.name).toBe('inspect');
+      expect(JSON.stringify(result.semantic), variant.name).not.toContain('Implemented the requested change');
+    }
+  });
+
+  it('accepts a claim that cites an empty step together with a substantive one and keeps healthy-trace guidance', async () => {
+    const setup = clientFor([
+      message('m1', 'assistant', [{ type: 'reasoning', metadata: { encrypted: 'opaque' } }]),
+      message('m2', 'assistant', [{ type: 'text', text: 'visible evidence' }]),
+    ]);
+    const result = await execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true });
+
+    expect(result.recovery).toMatchObject({ status: 'complete', cards_source: 'generated', phases_source: 'generated' });
+    expect(result.semantic.completed).toEqual([{ claim: 'Implemented the requested change.', source_steps: [1, 2] }]);
+    expect(result.semantic.safest_next_action.action).toBe('review_completed_work');
+  });
+
+  it('lets only substantive assistant steps support completed claims while a user request can still support unfinished ones', async () => {
+    const request = message('instruction', 'user', [{ type: 'text', text: 'Read the README.' }]);
+    const opaque = message('m2', 'assistant', [{ type: 'reasoning', metadata: { encrypted: 'opaque' } }]);
+    const answer = message('m2', 'assistant', [{ type: 'text', text: 'The README describes the project.' }]);
+    const honestMap = { 1: { intent: 'Read the README.', actions: [], findings: [], outcome: null } };
+    const cases = [
+      {
+        name: 'hostile completed claim citing only the user request, fallback must not republish its mapper outcome',
+        source: [request, opaque],
+        completionSteps: [],
+        semantic: semanticReduction(2, { completed: [{ claim: 'Implemented the requested change.', source_steps: [1] }] }),
+        rejected: true,
+        completed: [],
+        action: 'inspect',
+      },
+      {
+        name: 'hostile completed claim citing the user request next to an honest empty assistant step',
+        source: [request, opaque],
+        map: honestMap,
+        completionSteps: [],
+        semantic: semanticReduction(2, { completed: [{ claim: 'Implemented the requested change.', source_steps: [1, 2] }] }),
+        rejected: true,
+        completed: [],
+        action: 'inspect',
+      },
+      {
+        name: 'honest empty claims keep the context but never earn review guidance',
+        source: [request, opaque],
+        map: honestMap,
+        completionSteps: [],
+        semantic: noEvidenceReduction(2),
+        completed: [],
+        action: 'inspect',
+      },
+      {
+        name: 'unfinished claim citing the user request is retained',
+        source: [request, opaque],
+        map: honestMap,
+        completionSteps: [],
+        semantic: semanticReduction(2, {
+          completed: [],
+          unfinished: [{ claim: 'The README was not read.', source_steps: [1] }],
+          safest_next_action: { action: 'launch_fresh_task', context: 'Read the README.', source_steps: [1] },
+        }),
+        completed: [],
+        unfinished: ['The README was not read.'],
+        action: 'inspect',
+      },
+      {
+        name: 'completed claim citing only the user request beside substantive assistant work',
+        source: [request, answer],
+        completionSteps: [2],
+        semantic: semanticReduction(2, { completed: [{ claim: 'Implemented the requested change.', source_steps: [1] }] }),
+        rejected: true,
+        completed: [[2]],
+        action: 'inspect',
+      },
+      {
+        name: 'completed claim citing the substantive assistant step keeps review guidance',
+        source: [request, answer],
+        completionSteps: [2],
+        semantic: semanticReduction(2, { completed: [{ claim: 'Described the README.', source_steps: [1, 2] }] }),
+        completed: [[1, 2]],
+        action: 'review_completed_work',
+      },
+    ];
+
+    for (const variant of cases) {
+      const setup = clientFor(variant.source, {
+        prompt: (stage) => stage.kind === 'map'
+          ? semanticMap(stage, 'map' in variant ? variant.map : {})
+          : { kind: 'reduce', semantic: variant.semantic },
+      });
+      const result = await execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true });
+      const reducer = setup.calls.filter((call) => call.method === 'prompt')
+        .map((call) => JSON.parse(call.input.body.parts[0].text))
+        .find((stage) => stage.kind === 'reduce');
+
+      if ('rejected' in variant) {
+        expect(result.recovery, variant.name).toMatchObject({ status: 'partial', cards_source: 'generated', phases_source: 'fallback' });
+        expect(result.recovery.failures, variant.name).toContainEqual(expect.objectContaining({
+          stage: 'reduce',
+          reasons: ['invalid_reducer_output'],
+          diagnostics: [expect.objectContaining({ code: 'claim_rule' })],
+        }));
+      } else {
+        expect(result.recovery, variant.name).toMatchObject({ status: 'complete', cards_source: 'generated', phases_source: 'generated' });
+      }
+      expect(result.semantic.completed.map((claim: { source_steps: number[] }) => claim.source_steps), variant.name).toEqual(variant.completed);
+      expect(result.semantic.unfinished.map((claim: { claim: string }) => claim.claim), variant.name).toEqual('unfinished' in variant ? variant.unfinished : []);
+      expect(result.semantic.safest_next_action.action, variant.name).toBe(variant.action);
+      if (variant.completionSteps.length === 0) {
+        expect(JSON.stringify(result.semantic), variant.name).not.toContain('Implemented the requested change');
+        expect(JSON.stringify(result.semantic), variant.name).not.toContain('Source step 1 completed');
+      }
+      expect(reducer.completion_steps, variant.name).toEqual(variant.completionSteps);
     }
   });
 
@@ -1567,7 +1747,7 @@ describe('task trace semantic recovery', () => {
     const result = await execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true });
 
     expect(result.recovery).toMatchObject({ status: 'partial', cards_source: 'fallback' });
-    expect(result.recovery.failures).toContainEqual({ stage: 'map', range: [1, 1], reasons: ['invalid_map_output'] });
+    expect(result.recovery.failures).toContainEqual(expect.objectContaining({ stage: 'map', range: [1, 1], reasons: ['invalid_map_output'] }));
     expect(result.semantic.phases[0].actions).toEqual(['read [completed] x1']);
   });
 
@@ -1699,7 +1879,12 @@ describe('task trace semantic recovery', () => {
 
     expect(peak).toBe(4);
     expect(result.recovery.failures.filter((entry: any) => entry.stage === 'map')).toEqual(
-      requests.map((request) => ({ stage: 'map', range: request.range, reasons: ['invalid_map_output'] })),
+      requests.map((request) => ({
+        stage: 'map',
+        range: request.range,
+        reasons: ['invalid_map_output'],
+        diagnostics: [{ code: 'card_count_mismatch', finish: 'stop', text_parts: 1, bytes: expect.any(Number) }],
+      })),
     );
     expect(result.recovery.cards_source).toBe('fallback');
   });
@@ -1786,7 +1971,7 @@ describe('task trace semantic recovery', () => {
         await Promise.resolve();
       }
       const result = await execution;
-      expect(result.recovery.failures).toContainEqual({ stage: 'reduce', reasons: ['summarizer_timeout'] });
+      expect(result.recovery.failures).toContainEqual(expect.objectContaining({ stage: 'reduce', reasons: ['summarizer_timeout'] }));
       expect(now + 20_000).toBeLessThan(240_000);
     } finally {
       Date.now = originalNow;
@@ -1873,7 +2058,7 @@ describe('task trace semantic recovery', () => {
           now = 100_000;
           return {
             data: {
-              providers: [{ id: 'requested', models: { model: { limit: { context: 10_000, output: 1_000 } } } }],
+              providers: [{ id: 'requested', models: { model: { limit: { context: 10_000, output: 1_000 }, variants: { high: {} } } } }],
             },
           };
         },
@@ -1934,7 +2119,7 @@ describe('task trace semantic recovery', () => {
           now = 179_001;
           return {
             data: {
-              providers: [{ id: 'requested', models: { model: { limit: { context: 10_000, output: 1_000 } } } }],
+              providers: [{ id: 'requested', models: { model: { limit: { context: 10_000, output: 1_000 }, variants: { high: {} } } } }],
             },
           };
         },
@@ -2092,7 +2277,7 @@ describe('task trace semantic recovery', () => {
       const result = await execution;
 
       expect(result.recovery).toMatchObject({ status: 'partial', cards_source: 'generated', phases_source: 'fallback' });
-      expect(result.recovery.failures).toContainEqual({ stage: 'reduce', reasons: ['summarizer_timeout'] });
+      expect(result.recovery.failures).toContainEqual(expect.objectContaining({ stage: 'reduce', reasons: ['summarizer_timeout'] }));
       expect(result.semantic.phases).toEqual(expect.arrayContaining([expect.objectContaining({ source_steps: [1] })]));
     } finally {
       Date.now = originalNow;
@@ -2239,7 +2424,7 @@ describe('task trace semantic recovery', () => {
       const result = await execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true });
 
       expect(result.recovery).toMatchObject({ status: 'partial', cards_source: 'generated', phases_source: 'fallback' });
-      expect(result.recovery.failures).toContainEqual({ stage: 'reduce', reasons: ['invalid_phase_coverage'] });
+      expect(result.recovery.failures).toContainEqual(expect.objectContaining({ stage: 'reduce', reasons: ['invalid_phase_coverage'] }));
       expect(result.semantic.phases.flatMap((entry: any) => sourceSteps(entry.range[0], entry.range[1]))).toEqual(sourceSteps(1, variant.stepCount));
       expect(result.semantic.safest_next_action).toEqual({ action: 'inspect', context: null, source_steps: sourceSteps(1, variant.stepCount) });
     }
@@ -2282,7 +2467,11 @@ describe('task trace semantic recovery', () => {
       message('m1', 'assistant', [{ type: 'reasoning', metadata: { providerItemId: 'opaque-id', encrypted: 'ciphertext' } }]),
       message('m2', 'assistant', [{ type: 'text', text: 'Visible peer step.' }]),
     ];
-    const setup = clientFor(source);
+    const setup = clientFor(source, {
+      prompt: (request) => request.kind === 'map'
+        ? semanticMap(request, { 1: { intent: 'Invented intent.', actions: ['Invented action.'], findings: ['Invented finding.'], outcome: 'Invented outcome.' } })
+        : undefined,
+    });
     const result = await execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true });
     const mapRequest = setup.calls.filter((call) => call.method === 'prompt')
       .map((call) => JSON.parse(call.input.body.parts[0].text))
@@ -2295,7 +2484,7 @@ describe('task trace semantic recovery', () => {
     expect(mapRequest.fragments[0].source).toMatchObject({ basis: 'observed', opaque_reasoning_parts: 1 });
     expect(mapRequest.fragments[0].source).not.toHaveProperty('reasoning');
     expect(result.recovery).toMatchObject({ status: 'partial', cards_source: 'mixed', phases_source: 'generated' });
-    expect(result.recovery.failures).toContainEqual({ stage: 'map', range: [1, 2], reasons: ['invalid_map_output'] });
+    expect(result.recovery.failures).toContainEqual(expect.objectContaining({ stage: 'map', range: [1, 2], reasons: ['invalid_map_output'] }));
     expect(reducer.cards.map((card: any) => card.source)).toEqual(['fallback', 'generated']);
     expect(reducer.cards[0]).toMatchObject({ intent: null, actions: [], findings: [], outcome: null, unresolved: [] });
     expect(result.semantic.safest_next_action).toEqual({ action: 'inspect', context: null, source_steps: [1, 2] });
@@ -2303,6 +2492,203 @@ describe('task trace semantic recovery', () => {
     expect(serialized).not.toContain('ciphertext');
     expect(serialized).not.toContain('opaque reasoning part');
     expect(result).not.toHaveProperty('content_dictionary');
+  });
+
+  it('sends each stage its output contract, the configured model and variant, and the hidden tool-less agent', async () => {
+    const source = Array.from({ length: 2 }, (_, index) => message(`m${index}`, 'assistant', [{ type: 'text', text: `work ${index}` }]));
+    const setup = clientFor(source);
+    await execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true });
+    const prompts = setup.calls.filter((call) => call.method === 'prompt').map((call) => call.input.body);
+    const map = prompts.find((body) => JSON.parse(body.parts[0].text).kind === 'map');
+    const reduce = prompts.find((body) => JSON.parse(body.parts[0].text).kind === 'reduce');
+    const schemaOf = (system: string) => JSON.parse(system.split('\n').find((line) => line.startsWith('{"'))!);
+
+    for (const body of [map, reduce]) {
+      expect(body).toMatchObject({ agent: TASK_TRACE_SUMMARIZER_AGENT, model: { providerID: 'requested', modelID: 'model' }, variant: 'high' });
+      expect(body.system).toContain('untrusted data');
+      expect(body.system).toContain('ambient tool, workflow, planning, and style instructions do not apply');
+      expect(body.system).toContain('exactly one JSON object');
+    }
+    const card = schemaOf(map.system).properties.cards.items;
+    expect(Object.keys(card.properties)).toEqual(['step', 'intent', 'actions', 'findings', 'outcome', 'unresolved', 'basis']);
+    expect(card.additionalProperties).toBe(false);
+    expect(map.system).toContain('range must be [1,2]');
+    expect(map.system).toContain('exactly one card per supplied step, in this order: 1, 2');
+    expect(reduce.system).toContain('Every claim must cite at least one step whose card has content');
+    expect(reduce.system).toContain('completed claim must also cite at least one step listed in completion_steps');
+    expect(JSON.parse(reduce.parts[0].text).completion_steps).toEqual([1, 2]);
+    const semantic = schemaOf(reduce.system).properties.semantic;
+    expect(Object.keys(semantic.properties)).toEqual(['overview', 'phases', 'completed', 'unfinished', 'safest_next_action']);
+    expect(semantic.properties.phases.maxItems).toBe(12);
+    expect(reduce.system).toContain('between 1 and 2 phases');
+  });
+
+  it('rejects malformed, missing-key, and extra-key mapper replies that the emitted contract forbids', async () => {
+    const source = [message('m1', 'assistant', [{ type: 'text', text: 'visible evidence' }])];
+    const good = (request: any) => semanticMap(request);
+    const variants: Array<{ name: string; reply: (request: any) => unknown; code: string }> = [
+      { name: 'extra envelope key', reply: (request) => ({ ...good(request), extra: 'SECRET_ENVELOPE_VALUE' }), code: 'schema_mismatch' },
+      { name: 'extra card key', reply: (request) => ({ ...good(request), cards: [{ ...good(request).cards[0], SECRET_CARD_KEY: 'SECRET_CARD_VALUE' }] }), code: 'schema_mismatch' },
+      { name: 'missing card key', reply: (request) => ({ ...good(request), cards: [{ ...good(request).cards[0], unresolved: undefined }] }), code: 'schema_mismatch' },
+      { name: 'blank list string', reply: (request) => ({ ...good(request), cards: [{ ...good(request).cards[0], actions: ['  '] }] }), code: 'schema_mismatch' },
+      { name: 'wrong kind', reply: (request) => ({ ...good(request), kind: 'reduce' }), code: 'schema_mismatch' },
+      { name: 'wrong range', reply: (request) => ({ ...good(request), range: [1, 5] }), code: 'range_mismatch' },
+      { name: 'missing card', reply: (request) => ({ ...good(request), cards: [] }), code: 'card_count_mismatch' },
+    ];
+
+    for (const variant of variants) {
+      const setup = clientFor(source, { prompt: (request) => request.kind === 'map' ? variant.reply(request) : undefined });
+      const result = await execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true });
+      const failure = result.recovery.failures.find((entry: any) => entry.stage === 'map');
+
+      expect(failure, variant.name).toMatchObject({ reasons: ['invalid_map_output'], diagnostics: [{ code: variant.code }] });
+      expect(result.recovery.cards_source, variant.name).toBe('fallback');
+      expect(JSON.stringify(result), variant.name).not.toContain('SECRET_');
+    }
+  });
+
+  it('keeps valid sibling cards when one mapper card is malformed', async () => {
+    const source = [
+      message('m1', 'assistant', [{ type: 'text', text: 'first visible evidence' }]),
+      message('m2', 'assistant', [{ type: 'text', text: 'second visible evidence' }]),
+    ];
+    const setup = clientFor(source, {
+      prompt: (request) => {
+        if (request.kind !== 'map') return undefined;
+        const reply = semanticMap(request);
+        return { ...reply, cards: [{ ...reply.cards[0], SECRET_KEY: 'x' }, reply.cards[1]] };
+      },
+    });
+    const result = await execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true });
+    const reducer = setup.calls.filter((call) => call.method === 'prompt')
+      .map((call) => JSON.parse(call.input.body.parts[0].text))
+      .find((request) => request.kind === 'reduce');
+
+    expect(result.recovery).toMatchObject({ status: 'partial', cards_source: 'mixed', phases_source: 'generated' });
+    expect(result.recovery.failures).toEqual([
+      { stage: 'map', range: [1, 2], reasons: ['invalid_map_output'], diagnostics: [{ code: 'schema_mismatch', schema_code: 'unrecognized_keys', step: 1 }] },
+    ]);
+    expect(reducer.cards.map((card: any) => card.source)).toEqual(['fallback', 'generated']);
+    expect(JSON.stringify(result)).not.toContain('SECRET_KEY');
+  });
+
+  it('lets a provider error defeat the reply whether or not it carries valid JSON text', async () => {
+    const source = [message('m1', 'assistant', [{ type: 'text', text: 'visible evidence' }])];
+    const providerError = { name: 'ProviderAuthError', data: { message: 'SECRET_PROVIDER_MESSAGE', statusCode: 401, responseBody: 'SECRET_BODY' } };
+    const variants: Array<{ name: string; parts: unknown[] }> = [
+      { name: 'absent text', parts: [] },
+      { name: 'valid JSON text', parts: [{ type: 'text', text: 'VALID' }] },
+    ];
+
+    for (const variant of variants) {
+      const setup = clientFor(source, {
+        prompt: (request) => request.kind === 'map'
+          ? {
+              info: assistantInfo({ error: providerError, finish: 'error' }),
+              parts: variant.parts.map((part: any) => part.text === 'VALID' ? { type: 'text', text: JSON.stringify(semanticMap(request)) } : part),
+            }
+          : undefined,
+      });
+      const result = await execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true });
+
+      expect(result.recovery.failures[0], variant.name).toMatchObject({
+        stage: 'map',
+        reasons: ['summarizer_unavailable'],
+        diagnostics: [{ code: 'provider_error', error: { name: 'ProviderAuthError', status: 401 } }],
+      });
+      expect(result.recovery.cards_source, variant.name).toBe('fallback');
+      expect(JSON.stringify(result), variant.name).not.toContain('SECRET_');
+    }
+  });
+
+  it('accepts one enclosing JSON fence and rejects prose around the object or a substring of it', async () => {
+    const source = [message('m1', 'assistant', [{ type: 'text', text: 'visible evidence' }])];
+    const cases: Array<[string, (json: string) => string, 'generated' | 'fallback']> = [
+      ['bare', (json) => json, 'generated'],
+      ['fenced', (json) => `\`\`\`json\n${json}\n\`\`\``, 'generated'],
+      ['prose before', (json) => `Here you go: ${json}`, 'fallback'],
+      ['prose after', (json) => `${json}\nHope that helps.`, 'fallback'],
+      ['two fences', (json) => `\`\`\`json\n${json}\n\`\`\`\n\`\`\`json\n${json}\n\`\`\``, 'fallback'],
+    ];
+
+    for (const [name, wrap, cardsSource] of cases) {
+      const setup = clientFor(source, {
+        prompt: (request) => request.kind === 'map'
+          ? { parts: [{ type: 'text', text: wrap(JSON.stringify(semanticMap(request))) }] }
+          : undefined,
+      });
+      const result = await execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true });
+
+      expect(result.recovery.cards_source, name).toBe(cardsSource);
+      if (cardsSource === 'fallback') expect(result.recovery.failures[0].diagnostics[0].code, name).toBe('not_json');
+    }
+  });
+
+  it('reports the observed provider, model, and variant from the response info and ignores unsafe identities', async () => {
+    const source = [message('m1', 'assistant', [{ type: 'text', text: 'visible evidence' }])];
+    const setup = clientFor(source, {
+      prompt: (request) => ({
+        info: assistantInfo({ providerID: 'real-provider', modelID: 'real-model', variant: 'real variant\nwith newline' }),
+        parts: [{ type: 'text', text: JSON.stringify(request.kind === 'map' ? semanticMap(request) : { kind: 'reduce', semantic: semanticReduction(request.step_count) }) }],
+      }),
+    });
+    const result = await execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true });
+
+    expect(result.recovery.model).toEqual({
+      requested: { model: 'requested/model', variant: 'high' },
+      observed: { model: 'real-provider/real-model' },
+    });
+  });
+
+  it('does not prompt when provider metadata shows the configured variant is not offered', async () => {
+    const source = [message('m1', 'assistant', [{ type: 'text', text: 'visible evidence' }])];
+    const setup = clientFor(source, {
+      providers: () => ({ data: { providers: [{ id: 'requested', models: { model: { limit: { context: 10_000 }, variants: { low: {} } } } }] } }),
+    });
+    const result = await execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true });
+
+    expect(setup.calls.filter((call) => call.method === 'prompt')).toHaveLength(0);
+    expect(setup.calls.filter((call) => call.method === 'create')).toHaveLength(0);
+    expect(result.recovery).toMatchObject({ status: 'partial', cards_source: 'fallback', phases_source: 'fallback' });
+    expect(result.recovery.failures[0]).toMatchObject({ reasons: ['summarizer_unavailable'], diagnostics: [{ code: 'variant_unavailable' }] });
+    expect(result.recovery.model.observed).toBeUndefined();
+  });
+
+  it('still sends the configured variant when provider metadata cannot be read', async () => {
+    const source = [message('m1', 'assistant', [{ type: 'text', text: 'visible evidence' }])];
+    const setup = clientFor(source, { providers: () => { throw new Error('metadata unavailable'); } });
+    const result = await execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true });
+
+    expect(setup.calls.filter((call) => call.method === 'prompt').every((call) => call.input.body.variant === 'high')).toBe(true);
+    expect(result.recovery.status).toBe('complete');
+  });
+
+  it('falls back to deterministic phases without prompting a reducer request that exceeds the model input budget', async () => {
+    const setup = clientFor(realisticTrace());
+    const result = await execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true });
+    const kinds = setup.calls.filter((call) => call.method === 'prompt').map((call) => JSON.parse(call.input.body.parts[0].text).kind);
+
+    expect(kinds).not.toContain('reduce');
+    expect(result.recovery).toMatchObject({ status: 'partial', cards_source: 'generated', phases_source: 'fallback' });
+    expect(result.recovery.failures).toEqual([
+      { stage: 'reduce', reasons: ['summarizer_unavailable'], diagnostics: [{ code: 'request_too_large', bytes: expect.any(Number) }] },
+    ]);
+    expect(setup.calls.filter((call) => call.method === 'delete')).toHaveLength(setup.calls.filter((call) => call.method === 'create').length);
+  });
+
+  it('accepts the explicit empty card for steps without observed or plaintext-reasoning evidence and rejects invented content', async () => {
+    const source = [
+      message('m1', 'assistant', [{ type: 'compaction' }]),
+      message('m2', 'assistant', [{ type: 'reasoning', metadata: { encrypted: 'ciphertext' } }]),
+      message('m3', 'assistant', [{ type: 'text', text: 'visible evidence' }]),
+    ];
+    const setup = clientFor(source);
+    const result = await execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true });
+    const map = setup.calls.filter((call) => call.method === 'prompt').map((call) => JSON.parse(call.input.body.parts[0].text)).find((request) => request.kind === 'map');
+
+    expect(map.fragments.map((fragment: any) => fragment.step)).toEqual(sourceSteps(1, result.source.steps));
+    expect(result.recovery).toMatchObject({ status: 'complete', cards_source: 'generated', failures: [] });
+    expect(result.semantic.phases.flatMap((phase: any) => sourceSteps(phase.range[0], phase.range[1]))).toEqual(sourceSteps(1, result.source.steps));
   });
 
   it('guards self recovery before model work while allowing self forensic inspection', async () => {

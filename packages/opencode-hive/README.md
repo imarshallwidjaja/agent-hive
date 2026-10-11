@@ -401,7 +401,10 @@ Dedicated mode does not auto-switch the live chat agent when you run a slash com
 Behavior:
 
 - Recovery interpretation is always marked untrusted (`provenance: 'summarizer_interpretation'`).
-- An unavailable configured model or variant produces deterministic partial fallback without provider retry.
+- The configured `model` and `variant` are sent with every summarizer request and `temperature` is applied to the hidden agent. Each request carries its own stage output contract (a strict JSON Schema plus the rules it cannot express); replies are validated against the same schema.
+- `recovery.model.observed` reports the provider, model, and variant the host says it ran. A configured variant that provider metadata shows the model does not offer is not sent; recovery returns deterministic partial fallback and does not claim it was applied. If metadata cannot be read, the variant is still sent and `observed` shows what ran.
+- A provider error, an unusable reply, or a request that exceeds the model's input budget produces deterministic partial fallback without provider retry or model fallback. Each affected failure entry may carry up to four `diagnostics`: finite codes, a schema path and step number, the provider error name and HTTP status, finish reason, and reply size. Diagnostics never include provider messages, response bodies, source text, or model text.
+- Only the bare JSON object, or that object inside one enclosing code fence, is accepted. Prose around it is a failure, and nothing is extracted or repaired.
 - Recovery never authorizes accept, merge, retry, resume, or auto-run. Native `task_id` pass-through requires explicit operator or runtime-owned interruption-recovery authorization; after every returned result, follow-up work uses a fresh child session and may reuse the same Hive task/worktree.
 - See [Runtime Session Inspection](docs/HIVE-TOOLS.md#runtime-session-inspection-2-tools) for the full trace/recovery contract.
 

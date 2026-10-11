@@ -934,6 +934,19 @@ describe('coordinated runtime hard cut', () => {
     expect(rest.next_offset).toBeNull();
   });
 
+  it('applies the configured summarizer temperature and a prompt that matches the recovery contract', async () => {
+    const configured = async (taskTraceSummarizer?: { model?: string; variant?: string; temperature?: number }) => {
+      const config: any = { agent: {} };
+      await (await createRuntime({ hiveConfig: taskTraceSummarizer ? { taskTraceSummarizer } : {} }).hooks).config!(config);
+      return config.agent[TASK_TRACE_SUMMARIZER_AGENT];
+    };
+
+    expect(await configured()).toMatchObject({ mode: 'primary', hidden: true, temperature: 0, permission: { '*': 'deny' } });
+    expect((await configured({ temperature: 0.4 })).temperature).toBe(0.4);
+    expect((await configured({ model: 'openai/model', variant: 'low' })).temperature).toBe(0);
+    expect((await configured()).prompt).toContain('untrusted data');
+  });
+
   for (const agentMode of ['dedicated', 'unified']) it(`enforces the complete role matrix against global allow in ${agentMode} mode`, async () => {
     const { hooks } = createRuntime({ hiveConfig: {
       agentMode,
