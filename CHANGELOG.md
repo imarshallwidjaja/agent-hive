@@ -7,11 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.2.0] - 2026-10-12
+
 ### Changed
 
 - `hive_task_trace` cursors are now a readable string, `trace-cursor:v3:<prefix|source>:<after_seq>:<guard>`, instead of a base64 encoding of JSON. Agents pass the whole `coverage.next_cursor` back unchanged; the guard is still the complete digest, and cursors issued earlier remain valid. A malformed cursor returns `invalid_cursor` with a hint to pass `coverage.next_cursor` unchanged or omit `cursor`. Event refs and recovery content IDs keep their existing format. The tool description, Hive Helper prompt, and docs now say to pass `coverage.next_cursor` as `cursor` and `events[n].ref` as `event`.
 - The packaged `humanizer` skill now follows the rewrite workflow from phuryn/work-humanizer (MIT). It lists every fact with its certainty before editing, writes AI-composed drafts fresh while keeping a writer's own sentences, and ends with a fact audit that checks strength words in both directions. When a draft lacks what only the writer knows, it interviews the writer with up to five questions; a delegated child returns those questions to its parent instead of inventing answers. It can also build a piece from the writer's notes or transcript. An optional `check.py` sweep counts dashes, semicolons, stock vocabulary, and sentence-length uniformity, skipping code. A "Shorter option:" note is offered only in conversation, never inside the artifact.
 - `stop-slop` adds a crafted-line budget of one per piece, a sentence-length rule that varies uniform rhythm in either direction, pause-and-point and colon-reveal lines, restating and engagement closers, fragment stacks, invented metaphor labels, and filler transitions. `writing-for-humans` keeps its em dash limit and adds context-based substitutes, a rule against rerouting a removed dash into a semicolon, and replacement of dashes when rewriting AI-composed prose. `writing-policy` routes notes, transcripts, and interview answers to `humanizer`.
+
+### Fixed
+
+- Semantic recovery for `hive_task_trace` now gives each summarizer stage an explicit output contract. Map and reduce requests carry a strict JSON Schema built from the same schema that validates the reply, plus the rules the schema cannot express; unknown or missing keys, blank strings, and wrong ranges are rejected, and a malformed map card falls back on its own step while valid sibling cards are kept. Only a bare JSON object, or that object inside one enclosing code fence, is accepted; nothing is extracted or repaired.
+- The configured recovery `model` and `variant` are included on each summarizer request that is sent, and `temperature` is applied to the hidden summarizer agent. `recovery.model.observed` reports the provider, model, and variant the host says it ran. When provider metadata shows the model does not offer the configured variant, no summarizer session is created and no prompt runs; recovery falls back deterministically with a `variant_unavailable` diagnostic and does not claim the variant was applied. If that metadata cannot be read, the variant is still sent. Provider errors reported in the response, unusable or oversized replies, and requests above the model input budget fall back deterministically, without provider retry or model fallback.
+- Failed recovery stages may carry up to four value-free `diagnostics`: finite codes, a schema path and step number, provider error name and HTTP status, finish reason, and reply size. They never include provider messages, response bodies, source text, or model text.
+- Completion claims in recovery output must cite assistant steps with observed evidence or plaintext reasoning; the reduce request lists them as `completion_steps`. A completed claim must cite at least one `completion_steps` member and may also cite a user request, but a user request alone cannot support it; an unfinished claim can cite a user request alone. When `completion_steps` is empty, the safest next action is `inspect`.
+
+### Upgrade
+
+- Update `oc-arkive` to `4.2.0` and restart the plugin-host process (for a long-lived server, `opencode.service`); start fresh sessions so agents load the updated humanizer skill and trace guidance. Install the matching `vscode-arkive.vsix` from the v4.2.0 GitHub Release for the VS Code companion. Cursors issued by earlier versions still work; pass `coverage.next_cursor` and `events[n].ref` back unchanged. See [v4.2.0 release notes](docs/releases/v4.2.0.md).
 
 ## [4.1.0] - 2026-10-10
 
