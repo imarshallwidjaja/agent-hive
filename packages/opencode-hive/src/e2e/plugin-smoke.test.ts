@@ -13,7 +13,7 @@ async function fixture() {
   const home = fs.mkdtempSync(`/tmp/hive-plugin-smoke-home-${process.pid}-`);
   roots.push(root, home);
   fs.mkdirSync(path.join(root, '.hive'), { recursive: true });
-  const hooks = await createPluginWithHome(home, () => plugin({
+  const hooks = await createPluginWithHome(home, () => plugin.server({
     directory: root,
     worktree: root,
     project: { id: 'plugin-smoke', worktree: root },
@@ -27,6 +27,14 @@ afterEach(() => {
 });
 
 describe('plugin hard-cut surface', () => {
+  it('exports one module with the v1 server entry and a synchronous v2 effect entry', () => {
+    expect(plugin.id).toBe('oc-arkive');
+    expect(typeof plugin.server).toBe('function');
+    const effect: any = plugin.effect({ location: { directory: '/tmp/unused' } } as any);
+    expect(effect).not.toBeInstanceOf(Promise);
+    expect(typeof effect.then).toBe('undefined');
+  });
+
   it('registers the canonical tools and ordinary review commands', async () => {
     const { hooks } = await fixture();
     expect(Object.keys(hooks.tool ?? {}).sort()).toEqual([...HIVE_TOOL_NAMES].sort());

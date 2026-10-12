@@ -61,7 +61,7 @@ describe('background task lifecycle hook support', () => {
     process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
 
     try {
-      const hooks = await createPluginWithHome(home, () => plugin({
+      const hooks = await createPluginWithHome(home, () => plugin.server({
         directory: testRoot,
         worktree: testRoot,
         serverUrl: new URL('http://localhost:1'),
@@ -132,7 +132,7 @@ describe('background task lifecycle hook support', () => {
       expect(board.jobs.map((job) => job.taskId)).not.toContain('task_foreground');
 
       const abortCalls: unknown[] = [];
-      const cancelHooks = await createPluginWithHome(home, () => plugin({
+      const cancelHooks = await createPluginWithHome(home, () => plugin.server({
         directory: testRoot,
         worktree: testRoot,
         serverUrl: new URL('http://localhost:1'),
@@ -179,7 +179,7 @@ describe('background task lifecycle hook support', () => {
     process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
 
     try {
-      const hooks = await createPluginWithHome(home, () => plugin({
+      const hooks = await createPluginWithHome(home, () => plugin.server({
         directory: testRoot,
         worktree: testRoot,
         serverUrl: new URL('http://localhost:1'),

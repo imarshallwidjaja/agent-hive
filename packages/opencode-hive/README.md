@@ -22,6 +22,8 @@ For a brand-new config, add the plugin to `opencode.json` or `opencode.jsonc`. O
 
 Restart OpenCode after changing plugins.
 
+In the current checkout, the package declares `@opencode/plugin` (pinned to the qualified v2 host release) and `@types/json-schema` as required dependencies, because its public type declarations import them. A TypeScript project that imports `oc-arkive` therefore type-checks after a plain install, with no extra packages and with `skipLibCheck` off. The cost is install size: a plain `npm install` of the package measured about 245 MB, up from about 122 MB. A v1 host never loads these dependencies at runtime. `effect` and `@opencode-ai/plugin` remain peer dependencies.
+
 ### Existing OpenCode configurations
 
 If you already have an OpenCode config, append `oc-arkive@latest` to its existing `plugin` array. Keep your surrounding settings and existing plugin entries, and preserve unrelated settings in the source file. The plugin still intentionally mutates the OpenCode fields listed below. This section is the full compatibility reference; the root README points here instead of repeating these mutations.

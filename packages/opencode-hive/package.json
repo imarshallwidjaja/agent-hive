@@ -29,23 +29,29 @@
     "clean": "rm -rf dist",
     "generate-plugin-manifest": "bun run scripts/generate-plugin-manifest.ts",
     "generate": "npm run generate-plugin-manifest",
-    "build": "npm run clean && npm run generate && bun build src/index.ts --outdir dist --target node --format esm --packages=bundle && tsc --emitDeclarationOnly",
+    "build": "npm run clean && npm run generate && bun run scripts/build-plugin.ts && tsc --emitDeclarationOnly",
     "dev": "opencode plugin dev",
     "test": "bun test"
   },
   "peerDependencies": {
-    "@opencode-ai/plugin": ">=1.18.30"
+    "@opencode-ai/plugin": ">=1.18.30",
+    "effect": ">=4.0.0-rc.112 <5"
   },
   "dependencies": {
+    "@opencode/plugin": "2.0.26",
+    "@types/json-schema": "7.0.15",
     "gray-matter": "^4.0.3"
   },
   "devDependencies": {
     "@opencode-ai/plugin": "^1.18.30",
     "@opencode-ai/sdk": "^0.13.0",
+    "@opencode/client": "2.0.26",
     "@types/bun": "^1.2.0",
     "@types/node": "^20.0.0",
+    "effect": "4.0.0-rc.112",
     "hive-core": "4.2.0",
-    "typescript": "^5.0.0"
+    "typescript": "^5.0.0",
+    "zod": "4.1.8"
   },
   "files": [
     "dist/",

@@ -129,7 +129,7 @@ describe('e2e: published custom-agent docs example', () => {
       client: OPENCODE_CLIENT,
     };
 
-    const hooks = await plugin(ctx);
+    const hooks = await plugin.server(ctx);
     const opencodeConfig: any = { agent: {} };
     await hooks.config!(opencodeConfig);
 
@@ -225,7 +225,7 @@ describe('e2e: published custom-agent docs example', () => {
     expect(builderPrompt).not.toContain('`vulnerability-reviewer` — kind: default');
 
     fs.writeFileSync(configPath, JSON.stringify({ ...publishedExample, agentMode: 'unified' }, null, 2));
-    const unifiedHooks = await plugin(ctx);
+    const unifiedHooks = await plugin.server(ctx);
     const unifiedConfig: any = { agent: {} };
     await unifiedHooks.config!(unifiedConfig);
     const hiveOutput = { system: ['OpenCode provider base prompt'] };

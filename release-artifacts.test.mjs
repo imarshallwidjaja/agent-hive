@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { builtinModules } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -83,7 +84,7 @@ function withPackedPackage(packageRoot, inspect) {
     const [packResult] = results;
     const tarballPath = path.join(temporaryRoot, packResult.filename);
     execFileSync('tar', ['-xzf', tarballPath, '-C', extractedRoot]);
-    return inspect(path.join(extractedRoot, 'package'), new Set(packResult.files.map((file) => file.path)));
+    return inspect(path.join(extractedRoot, 'package'), new Set(packResult.files.map((file) => file.path)), tarballPath);
   } finally {
     fs.rmSync(temporaryRoot, { recursive: true, force: true });
   }
@@ -195,11 +196,23 @@ function assertNoHiveCoreModuleReference(source, fileName) {
   assert.deepEqual(references, [], `${fileName} should not reference unpacked hive-core modules`);
 }
 
-function assertNoModuleReferences(source, fileName, forbiddenModules) {
-  const references = [...staticModuleSpecifiers(source, fileName)].filter((specifier) =>
-    forbiddenModules.some((moduleName) => specifier === moduleName || specifier.startsWith(`${moduleName}/`))
+// The v2 host supplies exactly these modules at runtime and requires one shared Effect instance, so they are
+// the only non-builtin bare specifiers a packed runtime file may import. Everything else must be bundled.
+const hostProvidedModules = ['effect', '@opencode/plugin'];
+
+function isNodeBuiltin(specifier) {
+  const name = specifier.replace(/^node:/, '').split('/')[0];
+  return specifier.startsWith('node:') || builtinModules.includes(name);
+}
+
+function isHostProvided(specifier) {
+  return hostProvidedModules.some((moduleName) => specifier === moduleName || specifier.startsWith(`${moduleName}/`));
+}
+
+function unbundledBareSpecifiers(source, fileName) {
+  return [...staticModuleSpecifiers(source, fileName)].filter(
+    (specifier) => !specifier.startsWith('.') && !isNodeBuiltin(specifier)
   );
-  assert.deepEqual(references, [], `${fileName} should not reference removed direct dependencies`);
 }
 
 function declarationEntrypoints(packageJson) {
@@ -237,6 +250,7 @@ function assertPackedDeclarationGraph(packageRoot, packageJson) {
 
   const pending = entrypoints.map((entrypoint) => path.resolve(packageRoot, entrypoint));
   const visited = new Set();
+  const barePackages = new Set();
   while (pending.length > 0) {
     const filePath = pending.pop();
     assert.ok(filePath.startsWith(`${packageRoot}${path.sep}`), `declaration path escapes package: ${filePath}`);
@@ -247,11 +261,94 @@ function assertPackedDeclarationGraph(packageRoot, packageJson) {
     const source = fs.readFileSync(filePath, 'utf8');
     assertNoHiveCoreModuleReference(source, path.relative(packageRoot, filePath));
     for (const specifier of staticModuleSpecifiers(source, filePath)) {
-      if (!specifier.startsWith('.')) continue;
+      if (!specifier.startsWith('.')) {
+        if (!isNodeBuiltin(specifier)) barePackages.add(packageName(specifier));
+        continue;
+      }
       const resolved = resolveDeclarationReference(filePath, specifier);
       assert.ok(resolved, `packed declaration dependency is missing: ${specifier} from ${path.relative(packageRoot, filePath)}`);
       pending.push(resolved);
     }
+  }
+
+  // A bare declaration import resolves for an installed consumer only through the packed manifest, never through
+  // the host runtime or the workspace.
+  const declared = new Set(
+    ['dependencies', 'optionalDependencies', 'peerDependencies'].flatMap((type) => Object.keys(packageJson[type] ?? {}))
+  );
+  assert.deepEqual(
+    [...barePackages].filter((name) => !declared.has(name)),
+    [],
+    'every package imported by the public declaration closure should be declared by the packed manifest'
+  );
+}
+
+function packageName(specifier) {
+  const [scopeOrName, scopedName] = specifier.split('/');
+  return scopeOrName.startsWith('@') ? `${scopeOrName}/${scopedName}` : scopeOrName;
+}
+
+// Installs only the packed tarball plus the compiler and Node typings into an empty project outside the workspace,
+// then type-checks the public entry with library checking on in each module-resolution mode a consumer can use. A
+// declaration import that only the workspace, or a hand-installed extra package, can resolve fails here.
+const consumerModes = [
+  { name: 'NodeNext native ESM', module: 'NodeNext', moduleResolution: 'NodeNext' },
+  { name: 'Bundler', module: 'ESNext', moduleResolution: 'bundler' },
+];
+
+function typeCheckPackedConsumer(tarballPath) {
+  const { devDependencies } = readJson('packages/opencode-hive/package.json');
+  const consumerRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'oc-arkive-consumer-'));
+
+  try {
+    fs.writeFileSync(path.join(consumerRoot, 'package.json'), JSON.stringify({ private: true, type: 'module' }));
+    execFileSync(
+      'npm',
+      [
+        'install', '--no-audit', '--no-fund', '--ignore-scripts', '--prefer-offline',
+        tarballPath, `typescript@${ts.version}`, `@types/node@${devDependencies['@types/node']}`,
+      ],
+      { cwd: consumerRoot, encoding: 'utf8', stdio: 'pipe', env: getCommandEnv() }
+    );
+    // The plain import is what every consumer, including a v1 server-only one, compiles. Equal<> then fails when a
+    // declaration import was erased to any or resolves to a different type than the host's own.
+    fs.writeFileSync(
+      path.join(consumerRoot, 'consumer.ts'),
+      [
+        "import type { Plugin as V1Plugin } from '@opencode-ai/plugin';",
+        "import type { Plugin as V2Plugin } from '@opencode/plugin/effect';",
+        "import type { Effect, Scope } from 'effect';",
+        "import plugin from 'oc-arkive';",
+        'export const server = plugin.server;',
+        'type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;',
+        'export const v1Server: Equal<typeof plugin.server, V1Plugin> = true;',
+        'export const v2Context: Equal<Parameters<typeof plugin.effect>[0], V2Plugin.Context> = true;',
+        'export const v2Result: Equal<ReturnType<typeof plugin.effect>, Effect.Effect<void, never, Scope.Scope>> = true;',
+        'export const id: string = plugin.id;',
+        '',
+      ].join('\n')
+    );
+    for (const mode of consumerModes) {
+      fs.writeFileSync(
+        path.join(consumerRoot, 'tsconfig.json'),
+        JSON.stringify({
+          compilerOptions: {
+            module: mode.module, moduleResolution: mode.moduleResolution, target: 'ESNext',
+            strict: true, skipLibCheck: false, noEmit: true, types: ['node'],
+          },
+          files: ['consumer.ts'],
+        })
+      );
+      try {
+        execFileSync(process.execPath, [path.join(consumerRoot, 'node_modules', 'typescript', 'bin', 'tsc'), '-p', consumerRoot], {
+          cwd: consumerRoot, encoding: 'utf8', stdio: 'pipe',
+        });
+      } catch (error) {
+        assert.fail(`packed consumer should type-check the public entry with library checks under ${mode.name}:\n${error.stdout}${error.stderr}`);
+      }
+    }
+  } finally {
+    fs.rmSync(consumerRoot, { recursive: true, force: true });
   }
 }
 
@@ -323,6 +420,28 @@ describe(`release ${releaseVersion} artifact contract on main`, () => {
     assert.match(bunLock, /"vscode-arkive": \["vscode-arkive@workspace:packages\/vscode-hive"\]/);
     assert.doesNotMatch(bunLock, /"opencode-hive": \["opencode-hive@workspace:packages\/opencode-hive"\]/);
     assert.doesNotMatch(bunLock, /"vscode-hive": \["vscode-hive@workspace:packages\/vscode-hive"\]/);
+  });
+
+  it('pins the v2 host-facing libraries to the qualified host release', () => {
+    const { dependencies, devDependencies } = readJson('packages/opencode-hive/package.json');
+    assert.deepEqual(
+      {
+        '@opencode/client': devDependencies['@opencode/client'],
+        '@opencode/plugin': dependencies['@opencode/plugin'],
+        '@types/json-schema': dependencies['@types/json-schema'],
+        effect: devDependencies.effect,
+        zod: devDependencies.zod,
+      },
+      {
+        '@opencode/client': '2.0.26',
+        '@opencode/plugin': '2.0.26',
+        '@types/json-schema': '7.0.15',
+        effect: '4.0.0-rc.112',
+        zod: '4.1.8',
+      },
+      'oc-arkive should build against the exact v2 host libraries and the Zod version that matches tool.schema'
+    );
+    assert.equal(devDependencies['@opencode/plugin'], undefined, '@opencode/plugin is a dependency, not a duplicate dev dependency');
   });
 
   it('distinguishes real hive-core module references from comments and ordinary strings', () => {
@@ -407,8 +526,8 @@ describe(`release ${releaseVersion} artifact contract on main`, () => {
     );
   });
 
-  it('packs every oc-arkive asset without unresolved hive-core module references', () => {
-    withPackedPackage(opencodeHiveRoot, (packageRoot, packedFiles) => {
+  it('packs every oc-arkive asset and type-checks the tarball in a clean consumer', () => {
+    withPackedPackage(opencodeHiveRoot, (packageRoot, packedFiles, tarballPath) => {
       assertPackedFile(packedFiles, 'dist/index.js', 'oc-arkive');
       assertPackedFile(packedFiles, 'schema/agent_hive.schema.json', 'oc-arkive');
       assertPackedFile(packedFiles, 'schema/agent_hive.override.schema.json', 'oc-arkive');
@@ -417,8 +536,20 @@ describe(`release ${releaseVersion} artifact contract on main`, () => {
         'README-promised oc-arkive asset missing from npm pack: skills/'
       );
       const packedManifest = JSON.parse(fs.readFileSync(path.join(packageRoot, 'package.json'), 'utf8'));
-      assert.deepEqual(packedManifest.dependencies, { 'gray-matter': '^4.0.3' });
-      const removedDirectDependencies = ['effect', 'simple-git'];
+      // The public declarations import @opencode/plugin and, through it, JSON Schema types, so an installed consumer
+      // can only resolve them if the tarball's required dependencies bring them.
+      assert.deepEqual(packedManifest.dependencies, {
+        '@opencode/plugin': '2.0.26',
+        '@types/json-schema': '7.0.15',
+        'gray-matter': '^4.0.3',
+      });
+      // effect is a peer so a v1 host can resolve the one eager import; the v2 host replaces it with its own copy.
+      assert.deepEqual(packedManifest.peerDependencies, {
+        '@opencode-ai/plugin': '>=1.18.30',
+        effect: '>=4.0.0-rc.112 <5',
+      });
+      assert.equal(packedManifest.peerDependenciesMeta, undefined, 'no peer dependency should be optional');
+      const removedDirectDependencies = ['simple-git'];
       for (const dependencyType of ['dependencies', 'optionalDependencies', 'peerDependencies']) {
         assert.equal(
           packedManifest[dependencyType]?.['hive-core'],
@@ -437,13 +568,28 @@ describe(`release ${releaseVersion} artifact contract on main`, () => {
       const executablePath = path.resolve(packageRoot, packedManifest.main);
       assert.ok(executablePath.startsWith(`${packageRoot}${path.sep}`), 'packed executable path should stay inside the package');
       assert.ok(fs.existsSync(executablePath), `packed executable is missing: ${packedManifest.main}`);
+      assertPackedFile(packedFiles, 'dist/v2/plugin.js', 'oc-arkive');
       const executableSource = fs.readFileSync(executablePath, 'utf8');
-      assertNoHiveCoreModuleReference(executableSource, packedManifest.main);
-      assertNoModuleReferences(executableSource, packedManifest.main, removedDirectDependencies);
+      for (const relativePath of [...packedFiles].filter((file) => file.startsWith('dist/') && file.endsWith('.js'))) {
+        const unexpected = unbundledBareSpecifiers(fs.readFileSync(path.join(packageRoot, relativePath), 'utf8'), relativePath).filter(
+          (specifier) => !isHostProvided(specifier)
+        );
+        assert.deepEqual(unexpected, [], `${relativePath} should bundle everything except host-provided modules`);
+      }
+      assert.deepEqual(
+        unbundledBareSpecifiers(executableSource, packedManifest.main),
+        ['effect'],
+        'the shared entry should import only effect eagerly; the v2 adapter loads lazily'
+      );
+      assert.match(
+        executableSource,
+        /import\(["']\.\/v2\/plugin\.js["']\)/,
+        'the shared entry should load the v2 adapter lazily'
+      );
       assertPackedDeclarationGraph(packageRoot, packedManifest);
+      typeCheckPackedConsumer(tarballPath);
     });
   });
-
 });
 
 describe('release documentation artifact locality', () => {

@@ -65,7 +65,7 @@ describe('agent registration', () => {
         },
       },
     }));
-    const hooks = await plugin({
+    const hooks = await plugin.server({
       directory: root,
       worktree: root,
       project: { id: 'agent-exposure', worktree: root },
@@ -101,7 +101,7 @@ describe('agent registration', () => {
     const configPath = path.join(root, '.config', 'opencode', 'agent_hive.json');
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
     fs.writeFileSync(configPath, JSON.stringify({ agentMode: 'unified' }));
-    const hooks = await plugin({
+    const hooks = await plugin.server({
       directory: root,
       worktree: root,
       project: { id: 'agent-mode-unified', worktree: root },

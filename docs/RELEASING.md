@@ -33,7 +33,7 @@ Release preparation is manual. Update the release branch explicitly for `vX.Y.Z`
 
 The release workflow uses `docs/releases/vX.Y.Z.md` as the GitHub Release body for the resolved release tag, so the matching release note file must exist before tagging.
 
-The pushed tag must also match the root package version. A `v1.2.3` tag on a commit whose `package.json` version is still `1.2.2` is invalid and fails before publish jobs run. The release artifact check verifies both exact `hive-core` pins, the npm local-workspace link, and the packed `oc-arkive` dependency and module-reference boundaries.
+The pushed tag must also match the root package version. A `v1.2.3` tag on a commit whose `package.json` version is still `1.2.2` is invalid and fails before publish jobs run. The release artifact check verifies both exact `hive-core` pins, the npm local-workspace link, and the packed `oc-arkive` dependency and module-reference boundaries. It also installs only the packed tarball into a clean project and type-checks the public entry under NodeNext and Bundler module resolution with library checking on, so a declaration import that the manifest does not supply fails the release check.
 
 ## 3. Run local release preflight
 

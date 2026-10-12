@@ -84,7 +84,7 @@ describe('plugin config source resolution', () => {
       },
     };
 
-    const hooks = await plugin(ctx);
+    const hooks = await plugin.server(ctx);
 
     const toolContext = createToolContext('sess_config_resolution_defaults');
     await hooks.tool!.hive_feature_create.execute({ name: 'warning-defaults-feature' }, toolContext);
@@ -133,7 +133,7 @@ describe('plugin config source resolution', () => {
       project: createProject(aliasRoot),
       client: { notify: () => true },
     };
-    const hooks = await plugin(ctx);
+    const hooks = await plugin.server(ctx);
     const opencodeConfig: any = { agent: { existing: { model: 'existing/model' } } };
     await hooks.config!(opencodeConfig);
 

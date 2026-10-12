@@ -88,7 +88,7 @@ function createRuntime(options: { detectedFeature?: string; hiveConfig?: Record<
     workTarget,
     sessions,
     transcripts,
-    hooks: createPluginWithHome(home, () => plugin({ directory: workTarget, worktree: workTarget, project: { id: 'test', worktree: workTarget }, client } as any)),
+    hooks: createPluginWithHome(home, () => plugin.server({ directory: workTarget, worktree: workTarget, project: { id: 'test', worktree: workTarget }, client } as any)),
   };
 }
 

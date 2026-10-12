@@ -74,7 +74,7 @@ async function applyConfigHook(
   testRoot: string,
   opencodeConfig: Record<string, unknown> = { agent: {} },
 ): Promise<Record<string, unknown>> {
-  const hooks = await plugin(createCtx(testRoot));
+  const hooks = await plugin.server(createCtx(testRoot));
   await hooks.config!(opencodeConfig);
   return opencodeConfig;
 }
@@ -84,7 +84,7 @@ async function renderRuntimeSystemPrompt(
   agentName: string,
   options: { trackMessage?: boolean; opencodeConfig?: Record<string, unknown> } = {},
 ): Promise<string> {
-  const hooks = await plugin(createCtx(testRoot));
+  const hooks = await plugin.server(createCtx(testRoot));
   await hooks.config!(options.opencodeConfig ?? { agent: {} });
 
   const sessionID = `sess_${agentName.replace(/[^a-z0-9]/gi, '_')}`;
