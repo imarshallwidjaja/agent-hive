@@ -2321,7 +2321,8 @@ describe('Hive Helper prompt', () => {
 
   it('returns cited evidence, observed HEADs, coverage limits and hypotheses without deciding lifecycle', () => {
     for (const requirement of [
-      'exact event refs', 'coverage.next_cursor', 'Re-index stale cursors or changed refs',
+      'exact event refs', 'coverage.next_cursor', 'passing the entire string unchanged as `cursor`', 'passing the event\'s `events[n].ref` as `event`',
+      'Re-index stale cursors or changed refs',
       'observed source HEAD', 'dirty and untracked state', 'report.md', 'handoff.md',
       'Separate observations, attributed self-reports, and hypotheses',
       'never as a returned, verified source pin',

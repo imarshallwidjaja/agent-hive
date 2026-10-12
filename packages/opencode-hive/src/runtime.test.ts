@@ -907,6 +907,11 @@ describe('coordinated runtime hard cut', () => {
         info: { id: 'msg_a', role: 'assistant', time: { created: 2, completed: 3 } },
         parts: [{ id: 'prt_a', type: 'tool', tool: 'bash', callID: 'call-a', state: { status: 'completed', title: 'Run suite', input: { command: 'bun test' }, output } }],
       },
+      // Enough later events to span several index pages.
+      ...Array.from({ length: 120 }, (_, index) => ({
+        info: { id: `msg_p${index}`, role: 'assistant', time: { created: 4 + index, completed: 5 + index } },
+        parts: [{ id: `prt_p${index}`, type: 'text', text: `${index}:${'x'.repeat(300)}` }],
+      })),
     ]);
     const trace = loaded.tool!.hive_task_trace;
     const content = loaded.tool!.hive_task_trace_content;
@@ -921,8 +926,28 @@ describe('coordinated runtime hard cut', () => {
       ok: true,
       version: 3,
       target: { id: 'child', relationship: 'direct_child' },
-      coverage: { complete: true, next_cursor: null },
+      coverage: { complete: false, events: 122, from_seq: 1 },
       context: { assignment: { text: 'Run the suite.' } },
+    });
+    // The cursor is a string the unchanged schema accepts; passing it back pages through every event once.
+    const cursorSchema = trace.args.cursor as any;
+    const seqs: number[] = [];
+    let current = page;
+    while (current.coverage.next_cursor !== null) {
+      seqs.push(...current.events.map((row: any) => row.seq));
+      const cursor = current.coverage.next_cursor;
+      expect(cursor).toMatch(/^trace-cursor:v3:prefix:[1-9][0-9]*:[A-Za-z0-9_-]{43}$/);
+      expect(cursorSchema.safeParse(cursor).success).toBe(true);
+      current = JSON.parse(await trace.execute({ task_id: 'child', cursor }, context('parent')));
+      expect(current.ok).toBe(true);
+    }
+    seqs.push(...current.events.map((row: any) => row.seq));
+    expect(current.coverage.complete).toBe(true);
+    expect(seqs).toEqual(Array.from({ length: 122 }, (_, index) => index + 1));
+    expect(JSON.parse(await trace.execute({ task_id: 'child', cursor: 'not-a-cursor' }, context('parent')))).toEqual({
+      ok: false,
+      reason: 'invalid_cursor',
+      hint: 'Pass coverage.next_cursor unchanged, or omit cursor to restart from the first page.',
     });
     expect(page.events[1]).toMatchObject({ kind: 'tool', tool: 'bash', call_id: 'call-a', input: { command: 'bun test' }, abbreviated: ['output'] });
 

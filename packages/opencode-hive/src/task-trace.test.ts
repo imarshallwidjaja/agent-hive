@@ -390,6 +390,14 @@ function decodeToken(value: string): unknown {
   return JSON.parse(Buffer.from(value, 'base64url').toString('utf8'));
 }
 
+const GUARD = 'a'.repeat(43);
+const INVALID_CURSOR_HINT = 'Pass coverage.next_cursor unchanged, or omit cursor to restart from the first page.';
+const CURSOR_FORM = /^trace-cursor:v3:(prefix|source):([1-9][0-9]*):([A-Za-z0-9_-]{43})$/;
+
+function taggedCursor(scope: string, seq: number | string, guard = GUARD): string {
+  return `trace-cursor:v3:${scope}:${seq}:${guard}`;
+}
+
 function bareMessage(parts: Array<Record<string, unknown>>) {
   return { info: { role: 'assistant', time: { created: 1, completed: 2 } }, parts };
 }
@@ -465,7 +473,7 @@ describe('forensic task trace v3 index', () => {
     expect(events.flatMap((event: any) => Object.keys(event)).filter((key: string) => !allowed.has(key))).toEqual([]);
     const keys = serialized.flatMap((raw) => allKeys(JSON.parse(raw)));
     for (const excluded of ['timeline', 'content_dictionary', 'tool_dictionary', 'tool_rollup', 'r']) expect(keys).not.toContain(excluded);
-    const tokens = [...events.map((event: any) => decodeToken(event.ref)), decodeToken(pages[0].coverage.next_cursor)];
+    const tokens = [...events.map((event: any) => decodeToken(event.ref)), pages[0].coverage.next_cursor];
     expect(JSON.stringify([serialized, tokens])).not.toContain('private reasoning');
     expect(setup.calls.map((call) => call.method)).toEqual(pages.flatMap(() => ['get', 'messages', 'status']));
   });
@@ -782,7 +790,7 @@ describe('forensic task trace v3 index', () => {
     const cursor = first.coverage.next_cursor;
     const continueWith = (messages: unknown[]) => execute(toolsFor(clientFor(messages)), 'hive_task_trace', { task_id: 'child', cursor });
 
-    expect(typeof cursor).toBe('string');
+    expect(cursor).toMatch(/^trace-cursor:v3:prefix:/);
     const appendedTools = toolsFor(clientFor([...source, text(150), text(151)]));
     const pages = [first];
     for (let next = cursor; next;) {
@@ -808,6 +816,7 @@ describe('forensic task trace v3 index', () => {
     const continueWith = (messages: unknown[]) => execute(toolsFor(clientFor(messages)), 'hive_task_trace', { task_id: 'child', cursor });
 
     expect(pages.length).toBeGreaterThan(1);
+    expect(cursor).toBe(taggedCursor('source', pages[0].coverage.to_seq, pages[0].source.as_of));
     expect(events.map((event: any) => event.seq)).toEqual(sourceSteps(1, 150));
     expect(events.every((event: any) => event.identity === 'ambiguous')).toBe(true);
     expect(pages.at(-1).coverage).toMatchObject({ complete: true, events: 150 });
@@ -822,7 +831,7 @@ describe('forensic task trace v3 index', () => {
 
     const partial = Array.from({ length: 150 }, (_, index) => ({ ...bare(`${index}`), info: { id: `m${index}`, role: 'assistant' } }));
     const first = await execute(toolsFor(clientFor(partial)), 'hive_task_trace', { task_id: 'child' });
-    expect(typeof first.coverage.next_cursor).toBe('string');
+    expect(first.coverage.next_cursor).toMatch(/^trace-cursor:v3:source:/);
     const replaced = [{ ...partial[0], info: { id: 'replacement', role: 'assistant' } }, ...partial.slice(1)];
     expect(await execute(toolsFor(clientFor(replaced)), 'hive_task_trace', { task_id: 'child', cursor: first.coverage.next_cursor })).toEqual({ ok: false, reason: 'cursor_stale' });
 
@@ -830,7 +839,7 @@ describe('forensic task trace v3 index', () => {
     const mixedFirst = await execute(toolsFor(clientFor(mixed)), 'hive_task_trace', { task_id: 'child' });
     expect(mixedFirst.events[0].identity).toBe('positional');
     expect(decodeToken(mixedFirst.events.at(-1).ref)[1]).toBe('n');
-    expect(typeof mixedFirst.coverage.next_cursor).toBe('string');
+    expect(mixedFirst.coverage.next_cursor).toMatch(/^trace-cursor:v3:source:/);
     expect(await execute(toolsFor(clientFor([...mixed, message('appended', 'assistant', [{ type: 'text', text: 'later' }])])), 'hive_task_trace', { task_id: 'child', cursor: mixedFirst.coverage.next_cursor })).toEqual({ ok: false, reason: 'cursor_stale' });
   });
 
@@ -854,7 +863,7 @@ describe('forensic task trace v3 index', () => {
     ];
     const tokens = [
       ...events.map((event: any) => decodeToken(event.ref)),
-      ...pages.flatMap((page) => page.coverage.next_cursor ? [decodeToken(page.coverage.next_cursor)] : []),
+      ...pages.flatMap((page) => page.coverage.next_cursor ? [page.coverage.next_cursor] : []),
     ];
 
     expect(pages.length).toBeGreaterThan(1);
@@ -887,7 +896,7 @@ describe('forensic task trace v3 index', () => {
 
   it('returns opaque unavailability for unresolved targets before messages or status reads', async () => {
     const locator = token([2, 0, 0, 1, 1, 'a'.repeat(43)]);
-    const cursor = token([3, 'c', 1, 'a'.repeat(43)]);
+    const cursor = taggedCursor('prefix', 1);
     const event = token([3, 'n', 'm1', 'p1', 'a'.repeat(43)]);
     const cases = [
       { getResponse: { data: undefined } },
@@ -922,7 +931,7 @@ describe('forensic task trace v3 index', () => {
     const tools = toolsFor(setup);
     const [textRef, toolRef] = (await indexPages(tools)).events.map((event: any) => event.ref);
     const locator = token([2, 0, 0, 1, 7, 'a'.repeat(43)]);
-    const cursor = token([3, 'c', 1, 'a'.repeat(43)]);
+    const cursor = taggedCursor('prefix', 1);
     const before = setup.calls.length;
 
     for (const args of [{}, { content_id: locator, event: textRef }, { field: 'text' }, { content_id: locator, field: 'text' }, { event: textRef, offset: 0 }]) {
@@ -930,7 +939,7 @@ describe('forensic task trace v3 index', () => {
     }
     expect(await readEvent(tools, 'not-a-ref')).toEqual({ ok: false, reason: 'invalid_event' });
     expect(await execute(tools, 'hive_task_trace_content', { task_id: 'child', event: textRef, field: 'bogus' })).toEqual({ ok: false, reason: 'invalid_field' });
-    expect(await execute(tools, 'hive_task_trace', { task_id: 'child', cursor: 'not-a-cursor' })).toEqual({ ok: false, reason: 'invalid_cursor' });
+    expect(await execute(tools, 'hive_task_trace', { task_id: 'child', cursor: 'not-a-cursor' })).toEqual({ ok: false, reason: 'invalid_cursor', hint: INVALID_CURSOR_HINT });
     expect(await execute(tools, 'hive_task_trace', { task_id: 'child', cursor, recovery: true })).toEqual({ ok: false, reason: 'invalid_selector' });
     expect(setup.calls.length).toBe(before);
 
@@ -940,6 +949,110 @@ describe('forensic task trace v3 index', () => {
     expect(await execute(tools, 'hive_task_trace_content', { task_id: 'child', event: toolRef, field: 'output' })).toMatchObject({
       ok: true, field: 'output', format: 'text', content: '', offset: 0, next_offset: null, bytes: 0,
     });
+  });
+
+  it('issues readable tagged cursors that carry the complete guard and pass back unchanged', async () => {
+    const issue = async () => indexPages(toolsFor(clientFor(realisticTrace())));
+    const { pages, events } = await issue();
+    const cursors = pages.slice(0, -1).map((page) => page.coverage.next_cursor as string);
+
+    expect(cursors.length).toBeGreaterThan(0);
+    for (const [index, cursor] of cursors.entries()) {
+      const [, scope, seq, guard] = CURSOR_FORM.exec(cursor)!;
+      expect(scope).toBe('prefix');
+      expect(Number(seq)).toBe(pages[index].coverage.to_seq);
+      expect(pages[index + 1].coverage.from_seq).toBe(Number(seq) + 1);
+      expect(guard).toHaveLength(43);
+      // The page budget reserves 160 bytes for the cursor.
+      expect(cursor.length).toBeLessThan(160);
+    }
+    expect(events.map((event: any) => event.seq)).toEqual(sourceSteps(1, 118));
+    expect((await issue()).pages.map((page) => page.coverage.next_cursor)).toEqual(pages.map((page) => page.coverage.next_cursor));
+  });
+
+  it('rejects every cursor outside the canonical tagged and legacy forms before authorization', async () => {
+    const setup = clientFor(realisticTrace());
+    const tools = toolsFor(setup);
+    const [firstEvent] = (await indexPages(tools)).events;
+    const before = setup.calls.length;
+    const valid = taggedCursor('prefix', 27);
+    const rejected = [
+      '', ' ', 'not-a-cursor', 'x'.repeat(5_000),
+      // Historical model transcription: five elements, as base64url and as raw JSON.
+      token([3, 'n', 'c', 27, GUARD]), JSON.stringify([3, 'n', 'c', 27, GUARD]), JSON.stringify([3, 'c', 27, GUARD]),
+      token([3, 'c', '27', GUARD]), token([3, 'c', 0, GUARD]), token([3, 'x', 27, GUARD]), token([3, 'c', 27, GUARD.slice(1)]),
+      Buffer.from(JSON.stringify([3, 'c', 27, GUARD], null, 1)).toString('base64url'),
+      // Other token families.
+      firstEvent.ref, token([2, 0, 0, 1, 7, GUARD]),
+      // Tag, version, and scope are exact.
+      valid.replace('trace-cursor', 'Trace-Cursor'), valid.replace('trace-cursor', 'TRACE-CURSOR'),
+      valid.replace(':v3:', ':V3:'), valid.replace(':v3:', ':v2:'), valid.replace(':v3:', ':v4:'),
+      valid.replace(':prefix:', ':Prefix:'), valid.replace(':prefix:', ':chain:'), valid.replace(':prefix:', '::'),
+      // No whitespace, other separators, wrappers, or extra fields.
+      ` ${valid}`, `${valid} `, `${valid}\n`, `${valid}\t`, valid.replace(':27:', ': 27:'), valid.replace(':27:', ':27 :'),
+      valid.replace(/:/g, ';'), valid.replace(/:/g, '/'), valid.replace(/:/g, '-'),
+      `<${valid}>`, `"${valid}"`, `${valid}.`, `${valid}:extra`, `${valid}:`, `${valid}:${GUARD}`, taggedCursor('prefix', 27).slice(0, -44),
+      // after_seq is a canonical positive decimal safe integer.
+      ...['', '0', '01', '007', '+27', '-27', '27.0', '27e0', '0x1b', '٢٧', '9007199254740992', '9007199254740993', '10000000000000000', '1'.repeat(30)]
+        .map((seq) => taggedCursor('prefix', seq)),
+      // The guard is exactly 43 base64url characters.
+      ...[GUARD.slice(1), `${GUARD}a`, `${GUARD}=`, `${GUARD.slice(1)}+`, `${GUARD.slice(1)}/`, `${GUARD.slice(1)}é`, `${GUARD.slice(1)} `, '']
+        .map((guard) => taggedCursor('source', 27, guard)),
+    ];
+
+    for (const cursor of rejected) {
+      expect(await execute(tools, 'hive_task_trace', { task_id: 'child', cursor }), JSON.stringify(cursor)).toEqual({ ok: false, reason: 'invalid_cursor', hint: INVALID_CURSOR_HINT });
+    }
+    expect(setup.calls.length).toBe(before);
+  });
+
+  it('accepts the canonical syntax at its bounds and reports a wrong guard or position as stale', async () => {
+    const native = Array.from({ length: 150 }, (_, index) => message(`m${index}`, 'assistant', [{ type: 'text', text: `${index}:${'x'.repeat(300)}` }]));
+    const bare = Array.from({ length: 150 }, () => bareMessage([{ type: 'text', text: `same:${'x'.repeat(300)}` }]));
+    const run = (messages: unknown[], cursor: string) => execute(toolsFor(clientFor(messages)), 'hive_task_trace', { task_id: 'child', cursor });
+    const stale = { ok: false, reason: 'cursor_stale' };
+    const hyphenUnderscore = `${'-_'.repeat(21)}a`;
+
+    for (const messages of [native, bare]) {
+      const { coverage: { next_cursor: issued } } = await execute(toolsFor(clientFor(messages)), 'hive_task_trace', { task_id: 'child' });
+      const [, scope, seq, guard] = CURSOR_FORM.exec(issued)!;
+      const other = scope === 'prefix' ? 'source' : 'prefix';
+
+      expect((await run(messages, issued)).ok).toBe(true);
+      expect(await run(messages, taggedCursor(scope, seq, GUARD))).toEqual(stale);
+      expect(await run(messages, taggedCursor(scope, seq, hyphenUnderscore))).toEqual(stale);
+      expect(await run(messages, taggedCursor(other, seq, guard))).toEqual(stale);
+      // A prefix guard binds its position; a source guard covers the whole eligible source.
+      if (scope === 'prefix') expect(await run(messages, taggedCursor(scope, Number(seq) + 1, guard))).toEqual(stale);
+      expect(await run(messages, taggedCursor(scope, 151, guard))).toEqual(stale);
+      expect(await run(messages, taggedCursor(scope, Number.MAX_SAFE_INTEGER, guard))).toEqual(stale);
+    }
+  });
+
+  it('still continues cursors issued in the legacy base64url form, with the same guard semantics', async () => {
+    const legacyFor = (cursor: string, guard?: string) => {
+      const [, scope, seq, issued] = CURSOR_FORM.exec(cursor)!;
+      return token([3, scope === 'prefix' ? 'c' : 's', Number(seq), guard ?? issued]);
+    };
+    const nativeAt = (index: number) => message(`m${index}`, 'assistant', [{ type: 'text', text: `${index}:${'x'.repeat(300)}` }]);
+    const native = Array.from({ length: 150 }, (_, index) => nativeAt(index));
+    const bare = Array.from({ length: 150 }, () => bareMessage([{ type: 'text', text: `same:${'x'.repeat(300)}` }]));
+    const page = (messages: unknown[], cursor: string) => execute(toolsFor(clientFor(messages)), 'hive_task_trace', { task_id: 'child', cursor });
+
+    for (const [messages, appended] of [[native, nativeAt(150)], [bare, bareMessage([{ type: 'text', text: 'later' }])]] as const) {
+      const first = await execute(toolsFor(clientFor(messages)), 'hive_task_trace', { task_id: 'child' });
+      const tagged = first.coverage.next_cursor as string;
+      const legacy = legacyFor(tagged);
+
+      expect(legacy).not.toBe(tagged);
+      expect(await page(messages, legacy)).toEqual(await page(messages, tagged));
+      expect((await page(messages, legacy)).coverage.from_seq).toBe(first.coverage.to_seq + 1);
+      expect(await page(messages, legacyFor(tagged, GUARD))).toEqual({ ok: false, reason: 'cursor_stale' });
+      // A prefix cursor tolerates appends; a source cursor does not.
+      expect(await page([...messages, appended], legacy)).toEqual(
+        tagged.includes(':prefix:') ? await page([...messages, appended], tagged) : { ok: false, reason: 'cursor_stale' },
+      );
+    }
   });
 
   it('projects a confirmed child_session_id for native task calls from state or part metadata only', async () => {
@@ -2843,7 +2956,9 @@ describe('task trace lifecycle hints', () => {
     expect(description).toContain('empty');
     expect(description).toContain('unclear');
     expect(description).toContain('paged forensic v3 index');
-    expect(description).toContain('cursor');
+    expect(description).toContain('pass the entire coverage.next_cursor string unchanged as cursor');
+    expect(description).toContain('passing its events[n].ref as event');
+    expect((tools.hive_task_trace.args.cursor as any).description).toContain('passed unchanged');
     expect(description).toContain('read-only');
     expect(tools.hive_task_trace_content.description).toContain('guarded event');
     expect(tools.hive_task_trace_content.description).toContain('v2 content ID');

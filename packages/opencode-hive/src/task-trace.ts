@@ -34,6 +34,9 @@ const CURSOR_RESERVE_BYTES = 160;
 const MAX_TOKEN_LENGTH = 2048;
 const ABBREVIATION_MARKER = ' [...] ';
 const DIGEST_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+// Canonical decimal after_seq without leading zeros, at most 16 digits (a safe integer is checked after).
+const CURSOR_PATTERN = /^trace-cursor:v3:(prefix|source):([1-9][0-9]{0,15}):([A-Za-z0-9_-]{43})$/;
+const INVALID_CURSOR_HINT = 'Pass coverage.next_cursor unchanged, or omit cursor to restart from the first page.';
 // Native IDs outside visible ASCII or 256 bytes are treated as missing so refs stay bounded.
 const NATIVE_ID_PATTERN = /^[\x21-\x7e]{1,256}$/;
 // Recorded input keys that identify an action when the whole input is too large to show.
@@ -670,13 +673,24 @@ function decodeEventRef(value: unknown): EventSelector | undefined {
   return undefined;
 }
 
+// Cursors are one readable string, `trace-cursor:v3:<scope>:<after_seq>:<guard>`, that callers pass
+// back unchanged. `prefix` guards the native-identity chain of the first after_seq events (appends
+// are accepted); `source` guards the whole eligible source. The guard is the complete digest.
 function cursorToken(index: EventIndex, seq: number): string {
-  return index.events.slice(0, seq).every((event) => event.identity === 'native')
-    ? encodeToken([3, 'c', seq, index.events[seq - 1].chain])
-    : encodeToken([3, 's', seq, index.asOf]);
+  const prefix = index.events.slice(0, seq).every((event) => event.identity === 'native');
+  return `trace-cursor:v3:${prefix ? 'prefix' : 'source'}:${seq}:${prefix ? index.events[seq - 1].chain : index.asOf}`;
 }
 
+// Cursors issued before the readable form were base64url JSON `[3, 'c' | 's', seq, guard]`; they
+// outlive a host restart inside stored model context, so the canonical legacy encoding still decodes.
 function decodeCursor(value: unknown): IndexCursor | undefined {
+  if (typeof value === 'string' && value.startsWith('trace-cursor:')) {
+    const match = CURSOR_PATTERN.exec(value);
+    const seq = match ? Number(match[2]) : NaN;
+    return match && Number.isSafeInteger(seq)
+      ? { seq, scope: match[1] as IndexCursor['scope'], digest: match[3] }
+      : undefined;
+  }
   const parsed = decodeToken(value);
   if (!parsed || parsed.length !== 4 || parsed[0] !== 3 || (parsed[1] !== 'c' && parsed[1] !== 's')) return undefined;
   const [, scope, seq, guard] = parsed;
@@ -2209,10 +2223,10 @@ export function createTaskTraceTools(options: TaskTraceOptions) {
 
   return {
     hive_task_trace: tool({
-      description: 'Inspect any explicitly identified OpenCode session visible to the connected runtime when its result failed, blocked, timed out, was cancelled, is empty, or is unclear. Returns a read-only paged forensic v3 index of surviving non-reasoning events in source order, with lifecycle, assignment and final self-report context, bounded excerpts, event refs, and coverage; follow coverage.next_cursor with cursor for the next page. Native task call rows show child_session_id when the runtime confirms that child belongs to the traced session. Optional recovery observes a finished turn and returns an untrusted semantic projection with runtime-safe next actions; for an idle runtime whose records stay open it returns an inspect-only evidence snapshot.',
+      description: 'Inspect any explicitly identified OpenCode session visible to the connected runtime when its result failed, blocked, timed out, was cancelled, is empty, or is unclear. Returns a read-only paged forensic v3 index of surviving non-reasoning events in source order, with lifecycle, assignment and final self-report context, bounded excerpts, event refs, and coverage; for the next page pass the entire coverage.next_cursor string unchanged as cursor, and read one event in detail with hive_task_trace_content, passing its events[n].ref as event. Native task call rows show child_session_id when the runtime confirms that child belongs to the traced session. Optional recovery observes a finished turn and returns an untrusted semantic projection with runtime-safe next actions; for an idle runtime whose records stay open it returns an inspect-only evidence snapshot.',
       args: {
         task_id: tool.schema.string().describe('OpenCode session ID visible through the connected runtime.'),
-        cursor: tool.schema.string().optional().describe('coverage.next_cursor from the previous index page. Omit for the first page; not valid with recovery.'),
+        cursor: tool.schema.string().optional().describe('The entire coverage.next_cursor string from the previous index page, passed unchanged (a readable trace-cursor:v3:<prefix|source>:<after_seq>:<guard> value; do not decode, edit, or rebuild it). Omit for the first page; not valid with recovery.'),
         recovery: tool.schema.boolean().optional().describe('Request semantic map/reduce recovery: closed_turn scope for an observed idle-and-closed turn, evidence_only scope for an idle runtime with open tool or message records. Defaults to false forensic output; non-direct-child targets and evidence-only snapshots are inspect-only.'),
       },
       async execute({ task_id, cursor, recovery = false }, context) {
@@ -2221,7 +2235,7 @@ export function createTaskTraceTools(options: TaskTraceOptions) {
         if (cursor !== undefined) {
           if (recovery) return JSON.stringify({ ok: false, reason: 'invalid_selector' });
           start = decodeCursor(cursor);
-          if (!start) return JSON.stringify({ ok: false, reason: 'invalid_cursor' });
+          if (!start) return JSON.stringify({ ok: false, reason: 'invalid_cursor', hint: INVALID_CURSOR_HINT });
         }
         const unavailable = JSON.stringify({ ok: false, reason: 'unavailable_or_unauthorized' });
         const target = await resolveTargetSession(
