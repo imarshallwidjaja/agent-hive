@@ -50,6 +50,9 @@ describe('release documentation and runtime contract', () => {
 
   it('keeps active runtime source free of removed admission and private-review machinery', () => {
     const runtime = read('packages/opencode-hive/src/runtime.ts');
+    const services = read('packages/opencode-hive/src/runtime/hive-services.ts');
+    const tools = read('packages/opencode-hive/src/runtime/hive-tools.ts');
+    const policy = read('packages/opencode-hive/src/runtime/role-policy.ts');
     for (const removed of [
       'ExecutionAttemptService',
       'ExecutionFinalizationService',
@@ -57,9 +60,10 @@ describe('release documentation and runtime contract', () => {
       'shouldRejectTaskIdReuse',
       'ReviewWorkspaceService',
       'ReviewEvidenceBundleService',
-    ]) assert.doesNotMatch(runtime, new RegExp(removed), removed);
-    assert.match(runtime, /hive_feature_select/);
-    assert.match(runtime, /sourceDirectory cannot be combined with repoIds/);
+    ]) assert.doesNotMatch([runtime, services, tools, policy].join('\n'), new RegExp(removed), removed);
+    assert.match(tools, /hive_feature_select/);
+    assert.match(policy, /hive_feature_select/);
+    assert.match(services, /sourceDirectory cannot be combined with repoIds/);
     assert.match(runtime, /hive-route-snapshot/);
   });
 

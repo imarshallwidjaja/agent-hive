@@ -990,6 +990,7 @@ describe('coordinated runtime hard cut', () => {
       experimental: { primary_tools: ['operator_tool', 'question'], mcp_timeout: 1234 },
       agent: Object.fromEntries(['general', 'explore'].map((name) => [name, {
         description: `Operator ${name}`,
+        model: 'operator/model',
         permission: { 'hive_*': 'allow', hive_status: 'allow', task: 'allow', question: 'allow', skill: 'deny', edit: 'allow', '*': 'allow', read: { '*': 'allow', '*.env': 'deny' } },
       }])),
     };
@@ -1030,7 +1031,16 @@ describe('coordinated runtime hard cut', () => {
     for (const base of CUSTOM_AGENT_BASES) matrix[`audit-${base}`] = matrix[base]!;
 
     expect(HIVE_TOOL_NAMES).toHaveLength(37);
-    expect(config.experimental.primary_tools.toSorted()).toEqual(['operator_tool', 'question', ...primaryOnly].toSorted());
+    // The operator's entries stay first and `question` is not repeated; the policy's entries follow in policy order.
+    expect(config.experimental.primary_tools).toEqual(['operator_tool', 'question', ...primaryOnly]);
+    const bare: any = {};
+    await loaded.config!(bare);
+    expect(bare.experimental.primary_tools).toEqual(['question', ...primaryOnly]);
+    // Agents Hive does not manage are handed back untouched.
+    const unmanaged = { description: 'Operator agent.', permission: { bash: 'allow', hive_status: 'allow' } };
+    const withUnmanaged: any = { agent: { 'operator-agent': unmanaged } };
+    await loaded.config!(withUnmanaged);
+    expect(withUnmanaged.agent['operator-agent']).toBe(unmanaged);
     expect(config.experimental.mcp_timeout).toBe(1234);
     expect(config.subagent_depth).toBe(2);
     expect(Object.keys(config.agent).toSorted()).toEqual(Object.keys(matrix).toSorted());
@@ -1089,6 +1099,7 @@ describe('coordinated runtime hard cut', () => {
     }
     for (const agent of ['general', 'explore']) {
       expect(config.agent[agent].description).toBe(`Operator ${agent}`);
+      expect(config.agent[agent].model).toBe('operator/model');
       expect(action(agent, 'read', false, 'private.env')).toBe('deny');
     }
     for (const base of CUSTOM_AGENT_BASES) expect(config.agent[`audit-${base}`].permission).toEqual(config.agent[base].permission);
@@ -1118,6 +1129,10 @@ describe('coordinated runtime hard cut', () => {
         );
         expect(config.agent[agent].permission.read).toEqual({ '*.env': 'deny' });
         expect(config.agent[agent].permission.bash).toBe('allow');
+        // Preserved operator rules keep their order and Hive's boundary rules follow.
+        expect(Object.keys(config.agent[agent].permission)).toEqual([
+          ...(agent === 'general' ? ['edit'] : []), 'read', 'bash', 'hive_*', 'task', 'question', 'skill', ...(agent === 'explore' ? ['edit'] : []),
+        ]);
       }
     } finally {
       warn.mockRestore();

@@ -78,6 +78,7 @@ describe('agent registration', () => {
       expect(config.agent[name].hidden, name).toBe(true);
     }
     expect(config.agent['hive-master'].hidden).toBe(true);
+    expect(config.default_agent).toBe('architect-planner');
     expect(config.agent['architect-planner'].hidden).toBeUndefined();
     expect(config.agent['swarm-orchestrator'].hidden).toBeUndefined();
     expect(config.agent['hive-builder'].hidden).toBeUndefined();

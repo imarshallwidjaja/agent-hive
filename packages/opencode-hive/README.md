@@ -107,7 +107,7 @@ Use `/dash-review` for one read-only Git, process/concept, or local-artifact rev
 
 For an ad-hoc run, review the existing run or branch, then give a later fix instruction to the ad-hoc orchestrator. For a Hive feature run, review the task, feature, or branch, then give the active planner or orchestrator a later fix instruction.
 
-Background instructions appear only when `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL` has a truthy value (empty, `0`, `false`, and `no` keep the gate closed) and the bundled background protocol is available. Use the [Background Orchestration](#background-orchestration) section and the `background-delegation` skill for the scheduler protocol. The `/dash-review` command template does not add background instructions, though its private primary has access to the background board tools when the gate is open ([command renderer](src/commands/renderers.ts), [runtime grants](src/runtime.ts)).
+Background instructions appear only when `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL` has a truthy value (empty, `0`, `false`, and `no` keep the gate closed) and the bundled background protocol is available. Use the [Background Orchestration](#background-orchestration) section and the `background-delegation` skill for the scheduler protocol. The `/dash-review` command template does not add background instructions, though its private primary has access to the background board tools when the gate is open ([command renderer](src/commands/renderers.ts), [runtime grants](src/runtime/role-policy.ts)).
 
 ### Vulnerability Review
 
@@ -115,7 +115,7 @@ Use `/vuln-review` with a source scope in ordinary language, for example `/vuln-
 
 The primary selects configured `vulnerability-reviewer` specialists by description and dispatches every explicitly requested configured specialist. It preserves the source fingerprint when it uses a Git snapshot. The report leads with deduplicated, severity-ordered findings backed by an attacker-to-impact path, confidence, affected locations, and root cause; it also states unresolved leads and coverage gaps. With no confirmed findings, it says "No confirmed vulnerabilities found in reviewed scope." A clean result applies only to the reviewed scope, not repository security ([reviewer contract](src/agents/vulnerability-reviewer.ts)).
 
-External research may receive only public dependency names and versions or public advisory IDs such as CVE and GHSA IDs. Never send proprietary source, symbols, paths, configuration, logs, or stack traces to external tools ([reviewer contract](src/agents/vulnerability-reviewer.ts)). Findings stay in session history; the command writes no report file. The private primary has edit permission denied and does not begin remediation in the first response ([runtime grants](src/runtime.ts), [primary prompt](src/agents/vulnerability-review-primary.ts)).
+External research may receive only public dependency names and versions or public advisory IDs such as CVE and GHSA IDs. Never send proprietary source, symbols, paths, configuration, logs, or stack traces to external tools ([reviewer contract](src/agents/vulnerability-reviewer.ts)). Findings stay in session history; the command writes no report file. The private primary has edit permission denied and does not begin remediation in the first response ([runtime grants](src/runtime/role-policy.ts), [primary prompt](src/agents/vulnerability-review-primary.ts)).
 
 ### Planning-mode delegation
 
@@ -253,11 +253,11 @@ Primary orchestrators can inspect any explicitly identified native OpenCode sess
 
 ### Operator Constraints
 
-`hive_constraints_read`, `hive_constraints_add`, `hive_constraints_edit`, and `hive_constraints_clear` manage durable operator directives. Scope defaults to the current session; pass `scope: "feature"` for a feature directive. Read the current register before editing or clearing; `hive_constraints_edit` takes the constraint `id` and register `expectedRevision`, while `hive_constraints_clear` takes `expectedRevision` ([runtime tools](src/runtime.ts)). Only primary agents can mutate constraints. The selected feature route, session constraints, and feature constraints travel with native child dispatch.
+`hive_constraints_read`, `hive_constraints_add`, `hive_constraints_edit`, and `hive_constraints_clear` manage durable operator directives. Scope defaults to the current session; pass `scope: "feature"` for a feature directive. Read the current register before editing or clearing; `hive_constraints_edit` takes the constraint `id` and register `expectedRevision`, while `hive_constraints_clear` takes `expectedRevision` ([runtime tools](src/runtime/hive-tools.ts)). Only primary agents can mutate constraints. The selected feature route, session constraints, and feature constraints travel with native child dispatch.
 
 ### Git Snapshot
 
-`hive_git_snapshot` captures a validated `hive-git-snapshot/v1` envelope for a selected Git range or paths. Its optional absolute `directory` must be an exact foreign Git top-level without a Hive manifest and cannot be combined with `repositoryIds` ([runtime tool](src/runtime.ts)). In a manifest-backed project, omit `directory` and select repositories with `repositoryIds` when needed. Check the returned status and failure records before using the snapshot as review evidence.
+`hive_git_snapshot` captures a validated `hive-git-snapshot/v1` envelope for a selected Git range or paths. Its optional absolute `directory` must be an exact foreign Git top-level without a Hive manifest and cannot be combined with `repositoryIds` ([runtime tool](src/runtime/hive-tools.ts)). In a manifest-backed project, omit `directory` and select repositories with `repositoryIds` when needed. Check the returned status and failure records before using the snapshot as review evidence.
 
 ### Troubleshooting
 

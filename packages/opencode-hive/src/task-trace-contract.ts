@@ -1,10 +1,8 @@
-import { tool } from '@opencode-ai/plugin';
+import { z } from './runtime/schema.js';
 
 // Output contract and reply handling for the hidden recovery summarizer. The structural schemas below
 // are the single source for both the contract sent to the model and the shape validation of its reply;
 // task-trace.ts layers the data-dependent rules (step coverage, basis support, action rules) on top.
-
-const z = tool.schema;
 
 type RecordValue = Record<string, unknown>;
 

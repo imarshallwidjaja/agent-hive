@@ -69,4 +69,4 @@ Full primaries are never valid `task()` targets, and `hive-helper` is not a cust
 - Background tools exist only when `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL` is set; otherwise they return `background_tools_disabled`.
 - Skills load through OpenCode's native `skill` tool, which every Hive role except the hidden trace summarizer may call.
 
-When the agent-hive source is available, the enforced matrix lives in `packages/opencode-hive/src/runtime.ts` (config hook) and is documented in `packages/opencode-hive/docs/HIVE-TOOLS.md` under "Agent Tool Access". Prefer those over this table if they disagree.
+When the agent-hive source is available, the enforced matrix lives in `packages/opencode-hive/src/runtime/role-policy.ts` (applied by the config hook in `runtime.ts`) and is documented in `packages/opencode-hive/docs/HIVE-TOOLS.md` under "Agent Tool Access". Prefer those over this table if they disagree.

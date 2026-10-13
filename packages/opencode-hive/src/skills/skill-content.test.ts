@@ -1356,7 +1356,7 @@ describe('skill content', () => {
         .match(/export type TaskSpecFreshnessReason =([^;]+);/)![1];
       const reasons = [...union.matchAll(/'([a-z_]+)'/g)].map((match) => match[1]);
       expect(reasons.length).toBeGreaterThan(0);
-      expect(readRepoFile('packages/opencode-hive/src/runtime.ts')).toContain("specStaleReason ?? 'freshness_unavailable'");
+      expect(readRepoFile('packages/opencode-hive/src/runtime/hive-tools.ts')).toContain("specStaleReason ?? 'freshness_unavailable'");
       const table = section(reference('runtime-layout.md'), '### Spec freshness (`specStaleReason`)');
       expect(new Set(firstCellNames(table))).toEqual(new Set([...reasons, 'freshness_unavailable']));
     });

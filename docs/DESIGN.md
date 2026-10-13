@@ -47,7 +47,7 @@ packages/
 ### Component responsibilities
 
 - `hive-core` owns feature, plan, task, context, repository-manifest, session, constraint, background-board, and worktree services. `TaskService` parses tasks and persists status and reports; `WorktreeService` and `AdhocWorktreeService` inspect and integrate Git workspaces without assigning workers or updating task state.
-- `opencode-hive/src/runtime.ts` registers the direct `hive_*` tools, builds agent and command configuration, captures route and constraint snapshots for native `task()` calls, and connects background observation. Bundled skills are discovered and materialized from packaged `SKILL.md` files.
+- `opencode-hive/src/runtime.ts` registers the v1 `hive_*` tools, builds agent and command configuration, captures route and constraint snapshots for native `task()` calls, and connects background observation. It delegates to three host-neutral modules under `src/runtime/`: `hive-services.ts` binds the domain services and feature, session and constraint routing to one canonical project root; `hive-tools.ts` defines the 31 ordinary operations with their Zod argument schemas and structured results; `role-policy.ts` holds each role's Hive tool grants, delegation allowlists and primary-only operations. Bundled skills are discovered and materialized from packaged `SKILL.md` files.
 - `vscode-hive` displays feature and task state, plans, comments, and scoped context; its plan comment controller writes review threads while its filesystem watcher triggers UI refresh.
 
 ### Execution ownership

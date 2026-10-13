@@ -125,9 +125,9 @@ Task status and reports are the execution record. There is no attempt ledger. Ol
 
 ### Adding a New Tool
 
-1. Add the tool definition to `packages/opencode-hive/src/runtime.ts`, `src/background/backgroundTools.ts`, or `src/task-trace.ts`, according to its owner.
+1. Add an ordinary Hive operation to `packages/opencode-hive/src/runtime/hive-tools.ts` (its Zod arguments and structured result; `runtime.ts` registers every operation for v1 and adds no per-tool code), or add the tool to `src/background/backgroundTools.ts` or `src/task-trace.ts`, according to its owner.
 2. Register its name in `HIVE_TOOL_NAMES` in `packages/opencode-hive/src/utils/plugin-manifest.ts`; regenerate `plugin.json` with the package build.
-3. Update ordered role permissions and agent guidance where the tool must be available or explained. Add primary-only operations to `experimental.primary_tools`; test effective permissions against global allow and child-session denial.
+3. Update ordered role grants in `packages/opencode-hive/src/runtime/role-policy.ts` and agent guidance where the tool must be available or explained. Add primary-only operations to `PRIMARY_ONLY_TOOLS` there (they reach `experimental.primary_tools`); test effective permissions against global allow and child-session denial.
 4. Update the tool table in `AGENTS.md`, `packages/opencode-hive/docs/HIVE-TOOLS.md`, and the tool-count pin in `packages/opencode-hive/src/runtime.test.ts`.
 5. Test the tool through the plugin runtime.
 
