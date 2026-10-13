@@ -11,6 +11,8 @@ import { parseV2Options } from './options.js';
 import { registerCatalog, type V2Catalog } from './registration.js';
 
 // lifecycle imports: native dispatch and background observation
+import { createV2BackgroundLifecycle, hostRuntimeId, registerBackground } from './background.js';
+import { registerDispatch } from './dispatch.js';
 
 // evidence imports: forensic reads and semantic recovery
 
@@ -22,8 +24,19 @@ function composeCatalog(context: Plugin.Context, identity: Identity): Effect.Eff
   return Effect.suspend(() => registerCatalog({ context, identity, options: parseV2Options(context.options) }));
 }
 
-function composeLifecycle(_context: Plugin.Context, _identity: Identity, _catalog: V2Catalog): Effect.Effect<void, never, Scope.Scope> {
-  return Effect.void;
+/**
+ * Native subagent dispatch (route capture, prompt composition, the continuation preflight against the server's verified
+ * active sessions, and the child-binding barrier) and the background board (its four tools, the parent's board view and
+ * host-event observation). The host keeps scheduling and running jobs.
+ */
+function composeLifecycle(context: Plugin.Context, _identity: Identity, catalog: V2Catalog): Effect.Effect<void, never, Scope.Scope> {
+  const { services } = catalog;
+  const runtimeId = hostRuntimeId(context.location.directory);
+  const background = createV2BackgroundLifecycle({ projectRoot: services.projectRoot, service: services.backgroundJobService, runtimeId });
+  return Effect.gen(function* () {
+    yield* registerDispatch({ context, services, authority: catalog.authority, background, activity: catalog.readAccess });
+    yield* registerBackground({ context, registrar: catalog.registrar, projectRoot: services.projectRoot, service: services.backgroundJobService, lifecycle: background, runtimeId });
+  });
 }
 
 function composeEvidence(_context: Plugin.Context, _identity: Identity, _catalog: V2Catalog): Effect.Effect<void, never, Scope.Scope> {

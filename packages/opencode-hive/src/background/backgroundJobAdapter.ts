@@ -41,9 +41,33 @@ export interface BackgroundJobAdapterOptions {
   warn?: (message: string) => void;
 }
 
-type SessionLifecycleObservation =
+/**
+ * A v1 child session's lifecycle. `idle` is not stop evidence: it leaves a live row uncertain until the native
+ * completion notification arrives. `error` is v1's terminal session error.
+ */
+export type SessionLifecycleObservation =
   | { kind: 'idle'; sessionId: string }
   | { kind: 'error'; sessionId: string; runtimeState: 'error' | 'cancelled'; diagnostic: string };
+
+/** A v1 native completion notification for one child, decoded from its synthetic message. */
+export type NativeCompletionObservation = {
+  /** Identifies this notification so a replayed delivery is applied once. */
+  key: string;
+  parentSessionId: string;
+  childId: string;
+  callId?: string;
+  runtimeState: 'completed' | 'error' | 'cancelled';
+  result?: string;
+  error?: string;
+  timedOut?: boolean;
+};
+
+export interface BoardObserverOptions {
+  projectRoot: string;
+  service: BackgroundJobService;
+  runtimeId?: string;
+  warn: (message: string) => void;
+}
 
 export function classifyRuntimeEpochStaleJobs(input: {
   service: BackgroundJobService;
@@ -74,11 +98,133 @@ export function classifyRuntimeEpochStaleJobs(input: {
   }
 }
 
+/**
+ * Board observation. Both hosts use the parent's prompt board and its acknowledgement. Completion and session
+ * lifecycle matching serve v1, whose notifications can carry the launching call: every match is scoped to this project
+ * and the notification's parent, and a child identity with more than one board row (a reused native child) is marked
+ * uncertain rather than guessed.
+ */
+export function createBoardObserver(options: BoardObserverOptions) {
+  const { warn } = options;
+  const observedCompletionNotifications = new Set<string>();
+
+  function findNativeJobs(taskId: string, parentSessionId: string, callId?: string): BackgroundJobRecord[] {
+    return options.service
+      .listScoped({ projectRoot: options.projectRoot, parentSessionId }, { includeArchived: true })
+      .filter(job => job.taskId === taskId || job.sessionId === taskId)
+      .filter(job => callId === undefined || job.callId === callId);
+  }
+
+  function markAmbiguousObservation(jobs: BackgroundJobRecord[], taskId: string, source: string): boolean {
+    const aliases = jobs.map(job => job.alias).join(', ');
+    const diagnostic = `Ambiguous ${source} for reused native child '${taskId}'. Preserved prior terminal outcomes; inspect hive_task_trace({ task_id: ${JSON.stringify(taskId)} }) and use an exact board alias (${aliases}).`;
+    let succeeded = true;
+    for (const job of jobs) {
+      if (isLiveBackgroundJob(job)) {
+        try {
+          options.service.updateRuntimeState(job.alias, 'unknown', {
+            statusUncertain: true,
+            lastStatusError: diagnostic,
+          });
+        } catch (error) {
+          succeeded = false;
+          warn(`[hive:background] failed to mark ambiguous background task ${job.alias}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+    }
+    warn(`[hive:background] ${diagnostic}`);
+    return succeeded;
+  }
+
+  /** Applies one v1 completion notification to the single board row it matches, or marks a reused child ambiguous. */
+  function observeCompletion(observation: NativeCompletionObservation): void {
+    if (observedCompletionNotifications.has(observation.key)) return;
+    const jobs = findNativeJobs(observation.childId, observation.parentSessionId, observation.callId);
+    if (jobs.length === 0) return;
+    if (jobs.length > 1) {
+      if (markAmbiguousObservation(jobs, observation.childId, 'native completion notification')) {
+        observedCompletionNotifications.add(observation.key);
+      }
+      return;
+    }
+    try {
+      options.service.markTerminal(jobs[0]!.alias, observation.runtimeState, {
+        resultSummary: observation.result,
+        lastStatusError: observation.error,
+        statusUncertain: observation.timedOut ?? false,
+      });
+      observedCompletionNotifications.add(observation.key);
+    } catch (error) {
+      warn(`[hive:background] failed to update background task ${observation.childId} from completion notification: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  function observeSessionLifecycle(observation: SessionLifecycleObservation): void {
+    try {
+      const history = options.service
+        .listScoped({ projectRoot: options.projectRoot }, { includeArchived: true })
+        .filter(job => job.sessionId === observation.sessionId);
+      const currentJobs = history.filter(isLiveBackgroundJob);
+      if (currentJobs.length === 0) return;
+      if (history.length > 1) {
+        markAmbiguousObservation(history, observation.sessionId, `session ${observation.kind} event`);
+        return;
+      }
+
+      const job = currentJobs[0]!;
+      if (observation.kind === 'idle') {
+        options.service.updateRuntimeState(job.alias, 'unknown', { statusUncertain: true });
+      } else {
+        options.service.markTerminal(job.alias, observation.runtimeState, {
+          statusUncertain: false,
+          lastStatusError: observation.diagnostic,
+        });
+      }
+    } catch (error) {
+      warn(`[hive:background] failed to observe session ${observation.kind} for ${observation.sessionId}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  /** The parent session finished a turn, so it has seen the board it was shown. */
+  function acknowledgePrompt(parentSessionId: string): void {
+    try {
+      options.service.markPromptAcknowledgedForSession(parentSessionId);
+    } catch (error) {
+      warn(`[hive:background] failed to acknowledge parent prompt for ${parentSessionId}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  /**
+   * The board a parent session's next model request shows, or undefined when nothing needs showing. Rows from an
+   * earlier runtime epoch are classified stale first. Showing the board records the prompt notification.
+   */
+  function promptBoard(sessionID: string): { text: string; notify: () => void } | undefined {
+    classifyRuntimeEpochStaleJobs({
+      service: options.service,
+      projectRoot: options.projectRoot,
+      currentRuntimeId: options.runtimeId,
+      isVisible: job => isJobVisibleInPrompt(job, options.projectRoot, sessionID),
+    });
+    const jobs = options.service
+      .listScoped({ projectRoot: options.projectRoot })
+      .filter(job => isJobVisibleInPrompt(job, options.projectRoot, sessionID))
+      .filter(job => shouldShowJobInPrompt(job, sessionID));
+    if (jobs.length === 0) return undefined;
+    return { text: formatPromptBoard(jobs), notify: () => { options.service.markPromptNotified(jobs.map(job => job.taskId), sessionID); } };
+  }
+
+  return { findNativeJobs, markAmbiguousObservation, observeCompletion, observeSessionLifecycle, acknowledgePrompt, promptBoard };
+}
+
+export type BoardObserver = ReturnType<typeof createBoardObserver>;
+
+/** V1 board adapter: decodes v1 tool output, synthetic XML notifications and session events into the shared observer. */
 export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions) {
   const lifecycleContextByCall = new Map<string, TaskLifecycleContext>();
-  const observedCompletionNotifications = new Set<string>();
   const parseLifecycleEvent = options.parseLifecycleEvent ?? parseTaskLifecycleEvent;
   const warn = options.warn ?? ((message: string) => console.warn(message));
+  const observer = createBoardObserver({ projectRoot: options.projectRoot, service: options.service, runtimeId: options.runtimeId, warn });
+  const { findNativeJobs, markAmbiguousObservation, observeSessionLifecycle } = observer;
 
   const adapter = {
     'tool.execute.before': async (input: { tool?: string; sessionID?: string; callID?: string }, output: { args?: Record<string, unknown> }): Promise<void> => {
@@ -128,21 +274,10 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
         return;
       }
 
-      classifyRuntimeEpochStaleJobs({
-        service: options.service,
-        projectRoot: options.projectRoot,
-        currentRuntimeId: options.runtimeId,
-        isVisible: job => isJobVisibleInPrompt(job, options.projectRoot, sessionID),
-      });
-      const jobs = options.service
-        .listScoped({ projectRoot: options.projectRoot })
-        .filter(job => isJobVisibleInPrompt(job, options.projectRoot, sessionID))
-        .filter(job => shouldShowJobInPrompt(job, sessionID));
-      if (jobs.length === 0) {
+      const board = observer.promptBoard(sessionID);
+      if (!board) {
         return;
       }
-
-      const board = formatPromptBoard(jobs);
       if (targetMessage.parts.some(part => part.text?.includes('## Background Job Board'))) {
         return;
       }
@@ -154,10 +289,10 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
         sessionID,
         messageID,
         type: 'text',
-        text: `\n\n${board}`,
+        text: `\n\n${board.text}`,
         synthetic: true,
       });
-      options.service.markPromptNotified(jobs.map(job => job.taskId), sessionID);
+      board.notify();
     },
 
     event: async (input: unknown): Promise<void> => {
@@ -170,11 +305,7 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
         return;
       }
       if (observation.kind === 'idle') {
-        try {
-          options.service.markPromptAcknowledgedForSession(observation.sessionId);
-        } catch (error) {
-          warn(`[hive:background] failed to acknowledge parent prompt for ${observation.sessionId}: ${error instanceof Error ? error.message : String(error)}`);
-        }
+        observer.acknowledgePrompt(observation.sessionId);
       }
       observeSessionLifecycle(observation);
     },
@@ -283,92 +414,20 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
 
         const notificationParent = part.sessionID ?? parentSessionId;
         if (!notificationParent) continue;
-        const jobs = findNativeJobs(parsed.task_id, notificationParent, parsed.callId);
-        const notificationKey = `${message.info.id ?? part.messageID ?? ''}\u0000${part.id ?? ''}\u0000${notificationParent}\u0000${parsed.task_id}`;
-        if (observedCompletionNotifications.has(notificationKey) || jobs.length === 0) {
-          continue;
-        }
-
-        if (jobs.length > 1) {
-          if (markAmbiguousObservation(jobs, parsed.task_id, 'native completion notification')) {
-            observedCompletionNotifications.add(notificationKey);
-          }
-          continue;
-        }
-        const job = jobs[0]!;
-
         const state = normalizeBackgroundRuntimeState(parsed.runtimeState, parsed.error?.kind);
-        if (state !== 'completed' && state !== 'error' && state !== 'cancelled') {
-          continue;
-        }
-
-        try {
-          options.service.markTerminal(job.alias, state, {
-            resultSummary: parsed.result,
-            lastStatusError: parsed.error?.message,
-            statusUncertain: parsed.timedOut ?? false,
-          });
-          observedCompletionNotifications.add(notificationKey);
-        } catch (error) {
-          warn(`[hive:background] failed to update background task ${parsed.task_id} from completion notification: ${error instanceof Error ? error.message : String(error)}`);
-        }
-      }
-    }
-  }
-
-  function observeSessionLifecycle(observation: SessionLifecycleObservation): void {
-    try {
-      const history = options.service
-        .listScoped({ projectRoot: options.projectRoot }, { includeArchived: true })
-        .filter(job => job.sessionId === observation.sessionId);
-      const currentJobs = history.filter(job =>
-        !isBackgroundJobArchived(job) && !isTerminalRuntimeState(job.runtimeState));
-      if (currentJobs.length === 0) return;
-      if (history.length > 1) {
-        markAmbiguousObservation(history, observation.sessionId, `session ${observation.kind} event`);
-        return;
-      }
-
-      const job = currentJobs[0]!;
-      if (observation.kind === 'idle') {
-        options.service.updateRuntimeState(job.alias, 'unknown', { statusUncertain: true });
-      } else {
-        options.service.markTerminal(job.alias, observation.runtimeState, {
-          statusUncertain: false,
-          lastStatusError: observation.diagnostic,
+        if (state !== 'completed' && state !== 'error' && state !== 'cancelled') continue;
+        observer.observeCompletion({
+          key: `${message.info.id ?? part.messageID ?? ''}\u0000${part.id ?? ''}\u0000${notificationParent}\u0000${parsed.task_id}`,
+          parentSessionId: notificationParent,
+          childId: parsed.task_id,
+          callId: parsed.callId,
+          runtimeState: state,
+          result: parsed.result,
+          error: parsed.error?.message,
+          timedOut: parsed.timedOut,
         });
       }
-    } catch (error) {
-      warn(`[hive:background] failed to observe session ${observation.kind} for ${observation.sessionId}: ${error instanceof Error ? error.message : String(error)}`);
     }
-  }
-
-  function findNativeJobs(taskId: string, parentSessionId: string, callId?: string): BackgroundJobRecord[] {
-    return options.service
-      .listScoped({ projectRoot: options.projectRoot, parentSessionId }, { includeArchived: true })
-      .filter(job => job.taskId === taskId || job.sessionId === taskId)
-      .filter(job => callId === undefined || job.callId === callId);
-  }
-
-  function markAmbiguousObservation(jobs: BackgroundJobRecord[], taskId: string, source: string): boolean {
-    const aliases = jobs.map(job => job.alias).join(', ');
-    const diagnostic = `Ambiguous ${source} for reused native child '${taskId}'. Preserved prior terminal outcomes; inspect hive_task_trace({ task_id: ${JSON.stringify(taskId)} }) and use an exact board alias (${aliases}).`;
-    let succeeded = true;
-    for (const job of jobs) {
-      if (!isBackgroundJobArchived(job) && !isTerminalRuntimeState(job.runtimeState)) {
-        try {
-          options.service.updateRuntimeState(job.alias, 'unknown', {
-            statusUncertain: true,
-            lastStatusError: diagnostic,
-          });
-        } catch (error) {
-          succeeded = false;
-          warn(`[hive:background] failed to mark ambiguous background task ${job.alias}: ${error instanceof Error ? error.message : String(error)}`);
-        }
-      }
-    }
-    warn(`[hive:background] ${diagnostic}`);
-    return succeeded;
   }
 
   return adapter;
@@ -459,6 +518,11 @@ function shouldShowJobInPrompt(job: BackgroundJobRecord, sessionID: string): boo
     || job.terminalUnreconciled === true
     || !!job.cancelRequestedAt
     || !!job.staleAt;
+}
+
+/** A row the board still treats as a running or uncertain launch: neither terminal nor archived. */
+export function isLiveBackgroundJob(job: BackgroundJobRecord): boolean {
+  return !isBackgroundJobArchived(job) && !isTerminalRuntimeState(job.runtimeState);
 }
 
 function isTerminalRuntimeState(state: BackgroundJobRecord['runtimeState']): boolean {

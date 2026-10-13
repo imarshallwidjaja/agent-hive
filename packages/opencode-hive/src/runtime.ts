@@ -16,7 +16,7 @@ import { HIVE_COMMANDS } from './commands/registry.js';
 import { hiveCommandRenderers } from './commands/renderers.js';
 import type { HiveCommandAgentDescriptor, HiveCommandContext } from './commands/types.js';
 import { createTaskTraceTools, injectTaskTraceHint, isDirectChildSession, TASK_TRACE_SUMMARIZER_AGENT, TASK_TRACE_SUMMARIZER_PROMPT } from './task-trace.js';
-import { composeTaskBrief, TASK_BRIEF_BLOCK } from './task-brief.js';
+import { childRouteRecord, composeDispatchPrompt } from './task-brief.js';
 import { createHiveServices, type RouteSnapshot } from './runtime/hive-services.js';
 import { createHiveOperations, presentHiveResult } from './runtime/hive-tools.js';
 import { buildRoleCatalog, createCommandContext as createSharedCommandContext } from './runtime/role-catalog.js';
@@ -36,41 +36,6 @@ function taskChildBinding(event: unknown): { parent: string; call: string; child
     child,
     ...(typeof state?.input?.subagent_type === 'string' ? { agent: state.input.subagent_type } : {}),
   };
-}
-
-/**
- * Matches a generated route snapshot block and its separator. The start marker must open the
- * generated heading line, so an authored prompt that quotes the marker pair inline is preserved.
- */
-const ROUTE_SNAPSHOT_BLOCK = /(?:\n\n)?<!-- hive-route-snapshot:start -->\n## Hive route snapshot\n(?:(?!<!-- hive-route-snapshot:(?:start|end) -->)[\s\S])*?<!-- hive-route-snapshot:end -->/g;
-
-function escapeRouteSnapshotMarkers(text: string): string {
-  return text
-    .replaceAll('<!-- hive-route-snapshot:start -->', '&lt;!-- hive-route-snapshot:start -->')
-    .replaceAll('<!-- hive-route-snapshot:end -->', '&lt;!-- hive-route-snapshot:end -->');
-}
-
-function routeFooter(snapshot: RouteSnapshot, separated: boolean): string {
-  const payload = {
-    projectRoot: snapshot.projectRoot,
-    featureRoute: { selected: snapshot.hasFeatureRoute, feature: snapshot.featureName ?? null },
-  };
-  const constraints = [
-    `Session constraints (revision ${snapshot.sessionConstraints.revision}):\n${escapeRouteSnapshotMarkers(snapshot.sessionConstraints.constraints || '(none)')}`,
-    snapshot.featureConstraints
-      ? `Feature constraints for ${JSON.stringify(snapshot.featureName)} (revision ${snapshot.featureConstraints.revision}):\n${escapeRouteSnapshotMarkers(snapshot.featureConstraints.constraints || '(none)')}`
-      : 'Feature constraints: (none)',
-  ].join('\n\n');
-  return [
-    `${separated ? '\n\n' : ''}<!-- hive-route-snapshot:start -->`,
-    '## Hive route snapshot',
-    `Route snapshot (JSON): ${JSON.stringify(payload)}`,
-    '',
-    '## Standing Constraints',
-    constraints,
-    'This is a dispatch-time snapshot. If directives conflict, report the conflict; runtime routing does not decide it.',
-    '<!-- hive-route-snapshot:end -->',
-  ].join('\n');
 }
 
 const plugin: Plugin = async (ctx) => {
@@ -121,15 +86,7 @@ const plugin: Plugin = async (ctx) => {
     if (existing?.parentSessionId !== undefined && existing.parentSessionId !== binding.parent) {
       throw new Error('existing child snapshot parent cannot change');
     }
-    sessionService.trackGlobal(binding.child, {
-      parentSessionId: binding.parent,
-      projectRoot: snapshot.projectRoot,
-      featureName: snapshot.hasFeatureRoute ? snapshot.featureName : undefined,
-      agent: binding.agent,
-      standingConstraintEntries: snapshot.sessionConstraints.entries,
-      standingConstraintsRevision: snapshot.sessionConstraints.revision,
-      standingConstraints: snapshot.sessionConstraints.constraints || undefined,
-    });
+    sessionService.trackGlobal(binding.child, childRouteRecord(snapshot, binding.parent, binding.agent));
   };
 
   // V1 registration: each shared operation becomes a plugin tool whose result is the operation's JSON presentation.
@@ -204,16 +161,10 @@ const plugin: Plugin = async (ctx) => {
       if (input.tool === 'task' && input.sessionID && input.callID) {
         const snapshot = services.captureRoute(input.sessionID);
         dispatchSnapshots.set(`${input.sessionID}\0${input.callID}`, snapshot);
-        const prompt = typeof output.args?.prompt === 'string'
-          ? output.args.prompt.replace(ROUTE_SNAPSHOT_BLOCK, '').replace(TASK_BRIEF_BLOCK, '')
-          : '';
         const agent = output.args?.subagent_type;
         const foragerDispatch = typeof agent === 'string'
           && classifySession(agent, configService.getCustomAgentConfigs()).baseAgent === 'forager-worker';
-        const brief = foragerDispatch && snapshot.hasFeatureRoute && typeof snapshot.featureName === 'string'
-          ? `\n\n${composeTaskBrief({ projectRoot, taskService, contextService }, snapshot.featureName, prompt)}`
-          : '';
-        output.args.prompt = `${prompt}${routeFooter(snapshot, prompt.length > 0)}${brief}`;
+        output.args.prompt = composeDispatchPrompt({ sources: { projectRoot, taskService, contextService }, snapshot, prompt: output.args?.prompt, foragerDispatch });
       }
       await backgroundAdapter['tool.execute.before'](input, output);
     },

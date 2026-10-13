@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { Effect, Scope } from 'effect';
+import { Effect, Scope, Stream } from 'effect';
 import type { Plugin } from '@opencode/plugin/effect';
 import plugin from '../index.js';
 import { IDENTITY_RPC_ID } from './identity.js';
@@ -13,7 +13,8 @@ afterEach(() => {
   for (const dir of cleanup.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
-// Activation also composes the catalog; these stubs accept its registrations, which registration.test.ts pins.
+// Activation also composes the catalog and lifecycle; these stubs accept their registrations, which
+// registration.test.ts and the dispatch/background suites pin.
 const accept = () => Effect.succeed({ dispose: Effect.void });
 
 function projectDir(): string {
@@ -32,6 +33,7 @@ function fakeContext(directory: string, projectDirectory = directory) {
     command: { transform: accept },
     tool: { transform: accept, hook: accept },
     session: { hook: accept },
+    event: { subscribe: () => Stream.empty },
     rpc: {
       register: (definition: any, handlers: any) =>
         Effect.sync(() => {

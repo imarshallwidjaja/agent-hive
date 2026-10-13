@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { ContextService, FeatureService, PlanService, TaskService, getFeaturePath } from 'hive-core';
-import { composeTaskBrief, TASK_BRIEF_BLOCK, TASK_BRIEF_MAX_BYTES, type TaskBriefSources } from './task-brief.js';
+import { childRouteRecord, composeDispatchPrompt, composeTaskBrief, TASK_BRIEF_BLOCK, TASK_BRIEF_MAX_BYTES, type TaskBriefSources } from './task-brief.js';
 
 const roots: string[] = [];
 
@@ -235,5 +235,39 @@ describe('task dispatch brief', () => {
     const block = composeTaskBrief(sources, 'broken', `Hive task: ${folder}`);
     expect(Buffer.byteLength(block, 'utf8')).toBeLessThanOrEqual(TASK_BRIEF_MAX_BYTES);
     expect(block).toContain('..." has missing/unreadable status (status_missing); do not execute; the primary must inspect and repair the task status.');
+  });
+});
+
+describe('dispatch prompt composition shared by both hosts', () => {
+  const snapshot = (overrides: Partial<Parameters<typeof composeDispatchPrompt>[0]['snapshot']> = {}) => ({
+    projectRoot: '/project',
+    hasFeatureRoute: true,
+    featureName: 'alpha' as string | null,
+    sessionConstraints: { entries: [], revision: 2, constraints: 'Blocking only.' },
+    ...overrides,
+  });
+
+  it('replaces earlier generated blocks, separates the footer only after authored text, and briefs only Forager feature routes', () => {
+    const sources = stubSources();
+    const recomposed = composeDispatchPrompt({ sources, snapshot: snapshot(), prompt: composeDispatchPrompt({ sources, snapshot: snapshot(), prompt: 'Hive task: 01-a', foragerDispatch: true }), foragerDispatch: true });
+    expect(recomposed.match(/<!-- hive-route-snapshot:start -->/g)).toHaveLength(1);
+    expect(recomposed.match(/<!-- hive-task-brief:start -->/g)).toHaveLength(1);
+    expect(recomposed.startsWith('Hive task: 01-a\n\n<!-- hive-route-snapshot:start -->\n## Hive route snapshot\n')).toBe(true);
+
+    expect(composeDispatchPrompt({ sources, snapshot: snapshot(), prompt: undefined, foragerDispatch: false }).startsWith('<!-- hive-route-snapshot:start -->')).toBe(true);
+    expect(composeDispatchPrompt({ sources, snapshot: snapshot(), prompt: 'Look.', foragerDispatch: false })).not.toContain('hive-task-brief');
+    const explicitNull = composeDispatchPrompt({ sources, snapshot: snapshot({ featureName: null }), prompt: 'Hive task: 01-a', foragerDispatch: true });
+    expect(explicitNull).toContain('{"selected":true,"feature":null}');
+    expect(explicitNull).not.toContain('hive-task-brief');
+  });
+
+  it('binds a child to the captured route, keeping an explicit null route and omitting an empty constraint register', () => {
+    expect(childRouteRecord(snapshot({ featureName: null }), 'parent', 'forager-worker')).toEqual({
+      parentSessionId: 'parent', projectRoot: '/project', featureName: null, agent: 'forager-worker',
+      standingConstraintEntries: [], standingConstraintsRevision: 2, standingConstraints: 'Blocking only.',
+    });
+    const unrouted = childRouteRecord(snapshot({ hasFeatureRoute: false, sessionConstraints: { entries: [], revision: 0, constraints: '' } }), 'parent');
+    expect(unrouted.featureName).toBeUndefined();
+    expect(unrouted.standingConstraints).toBeUndefined();
   });
 });

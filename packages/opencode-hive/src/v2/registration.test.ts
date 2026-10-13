@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, spyOn } from 'bun:test';
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { Effect, Exit, Scope } from 'effect';
+import { Effect, Exit, Scope, Stream } from 'effect';
 import type { Plugin } from '@opencode/plugin/effect';
 import { Tool } from '@opencode/schema/tool';
 import plugin from '../index.js';
@@ -60,6 +60,7 @@ function createFakeHost(directory: string, options: Record<string, unknown> = {}
     location: { directory, project: { id: 'project', directory: projectDirectory, canonical: projectDirectory } },
     options,
     rpc: { register: () => Effect.succeed({ dispose: Effect.void, events: { emit: () => Effect.void } }) },
+    event: { subscribe: () => Stream.empty },
     agent: {
       transform: (cb: any) => Effect.sync(() => { transforms.agent.push(cb); return registration; }),
       list: () => Effect.sync(() => ({ data: [...agents(userConfig).registry.values()] })),
@@ -115,7 +116,8 @@ function createFakeHost(directory: string, options: Record<string, unknown> = {}
   }
   const tools = () => {
     const registry = new Map<string, any>();
-    for (const cb of transforms.tool) cb({ add: (info: any) => registry.set(info.name, info) });
+    // `update` ignores missing tools, as the host's editor does; the native subagent tool is not registered here.
+    for (const cb of transforms.tool) cb({ add: (info: any) => registry.set(info.name, info), update: (id: string, fn: (info: any) => void) => { if (registry.has(id)) fn(registry.get(id)); } });
     return registry;
   };
   /** The skill catalog after Hive's transform and then the user's configured sources, as the host builds it. */
@@ -212,7 +214,9 @@ describe('v2 tool registration', () => {
     for (const transport of ['codemode', 'direct'] as const) {
       const host = await activate({ readTransport: transport });
       const tools = host.tools();
-      expect([...tools.keys()].sort()).toEqual([...ORDINARY_TOOLS].sort());
+      // Other families (background, trace) register through the same registrar; their suites pin their sets.
+      expect([...tools.keys()].filter((name) => ORDINARY_TOOLS.includes(name)).sort()).toEqual([...ORDINARY_TOOLS].sort());
+      expect([...tools.keys()].filter((name) => !HIVE_TOOL_NAMES.includes(name))).toEqual([]);
       for (const [name, info] of tools) {
         expect(typeof info.options.codemode).toBe('boolean');
         expect(info.options.codemode).toBe(transport === 'codemode' && (CODEMODE_READ_TOOLS as readonly string[]).includes(name));

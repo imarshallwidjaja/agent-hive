@@ -10,6 +10,7 @@ import {
   type TaskService,
   type TaskSpecFreshness,
 } from 'hive-core';
+import type { RouteSnapshot } from './runtime/hive-services.js';
 
 export const TASK_BRIEF_MAX_BYTES = 2048;
 
@@ -159,6 +160,68 @@ function composeBoundLines(sources: TaskBriefSources, featureName: string, tasks
   // unowned-heading and own-handoff lines, then to the core locators alone.
   if (fits([...core, ...before])) return [...core, ...before];
   return core;
+}
+
+/**
+ * Matches a generated route snapshot block and its separator. The start marker must open the
+ * generated heading line, so an authored prompt that quotes the marker pair inline is preserved.
+ */
+export const ROUTE_SNAPSHOT_BLOCK = /(?:\n\n)?<!-- hive-route-snapshot:start -->\n## Hive route snapshot\n(?:(?!<!-- hive-route-snapshot:(?:start|end) -->)[\s\S])*?<!-- hive-route-snapshot:end -->/g;
+
+function escapeRouteSnapshotMarkers(text: string): string {
+  return text
+    .replaceAll('<!-- hive-route-snapshot:start -->', '&lt;!-- hive-route-snapshot:start -->')
+    .replaceAll('<!-- hive-route-snapshot:end -->', '&lt;!-- hive-route-snapshot:end -->');
+}
+
+function routeFooter(snapshot: RouteSnapshot, separated: boolean): string {
+  const payload = {
+    projectRoot: snapshot.projectRoot,
+    featureRoute: { selected: snapshot.hasFeatureRoute, feature: snapshot.featureName ?? null },
+  };
+  const constraints = [
+    `Session constraints (revision ${snapshot.sessionConstraints.revision}):\n${escapeRouteSnapshotMarkers(snapshot.sessionConstraints.constraints || '(none)')}`,
+    snapshot.featureConstraints
+      ? `Feature constraints for ${JSON.stringify(snapshot.featureName)} (revision ${snapshot.featureConstraints.revision}):\n${escapeRouteSnapshotMarkers(snapshot.featureConstraints.constraints || '(none)')}`
+      : 'Feature constraints: (none)',
+  ].join('\n\n');
+  return [
+    `${separated ? '\n\n' : ''}<!-- hive-route-snapshot:start -->`,
+    '## Hive route snapshot',
+    `Route snapshot (JSON): ${JSON.stringify(payload)}`,
+    '',
+    '## Standing Constraints',
+    constraints,
+    'This is a dispatch-time snapshot. If directives conflict, report the conflict; runtime routing does not decide it.',
+    '<!-- hive-route-snapshot:end -->',
+  ].join('\n');
+}
+
+/**
+ * The prompt a native subagent call delivers: the parent's authored prompt without earlier generated blocks, the
+ * route snapshot footer, then, for a Forager dispatch (built-in or custom-derived) on a selected feature route, the
+ * task brief. Both hosts compose it from the parent's own prompt, before the host adds its subagent prefix.
+ */
+export function composeDispatchPrompt(input: { sources: TaskBriefSources; snapshot: RouteSnapshot; prompt: unknown; foragerDispatch: boolean }): string {
+  const { sources, snapshot, foragerDispatch } = input;
+  const authored = typeof input.prompt === 'string' ? input.prompt.replace(ROUTE_SNAPSHOT_BLOCK, '').replace(TASK_BRIEF_BLOCK, '') : '';
+  const brief = foragerDispatch && snapshot.hasFeatureRoute && typeof snapshot.featureName === 'string'
+    ? `\n\n${composeTaskBrief(sources, snapshot.featureName, authored)}`
+    : '';
+  return `${authored}${routeFooter(snapshot, authored.length > 0)}${brief}`;
+}
+
+/** The session record that binds a child to the route its parent captured at dispatch. */
+export function childRouteRecord(snapshot: RouteSnapshot, parentSessionId: string, agent?: string) {
+  return {
+    parentSessionId,
+    projectRoot: snapshot.projectRoot,
+    featureName: snapshot.hasFeatureRoute ? snapshot.featureName : undefined,
+    agent,
+    standingConstraintEntries: snapshot.sessionConstraints.entries,
+    standingConstraintsRevision: snapshot.sessionConstraints.revision,
+    standingConstraints: snapshot.sessionConstraints.constraints || undefined,
+  };
 }
 
 /**
