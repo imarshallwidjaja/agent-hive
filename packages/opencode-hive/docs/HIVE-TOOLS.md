@@ -2,6 +2,14 @@
 
 Tool availability plus instructions govern action. Each tool validates its own operation.
 
+## Host entries and read transport
+
+The unreleased checkout supplies one package with native v1/v2 entries, all 37 tools and 11 commands. Published 4.1.0 is v1-only. The qualified hosts are v1.18.30 and v2.0.26. Installation, `plugins` options and actual model-selection semantics are in the [plugin README](../README.md#opencode-v2-unreleased-checkout).
+
+V2 registers every tool through one validating registrar. `readTransport: "codemode"` (default) explicitly admits only `hive_repositories_status`, `hive_git_snapshot` and `hive_task_trace_content` to Code Mode; controls, repairing reads, worktree inspections and mixed `hive_task_trace` stay direct. `readTransport: "direct"` makes all 37 direct, with the same IDs and authority. Use direct mode when global, per-role or custom-agent permissions deny `execute`. Hive diagnoses unavailable Code Mode reads and preserves the denial.
+
+The access matrix below names canonical role authority on both hosts. Its config-hook/`primary_tools` mechanism is v1-specific. On v2 native user settings own supported default selection, presentation, model/variant, limits and permission visibility. User allow rules can expose a forbidden tool, but every Hive executor and the native `execute.before` hook still check canonical role/custom inheritance and actual child ancestry before effects. Mode/description do not grant authority; ordinary native `general`/`explore` cannot run Hive tools. Request-time instructions survive user prompt configuration; user skills retain live-catalog precedence. V2 needs operator-set `experimental.subagent_depth: 2` for delegated Architect helpers.
+
 ## Agent Tool Access
 
 Hive registers ordered `agent.permission` rules in OpenCode. Each Hive role starts with `'hive_*': 'deny'`, followed by exact allows and native permissions. OpenCode v1.18.30 appends these rules after global permissions and evaluates the last matching wildcard rule, so a global `{"*":"allow"}` cannot reopen a role-denied Hive tool. The rule also covers future `hive_*` names. Custom agents inherit their base role's permissions.
@@ -26,7 +34,7 @@ Abbreviations enumerate exact tools:
 - **C**: `hive_context_write`, `hive_context_append`.
 - **I**: `hive_worktree_inspect`, `hive_adhoc_worktree_inspect`.
 - **T**: `hive_task_trace`, `hive_task_trace_content`.
-- **B**: all four `hive_background_*` tools listed above; still experiment-gated.
+- **B**: all four `hive_background_*` tools listed above; experiment-gated on v1 and native on v2.
 - **M**: `hive_constraints_add`, `hive_constraints_edit`, `hive_constraints_clear`.
 - **P**: `hive_feature_create`, `hive_feature_select`, `hive_plan_write`, `hive_plan_patch`, `hive_plan_approve`, `hive_tasks_sync`, `hive_repositories_discover`, `hive_repositories_update`, `hive_context_archive`.
 - **V**: `hive_feature_select`, `hive_adhoc_worktree_create`, `hive_adhoc_worktree_cleanup` for operator-authorized isolated review placement.
@@ -274,7 +282,7 @@ The identity guard coordinates Hive operations under the existing repository loc
 
 ## Background Orchestration (4 tools)
 
-These tools are primary-agent-only and are available when the OpenCode background subagent experiment is enabled with `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`. They manage Hive's scoped background job board around native completion notifications from OpenCode `task({ background: true, ... })`.
+These tools are primary-agent-only. V1 enables them with `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL` around native `task({ background: true, ... })`. V2 supplies native `subagent({ background: true, ... })` and the board without that experiment gate.
 
 | Tool | Purpose |
 |------|---------|
@@ -289,15 +297,19 @@ Failure `hint` is one actionable string. `job_not_terminal` tells the caller to 
 
 The board observes the originating native parent and call, not the current feature or agent, and only for background launches; see [Foreground children after a restart](#foreground-children-after-a-restart). Stale and unknown observations stay visible. It does not couple to execution, worktree, or task status. Multiple launch observations may exist for one native task identity when explicit runtime-owned interruption recovery is used. If completion lacks a call ID or its identity is ambiguous, record unknown and hint `hive_task_trace`; never guess the latest child. Missing or ambiguous completion identity must not block unrelated dispatch, but ownership-overlapping work still requires inspection or waiting; do not send another prompt or launch another writer.
 
-With the env gate unset, the background management tools return `background_tools_disabled`. Primary agents keep normal blocking `task()` wait mode. With the env gate set, primary orchestrators receive delegate-first background scheduling guidance and the board tools are active.
+On v1 with the env gate unset, the background management tools return `background_tools_disabled`. Primary agents keep normal blocking `task()` wait mode. With the env gate set, primary orchestrators receive delegate-first background scheduling guidance and the board tools are active. V2 availability follows its native background support.
 
 `hive_background_status` owns `recommendedNextAction`. Both status and reconciliation can set `requiresHiveStatusRefresh`; when true, refresh `hive_status` before dependent feature/task or merge decisions. Reconciliation acknowledgements describe only the requested items; use background status when a later decision needs the remaining board.
 
 Reconcile terminal background jobs first, then refresh `hive_status` before dependent task or merge decisions for scoped feature/task work.
 
-If `hive_background_status` returns `schedulerGuidance.reason: wait_for_native_completion_notification`, do not refresh repeatedly. Wait for OpenCode's native completion notification.
+If `hive_background_status` returns `schedulerGuidance.reason: wait_for_native_completion_notification`, do not refresh repeatedly. Wait for OpenCode's native completion notifications, then inspect the board.
 
 Cancellation is not rollback. Cancel acknowledgement does not prove the worker stopped. Do not invent native task IDs. Reconcile and ignore archive board rows only.
+
+On v2.0.26 every native completion notification lacks the launching call ID. All matching rows, including a singleton, stay `unknown`/uncertain with the native outcome in `lastStatusError`. Terminal reconciliation returns `uncertain_job_requires_ignore`; inspect the child, then archive only the exact canonical alias with `decision: "ignored"`. Same-process reload makes existing observations uncertain, while a process restart makes old rows stale/uncertain. Native interruption acknowledgement is separate from settlement and notification; none of these board states authorizes dispatch or a replacement writer.
+
+V2 dispatch binds captured parent route/constraints at awaited native progress before child prompt admission. Fresh children and proven-compatible parent-bound continuations need no read client. Adopting an existing native direct child whose Hive binding is missing or has no parent, or changing route/constraints/agent, requires the explicit server option and verified native idle before the native executor can switch or prompt it. Hive checks native parent ancestry first. An activation-local reservation precedes the awaited read and releases on every exit; a matching pending reservation alone is not compatibility proof. Idle rebinding is supported, with no lifetime-immutable route or external same-child atomic-fence guarantee.
 
 ## Runtime Session Inspection (2 tools)
 
@@ -328,6 +340,10 @@ hive_task_trace_content({ task_id: "child", event: "<events[n].ref>", field: "ou
 ```
 
 ### Forensic index
+
+V2 reads the complete public message timeline, not active context or a filtered export, through the verified server client. The `server` option binds the exact activation/location using its held nonce; both identity checks bracket each read. Placement is independent of native relationship: self, child, descendant and other are classified without rerouting another location. Non-direct-child recovery stays inspect-only. Native `subagent` rows use their recorded `sessionID` metadata for child disclosure.
+
+When verified read access fails, the `read_access` string names a connection or caller boundary: `not_configured`, `unauthorized`, `unreachable`, `wrong_location`, `wrong_instance`, `caller_unavailable` or `caller_displaced`. Target failures such as `target_unavailable` and `inconsistent_lookup` return `unavailable_or_unauthorized` without `read_access` to avoid disclosing target details. Missing configuration is not an empty timeline or confirmed idle. Configure the URL and password environment-variable reference in the **server process**; custom variables may also reach trusted tool subprocesses. The reader cannot guess a server or start one.
 
 Each page lists events in source order under a 24 KiB budget (`render.bytes` is exact) and always makes forward progress. An event is one text, tool, retry, patch, compaction, or unsupported part, or an assistant message error. Step markers are counted as `source.structural_parts`. Reasoning is excluded from events, refs, cursors, guards, and errors; `reasoning` reports only part, byte, and token counts.
 
@@ -364,6 +380,12 @@ Any unresolved tool record or open latest assistant message keeps `terminal: fal
 Summarizer requests carry a per-stage output contract built from the same strict schema that validates the reply. Map replies are `{ kind: "map", range, cards }` and reduce replies are `{ kind: "reduce", semantic }`; unknown or missing keys, blank strings, and wrong ranges are rejected. A malformed map card falls back on its own step while valid sibling cards are kept. A step with neither observed evidence nor plaintext reasoning takes the explicit all-empty card. An unfinished claim must cite at least one step that has observed evidence or plaintext reasoning, and a completed claim must cite at least one such assistant step, which the reduce request lists as `completion_steps`; a user request can support an unfinished claim but never a completed one. A claim citing only unsupported steps fails reduce validation, and a recovery with no such assistant step always proposes `inspect`. The configured variant is validated against provider metadata and never claimed as applied when unavailable; `recovery.model.observed` comes from the host's response. A provider error, absent or unparseable text, or a request above the model input budget (including the contract) falls back deterministically. Failure entries may include at most four value-free `diagnostics`, never provider messages, bodies, source text, or model text. Cleanup of ephemeral sessions is always attempted under bounded deadlines; a cleanup failure is reported and any session ID whose deletion is unconfirmed is retained. There is no model fallback or automatic retry.
 
 Semantic output is always `untrusted: true`. Generated `source_steps` arrays are sorted context source coverage, not evidence or proof. Never accept, merge, retry, resume, or auto-run from recovery output.
+
+Ordinary v1 trace/content cancellation behavior is unchanged. Ordinary v2 trace/content reads stop with the calling invocation, including identity, relationship, paging and status requests. Recovery reads/generation cancel with the caller on both hosts; cleanup uses independent bounded deadlines.
+
+For v2 recovery, the plugin allocates the summarizer ID before public `session.create({ id })`, excludes the target ID before ownership/create, and keeps allocated IDs cleanup-owned even if creation commits before returning. Cleanup waits for an unsettled create within its 10-second deadline. Native `Session.NotFoundError` or `SessionNotFoundError` confirms absence. A create that commits after that window can leave a known unconfirmed ID; there is no later sweeper. Live failures report `ephemeral_cleanup_failed`; interrupted callers retain unconfirmed IDs in activation-local accounting. V1's acquisition behavior remains unchanged.
+
+With a v2 summarizer `variant` but no `model`, Hive resolves the native default model and applies the variant to that model. Unsupported variants produce `variant_unavailable` before creating a session, rather than silently dropping the request. Observed model/variant comes from the actual native generation hook. Provider-internal retries are not claimed controlled by Hive.
 
 ### Foreground children after a restart
 

@@ -24,6 +24,23 @@ At material state, type, boundary, retry, shared-writer, or internal-migration c
 
 Substantial human-facing prose and prose rewrites use the packaged `writing-policy` router and its conditional depth skills when available. The policy preserves role output contracts and source wording. See [Skill ownership](../packages/opencode-hive/docs/SKILL-OWNERSHIP.md) for the responsibility map.
 
+## Switching OpenCode hosts and rollback
+
+Published `oc-arkive@4.1.0` is v1-only. The unreleased checkout packages both native entries; its tested hosts are v1.18.30 and v2.0.26. Follow the [v2 setup reference](../packages/opencode-hive/README.md#opencode-v2-unreleased-checkout) for the packed checkout, `plugins` options, both read transports, explicit server/auth reference and helper depth. With `execute` denied, select `readTransport: "direct"`; Code Mode reads require `execute` and otherwise produce a setup diagnostic.
+
+V2 native user configuration owns supported default selection, presentation, model/variant, limits and permission visibility. Hive adds canonical instructions to requests and checks role/child authority before effects, so a user allow rule can expose a tool without granting the effect. Native `general`/`explore` cannot run Hive operations. User skills retain precedence and exact live catalog IDs. V1's config hook ownership remains unchanged.
+
+To hand over one project sequentially:
+
+1. Finish or deliberately abandon live workers in the old host, inspect uncertain outcomes and retain their evidence. Cancellation acknowledgement alone does not establish termination. Stop that project's old host writer before starting another.
+2. Keep the checkout and `.hive/` in place. Plans, tasks, reports, handoffs, managed context, feature constraints, repository metadata and worktree registrations are shared domain state. Resolve retained worktree/source pins before new writing assignments.
+3. Start the other host with its appropriate plugin configuration, a separate native config/data/cache home and freshly selected models. In the disposable check, sharing one HOME made v1.18.30 reject v2's database with `Database is not empty and has no session table`; separate HOME/XDG directories keep native databases independent. Keep the project checkout shared. Reapply session-only directives and explicitly select the feature in the new native session. Native conversations, live workers, selected session routes and session constraints do not migrate.
+4. Inspect shared task/context state in the new host and launch fresh children. Keep the old host's observations as historical evidence.
+
+V1 native bindings/board stay in `.hive/sessions.json` and `.hive/background-jobs.json`; v2 uses `.hive/runtime/opencode-v2/{sessions,background-jobs}.json`. Feature projections use the corresponding owner's path inside the resolved feature directory. Equal IDs/aliases in two owners are separate records. VS Code carries the owner with each action. Never copy, merge or rename a native store to transfer a conversation.
+
+For rollback, quiesce v2 using the same procedure, restore the v1 plugin/config entry and start the v1 host with its retained independent native home. Shared domain files remain usable; v2 observations remain in their own store. Restore session directives explicitly and use fresh sessions. Custom credential environment variables may be visible to trusted tool subprocesses, so provision the server environment with that exposure in mind.
+
 ## Agents
 
 OpenCode shows these public seats. Dedicated mode (the default) uses `architect-planner` as the default planning seat and `swarm-orchestrator` for execution; `hive-master` is hidden. Unified mode (`"agentMode": "unified"`) makes `hive-master` the default while retaining the split seats. `hive-builder` and the subagents below stay available in both modes.

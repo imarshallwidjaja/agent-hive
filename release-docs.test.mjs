@@ -75,4 +75,38 @@ describe('release documentation and runtime contract', () => {
     assert.match(releasing, /workflow_dispatch/);
     assert.match(read('AGENTS.md'), /release:check/);
   });
+
+  it('keeps dual-host setup and authority guidance consistent with the shipped entries', () => {
+    const plugin = read('packages/opencode-hive/README.md');
+    const tools = read('packages/opencode-hive/docs/HIVE-TOOLS.md');
+    const guide = read('docs/OPERATOR-GUIDE.md');
+    const agents = read('AGENTS.md');
+    assert.doesNotMatch(plugin, /background orchestration and session-trace tools are not yet/);
+    assert.match(plugin, /37 Hive tools.*11 commands/);
+    assert.match(plugin, /Published.*4\.1\.0.*v1-only/);
+    assert.match(plugin, /"readTransport": "direct"/);
+    assert.match(plugin, /"package": "\/absolute\/install\/node_modules\/oc-arkive\/dist"/);
+    assert.match(plugin, /"subagent_depth": 2/);
+    assert.match(plugin, /passwordEnv/);
+    assert.match(plugin, /Create the artifact directory before packing/);
+    assert.match(plugin, /connecting CLI process needs the same password in its own environment/);
+    assert.match(plugin, /`OPENCODE_PASSWORD`.*legacy `OPENCODE_SERVER_PASSWORD`/);
+    assert.match(plugin, /`server\.passwordEnv` selects the environment variable for Hive's reader.*does not configure CLI authentication/);
+    assert.match(plugin, /existing native direct child whose Hive binding is missing or has no parent/);
+    assert.match(plugin, /top-level session uses the explicit CLI\/session model/);
+    assert.match(plugin, /trusted shell\/tool subprocesses/);
+    assert.match(tools, /every Hive executor and the native `execute.before` hook/);
+    assert.match(tools, /singleton.*unknown/);
+    assert.doesNotMatch(tools, /read_access\.code/);
+    assert.match(tools, /`read_access` string names.*`not_configured`, `unauthorized`, `unreachable`, `wrong_location`, `wrong_instance`, `caller_unavailable` or `caller_displaced`/);
+    assert.match(tools, /`target_unavailable` and `inconsistent_lookup`.*`unavailable_or_unauthorized` without `read_access`/);
+    assert.match(tools, /existing native direct child whose Hive binding is missing or has no parent/);
+    assert.match(tools, /Ordinary v1 trace\/content cancellation behavior is unchanged/);
+    assert.match(tools, /there is no later sweeper/);
+    assert.match(guide, /Never copy, merge or rename a native store/);
+    assert.match(guide, /separate native config\/data\/cache home/);
+    assert.match(guide, /Database is not empty and has no session table/);
+    assert.match(agents, /Set direct reads when `execute` is denied/);
+    assert.match(agents, /existing native direct child whose Hive binding is missing or has no parent/);
+  });
 });

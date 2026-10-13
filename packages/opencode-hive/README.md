@@ -5,7 +5,7 @@
 
 OpenCode workflow plugin for plan-first feature development and ad-hoc work: feature plans, approval and task sync, Git worktrees, durable `.hive/` state, and review commands.
 
-Requires **OpenCode >= 1.18.30** for native task attachment hooks. Open your project and ask Hive to work.
+The OpenCode v1 floor is **1.18.30**. This unreleased checkout also has a native v2 entry, qualified on **2.0.26**. Published **4.1.0** is v1-only; its npm installation does not include this port. Open your project and ask Hive to work.
 
 Human onboarding starts in the [root README](../../README.md). This README is the detailed npm and operator reference.
 
@@ -26,7 +26,7 @@ In the current checkout, the package declares `@opencode/plugin`, `@opencode/cli
 
 ### Existing OpenCode configurations
 
-If you already have an OpenCode config, append `oc-arkive@latest` to its existing `plugin` array. Keep your surrounding settings and existing plugin entries, and preserve unrelated settings in the source file. The plugin still intentionally mutates the OpenCode fields listed below. This section is the full compatibility reference; the root README points here instead of repeating these mutations.
+On v1, append `oc-arkive@latest` to an existing `plugin` array. Keep surrounding settings and existing entries. The v1 config hook intentionally mutates the fields below; v2 has the separate native-precedence contract in the next section.
 
 Before upgrading, remove `disableMcps`, `sandbox`, `dockerImage`, and `persistentContainers` from `~/.config/opencode/agent_hive.json`. Strict validation rejects those removed keys. Earlier versions wrote `disableMcps` and `sandbox` when they created the file. While any of those keys remain, Hive ignores the whole global configuration, including agent model overrides and custom agents. In projects without `.hive/repositories.json` or a generated `workspace.json`, repository and worktree tools also fail with an invalid-config error that names the file but not the key.
 
@@ -41,20 +41,27 @@ The config hook intentionally mutates these OpenCode fields:
 
 ### OpenCode v2 (unreleased checkout)
 
-The same package loads on OpenCode v2 through its `effect` entry. v2 support is still being ported in this checkout: agents, skills, commands, the ordinary Hive tools, request-time instructions and execution guards are registered, while background orchestration and session-trace tools are not yet. No released version includes v2 support.
+The same package loads through its `server` entry on v1 and synchronous `effect` entry on v2. The checkout registers all **37 Hive tools** and **11 commands**, dedicated/unified modes, custom agents, packaged skills, native dispatch/background observation and forensic/recovery tools. Qualification is against stock v1.18.30 and v2.0.26; this is not a claim about every later host release. Final integrated host and security acceptance is recorded in the feature reports before release.
+
+For contributor use, run `bun install && bun run build` at the checkout root. Create the artifact directory before packing: in `packages/opencode-hive`, run `mkdir -p /absolute/artifact-directory && npm pack --pack-destination /absolute/artifact-directory`. In a clean installation directory, run `npm install /absolute/artifact-directory/oc-arkive-4.2.0.tgz`. Point the v2 entry at the absolute installed **dist directory**, which contains `index.js`; the tested local-directory loader needs that entry at the directory root. This uses the installed package without another cold registry resolution at first prompt. A package-name file specifier such as `oc-arkive@file:/absolute/artifact-directory/oc-arkive-4.2.0.tgz` is also supported by the tested host loader, but resolves its dependencies into the host's cache on first use. Preserve server logs if first use stalls before the `loading plugin` event; a green retry does not explain that failure.
 
 The v2 entry takes options in the plugin list. The schema is [`schema/opencode-v2.options.schema.json`](schema/opencode-v2.options.schema.json):
 
 ```json
 {
   "plugins": [
-    { "package": "oc-arkive", "options": { "readTransport": "codemode", "server": { "url": "http://127.0.0.1:4096", "passwordEnv": "OPENCODE_SERVER_PASSWORD" } } }
-  ]
+    { "package": "/absolute/install/node_modules/oc-arkive/dist", "options": { "readTransport": "direct", "server": { "url": "http://127.0.0.1:4096", "passwordEnv": "OPENCODE_SERVER_PASSWORD" } } }
+  ],
+  "experimental": { "subagent_depth": 2 }
 }
 ```
 
 - `readTransport`: `codemode` (default) runs `hive_repositories_status`, `hive_git_snapshot` and `hive_task_trace_content` inside Code Mode, which needs the `execute` tool. Every other Hive tool is a direct call. When an agent's permissions deny `execute`, Hive tells that agent its Code Mode reads are unavailable and logs a setup warning; it does not lift the denial. Set `direct` to make every Hive tool a direct call for configurations that deny `execute`.
 - `server`: the URL of the running v2 server and the name of the environment variable holding its password, for the session-history reads the in-process plugin API lacks. The password itself never goes into configuration. Hive creates its client on first use, and every read is bracketed by a check that the server answers with this activation's own identity for this directory, so a result read across a server restart, reload or port takeover is discarded; it never guesses a port or starts a server. Deciding whether a session is the caller, its child or descendant, or an unrelated session also reads the caller from the server, and rereads it before accepting the answer. Unknown keys, inline secrets and URLs with credentials fail activation.
+
+Start the server explicitly with `opencode2 serve --hostname 127.0.0.1 --port 4096` in the project, with `OPENCODE_SERVER_PASSWORD` in that server process's environment for the fragment above. `server.passwordEnv` selects the environment variable for Hive's reader and does not configure CLI authentication. If you choose a custom reader variable, the server also needs the same credential under `OPENCODE_PASSWORD` or legacy `OPENCODE_SERVER_PASSWORD` for native authentication. The connecting CLI process needs the same password in its own environment under `OPENCODE_PASSWORD` (or legacy `OPENCODE_SERVER_PASSWORD`); connect using `opencode2 run --server http://127.0.0.1:4096`. The executable name may differ in your installation. `server.username` defaults to `opencode`. Custom credential environment variables may be inherited by trusted shell/tool subprocesses; an environment reference prevents a literal secret in project config, not subprocess exposure or secret isolation.
+
+The server option is also required to adopt an existing native direct child whose Hive binding is missing or has no parent, or change a continuation's route, constraints or agent: Hive checks native parent ancestry first and must verify native idle before native switching or prompt admission. Fresh dispatch and continuation of a proven-compatible parent-bound snapshot need no reader. Activation-local reservations precede awaited qualification and release on all exits. They do not provide an atomic fence against external same-child writers. A route is not immutable for the child's lifetime; qualified idle rebinding is supported. Operator-authorized continuation remains separate from these admission checks.
 
 Hive keeps its state in the project checkout the host resolves for the session: a session opened in a subdirectory shares the checkout's `.hive` (manifest, constraints, features), and a session in a Hive task worktree maps back to the main checkout and its feature.
 
@@ -64,7 +71,9 @@ Hive does not rewrite v2 configuration. Its agent registrations are defaults: yo
 - Commands render against your agents as they are when you run them, so a disabled agent drops out of a council or review roster and your description, model and variant are the ones shown. A command bound to an agent switches the session to that agent and to its effective model and variant, as native configured commands do.
 - Hive operations and native effects are checked when they run, from the agent's role (a built-in role name or a custom agent's base role) and the session's actual parent, never from its mode or description. A permission rule that allows a tool makes it visible but does not authorize a role to run a Hive operation it lacks, a primary-only operation in a child session, edits for read-only roles, delegation outside the role's targets, delegation to `hive-master`, `swarm-orchestrator` or `hive-builder` by any agent, or `question` in a child session. Native `general` and `explore` get no Hive tools. Hive roles cannot run the native `opencode_worktree_create`, `opencode_worktree_remove` or `opencode_session_move` tools, including from Code Mode. Agents Hive does not register keep native behavior, apart from the child-session limits.
 
-v2 limits subagent nesting with `experimental.subagent_depth` (default 1). Set it to `2` so a delegated Architect can call its Scout, reviewer and Helper agents; Hive does not set it for you. On v2 a subagent runs on the agent's model; a top-level session runs on the session or configured model, not the agent's registered model.
+v2 limits subagent nesting with `experimental.subagent_depth` (default 1). Set it to `2` so a delegated Architect can call its Scout, reviewer and Helper agents; Hive does not set it for you. On the tested v2 host, a top-level session uses the explicit CLI/session model or native configured model, rather than its agent's registered model. A native subagent uses the effective agent model/variant; an agent-bound command switches to its effective model/variant. Set participating models deliberately, including recovery models, and check actual requests rather than catalog fields. Hive agent temperature is a request-time option. V1 selection behavior is unchanged. Scripted-provider qualification establishes wiring, not real-model judgment.
+
+See [Switching OpenCode hosts and rollback](../../docs/OPERATOR-GUIDE.md#switching-opencode-hosts-and-rollback) for shared domain state and separate native observations.
 
 ### Research integrations
 
@@ -256,7 +265,7 @@ Native `general` is an ordinary delegation with ordinary tools only; it cannot d
 
 ### Background Orchestration
 
-With the env gate unset (`OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`), Hive keeps normal blocking `task()` wait mode. Background board tools report `background_tools_disabled`, and no background appendix is injected into primary prompts.
+With the env gate unset (`OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`) on v1, Hive keeps normal blocking `task()` wait mode. Background board tools report `background_tools_disabled`, and no background appendix is injected into primary prompts. V2 provides native `subagent({ background: true, ... })` and the board without that experiment gate.
 
 With the env gate set, board tools are active. Primary orchestrators receive background wait-mode guidance when `background-delegation` is available. This is the background-first scheduler contract under the experimental gate, not always-on behavior. It does not add agents or change custom-agent preservation: primary agents still choose built-in or configured custom specialists by descriptor, not by a fixed routing table.
 
@@ -269,6 +278,8 @@ With the env gate set, primary agents can launch independent native background t
 Prompt acknowledgment only means Hive showed a terminal result to the parent session. It does not clear `terminalUnreconciled`; the primary agent still reconciles or ignores the job after consuming the result.
 
 Cancellation is not rollback. A cancellation request does not revert files, branches, worktrees, commits, or reports. Cancel is unavailable without a real native identity. Cancellation is owner-scoped; another primary must not automatically terminate another primary's child. Cancel acknowledgement is not proof of termination. Board rows without a native task ID stay on the board as observational bookkeeping; archive, reconcile, and ignore do not stop execution. The board observes the originating native parent and call. Stale and unknown observations stay visible. Multiple launch observations may exist for one native task identity when explicit runtime-owned interruption recovery is used. If completion lacks a call ID, record unknown and hint `hive_task_trace`.
+
+On v2.0.26 native completion carries parent/child/outcome but no launching call ID. Every matching observation, including a singleton, stays `unknown`/uncertain with the native outcome diagnostic. Inspect it, then use the exact canonical alias with `decision: "ignored"`; terminal reconciliation is refused. Same-process plugin reload makes old observations uncertain; a process restart marks them stale. The board never authorizes dispatch, replacement writers or continuation.
 
 ### Runtime Session Inspection
 

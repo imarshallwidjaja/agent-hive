@@ -16,13 +16,13 @@ https://github.com/user-attachments/assets/6290b435-1566-46b4-ac98-0420ed321204
 
 Tracked feature writes use matching Git worktrees; non-Git or report-only work follows the documented direct-work exceptions. Worktree tools do not assign workers or change task status. See the [Operator Guide](docs/OPERATOR-GUIDE.md).
 
-- [OpenCode](https://opencode.ai) `>= 1.18.30` (peer dependency of `oc-arkive`; required for native `tool.definition` and task attachment hooks)
+- [OpenCode](https://opencode.ai): the v1 floor remains `1.18.30`; this unreleased checkout also provides the v2 entry qualified on `2.0.26`. Published `oc-arkive@4.1.0` contains the v1 plugin. Install the checkout's packed artifact to try v2; `@latest` does not supply this unreleased port.
 - Worktree workflows require a project whose work resolves to one or more git repositories. Single-repo projects need no manifest; multi-repo topology is optional. When a multi-repo root needs explicit topology, ask Hive to inspect, discover, and update it; do not hand-create `<project>/.hive/repositories.json`.
 - Optional: [VS Code](https://code.visualstudio.com/) for sidebar plan review via `vscode-arkive`
 
 ## Quick start
 
-1. Append `oc-arkive@latest` to the existing `plugin` array in your OpenCode config (`opencode.json` or `opencode.jsonc`). Keep your existing plugin entries, preserve unrelated settings, and retain the surrounding config. This JSONC fragment uses placeholders:
+1. On OpenCode v1, append `oc-arkive@latest` to the existing `plugin` array in your OpenCode config (`opencode.json` or `opencode.jsonc`). Keep your existing plugin entries, preserve unrelated settings, and retain the surrounding config. This JSONC fragment uses placeholders:
 
 ```jsonc
 {
@@ -38,6 +38,12 @@ Tracked feature writes use matching Git worktrees; non-Git or report-only work f
 For a brand-new config, a plugin array containing only `"oc-arkive@latest"` is sufficient.
 
 2. Restart OpenCode so it loads the plugin.
+
+### OpenCode v2 checkout setup
+
+Build this checkout with `bun install && bun run build`, then run `npm pack` in `packages/opencode-hive`. Install that tarball with npm into a dedicated directory. Configure v2's `plugins` entry to the absolute installed `oc-arkive/dist` directory, with `readTransport: "direct"` when `execute` is denied, and an explicit running-server URL/auth environment reference for history and continuation qualification. Set `experimental.subagent_depth` to `2` for delegated Architect helpers. The [plugin setup reference](packages/opencode-hive/README.md#opencode-v2-unreleased-checkout) contains the complete fragment and model-selection rules.
+
+The one package selects its native entry for the host. V2 user settings own supported agent selection, presentation, model/variant, limits and tool visibility; Hive adds canonical instructions at request time and enforces role/child boundaries before effects. A visible tool can still be denied by Hive. Use the [handover procedure](docs/OPERATOR-GUIDE.md#switching-opencode-hosts-and-rollback) when reusing a project across hosts.
 
 ## First feature loop
 
@@ -111,7 +117,7 @@ and the subagents below are available in both modes.
 Why each seat exists, how it behaves, and the full ad-hoc / dash-review /
 vuln-review loops are in the [Operator Guide](docs/OPERATOR-GUIDE.md).
 
-OpenCode enforces Hive-tool access through ordered agent permissions. Primaries own
+OpenCode v1 enforces Hive-tool access through ordered agent permissions. V2 also checks canonical role and child authority inside every Hive executor and the native effect hook, even when user allow rules expose a forbidden tool. Primaries own
 merge, cleanup, approval/sync, constraints, and other control mutations; child
 sessions receive explicit denials. Workers retain the metadata and report tools
 their assignments need, reviewers can read plans/status/constraints and write
