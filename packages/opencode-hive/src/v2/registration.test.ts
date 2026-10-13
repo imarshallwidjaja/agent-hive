@@ -117,7 +117,13 @@ function createFakeHost(directory: string, options: Record<string, unknown> = {}
   const tools = () => {
     const registry = new Map<string, any>();
     // `update` ignores missing tools, as the host's editor does; the native subagent tool is not registered here.
-    for (const cb of transforms.tool) cb({ add: (info: any) => registry.set(info.name, info), update: (id: string, fn: (info: any) => void) => { if (registry.has(id)) fn(registry.get(id)); } });
+    for (const cb of transforms.tool) cb({
+      add: (info: any) => {
+        expect(registry.has(info.name)).toBe(false);
+        registry.set(info.name, info);
+      },
+      update: (id: string, fn: (info: any) => void) => { if (registry.has(id)) fn(registry.get(id)); },
+    });
     return registry;
   };
   /** The skill catalog after Hive's transform and then the user's configured sources, as the host builds it. */
@@ -201,8 +207,6 @@ async function activate(options: Record<string, unknown> = {}, hiveConfig?: Reco
   return { ...host, root, home };
 }
 
-const ORDINARY_TOOLS = HIVE_TOOL_NAMES.filter((name) => !name.startsWith('hive_background_') && !name.startsWith('hive_task_trace'));
-
 function denied(exit: Exit.Exit<unknown, unknown>): string | undefined {
   if (Exit.isSuccess(exit)) return undefined;
   const error = exit.cause.reasons.find((reason: any) => reason._tag === 'Fail') as any;
@@ -210,13 +214,12 @@ function denied(exit: Exit.Exit<unknown, unknown>): string | undefined {
 }
 
 describe('v2 tool registration', () => {
-  it('registers every ordinary operation once, with an explicit Code Mode flag from the selected transport', async () => {
+  it('registers all 37 Hive tools once, with an explicit Code Mode flag from the selected transport', async () => {
+    expect(HIVE_TOOL_NAMES).toHaveLength(37);
     for (const transport of ['codemode', 'direct'] as const) {
       const host = await activate({ readTransport: transport });
       const tools = host.tools();
-      // Other families (background, trace) register through the same registrar; their suites pin their sets.
-      expect([...tools.keys()].filter((name) => ORDINARY_TOOLS.includes(name)).sort()).toEqual([...ORDINARY_TOOLS].sort());
-      expect([...tools.keys()].filter((name) => !HIVE_TOOL_NAMES.includes(name))).toEqual([]);
+      expect([...tools.keys()].sort()).toEqual([...HIVE_TOOL_NAMES].sort());
       for (const [name, info] of tools) {
         expect(typeof info.options.codemode).toBe('boolean');
         expect(info.options.codemode).toBe(transport === 'codemode' && (CODEMODE_READ_TOOLS as readonly string[]).includes(name));

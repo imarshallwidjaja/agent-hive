@@ -76,7 +76,8 @@ export function createHiveToolRegistrar(input: { context: Plugin.Context; readTr
 export function toToolInfo(name: string, operation: HiveOperation, readTransport: ReadTransport, guard: HiveToolGuard): Tool.Info {
   const execute = (args: unknown, context: Tool.Context) => guard(name, { sessionID: context.sessionID, agent: context.agent }).pipe(
     Effect.andThen(Effect.tryPromise({
-      try: async () => operation.execute(args, { sessionID: context.sessionID }),
+      // The signal aborts when the host interrupts the call, so operations with long stages can stop with it.
+      try: async (signal) => operation.execute(args, { sessionID: context.sessionID, signal }),
       catch: (error) => new Tool.Error({ message: error instanceof Error ? error.message : String(error) }),
     })),
     Effect.map((result) => {

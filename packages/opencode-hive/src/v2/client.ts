@@ -12,10 +12,15 @@ import { IDENTITY_RPC_ID, type Identity } from './identity.js';
  * reads, so evidence read across a server restart, reload or port takeover is discarded rather than returned. The
  * methods are the whole surface: there is no client or callback to retain, so a reference kept across a replacement
  * fails the same checks as a fresh one. Only reads are exposed; native mutations stay on the in-process plugin context.
+ *
+ * Each method takes the caller's `signal`. It reaches every request the method makes, identity checks included, and an
+ * aborted call rethrows its own abort error, so a cancellation is never reported as a binding or target failure.
  */
 
 type RawClient = ReturnType<typeof OpenCode.make>;
 type VerifiedClient = Pick<RawClient, 'rpc' | 'session' | 'message'>;
+/** The per-request options the public client accepts, reduced to what reads pass. */
+type RequestOptions = { signal: AbortSignal } | undefined;
 
 export type ReadAccessErrorCode =
   | 'not_configured' | 'unauthorized' | 'unreachable' | 'wrong_location' | 'wrong_instance'
@@ -36,9 +41,9 @@ export type TargetCheck = {
 };
 
 export interface VerifiedReadAccess {
-  sessionActive(): ReturnType<RawClient['session']['active']>;
-  sessionGet(sessionID: string): ReturnType<RawClient['session']['get']>;
-  messageList(input: Parameters<RawClient['message']['list']>[0]): ReturnType<RawClient['message']['list']>;
+  sessionActive(signal?: AbortSignal): ReturnType<RawClient['session']['active']>;
+  sessionGet(sessionID: string, signal?: AbortSignal): ReturnType<RawClient['session']['get']>;
+  messageList(input: Parameters<RawClient['message']['list']>[0], signal?: AbortSignal): ReturnType<RawClient['message']['list']>;
   /**
    * Classifies `targetID` against the caller. The caller is read from the server, not assumed from its ID: it must
    * exist, answer to that ID and still sit in this location. Every session read must answer to the ID asked for, the
@@ -46,7 +51,7 @@ export interface VerifiedReadAccess {
    * decide what each combination permits (other sessions stay inspect-only); a target in another location is
    * reported, never rerouted.
    */
-  checkTarget(input: { callerID: string; targetID: string }): Promise<TargetCheck>;
+  checkTarget(input: { callerID: string; targetID: string }, signal?: AbortSignal): Promise<TargetCheck>;
 }
 
 type ClientFactory = (options: { baseUrl: string; headers: Record<string, string> }) => VerifiedClient;
@@ -78,11 +83,13 @@ export function createVerifiedReadAccess(input: {
     return created;
   };
 
-  const verify = async (client: VerifiedClient) => {
+  const verify = async (client: VerifiedClient, options: RequestOptions) => {
     let reply: { output?: unknown };
     try {
-      reply = await client.rpc.call({ rpcID: IDENTITY_RPC_ID, method: 'get', location: { directory }, input: {} });
+      reply = await client.rpc.call({ rpcID: IDENTITY_RPC_ID, method: 'get', location: { directory }, input: {} }, options);
     } catch (error) {
+      // A cancelled check says nothing about the server, so the client stays.
+      if (options?.signal.aborted) throw error;
       created = undefined;
       throw classifyBindingFailure(error, server!.url);
     }
@@ -98,11 +105,12 @@ export function createVerifiedReadAccess(input: {
   };
 
   /** Runs reads between two identity checks; the result is returned only when both pass. */
-  const verified = async <T>(read: (client: VerifiedClient) => Promise<T>): Promise<T> => {
+  const verified = async <T>(read: (client: VerifiedClient, options: RequestOptions) => Promise<T>, signal: AbortSignal | undefined): Promise<T> => {
     const client = connect();
-    await verify(client);
-    const result = await read(client);
-    await verify(client);
+    const options: RequestOptions = signal ? { signal } : undefined;
+    await verify(client, options);
+    const result = await read(client, options);
+    await verify(client, options);
     return result;
   };
 
@@ -113,17 +121,18 @@ export function createVerifiedReadAccess(input: {
     return session;
   };
 
-  const getSession = async (client: VerifiedClient, sessionID: string, unavailable: 'caller_unavailable' | 'target_unavailable') => {
+  const getSession = async (client: VerifiedClient, options: RequestOptions, sessionID: string, unavailable: 'caller_unavailable' | 'target_unavailable') => {
     let session;
     try {
-      session = await client.session.get({ sessionID } as Parameters<RawClient['session']['get']>[0]);
+      session = await client.session.get({ sessionID } as Parameters<RawClient['session']['get']>[0], options);
     } catch (error) {
+      if (options?.signal.aborted) throw error;
       throw new ReadAccessError(unavailable, `Hive could not read session ${sessionID}: ${error instanceof Error ? error.message : String(error)}`);
     }
     return answeredFor(session, sessionID) as unknown as SessionPlacement;
   };
 
-  const classify = async (client: VerifiedClient, caller: SessionPlacement, target: SessionPlacement): Promise<TargetCheck> => {
+  const classify = async (client: VerifiedClient, options: RequestOptions, caller: SessionPlacement, target: SessionPlacement): Promise<TargetCheck> => {
     const placement = target.location?.directory === directory ? 'this-location' : 'other-location';
     if (target.id === caller.id) return { relationship: 'self', placement };
     if (target.parentID === caller.id) return { relationship: 'child', placement };
@@ -132,7 +141,7 @@ export function createVerifiedReadAccess(input: {
     while (parentID !== undefined) {
       if (seen.has(parentID) || seen.size > MAX_LINEAGE_DEPTH) throw new ReadAccessError('inconsistent_lookup', `The parent chain of session ${target.id} is not a finite chain.`);
       seen.add(parentID);
-      const parent = await getSession(client, parentID, 'target_unavailable');
+      const parent = await getSession(client, options, parentID, 'target_unavailable');
       if (parent.parentID === caller.id) return { relationship: 'descendant', placement };
       parentID = parent.parentID;
     }
@@ -140,24 +149,24 @@ export function createVerifiedReadAccess(input: {
   };
 
   return {
-    sessionActive: () => verified((client) => client.session.active()),
-    sessionGet: (sessionID) => verified(async (client) => answeredFor(await client.session.get({ sessionID } as Parameters<RawClient['session']['get']>[0]), sessionID)),
-    messageList: (request) => verified((client) => client.message.list(request)),
-    checkTarget: ({ callerID, targetID }) => verified(async (client) => {
+    sessionActive: (signal) => verified((client, options) => client.session.active(options), signal),
+    sessionGet: (sessionID, signal) => verified(async (client, options) => answeredFor(await client.session.get({ sessionID } as Parameters<RawClient['session']['get']>[0], options), sessionID), signal),
+    messageList: (request, signal) => verified((client, options) => client.message.list(request, options), signal),
+    checkTarget: ({ callerID, targetID }, signal) => verified(async (client, options) => {
       const readCaller = async () => {
-        const caller = await getSession(client, callerID, 'caller_unavailable');
+        const caller = await getSession(client, options, callerID, 'caller_unavailable');
         if (caller.location?.directory !== directory) throw new ReadAccessError('caller_displaced', `Caller session ${callerID} is in ${String(caller.location?.directory)}, not ${directory}.`);
         return caller;
       };
       const caller = await readCaller();
-      const target = await getSession(client, targetID, 'target_unavailable');
-      const check = await classify(client, caller, target);
-      const [callerAgain, targetAgain] = [await readCaller(), await getSession(client, targetID, 'target_unavailable')];
+      const target = await getSession(client, options, targetID, 'target_unavailable');
+      const check = await classify(client, options, caller, target);
+      const [callerAgain, targetAgain] = [await readCaller(), await getSession(client, options, targetID, 'target_unavailable')];
       if (callerAgain.parentID !== caller.parentID || targetAgain.parentID !== target.parentID || targetAgain.location?.directory !== target.location?.directory) {
         throw new ReadAccessError('inconsistent_lookup', `Session ${callerID} or ${targetID} changed while its relationship was being checked.`);
       }
       return check;
-    }),
+    }, signal),
   };
 }
 

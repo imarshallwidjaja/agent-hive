@@ -18,8 +18,11 @@ import {
   type StandingConstraintEntry,
 } from 'hive-core';
 
-/** The caller identity a host supplies with each operation. Only the session is needed to resolve routes and constraints. */
-export type HiveInvocation = { sessionID?: string };
+/**
+ * What a host supplies with each operation: the calling session, which resolves routes and constraints, and, when the
+ * host can cancel the call, a signal that aborts when it does. Operations that run long stages observe it.
+ */
+export type HiveInvocation = { sessionID?: string; signal?: AbortSignal };
 
 export type ConstraintRegister = { entries: StandingConstraintEntry[]; revision: number; constraints: string };
 

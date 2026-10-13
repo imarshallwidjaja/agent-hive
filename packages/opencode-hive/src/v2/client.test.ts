@@ -20,31 +20,34 @@ function fakeServer(answers: Answer[], sessions: Record<string, Session> = {}, o
   const made: Array<{ baseUrl: string; headers: Record<string, string> }> = [];
   const calls: unknown[] = [];
   const reads: string[] = [];
+  const signals: Array<AbortSignal | undefined> = [];
   const makeClient = (options: { baseUrl: string; headers: Record<string, string> }) => {
     made.push(options);
     return {
       rpc: {
-        call: async (request: unknown) => {
+        call: async (request: unknown, options?: { signal?: AbortSignal }) => {
           calls.push(request);
+          signals.push(options?.signal);
           const answer = answers.length > 1 ? answers.shift()! : answers[0]!;
           if (answer instanceof Error) throw answer;
           return { output: answer };
         },
       },
       session: {
-        active: async () => { reads.push('active'); return { ses_1: 'running' }; },
-        get: async ({ sessionID }: { sessionID: string }) => {
+        active: async (options?: { signal?: AbortSignal }) => { reads.push('active'); signals.push(options?.signal); return { ses_1: 'running' }; },
+        get: async ({ sessionID }: { sessionID: string }, options?: { signal?: AbortSignal }) => {
           reads.push(`get:${sessionID}`);
+          signals.push(options?.signal);
           onSessionGet?.(sessionID);
           const session = sessions[sessionID];
           if (!session) throw new Error(`session ${sessionID} not found`);
           return session;
         },
       },
-      message: { list: async () => { reads.push('messages'); return { data: [{ id: 'msg_1' }], cursor: {} }; } },
+      message: { list: async (_request: unknown, options?: { signal?: AbortSignal }) => { reads.push('messages'); signals.push(options?.signal); return { data: [{ id: 'msg_1' }], cursor: {} }; } },
     } as any;
   };
-  return { made, calls, reads, makeClient };
+  return { made, calls, reads, signals, makeClient };
 }
 
 const env = { HIVE_TEST_SERVER_PASSWORD: 'secret' };
@@ -119,6 +122,43 @@ describe('verified v2 read access', () => {
     const access = createVerifiedReadAccess({ server, identity, directory, env, makeClient: host.makeClient });
     expect(((await access.sessionGet('s')) as any).id).toBe('s');
     expect((await failure(access.sessionGet('liar'))).code).toBe('inconsistent_lookup');
+  });
+
+  it('gives the caller signal to every request of a read and keeps a cancelled check from resetting the client', async () => {
+    const sessions = { caller: { id: 'caller', location: { directory } }, child: { id: 'child', parentID: 'caller', location: { directory } } };
+    const host = fakeServer([ok], sessions);
+    const access = createVerifiedReadAccess({ server, identity, directory, env, makeClient: host.makeClient });
+    const controller = new AbortController();
+    await access.sessionActive(controller.signal);
+    await access.messageList({ sessionID: 'child' } as any, controller.signal);
+    await access.sessionGet('child', controller.signal);
+    await access.checkTarget({ callerID: 'caller', targetID: 'child' }, controller.signal);
+    expect(host.signals.length).toBeGreaterThan(12);
+    expect(host.signals.every((signal) => signal === controller.signal)).toBe(true);
+
+    host.signals.length = 0;
+    await access.sessionActive();
+    expect(host.signals.every((signal) => signal === undefined)).toBe(true);
+
+    const cancelled = new AbortController();
+    let created = 0;
+    let first = true;
+    const client = {
+      rpc: {
+        call: (_request: unknown, options?: { signal?: AbortSignal }) => {
+          if (!first) return Promise.resolve({ output: ok });
+          first = false;
+          return new Promise((_resolve, reject) => options?.signal?.addEventListener('abort', () => reject(options.signal!.reason)));
+        },
+      },
+      session: { active: async () => ({}) },
+    } as any;
+    const replaced = createVerifiedReadAccess({ server, identity, directory, env, makeClient: () => { created += 1; return client; } });
+    const waiting = replaced.sessionActive(cancelled.signal);
+    cancelled.abort(new Error('caller gone'));
+    await expect(waiting).rejects.toThrow('caller gone');
+    await replaced.sessionActive();
+    expect(created).toBe(1);
   });
 
   it('reports a missing server option or password variable instead of guessing a server', async () => {

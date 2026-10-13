@@ -6,6 +6,7 @@ import {
   injectTaskTraceHint,
   TASK_TRACE_SUMMARIZER_AGENT,
 } from './task-trace.js';
+import { generatedReply, normalizeReply } from './task-trace-contract.js';
 
 type Call = { method: string; input: any };
 
@@ -434,6 +435,30 @@ async function readField(tools: ReturnType<typeof createTaskTraceTools>, event: 
 }
 
 describe('forensic task trace v3 index', () => {
+  for (const timing of ['before', 'during'] as const) {
+    it(`preserves ordinary v1 inspection when the caller aborts ${timing} the read, without SDK signals`, async () => {
+      const controller = new AbortController();
+      const source = [message('work', 'assistant', [nativeTask('child-call', 'completed', { state: { sessionId: 'grandchild' } })])];
+      const setup = clientFor(source, {
+        sessions: { grandchild: childRecord('grandchild') },
+        mutateMessages: () => {
+          if (timing === 'during') controller.abort(new Error('cancel ordinary inspection'));
+          return source;
+        },
+      });
+      if (timing === 'before') controller.abort(new Error('cancel ordinary inspection'));
+
+      const result = JSON.parse(await executeRaw(toolsFor(setup), 'hive_task_trace', {
+        task_id: 'child', ...(timing === 'during' ? { recovery: false } : {}),
+      }, controller.signal));
+
+      expect(result).toMatchObject({ ok: true, version: 3 });
+      expect(result.events.find((event: any) => event.kind === 'tool').child_session_id).toBe('grandchild');
+      expect(new Set(setup.calls.map((call) => call.method))).toEqual(new Set(['get', 'messages', 'status']));
+      expect(setup.calls.every((call) => !('signal' in call.input))).toBe(true);
+    });
+  }
+
   it('lists every surviving non-reasoning event once in source order across readable bounded pages', async () => {
     const setup = clientFor(realisticTrace());
     const tools = toolsFor(setup);
@@ -2076,14 +2101,10 @@ describe('task trace semantic recovery', () => {
       expect(timers.active(20_000)).toHaveLength(1);
       expect(timers.active(120_000)).toHaveLength(0);
       timers.fire(timers.active(20_000)[0]);
-      await settleUntil(() => setup.calls.some((call) => call.method === 'abort') || setup.calls.filter((call) => call.method === 'delete').length > 1);
-      for (let index = 0; index < 4; index += 1) {
-        const cleanup = timers.active(10_000)[0];
-        if (!cleanup) break;
-        timers.fire(cleanup);
-        await Promise.resolve();
-      }
+      // Abort and delete answer at once, so cleanup settles without its own timeout firing.
+      await settleUntil(() => setup.calls.some((call) => call.method === 'abort') && setup.calls.filter((call) => call.method === 'delete').length > 1);
       const result = await execution;
+      expect(timers.active(10_000)).toHaveLength(0);
       expect(result.recovery.failures).toContainEqual(expect.objectContaining({ stage: 'reduce', reasons: ['summarizer_timeout'] }));
       expect(now + 20_000).toBeLessThan(240_000);
     } finally {
@@ -2942,6 +2963,51 @@ describe('task trace semantic recovery', () => {
     expect(decoded).toEqual([2, 0, 0, 1, Buffer.byteLength(large), expect.any(String)]);
     const reasoningLocator = Buffer.from(JSON.stringify([2, 0, 1, 7, 7, 'a'.repeat(43)])).toString('base64url');
     expect(await execute(tools, 'hive_task_trace_content', { task_id: 'child', content_id: reasoningLocator })).toEqual({ ok: false, reason: 'invalid_content_id' });
+  });
+});
+
+describe('summarizer reply bounds', () => {
+  const textPart = (text: string, extra: Record<string, unknown> = {}) => ({ type: 'text', text, ...extra });
+  const v1Reply = (parts: unknown[], info: Record<string, unknown> = {}) => normalizeReply({ data: { info, parts } });
+
+  it('counts only eligible text parts and stops at the part and byte limits', () => {
+    const eligible = Array.from({ length: 8 }, (_, index) => textPart(`part ${index}`));
+    const ignored = [textPart('ignored', { ignored: true }), { type: 'reasoning', text: 'hidden' }, { type: 'text' }, textPart(42 as never)];
+    expect(v1Reply([...ignored.slice(0, 2), ...eligible.slice(0, 4), ...ignored.slice(2), ...eligible.slice(4)])).toMatchObject({
+      textParts: 8,
+      text: eligible.map((part) => part.text).join(''),
+    });
+
+    const ninth = v1Reply([...eligible, textPart('one too many')]);
+    expect(ninth).toMatchObject({ issue: 'response_too_large', textParts: 8, bytes: Buffer.byteLength(eligible.map((part) => part.text).join('') + 'one too many') });
+    expect(ninth.text).toBeUndefined();
+
+    const large = 'x'.repeat(128 * 1024 + 1);
+    expect(v1Reply([textPart('small'), textPart(large)])).toMatchObject({ issue: 'response_too_large', textParts: 1, bytes: 128 * 1024 });
+    expect(generatedReply({ text: large })).toMatchObject({ issue: 'response_too_large', textParts: 0, bytes: 128 * 1024 });
+    expect(generatedReply({ text: ' \n' })).toMatchObject({ issue: 'no_text', textParts: 1 });
+  });
+
+  it('reports the failure before an over-limit reply and validates the observed identity in both builders', () => {
+    const parts = Array.from({ length: 9 }, () => textPart('x'));
+    expect(v1Reply(parts, { error: { name: 'APIError', data: { statusCode: 429 } } })).toMatchObject({
+      failure: { code: 'provider_error', error: { name: 'APIError', status: 429 } },
+      textParts: 8,
+    });
+    const observed = { providerID: 'p', modelID: 'm', variant: 'bad variant' };
+    expect(v1Reply([textPart('{}')], observed).observed).toEqual({ model: 'p/m' });
+    expect(generatedReply({ text: '{}', observed }).observed).toEqual({ model: 'p/m' });
+    expect(generatedReply({ error: { name: 'APIError' } }).failure).toEqual({ code: 'provider_error', error: { name: 'APIError' } });
+  });
+
+  it('never reads parts past the bound that rejects the reply', () => {
+    const reads: number[] = [];
+    const parts: unknown[] = Array.from({ length: 12 }, () => textPart('x'));
+    for (let index = 9; index < parts.length; index += 1) {
+      Object.defineProperty(parts, index, { get: () => { reads.push(index); return textPart('past the bound'); } });
+    }
+    expect(v1Reply(parts)).toMatchObject({ issue: 'response_too_large', textParts: 8 });
+    expect(reads).toEqual([]);
   });
 });
 

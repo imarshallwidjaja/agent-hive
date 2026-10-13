@@ -175,41 +175,64 @@ function identity(value: unknown): string | undefined {
   return typeof value === 'string' && value.length <= MAX_IDENTITY_LENGTH && /^[\x21-\x7e]+$/.test(value) ? value : undefined;
 }
 
+/** The v1 prompt response: the assistant message record (identity, finish, error) and its text parts. */
 export function normalizeReply(response: { data?: unknown; error?: unknown }): SummarizerReply {
-  const reply: SummarizerReply = { textParts: 0, bytes: 0 };
   if (response.error !== undefined) {
-    reply.failure = { code: 'transport_error', error: describeError(response.error) };
-    return reply;
+    return { textParts: 0, bytes: 0, failure: { code: 'transport_error', error: describeError(response.error) } };
   }
   const data = record(response.data);
   const info = record(data?.info);
-  const provider = identity(info?.providerID);
-  const model = identity(info?.modelID);
-  const variant = identity(info?.variant);
+  return boundedReply(eligibleTexts(data?.parts), info?.providerID, info?.modelID, info?.variant, info?.finish, info?.error);
+}
+
+/** The reply's visible text parts, produced one at a time so the builder stops reading at its bound. */
+function* eligibleTexts(parts: unknown): Generator<string> {
+  for (const raw of Array.isArray(parts) ? parts : []) {
+    const part = record(raw);
+    if (part?.type === 'text' && typeof part.text === 'string' && part.ignored !== true) yield part.text;
+  }
+}
+
+/**
+ * A reply generated in-process (OpenCode v2 `session.generate`): its text, the model identity the host prepared the
+ * request with, and the generation's failure. The same bounds and value-free diagnostics apply as for v1 replies.
+ */
+export function generatedReply(input: {
+  text?: string;
+  observed?: { providerID?: unknown; modelID?: unknown; variant?: unknown };
+  error?: unknown;
+}): SummarizerReply {
+  const { observed } = input;
+  return boundedReply(input.text === undefined ? [] : [input.text], observed?.providerID, observed?.modelID, observed?.variant, undefined, input.error);
+}
+
+function boundedReply(texts: Iterable<string>, providerID: unknown, modelID: unknown, variantID: unknown, finish: unknown, error: unknown): SummarizerReply {
+  const reply: SummarizerReply = { textParts: 0, bytes: 0 };
+  const provider = identity(providerID);
+  const model = identity(modelID);
+  const variant = identity(variantID);
   if (provider || model || variant) {
     reply.observed = {
       ...(provider && model ? { model: `${provider}/${model}` } : {}),
       ...(variant ? { variant } : {}),
     };
   }
-  if (typeof info?.finish === 'string' && /^[a-z_-]{1,32}$/.test(info.finish)) reply.finish = info.finish;
+  if (typeof finish === 'string' && /^[a-z_-]{1,32}$/.test(finish)) reply.finish = finish;
   const parts: string[] = [];
   let bytes = 0;
   let tooLarge = false;
-  for (const raw of Array.isArray(data?.parts) ? data.parts : []) {
-    const part = record(raw);
-    if (part?.type !== 'text' || typeof part.text !== 'string' || part.ignored === true) continue;
-    bytes += Buffer.byteLength(part.text);
+  for (const text of texts) {
+    bytes += Buffer.byteLength(text);
     if (parts.length >= MAX_REPLY_PARTS || bytes > MAX_REPLY_BYTES) {
       tooLarge = true;
       break;
     }
-    parts.push(part.text);
+    parts.push(text);
   }
   reply.textParts = parts.length;
   reply.bytes = Math.min(bytes, MAX_REPLY_BYTES);
-  if (info?.error !== undefined) {
-    reply.failure = { code: 'provider_error', error: describeError(info.error) };
+  if (error !== undefined) {
+    reply.failure = { code: 'provider_error', error: describeError(error) };
   } else if (tooLarge) {
     reply.issue = 'response_too_large';
   } else if (parts.some((part) => part.trim().length > 0)) {

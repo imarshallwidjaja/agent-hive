@@ -15,6 +15,7 @@ import { createV2BackgroundLifecycle, hostRuntimeId, registerBackground } from '
 import { registerDispatch } from './dispatch.js';
 
 // evidence imports: forensic reads and semantic recovery
+import { registerEvidence } from './trace-source.js';
 
 /**
  * Agents, skills, commands, the ordinary Hive tools, request-time instructions and execution guards. Invalid plugin
@@ -39,8 +40,9 @@ function composeLifecycle(context: Plugin.Context, _identity: Identity, catalog:
   });
 }
 
-function composeEvidence(_context: Plugin.Context, _identity: Identity, _catalog: V2Catalog): Effect.Effect<void, never, Scope.Scope> {
-  return Effect.void;
+/** Session trace inspection and semantic recovery: both trace tools through the catalog registrar, read-only access. */
+function composeEvidence(context: Plugin.Context, _identity: Identity, catalog: V2Catalog): Effect.Effect<void, never, Scope.Scope> {
+  return registerEvidence(context, catalog);
 }
 
 /**
