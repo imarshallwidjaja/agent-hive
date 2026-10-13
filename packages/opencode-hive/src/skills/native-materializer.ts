@@ -5,6 +5,8 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import matter from 'gray-matter';
+import type { HostProfile } from '../runtime/host-profile.js';
+import { renderStagedHostMarkdown } from './host-renderer.js';
 
 const DEFAULT_URL_FETCH_TIMEOUT_MS = 1500;
 
@@ -39,6 +41,8 @@ export interface PreparedNativeHiveSkills {
 }
 
 export interface PrepareNativeHiveSkillsInput {
+  /** The host the bundled skills are rendered for; its sections are kept and every other host's are removed. */
+  host: HostProfile;
   directory: string;
   worktree: string;
   packagedSkillsDir?: string;
@@ -593,6 +597,7 @@ async function buildGeneratedHash(stagedRoot: string): Promise<string> {
 async function materializeSkills(
   generatedRoot: string,
   bundledSkills: BundledSkillSource[],
+  host: HostProfile,
   logger: Logger,
 ): Promise<{ materializedPath: string; skillsByName: Map<string, PreparedHiveSkill> }> {
   await fsp.mkdir(generatedRoot, { recursive: true });
@@ -603,6 +608,7 @@ async function materializeSkills(
     for (const skill of bundledSkills) {
       const destinationDir = path.join(tempPath, skill.directoryName);
       await fsp.cp(skill.sourceDir, destinationDir, { recursive: true, verbatimSymlinks: true });
+      await renderStagedHostMarkdown(destinationDir, host);
     }
 
     const stagedSkills: Array<{ source: BundledSkillSource; parsed: ParsedNativeSkill }> = [];
@@ -721,7 +727,7 @@ export async function prepareNativeHiveSkills(
     };
   }
 
-  const { materializedPath, skillsByName } = await materializeSkills(generatedRoot, eligibleSkills, logger);
+  const { materializedPath, skillsByName } = await materializeSkills(generatedRoot, eligibleSkills, input.host, logger);
 
   return {
     materializedPath,

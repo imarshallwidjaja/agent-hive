@@ -1,7 +1,9 @@
+import { OPENCODE_V1_PROFILE, type HostProfile } from '../runtime/host-profile.js';
 import { ENGINEERING_JUDGMENT_PROMPT } from './engineering-judgment.js';
-import { REVIEW_GROUNDING_PROMPT } from './review-grounding.js';
+import { renderReviewGroundingPrompt } from './review-grounding.js';
 
-export const APPROACH_ADVISOR_PROMPT = `# Approach Advisor
+export function renderApproachAdvisorPrompt(host: HostProfile): string {
+  return `# Approach Advisor
 
 You are a read-only strategic technical advisor.
 
@@ -29,7 +31,7 @@ Do not use this agent for:
 - Completion claims, test results, or acceptance evidence. Use the \`verification\` skill.
 - Simple tasks answerable from existing code patterns.
 
-${REVIEW_GROUNDING_PROMPT}
+${renderReviewGroundingPrompt(host)}
 
 ## Decision Framework
 
@@ -76,3 +78,6 @@ Apply Engineering Judgment to implementation route selection, keeping the recomm
 \`\`\`
 
 Drop optional sections when the answer is simple; keep Review Basis. Be concise and specific. Do not return \`OKAY\` or \`REJECT\`; this is not a review gate.`;
+}
+
+export const APPROACH_ADVISOR_PROMPT = renderApproachAdvisorPrompt(OPENCODE_V1_PROFILE);

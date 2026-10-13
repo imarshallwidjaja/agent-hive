@@ -8,6 +8,27 @@ import { SWARM_BEE_PROMPT } from './swarm';
 import { FORAGER_BEE_PROMPT } from './forager';
 import { SCOUT_BEE_PROMPT } from './scout';
 import { HIVE_HELPER_PROMPT } from './hive-helper';
+import { CODEMODE_READ_TOOLS, OPENCODE_V1_PROFILE, createHostProfile, renderReadTransport, renderSkillResolution, requiredSkillIdentity, skillCall, type HostProfile } from '../runtime/host-profile';
+import { HIVE_TOOL_NAMES } from '../utils/plugin-manifest';
+import { renderBackgroundFirstOrchestrationAppendix } from '../utils/background-gate';
+import { renderCommandBehavior } from '../commands/command-bodies';
+import { renderQueenBeePrompt } from './hive';
+import { renderArchitectBeePrompt } from './architect';
+import { renderSwarmBeePrompt } from './swarm';
+import { renderHiveBuilderPrompt } from './hive-builder';
+import { renderScoutBeePrompt } from './scout';
+import { renderHiveHelperPrompt } from './hive-helper';
+import { renderDashReviewerPrompt } from './dash-reviewer';
+import { renderVulnerabilityReviewPrimaryPrompt } from './vulnerability-review-primary';
+import { renderAutoLoadSkillsAppendix, renderHiveSystemPrompt } from '../hooks/system-hook';
+import { renderPlanReviewerPrompt } from './plan-reviewer';
+import { renderCodeReviewerPrompt } from './code-reviewer';
+import { renderSimplicityReviewerPrompt } from './simplicity-reviewer';
+import { renderApproachAdvisorPrompt } from './approach-advisor';
+import { renderVulnerabilityReviewerPrompt } from './vulnerability-reviewer';
+import { renderReviewGroundingPrompt } from './review-grounding';
+import { renderInterruptedWorkerRecoveryPrompt } from './task-reporting';
+import { renderNativeTaskContinuationPolicyPrompt } from './process-judgment';
 import { COMMAND_BEHAVIOR } from '../commands/command-bodies';
 import { buildHiveCommandMap } from '../commands/runtime.js';
 import { hiveCommandRenderers } from '../commands/renderers.js';
@@ -780,7 +801,7 @@ describe('Multi-plan feature routing guidance', () => {
   it('reuses route selection only with visible same-session evidence and selects when uncertain', () => {
     const workspaceRoot = path.resolve(import.meta.dir, '..', '..', '..', '..');
     const commands = buildHiveCommandMap(hiveCommandRenderers, () => ({
-      agentMode: 'unified', backgroundGuidance: { available: false }, council: {} as never,
+      agentMode: 'unified', host: OPENCODE_V1_PROFILE, backgroundGuidance: { available: false }, council: {} as never,
       agents: {}, dashReviewLanes: [], vulnerabilityReviewLanes: [],
     }));
     const startExecution = commands['start-execution'].run('');
@@ -3068,5 +3089,245 @@ describe('Primary orchestration direct-work boundaries', () => {
     expect(PLAN_REVIEWER_PROMPT).toContain('do not redesign the architecture or reject a plan for a low parallel task count');
     expect(PLAN_REVIEWER_PROMPT).toContain('Optional coordination observations are nonblocking and do not change the verdict');
     expect(PLAN_REVIEWER_PROMPT).toContain('[Optional, when a concrete nonblocking improvement is apparent]\n**Coordination Observations**:');
+  });
+});
+
+describe('host-rendered policy', () => {
+  // A profile whose slots are markers: whatever differs between hosts must come from a slot, never from forked text.
+  const SENTINEL: HostProfile = {
+    host: 'opencode-v1',
+    nativeTask: { tool: '@@TOOL@@', agentField: '@@AGENT@@', continuationField: '@@CONTINUATION@@' },
+    shell: { tool: '@@SHELL@@', sentence: '@@SHELL_SENTENCE@@' },
+    nativeSkill: { tool: 'skill', field: 'name' },
+    readTransport: 'direct',
+    backgroundGate: 'experiment-env',
+  };
+  const V2_CODEMODE = createHostProfile('opencode-v2');
+  const V2_DIRECT = createHostProfile('opencode-v2', { readTransport: 'direct' });
+  const hostProfiles = [OPENCODE_V1_PROFILE, V2_CODEMODE, V2_DIRECT];
+
+  const fill = (text: string, host: HostProfile) => text
+    .replaceAll('@@TOOL@@', host.nativeTask.tool)
+    .replaceAll('@@AGENT@@', host.nativeTask.agentField)
+    .replaceAll('@@CONTINUATION@@', host.nativeTask.continuationField)
+    .replaceAll('@@SHELL_SENTENCE@@', host.shell.sentence)
+    .replaceAll('@@SHELL@@', host.shell.tool);
+
+  // Skill calls differ by more than a name (v2 selects by catalog id), so they are compared as tokens that keep the skill name.
+  const SKILL_CALL = /`?skill\(\{ (?:name: ("[^"]*")|id) \}\)`?(?: for the catalog entry named ("[^"]*"))?/g;
+  const maskSkillCalls = (text: string) => text.replace(SKILL_CALL, (_match, v1Name?: string, v2Name?: string) => {
+    const named = v1Name ?? v2Name;
+    return named === undefined || named === '"..."' ? '@@SKILL@@' : `@@SKILL ${named}@@`;
+  });
+  const maskSkillText = (text: string, host: HostProfile) => maskSkillCalls(text.replace(renderSkillResolution(host), '').replace(requiredSkillIdentity(host), '@@REQUIRED_SKILLS@@'));
+
+  const policyRenders: Array<[string, (host: HostProfile) => string]> = [
+    ['hive', renderQueenBeePrompt],
+    ['architect', renderArchitectBeePrompt],
+    ['swarm', renderSwarmBeePrompt],
+    ['hive-builder', renderHiveBuilderPrompt],
+    ['scout', renderScoutBeePrompt],
+    ['hive-helper', renderHiveHelperPrompt],
+    ['dash-reviewer', renderDashReviewerPrompt],
+    ['vulnerability-review-primary', renderVulnerabilityReviewPrimaryPrompt],
+    ['plan-reviewer', renderPlanReviewerPrompt],
+    ['code-reviewer', renderCodeReviewerPrompt],
+    ['simplicity-reviewer', renderSimplicityReviewerPrompt],
+    ['approach-advisor', renderApproachAdvisorPrompt],
+    ['vulnerability-reviewer', renderVulnerabilityReviewerPrompt],
+    ['review grounding', renderReviewGroundingPrompt],
+    ['native task contract', renderNativeTaskContinuationPolicyPrompt],
+    ['interrupted worker recovery', renderInterruptedWorkerRecoveryPrompt],
+    ['background-first appendix', renderBackgroundFirstOrchestrationAppendix],
+    // The read-transport section is host-and-mode specific text and has its own test below.
+    ['system prompt', (host) => renderHiveSystemPrompt({ ...host, readTransport: 'direct' }).replace(renderReadTransport({ ...host, readTransport: 'direct' }), '')],
+    ...Object.keys(COMMAND_BEHAVIOR).map((key): [string, (host: HostProfile) => string] => [`command body ${key}`, (host) => renderCommandBehavior(host)[key as keyof typeof COMMAND_BEHAVIOR]]),
+  ];
+
+  it('keeps v1 renders identical to the exported prompt constants', () => {
+    expect(renderQueenBeePrompt(OPENCODE_V1_PROFILE)).toBe(QUEEN_BEE_PROMPT);
+    expect(renderArchitectBeePrompt(OPENCODE_V1_PROFILE)).toBe(ARCHITECT_BEE_PROMPT);
+    expect(renderSwarmBeePrompt(OPENCODE_V1_PROFILE)).toBe(SWARM_BEE_PROMPT);
+    expect(renderHiveBuilderPrompt(OPENCODE_V1_PROFILE)).toBe(HIVE_BUILDER_PROMPT);
+    expect(renderHiveSystemPrompt(OPENCODE_V1_PROFILE)).toBe(HIVE_SYSTEM_PROMPT);
+    expect(renderCommandBehavior(OPENCODE_V1_PROFILE)).toEqual(COMMAND_BEHAVIOR);
+    expect(renderPlanReviewerPrompt(OPENCODE_V1_PROFILE)).toBe(PLAN_REVIEWER_PROMPT);
+    expect(renderCodeReviewerPrompt(OPENCODE_V1_PROFILE)).toBe(CODE_REVIEWER_PROMPT);
+    expect(renderSimplicityReviewerPrompt(OPENCODE_V1_PROFILE)).toBe(SIMPLICITY_REVIEWER_PROMPT);
+    expect(renderApproachAdvisorPrompt(OPENCODE_V1_PROFILE)).toBe(APPROACH_ADVISOR_PROMPT);
+    expect(renderVulnerabilityReviewerPrompt(OPENCODE_V1_PROFILE)).toBe(VULNERABILITY_REVIEWER_PROMPT);
+    expect(renderReviewGroundingPrompt(OPENCODE_V1_PROFILE)).toBe(REVIEW_GROUNDING_PROMPT);
+  });
+
+  it.each(policyRenders)('derives every host difference of %s from the profile slots', (_name, render) => {
+    const sentinel = render(SENTINEL);
+    for (const host of hostProfiles) expect(fill(maskSkillText(sentinel, SENTINEL), host)).toBe(maskSkillText(render(host), host));
+    // Native syntax left behind would be v1 wording that no profile slot controls.
+    expect(sentinel).not.toMatch(/\btask\(/);
+    expect(sentinel).not.toContain('subagent_type');
+    expect(sentinel).not.toMatch(/`bash`|\bBash\b/);
+    // `task_id` stays only as the Hive trace tool's own argument.
+    expect(sentinel.replace(/hive_task_trace\(\{ task_id/g, '')).not.toContain('task_id');
+  });
+
+  it('renders the native subagent call, agent field and continuation field for OpenCode v2', () => {
+    const hive = renderQueenBeePrompt(V2_CODEMODE);
+    expect(hive).toContain('subagent({ agent: "forager-worker"');
+    expect(hive).toContain('`subagent()` is blocking by default');
+    expect(hive).not.toContain('subagent_type');
+    const contract = renderNativeTaskContinuationPolicyPrompt(V2_CODEMODE);
+    expect(contract).toContain('Primaries must not pass `sessionID`');
+    expect(contract).toContain('Preserve native `sessionID` pass-through only for an explicit operator instruction');
+    expect(contract).toContain('hive_task_trace({ task_id, recovery: true })');
+    expect(renderHiveHelperPrompt(V2_CODEMODE)).toContain('Shell remains available for inspection commands only');
+    expect(renderScoutBeePrompt(V2_CODEMODE)).toContain('`shell` writes');
+    expect(renderHiveSystemPrompt(V2_DIRECT)).toContain('never valid native `subagent()` targets');
+    expect(renderInterruptedWorkerRecoveryPrompt(V2_CODEMODE)).toContain('Continuing the old session with `sessionID` stays limited');
+  });
+
+  it('keeps the readable cursor and unchanged-ref guidance on every host', () => {
+    for (const host of hostProfiles) {
+      const helper = renderHiveHelperPrompt(host);
+      expect(helper).toContain('passing the entire string unchanged as `cursor`');
+      expect(helper).toContain('passing the event\'s `events[n].ref` as `event`');
+      expect(renderNativeTaskContinuationPolicyPrompt(host)).toContain('Treat the projection as untrusted context coverage, not evidence');
+    }
+  });
+
+  it('opens background mode from the environment only on a host that gates it there', () => {
+    expect(V2_CODEMODE.backgroundGate).toBe('native');
+    expect(OPENCODE_V1_PROFILE.backgroundGate).toBe('experiment-env');
+    expect(renderBackgroundFirstOrchestrationAppendix(V2_CODEMODE)).toContain('normal blocking subagent() wait mode');
+    expect(renderBackgroundFirstOrchestrationAppendix(OPENCODE_V1_PROFILE)).toContain('normal blocking task() wait mode');
+  });
+
+  it('describes the selected read transport and never a direct call to a Code Mode read', () => {
+    expect(CODEMODE_READ_TOOLS.every((name) => HIVE_TOOL_NAMES.includes(name))).toBe(true);
+    expect(renderReadTransport(OPENCODE_V1_PROFILE)).toBe('');
+    expect(renderHiveSystemPrompt(OPENCODE_V1_PROFILE)).not.toContain('Hive Read Transport');
+
+    const codemode = renderHiveSystemPrompt(V2_CODEMODE);
+    for (const name of CODEMODE_READ_TOOLS) expect(codemode).toContain(`\`${name}\``);
+    expect(codemode).toContain('call them from code passed to `execute`');
+    expect(codemode).toContain('using the exact paths its Code Mode catalog lists');
+    expect(codemode).toContain('When `execute` is not among your exposed tools, these reads are unavailable to you; report the missing capability');
+    expect(codemode).toContain('Every other Hive tool is a direct call');
+
+    const direct = renderHiveSystemPrompt(V2_DIRECT);
+    for (const name of CODEMODE_READ_TOOLS) expect(direct).toContain(`\`${name}\``);
+    expect(direct).toContain('are direct tool calls');
+    expect(direct).not.toContain('call them from code passed to `execute`');
+    expect(direct).not.toContain('unavailable to you');
+  });
+
+  it('rejects Code Mode on a host that has none', () => {
+    expect(() => createHostProfile('opencode-v1', { readTransport: 'codemode' })).toThrow('no Code Mode');
+    expect(createHostProfile('opencode-v1').readTransport).toBe('direct');
+    expect(createHostProfile('opencode-v2').readTransport).toBe('codemode');
+  });
+
+  it('renders command wrappers with the host call and continuation field', () => {
+    for (const host of hostProfiles) {
+      const context: any = { agentMode: 'unified', host, backgroundGuidance: { available: false }, council: {}, agents: {}, dashReviewLanes: [], vulnerabilityReviewLanes: [] };
+      const text = hiveCommandRenderers['start-execution']('', context) as string;
+      expect(text).toContain(`issue the native Forager ${host.nativeTask.tool}() call`);
+      expect(text).toContain(`preserve ${host.nativeTask.continuationField} pass-through only`);
+      expect(text).toContain(`Pass ${host.nativeTask.continuationField} only when`);
+    }
+  });
+  describe('native skill calls in composed prompts', () => {
+    // The composition runtime.ts builds for each role: role prompt + system prompt + auto-load appendix.
+    const roleRenders: Array<[string, (host: HostProfile) => string]> = [
+      ['hive', renderQueenBeePrompt],
+      ['architect', renderArchitectBeePrompt],
+      ['swarm', renderSwarmBeePrompt],
+      ['hive-builder', renderHiveBuilderPrompt],
+      ['scout', renderScoutBeePrompt],
+      ['forager', () => FORAGER_BEE_PROMPT],
+      ['hive-helper', renderHiveHelperPrompt],
+      ['plan-reviewer', renderPlanReviewerPrompt],
+      ['code-reviewer', renderCodeReviewerPrompt],
+      ['simplicity-reviewer', renderSimplicityReviewerPrompt],
+      ['approach-advisor', renderApproachAdvisorPrompt],
+      ['vulnerability-reviewer', renderVulnerabilityReviewerPrompt],
+      ['dash-reviewer', renderDashReviewerPrompt],
+      ['vulnerability-review-primary', renderVulnerabilityReviewPrimaryPrompt],
+    ];
+    const compose = (render: (host: HostProfile) => string, host: HostProfile) =>
+      render(host) + renderHiveSystemPrompt(host) + renderAutoLoadSkillsAppendix(host, ['verification', 'context-engineering'])
+      + renderBackgroundFirstOrchestrationAppendix(host);
+    const V2_PROFILES = [V2_CODEMODE, V2_DIRECT];
+
+    it.each(roleRenders)('composes %s with the skill call the selected host accepts', (_name, render) => {
+      const v1 = compose(render, OPENCODE_V1_PROFILE);
+      expect(v1).toContain('native skill({ name: "..." }) tool');
+      expect(v1).toContain('- `skill({ name: "verification" })`');
+      expect(v1).not.toMatch(/skill\(\{ id/);
+      for (const host of V2_PROFILES) {
+        const v2 = compose(render, host);
+        // v2 selects by catalog id, so no composed path may tell an agent to pass a name.
+        expect(v2).not.toMatch(/skill\(\{ name/);
+        expect(v2).toContain('native skill({ id }) tool');
+        expect(v2).toContain('- `skill({ id })` for the catalog entry named "verification"');
+        expect(v2).toContain('load/use skill({ id }) for the catalog entry named "background-delegation"');
+        expect(v2).toContain(renderSkillResolution(host).trim());
+      }
+    });
+
+    it('keeps the exact required-skill identity rule and resolves names through the catalog on v2', () => {
+      for (const host of hostProfiles) {
+        const system = renderHiveSystemPrompt(host);
+        expect(system).toContain('treat that exact name as required for the covered work');
+        expect(system).toContain('A parent or sibling load does not count, and similar names do not substitute: stop-design-slop and stop-slop are distinct.');
+        expect(system).toContain('report unavailable tools or skills, unresolved identity, or conflicts and pause only the affected work');
+        expect(system).toContain('Within one child session, reuse a skill already loaded successfully there.');
+      }
+      const v2 = renderHiveSystemPrompt(V2_CODEMODE);
+      expect(v2).toContain("whose `<name>` is exactly the skill's name");
+      expect(v2).toContain('an id may differ from its name');
+      expect(v2).toContain('When no entry or more than one entry matches, the identity is unresolved');
+      // Every identity rule stays visible once; the lookup sentence is not repeated per role.
+      expect(v2.split('available-skills catalog entry').length - 1).toBe(1);
+      expect(renderSkillResolution(OPENCODE_V1_PROFILE)).toBe('');
+    });
+
+    it('names the catalog entry, not an invented id, for every skill in the on-demand table', () => {
+      const names = [...renderQueenBeePrompt(OPENCODE_V1_PROFILE).matchAll(/^\| `skill\(\{ name: "([a-z-]+)" \}\)` \|/gm)].map((match) => match[1]!);
+      expect(names.length).toBe(11);
+      const v2 = renderQueenBeePrompt(V2_CODEMODE);
+      for (const name of names) expect(v2).toContain(`| ${skillCall(V2_CODEMODE, name)} |`);
+      expect(skillCall(V2_CODEMODE, 'verification')).toBe('`skill({ id })` for the catalog entry named "verification"');
+      expect(skillCall(V2_CODEMODE, 'verification', { code: false })).toBe('skill({ id }) for the catalog entry named "verification"');
+      expect(skillCall(OPENCODE_V1_PROFILE, 'verification')).toBe('`skill({ name: "verification" })`');
+    });
+
+    it('audits required skill loads by the identity the host records', () => {
+      expect(renderNativeTaskContinuationPolicyPrompt(OPENCODE_V1_PROFILE)).toContain('confirm successful native skill calls for the exact required names before covered work');
+      expect(renderNativeTaskContinuationPolicyPrompt(V2_CODEMODE)).toContain('confirm successful native skill calls for the catalog ids of the exact required names before covered work');
+    });
+
+    it('resolves every named skill in v2 compositions to a packaged skill', () => {
+      const skillsRoot = path.resolve(import.meta.dir, '..', '..', 'skills');
+      const loadPatterns = [
+        /skill\(\{ id \}\)`? for the catalog entry named "([a-z0-9][a-z0-9-]*)"/g,
+        /native skill [`"]([a-z0-9][a-z0-9-]*)[`"]/g,
+      ];
+      for (const [name, render] of roleRenders) {
+        const text = compose(render, V2_CODEMODE);
+        for (const pattern of loadPatterns) {
+          for (const match of text.matchAll(pattern)) {
+            expect(() => readFileSync(path.join(skillsRoot, match[1]!, 'SKILL.md')), `${name} -> ${match[1]}`).not.toThrow();
+          }
+        }
+      }
+    });
+
+    it('builds every role prompt in runtime.ts from the selected host, not from a v1 render', () => {
+      const runtime = readFileSync(path.resolve(import.meta.dir, '..', 'runtime.ts'), 'utf8');
+      const v1Constants = /\b(?:QUEEN_BEE|ARCHITECT_BEE|SWARM_BEE|HIVE_BUILDER|SCOUT_BEE|HIVE_HELPER|PLAN_REVIEWER|CODE_REVIEWER|SIMPLICITY_REVIEWER|APPROACH_ADVISOR|VULNERABILITY_REVIEWER|VULNERABILITY_REVIEW_PRIMARY|DASH_REVIEWER|REVIEW_GROUNDING|HIVE_SYSTEM|NATIVE_TASK_CONTINUATION_POLICY|INTERRUPTED_WORKER_RECOVERY)_PROMPT\b/;
+      expect(runtime).not.toMatch(v1Constants);
+      // Every role except Forager (a host-neutral constant) composes from a render function.
+      expect([...runtime.matchAll(/render\w+Prompt\(host\) \+ systemPrompt/g)].length).toBe(roleRenders.length - 1);
+    });
   });
 });

@@ -1,6 +1,9 @@
 import type { HiveCommandKey } from './registry.js';
+import { OPENCODE_V1_PROFILE, type HostProfile } from '../runtime/host-profile.js';
 
-export const COMMAND_BEHAVIOR: Record<HiveCommandKey, string> = {
+export function renderCommandBehavior(host: HostProfile): Record<HiveCommandKey, string> {
+  const continuation = host.nativeTask.continuationField;
+  return {
   interview: `Clarify the operator's idea one material question at a time. Verify repository facts before presenting them as settled. End with aligned decisions, unresolved items, and the recommended next step. Do not implement or mutate Hive state.`,
 
   grill: `Question supplied context one material issue at a time until shared understanding is explicit. Separate operator decisions, operator preferences, verified facts, assumptions, and unresolved risks. Do not implement or mutate Hive state.`,
@@ -11,7 +14,7 @@ export const COMMAND_BEHAVIOR: Record<HiveCommandKey, string> = {
 
   'approve-sync-plan': `Read the current plan and comments, approve only when review issues are resolved, sync tasks, then read back status. Suggest DAG-backed target task milestones and copy-paste run/continue prompts in Session Strategy. Report exact blockers instead of continuing on partial state.`,
 
-  'start-execution': `Execute the approved plan through explicit tasks and ordinary native subagents. Create or inspect a task worktree when isolation is needed, capture its initial destination identity from the create result, and put the returned path and identities in the authored task prompt. Persist outcomes with hive_task_update. Verify before the primary calls hive_worktree_merge with the worker's unchanged source pin and inspected target expectation; use same-call cleanup when retention is not needed. After every returned native task result, launch a fresh child session for follow-up and reuse the same Hive task/worktree where appropriate. Pass task_id only when an explicit operator instruction or runtime-owned interruption-recovery mechanism authorizes continuation. Every invocation receives the current route snapshot.`,
+  'start-execution': `Execute the approved plan through explicit tasks and ordinary native subagents. Create or inspect a task worktree when isolation is needed, capture its initial destination identity from the create result, and put the returned path and identities in the authored task prompt. Persist outcomes with hive_task_update. Verify before the primary calls hive_worktree_merge with the worker's unchanged source pin and inspected target expectation; use same-call cleanup when retention is not needed. After every returned native task result, launch a fresh child session for follow-up and reuse the same Hive task/worktree where appropriate. Pass ${continuation} only when an explicit operator instruction or runtime-owned interruption-recovery mechanism authorizes continuation. Every invocation receives the current route snapshot.`,
 
   'council-directive': `Shape rough input into a reusable read-only council directive with objective, context, constraints, assumptions to validate, requested perspectives, and desired output. Do not launch councillors.`,
 
@@ -23,3 +26,6 @@ export const COMMAND_BEHAVIOR: Record<HiveCommandKey, string> = {
 
   'compact-summary': `Summarize the visible session without mutating state. Use these sections in order: Goal; Constraints & Preferences; Progress; Key Decisions; Next Steps; Critical Context; Relevant Files. Include verification only when supported by command or tool evidence.`,
 };
+}
+
+export const COMMAND_BEHAVIOR = renderCommandBehavior(OPENCODE_V1_PROFILE);

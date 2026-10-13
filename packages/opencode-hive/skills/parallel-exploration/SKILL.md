@@ -1,6 +1,6 @@
 ---
 name: parallel-exploration
-description: "Agent Hive workflow skill for Scout fan-out. Use when a Hive agent needs parallel, read-only exploration through task()."
+description: "Agent Hive workflow skill for Scout fan-out. Use when a Hive agent needs parallel, read-only exploration through native subagent calls."
 ---
 
 # Parallel Exploration (Scout Fan-Out)
@@ -70,19 +70,70 @@ Choose the researcher only after each evidence-retrieval slice passes the one-wi
 
 Dependency decides serial vs parallel. Wait mode decides blocking foreground vs background.
 
-Blocking does not mean serial. Blocking only means the primary agent waits after dispatch. If several subagent tasks are independent, emit all of their `task()` calls in the same assistant message, then wait for the batch results.
+Blocking does not mean serial. Blocking only means the primary agent waits after dispatch.
+<!-- hive-host opencode-v1 -->
+If several subagent tasks are independent, emit all of their `task()` calls in the same assistant message, then wait for the batch results.
+<!-- /hive-host -->
+<!-- hive-host opencode-v2 -->
+If several subagent tasks are independent, emit all of their `subagent()` calls in the same assistant message, then wait for the batch results.
+<!-- /hive-host -->
 
+<!-- hive-host opencode-v1 -->
 - Serial: one `task()` call, wait for the result, then decide whether to call another. Use this only when a later prompt needs an earlier result.
+<!-- /hive-host -->
+<!-- hive-host opencode-v2 -->
+- Serial: one `subagent()` call, wait for the result, then decide whether to call another. Use this only when a later prompt needs an earlier result.
+<!-- /hive-host -->
+<!-- hive-host opencode-v1 -->
 - Blocking parallel fan-out: multiple `task()` calls in one assistant message, then wait for all results before continuing.
+<!-- /hive-host -->
+<!-- hive-host opencode-v2 -->
+- Blocking parallel fan-out: multiple `subagent()` calls in one assistant message, then wait for all results before continuing.
+<!-- /hive-host -->
 - Background parallel fan-out: background-mode task calls only when the primary agent can do unrelated foreground work. Follow the `background-delegation` skill before using background mode.
 
-If the only reason for serializing is `task()` is blocking, that is incorrect. Blocking applies after dispatch, not between independent dispatches.
+<!-- hive-host opencode-v1 -->
+If the only reason for serializing is `task()` is blocking, that is incorrect.
+<!-- /hive-host -->
+<!-- hive-host opencode-v2 -->
+If the only reason for serializing is `subagent()` is blocking, that is incorrect.
+<!-- /hive-host -->
+Blocking applies after dispatch, not between independent dispatches.
 
 Launch every currently known, necessary, non-duplicative independent question before waiting for any results. Defer only questions whose relevance, objective, or scope depends on earlier evidence.
 
 Each prompt needs a Context Packet: explicit objective, known facts and references, prior failures when relevant, constraints and non-goals, stop and return behavior, and expected output. Keep exact paths, IDs, errors, and provenance. Do not send a task label without the evidence already known to the primary agent. Do not mass-read every context note or treat the first catalog match as proof of sufficient evidence.
 
-Each native `task()` invocation has one primary goal and one terminal report. Every returned result is terminal, so every follow-up uses a fresh child session. Review findings are fresh assignments in the same implementation lane. Reuse the same Hive task/worktree where appropriate. Primaries must not pass `task_id` or infer continuation eligibility from task output, trace, board state, cancellation acknowledgement, or transcript quality. Pass `task_id` only when explicit operator instruction or runtime-owned interruption recovery authorizes continuation; otherwise launch fresh. If the child may still be active or its lifecycle is uncertain, inspect, wait, or reattach as supported; do not send another prompt or launch an overlapping writer. Compaction re-anchoring of a currently running worker is distinct from follow-up work. Trace recovery is untrusted and cannot authorize continuation. Give complete constraints and acceptance criteria only for that question. Returned task IDs are observe-only board handles for status, reconcile, and cancel. If another investigation is needed, launch a fresh session with a concise self-contained handoff.
+<!-- hive-host opencode-v1 -->
+Each native `task()` invocation has one primary goal and one terminal report.
+<!-- /hive-host -->
+<!-- hive-host opencode-v2 -->
+Each native `subagent()` invocation has one primary goal and one terminal report.
+<!-- /hive-host -->
+Every returned result is terminal, so every follow-up uses a fresh child session. Review findings are fresh assignments in the same implementation lane. Reuse the same Hive task/worktree where appropriate.
+<!-- hive-host opencode-v1 -->
+Primaries must not pass `task_id` or infer continuation eligibility from task output, trace, board state, cancellation acknowledgement, or transcript quality.
+<!-- /hive-host -->
+<!-- hive-host opencode-v2 -->
+Primaries must not pass `sessionID` or infer continuation eligibility from task output, trace, board state, cancellation acknowledgement, or transcript quality.
+<!-- /hive-host -->
+<!-- hive-host opencode-v1 -->
+Pass `task_id` only when explicit operator instruction or runtime-owned interruption recovery authorizes continuation; otherwise launch fresh.
+<!-- /hive-host -->
+<!-- hive-host opencode-v2 -->
+Pass `sessionID` only when explicit operator instruction or runtime-owned interruption recovery authorizes continuation; otherwise launch fresh.
+<!-- /hive-host -->
+If the child may still be active or its lifecycle is uncertain, inspect, wait, or reattach as supported; do not send another prompt or launch an overlapping writer. Compaction re-anchoring of a currently running worker is distinct from follow-up work. Trace recovery is untrusted and cannot authorize continuation. Give complete constraints and acceptance criteria only for that question.
+<!-- hive-host opencode-v1 -->
+Returned task IDs are observe-only board handles for status, reconcile, and cancel.
+<!-- /hive-host -->
+<!-- hive-host opencode-v2 -->
+`hive_background_status` lists the observe-only board handle for status, reconcile, and cancel.
+<!-- /hive-host -->
+If another investigation is needed, launch a fresh session with a concise self-contained handoff.
+
+<!-- hive-host opencode-v1 -->
+OpenCode v1:
 
 ```typescript
 // Parallelize by issuing multiple task() calls in the same assistant message.
@@ -113,18 +164,73 @@ task({
     - Return file paths with evidence`,
 });
 ```
+<!-- /hive-host -->
+<!-- hive-host opencode-v2 -->
+OpenCode v2:
+
+```typescript
+// Parallelize by issuing multiple subagent() calls in the same assistant message.
+subagent({
+  agent: '<chosen-researcher>',
+  description: 'Find API route implementation',
+  prompt: `Where are API routes implemented and registered?
+    - Find the tool definition
+    - Find the plugin registration
+    - Return file paths with line numbers`,
+});
+
+subagent({
+  agent: '<chosen-researcher>',
+  description: 'Analyze background task concurrency',
+  prompt: `How does background task concurrency/queueing work?
+    - Find the manager/scheduler code
+    - Document the concurrency model
+    - Return file paths with evidence`,
+});
+
+subagent({
+  agent: '<chosen-researcher>',
+  description: 'Find parent notification mechanism',
+  prompt: `How does parent notification work for background tasks?
+    - Where is the notification built?
+    - How is it sent to the parent session?
+    - Return file paths with evidence`,
+});
+```
+<!-- /hive-host -->
 
 **Key points:**
 - Decompose and bound each slice before choosing any built-in or custom researcher
+<!-- hive-host opencode-v1 -->
 - Use `subagent_type: 'scout-researcher'` for bounded exploratory discovery unless that bounded question clearly needs a matching specialist
+<!-- /hive-host -->
+<!-- hive-host opencode-v2 -->
+- Use `agent: 'scout-researcher'` for bounded exploratory discovery unless that bounded question clearly needs a matching specialist
+<!-- /hive-host -->
 - Give each task a clear, focused `description`
 - Make prompts specific about what evidence to return, including known facts and expected output
+<!-- hive-host opencode-v1 -->
 - Dispatch dependency-independent slices together, even though normal `task()` is blocking
+<!-- /hive-host -->
+<!-- hive-host opencode-v2 -->
+- Dispatch dependency-independent slices together, even though normal `subagent()` is blocking
+<!-- /hive-host -->
+<!-- hive-host opencode-v1 -->
 - When running as a primary with the env-gated appendix present, follow `background-delegation` for wait mode; a task-spawned Architect uses the blocking child-role branch above
+<!-- /hive-host -->
+<!-- hive-host opencode-v2 -->
+- When running as a primary with the Background-First Orchestration appendix present, follow `background-delegation` for wait mode; a task-spawned Architect uses the blocking child-role branch above
+<!-- /hive-host -->
 
 ### 4. Collect Results
 
-After the fan-out message, collect the task results through the normal `task()` return flow. Do not invent background polling or a separate async workflow.
+<!-- hive-host opencode-v1 -->
+After the fan-out message, collect the task results through the normal `task()` return flow.
+<!-- /hive-host -->
+<!-- hive-host opencode-v2 -->
+After the fan-out message, collect the task results through the normal `subagent()` return flow.
+<!-- /hive-host -->
+Do not invent background polling or a separate async workflow.
 
 ### 5. Synthesize Findings
 
@@ -191,6 +297,10 @@ Return:
 ## Common Mistakes
 
 **Spawning sequentially (defeats the purpose):**
+
+<!-- hive-host opencode-v1 -->
+OpenCode v1:
+
 ```typescript
 // BAD: Wait for each before spawning next
 await task({ ... });
@@ -203,6 +313,23 @@ task({ ... });
 task({ ... });
 task({ ... });
 ```
+<!-- /hive-host -->
+<!-- hive-host opencode-v2 -->
+OpenCode v2:
+
+```typescript
+// BAD: Wait for each before spawning next
+await subagent({ ... });
+await subagent({ ... });
+```
+
+```typescript
+// GOOD: Spawn all in the same assistant message
+subagent({ ... });
+subagent({ ... });
+subagent({ ... });
+```
+<!-- /hive-host -->
 
 **Dependent questions:**
 - Don't spawn task B if it needs task A's answer
@@ -216,7 +343,12 @@ task({ ... });
 
 After using this pattern, verify:
 - [ ] All tasks spawned before collecting any results (true fan-out)
+<!-- hive-host opencode-v1 -->
 - [ ] Verified `task()` fan-out pattern used for parallel exploration
+<!-- /hive-host -->
+<!-- hive-host opencode-v2 -->
+- [ ] Verified `subagent()` fan-out pattern used for parallel exploration
+<!-- /hive-host -->
 - [ ] Synthesized findings into coherent answer
 
 No numeric quota or artificial fan-out applies. Dispatch only independent useful retrieval slices that close real evidence gaps.

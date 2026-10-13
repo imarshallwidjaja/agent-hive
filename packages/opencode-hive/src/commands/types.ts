@@ -1,4 +1,5 @@
 import type { CouncilConfig } from 'hive-core';
+import type { HostProfile } from '../runtime/host-profile.js';
 import type { BackgroundDelegationAvailability } from '../utils/background-gate.js';
 
 export interface HiveCommandMetadata {
@@ -17,6 +18,7 @@ export interface HiveRuntimeCommand {
 export type HiveRuntimeCommandMap = Record<string, HiveRuntimeCommand>;
 
 export interface HiveCommandContext {
+  host: HostProfile;
   agentMode: 'unified' | 'dedicated';
   backgroundGuidance: BackgroundDelegationAvailability;
   council: CouncilConfig;

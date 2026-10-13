@@ -24,6 +24,28 @@ oc-arkive ships the skill sources in `packages/opencode-hive/skills/`. OpenCode 
 
 Planning, execution, concurrency, recovery, and managed context keep their established owners. New design guidance does not authorize clearing state, adopting live sessions, deleting public compatibility, bypassing checks, or promoting reviewer votes into acceptance.
 
+## Host-specific wording
+
+One canonical policy serves both OpenCode hosts. Only the host's own names differ, and they come from one `HostProfile` (`src/runtime/host-profile.ts`): the native subagent call (`task()` with `subagent_type` and `task_id` on v1, `subagent()` with `agent` and `sessionID` on v2), the native skill call (`skill({ name })` on v1; `skill({ id })` on v2, where `id` is the `<id>` of the available-skills catalog entry whose `<name>` is the skill's name, never assumed equal to it), the shell tool name, the Hive read transport, and whether background subagents are gated by an experiment variable. Agent prompts, command bodies and the system prompt are `render*(host)` functions; the exported `*_PROMPT` constants are their v1 renders. A new prompt sentence that names native syntax takes the profile slot, not a literal.
+
+Packaged skills are rendered by the materializer (`src/skills/host-renderer.ts`) for the host that loads them. A sentence or example that differs between hosts is written twice, each wrapped in a section on its own marker lines:
+
+```
+<!-- hive-host opencode-v1 -->
+...text for OpenCode v1...
+<!-- /hive-host -->
+<!-- hive-host opencode-v2 -->
+...text for OpenCode v2...
+<!-- /hive-host -->
+```
+
+- Both sections stay in the packaged source, so a skill discovered directly from the package is complete and has no placeholders. Materialization keeps the selected host's sections and removes the markers. An unknown host, a nested or unclosed section, or a stray closing marker fails materialization and names the file and line.
+- Rendering runs on regular `.md` files in the staged copy before the cache identity is computed, so each host gets its own generated directory. Symbolic links are neither followed nor rewritten, non-Markdown files and imported `UPSTREAM`/`LICENSE` files are copied unchanged, and no cache directory is pruned.
+- Markers stay outside code fences. A native-call example is written once per host as a complete fenced block under a plain "OpenCode v1:" or "OpenCode v2:" label, inside its own section, so a skill read straight from the package shows whole examples and no fence mixes two hosts' calls. Text that does not differ stays outside the sections.
+- Raw v2 wording may depend on the read transport the system prompt names. A skill does not call a Code Mode read directly: it tells the agent to obtain the result through the transport first (code passed to `execute` with the exact path the catalog lists, or a direct call when reads are direct) and uses the result afterwards. The renderer has no transport dimension.
+- Keep a section to the sentence, bullet or example whose syntax differs. Rules, strength and exceptions stay in shared text; a section that adds or drops a rule is a policy fork.
+- Historical host-specific material, such as the OpenCode v1 database recipes in `hive-config`, is labelled with its version and never stands in for the public APIs another host provides.
+
 ## Source-preserving maintenance
 
 Imported skills carry source provenance, applicable license notices, and adaptation notes in their skill directories.

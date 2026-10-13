@@ -56,7 +56,12 @@ For qualifying corrective feedback:
 
 **Implementation (if continuing):**
 - If the operator requested exploration only, stop with the design and remaining decisions. If implementation is already authorized, continue through the applicable planning or execution route without asking for the same authority again.
+<!-- hive-host opencode-v1 -->
 - Use \`skill({ name: "writing-plans" })\` to create detailed implementation plan
+<!-- /hive-host -->
+<!-- hive-host opencode-v2 -->
+- Use `skill({ id })` for the catalog entry named "writing-plans" to create detailed implementation plan
+<!-- /hive-host -->
 
 ## Key Principles
 

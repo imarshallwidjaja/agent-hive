@@ -87,18 +87,36 @@ Lock files sit beside the file they guard as `<file>.lock` and hold the holder's
 
 Each native host owns separate stores, so identical session IDs or job aliases under different owners are different records. `.hive/sessions.json` and `.hive/background-jobs.json` belong to OpenCode v1; OpenCode v2 uses the same file names under `.hive/runtime/opencode-v2/`. An absent v2 store is empty, not a lost copy of v1. Read the store of the host you are investigating.
 
-`.hive/sessions.json` holds canonical session bindings: selected feature route (`featureName`, where explicit `null` means featureless), parent session, task folder, and session constraints with a `standingConstraintsRevision`. Feature constraints live in the feature's `constraints.json`. `sessions.json` is not a trace source.
+<!-- hive-host opencode-v1 -->
+The session index is `.hive/sessions.json`.
+<!-- /hive-host -->
+<!-- hive-host opencode-v2 -->
+The session index is `.hive/runtime/opencode-v2/sessions.json`.
+<!-- /hive-host -->
+It holds canonical session bindings: selected feature route (`featureName`, where explicit `null` means featureless), parent session, task folder, and session constraints with a `standingConstraintsRevision`. Feature constraints live in the feature's `constraints.json`. The session index is not a trace source.
 
-If `.hive/sessions.json` is not valid JSON, the first read or update of the session index copies the bytes to `sessions.json.corrupt-<timestamp>` and writes `{ "sessions": [] }`; an update then writes its own change on top. That discards every saved route and standing constraint. Triggers include:
+If the session index is not valid JSON, the first read or update of it copies the bytes to a `sessions.json.corrupt-<timestamp>` sibling in the same directory and writes `{ "sessions": [] }`; an update then writes its own change on top. That discards every saved route and standing constraint. Triggers include:
 
+<!-- hive-host opencode-v1 -->
 - The host's `chat.message` hook, which records the session whenever a message carries an agent. The file is left holding only that one session.
 - Route resolution in any feature-scoped tool called without an explicit `feature`, such as `hive_status()`, as well as feature selection, constraint tools, and native `task()` dispatch, which captures the route.
+<!-- /hive-host -->
+<!-- hive-host opencode-v2 -->
+- Any host event on which the adapter records a session binding for an agent. The file is left holding only the sessions recorded since the reset.
+- Route resolution in any feature-scoped tool called without an explicit `feature`, such as `hive_status()`, as well as feature selection, constraint tools, and native `subagent()` dispatch, which captures the route.
+<!-- /hive-host -->
 
-So read `.hive/sessions.json` directly, with a shell or file read, before any session-resolving call. If it does not parse, or a `sessions.json.corrupt-*` sibling exists, report both paths to the primary or operator, who decides how to restore it. An empty or one-session index next to a `corrupt-*` copy is reset damage, not intentional state. Until the operator decides, avoid session-resolving calls; when you need a feature-scoped read, pass `feature` explicitly.
+So read the session index directly, with a shell or file read, before any session-resolving call. If it does not parse, or a `sessions.json.corrupt-*` sibling exists in its directory, report both paths to the primary or operator, who decides how to restore it. An empty or one-session index next to a `corrupt-*` copy is reset damage, not intentional state. Until the operator decides, avoid session-resolving calls; when you need a feature-scoped read, pass `feature` explicitly.
 
 ## Background board
 
-`.hive/background-jobs.json` records background `task()` launches (`schemaVersion: 1`, `jobs[]` with native `taskId`, `sessionId`, `alias`, `runtimeState`). It observes the originating parent and call, not feature or task status, and never tracks foreground calls. Archive and cancel acknowledgements do not prove a worker stopped. Agents never edit it; `background-delegation` owns the protocol.
+<!-- hive-host opencode-v1 -->
+`.hive/background-jobs.json` records background `task()` launches (`schemaVersion: 1`, `jobs[]` with native `taskId`, `sessionId`, `alias`, `runtimeState`).
+<!-- /hive-host -->
+<!-- hive-host opencode-v2 -->
+The OpenCode v2 background board records background `subagent()` launches in its own store (`schemaVersion: 1`, `jobs[]` with native `taskId`, `sessionId`, `alias`, `runtimeState`).
+<!-- /hive-host -->
+It observes the originating parent and call, not feature or task status, and never tracks foreground calls. Archive and cancel acknowledgements do not prove a worker stopped. Agents never edit it; `background-delegation` owns the protocol.
 
 ## Integrity signals
 

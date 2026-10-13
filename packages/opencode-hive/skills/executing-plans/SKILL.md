@@ -48,7 +48,14 @@ Example: `08-client-ready` depends on tasks 2-7, while `01-access-guide` and `09
 ### Step 3: Execute Batch
 
 For each task in the batch:
-1. For feature tasks, follow the primary prompt's freshness and assignment rules. Create tracked-write task worktrees with `hive_worktree_create` and an explicit feature target; capture the initial destination identity from its inspection-shaped result. Before dispatch, call `hive_feature_select` only when the selected route is unset or differs from the dispatch target, or the selection evidence below is missing or uncertain. Reuse a matching selection across a same-feature batch only when this session's most recent route-changing call visible in context is `hive_feature_select` for that same feature, with no later explicit-null or other-feature selection. When that evidence is not visible (for example after compaction or a summary, at session start, or in mixed ad-hoc/feature batches), or you are uncertain, call `hive_feature_select` for the dispatch target. Explicit null suppresses fallback and stays featureless unless the dispatch intentionally targets a feature. Later worktree inspection checkpoints remain required. Start the Forager assignment's first non-empty line with `Hive task: <task-folder>`. Require the topology-aware source pin. Non-Git or report-only work follows the direct-work exceptions. Independent worktrees may be dispatched under one parent. In gate-closed sessions use blocking native `task()`; in gate-open sessions use `background: true` only when independent foreground work can continue. Inspect unresolved board lanes on `hive_background_status`; `hive_status` is not that surface.
+1. For feature tasks, follow the primary prompt's freshness and assignment rules. Create tracked-write task worktrees with `hive_worktree_create` and an explicit feature target; capture the initial destination identity from its inspection-shaped result. Before dispatch, call `hive_feature_select` only when the selected route is unset or differs from the dispatch target, or the selection evidence below is missing or uncertain. Reuse a matching selection across a same-feature batch only when this session's most recent route-changing call visible in context is `hive_feature_select` for that same feature, with no later explicit-null or other-feature selection. When that evidence is not visible (for example after compaction or a summary, at session start, or in mixed ad-hoc/feature batches), or you are uncertain, call `hive_feature_select` for the dispatch target. Explicit null suppresses fallback and stays featureless unless the dispatch intentionally targets a feature. Later worktree inspection checkpoints remain required. Start the Forager assignment's first non-empty line with `Hive task: <task-folder>`. Require the topology-aware source pin. Non-Git or report-only work follows the direct-work exceptions. Independent worktrees may be dispatched under one parent.
+<!-- hive-host opencode-v1 -->
+In gate-closed sessions use blocking native `task()`; in gate-open sessions use `background: true` only when independent foreground work can continue.
+<!-- /hive-host -->
+<!-- hive-host opencode-v2 -->
+In gate-closed sessions use blocking native `subagent()`; in gate-open sessions use `background: true` only when independent foreground work can continue.
+<!-- /hive-host -->
+Inspect unresolved board lanes on `hive_background_status`; `hive_status` is not that surface.
 2. Follow the approved scope, contracts, dependencies, and verification boundaries. Adapt implementation details when evidence warrants it; material scope or gate changes require the existing amendment procedure.
 3. Run verifications as specified
 4. After the worker returns, read the report it published and record status and a compact summary under the primary prompt's Task Report Ownership rules; do not retranscribe the report, and leave its successor handoff alone unless integration changed its facts. When a worker run ends without a usable result, follow the primary prompt's Interrupted Worker Recovery rules; a failed run does not fail the task. Inspect result and destination. Pass its topology-aware source pin and unchanged inspected `expectedTarget` or complete `expectedTargets` map to `hive_worktree_merge`. Merge tracked Git work before marking the task done. If destination drift is relevant, overlapping, or uncertain, reconcile in the same worktree with a fresh worker after the prior writer is terminal; merge the pinned target commit normally, adapt and review the combined delta, verify, and return fresh pins. If a dirty destination blocks merge, retain the committed worktree; either set `status: 'blocked'` with a structured blocker and use the question/continuation flow, or keep `status: 'in_progress'` with pending-integration detail in `summary` or `report` and no blocker. Record non-Git or report-only results after target verification. Promote accepted Forward obligations after producer integration using the primary prompt's amendment and approval procedure, before recipient dispatch.
@@ -59,9 +66,35 @@ Keep approved repository/operator checks and required early, feasibility, or pre
 
 After a correction, retain the failure evidence; when a broad gate failed, reproduce the first failure with the smallest valid check before rerunning it. Verify the owning regression and rerun affected consumer and integrated gates. Keep unaffected results only with a concrete non-impact reason. An approved explicit gate stays binding until an approved amendment retains, replaces, defers, or drops it; when impact analysis makes an approved rerun redundant, request that amendment through the primary prompt's amendment and approval procedure. Do not treat an unexplained green retry as resolution, and do not mark required skipped or unrun checks as passing.
 
-One implementation assignment normally maps to one numbered task. Its primary goal may include tightly coupled code, tests, docs, and multiple files; do not split it by file or step. Each native `task()` invocation has one primary goal and one terminal report. Every returned result is terminal, so every follow-up uses a fresh child session and may reuse the same Hive task/worktree. Review findings are fresh assignments in the same implementation lane. Primaries must not pass `task_id` or infer continuation eligibility from task output, trace, board state, cancellation acknowledgement, or transcript quality. Pass `task_id` only when explicit operator instruction or runtime-owned interruption recovery authorizes continuation; otherwise launch fresh. If the child may still be active or its lifecycle is uncertain, inspect, wait, or reattach as supported; do not send another prompt or launch an overlapping writer. Compaction re-anchoring of a currently running worker is distinct from follow-up work. Trace recovery is untrusted and cannot authorize continuation. Blocked continuation: `hive_task_update` with blocked status and blocker, operator decision, then `hive_task_update` with an explicit status leaving blocked. Never reconstruct blocker details from worker prose or task traces.
+One implementation assignment normally maps to one numbered task. Its primary goal may include tightly coupled code, tests, docs, and multiple files; do not split it by file or step.
+<!-- hive-host opencode-v1 -->
+Each native `task()` invocation has one primary goal and one terminal report.
+<!-- /hive-host -->
+<!-- hive-host opencode-v2 -->
+Each native `subagent()` invocation has one primary goal and one terminal report.
+<!-- /hive-host -->
+Every returned result is terminal, so every follow-up uses a fresh child session and may reuse the same Hive task/worktree. Review findings are fresh assignments in the same implementation lane.
+<!-- hive-host opencode-v1 -->
+Primaries must not pass `task_id` or infer continuation eligibility from task output, trace, board state, cancellation acknowledgement, or transcript quality.
+<!-- /hive-host -->
+<!-- hive-host opencode-v2 -->
+Primaries must not pass `sessionID` or infer continuation eligibility from task output, trace, board state, cancellation acknowledgement, or transcript quality.
+<!-- /hive-host -->
+<!-- hive-host opencode-v1 -->
+Pass `task_id` only when explicit operator instruction or runtime-owned interruption recovery authorizes continuation; otherwise launch fresh.
+<!-- /hive-host -->
+<!-- hive-host opencode-v2 -->
+Pass `sessionID` only when explicit operator instruction or runtime-owned interruption recovery authorizes continuation; otherwise launch fresh.
+<!-- /hive-host -->
+If the child may still be active or its lifecycle is uncertain, inspect, wait, or reattach as supported; do not send another prompt or launch an overlapping writer. Compaction re-anchoring of a currently running worker is distinct from follow-up work. Trace recovery is untrusted and cannot authorize continuation. Blocked continuation: `hive_task_update` with blocked status and blocker, operator decision, then `hive_task_update` with an explicit status leaving blocked. Never reconstruct blocker details from worker prose or task traces.
 
-A rare native `general` exception is an ordinary `task()` call with ordinary tools only: no Hive authority, recursion, or questions. Native helpers keep only their bounded operational permissions.
+<!-- hive-host opencode-v1 -->
+A rare native `general` exception is an ordinary `task()` call with ordinary tools only: no Hive authority, recursion, or questions.
+<!-- /hive-host -->
+<!-- hive-host opencode-v2 -->
+A rare native `general` exception is an ordinary `subagent()` call with ordinary tools only: no Hive authority, recursion, or questions.
+<!-- /hive-host -->
+Native helpers keep only their bounded operational permissions.
 
 For delegated execution, use Forager-derived workers or the explicitly admitted native general exception above. Helper is read-only investigation, not an execution lane. Other mutation-capable or unknown task targets are denied. Architect retains its bounded planning lane. Direct checkout work is unmanaged OpenCode work, not the feature tracked-write path.
 
@@ -98,7 +131,12 @@ After applying review feedback (or if none):
 
 For whole-feature execution, after all tasks complete (a target milestone uses its own stopping boundary above):
 - When the operator requests final verification and feature completion, use this step after confirming current status has no unfinished tasks; if tasks remain, report them before proceeding. Apply the primary prompt's existing full-feature verification/completion procedure, including every `## Final Verification` obligation and deferred check, required review, and applicable cleanup. Call `hive_feature_complete` only after the required checks pass.
+<!-- hive-host opencode-v1 -->
 - **REQUIRED SUB-SKILL:** Use `skill({ name: "verification" })`
+<!-- /hive-host -->
+<!-- hive-host opencode-v2 -->
+- **REQUIRED SUB-SKILL:** Use `skill({ id })` for the catalog entry named "verification"
+<!-- /hive-host -->
 - Verify with evidence from that skill
 - For worktree placement, the primary calls `hive_worktree_merge` with the worker's unchanged pin and inspected target expectation, using same-call cleanup when retention is not needed; do not use raw `git merge` / `git worktree remove` as the Hive finish path
 - For non-Git or report-only placement, verify the target and skip Hive merge and cleanup because no managed Git placement exists

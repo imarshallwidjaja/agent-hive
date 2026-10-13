@@ -6,8 +6,19 @@ Read-only recipes for reconstructing what a task, worker, or session did. Name t
 
 1. **Hive records**: `hive_status`, then the task folder's `report.md`, `reports/<N>.md`, `handoff.md`, `spec.md`, and `status.json`. Get the folder path from `hive_status` or the task brief.
 2. **Git state**, read-only: worktree and branch commands below.
-3. **`hive_task_trace` and `hive_task_trace_content`**, when exposed to your role. They read any session the connected runtime can see, guard each event, and report coverage and compaction limits. Prefer them over the raw store.
+3. **`hive_task_trace` and `hive_task_trace_content`**, when exposed to your role. They read any session the connected runtime can see, guard each event, and report coverage and compaction limits.
+<!-- hive-host opencode-v1 -->
+Prefer them over the raw store.
+<!-- /hive-host -->
+<!-- hive-host opencode-v2 -->
+They are the supported read path.
+<!-- /hive-host -->
+<!-- hive-host opencode-v1 -->
 4. **The OpenCode session store**, read-only, when the trace tools are unavailable, the session belongs to another runtime or project, or you need a cross-session query such as "every child of this parent".
+<!-- /hive-host -->
+<!-- hive-host opencode-v2 -->
+4. **No store read.** OpenCode v2 sessions are reached only through the trace tools above, which use the host's public session APIs. When they are unavailable or cannot reach the session, report what cannot be established; do not read the host's database directly.
+<!-- /hive-host -->
 
 ## Task records
 
@@ -29,7 +40,8 @@ git -C "<repository-root>" merge-base --is-ancestor "<target-commit>" "<source-c
 
 Pass `--no-optional-locks` to `status`: a plain `git status` may refresh the index and take `index.lock`, which can collide with a writer in the same worktree. `hive_worktree_inspect` and `hive_adhoc_worktree_inspect` return the same facts with destination identity and comparison. Prefer them when exposed. Never run `checkout`, `reset`, `clean`, `stash`, `worktree remove`, `worktree prune`, or `branch -d` during forensics.
 
-## OpenCode session store
+<!-- hive-host opencode-v1 -->
+## OpenCode v1 session store
 
 A single SQLite database in WAL mode, written live by the running server. It can be tens of gigabytes.
 
@@ -134,3 +146,9 @@ Truncate large fields with `substr` and read one full field only when the questi
 - The last assistant text is the session's self-report, not proof that the work happened.
 - Large tool results may be saved to files under `<data>/tool-output/`; read the file the truncated output names.
 - Write down the session IDs, part IDs, and timestamps you relied on, so someone else can repeat the query.
+<!-- /hive-host -->
+<!-- hive-host opencode-v2 -->
+## OpenCode v2 sessions
+
+Read a session with `hive_task_trace`, which lists the native task calls of a session with their child session IDs, and `hive_task_trace_content`, which rereads one guarded event. Follow the coverage and cursor the trace returns unchanged; a missing or unconfirmed record is unavailable evidence, not a reason to look elsewhere. Write down the session IDs and event refs you relied on, so someone else can repeat the read.
+<!-- /hive-host -->

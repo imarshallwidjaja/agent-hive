@@ -79,14 +79,14 @@ async function applyConfigHook(
   return opencodeConfig;
 }
 
-async function renderRuntimeSystemPrompt(
-  testRoot: string,
-  agentName: string,
-  options: { trackMessage?: boolean; opencodeConfig?: Record<string, unknown> } = {},
-): Promise<string> {
-  const hooks = await plugin.server(createCtx(testRoot));
-  await hooks.config!(options.opencodeConfig ?? { agent: {} });
+type ConfiguredHooks = Awaited<ReturnType<typeof plugin.server>>;
 
+/** System text one agent receives from hooks whose config hook has already run. */
+async function renderSystemPromptWithHooks(
+  hooks: ConfiguredHooks,
+  agentName: string,
+  options: { trackMessage?: boolean } = {},
+): Promise<string> {
   const sessionID = `sess_${agentName.replace(/[^a-z0-9]/gi, '_')}`;
   if (options.trackMessage ?? true) {
     await hooks['chat.message']?.(
@@ -102,6 +102,16 @@ async function renderRuntimeSystemPrompt(
   await systemTransform?.({ sessionID, agent: agentName }, output);
 
   return output.system[0] ?? '';
+}
+
+async function renderRuntimeSystemPrompt(
+  testRoot: string,
+  agentName: string,
+  options: { trackMessage?: boolean; opencodeConfig?: Record<string, unknown> } = {},
+): Promise<string> {
+  const hooks = await plugin.server(createCtx(testRoot));
+  await hooks.config!(options.opencodeConfig ?? { agent: {} });
+  return renderSystemPromptWithHooks(hooks, agentName, options);
 }
 
 async function captureWarnings<T>(run: () => Promise<T>): Promise<{ result: T; warnings: string[] }> {
@@ -726,10 +736,13 @@ describe('config hook autoLoadSkills guidance', () => {
 
     for (const agentMode of ['dedicated', 'unified'] as const) {
       writeHiveConfig(testRoot, { agentMode });
-      const opencodeConfig = await applyConfigHook(testRoot);
+      // One configured plugin per mode; each agent's system text is then a fresh transform on its own output.
+      const hooks = await plugin.server(createCtx(testRoot));
+      const opencodeConfig: Record<string, unknown> = { agent: {} };
+      await hooks.config!(opencodeConfig);
       const agents = opencodeConfig.agent as Record<string, { prompt?: string }>;
       for (const agentName of Object.keys(agents).filter((name) => name !== 'general' && name !== 'explore')) {
-        const prompt = (agents[agentName]?.prompt ?? '') + await renderRuntimeSystemPrompt(testRoot, agentName, { trackMessage: false });
+        const prompt = (agents[agentName]?.prompt ?? '') + await renderSystemPromptWithHooks(hooks, agentName, { trackMessage: false });
         for (const pattern of loadInstructionPatterns) {
           for (const match of prompt.matchAll(pattern)) {
             const users = referenced.get(match[1]!) ?? new Set<string>();

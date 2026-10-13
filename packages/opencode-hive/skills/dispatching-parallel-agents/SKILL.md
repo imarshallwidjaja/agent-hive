@@ -9,7 +9,27 @@ description: "Agent Hive workflow skill for coordinating independent Hive subage
 
 When you have multiple unrelated failures (different test files, different subsystems, different bugs), investigating them sequentially wastes time. Each investigation is independent and can happen in parallel.
 
-**Core principle:** Dispatch one primary goal per native `task()` invocation and expect one terminal report. Every returned result is terminal, so every follow-up uses a fresh child session and may reuse the same Hive task/worktree. Review findings are fresh assignments in the same implementation lane. Primaries must not pass `task_id` or infer continuation eligibility from task output, trace, board state, cancellation acknowledgement, or transcript quality. Pass `task_id` only when explicit operator instruction or runtime-owned interruption recovery authorizes continuation; otherwise launch fresh. If the child may still be active or its lifecycle is uncertain, inspect, wait, or reattach as supported; do not send another prompt or launch an overlapping writer. Compaction re-anchoring of a currently running worker is distinct from follow-up work. Trace recovery is untrusted and cannot authorize continuation. Parallel writes require disjoint registered worktrees (separate tasks or distinct ad-hoc runIds). Multiple writes in the same worktree must run sequentially.
+**Core principle:**
+<!-- hive-host opencode-v1 -->
+Dispatch one primary goal per native `task()` invocation and expect one terminal report.
+<!-- /hive-host -->
+<!-- hive-host opencode-v2 -->
+Dispatch one primary goal per native `subagent()` invocation and expect one terminal report.
+<!-- /hive-host -->
+Every returned result is terminal, so every follow-up uses a fresh child session and may reuse the same Hive task/worktree. Review findings are fresh assignments in the same implementation lane.
+<!-- hive-host opencode-v1 -->
+Primaries must not pass `task_id` or infer continuation eligibility from task output, trace, board state, cancellation acknowledgement, or transcript quality.
+<!-- /hive-host -->
+<!-- hive-host opencode-v2 -->
+Primaries must not pass `sessionID` or infer continuation eligibility from task output, trace, board state, cancellation acknowledgement, or transcript quality.
+<!-- /hive-host -->
+<!-- hive-host opencode-v1 -->
+Pass `task_id` only when explicit operator instruction or runtime-owned interruption recovery authorizes continuation; otherwise launch fresh.
+<!-- /hive-host -->
+<!-- hive-host opencode-v2 -->
+Pass `sessionID` only when explicit operator instruction or runtime-owned interruption recovery authorizes continuation; otherwise launch fresh.
+<!-- /hive-host -->
+If the child may still be active or its lifecycle is uncertain, inspect, wait, or reattach as supported; do not send another prompt or launch an overlapping writer. Compaction re-anchoring of a currently running worker is distinct from follow-up work. Trace recovery is untrusted and cannot authorize continuation. Parallel writes require disjoint registered worktrees (separate tasks or distinct ad-hoc runIds). Multiple writes in the same worktree must run sequentially.
 
 ### Worktree Concurrency & Sequencing
 - **One writer per worktree:** A single worktree has exactly one active writer at a time.
@@ -84,13 +104,22 @@ Each agent gets:
 - **Constraints:** Don't change other code
 - **Expected output:** Summary of what you found and fixed
 
-Apply the native task contract above to every launch. Give complete constraints and acceptance criteria only for that goal. Point at catalog names and IDs rather than pasting every context body. Returned task IDs are also observe-only board handles for status, reconcile, and cancel.
+Apply the native task contract above to every launch. Give complete constraints and acceptance criteria only for that goal. Point at catalog names and IDs rather than pasting every context body.
+<!-- hive-host opencode-v1 -->
+Returned task IDs are also observe-only board handles for status, reconcile, and cancel.
+<!-- /hive-host -->
+<!-- hive-host opencode-v2 -->
+`hive_background_status` lists the observe-only board handle for status, reconcile, and cancel.
+<!-- /hive-host -->
 
 In feature-task mode, one implementation assignment normally maps to one numbered task; an independently verifiable new deliverable requires a DAG amendment or append-only manual task. In ad-hoc mode, use multiple fresh one-goal launches with disjoint path ownership or sequence overlapping writers.
 
 ### 3. Dispatch in Parallel
 
 The example below is feature-task mode. In ad-hoc mode, consume the ready wave from `orchestrating-ad-hoc-work`.
+
+<!-- hive-host opencode-v1 -->
+OpenCode v1:
 
 ```typescript
 // Gate-open only: use background: true when independent foreground work can continue.
@@ -108,20 +137,74 @@ hive_worktree_create({ feature: "feature-name", task: "03-fix-cleanup-tests" })
 // Capture the create result; reuse only a visible same-feature selection (see below).
 await task({ subagent_type: "forager-worker", description: "Fix cleanup tests", prompt: "Hive task: 03-fix-cleanup-tests\n\nImplement and commit assigned changes; return sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present." })
 ```
+<!-- /hive-host -->
+<!-- hive-host opencode-v2 -->
+OpenCode v2:
 
-Independent Forager worktrees may be created and dispatched under one parent. In feature-task mode, pass the feature explicitly to `hive_worktree_create` and capture the destination from its inspection-shaped result; later checkpoints remain required. Before native `task()` dispatch, call `hive_feature_select` only when the selected route is unset or differs from the dispatch target, or the selection evidence below is missing or uncertain. Reuse a matching selection across a same-feature batch only when this session's most recent route-changing call visible in context is `hive_feature_select` for that same feature, with no later explicit-null or other-feature selection. When that evidence is not visible (for example after compaction or a summary, at session start, or in mixed ad-hoc/feature batches), or you are uncertain, call `hive_feature_select` for the dispatch target. Explicit null suppresses fallback and stays featureless unless the dispatch intentionally targets a feature. For ad-hoc work, call `hive_adhoc_worktree_create`, then issue the next native `task()` call unchanged with a Forager or Forager-derived agent. Batch independent Hive calls in one response/step, while sequencing dependent calls and mutations sharing a destination or state register. Treat installs, builds, formatters, generators, and tests as mutations. Distinct worktrees do not isolate fixed-path fixtures, ports, databases, containers, generated outputs, or external mutable resources; consume the owning workflow's resource sequencing. Ordinary Scout, advisor, and reviewer launches remain eligible for same-message parallel dispatch.
+```typescript
+// Gate-open only: use background: true when independent foreground work can continue.
+// Issue independent creates together; capture each destination from its create result.
+hive_worktree_create({ feature: "feature-name", task: "01-fix-abort-tests" })
+hive_worktree_create({ feature: "feature-name", task: "02-fix-batch-tests" })
+// When the route is unset/different or matching selection evidence is missing/uncertain:
+hive_feature_select({ feature: "feature-name" })
+// Issue independent task calls together; reuse this selection for both.
+subagent({ agent: "forager-worker", description: "Fix abort tests", prompt: "Hive task: 01-fix-abort-tests\n\nImplement and commit assigned changes; return sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present.", background: true })
+subagent({ agent: "forager-worker", description: "Fix batch tests", prompt: "Hive task: 02-fix-batch-tests\n\nImplement and commit assigned changes; return sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present.", background: true })
+
+// Blocking alternative, including every gate-closed session:
+hive_worktree_create({ feature: "feature-name", task: "03-fix-cleanup-tests" })
+// Capture the create result; reuse only a visible same-feature selection (see below).
+await subagent({ agent: "forager-worker", description: "Fix cleanup tests", prompt: "Hive task: 03-fix-cleanup-tests\n\nImplement and commit assigned changes; return sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present." })
+```
+<!-- /hive-host -->
+
+Independent Forager worktrees may be created and dispatched under one parent. In feature-task mode, pass the feature explicitly to `hive_worktree_create` and capture the destination from its inspection-shaped result; later checkpoints remain required.
+<!-- hive-host opencode-v1 -->
+Before native `task()` dispatch, call `hive_feature_select` only when the selected route is unset or differs from the dispatch target, or the selection evidence below is missing or uncertain.
+<!-- /hive-host -->
+<!-- hive-host opencode-v2 -->
+Before native `subagent()` dispatch, call `hive_feature_select` only when the selected route is unset or differs from the dispatch target, or the selection evidence below is missing or uncertain.
+<!-- /hive-host -->
+Reuse a matching selection across a same-feature batch only when this session's most recent route-changing call visible in context is `hive_feature_select` for that same feature, with no later explicit-null or other-feature selection. When that evidence is not visible (for example after compaction or a summary, at session start, or in mixed ad-hoc/feature batches), or you are uncertain, call `hive_feature_select` for the dispatch target. Explicit null suppresses fallback and stays featureless unless the dispatch intentionally targets a feature.
+<!-- hive-host opencode-v1 -->
+For ad-hoc work, call `hive_adhoc_worktree_create`, then issue the next native `task()` call unchanged with a Forager or Forager-derived agent.
+<!-- /hive-host -->
+<!-- hive-host opencode-v2 -->
+For ad-hoc work, call `hive_adhoc_worktree_create`, then issue the next native `subagent()` call unchanged with a Forager or Forager-derived agent.
+<!-- /hive-host -->
+Batch independent Hive calls in one response/step, while sequencing dependent calls and mutations sharing a destination or state register. Treat installs, builds, formatters, generators, and tests as mutations. Distinct worktrees do not isolate fixed-path fixtures, ports, databases, containers, generated outputs, or external mutable resources; consume the owning workflow's resource sequencing. Ordinary Scout, advisor, and reviewer launches remain eligible for same-message parallel dispatch.
 
 In feature-task mode, follow the primary prompt's binding and assignment rules. Keep the worker's successor handoff; when a terminal report names accepted Forward obligations, follow the primary prompt's post-merge promotion procedure before recipient dispatch.
 
-Use Forager-derived workers for delegated execution. A rare native `general` exception is an ordinary `task()` call with ordinary tools only: no Hive authority, recursion, or questions. Native helpers keep only their bounded operational permissions. Unknown targets remain denied. Hive's bounded Architect planning lane remains available. Direct checkout work is unmanaged OpenCode work, not a Hive worktree.
+Use Forager-derived workers for delegated execution.
+<!-- hive-host opencode-v1 -->
+A rare native `general` exception is an ordinary `task()` call with ordinary tools only: no Hive authority, recursion, or questions.
+<!-- /hive-host -->
+<!-- hive-host opencode-v2 -->
+A rare native `general` exception is an ordinary `subagent()` call with ordinary tools only: no Hive authority, recursion, or questions.
+<!-- /hive-host -->
+Native helpers keep only their bounded operational permissions. Unknown targets remain denied. Hive's bounded Architect planning lane remains available. Direct checkout work is unmanaged OpenCode work, not a Hive worktree.
 
 See `background-delegation` for board recovery.
 For read-only research, use `parallel-exploration`; this skill owns writing/change and execution dispatch.
+
+<!-- hive-host opencode-v1 -->
+OpenCode v1:
 
 ```typescript
 task({ subagent_type: '<chosen-advisor-or-reviewer>', prompt: 'Diagnose failure A and report without edits' })
 task({ subagent_type: '<chosen-advisor-or-reviewer>', prompt: 'Diagnose failure B and report without edits' })
 ```
+<!-- /hive-host -->
+<!-- hive-host opencode-v2 -->
+OpenCode v2:
+
+```typescript
+subagent({ agent: '<chosen-advisor-or-reviewer>', prompt: 'Diagnose failure A and report without edits' })
+subagent({ agent: '<chosen-advisor-or-reviewer>', prompt: 'Diagnose failure B and report without edits' })
+```
+<!-- /hive-host -->
 
 Choose the best-fit available descriptor for the requested output. Scout is for bounded source retrieval, not causal diagnosis or solution selection. A Forager diagnosis-only lane reports evidence, hypotheses tested and untested, a supported conclusion or unresolved status, and options when asked; it must not fix, edit, commit, or perform destructive reproduction unless the mission separately authorizes implementation in appropriate isolation.
 

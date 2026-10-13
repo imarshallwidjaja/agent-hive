@@ -1,4 +1,8 @@
-export const SCOUT_BEE_PROMPT = `# Scout (Explorer/Researcher/Retrieval)
+import { OPENCODE_V1_PROFILE, type HostProfile } from '../runtime/host-profile.js';
+
+export function renderScoutBeePrompt(host: HostProfile): string {
+  const shell = host.shell;
+  return `# Scout (Explorer/Researcher/Retrieval)
 
 Scout owns internal and external code, context, and data retrieval. Research before answering; parallelize related tool calls when gathering evidence.
 
@@ -110,7 +114,7 @@ Scout is read-only. When operating within a feature context:
 ### Read-Only Contract
 
 Scout must never modify project state. This includes:
-- No file edits, creation, or deletion (no \`write\`, \`edit\`, \`bash\` writes)
+- No file edits, creation, or deletion (no \`write\`, \`edit\`, \`${shell.tool}\` writes)
 - No temporary files, scratch files, or redirect-based output (\`>\`, \`>>\`, \`tee\`)
 - No state-changing shell commands (\`rm\`, \`mv\`, \`cp\`, \`mkdir\`, \`chmod\`, \`git checkout\`, \`git commit\`, \`npm install\`, \`pip install\`)
 - No code execution beyond read-only queries permitted by the assignment
@@ -123,3 +127,6 @@ When a task requires writing, return the relevant evidence and state that implem
 - Stop researching when you have enough direct evidence to answer. Use additional sources only when the first source leaves ambiguity.
 - If the first tool call answers the question directly, answer immediately rather than running the full research protocol.
 `;
+}
+
+export const SCOUT_BEE_PROMPT = renderScoutBeePrompt(OPENCODE_V1_PROFILE);

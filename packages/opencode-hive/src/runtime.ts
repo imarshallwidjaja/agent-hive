@@ -8,20 +8,20 @@ import {
   type CustomAgentBase,
   type ResolvedCustomAgentConfig,
 } from 'hive-core';
-import { QUEEN_BEE_PROMPT, hiveBeeAgent } from './agents/hive.js';
-import { ARCHITECT_BEE_PROMPT, architectBeeAgent } from './agents/architect.js';
-import { SWARM_BEE_PROMPT, swarmBeeAgent } from './agents/swarm.js';
-import { SCOUT_BEE_PROMPT } from './agents/scout.js';
+import { renderQueenBeePrompt, hiveBeeAgent } from './agents/hive.js';
+import { renderArchitectBeePrompt, architectBeeAgent } from './agents/architect.js';
+import { renderSwarmBeePrompt, swarmBeeAgent } from './agents/swarm.js';
+import { renderScoutBeePrompt } from './agents/scout.js';
 import { FORAGER_BEE_PROMPT } from './agents/forager.js';
-import { HIVE_HELPER_PROMPT, hiveHelperAgent } from './agents/hive-helper.js';
-import { HIVE_BUILDER_PROMPT, hiveBuilderAgent } from './agents/hive-builder.js';
-import { PLAN_REVIEWER_PROMPT } from './agents/plan-reviewer.js';
-import { CODE_REVIEWER_PROMPT } from './agents/code-reviewer.js';
-import { SIMPLICITY_REVIEWER_PROMPT } from './agents/simplicity-reviewer.js';
-import { APPROACH_ADVISOR_PROMPT } from './agents/approach-advisor.js';
-import { VULNERABILITY_REVIEWER_PROMPT } from './agents/vulnerability-reviewer.js';
-import { DASH_REVIEWER_PROMPT } from './agents/dash-reviewer.js';
-import { VULNERABILITY_REVIEW_PRIMARY_PROMPT } from './agents/vulnerability-review-primary.js';
+import { renderHiveHelperPrompt, hiveHelperAgent } from './agents/hive-helper.js';
+import { renderHiveBuilderPrompt, hiveBuilderAgent } from './agents/hive-builder.js';
+import { renderPlanReviewerPrompt } from './agents/plan-reviewer.js';
+import { renderCodeReviewerPrompt } from './agents/code-reviewer.js';
+import { renderSimplicityReviewerPrompt } from './agents/simplicity-reviewer.js';
+import { renderApproachAdvisorPrompt } from './agents/approach-advisor.js';
+import { renderVulnerabilityReviewerPrompt } from './agents/vulnerability-reviewer.js';
+import { renderDashReviewerPrompt } from './agents/dash-reviewer.js';
+import { renderVulnerabilityReviewPrimaryPrompt } from './agents/vulnerability-review-primary.js';
 import { buildCustomSubagents } from './agents/custom-agents.js';
 import {
   prepareNativeHiveSkills,
@@ -31,8 +31,9 @@ import {
 } from './skills/native-materializer.js';
 import { createBackgroundJobAdapter } from './background/backgroundJobAdapter.js';
 import { createBackgroundTools } from './background/backgroundTools.js';
-import { isBackgroundSubagentsExperimentEnabled, resolveBackgroundDelegationAvailability } from './utils/background-gate.js';
-import { HIVE_SYSTEM_PROMPT, SUBAGENT_CLARIFICATION_PROMPT } from './hooks/system-hook.js';
+import { isBackgroundSubagentsExperimentEnabled, renderBackgroundFirstOrchestrationAppendix, resolveBackgroundDelegationAvailability } from './utils/background-gate.js';
+import { renderAutoLoadSkillsAppendix, renderHiveSystemPrompt, SUBAGENT_CLARIFICATION_PROMPT } from './hooks/system-hook.js';
+import { OPENCODE_V1_PROFILE, type HostProfile } from './runtime/host-profile.js';
 import { classifySession, createVariantHook } from './hooks/variant-hook.js';
 import { buildHiveCommandMap } from './commands/runtime.js';
 import { HIVE_COMMANDS } from './commands/registry.js';
@@ -48,6 +49,7 @@ import { ROUTING_BASES, agentPermission, createRolePolicy, mergePrimaryOnlyTools
 const BACKGROUND_DELEGATION_SKILL_ID = 'background-delegation';
 
 function buildAutoLoadSkillsPromptAppendix(
+  host: HostProfile,
   agentName: string,
   configService: ConfigService,
   nativeSkillsByName: Map<string, PreparedNativeSkill>,
@@ -68,19 +70,19 @@ function buildAutoLoadSkillsPromptAppendix(
     console.warn(`[hive] Auto-load skill "${skillId}" was not added to guidance for agent "${agentName}" because ${reason}.`);
     return [];
   });
-  if (!names.length) return '';
-  return `\n\n## Configured Auto-Load Skills\nHigh-priority instruction: load these OpenCode native skills with the \`skill\` tool before work covered by them.\n${names.map((name) => `- \`skill({ name: ${JSON.stringify(name)} })\``).join('\n')}\nFollow the loaded skill output. Skill bodies are not preloaded.`;
+  return renderAutoLoadSkillsAppendix(host, names);
 }
 
 function buildBackgroundDelegationPromptAppendix(
+  host: HostProfile,
   agentName: string,
   nativeSkillsByName: Map<string, PreparedNativeSkill>,
   eligibleHiveSkills: Map<string, PreparedHiveSkill>,
   skippedHiveSkills: Map<string, PreparedNativeHiveSkills['skipped'][number]>,
 ): string {
-  const availability = resolveBackgroundDelegationAvailability(nativeSkillsByName, eligibleHiveSkills, skippedHiveSkills);
+  const availability = resolveBackgroundDelegationAvailability(nativeSkillsByName, eligibleHiveSkills, skippedHiveSkills, host);
   if (availability.available) {
-    return '\n\n## Background-First Orchestration\nThis appendix applies only when running as a primary. When Architect is task-spawned, use blocking calls for its permitted terminal planning-helper layer, including hive-helper. Child-role rules take precedence over this appendix: child sessions cannot use background board tools, so return board/control requests to the parent without loading the primary-only background-delegation skill. OpenCode background subagents are enabled for primary sessions. Delegation-first orchestration is the baseline; this appendix only opens background wait mode and the Hive board protocol. When this heading is present in a primary session, background-delegation governs scheduling and wait mode; other loaded skills govern domain workflow and safety. Before launching or managing background lanes, load/use skill({ name: "background-delegation" }). Background mode is available only when useful unrelated foreground work can continue; otherwise use blocking. Detailed safety overrides and board protocol live in that skill. Gate-closed sessions keep normal blocking task() wait mode and must launch returned blocking task calls rather than working directly in delegated worktrees.';
+    return renderBackgroundFirstOrchestrationAppendix(host);
   }
   if (availability.reason === 'experiment-disabled') return '';
   const reason = availability.reason === 'skill-disabled'
@@ -170,6 +172,9 @@ const plugin: Plugin = async (ctx) => {
   const detected = detectContext(workTarget);
   const projectRoot = canonicalProjectRoot(detected.projectRoot);
   const runtimeId = `pid-${process.pid}-${Date.now().toString(36)}`;
+  // This entry is the OpenCode v1 server; the v2 adapter builds its own profile.
+  const host = OPENCODE_V1_PROFILE;
+  const systemPrompt = renderHiveSystemPrompt(host);
 
   const services = createHiveServices({ projectRoot, detectedFeature: detected.feature, nativeObservationOwner: 'opencode-v1' });
   const { sessionService, contextService, taskService, configService, backgroundJobService } = services;
@@ -245,6 +250,7 @@ const plugin: Plugin = async (ctx) => {
 
   let runtimeCommandAgents: Record<string, HiveCommandAgentDescriptor> = {};
   const createCommandContext = (): HiveCommandContext => ({
+    host,
     agentMode: configService.get().agentMode ?? 'dedicated',
     backgroundGuidance: { available: isBackgroundSubagentsExperimentEnabled(), reason: isBackgroundSubagentsExperimentEnabled() ? undefined : 'experiment-disabled' } as any,
     council: configService.get().council ?? DEFAULT_COUNCIL_CONFIG,
@@ -329,7 +335,7 @@ const plugin: Plugin = async (ctx) => {
       const mutableConfig = opencodeConfig as any;
       configService.init();
       const existingSkills = typeof mutableConfig.skills === 'object' && mutableConfig.skills ? mutableConfig.skills : {};
-      const prepared = await prepareNativeHiveSkills({ directory: projectRoot, worktree: workTarget, disableSkills: configService.getDisabledSkills(), opencodeConfig: { skills: existingSkills } });
+      const prepared = await prepareNativeHiveSkills({ host, directory: projectRoot, worktree: workTarget, disableSkills: configService.getDisabledSkills(), opencodeConfig: { skills: existingSkills } });
       mutableConfig.skills = { ...existingSkills, paths: prepared.skillPaths };
       mutableConfig.subagent_depth = 2;
       runtimeAgentPrompts.clear();
@@ -338,24 +344,24 @@ const plugin: Plugin = async (ctx) => {
       const skipped = new Map(prepared.skipped.map((entry) => [entry.name, entry]));
       const descriptions = Object.fromEntries(ROUTING_BASES.map((name) => [name, configService.getRoutingAgentDescription(name)])) as Record<CustomAgentBase, string>;
       const routingAppendix = (bases: readonly CustomAgentBase[]) => buildSubagentRoutingAppendix(bases, custom, descriptions);
-      const autoLoadAppendix = (name: string, override?: string[]) => buildAutoLoadSkillsPromptAppendix(name, configService, prepared.nativeSkillsByName, prepared.skillsByName, skipped, override);
-      const backgroundAppendix = (name: string) => buildBackgroundDelegationPromptAppendix(name, prepared.nativeSkillsByName, prepared.skillsByName, skipped);
+      const autoLoadAppendix = (name: string, override?: string[]) => buildAutoLoadSkillsPromptAppendix(host, name, configService, prepared.nativeSkillsByName, prepared.skillsByName, skipped, override);
+      const backgroundAppendix = (name: string) => buildBackgroundDelegationPromptAppendix(host, name, prepared.nativeSkillsByName, prepared.skillsByName, skipped);
       const agentMode = configService.get().agentMode ?? 'dedicated';
       const prompts: Record<string, string> = {
-        'hive-master': QUEEN_BEE_PROMPT + HIVE_SYSTEM_PROMPT + autoLoadAppendix('hive-master') + backgroundAppendix('hive-master') + (agentMode === 'unified' ? routingAppendix(ROUTING_BASES) : ''),
-        'architect-planner': ARCHITECT_BEE_PROMPT + HIVE_SYSTEM_PROMPT + autoLoadAppendix('architect-planner') + backgroundAppendix('architect-planner') + (agentMode === 'dedicated' ? routingAppendix(['scout-researcher', 'plan-reviewer', 'approach-advisor']) : ''),
-        'swarm-orchestrator': SWARM_BEE_PROMPT + HIVE_SYSTEM_PROMPT + autoLoadAppendix('swarm-orchestrator') + backgroundAppendix('swarm-orchestrator') + (agentMode === 'dedicated' ? routingAppendix(ROUTING_BASES) : ''),
-        'hive-builder': HIVE_BUILDER_PROMPT + HIVE_SYSTEM_PROMPT + autoLoadAppendix('hive-builder') + backgroundAppendix('hive-builder') + routingAppendix(['scout-researcher', 'forager-worker', 'code-reviewer', 'simplicity-reviewer']),
-        'scout-researcher': SCOUT_BEE_PROMPT + HIVE_SYSTEM_PROMPT + autoLoadAppendix('scout-researcher'),
-        'forager-worker': FORAGER_BEE_PROMPT + HIVE_SYSTEM_PROMPT + autoLoadAppendix('forager-worker'),
-        'hive-helper': HIVE_HELPER_PROMPT + HIVE_SYSTEM_PROMPT + autoLoadAppendix('hive-helper'),
-        'plan-reviewer': PLAN_REVIEWER_PROMPT + HIVE_SYSTEM_PROMPT + autoLoadAppendix('plan-reviewer'),
-        'code-reviewer': CODE_REVIEWER_PROMPT + HIVE_SYSTEM_PROMPT + autoLoadAppendix('code-reviewer'),
-        'simplicity-reviewer': SIMPLICITY_REVIEWER_PROMPT + HIVE_SYSTEM_PROMPT + autoLoadAppendix('simplicity-reviewer'),
-        'approach-advisor': APPROACH_ADVISOR_PROMPT + HIVE_SYSTEM_PROMPT + autoLoadAppendix('approach-advisor'),
-        'vulnerability-reviewer': VULNERABILITY_REVIEWER_PROMPT + HIVE_SYSTEM_PROMPT + autoLoadAppendix('vulnerability-reviewer'),
-        'dash-reviewer': DASH_REVIEWER_PROMPT + HIVE_SYSTEM_PROMPT,
-        'vulnerability-review-primary': VULNERABILITY_REVIEW_PRIMARY_PROMPT + HIVE_SYSTEM_PROMPT,
+        'hive-master': renderQueenBeePrompt(host) + systemPrompt + autoLoadAppendix('hive-master') + backgroundAppendix('hive-master') + (agentMode === 'unified' ? routingAppendix(ROUTING_BASES) : ''),
+        'architect-planner': renderArchitectBeePrompt(host) + systemPrompt + autoLoadAppendix('architect-planner') + backgroundAppendix('architect-planner') + (agentMode === 'dedicated' ? routingAppendix(['scout-researcher', 'plan-reviewer', 'approach-advisor']) : ''),
+        'swarm-orchestrator': renderSwarmBeePrompt(host) + systemPrompt + autoLoadAppendix('swarm-orchestrator') + backgroundAppendix('swarm-orchestrator') + (agentMode === 'dedicated' ? routingAppendix(ROUTING_BASES) : ''),
+        'hive-builder': renderHiveBuilderPrompt(host) + systemPrompt + autoLoadAppendix('hive-builder') + backgroundAppendix('hive-builder') + routingAppendix(['scout-researcher', 'forager-worker', 'code-reviewer', 'simplicity-reviewer']),
+        'scout-researcher': renderScoutBeePrompt(host) + systemPrompt + autoLoadAppendix('scout-researcher'),
+        'forager-worker': FORAGER_BEE_PROMPT + systemPrompt + autoLoadAppendix('forager-worker'),
+        'hive-helper': renderHiveHelperPrompt(host) + systemPrompt + autoLoadAppendix('hive-helper'),
+        'plan-reviewer': renderPlanReviewerPrompt(host) + systemPrompt + autoLoadAppendix('plan-reviewer'),
+        'code-reviewer': renderCodeReviewerPrompt(host) + systemPrompt + autoLoadAppendix('code-reviewer'),
+        'simplicity-reviewer': renderSimplicityReviewerPrompt(host) + systemPrompt + autoLoadAppendix('simplicity-reviewer'),
+        'approach-advisor': renderApproachAdvisorPrompt(host) + systemPrompt + autoLoadAppendix('approach-advisor'),
+        'vulnerability-reviewer': renderVulnerabilityReviewerPrompt(host) + systemPrompt + autoLoadAppendix('vulnerability-reviewer'),
+        'dash-reviewer': renderDashReviewerPrompt(host) + systemPrompt,
+        'vulnerability-review-primary': renderVulnerabilityReviewPrimaryPrompt(host) + systemPrompt,
       };
       const runtimePromptAgents = new Set(['hive-master', 'swarm-orchestrator', 'hive-builder', 'forager-worker']);
       const mk = (name: BuiltInRole, mode: 'primary' | 'subagent' | 'all', description: string) => {

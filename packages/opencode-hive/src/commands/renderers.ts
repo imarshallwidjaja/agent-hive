@@ -1,6 +1,7 @@
 import type { HiveCommandKey } from './registry.js';
 import type { HiveCommandContext, HiveCommandRenderers } from './types.js';
-import { COMMAND_BEHAVIOR } from './command-bodies.js';
+import { renderCommandBehavior } from './command-bodies.js';
+import { nativeCall } from '../runtime/host-profile.js';
 import { resolveCouncilMembers } from './council.js';
 
 type CommandSectionInput = {
@@ -43,7 +44,7 @@ function renderSections(input: CommandSectionInput): string {
 
 function renderHybridCommand(
   command: HiveCommandKey,
-  _context: HiveCommandContext,
+  context: HiveCommandContext,
   input: CommandSectionInput,
 ): string {
   const wrapper = renderSections({
@@ -53,7 +54,7 @@ function renderHybridCommand(
     backgroundItems: input.backgroundItems,
     outputItems: input.outputItems,
   });
-  return `${wrapper}\n\n---\n\n${COMMAND_BEHAVIOR[command]}`;
+  return `${wrapper}\n\n---\n\n${renderCommandBehavior(context.host)[command]}`;
 }
 
 function topicOrCurrent(args: string, fallback: string): string {
@@ -267,9 +268,9 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
         'Follow explicit operator execution direction; otherwise sequence from dependencies, owned paths, and shared resources. Ask only when a material scheduling or authority decision remains unresolved.',
         'When direction is run/continue a feature until a target task is complete/done, including an explicit companion suffix, load executing-plans and apply its Target Task Milestones procedure before dispatch and on resumption. Preserve the exact feature, target, and explicitly named companions from the suggested prompt; report milestone scope and stop at that boundary.',
         'Use todos to track task progress and transitions.',
-        'Create or inspect the task worktree with an explicit feature target when isolation is needed; capture the initial destination identity from the inspection-shaped create result and keep later checkpoints. Before dispatch, call hive_feature_select only when the selected route is unset or differs from the dispatch target, or the selection evidence below is missing or uncertain, then issue the native Forager task() call with that path in its authored prompt. Reuse a matching selection across a same-feature batch only when this session\'s most recent route-changing call visible in context is `hive_feature_select` for that same feature, with no later explicit-null or other-feature selection. When that evidence is not visible (for example after compaction or a summary, at session start, or in mixed ad-hoc/feature batches), or you are uncertain, call `hive_feature_select` for the dispatch target. Explicit null stays featureless unless the dispatch intentionally changes target.',
+        'Create or inspect the task worktree with an explicit feature target when isolation is needed; capture the initial destination identity from the inspection-shaped create result and keep later checkpoints. Before dispatch, call hive_feature_select only when the selected route is unset or differs from the dispatch target, or the selection evidence below is missing or uncertain, then issue the native Forager ' + nativeCall(context.host) + ' call with that path in its authored prompt. Reuse a matching selection across a same-feature batch only when this session\'s most recent route-changing call visible in context is `hive_feature_select` for that same feature, with no later explicit-null or other-feature selection. When that evidence is not visible (for example after compaction or a summary, at session start, or in mixed ad-hoc/feature batches), or you are uncertain, call `hive_feature_select` for the dispatch target. Explicit null stays featureless unless the dispatch intentionally changes target.',
         'Read the report a bound worker published, then record status, summary, or blocker with hive_task_update under Task Report Ownership; do not retranscribe the report.',
-        'After any returned native task result, launch a fresh child session for follow-up; preserve task_id pass-through only for explicit operator/runtime-owned interruption recovery.',
+        'After any returned native task result, launch a fresh child session for follow-up; preserve ' + context.host.nativeTask.continuationField + ' pass-through only for explicit operator/runtime-owned interruption recovery.',
       ],
       doNotItems: [
         'Do not start execution without an approved and synced plan.',

@@ -4,11 +4,18 @@ import * as fsp from 'node:fs/promises';
 import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { OPENCODE_V1_PROFILE, createHostProfile, type HostProfile } from '../runtime/host-profile.js';
+import { renderHostMarkdown } from './host-renderer.js';
 import {
   parseNativeSkillMarkdown,
-  prepareNativeHiveSkills,
+  prepareNativeHiveSkills as prepareNativeHiveSkillsForHost,
   resolvePackagedSkillsDir,
+  type PrepareNativeHiveSkillsInput,
 } from './native-materializer.js';
+
+// Most cases exercise discovery, conflicts and caching, which do not depend on the host; they run as OpenCode v1.
+const prepareNativeHiveSkills = (input: Omit<PrepareNativeHiveSkillsInput, 'host'> & { host?: HostProfile }) =>
+  prepareNativeHiveSkillsForHost({ host: OPENCODE_V1_PROFILE, ...input });
 
 const VALID_SKILL = `---
 name: sample-skill
@@ -1468,5 +1475,181 @@ description: URL native skill
     );
     expect(originalConfig.skills.paths).toEqual([userPath]);
     expect(originalConfig.skills.urls).toEqual(['https://example.test/skills']);
+  });
+});
+
+const V2_PROFILE = createHostProfile('opencode-v2');
+
+const HOST_SECTIONED_SKILL = `---
+name: host-skill
+description: Skill with host sections
+---
+# Host Skill
+
+Shared opening.
+
+<!-- hive-host opencode-v1 -->
+Dispatch with \`task()\`.
+<!-- /hive-host -->
+<!-- hive-host opencode-v2 -->
+Dispatch with \`subagent()\`.
+<!-- /hive-host -->
+
+Shared closing.
+`;
+
+describe('host-renderer - renderHostMarkdown', () => {
+  it('keeps only the selected host sections and one blank line where a section was removed', () => {
+    const source = 'a\n\n<!-- hive-host opencode-v1 -->\nv1\n<!-- /hive-host -->\n\n<!-- hive-host opencode-v2 -->\nv2\n<!-- /hive-host -->\n\nz\n';
+    expect(renderHostMarkdown(source, OPENCODE_V1_PROFILE, 'x.md')).toBe('a\n\nv1\n\nz\n');
+    expect(renderHostMarkdown(source, V2_PROFILE, 'x.md')).toBe('a\n\nv2\n\nz\n');
+  });
+
+  it('leaves Markdown without host sections byte for byte unchanged', () => {
+    const source = '# Title\n\n<!-- ordinary comment -->\ntext\n';
+    expect(renderHostMarkdown(source, V2_PROFILE, 'x.md')).toBe(source);
+  });
+
+  it('honors a section that changes lines inside a code fence', () => {
+    const source = '```ts\n<!-- hive-host opencode-v1 -->\ntask({})\n<!-- /hive-host -->\n<!-- hive-host opencode-v2 -->\nsubagent({})\n<!-- /hive-host -->\n```\n';
+    expect(renderHostMarkdown(source, V2_PROFILE, 'x.md')).toBe('```ts\nsubagent({})\n```\n');
+  });
+
+  it.each([
+    ['an unknown host', '<!-- hive-host opencode-v9 -->\nx\n<!-- /hive-host -->\n', 'unknown host section "opencode-v9"'],
+    ['a section that is never closed', '<!-- hive-host opencode-v1 -->\nx\n', 'is never closed'],
+    ['a nested section', '<!-- hive-host opencode-v1 -->\n<!-- hive-host opencode-v2 -->\nx\n<!-- /hive-host -->\n<!-- /hive-host -->\n', 'opened inside the section from line 1'],
+    ['a closing marker without an opening marker', 'x\n<!-- /hive-host -->\n', 'closed without an opening marker'],
+  ])('throws for %s', (_name, source, message) => {
+    expect(() => renderHostMarkdown(source, V2_PROFILE, 'bad.md')).toThrow(message);
+    expect(() => renderHostMarkdown(source, V2_PROFILE, 'bad.md')).toThrow('bad.md:');
+  });
+});
+
+describe('prepareNativeHiveSkills - host rendering', () => {
+  function setup() {
+    const worktree = createTempDir();
+    const bundledSkillsDir = path.join(worktree, 'fixtures', 'bundled-skills');
+    const skillDir = createBundledSkillDir(bundledSkillsDir, 'host-skill');
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'), HOST_SECTIONED_SKILL);
+    createSkillFile(skillDir, 'references/guide.md', 'Guide\n<!-- hive-host opencode-v1 -->\nv1 guide\n<!-- /hive-host -->\n<!-- hive-host opencode-v2 -->\nv2 guide\n<!-- /hive-host -->\n');
+    fs.chmodSync(path.join(skillDir, 'references', 'guide.md'), 0o640);
+    fs.writeFileSync(path.join(skillDir, 'references', 'asset.bin'), Buffer.from([0, 1, 2, 255]));
+    createSkillFile(skillDir, 'UPSTREAM.md', '# Upstream\nImported from elsewhere.\n');
+    createSkillFile(skillDir, 'LICENSE', 'Permission is hereby granted.\n');
+    return { worktree, bundledSkillsDir, skillDir };
+  }
+  const prepare = (worktree: string, bundledSkillsDir: string, host: HostProfile, extra: Partial<PrepareNativeHiveSkillsInput> = {}) =>
+    prepareNativeHiveSkillsForHost({ host, directory: worktree, worktree, packagedSkillsDir: bundledSkillsDir, env: { HOME: worktree }, ...extra });
+
+  it('renders SKILL.md and nested Markdown for the selected host and leaves other files untouched', async () => {
+    const { worktree, bundledSkillsDir, skillDir } = setup();
+    const v1 = await prepare(worktree, bundledSkillsDir, OPENCODE_V1_PROFILE);
+    const v2 = await prepare(worktree, bundledSkillsDir, V2_PROFILE);
+
+    const read = (result: typeof v1, file: string) => fs.readFileSync(path.join(result.materializedPath!, 'host-skill', file), 'utf8');
+    expect(read(v1, 'SKILL.md')).toContain('Dispatch with `task()`.');
+    expect(read(v1, 'SKILL.md')).not.toContain('subagent()');
+    expect(read(v2, 'SKILL.md')).toContain('Dispatch with `subagent()`.');
+    expect(read(v2, 'SKILL.md')).not.toContain('task()');
+    expect(read(v2, 'references/guide.md')).toBe('Guide\nv2 guide\n');
+    expect(read(v1, 'references/guide.md')).toBe('Guide\nv1 guide\n');
+    for (const result of [v1, v2]) {
+      expect(read(result, 'SKILL.md')).not.toContain('hive-host');
+      expect(fs.readFileSync(path.join(result.materializedPath!, 'host-skill', 'references/asset.bin'))).toEqual(Buffer.from([0, 1, 2, 255]));
+      expect(read(result, 'UPSTREAM.md')).toBe('# Upstream\nImported from elsewhere.\n');
+      expect(read(result, 'LICENSE')).toBe('Permission is hereby granted.\n');
+      expect(fs.statSync(path.join(result.materializedPath!, 'host-skill', 'references/guide.md')).mode & 0o777).toBe(0o640);
+    }
+    // Prepared content is the rendered body, and the packaged source keeps both hosts' sections.
+    expect(v2.skillsByName.get('host-skill')?.content).toContain('Dispatch with `subagent()`.');
+    expect(v2.skillsByName.get('host-skill')?.content).not.toContain('task()');
+    expect(fs.readFileSync(path.join(skillDir, 'SKILL.md'), 'utf8')).toBe(HOST_SECTIONED_SKILL);
+  });
+
+  it('hashes the rendered Markdown so each host has its own cache and neither prunes the other', async () => {
+    const { worktree, bundledSkillsDir } = setup();
+    const v1 = await prepare(worktree, bundledSkillsDir, OPENCODE_V1_PROFILE);
+    const v2 = await prepare(worktree, bundledSkillsDir, V2_PROFILE);
+    expect(v2.materializedPath).not.toBe(v1.materializedPath);
+    expect(path.dirname(v2.materializedPath!)).toBe(path.dirname(v1.materializedPath!));
+
+    // A later run for either host reuses its own directory and removes nothing.
+    expect((await prepare(worktree, bundledSkillsDir, V2_PROFILE)).materializedPath).toBe(v2.materializedPath);
+    expect((await prepare(worktree, bundledSkillsDir, OPENCODE_V1_PROFILE)).materializedPath).toBe(v1.materializedPath);
+    expect(fs.existsSync(path.join(v1.materializedPath!, 'host-skill', 'SKILL.md'))).toBe(true);
+    expect(fs.existsSync(path.join(v2.materializedPath!, 'host-skill', 'SKILL.md'))).toBe(true);
+    // The other host's generated directory is never offered as a user skill path.
+    expect(v2.skillPaths).toEqual([v2.materializedPath!]);
+    const withOtherHostPath = await prepare(worktree, bundledSkillsDir, V2_PROFILE, { opencodeConfig: { skills: { paths: [v1.materializedPath!] } } });
+    expect(withOtherHostPath.skillPaths).toEqual([v2.materializedPath!]);
+    expect(withOtherHostPath.nativeSkillsByName.has('host-skill')).toBe(false);
+  });
+
+  it('shares one cache directory for a skill without host sections', async () => {
+    const worktree = createTempDir();
+    const bundledSkillsDir = path.join(worktree, 'fixtures', 'bundled-skills');
+    createBundledSkillDir(bundledSkillsDir, 'plain-skill');
+    const v1 = await prepare(worktree, bundledSkillsDir, OPENCODE_V1_PROFILE);
+    const v2 = await prepare(worktree, bundledSkillsDir, V2_PROFILE);
+    expect(v2.materializedPath).toBe(v1.materializedPath);
+  });
+
+  it('renders through regular files only: symbolic links keep their target and nothing is written through them', async () => {
+    const { worktree, bundledSkillsDir, skillDir } = setup();
+    // A link to Markdown inside the skill, a link to Markdown outside it, and a link to a directory.
+    const outside = path.join(worktree, 'outside.md');
+    const outsideText = 'Outside\n<!-- hive-host opencode-v1 -->\nouter v1\n<!-- /hive-host -->\n<!-- hive-host opencode-v2 -->\nouter v2\n<!-- /hive-host -->\n';
+    fs.writeFileSync(outside, outsideText);
+    fs.symlinkSync(path.join('references', 'guide.md'), path.join(skillDir, 'current-guide.md'));
+    fs.symlinkSync(outside, path.join(skillDir, 'external-guide.md'));
+    fs.symlinkSync('references', path.join(skillDir, 'reference-link'));
+
+    const v2 = await prepare(worktree, bundledSkillsDir, V2_PROFILE);
+    const staged = path.join(v2.materializedPath!, 'host-skill');
+
+    expect(fs.lstatSync(path.join(staged, 'current-guide.md')).isSymbolicLink()).toBe(true);
+    expect(fs.readlinkSync(path.join(staged, 'current-guide.md'))).toBe(path.join('references', 'guide.md'));
+    expect(fs.readFileSync(path.join(staged, 'current-guide.md'), 'utf8')).toBe('Guide\nv2 guide\n');
+    expect(fs.lstatSync(path.join(staged, 'external-guide.md')).isSymbolicLink()).toBe(true);
+    expect(fs.readlinkSync(path.join(staged, 'external-guide.md'))).toBe(outside);
+    expect(fs.lstatSync(path.join(staged, 'reference-link')).isSymbolicLink()).toBe(true);
+    // The external target is the user's file: it keeps both sections.
+    expect(fs.readFileSync(outside, 'utf8')).toBe(outsideText);
+    expect(fs.readFileSync(path.join(skillDir, 'references/guide.md'), 'utf8')).toContain('v1 guide');
+  });
+
+  it('rejects malformed host sections before publishing anything and leaves no temporary directory', async () => {
+    const { worktree, bundledSkillsDir, skillDir } = setup();
+    fs.writeFileSync(path.join(skillDir, 'references/guide.md'), '<!-- hive-host opencode-v1 -->\nunclosed\n');
+    const generatedRoot = path.join(worktree, '.config', 'opencode', 'agent-hive', 'generated', 'opencode-skills');
+
+    await expect(prepare(worktree, bundledSkillsDir, V2_PROFILE)).rejects.toThrow('guide.md:1: host section "opencode-v1" is never closed');
+    expect(fs.readdirSync(generatedRoot)).toEqual([]);
+  });
+
+  it('keeps disable, conflict and URL-scan outcomes the same for the selected host', async () => {
+    const { worktree, bundledSkillsDir } = setup();
+    createBundledSkillDir(bundledSkillsDir, 'disabled-skill');
+    createBundledSkillDir(bundledSkillsDir, 'conflict-skill');
+    createNativeSkill(worktree, '.opencode/skills/conflict-skill/SKILL.md', 'conflict-skill');
+
+    for (const host of [OPENCODE_V1_PROFILE, V2_PROFILE]) {
+      const result = await prepare(worktree, bundledSkillsDir, host, { disableSkills: ['disabled-skill'] });
+      expect(result.skipped).toEqual([
+        { name: 'conflict-skill', reason: 'conflict', source: path.join(worktree, '.opencode/skills/conflict-skill/SKILL.md') },
+        { name: 'disabled-skill', reason: 'disabled' },
+      ]);
+      expect([...result.skillsByName.keys()]).toEqual(['host-skill']);
+    }
+
+    const failed = await prepare(worktree, bundledSkillsDir, V2_PROFILE, {
+      opencodeConfig: { skills: { urls: ['https://skills.example.test/'] } },
+      fetchImpl: async () => { throw new Error('network down'); },
+      logger: createWarningRecorder().logger,
+    });
+    expect(failed.materializedPath).toBeUndefined();
+    expect(failed.urlScanComplete).toBe(false);
+    expect(failed.skipped.every((entry) => entry.reason === 'url-scan-incomplete')).toBe(true);
   });
 });

@@ -1,8 +1,10 @@
+import { OPENCODE_V1_PROFILE, type HostProfile } from '../runtime/host-profile.js';
 import { ENGINEERING_JUDGMENT_PROMPT } from './engineering-judgment.js';
-import { REVIEW_GROUNDING_PROMPT } from './review-grounding.js';
+import { renderReviewGroundingPrompt } from './review-grounding.js';
 import { REVIEW_INVESTIGATION_PROMPT } from './review-investigation.js';
 
-export const CODE_REVIEWER_PROMPT = `# Code Reviewer
+export function renderCodeReviewerPrompt(host: HostProfile): string {
+  return `# Code Reviewer
 
 You are a read-only implementation reviewer.
 
@@ -20,7 +22,7 @@ Use the provided review packet, task or plan reference, diff and its base, chang
 
 When the review names a Hive feature task, use the primary-supplied feature/task identity, plan path and current section, spec path, and current \`specStale\`/\`specStaleReason\` from \`hive_status\`. Reviewers may query \`hive_status\` with that explicit feature to clarify current state, but receive no task brief. When \`specStaleReason\` is \`manual_task\`, review against the supplied spec as the task contract; no plan section exists. When it is \`differs_from_plan\`, the current plan section governs. When the reason is \`plan_missing\`, \`plan_invalid\`, \`task_not_in_plan\`, \`spec_missing\`, \`freshness_unavailable\`, or \`unowned_heading_after_task_section\`, request the missing authoritative records or report the ambiguity instead of assuming either record governs. Otherwise compare the delta against the current plan section and also check the spec when \`specStale\` is false. Flag requirements in the delta that imply forward obligations but have no owning task, and references that no longer match the current plan or changed interfaces. Request missing identity or freshness evidence rather than treating an old spec as current.
 
-${REVIEW_GROUNDING_PROMPT}
+${renderReviewGroundingPrompt(host)}
 
 ${REVIEW_INVESTIGATION_PROMPT}
 
@@ -110,3 +112,6 @@ Prefer the smallest coherent implementation by total cognitive burden and owners
 \`\`\`
 
 Do not include mandatory praise. Findings come first.`;
+}
+
+export const CODE_REVIEWER_PROMPT = renderCodeReviewerPrompt(OPENCODE_V1_PROFILE);

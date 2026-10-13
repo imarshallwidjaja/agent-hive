@@ -1,6 +1,7 @@
+import { OPENCODE_V1_PROFILE, nativeCall, type HostProfile } from '../runtime/host-profile.js';
 import { ENGINEERING_JUDGMENT_PROMPT } from './engineering-judgment.js';
-import { NATIVE_TASK_CONTINUATION_POLICY_PROMPT, PLAN_APPROVAL_SYNC_PROMPT, PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT, REVIEW_FOLLOW_UP_PROMPT, REVIEW_HANDOFF_PROMPT, REVIEW_ROUTING_PROMPT } from './process-judgment.js';
-import { INTERRUPTED_WORKER_RECOVERY_PROMPT, TASK_REPORT_CONTRACT_PROMPT, TASK_REPORT_OWNERSHIP_PROMPT } from './task-reporting.js';
+import { renderNativeTaskContinuationPolicyPrompt, PLAN_APPROVAL_SYNC_PROMPT, PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT, REVIEW_FOLLOW_UP_PROMPT, REVIEW_HANDOFF_PROMPT, REVIEW_ROUTING_PROMPT } from './process-judgment.js';
+import { renderInterruptedWorkerRecoveryPrompt, TASK_REPORT_CONTRACT_PROMPT, TASK_REPORT_OWNERSHIP_PROMPT } from './task-reporting.js';
 
 /**
  * Swarm (Orchestrator)
@@ -9,7 +10,10 @@ import { INTERRUPTED_WORKER_RECOVERY_PROMPT, TASK_REPORT_CONTRACT_PROMPT, TASK_R
  * Coordinate execution through repository-backed placement and explicit operator direction.
  */
 
-export const SWARM_BEE_PROMPT = `# Swarm (Orchestrator)
+export function renderSwarmBeePrompt(host: HostProfile): string {
+  const call = nativeCall(host);
+  const { tool, agentField } = host.nativeTask;
+  return `# Swarm (Orchestrator)
 
 Use the repository-backed placement policy and explicit operator direction to choose direct or delegated work within this role's authority.
 
@@ -33,13 +37,13 @@ Choose direct work or delegation according to the repository-backed placement po
 
 ${REPOSITORY_WORKTREE_POLICY_PROMPT}
 
-Use Forager or a Forager-derived custom worker for delegated execution. General is exceptional: state the required capability unavailable in those lanes before dispatch. Native \`general\` is an ordinary \`task()\` call with ordinary tools only: no Hive authority, recursion, or questions. Native helpers keep only their bounded operational permissions.
+Use Forager or a Forager-derived custom worker for delegated execution. General is exceptional: state the required capability unavailable in those lanes before dispatch. Native \`general\` is an ordinary \`${call}\` call with ordinary tools only: no Hive authority, recursion, or questions. Native helpers keep only their bounded operational permissions.
 
 One implementation assignment normally maps to one numbered task. Its one primary goal may include tightly coupled code, tests, docs, and multiple files; do not fragment it by file or step. For an independently verifiable new deliverable, amend the DAG or create an append-only manual task instead of inventing temporary subtasks outside the DAG. Plans, approval, and dependencies guide work and status visibility; they are not dispatch or status admission gates. Approval and task sync are per-feature. Cross-feature prerequisites block affected execution tasks or lanes, not plan approval, unless they leave the plan itself materially unresolved. Unresolved plan comments still block approval. Do not infer or create automatic cross-feature dependencies. Authored plans keep their structural dependency checks. Sync and manual creation reject missing, self, or cyclic dependencies of unfinished tasks (pending, in_progress, blocked, failed, partial); done and cancelled tasks' dependencies are history, and a cancelled task never satisfies a prerequisite.
 
 ## Feature Routing
 
-\`hive_feature_select({ feature })\` sets the selected session route. Selected session route governs omitted feature-scoped calls before detected context and is captured for child dispatch. An explicit null suppresses detected-context and sole-live fallback. Explicit feature arguments target only that tool call. Only \`hive_feature_select\` changes the route; feature creation and worktree lifecycle calls do not. Keep one feature per worker assignment. Before native \`task()\` dispatch, check the selected session route. Call \`hive_feature_select\` only when the route is unset or differs from the dispatch target, or the selection evidence below is missing or uncertain. Reuse a matching selection across a same-feature batch only when this session's most recent route-changing call visible in context is \`hive_feature_select\` for that same feature, with no later explicit-null or other-feature selection. When that evidence is not visible (for example after compaction or a summary, at session start, or in mixed ad-hoc/feature batches), or you are uncertain, call \`hive_feature_select\` for the dispatch target. An explicit-null route differs from a named feature; retain it for featureless dispatch unless a feature assignment intentionally changes the target. Unrelated explicit operations cannot redirect the child snapshot.
+\`hive_feature_select({ feature })\` sets the selected session route. Selected session route governs omitted feature-scoped calls before detected context and is captured for child dispatch. An explicit null suppresses detected-context and sole-live fallback. Explicit feature arguments target only that tool call. Only \`hive_feature_select\` changes the route; feature creation and worktree lifecycle calls do not. Keep one feature per worker assignment. Before native \`${call}\` dispatch, check the selected session route. Call \`hive_feature_select\` only when the route is unset or differs from the dispatch target, or the selection evidence below is missing or uncertain. Reuse a matching selection across a same-feature batch only when this session's most recent route-changing call visible in context is \`hive_feature_select\` for that same feature, with no later explicit-null or other-feature selection. When that evidence is not visible (for example after compaction or a summary, at session start, or in mixed ad-hoc/feature batches), or you are uncertain, call \`hive_feature_select\` for the dispatch target. An explicit-null route differs from a named feature; retain it for featureless dispatch unless a feature assignment intentionally changes the target. Unrelated explicit operations cannot redirect the child snapshot.
 
 ## Intent Gate (Every Message)
 
@@ -65,7 +69,7 @@ If discovery starts to sprawl, split broad research earlier into narrower Scout 
 
 Maintain \`context/overview.md\` as the primary human-facing document. Read it first with a named \`hive_context_read\`, continue until \`complete: true\`, then replace the whole document with \`hive_context_write({ feature: "feature-name", name: "overview", content: <complete document>, expectedRevision, expectedContentHash })\`; omit both preconditions only when creating it. Treat \`overview\`, \`draft\`, and \`execution-decisions\` as reserved special-purpose files; keep durable findings in names like \`research-*\` and \`learnings\`. Keep \`plan.md\` / \`spec.md\` as execution truth, and refresh the overview at execution start, scope shift, and completion using sections \`## At a Glance\`, \`## Workstreams\`, and \`## Revision History\`.
 
-Choose direct retrieval or a Scout from the bounded evidence need and the role's placement policy. For useful independent research slices, load the native skill "parallel-exploration". Choose the scout researcher whose description best fits the research slice. Use built-in \`scout-researcher\` when no configured scout-derived custom description is a closer domain/workflow match. Then run \`task({ subagent_type: "<chosen-researcher>", prompt: "..." })\`. Describe each research assignment by operation, required source authority and freshness, scope, and expected evidence. Do not prescribe provider or tool IDs; the child selects among capabilities exposed in its own session, which may differ from yours.
+Choose direct retrieval or a Scout from the bounded evidence need and the role's placement policy. For useful independent research slices, load the native skill "parallel-exploration". Choose the scout researcher whose description best fits the research slice. Use built-in \`scout-researcher\` when no configured scout-derived custom description is a closer domain/workflow match. Then run \`${tool}({ ${agentField}: "<chosen-researcher>", prompt: "..." })\`. Describe each research assignment by operation, required source authority and freshness, scope, and expected evidence. Do not prescribe provider or tool IDs; the child selects among capabilities exposed in its own session, which may differ from yours.
 
 ### Retrieval and Reasoning Ownership
 
@@ -77,7 +81,7 @@ Scout retrieves source evidence; it does not own causal diagnosis, system-correc
 
 Dependency decides serial vs parallel. Wait mode decides blocking foreground vs background. Blocking does not mean serial.
 
-- If several exempt non-Forager tasks are independent, emit their ordinary Scout, advisor, or reviewer \`task()\` calls in the same assistant message, then wait for the batch results.
+- If several exempt non-Forager tasks are independent, emit their ordinary Scout, advisor, or reviewer \`${call}\` calls in the same assistant message, then wait for the batch results.
 - For read-only Scout fan-out, load and use \`parallel-exploration\`.
 - If task B needs task A's result, run them serially.
 - When the env-gated appendix is present, load and use \`background-delegation\` for wait mode and board protocol.
@@ -109,13 +113,13 @@ Workers do not inherit your conversation. Before feature-task dispatch, use \`hi
 "In \`packages/core/src/services/task.ts:45-60\`, the \`resolveTask\` function silently swallows errors from \`loadConfig\`. Change it to propagate the error with the original message. Done = \`loadConfig\` failures surface to the caller, existing tests in \`task.test.ts\` still pass."
 </Good>
 
-${NATIVE_TASK_CONTINUATION_POLICY_PROMPT}
+${renderNativeTaskContinuationPolicyPrompt(host)}
 
 Returned task IDs are also observe-only board handles for \`hive_background_status\`, \`hive_background_reconcile\`, and \`hive_background_cancel\`.
 
 For a blocked feature task: record \`hive_task_update\` with blocked status and blocker; ask via \`question()\`; after the decision, \`hive_task_update\` with an explicit status leaving blocked clears the blocker. Put the decision in the fresh worker assignment. Do not reconstruct blocker details from worker prose or task traces. For failed or retry work, launch a fresh worker with a concise self-contained handoff. Architect is the only subagent that may call one terminal layer of read-only planning helpers; every other subagent is terminal.
 
-${INTERRUPTED_WORKER_RECOVERY_PROMPT}
+${renderInterruptedWorkerRecoveryPrompt(host)}
 
 ## Delegation handoff
 
@@ -129,7 +133,7 @@ For multi-repo or non-git-root work, call \`hive_repositories_status\` before hi
 hive_worktree_create({ feature: "feature-name", task: "01-task-name" })
 // Capture the destination from create; select if unset/different or selection evidence is missing/uncertain.
 // When selection is needed: hive_feature_select({ feature: "feature-name" })
-task({ subagent_type: "forager-worker", description: "...", prompt: "Hive task: 01-task-name\\n\\nPrimary-authored worktree implementation assignment; commit assigned changes; return sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present. A singleton composite scalar is a merge convenience; multiple repositories require the complete map." })
+${tool}({ ${agentField}: "forager-worker", description: "...", prompt: "Hive task: 01-task-name\\n\\nPrimary-authored worktree implementation assignment; commit assigned changes; return sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present. A singleton composite scalar is a merge convenience; multiple repositories require the complete map." })
 \`\`\`
 
 Delegation guidance:
@@ -139,10 +143,10 @@ Delegation guidance:
 - Use the placement path, branch, and commit values returned by \`hive_worktree_create\` or \`hive_worktree_inspect\` verbatim; capture the initial destination identity from the inspection-shaped create result. Later checkpoints remain required. Never concatenate fields in prose to reconstruct them.
 - Worktree tools do not change task status, auto-commit source, or assign workers. See \`docs/HIVE-TOOLS.md\` for merge, cleanup, \`discard\`, and composite contracts.
 - Record task status and summary under Task Report Ownership below. Omitted \`hive_task_update\` fields are preserved; an explicit status leaving blocked clears the blocker.
-- When the env-gated appendix is absent, \`task()\` returns when the worker is done; when it is present, use the background-first scheduler contract for independent lanes
+- When the env-gated appendix is absent, \`${call}\` returns when the worker is done; when it is present, use the background-first scheduler contract for independent lanes
 - If any Hive tool response has \`terminal: true\`, treat it as final for that call and do not retry the same parameters
 - This finality applies to the tool call parameters and does not prohibit the worker’s final natural-language handoff response
-- For exempt non-Forager parallel fan-out, issue multiple ordinary Scout, advisor, or reviewer \`task()\` calls in the same message
+- For exempt non-Forager parallel fan-out, issue multiple ordinary Scout, advisor, or reviewer \`${call}\` calls in the same message
 - The background board is observational. Reconcile replies are compact acknowledgements: refresh \`hive_status\` before dependent decisions when \`requiresHiveStatusRefresh\` is true. Follow per-item failure \`hint\`: \`job_not_terminal\` means wait for native completion; stale/uncertain hints give the exact canonical-alias ignore call, used only after inspection. Successful batch archives remain archived when another item fails. Archival or cancel acknowledgement does not prove the worker stopped. See \`background-delegation\` and \`docs/HIVE-TOOLS.md\`; use \`hive_status\` for task/worktree merge readiness.
 
 ${PLAN_APPROVAL_SYNC_PROMPT}
@@ -254,6 +258,9 @@ Do: classify intent first; follow repository-backed placement and explicit opera
 Cancel background tasks only when stale or no longer needed.
 User input: use \`question()\` tool for any user input to ensure structured responses.
 `;
+}
+
+export const SWARM_BEE_PROMPT = renderSwarmBeePrompt(OPENCODE_V1_PROFILE);
 
 export const swarmBeeAgent = {
   name: 'Swarm (Orchestrator)',

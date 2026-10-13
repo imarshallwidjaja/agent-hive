@@ -5,6 +5,7 @@ import { HIVE_COMMANDS } from './registry.js';
 import { buildPluginManifest } from '../utils/plugin-manifest.js';
 import { hiveCommandRenderers } from './renderers.js';
 import { buildHiveCommandMap } from './runtime.js';
+import { OPENCODE_V1_PROFILE } from '../runtime/host-profile.js';
 
 const EXPECTED_COMMANDS = [
   {
@@ -104,6 +105,7 @@ describe('HIVE_COMMANDS', () => {
   it('assembles start-execution without broad native-task resume guidance', () => {
     const commands = buildHiveCommandMap(hiveCommandRenderers, () => ({
       agentMode: 'unified',
+      host: OPENCODE_V1_PROFILE,
       backgroundGuidance: { available: false },
       council: {} as never,
       agents: {},
@@ -133,6 +135,7 @@ describe('HIVE_COMMANDS', () => {
   it('suggests DAG-backed milestone prompts after approval and synced readback', () => {
     const commands = buildHiveCommandMap(hiveCommandRenderers, () => ({
       agentMode: 'dedicated',
+      host: OPENCODE_V1_PROFILE,
       backgroundGuidance: { available: false },
       council: {} as never,
       agents: {},
@@ -200,6 +203,7 @@ describe('HIVE_COMMANDS', () => {
   it('keeps dash-review steering and ordered challenge in the command handoff', () => {
     const commands = buildHiveCommandMap(hiveCommandRenderers, () => ({
       agentMode: 'unified',
+      host: OPENCODE_V1_PROFILE,
       backgroundGuidance: { available: false },
       council: {} as never,
       agents: {},

@@ -16,6 +16,9 @@ import {
 } from 'hive-core';
 import { HIVE_TOOL_NAMES } from '../utils/plugin-manifest.js';
 import { parseNativeSkillMarkdown, resolvePackagedSkillsDir } from './native-materializer.js';
+import { OPENCODE_V1_PROFILE, createHostProfile, type HostProfile } from '../runtime/host-profile.js';
+import { renderHiveSystemPrompt } from '../hooks/system-hook.js';
+import { renderHostMarkdown } from './host-renderer.js';
 
 type PackagedSkill = {
   name: string;
@@ -1033,7 +1036,11 @@ describe('skill content', () => {
     expect(skill!.template).toContain('execution-decisions');
     expect(skill!.template).toContain('Dependencies guide sequencing');
     expect(skill!.template).toContain('Explicit null suppresses fallback');
-    expect(skill!.template.match(/hive_feature_select\(\{ feature: "feature-name" \}\)/g)).toHaveLength(1);
+    // One complete example per host: the raw source holds both, and each host's rendering holds exactly one.
+    expect(skill!.template.match(/hive_feature_select\(\{ feature: "feature-name" \}\)/g)).toHaveLength(2);
+    for (const host of [OPENCODE_V1_PROFILE, createHostProfile('opencode-v2')]) {
+      expect(renderHostMarkdown(skill!.template, host, 'dispatching-parallel-agents').match(/hive_feature_select\(\{ feature: "feature-name" \}\)/g)).toHaveLength(1);
+    }
     expect(skill!.template).toContain('Batch independent Hive calls in one response/step');
     expect(skill!.template).toContain("same-call `cleanup: 'worktree+branch'`");
     expect(skill!.template).not.toContain('Only dispatch tasks that are runnable');
@@ -1049,6 +1056,14 @@ describe('skill content', () => {
         if (!fields.includes('forager-worker')) continue;
         exampleCount += 1;
         expect(fields, skill.name).toMatch(/\bsubagent_type\s*:/);
+        expect(fields, skill.name).toMatch(/\bdescription\s*:/);
+        expect(fields, skill.name).toMatch(/\bprompt\s*:/);
+      }
+      for (const match of skill.template.matchAll(/(?:await\s+)?subagent\(\{([\s\S]*?)\}\)/g)) {
+        const fields = match[1];
+        if (!fields.includes('forager-worker')) continue;
+        exampleCount += 1;
+        expect(fields, skill.name).toMatch(/\bagent\s*:/);
         expect(fields, skill.name).toMatch(/\bdescription\s*:/);
         expect(fields, skill.name).toMatch(/\bprompt\s*:/);
       }
@@ -1216,22 +1231,35 @@ describe('skill content', () => {
 
   it('keeps both Forager examples lane-scoped and the gate-open example reconciled after native completion', () => {
     const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'background-delegation')!;
-    const gateClosed = skill.template.match(/Gate-closed Forager launch \(blocking wait mode\):\n\n```ts\n([\s\S]*?)\n```/)?.[1];
-    const example = skill.template.match(/Gate-open Forager launch \(background wait mode\):\n\n```ts\n([\s\S]*?)\n```/)?.[1];
-    expect(gateClosed).toBeDefined();
-    expect(example).toBeDefined();
-    for (const launch of [gateClosed!, example!]) {
-      expect(launch).toContain('hive_repositories_status()');
-      expect(launch).toContain('const requestedRepoIds = lane.repoIds;');
-      expect(launch).toContain('requestedRepoIds.includes(id)');
-      expect(launch).toContain('new Set(requestedRepoIds).size !== requestedRepoIds.length');
-      expect(launch).toContain('requestedRepoIds.some((id) => !selectedRepoIds.includes(id))');
-      expect(launch).toContain('Placement blocker: lane.repoIds must exactly match repository status IDs');
-      expect(launch).toContain('const repoIds = selectedRepoIds;');
-      expect(launch).toContain('hive_adhoc_worktree_create({ repoIds })');
+    const fence = '`'.repeat(3);
+    const launchExample = (text: string, heading: string, label: string) => {
+      const opening = `${heading}\n\n${label}\n\n${fence}ts\n`;
+      const start = text.indexOf(opening);
+      return start === -1 ? undefined : text.slice(start + opening.length, text.indexOf(`\n${fence}`, start + opening.length));
+    };
+    // Each host's example is complete on its own, so every assertion holds for each rendering.
+    for (const [host, label, read] of [
+      [OPENCODE_V1_PROFILE, 'OpenCode v1:', 'hive_repositories_status()'],
+      [createHostProfile('opencode-v2'), 'OpenCode v2:', '// repositories: the repositories array from the hive_repositories_status result'],
+    ] as const) {
+      const text = renderHostMarkdown(skill.template, host, 'background-delegation');
+      const gateClosed = launchExample(text, 'Gate-closed Forager launch (blocking wait mode):', label);
+      const example = launchExample(text, 'Gate-open Forager launch (background wait mode):', label);
+      expect(gateClosed, label).toBeDefined();
+      expect(example, label).toBeDefined();
+      for (const launch of [gateClosed!, example!]) {
+        expect(launch).toContain(read);
+        expect(launch).toContain('const requestedRepoIds = lane.repoIds;');
+        expect(launch).toContain('requestedRepoIds.includes(id)');
+        expect(launch).toContain('new Set(requestedRepoIds).size !== requestedRepoIds.length');
+        expect(launch).toContain('requestedRepoIds.some((id) => !selectedRepoIds.includes(id))');
+        expect(launch).toContain('Placement blocker: lane.repoIds must exactly match repository status IDs');
+        expect(launch).toContain('const repoIds = selectedRepoIds;');
+        expect(launch).toContain('hive_adhoc_worktree_create({ repoIds })');
+      }
+      expect(example!.indexOf('hive_adhoc_worktree_create')).toBeLessThan(example!.indexOf('hive_background_reconcile'));
+      expect(example).toContain('background: true');
     }
-    expect(example!.indexOf('hive_adhoc_worktree_create')).toBeLessThan(example!.indexOf('hive_background_reconcile'));
-    expect(example).toContain('background: true');
   });
 
   describe('hive-config', () => {
@@ -1597,5 +1625,201 @@ describe('skill content', () => {
       expect(skill.name.trim().length).toBeGreaterThan(0);
       expect(skill.description.trim().length).toBeGreaterThan(0);
     }
+  });
+});
+
+describe('host sections in packaged skills', () => {
+  const V2 = createHostProfile('opencode-v2');
+  const HOSTS: HostProfile[] = [OPENCODE_V1_PROFILE, V2];
+  const skillsRoot = resolvePackagedSkillsDir();
+
+  function markdownFiles(): string[] {
+    return readdirSync(skillsRoot, { recursive: true, encoding: 'utf8' })
+      .filter((relative) => relative.endsWith('.md') && existsSync(path.join(skillsRoot, relative.split(path.sep)[0]!, 'SKILL.md')));
+  }
+  const rawText = (relative: string) => readFileSync(path.join(skillsRoot, relative), 'utf8');
+  const rendered = (relative: string, host: HostProfile) => renderHostMarkdown(rawText(relative), host, relative);
+  const sectionTexts = (name: string, host: HostProfile) => markdownFiles()
+    .filter((relative) => relative.split(path.sep)[0] === name)
+    .map((relative) => rendered(relative, host))
+    .join('\n');
+  const hostSensitive = ['background-delegation', 'dispatching-parallel-agents', 'parallel-exploration', 'executing-plans', 'hive-config'];
+
+  it('pairs every host section, closes it, and removes every marker when rendered', () => {
+    for (const relative of markdownFiles()) {
+      const raw = rawText(relative);
+      expect((raw.match(/^<!-- hive-host opencode-v1 -->$/gm) ?? []).length, relative).toBe((raw.match(/^<!-- hive-host opencode-v2 -->$/gm) ?? []).length);
+      for (const host of HOSTS) {
+        const out = rendered(relative, host);
+        expect(out, relative).not.toContain('hive-host');
+        expect(out, relative).not.toMatch(/\{\{|@@|%HOST%/);
+      }
+    }
+  });
+
+  it('keeps every host section readable in the raw package source with no placeholders', () => {
+    const raw = rawText('background-delegation/SKILL.md');
+    expect(raw).toContain('`task({ background: true, ... })`');
+    expect(raw).toContain('`subagent({ background: true, ... })`');
+    expect(raw).not.toMatch(/\{\{|@@|%HOST%/);
+    expect(parseNativeSkillMarkdown('raw', raw)?.name).toBe('background-delegation');
+  });
+
+  it('renders OpenCode v1 wording without v2 syntax and OpenCode v2 wording without v1 syntax', () => {
+    const allSkills = readdirSync(skillsRoot, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
+    // Every skill is checked, so a new native-syntax sentence outside a host section fails here.
+    expect(allSkills).toEqual(expect.arrayContaining(hostSensitive));
+    for (const name of allSkills) {
+      const v1 = sectionTexts(name, OPENCODE_V1_PROFILE);
+      const v2 = sectionTexts(name, V2);
+      expect(v1, name).not.toMatch(/\bsubagent\(|sessionID|`subagent`|skill\(\{ id/);
+      expect(v2, name).not.toMatch(/\btask\(|subagent_type|`task\.prompt`|skill\(\{ name/);
+      // `task_id` is only the Hive trace tool's own argument on v2.
+      expect(v2.replace(/hive_task_trace\(\{ task_id/g, ''), name).not.toContain('task_id');
+    }
+  });
+
+  it('keeps every raw code example complete, with host markers outside the fences', () => {
+    // Native discovery serves the raw file, so a fence must hold one whole example and never a marker.
+    const hostsMentioned = (code: string) => [/\btask\(/.test(code), /\bsubagent\(/.test(code)].filter(Boolean).length;
+    const unbalanced = (code: string) => {
+      const stack: string[] = [];
+      const pairs: Record<string, string> = { ')': '(', '}': '{', ']': '[' };
+      for (const char of code) {
+        if ('({['.includes(char)) stack.push(char);
+        else if (pairs[char] !== undefined && stack.pop() !== pairs[char]) return true;
+      }
+      return stack.length > 0;
+    };
+    let checked = 0;
+    for (const relative of markdownFiles()) {
+      let open: { line: number; lang: string; body: string[] } | undefined;
+      for (const [index, line] of rawText(relative).split('\n').entries()) {
+        const fence = /^\s*```(\w*)\s*$/.exec(line);
+        if (fence && !open) {
+          open = { line: index + 1, lang: fence[1]!, body: [] };
+        } else if (fence && open) {
+          const code = open.body.join('\n');
+          const where = `${relative}:${open.line}`;
+          if (/^(ts|typescript)$/.test(open.lang)) {
+            expect(unbalanced(code), `${where} holds an incomplete example`).toBe(false);
+            expect(hostsMentioned(code), `${where} mixes both hosts' native calls`).toBeLessThanOrEqual(1);
+            checked += 1;
+          }
+          open = undefined;
+        } else if (open) {
+          expect(line, `${relative}:${index + 1} puts a host marker inside a code fence`).not.toContain('hive-host');
+          open.body.push(line);
+        }
+      }
+      expect(open, `${relative} leaves a code fence open`).toBeUndefined();
+    }
+    expect(checked).toBeGreaterThan(10);
+  });
+
+  it('renders the same number of complete examples for each host', () => {
+    const fenceCount = (text: string) => (text.match(/^```(?:ts|typescript)$/gm) ?? []).length;
+    for (const relative of markdownFiles()) {
+      expect(fenceCount(rendered(relative, OPENCODE_V1_PROFILE)), relative).toBe(fenceCount(rendered(relative, V2)));
+    }
+  });
+
+  it('obtains repository status through the selected read transport on every profile', () => {
+    const profiles = [OPENCODE_V1_PROFILE, V2, createHostProfile('opencode-v2', { readTransport: 'direct' })];
+    for (const host of profiles) {
+      const skill = sectionTexts('background-delegation', host);
+      const system = renderHiveSystemPrompt(host);
+      if (host.host === 'opencode-v1') {
+        // Direct host: the example reads the status as an ordinary call.
+        expect(skill).toContain('const { repositories } = hive_repositories_status();');
+        expect(system).not.toContain('Hive Read Transport');
+        continue;
+      }
+      // Neither v2 transport can issue the read as a direct call from the example.
+      expect(skill).not.toMatch(/hive_repositories_status\(/);
+      expect(skill).toContain('// repositories: the repositories array from the hive_repositories_status result, read through the Hive read transport first.');
+      expect(skill).toContain('obtain its result through the Hive read transport your system prompt names before the launch');
+      expect(skill).toContain('the examples below bind its `repositories` array property, not the whole result, as `repositories`');
+      // The skill's two branches match the statement the profile's system prompt makes.
+      expect(skill).toContain('call it from code passed to `execute`, using the exact path the Code Mode catalog lists');
+      expect(skill).toContain('when your system prompt says Hive reads are direct tool calls, call it directly');
+      expect(skill).not.toMatch(/\bhive\.[a-z_]+\(|tools\.hive_|mcp__|codemode\./);
+      if (host.readTransport === 'codemode') {
+        expect(system).toContain('call them from code passed to `execute`, using the exact paths its Code Mode catalog lists');
+      } else {
+        expect(system).toContain('are direct tool calls');
+      }
+      // Control tools and the native subagent call stay direct after the read.
+      expect(skill).toContain('The Hive control tools and the native `subagent()` call in them are direct calls.');
+    }
+  });
+
+  it('keeps the corruption preflight on the active host\'s session index', () => {
+    const layout = (host: HostProfile) => {
+      const text = rendered('hive-config/references/runtime-layout.md', host);
+      const start = text.indexOf('The session index is');
+      return text.slice(start, text.indexOf('## Background board'));
+    };
+    const v1 = layout(OPENCODE_V1_PROFILE);
+    expect(v1).toContain('The session index is `.hive/sessions.json`.');
+    expect(v1).toContain('The host\'s `chat.message` hook');
+    const v2 = layout(V2);
+    expect(v2).toContain('The session index is `.hive/runtime/opencode-v2/sessions.json`.');
+    expect(v2).toContain('`sessions.json.corrupt-<timestamp>` sibling in the same directory');
+    expect(v2).toContain('`sessions.json.corrupt-*` sibling exists in its directory');
+    // No v1 path or v1 hook claim in a recipe an OpenCode v2 agent would follow.
+    expect(v2).not.toContain('.hive/sessions.json');
+    expect(v2).not.toContain('chat.message');
+    for (const host of HOSTS) {
+      const text = layout(host);
+      expect(text).toContain('So read the session index directly, with a shell or file read, before any session-resolving call.');
+      expect(text).toContain('report both paths to the primary or operator, who decides how to restore it');
+      expect(text).toContain('avoid session-resolving calls; when you need a feature-scoped read, pass `feature` explicitly');
+    }
+    const overview = rendered('hive-config/SKILL.md', V2);
+    expect(overview).toContain('(`.hive/runtime/opencode-v2/sessions.json`)');
+    expect(overview).not.toContain('chat message');
+    expect(rendered('hive-config/SKILL.md', OPENCODE_V1_PROFILE)).toContain('a corrupt `sessions.json` is reset by the next chat message or by any tool call that resolves a session route');
+  });
+
+  it('describes background tool gating only as the active host gates it', () => {
+    const ownership = (host: HostProfile) => rendered('hive-config/references/tool-ownership.md', host);
+    expect(ownership(OPENCODE_V1_PROFILE).match(/experiment-gated/g)?.length).toBe(2);
+    expect(ownership(V2)).not.toContain('experiment-gated');
+    expect(ownership(V2)).toContain('`.hive/runtime/opencode-v2/background-jobs.json` for OpenCode v2');
+    for (const name of ['background-delegation', 'parallel-exploration']) {
+      expect(sectionTexts(name, V2), name).not.toContain('env-gated');
+    }
+  });
+
+  it('keeps native dispatch rules at the same strength on both hosts', () => {
+    for (const host of HOSTS) {
+      const text = sectionTexts('background-delegation', host);
+      const call = host.nativeTask.tool + '()';
+      expect(text).toContain(`Each native \`${call}\` invocation has one primary goal and one terminal report.`);
+      expect(text).toContain(`Primaries must not pass \`${host.nativeTask.continuationField}\` or infer continuation eligibility`);
+      expect(text).toContain(`only when an explicit operator instruction or explicit runtime-owned interruption-recovery mechanism authorizes continuation; otherwise launch fresh.`);
+      expect(text).toContain(`A rare native \`general\` exception is an ordinary \`${call}\` call with ordinary tools only: no Hive authority, recursion, or questions.`);
+      expect(text).toContain(`${host.nativeTask.agentField}: 'forager-worker'`);
+    }
+  });
+
+  it('keeps the OpenCode v1 database recipes version-scoped and gives v2 only public reads', () => {
+    const v1 = sectionTexts('hive-config', OPENCODE_V1_PROFILE);
+    const v2 = sectionTexts('hive-config', V2);
+    expect(v1).toContain('## OpenCode v1 session store');
+    expect(v1).toContain('sqlite3 -readonly');
+    expect(v2).toContain('## OpenCode v2 sessions');
+    expect(v2).toContain('`hive_task_trace_content`');
+    expect(v2).toContain('do not read the host\'s database directly');
+    for (const forbidden of ['sqlite3', 'opencode.db', 'OPENCODE_DB', 'json_extract']) expect(v2, forbidden).not.toContain(forbidden);
+  });
+
+  it('describes v2 background and nesting settings without an experiment variable or config rewrite', () => {
+    const v2 = sectionTexts('hive-config', V2) + sectionTexts('background-delegation', V2);
+    expect(v2).toContain('No experiment variable gates background subagents on OpenCode v2.');
+    expect(v2).toContain('Hive does not rewrite it');
+    expect(v2).not.toContain('OPENCODE_EXPERIMENTAL');
+    expect(sectionTexts('hive-config', OPENCODE_V1_PROFILE)).toContain('OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS');
   });
 });

@@ -1,8 +1,10 @@
+import { OPENCODE_V1_PROFILE, type HostProfile } from '../runtime/host-profile.js';
 import { ENGINEERING_JUDGMENT_PROMPT } from './engineering-judgment.js';
-import { REVIEW_GROUNDING_PROMPT } from './review-grounding.js';
+import { renderReviewGroundingPrompt } from './review-grounding.js';
 import { REVIEW_INVESTIGATION_PROMPT } from './review-investigation.js';
 
-export const SIMPLICITY_REVIEWER_PROMPT = `# Simplicity Reviewer
+export function renderSimplicityReviewerPrompt(host: HostProfile): string {
+  return `# Simplicity Reviewer
 
 You are a read-only final post-implementation simplicity reviewer.
 
@@ -20,7 +22,7 @@ Use the provided review packet, task or plan reference, diff and its base, chang
 
 If the task or plan is missing and the current requirement cannot be inferred from the changed code, mark NEEDS_DISCUSSION instead of inventing requirements.
 
-${REVIEW_GROUNDING_PROMPT}
+${renderReviewGroundingPrompt(host)}
 
 ${REVIEW_INVESTIGATION_PROMPT}
 
@@ -122,3 +124,6 @@ None | [file:line] \`quoted line\` - [what to remove, inline, merge, or replace]
 \`\`\`
 
 Do not include mandatory praise. Findings come first.`;
+}
+
+export const SIMPLICITY_REVIEWER_PROMPT = renderSimplicityReviewerPrompt(OPENCODE_V1_PROFILE);

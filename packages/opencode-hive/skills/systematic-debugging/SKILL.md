@@ -288,6 +288,11 @@ Before calling the cause external, state which local hypotheses were tested and 
 
 **Related skills:**
 - **test-driven-development** - Load only when strict TDD is the selected strategy
+<!-- hive-host opencode-v1 -->
 - **skill({ name: "verification" })** - Verify fix worked before claiming success
+<!-- /hive-host -->
+<!-- hive-host opencode-v2 -->
+- **skill({ id })** for the catalog entry named "verification" - Verify fix worked before claiming success
+<!-- /hive-host -->
 
 The premise, restart-state, and hypothesis-reversal guidance is adapted from pstack; see `UPSTREAM.md` and `LICENSE.pstack` in this skill. These additions do not replace Hive's source/candidate evidence or recovery contracts.

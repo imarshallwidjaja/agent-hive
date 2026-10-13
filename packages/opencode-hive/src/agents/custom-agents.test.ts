@@ -2,11 +2,13 @@ import { describe, expect, it } from 'bun:test';
 import type { ResolvedCustomAgentConfig } from 'hive-core';
 import { FORAGER_BEE_PROMPT } from './forager';
 import { CODE_REVIEWER_PROMPT } from './code-reviewer';
-import { PLAN_REVIEWER_PROMPT } from './plan-reviewer';
+import { PLAN_REVIEWER_PROMPT, renderPlanReviewerPrompt } from './plan-reviewer';
 import { SIMPLICITY_REVIEWER_PROMPT } from './simplicity-reviewer';
 import { APPROACH_ADVISOR_PROMPT } from './approach-advisor';
 import { VULNERABILITY_REVIEWER_PROMPT } from './vulnerability-reviewer';
-import { SCOUT_BEE_PROMPT } from './scout';
+import { SCOUT_BEE_PROMPT, renderScoutBeePrompt } from './scout';
+import { createHostProfile } from '../runtime/host-profile';
+import { renderAutoLoadSkillsAppendix, renderHiveSystemPrompt } from '../hooks/system-hook';
 import { buildCustomSubagents } from './custom-agents';
 import type { RuntimeSubagentConfig } from './custom-agents';
 import { CUSTOM_AGENT_RESERVED_NAMES } from 'hive-core';
@@ -17,6 +19,42 @@ function countOccurrences(content: string, needle: string): number {
 }
 
 describe('buildCustomSubagents', () => {
+  it('derives custom subagents from the prompt rendered for the selected host', () => {
+    const permission: RuntimeSubagentConfig['permission'] = { edit: 'deny' };
+    for (const host of [createHostProfile('opencode-v1'), createHostProfile('opencode-v2')]) {
+      const basePrompt = renderScoutBeePrompt(host) + '\n## host system\n';
+      const derived = buildCustomSubagents({
+        customAgents: { 'scout-docs': { baseAgent: 'scout-researcher', description: 'Docs research.', autoLoadSkills: [] } },
+        baseAgents: { 'scout-researcher': { mode: 'subagent', description: 'Base Scout', prompt: basePrompt, permission } },
+        autoLoadSkillAppendices: { 'scout-docs': '\n\n## Configured Auto-Load Skills\n' },
+      });
+      expect(derived['scout-docs']?.prompt).toBe(`${basePrompt}\n\n## Configured Auto-Load Skills\n`);
+      expect(derived['scout-docs']?.prompt).toContain(`\`${host.shell.tool}\` writes`);
+      expect(derived['scout-docs']?.permission).toBe(permission);
+    }
+  });
+
+  it('keeps a custom reviewer on the skill call of the host its base was rendered for', () => {
+    const permission: RuntimeSubagentConfig['permission'] = { edit: 'deny' };
+    for (const host of [createHostProfile('opencode-v1'), createHostProfile('opencode-v2')]) {
+      const basePrompt = renderPlanReviewerPrompt(host) + renderHiveSystemPrompt(host) + renderAutoLoadSkillsAppendix(host, ['verification']);
+      const derived = buildCustomSubagents({
+        customAgents: { 'plan-reviewer-docs': { baseAgent: 'plan-reviewer', description: 'Docs plans.', autoLoadSkills: ['context-engineering'] } },
+        baseAgents: { 'plan-reviewer': { mode: 'subagent', description: 'Base reviewer', prompt: basePrompt, permission } },
+        autoLoadSkillAppendices: { 'plan-reviewer-docs': renderAutoLoadSkillsAppendix(host, ['context-engineering']) },
+      });
+      const prompt = derived['plan-reviewer-docs']!.prompt!;
+      expect(prompt.startsWith(basePrompt)).toBe(true);
+      if (host.host === 'opencode-v1') {
+        expect(prompt).toContain('- `skill({ name: "context-engineering" })`');
+        expect(prompt).not.toContain('skill({ id');
+      } else {
+        expect(prompt).toContain('- `skill({ id })` for the catalog entry named "context-engineering"');
+        expect(prompt).not.toContain('skill({ name');
+      }
+    }
+  });
+
   it('builds derived subagents for scout, forager, and reviewer bases', () => {
     const scoutPermission: RuntimeSubagentConfig['permission'] = {
       'hive_*': 'deny',
