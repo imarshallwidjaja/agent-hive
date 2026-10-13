@@ -113,7 +113,7 @@ Hive role permissions are registered by the plugin, not by Agent Hive config or 
 OpenCode applies agent rules after global `permission` rules, so a global allow cannot re-grant a Hive tool a role denies. Native `general`/`explore` overrides for Hive tools, `task`, `question`, `skill`, and `explore` edit are dropped with a warning.
 <!-- /hive-host -->
 <!-- hive-host opencode-v2 -->
-On OpenCode v2 the user's `permission` rules decide what an agent can see, and Hive enforces role and child boundaries inside its own tools, so a native allow rule cannot authorize a forbidden Hive operation. Native `general` and `explore` get no Hive tools.
+On OpenCode v2 the user's `permissions` rules decide what an agent can see, and Hive enforces role and child boundaries inside its own tools and the public execution hook, so a native allow rule cannot authorize a forbidden Hive operation or native effect. Native `general` and `explore` get no Hive tools. Delegated Architect helper calls need `experimental.subagent_depth` of at least 2 in the OpenCode configuration; Hive does not change it.
 <!-- /hive-host -->
 To change who can call a tool, change the plugin source; see [tool-ownership.md](tool-ownership.md) for the current matrix.
 

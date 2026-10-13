@@ -68,6 +68,9 @@ export function createHostProfile(host: HostId, options: { readTransport?: ReadT
 
 export const OPENCODE_V1_PROFILE: HostProfile = createHostProfile('opencode-v1');
 
+/** A resolved catalog entry; v1 discovery identifies it by name, v2 by its exact id. */
+export type NativeSkillIdentity = { readonly name: string; readonly id?: string };
+
 /** The native subagent call as it is named in prose, for example `task()`. */
 export function nativeCall(profile: HostProfile): string {
   return `${profile.nativeTask.tool}()`;
@@ -78,10 +81,11 @@ export function nativeCall(profile: HostProfile): string {
  * generic call shape. With a name on a host that selects skills by catalog id, the call carries no invented id: it
  * says which catalog entry supplies it.
  */
-export function skillCall(profile: HostProfile, name?: string, options: { code?: boolean } = {}): string {
+export function skillCall(profile: HostProfile, name?: string, options: { code?: boolean; id?: string } = {}): string {
   const { tool, field } = profile.nativeSkill;
   const wrap = (text: string) => (options.code === false ? text : `\`${text}\``);
   if (field === 'name') return wrap(`${tool}({ name: ${JSON.stringify(name ?? '...')} })`);
+  if (options.id !== undefined) return wrap(`${tool}({ id: ${JSON.stringify(options.id)} })`);
   const call = wrap(`${tool}({ ${field} })`);
   return name === undefined ? call : `${call} for the catalog entry named ${JSON.stringify(name)}`;
 }
@@ -97,7 +101,16 @@ export function requiredSkillIdentity(profile: HostProfile): string {
  */
 export function renderSkillResolution(profile: HostProfile): string {
   if (profile.nativeSkill.field === 'name') return '';
-  return ` On this host the native \`${profile.nativeSkill.tool}\` tool takes \`id\`, not a name: set it to the \`<id>\` of the available-skills catalog entry whose \`<name>\` is exactly the skill's name, or whose \`<id>\` is exactly the identifier a requirement gives, because an id may differ from its name. The same lookup applies wherever these instructions name a skill. When no entry or more than one entry matches, the identity is unresolved: report it and pause only the affected work.`;
+  return ` On this host the native \`${profile.nativeSkill.tool}\` tool takes \`id\`, not a name. An explicit catalog id selects that exact entry. For a requirement naming a skill, use the Hive Skill Name Lookup below when it has that name; it prefers a unique user skill over the bundled skill. Otherwise use the \`<id>\` of the available-skills catalog entry whose \`<name>\` is exactly the skill's name, because an id may differ from its name. The same lookup applies wherever these instructions name a skill. When no entry or multiple user entries match, the identity is unresolved: report it and pause only the affected work.`;
+}
+
+/** Request-time name resolution also covers canonical instructions, not just configured auto-loads. */
+export function renderSkillNameLookup(profile: HostProfile, names: ReadonlyMap<string, NativeSkillIdentity>, ambiguous: ReadonlyMap<string, readonly string[]> = new Map()): string {
+  if (profile.nativeSkill.field === 'name') return '';
+  const entries = [...names].filter(([name, skill]) => skill.id !== undefined && name !== skill.id)
+    .map(([name, skill]) => `- ${JSON.stringify(name)}: ${skillCall(profile, name, { id: skill.id })}`);
+  for (const [name, ids] of ambiguous) entries.push(`- ${JSON.stringify(name)}: unresolved (multiple user catalog ids: ${ids.map((id) => JSON.stringify(id)).join(', ')}). Report the ambiguity for name-based requirements; an explicit id still selects its exact entry.`);
+  return entries.length ? `\n\n## Hive Skill Name Lookup\nUse this lookup for skill names in any instruction, including canonical requirements.\n${entries.join('\n')}` : '';
 }
 
 /**

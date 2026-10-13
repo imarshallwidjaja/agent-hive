@@ -1,120 +1,26 @@
 import { tool, type Plugin } from '@opencode-ai/plugin';
 import {
-  DEFAULT_COUNCIL_CONFIG,
   canonicalProjectRoot,
   detectContext,
   getNativeSessionsPath,
-  type ConfigService,
-  type CustomAgentBase,
-  type ResolvedCustomAgentConfig,
 } from 'hive-core';
-import { renderQueenBeePrompt, hiveBeeAgent } from './agents/hive.js';
-import { renderArchitectBeePrompt, architectBeeAgent } from './agents/architect.js';
-import { renderSwarmBeePrompt, swarmBeeAgent } from './agents/swarm.js';
-import { renderScoutBeePrompt } from './agents/scout.js';
-import { FORAGER_BEE_PROMPT } from './agents/forager.js';
-import { renderHiveHelperPrompt, hiveHelperAgent } from './agents/hive-helper.js';
-import { renderHiveBuilderPrompt, hiveBuilderAgent } from './agents/hive-builder.js';
-import { renderPlanReviewerPrompt } from './agents/plan-reviewer.js';
-import { renderCodeReviewerPrompt } from './agents/code-reviewer.js';
-import { renderSimplicityReviewerPrompt } from './agents/simplicity-reviewer.js';
-import { renderApproachAdvisorPrompt } from './agents/approach-advisor.js';
-import { renderVulnerabilityReviewerPrompt } from './agents/vulnerability-reviewer.js';
-import { renderDashReviewerPrompt } from './agents/dash-reviewer.js';
-import { renderVulnerabilityReviewPrimaryPrompt } from './agents/vulnerability-review-primary.js';
-import { buildCustomSubagents } from './agents/custom-agents.js';
-import {
-  prepareNativeHiveSkills,
-  type PreparedHiveSkill,
-  type PreparedNativeHiveSkills,
-  type PreparedNativeSkill,
-} from './skills/native-materializer.js';
+import { prepareNativeHiveSkills } from './skills/native-materializer.js';
 import { createBackgroundJobAdapter } from './background/backgroundJobAdapter.js';
 import { createBackgroundTools } from './background/backgroundTools.js';
-import { isBackgroundSubagentsExperimentEnabled, renderBackgroundFirstOrchestrationAppendix, resolveBackgroundDelegationAvailability } from './utils/background-gate.js';
-import { renderAutoLoadSkillsAppendix, renderHiveSystemPrompt, SUBAGENT_CLARIFICATION_PROMPT } from './hooks/system-hook.js';
-import { OPENCODE_V1_PROFILE, type HostProfile } from './runtime/host-profile.js';
+import { isBackgroundSubagentsExperimentEnabled } from './utils/background-gate.js';
+import { SUBAGENT_CLARIFICATION_PROMPT } from './hooks/system-hook.js';
+import { OPENCODE_V1_PROFILE } from './runtime/host-profile.js';
 import { classifySession, createVariantHook } from './hooks/variant-hook.js';
 import { buildHiveCommandMap } from './commands/runtime.js';
 import { HIVE_COMMANDS } from './commands/registry.js';
 import { hiveCommandRenderers } from './commands/renderers.js';
-import { isReadOnlyCouncilEligibleBase } from './commands/council.js';
 import type { HiveCommandAgentDescriptor, HiveCommandContext } from './commands/types.js';
 import { createTaskTraceTools, injectTaskTraceHint, isDirectChildSession, TASK_TRACE_SUMMARIZER_AGENT, TASK_TRACE_SUMMARIZER_PROMPT } from './task-trace.js';
 import { composeTaskBrief, TASK_BRIEF_BLOCK } from './task-brief.js';
 import { createHiveServices, type RouteSnapshot } from './runtime/hive-services.js';
 import { createHiveOperations, presentHiveResult } from './runtime/hive-tools.js';
-import { ROUTING_BASES, agentPermission, createRolePolicy, mergePrimaryOnlyTools, nativeSubagentBoundary, type BuiltInRole } from './runtime/role-policy.js';
-
-const BACKGROUND_DELEGATION_SKILL_ID = 'background-delegation';
-
-function buildAutoLoadSkillsPromptAppendix(
-  host: HostProfile,
-  agentName: string,
-  configService: ConfigService,
-  nativeSkillsByName: Map<string, PreparedNativeSkill>,
-  eligibleHiveSkills: Map<string, PreparedHiveSkill>,
-  skippedHiveSkills: Map<string, PreparedNativeHiveSkills['skipped'][number]>,
-  override?: string[],
-): string {
-  const skills = override ?? configService.getAgentConfig(agentName).autoLoadSkills ?? [];
-  const names = skills.flatMap((skillId) => {
-    const skill = nativeSkillsByName.get(skillId) ?? eligibleHiveSkills.get(skillId);
-    if (skill) return [skill.name];
-    const skipped = skippedHiveSkills.get(skillId);
-    const reason = skipped?.reason === 'disabled'
-      ? 'it is disabled in Hive config'
-      : skipped?.reason === 'url-scan-incomplete'
-        ? 'configured skills URLs could not be fully scanned for conflicts during this config-hook run'
-        : 'it was not found in OpenCode native skill discovery or eligible Hive bundled skills';
-    console.warn(`[hive] Auto-load skill "${skillId}" was not added to guidance for agent "${agentName}" because ${reason}.`);
-    return [];
-  });
-  return renderAutoLoadSkillsAppendix(host, names);
-}
-
-function buildBackgroundDelegationPromptAppendix(
-  host: HostProfile,
-  agentName: string,
-  nativeSkillsByName: Map<string, PreparedNativeSkill>,
-  eligibleHiveSkills: Map<string, PreparedHiveSkill>,
-  skippedHiveSkills: Map<string, PreparedNativeHiveSkills['skipped'][number]>,
-): string {
-  const availability = resolveBackgroundDelegationAvailability(nativeSkillsByName, eligibleHiveSkills, skippedHiveSkills, host);
-  if (availability.available) {
-    return renderBackgroundFirstOrchestrationAppendix(host);
-  }
-  if (availability.reason === 'experiment-disabled') return '';
-  const reason = availability.reason === 'skill-disabled'
-    ? `skill "${BACKGROUND_DELEGATION_SKILL_ID}" is disabled in Hive config`
-    : availability.reason === 'url-scan-incomplete'
-      ? 'configured skills URLs could not be fully scanned for conflicts during this config-hook run'
-      : `skill "${BACKGROUND_DELEGATION_SKILL_ID}" was not found in OpenCode native skill discovery or eligible Hive bundled skills`;
-  console.warn(`[hive] Background delegation guidance was not advertised for agent "${agentName}" because ${reason}.`);
-  return '';
-}
-
-function buildSubagentRoutingAppendix(
-  bases: readonly CustomAgentBase[],
-  customAgents: Record<string, ResolvedCustomAgentConfig>,
-  descriptions: Record<CustomAgentBase, string>,
-): string {
-  const custom = Object.entries(customAgents);
-  if (!custom.some(([, config]) => bases.includes(config.baseAgent))) return '';
-  const cards = bases.flatMap((base) => [
-    `- \`${base}\` — kind: default; base: \`${base}\`; ${descriptions[base]}`,
-    ...custom.filter(([, config]) => config.baseAgent === base).sort(([left], [right]) => left.localeCompare(right))
-      .map(([name, config]) => `- \`${name}\` — kind: custom overlay; base: \`${base}\`; ${config.description}`),
-  ]);
-  return `\n\n## Configured Custom Subagents and Built-In Defaults
-Custom subagents are scoped specialists, not automatic model upgrades.
-Descriptions specialize routing within the inherited base role; they do not expand that role or override its prompt boundaries.
-For Scout research, decompose broad work and verify each slice fits one context window before choosing a custom Scout; capability is not a width upgrade and does not replace fan-out.
-Choose autonomously the agent whose description best matches the task's domain, workflow, artifact type, or concrete review/approach risk; use the built-in base agent when no configured custom subagent is a closer fit.
-Candidate-specific conditions in an individual description still apply, including a condition that the candidate may be selected only when the operator explicitly names it.
-Do not choose a custom subagent only because the task is important, large, complex, or quality-sensitive.
-${cards.join('\n')}`;
-}
+import { buildRoleCatalog, createCommandContext as createSharedCommandContext } from './runtime/role-catalog.js';
+import { mergePrimaryOnlyTools, nativeSubagentBoundary } from './runtime/role-policy.js';
 
 function taskChildBinding(event: unknown): { parent: string; call: string; child: string; agent?: string } | undefined {
   if (!event || typeof event !== 'object') return undefined;
@@ -174,7 +80,6 @@ const plugin: Plugin = async (ctx) => {
   const runtimeId = `pid-${process.pid}-${Date.now().toString(36)}`;
   // This entry is the OpenCode v1 server; the v2 adapter builds its own profile.
   const host = OPENCODE_V1_PROFILE;
-  const systemPrompt = renderHiveSystemPrompt(host);
 
   const services = createHiveServices({ projectRoot, detectedFeature: detected.feature, nativeObservationOwner: 'opencode-v1' });
   const { sessionService, contextService, taskService, configService, backgroundJobService } = services;
@@ -249,14 +154,11 @@ const plugin: Plugin = async (ctx) => {
   };
 
   let runtimeCommandAgents: Record<string, HiveCommandAgentDescriptor> = {};
-  const createCommandContext = (): HiveCommandContext => ({
+  const createCommandContext = (): HiveCommandContext => createSharedCommandContext({
     host,
-    agentMode: configService.get().agentMode ?? 'dedicated',
-    backgroundGuidance: { available: isBackgroundSubagentsExperimentEnabled(), reason: isBackgroundSubagentsExperimentEnabled() ? undefined : 'experiment-disabled' } as any,
-    council: configService.get().council ?? DEFAULT_COUNCIL_CONFIG,
+    configService,
     agents: runtimeCommandAgents,
-    dashReviewLanes: Object.entries(runtimeCommandAgents).filter(([, value]) => ['code-reviewer', 'simplicity-reviewer', 'approach-advisor'].includes(value.baseAgent)).map(([name, value]) => ({ taskTarget: name, sourceAgent: name, baseAgent: value.baseAgent as any, description: value.description, model: value.model, variant: value.variant })),
-    vulnerabilityReviewLanes: Object.entries(runtimeCommandAgents).filter(([, value]) => value.baseAgent === 'vulnerability-reviewer').map(([name, value]) => ({ taskTarget: name, sourceAgent: name, role: 'specialist' as const, description: value.description, model: value.model, variant: value.variant })),
+    backgroundGuidance: { available: isBackgroundSubagentsExperimentEnabled(), reason: isBackgroundSubagentsExperimentEnabled() ? undefined : 'experiment-disabled' } as any,
   });
 
   return {
@@ -338,70 +240,12 @@ const plugin: Plugin = async (ctx) => {
       const prepared = await prepareNativeHiveSkills({ host, directory: projectRoot, worktree: workTarget, disableSkills: configService.getDisabledSkills(), opencodeConfig: { skills: existingSkills } });
       mutableConfig.skills = { ...existingSkills, paths: prepared.skillPaths };
       mutableConfig.subagent_depth = 2;
+      const catalog = buildRoleCatalog(host, configService, prepared);
       runtimeAgentPrompts.clear();
-      const custom = configService.getCustomAgentConfigs();
-      const policy = createRolePolicy(custom);
-      const skipped = new Map(prepared.skipped.map((entry) => [entry.name, entry]));
-      const descriptions = Object.fromEntries(ROUTING_BASES.map((name) => [name, configService.getRoutingAgentDescription(name)])) as Record<CustomAgentBase, string>;
-      const routingAppendix = (bases: readonly CustomAgentBase[]) => buildSubagentRoutingAppendix(bases, custom, descriptions);
-      const autoLoadAppendix = (name: string, override?: string[]) => buildAutoLoadSkillsPromptAppendix(host, name, configService, prepared.nativeSkillsByName, prepared.skillsByName, skipped, override);
-      const backgroundAppendix = (name: string) => buildBackgroundDelegationPromptAppendix(host, name, prepared.nativeSkillsByName, prepared.skillsByName, skipped);
-      const agentMode = configService.get().agentMode ?? 'dedicated';
-      const prompts: Record<string, string> = {
-        'hive-master': renderQueenBeePrompt(host) + systemPrompt + autoLoadAppendix('hive-master') + backgroundAppendix('hive-master') + (agentMode === 'unified' ? routingAppendix(ROUTING_BASES) : ''),
-        'architect-planner': renderArchitectBeePrompt(host) + systemPrompt + autoLoadAppendix('architect-planner') + backgroundAppendix('architect-planner') + (agentMode === 'dedicated' ? routingAppendix(['scout-researcher', 'plan-reviewer', 'approach-advisor']) : ''),
-        'swarm-orchestrator': renderSwarmBeePrompt(host) + systemPrompt + autoLoadAppendix('swarm-orchestrator') + backgroundAppendix('swarm-orchestrator') + (agentMode === 'dedicated' ? routingAppendix(ROUTING_BASES) : ''),
-        'hive-builder': renderHiveBuilderPrompt(host) + systemPrompt + autoLoadAppendix('hive-builder') + backgroundAppendix('hive-builder') + routingAppendix(['scout-researcher', 'forager-worker', 'code-reviewer', 'simplicity-reviewer']),
-        'scout-researcher': renderScoutBeePrompt(host) + systemPrompt + autoLoadAppendix('scout-researcher'),
-        'forager-worker': FORAGER_BEE_PROMPT + systemPrompt + autoLoadAppendix('forager-worker'),
-        'hive-helper': renderHiveHelperPrompt(host) + systemPrompt + autoLoadAppendix('hive-helper'),
-        'plan-reviewer': renderPlanReviewerPrompt(host) + systemPrompt + autoLoadAppendix('plan-reviewer'),
-        'code-reviewer': renderCodeReviewerPrompt(host) + systemPrompt + autoLoadAppendix('code-reviewer'),
-        'simplicity-reviewer': renderSimplicityReviewerPrompt(host) + systemPrompt + autoLoadAppendix('simplicity-reviewer'),
-        'approach-advisor': renderApproachAdvisorPrompt(host) + systemPrompt + autoLoadAppendix('approach-advisor'),
-        'vulnerability-reviewer': renderVulnerabilityReviewerPrompt(host) + systemPrompt + autoLoadAppendix('vulnerability-reviewer'),
-        'dash-reviewer': renderDashReviewerPrompt(host) + systemPrompt,
-        'vulnerability-review-primary': renderVulnerabilityReviewPrimaryPrompt(host) + systemPrompt,
-      };
-      const runtimePromptAgents = new Set(['hive-master', 'swarm-orchestrator', 'hive-builder', 'forager-worker']);
-      const mk = (name: BuiltInRole, mode: 'primary' | 'subagent' | 'all', description: string) => {
-        const settings = configService.getAgentConfig(name);
-        if (runtimePromptAgents.has(name)) runtimeAgentPrompts.set(name, prompts[name]!);
-        // Config hooks run after OpenCode's deprecated tools normalization. Ordered permissions are enforced at agent construction.
-        return { model: settings.model, variant: settings.variant, temperature: settings.temperature, mode, description, ...(runtimePromptAgents.has(name) ? {} : { prompt: prompts[name] }), permission: agentPermission(policy[name]) };
-      };
-      const agents: Record<string, any> = {
-        'hive-master': mk('hive-master', 'primary', hiveBeeAgent.description),
-        'architect-planner': mk('architect-planner', 'all', architectBeeAgent.description),
-        'swarm-orchestrator': mk('swarm-orchestrator', 'primary', swarmBeeAgent.description),
-        'hive-builder': mk('hive-builder', 'primary', hiveBuilderAgent.description),
-        'scout-researcher': mk('scout-researcher', 'subagent', descriptions['scout-researcher']),
-        'forager-worker': mk('forager-worker', 'subagent', descriptions['forager-worker']),
-        'hive-helper': mk('hive-helper', 'subagent', hiveHelperAgent.description),
-        'plan-reviewer': mk('plan-reviewer', 'subagent', descriptions['plan-reviewer']),
-        'code-reviewer': mk('code-reviewer', 'subagent', descriptions['code-reviewer']),
-        'simplicity-reviewer': mk('simplicity-reviewer', 'subagent', descriptions['simplicity-reviewer']),
-        'approach-advisor': mk('approach-advisor', 'subagent', descriptions['approach-advisor']),
-        'vulnerability-reviewer': mk('vulnerability-reviewer', 'subagent', descriptions['vulnerability-reviewer']),
-        'dash-reviewer': mk('dash-reviewer', 'primary', 'Dash Reviewer - Read-only implementation review orchestrator.'),
-        'vulnerability-review-primary': mk('vulnerability-review-primary', 'primary', 'Private vulnerability review orchestrator.'),
-      };
-      agents['dash-reviewer'].hidden = true;
-      agents['vulnerability-review-primary'].hidden = true;
-      if (agentMode !== 'unified') agents['hive-master'].hidden = true;
-      const customAutoLoad = Object.fromEntries(Object.entries(custom).map(([name, config]) => {
-        const inherited = configService.getAgentConfig(config.baseAgent).autoLoadSkills ?? [];
-        return [name, autoLoadAppendix(name, (config.autoLoadSkills ?? []).filter((skill) => !inherited.includes(skill)))];
-      }));
-      const customAgents = buildCustomSubagents({
-        customAgents: custom,
-        baseAgents: agents,
-        baseRuntimePrompts: { 'forager-worker': prompts['forager-worker'] },
-        autoLoadSkillAppendices: customAutoLoad,
-        registerRuntimePrompt: (name, prompt) => runtimeAgentPrompts.set(name, prompt),
-      });
-      Object.assign(agents, customAgents);
-      runtimeCommandAgents = Object.fromEntries(Object.entries(agents).map(([name, value]) => [name, { baseAgent: custom[name]?.baseAgent ?? name, available: true, description: custom[name]?.description ?? value.description ?? 'Registered Hive agent', readOnlyCouncilEligible: isReadOnlyCouncilEligibleBase(custom[name]?.baseAgent ?? name), model: value.model, variant: value.variant }]));
+      for (const [name, prompt] of catalog.requestPrompts) runtimeAgentPrompts.set(name, prompt);
+      // Config hooks run after OpenCode's deprecated tools normalization. Ordered permissions are enforced at agent construction.
+      const agents: Record<string, any> = catalog.agents;
+      runtimeCommandAgents = catalog.commandAgents;
       const nativeAgents = Object.fromEntries((['general', 'explore'] as const).map((name) => {
         const existing = mutableConfig.agent?.[name] ?? {};
         const boundary = nativeSubagentBoundary(name, existing.permission);
@@ -411,7 +255,7 @@ const plugin: Plugin = async (ctx) => {
       mutableConfig.agent = { ...(mutableConfig.agent ?? {}), ...nativeAgents, ...agents, [TASK_TRACE_SUMMARIZER_AGENT]: { mode: 'primary', hidden: true, temperature: taskTraceConfig.temperature ?? 0, permission: { '*': 'deny' }, prompt: TASK_TRACE_SUMMARIZER_PROMPT } };
       const commandConfig = Object.fromEntries(await Promise.all(HIVE_COMMANDS.map(async (command) => [command.key, { description: command.description, ...('agent' in command ? { agent: command.agent } : {}), template: await hiveCommandRenderers[command.key]('$ARGUMENTS', createCommandContext()) }])));
       mutableConfig.command = { ...(mutableConfig.command ?? {}), ...commandConfig };
-      mutableConfig.default_agent = configService.get().agentMode === 'unified' ? 'hive-master' : 'architect-planner';
+      mutableConfig.default_agent = catalog.defaultAgent;
       const experimental = typeof mutableConfig.experimental === 'object' && mutableConfig.experimental ? mutableConfig.experimental : {};
       mutableConfig.experimental = { ...experimental, primary_tools: mergePrimaryOnlyTools(experimental.primary_tools) };
     },

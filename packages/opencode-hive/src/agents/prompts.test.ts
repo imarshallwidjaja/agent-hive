@@ -3236,7 +3236,7 @@ describe('host-rendered policy', () => {
     }
   });
   describe('native skill calls in composed prompts', () => {
-    // The composition runtime.ts builds for each role: role prompt + system prompt + auto-load appendix.
+    // The composition the shared role catalog builds for each role: role prompt + system prompt + auto-load appendix.
     const roleRenders: Array<[string, (host: HostProfile) => string]> = [
       ['hive', renderQueenBeePrompt],
       ['architect', renderArchitectBeePrompt],
@@ -3285,7 +3285,9 @@ describe('host-rendered policy', () => {
       const v2 = renderHiveSystemPrompt(V2_CODEMODE);
       expect(v2).toContain("whose `<name>` is exactly the skill's name");
       expect(v2).toContain('an id may differ from its name');
-      expect(v2).toContain('When no entry or more than one entry matches, the identity is unresolved');
+      expect(v2).toContain('An explicit catalog id selects that exact entry');
+      expect(v2).toContain('it prefers a unique user skill over the bundled skill');
+      expect(v2).toContain('When no entry or multiple user entries match, the identity is unresolved');
       // Every identity rule stays visible once; the lookup sentence is not repeated per role.
       expect(v2.split('available-skills catalog entry').length - 1).toBe(1);
       expect(renderSkillResolution(OPENCODE_V1_PROFILE)).toBe('');
@@ -3322,8 +3324,8 @@ describe('host-rendered policy', () => {
       }
     });
 
-    it('builds every role prompt in runtime.ts from the selected host, not from a v1 render', () => {
-      const runtime = readFileSync(path.resolve(import.meta.dir, '..', 'runtime.ts'), 'utf8');
+    it('builds every role prompt in the shared role catalog from the selected host, not from a v1 render', () => {
+      const runtime = readFileSync(path.resolve(import.meta.dir, '..', 'runtime', 'role-catalog.ts'), 'utf8');
       const v1Constants = /\b(?:QUEEN_BEE|ARCHITECT_BEE|SWARM_BEE|HIVE_BUILDER|SCOUT_BEE|HIVE_HELPER|PLAN_REVIEWER|CODE_REVIEWER|SIMPLICITY_REVIEWER|APPROACH_ADVISOR|VULNERABILITY_REVIEWER|VULNERABILITY_REVIEW_PRIMARY|DASH_REVIEWER|REVIEW_GROUNDING|HIVE_SYSTEM|NATIVE_TASK_CONTINUATION_POLICY|INTERRUPTED_WORKER_RECOVERY)_PROMPT\b/;
       expect(runtime).not.toMatch(v1Constants);
       // Every role except Forager (a host-neutral constant) composes from a render function.

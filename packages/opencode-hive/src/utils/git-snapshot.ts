@@ -22,6 +22,7 @@ const UNTRACKED_BOUNDS_HINT = 'narrow paths or the scoped path set';
 const SAFE_GIT_CONFIG = [
   '-c', 'core.fsmonitor=false',
   '-c', 'diff.external=',
+  '-c', 'diff.autoRefreshIndex=false',
   '-c', 'credential.helper=',
   '-c', 'fetch.ifMissing=false',
   '-c', 'remote.origin.promisor=false',
@@ -707,6 +708,24 @@ function parseNullSeparatedPaths(content: Buffer): string[] {
   return parseNullSeparatedTokens(content).sort(compareUnicodeCodePoints);
 }
 
+/** numstat compares contents without refreshing the index; name-only can report stale-stat false positives. */
+function parseDiffPaths(content: Buffer): string[] {
+  const records = parseNullSeparatedTokens(content);
+  const paths: string[] = [];
+  for (let index = 0; index < records.length; index += 1) {
+    const match = /^(?:\d+|-)\t(?:\d+|-)\t([\s\S]*)$/.exec(records[index]!);
+    if (!match) throw new Error('Malformed Git numstat response.');
+    // Renames use an empty stat path, followed by NUL-delimited old and new paths.
+    if (match[1]) paths.push(match[1]);
+    else {
+      if (records[index + 1] === undefined || records[index + 2] === undefined) throw new Error('Malformed Git numstat rename response.');
+      paths.push(records[index + 2]!);
+      index += 2;
+    }
+  }
+  return paths.sort(compareUnicodeCodePoints);
+}
+
 function parseLsFilesStages(content: Buffer): Array<{ mode: string; path: string }> {
   return content.toString('utf8').split('\0').filter(Boolean).map((entry) => {
     const match = /^(\S+)\s+\S+\s+\d+\t(.+)$/.exec(entry);
@@ -1189,9 +1208,9 @@ async function probeWorkingTree(input: WorkingTreeProbeInput): Promise<string> {
   const comparisonDiff = await runSnapshotGit(repository, ['diff', ...IGNORE_SUBMODULES, '--no-ext-diff', '--no-textconv', '--binary', input.comparisonBase, input.comparisonTarget, ...pathArgs], operation);
   const stagedDiff = await runSnapshotGit(repository, ['diff', ...IGNORE_SUBMODULES, '--no-ext-diff', '--no-textconv', '--binary', '--cached', ...pathArgs], operation);
   const unstagedDiff = await runSnapshotGit(repository, ['diff', ...IGNORE_SUBMODULES, '--no-ext-diff', '--no-textconv', '--binary', ...pathArgs], operation);
-  const comparisonPaths = parseNullSeparatedPaths(await runSnapshotGit(repository, ['diff', ...IGNORE_SUBMODULES, '--no-ext-diff', '--no-textconv', '--name-only', '-z', input.comparisonBase, input.comparisonTarget, ...pathArgs], operation));
-  const stagedPaths = parseNullSeparatedPaths(await runSnapshotGit(repository, ['diff', ...IGNORE_SUBMODULES, '--no-ext-diff', '--no-textconv', '--name-only', '-z', '--cached', ...pathArgs], operation));
-  const unstagedPaths = parseNullSeparatedPaths(await runSnapshotGit(repository, ['diff', ...IGNORE_SUBMODULES, '--no-ext-diff', '--no-textconv', '--name-only', '-z', ...pathArgs], operation));
+  const comparisonPaths = parseDiffPaths(await runSnapshotGit(repository, ['diff', ...IGNORE_SUBMODULES, '--no-ext-diff', '--no-textconv', '--numstat', '-z', input.comparisonBase, input.comparisonTarget, ...pathArgs], operation));
+  const stagedPaths = parseDiffPaths(await runSnapshotGit(repository, ['diff', ...IGNORE_SUBMODULES, '--no-ext-diff', '--no-textconv', '--numstat', '-z', '--cached', ...pathArgs], operation));
+  const unstagedPaths = parseDiffPaths(await runSnapshotGit(repository, ['diff', ...IGNORE_SUBMODULES, '--no-ext-diff', '--no-textconv', '--numstat', '-z', ...pathArgs], operation));
   const untrackedPaths = parseNullSeparatedPaths(await runSnapshotGit(repository, ['ls-files', '--others', '--exclude-standard', '-z', ...pathArgs], operation));
   if (untrackedPaths.length > MAX_UNTRACKED_FILES) {
     throw new GitSnapshotError('INCOMPLETE_UNTRACKED_CAPTURE', {}, {
@@ -1342,13 +1361,13 @@ async function captureSnapshot(
     ? emptyContent
     : captureBuffer(await runSnapshotGit(repository, ['diff', ...IGNORE_SUBMODULES, '--no-ext-diff', '--no-textconv', '--binary', ...pathArgs], operation));
   await notifyCaptureBoundary('unstaged-diff-captured');
-  const comparisonPaths = parseNullSeparatedPaths(await runSnapshotGit(repository, ['diff', ...IGNORE_SUBMODULES, '--no-ext-diff', '--no-textconv', '--name-only', '-z', comparisonBase, comparisonTarget, ...pathArgs], operation));
+  const comparisonPaths = parseDiffPaths(await runSnapshotGit(repository, ['diff', ...IGNORE_SUBMODULES, '--no-ext-diff', '--no-textconv', '--numstat', '-z', comparisonBase, comparisonTarget, ...pathArgs], operation));
   const stagedPaths = committed
     ? []
-    : parseNullSeparatedPaths(await runSnapshotGit(repository, ['diff', ...IGNORE_SUBMODULES, '--no-ext-diff', '--no-textconv', '--name-only', '-z', '--cached', ...pathArgs], operation));
+    : parseDiffPaths(await runSnapshotGit(repository, ['diff', ...IGNORE_SUBMODULES, '--no-ext-diff', '--no-textconv', '--numstat', '-z', '--cached', ...pathArgs], operation));
   const unstagedPaths = committed
     ? []
-    : parseNullSeparatedPaths(await runSnapshotGit(repository, ['diff', ...IGNORE_SUBMODULES, '--no-ext-diff', '--no-textconv', '--name-only', '-z', ...pathArgs], operation));
+    : parseDiffPaths(await runSnapshotGit(repository, ['diff', ...IGNORE_SUBMODULES, '--no-ext-diff', '--no-textconv', '--numstat', '-z', ...pathArgs], operation));
 
   operation.phase = 'untracked-capture';
   const untrackedPaths = (committed

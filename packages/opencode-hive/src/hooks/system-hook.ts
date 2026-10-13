@@ -1,4 +1,4 @@
-import { OPENCODE_V1_PROFILE, nativeCall, renderReadTransport, renderSkillResolution, skillCall, type HostProfile } from '../runtime/host-profile.js';
+import { OPENCODE_V1_PROFILE, nativeCall, renderReadTransport, renderSkillResolution, skillCall, type HostProfile, type NativeSkillIdentity } from '../runtime/host-profile.js';
 
 export function renderHiveSystemPrompt(host: HostProfile): string {
   const call = nativeCall(host);
@@ -51,9 +51,9 @@ ${renderReadTransport(host)}`;
 export const HIVE_SYSTEM_PROMPT = renderHiveSystemPrompt(OPENCODE_V1_PROFILE);
 
 /** Names the skills an agent is configured to load before covered work, in the host's skill-call form. */
-export function renderAutoLoadSkillsAppendix(host: HostProfile, skillNames: readonly string[]): string {
+export function renderAutoLoadSkillsAppendix(host: HostProfile, skillNames: readonly (string | NativeSkillIdentity)[]): string {
   if (!skillNames.length) return '';
-  return `\n\n## Configured Auto-Load Skills\nHigh-priority instruction: load these OpenCode native skills with the \`${host.nativeSkill.tool}\` tool before work covered by them.\n${skillNames.map((name) => `- ${skillCall(host, name)}`).join('\n')}\nFollow the loaded skill output. Skill bodies are not preloaded.`;
+  return `\n\n## Configured Auto-Load Skills\nHigh-priority instruction: load these OpenCode native skills with the \`${host.nativeSkill.tool}\` tool before work covered by them.\n${skillNames.map((skill) => `- ${typeof skill === 'string' ? skillCall(host, skill) : skillCall(host, skill.name, { id: skill.id })}`).join('\n')}\nFollow the loaded skill output. Skill bodies are not preloaded.`;
 }
 
 export const SUBAGENT_CLARIFICATION_PROMPT = `

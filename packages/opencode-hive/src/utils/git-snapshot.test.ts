@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { execFileSync } from 'node:child_process';
-import { chmodSync, constants, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, constants, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import {
@@ -87,6 +87,40 @@ async function captureOutcome(input: Parameters<typeof inspectGitSnapshot>[1]) {
 }
 
 describe('inspectGitSnapshot', () => {
+  it('discovers content-checked paths for binary changes and renames with tabs', async () => {
+    const renamed = 'src/renamed\twith-controls.ts';
+    git(['mv', 'src/one.ts', renamed]);
+    write('src/two.ts', '\0binary\0change');
+    const snapshot = await inspectGitSnapshot(repository, {});
+    expect(snapshot.changedPaths.staged).toEqual([renamed]);
+    expect(snapshot.changedPaths.unstaged).toEqual(['src/two.ts']);
+  });
+
+  it('captures a cold stale-stat index without refreshing it and retains staged and unstaged changes', async () => {
+    write('src/stable.ts', 'unchanged\n');
+    git(['add', 'src/stable.ts']);
+    git(['commit', '-m', 'stable source']);
+    write('src/one.ts', 'staged\n');
+    git(['add', 'src/one.ts']);
+    write('src/two.ts', 'unstaged\n');
+    // Equal contents with different stat data: diff's automatic refresh can write the real index even with
+    // optional locks disabled. No Git command warms the index after this point.
+    write('src/stable.ts', 'unchanged\n');
+    utimesSync(path.join(repository, 'src/stable.ts'), 946684800, 946684800);
+    const index = path.join(repository, '.git', 'index');
+    const bytes = readFileSync(index);
+    const identity = () => {
+      const { dev, ino, size, mtimeNs, ctimeNs } = statSync(index, { bigint: true });
+      return { dev, ino, size, mtimeNs, ctimeNs };
+    };
+    const before = identity();
+    const snapshot = await inspectGitSnapshot(repository, {});
+    expect(snapshot.changedPaths.staged).toEqual(['src/one.ts']);
+    expect(snapshot.changedPaths.unstaged).toEqual(['src/two.ts']);
+    expect(readFileSync(index)).toEqual(bytes);
+    expect(identity()).toEqual(before);
+  });
+
   it('changes its fingerprint for clean, unstaged, staged, and untracked content', async () => {
     const clean = await inspectGitSnapshot(repository, {});
 

@@ -99,6 +99,111 @@ export function agentPermission(policy: RolePolicy): AgentPermission {
 }
 
 /**
+ * Who is making a call, as far as Hive authority is concerned. A Hive role comes from the agent's name: a built-in
+ * role name, or a configured custom agent's base role. Mode, description or hidden state never identify a role,
+ * because the operator can edit them.
+ */
+export type CallerAuthority =
+  | { kind: 'role'; role: BuiltInRole }
+  | { kind: 'native-subagent'; name: 'general' | 'explore' }
+  | { kind: 'unmanaged' };
+
+export function resolveCallerAuthority(agent: string, policy: Record<BuiltInRole, RolePolicy>, customAgents: Record<string, ResolvedCustomAgentConfig>): CallerAuthority {
+  if (Object.prototype.hasOwnProperty.call(policy, agent)) return { kind: 'role', role: agent as BuiltInRole };
+  if (agent === 'general' || agent === 'explore') return { kind: 'native-subagent', name: agent };
+  const custom = Object.prototype.hasOwnProperty.call(customAgents, agent) ? customAgents[agent] : undefined;
+  return custom ? { kind: 'role', role: custom.baseAgent } : { kind: 'unmanaged' };
+}
+
+export type CallDecision = { allowed: true } | { allowed: false; reason: string };
+
+/**
+ * Whether a caller may run a Hive tool. The host passes whether the calling session has a parent; that, not the
+ * agent's configured mode, decides child restrictions. Unmanaged agents keep their native access except for
+ * primary-only operations in child sessions.
+ */
+export function authorizeHiveCall(policy: Record<BuiltInRole, RolePolicy>, input: { tool: string; caller: CallerAuthority; isChild: boolean }): CallDecision {
+  const { tool, caller, isChild } = input;
+  if (caller.kind === 'native-subagent') return { allowed: false, reason: `The native ${caller.name} subagent has no Hive tool access; ${tool} is denied.` };
+  if (caller.kind === 'role' && !policy[caller.role].hiveTools.includes(tool)) return { allowed: false, reason: `${tool} is not granted to the ${caller.role} role.` };
+  if (isChild && PRIMARY_ONLY_TOOLS.includes(tool)) return { allowed: false, reason: `${tool} is a primary-only operation and is denied in child sessions.` };
+  return { allowed: true };
+}
+
+/**
+ * Native OpenCode v2 tools that change worktrees or session placement outside Hive's ownership of `.hive` worktrees.
+ * Names are the effective tool ids the host reports to `execute.before`, including Code Mode inner calls.
+ */
+export const NATIVE_LIFECYCLE_BYPASS_TOOLS = ['opencode_worktree_create', 'opencode_worktree_remove', 'opencode_session_move'] as const;
+
+/** The role permission that governs each native OpenCode v2 tool Hive guards, keyed by the host's tool name. */
+const NATIVE_TOOL_PERMISSION: Record<string, 'edit' | 'question' | 'task'> = {
+  edit: 'edit', write: 'edit', patch: 'edit', question: 'question', subagent: 'task',
+};
+
+/** Native tools whose decision depends on whether the calling session is a child. */
+export function nativeCallNeedsAncestry(tool: string): boolean {
+  return tool === 'question';
+}
+
+/** Orchestrators that are never valid delegation targets, whichever agent calls and however the operator sets their mode. */
+export const PRIMARY_ONLY_AGENTS: readonly string[] = ['hive-master', 'swarm-orchestrator', 'hive-builder'];
+
+/**
+ * The native-tool boundaries Hive owns on OpenCode v2, keyed by the host's actual tool names. A Hive role keeps the
+ * edit, question and delegation limits of its policy (delegation is checked against the requested `agent`) and
+ * cannot use native lifecycle tools that bypass Hive worktrees. No caller, managed or not, may delegate to a
+ * primary-only orchestrator. Native `general`/`explore` cannot delegate or ask, and `explore` cannot edit. No child
+ * session may ask the operator. Every other native call, and every call by an unmanaged agent outside those limits,
+ * is left to native permissions.
+ */
+export function authorizeNativeCall(policy: Record<BuiltInRole, RolePolicy>, input: { tool: string; toolInput: unknown; caller: CallerAuthority; isChild: boolean }): CallDecision {
+  const { tool, toolInput, caller, isChild } = input;
+  if (NATIVE_TOOL_PERMISSION[tool] === 'task') {
+    const requested = toolInput && typeof toolInput === 'object' ? (toolInput as { agent?: unknown }).agent : undefined;
+    if (typeof requested === 'string' && PRIMARY_ONLY_AGENTS.includes(requested)) {
+      return { allowed: false, reason: `${requested} is a primary-only orchestrator and cannot be a delegation target.` };
+    }
+  }
+  if (caller.kind === 'role') {
+    if ((NATIVE_LIFECYCLE_BYPASS_TOOLS as readonly string[]).includes(tool)) {
+      return { allowed: false, reason: `${tool} bypasses Hive worktree and session ownership; use the Hive worktree tools instead.` };
+    }
+    const key = NATIVE_TOOL_PERMISSION[tool];
+    const rule = key ? policy[caller.role].permission[key] : undefined;
+    const target = key === 'task' && toolInput && typeof toolInput === 'object' ? (toolInput as { agent?: unknown }).agent : undefined;
+    const effect = typeof rule === 'string' || rule === undefined
+      ? rule
+      : (typeof target === 'string' && Object.prototype.hasOwnProperty.call(rule, target) ? rule[target] : rule['*']);
+    if (effect === 'deny') {
+      return { allowed: false, reason: key === 'task'
+        ? `The ${caller.role} role cannot delegate to ${typeof target === 'string' ? target : 'that agent'}.`
+        : `The ${caller.role} role cannot use ${tool}.` };
+    }
+  }
+  if (caller.kind === 'native-subagent') {
+    const denied = ['subagent', 'question', ...(caller.name === 'explore' ? ['edit', 'write', 'patch'] : [])];
+    if (denied.includes(tool)) return { allowed: false, reason: `The native ${caller.name} subagent cannot use ${tool}.` };
+  }
+  if (isChild && tool === 'question') return { allowed: false, reason: 'The question tool is unavailable in child sessions; return the clarification to the parent instead.' };
+  return { allowed: true };
+}
+
+type V2Rule = { action: string; resource: string; effect: 'allow' | 'deny' | 'ask' };
+
+/** OpenCode v2 names the v1 `task` and `bash` permissions after its tools. */
+const V2_ACTION_NAMES: Record<string, string> = { task: 'subagent', bash: 'shell' };
+
+/** Translates an ordered v1-shaped permission object into the ordered rule list an OpenCode v2 agent carries. */
+export function toV2PermissionRules(permission: Record<string, unknown>): V2Rule[] {
+  return Object.entries(permission).flatMap(([key, value]): V2Rule[] => {
+    const action = V2_ACTION_NAMES[key] ?? key;
+    if (typeof value === 'string') return [{ action, resource: '*', effect: value as V2Rule['effect'] }];
+    return Object.entries(value as Record<string, V2Rule['effect']>).map(([resource, effect]) => ({ action, resource, effect }));
+  });
+}
+
+/**
  * Hive owns the permission boundaries of the native `general` and `explore` subagents: no Hive tools, delegation or
  * questions, skills allowed, and `explore` cannot edit. Operator rules for other permissions are preserved.
  */

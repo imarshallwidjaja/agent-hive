@@ -22,7 +22,7 @@ For a brand-new config, add the plugin to `opencode.json` or `opencode.jsonc`. O
 
 Restart OpenCode after changing plugins.
 
-In the current checkout, the package declares `@opencode/plugin` (pinned to the qualified v2 host release) and `@types/json-schema` as required dependencies, because its public type declarations import them. A TypeScript project that imports `oc-arkive` therefore type-checks after a plain install, with no extra packages and with `skipLibCheck` off. The cost is install size: a plain `npm install` of the package measured about 245 MB, up from about 122 MB. A v1 host never loads these dependencies at runtime. `effect` and `@opencode-ai/plugin` remain peer dependencies.
+In the current checkout, the package declares `@opencode/plugin`, `@opencode/client` (both pinned to the qualified v2 host release) and `@types/json-schema` as required dependencies, because its public type declarations import them. The plugin entry and the standalone reader at `oc-arkive/dist/v2/client.js` type-check after a plain install with `skipLibCheck` off. `effect` and `@opencode-ai/plugin` remain peer dependencies.
 
 ### Existing OpenCode configurations
 
@@ -38,6 +38,33 @@ The config hook intentionally mutates these OpenCode fields:
 - `subagent_depth`: sets the OpenCode value to `2`.
 - `skills.paths`: when Hive skills are materialized, registers the generated Hive skill path first, followed by resolved user-configured paths.
 - `experimental.primary_tools`: preserves existing entries and adds `question` and the primary-only Hive operations in the [access matrix](docs/HIVE-TOOLS.md#agent-tool-access).
+
+### OpenCode v2 (unreleased checkout)
+
+The same package loads on OpenCode v2 through its `effect` entry. v2 support is still being ported in this checkout: agents, skills, commands, the ordinary Hive tools, request-time instructions and execution guards are registered, while background orchestration and session-trace tools are not yet. No released version includes v2 support.
+
+The v2 entry takes options in the plugin list. The schema is [`schema/opencode-v2.options.schema.json`](schema/opencode-v2.options.schema.json):
+
+```json
+{
+  "plugins": [
+    { "package": "oc-arkive", "options": { "readTransport": "codemode", "server": { "url": "http://127.0.0.1:4096", "passwordEnv": "OPENCODE_SERVER_PASSWORD" } } }
+  ]
+}
+```
+
+- `readTransport`: `codemode` (default) runs `hive_repositories_status`, `hive_git_snapshot` and `hive_task_trace_content` inside Code Mode, which needs the `execute` tool. Every other Hive tool is a direct call. When an agent's permissions deny `execute`, Hive tells that agent its Code Mode reads are unavailable and logs a setup warning; it does not lift the denial. Set `direct` to make every Hive tool a direct call for configurations that deny `execute`.
+- `server`: the URL of the running v2 server and the name of the environment variable holding its password, for the session-history reads the in-process plugin API lacks. The password itself never goes into configuration. Hive creates its client on first use, and every read is bracketed by a check that the server answers with this activation's own identity for this directory, so a result read across a server restart, reload or port takeover is discarded; it never guesses a port or starts a server. Deciding whether a session is the caller, its child or descendant, or an unrelated session also reads the caller from the server, and rereads it before accepting the answer. Unknown keys, inline secrets and URLs with credentials fail activation.
+
+Hive keeps its state in the project checkout the host resolves for the session: a session opened in a subdirectory shares the checkout's `.hive` (manifest, constraints, features), and a session in a Hive task worktree maps back to the main checkout and its feature.
+
+Hive does not rewrite v2 configuration. Its agent registrations are defaults: your v2 settings for the default agent, an agent's description, mode, hidden state, model and variant, step limits and permission rules take precedence. On v1 the config hook behavior above is unchanged. What v2 configuration cannot change:
+
+- Each Hive role's instructions are added at request time to its ordinary turns and to its compaction and generate requests (the title request names no agent and is left alone). An agent you gave your own system prompt keeps it, followed by the Hive instructions. A `temperature` set for the agent in `agent_hive.json` is applied the same way, as a request option, because v2 agent registrations carry no temperature. Skill guidance follows the live catalog, including your configured sources. Auto-load guidance retains resolved catalog ids. For name-based requirements, the request's Hive Skill Name Lookup prefers a unique user skill over a bundled skill even when their folder ids differ. Multiple user entries with the same name are reported as ambiguous; configure or request an exact catalog id to select one. User content stays unchanged.
+- Commands render against your agents as they are when you run them, so a disabled agent drops out of a council or review roster and your description, model and variant are the ones shown. A command bound to an agent switches the session to that agent and to its effective model and variant, as native configured commands do.
+- Hive operations and native effects are checked when they run, from the agent's role (a built-in role name or a custom agent's base role) and the session's actual parent, never from its mode or description. A permission rule that allows a tool makes it visible but does not authorize a role to run a Hive operation it lacks, a primary-only operation in a child session, edits for read-only roles, delegation outside the role's targets, delegation to `hive-master`, `swarm-orchestrator` or `hive-builder` by any agent, or `question` in a child session. Native `general` and `explore` get no Hive tools. Hive roles cannot run the native `opencode_worktree_create`, `opencode_worktree_remove` or `opencode_session_move` tools, including from Code Mode. Agents Hive does not register keep native behavior, apart from the child-session limits.
+
+v2 limits subagent nesting with `experimental.subagent_depth` (default 1). Set it to `2` so a delegated Architect can call its Scout, reviewer and Helper agents; Hive does not set it for you. On v2 a subagent runs on the agent's model; a top-level session runs on the session or configured model, not the agent's registered model.
 
 ### Research integrations
 

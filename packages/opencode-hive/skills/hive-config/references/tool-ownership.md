@@ -8,7 +8,7 @@ Each piece of Hive state has one owning tool. If that tool is not exposed to you
 - The plugin registers ordered `agent.permission` rules for every Hive role: `'hive_*': 'deny'` first, then that role's exact allows. OpenCode applies agent rules after global rules and takes the last matching rule. A global `"*": "allow"` or a global `permission` entry therefore cannot re-grant a Hive tool the role denies.
 <!-- /hive-host -->
 <!-- hive-host opencode-v2 -->
-- OpenCode v2 configuration owns what each agent can see: the user's `permission` rules apply and the last matching rule wins. Hive registers role defaults and enforces each role's operations and child restrictions inside its own tools and the public execution hooks, so a native allow rule can make a forbidden Hive operation visible but never authorizes it.
+- OpenCode v2 configuration owns what each agent can see: the user's `permissions` rules apply and the last matching rule wins. Hive registers role defaults and enforces each role's operations and child restrictions inside its own tools and the public execution hooks, so a native allow rule can make a forbidden Hive operation visible but never authorizes it.
 <!-- /hive-host -->
 - Custom agents inherit their base role's tools and permissions exactly. Extra auto-load skills never add authority.
 <!-- hive-host opencode-v1 -->

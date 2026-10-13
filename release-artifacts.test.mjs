@@ -245,7 +245,7 @@ function resolveDeclarationReference(filePath, specifier) {
 }
 
 function assertPackedDeclarationGraph(packageRoot, packageJson) {
-  const entrypoints = declarationEntrypoints(packageJson);
+  const entrypoints = [...declarationEntrypoints(packageJson), 'dist/v2/client.d.ts'];
   assert.ok(entrypoints.length > 0, 'packed oc-arkive manifest should declare a public type entrypoint');
 
   const pending = entrypoints.map((entrypoint) => path.resolve(packageRoot, entrypoint));
@@ -319,12 +319,22 @@ function typeCheckPackedConsumer(tarballPath) {
         "import type { Plugin as V2Plugin } from '@opencode/plugin/effect';",
         "import type { Effect, Scope } from 'effect';",
         "import plugin from 'oc-arkive';",
+        "import { createVerifiedReadAccess, ReadAccessError } from 'oc-arkive/dist/v2/client.js';",
+        "import type { OpenCode } from '@opencode/client';",
         'export const server = plugin.server;',
         'type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;',
         'export const v1Server: Equal<typeof plugin.server, V1Plugin> = true;',
         'export const v2Context: Equal<Parameters<typeof plugin.effect>[0], V2Plugin.Context> = true;',
         'export const v2Result: Equal<ReturnType<typeof plugin.effect>, Effect.Effect<void, never, Scope.Scope>> = true;',
         'export const id: string = plugin.id;',
+        'const reader = createVerifiedReadAccess({ server: { url: "http://localhost:4096", username: "opencode" }, identity: { nonce: "activation" }, directory: "/project" });',
+        'type Client = ReturnType<typeof OpenCode.make>;',
+        'export const active: Equal<ReturnType<typeof reader.sessionActive>, ReturnType<Client["session"]["active"]>> = true;',
+        'export const messages: Equal<ReturnType<typeof reader.messageList>, ReturnType<Client["message"]["list"]>> = true;',
+        'export const relationship: Equal<Awaited<ReturnType<typeof reader.checkTarget>>["relationship"], "self" | "child" | "descendant" | "other"> = true;',
+        'export const error = new ReadAccessError("wrong_instance", "replaced");',
+        '// @ts-expect-error The connection remains typed, rather than erased to any.',
+        'createVerifiedReadAccess({ server: { url: 42, username: "opencode" }, identity: { nonce: "n" }, directory: "/project" });',
         '',
       ].join('\n')
     );
@@ -426,8 +436,9 @@ describe(`release ${releaseVersion} artifact contract on main`, () => {
     const { dependencies, devDependencies } = readJson('packages/opencode-hive/package.json');
     assert.deepEqual(
       {
-        '@opencode/client': devDependencies['@opencode/client'],
+        '@opencode/client': dependencies['@opencode/client'],
         '@opencode/plugin': dependencies['@opencode/plugin'],
+        '@opencode/schema': devDependencies['@opencode/schema'],
         '@types/json-schema': dependencies['@types/json-schema'],
         effect: devDependencies.effect,
         zod: devDependencies.zod,
@@ -435,6 +446,7 @@ describe(`release ${releaseVersion} artifact contract on main`, () => {
       {
         '@opencode/client': '2.0.26',
         '@opencode/plugin': '2.0.26',
+        '@opencode/schema': '2.0.26',
         '@types/json-schema': '7.0.15',
         effect: '4.0.0-rc.112',
         zod: '4.1.8',
@@ -442,6 +454,7 @@ describe(`release ${releaseVersion} artifact contract on main`, () => {
       'oc-arkive should build against the exact v2 host libraries and the Zod version that matches tool.schema'
     );
     assert.equal(devDependencies['@opencode/plugin'], undefined, '@opencode/plugin is a dependency, not a duplicate dev dependency');
+    assert.equal(devDependencies['@opencode/client'], undefined, '@opencode/client is a dependency, not a duplicate dev dependency');
   });
 
   it('distinguishes real hive-core module references from comments and ordinary strings', () => {
@@ -539,6 +552,7 @@ describe(`release ${releaseVersion} artifact contract on main`, () => {
       // The public declarations import @opencode/plugin and, through it, JSON Schema types, so an installed consumer
       // can only resolve them if the tarball's required dependencies bring them.
       assert.deepEqual(packedManifest.dependencies, {
+        '@opencode/client': '2.0.26',
         '@opencode/plugin': '2.0.26',
         '@types/json-schema': '7.0.15',
         'gray-matter': '^4.0.3',
@@ -569,6 +583,7 @@ describe(`release ${releaseVersion} artifact contract on main`, () => {
       assert.ok(executablePath.startsWith(`${packageRoot}${path.sep}`), 'packed executable path should stay inside the package');
       assert.ok(fs.existsSync(executablePath), `packed executable is missing: ${packedManifest.main}`);
       assertPackedFile(packedFiles, 'dist/v2/plugin.js', 'oc-arkive');
+      assertPackedFile(packedFiles, 'dist/v2/client.js', 'oc-arkive');
       const executableSource = fs.readFileSync(executablePath, 'utf8');
       for (const relativePath of [...packedFiles].filter((file) => file.startsWith('dist/') && file.endsWith('.js'))) {
         const unexpected = unbundledBareSpecifiers(fs.readFileSync(path.join(packageRoot, relativePath), 'utf8'), relativePath).filter(

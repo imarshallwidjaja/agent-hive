@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/imarshallwidjaja/agent-hive/main/packages/opencode-hive/schema/opencode-v2.options.schema.json",
+  "title": "oc-arkive OpenCode v2 Plugin Options",
+  "description": "The options object of the oc-arkive entry in an OpenCode v2 `plugins` list. OpenCode v1 ignores it; v1 configuration stays in ~/.config/opencode/agent_hive.json.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "readTransport": {
+      "type": "string",
+      "enum": ["codemode", "direct"],
+      "default": "codemode",
+      "description": "How agents reach hive_repositories_status, hive_git_snapshot and hive_task_trace_content. `codemode` runs them inside Code Mode and needs the `execute` tool; `direct` registers them as direct tool calls, for configurations that deny `execute`. Every other Hive tool is a direct call in both modes."
+    },
+    "server": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url"],
+      "description": "The running OpenCode v2 server, for the session reads the in-process plugin API does not offer. Each binding is verified against this activation's own identity before use. Without it those reads report that they are not configured.",
+      "properties": {
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "description": "Server base URL, for example http://127.0.0.1:4096. Must be http or https, without credentials, query or fragment."
+        },
+        "username": {
+          "type": "string",
+          "minLength": 1,
+          "default": "opencode",
+          "description": "Basic-auth user name the server expects."
+        },
+        "passwordEnv": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "description": "Name of the environment variable, in the server process, that holds the server password (for example OPENCODE_SERVER_PASSWORD). The password itself is never written in configuration."
+        }
+      }
+    }
+  }
+}

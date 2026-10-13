@@ -22,6 +22,7 @@
       "name": "oc-arkive",
       "version": "4.2.0",
       "dependencies": {
+        "@opencode/client": "2.0.26",
         "@opencode/plugin": "2.0.26",
         "@types/json-schema": "7.0.15",
         "gray-matter": "^4.0.3",
@@ -29,7 +30,7 @@
       "devDependencies": {
         "@opencode-ai/plugin": "^1.18.30",
         "@opencode-ai/sdk": "^0.13.0",
-        "@opencode/client": "2.0.26",
+        "@opencode/schema": "2.0.26",
         "@types/bun": "^1.2.0",
         "@types/node": "^20.0.0",
         "effect": "4.0.0-rc.112",
