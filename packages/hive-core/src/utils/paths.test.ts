@@ -18,7 +18,15 @@ import {
   getGlobalSessionsPath,
   getHivePath,
   getProjectContextPath,
+  getFeaturePath,
 } from "./paths";
+import {
+  NATIVE_OBSERVATION_OWNERS,
+  getNativeBackgroundJobsPath,
+  getNativeFeatureSessionsPath,
+  getNativeSessionsPath,
+  isNativeObservationOwner,
+} from "../native-observations";
 
 const TEST_DIR = "/tmp/hive-core-test-" + process.pid;
 
@@ -511,5 +519,40 @@ describe("Atomic + Locked JSON Utilities", () => {
     it("returns the project-level context namespace", () => {
       expect(getProjectContextPath("/my/project")).toBe(path.join("/my/project", ".hive", "context"));
     });
+  });
+});
+
+describe("native observation paths", () => {
+  const root = "/my/project";
+
+  it("offers a closed set of owners and rejects everything else", () => {
+    expect([...NATIVE_OBSERVATION_OWNERS]).toEqual(["opencode-v1", "opencode-v2"]);
+    expect(isNativeObservationOwner("opencode-v2")).toBe(true);
+    for (const value of ["", "OpenCode-v1", "../escape", "opencode-v3", undefined, null, 2]) {
+      expect(isNativeObservationOwner(value)).toBe(false);
+    }
+    expect(() => getNativeSessionsPath(root, "../escape" as never)).toThrow("Unknown native observation owner");
+    expect(() => getNativeBackgroundJobsPath(root, "" as never)).toThrow("Unknown native observation owner");
+    expect(() => getNativeFeatureSessionsPath(root, "feature", "x" as never)).toThrow("Unknown native observation owner");
+  });
+
+  it("keeps the long-standing v1 locations", () => {
+    expect(getNativeSessionsPath(root, "opencode-v1")).toBe(getGlobalSessionsPath(root));
+    expect(getNativeBackgroundJobsPath(root, "opencode-v1")).toBe(path.join(root, ".hive", "background-jobs.json"));
+  });
+
+  it("nests v2 stores under their own runtime directory", () => {
+    expect(getNativeSessionsPath(root, "opencode-v2")).toBe(path.join(root, ".hive", "runtime", "opencode-v2", "sessions.json"));
+    expect(getNativeBackgroundJobsPath(root, "opencode-v2")).toBe(path.join(root, ".hive", "runtime", "opencode-v2", "background-jobs.json"));
+  });
+
+  it("derives feature projections from the resolved feature directory, including indexed prefixes", () => {
+    const projectRoot = path.join(TEST_DIR, "native-paths");
+    fs.mkdirSync(path.join(projectRoot, ".hive", "features", "07_indexed"), { recursive: true });
+    const featurePath = getFeaturePath(projectRoot, "indexed");
+    expect(featurePath).toBe(path.join(projectRoot, ".hive", "features", "07_indexed"));
+    expect(getNativeFeatureSessionsPath(projectRoot, "indexed", "opencode-v1")).toBe(path.join(featurePath, "sessions.json"));
+    expect(getNativeFeatureSessionsPath(projectRoot, "indexed", "opencode-v2")).toBe(path.join(featurePath, "runtime", "opencode-v2", "sessions.json"));
+    fs.rmSync(projectRoot, { recursive: true, force: true });
   });
 });

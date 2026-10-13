@@ -341,4 +341,58 @@ describe('BackgroundJobService', () => {
     expect(service.listScoped({}, { includeArchived: true })).toHaveLength(1);
     expect(() => service.markIgnored('missing', 'reason')).toThrow('Background job not found');
   });
+
+  describe('native observation owners', () => {
+    const V2_BOARD_PATH = path.join(TEST_DIR, '.hive', 'runtime', 'opencode-v2', 'background-jobs.json');
+    let v2: BackgroundJobService;
+
+    beforeEach(() => {
+      v2 = new BackgroundJobService(TEST_DIR, 'opencode-v2');
+    });
+
+    it('defaults to the v1 owner and rejects unknown owners at construction', () => {
+      expect(service.owner).toBe('opencode-v1');
+      expect(v2.owner).toBe('opencode-v2');
+      expect(() => new BackgroundJobService(TEST_DIR, '../escape' as never)).toThrow('Unknown native observation owner');
+    });
+
+    it('writes the v2 board under its own runtime directory', () => {
+      const record = v2.registerLaunch({
+        taskId: 'task-v2',
+        sessionId: 'session-v2',
+        agentName: 'forager-worker',
+        scope: { parentSessionId: 'parent-1' },
+      });
+
+      expect(record.alias).toBe('parent-1:job-1');
+      expect(JSON.parse(fs.readFileSync(V2_BOARD_PATH, 'utf8')).jobs).toHaveLength(1);
+      expect(fs.existsSync(BOARD_PATH)).toBe(false);
+      expect(fs.readdirSync(path.dirname(V2_BOARD_PATH)).filter((name) => name.endsWith('.lock'))).toEqual([]);
+    });
+
+    it('never imports legacy v1 jobs into a missing v2 board and reads without creating it', () => {
+      registerJob(service);
+      const before = fs.readFileSync(BOARD_PATH, 'utf8');
+
+      expect(v2.listScoped({}, { includeArchived: true })).toEqual([]);
+      expect(v2.resolve('parent-1:job-1')).toBeUndefined();
+      expect(fs.existsSync(path.join(TEST_DIR, '.hive', 'runtime'))).toBe(false);
+
+      expect(() => v2.markIgnored('parent-1:job-1', 'wrong store')).toThrow('Background job not found');
+      expect(fs.existsSync(V2_BOARD_PATH)).toBe(false);
+      expect(fs.readFileSync(BOARD_PATH, 'utf8')).toBe(before);
+    });
+
+    it('keeps equal aliases and task IDs isolated between owners', () => {
+      registerJob(service);
+      registerJob(v2);
+
+      v2.markIgnored('parent-1:job-1', 'v2 only');
+
+      expect(v2.resolve('parent-1:job-1')?.archiveReason).toBe('ignored');
+      expect(service.resolve('parent-1:job-1')?.archivedAt).toBeUndefined();
+      expect(service.listScoped()).toHaveLength(1);
+      expect(v2.listScoped()).toHaveLength(0);
+    });
+  });
 });

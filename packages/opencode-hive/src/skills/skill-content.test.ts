@@ -1388,6 +1388,11 @@ describe('skill content', () => {
         expect(layout).toContain('repositories.json');
         expect(layout).toContain('background-jobs.json');
 
+        new BackgroundJobService(root, 'opencode-v2').registerLaunch({ taskId: 'probe', sessionId: 'probe', agentName: 'forager-worker' });
+        expect(existsSync(path.join(hiveDir, 'runtime', 'opencode-v2', 'background-jobs.json'))).toBe(true);
+        expect(layout).toContain('OpenCode v2 uses the same file names under `.hive/runtime/opencode-v2/`');
+        expect(layout).toContain('An absent v2 store is empty, not a lost copy of v1');
+
         expect(getNextIndexedFeatureDirectoryName(root, 'my-feature')).toBe('01_my-feature');
         expect(layout).toContain('<NN>_<feature-name>');
         expect(reference('../SKILL.md')).toContain('`01_my-feature`');
@@ -1510,6 +1515,7 @@ describe('skill content', () => {
     expect(template).toContain('there is no extra role runtime authorization');
     expect(template).toContain('Error notices are not empty/current catalogs');
     expect(template).toContain('`.hive/sessions.json` is canonical global session truth');
+    expect(template).toContain('`.hive/runtime/opencode-v2/sessions.json`; an owner\'s missing store is never filled from another\'s');
     expect(template).toContain('Never replay historical prompt text as a new assignment');
     expect(template).toContain('Plugin restart does not continue old live workers');
     expect(template).toContain('do not follow a stored former root as catalog truth');

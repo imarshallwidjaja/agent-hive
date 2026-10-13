@@ -33,7 +33,7 @@ Direct editor saves are unmanaged: they bypass context metadata revisions and mu
 
 ### Session standing constraints
 
-Run **Hive: Inspect Session Standing Constraints** from the command palette and explicitly choose a session. The picker lists only sessions with constraints from the project's authoritative session registry, with agent, feature, kind, activity and ID for disambiguation. It does not infer an active session or use feature-local mirrors.
+Run **Hive: Inspect Session Standing Constraints** from the command palette and explicitly choose a session. The picker lists only sessions with constraints from the project's authoritative session registry, with agent, feature, kind, activity and ID for disambiguation. It reads the OpenCode v1 and OpenCode v2 registries separately, so the same session ID can appear once per host and each entry opens from its own host's registry; an unreadable registry is reported without hiding the other. It does not infer an active session or use feature-local mirrors.
 
 The read-only text document shows the selected identity and scope, stable entry IDs, verbatim constraint text, revision, and usage against 8,000 characters. It omits directive prompts, paths, and recovery metadata. Existing documents refresh on `.hive` changes or **Hive: Refresh**. Manage constraints through OpenCode; the inspector has no editing controls.
 
@@ -48,7 +48,7 @@ Expand a feature's **Tasks** group and a task to open its `spec.md`, **Successor
 Watches `.hive/` for changes and refreshes automatically.
 
 ### Background Jobs
-Viewer + limited operator archive tree for `.hive/background-jobs.json`. It shows scoped background job state written by `oc-arkive`, including runtime state and coordination metadata. Use the inline **Archive Background Job** action on an archiveable job row to move it to the collapsed Ignored group without cancelling or killing any running process.
+Viewer + limited operator archive tree for the background boards `.hive/background-jobs.json` (OpenCode v1) and `.hive/runtime/opencode-v2/background-jobs.json` (OpenCode v2). It shows scoped background job state written by `oc-arkive`, including runtime state and coordination metadata. Rows from the v2 board are marked `OpenCode v2`, and every row action (open, archive) targets only its own board; an unreadable board is reported without hiding the other. Use the inline **Archive Background Job** action on an archiveable job row to move it to the collapsed Ignored group without cancelling or killing any running process.
 
 ### Tracked Repositories
 Viewer-only tree for the optional Hive-managed project-local repository manifest in `.hive/repositories.json`. It shows the project-relative repositories that `oc-arkive` uses for manifest-backed workspaces.

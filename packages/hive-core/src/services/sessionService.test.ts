@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { SessionService, SessionContinuityError, STANDING_CONSTRAINTS_MAX_CHARS } from './sessionService.js';
 import { getGlobalSessionsPath } from '../utils/paths.js';
+import { getNativeFeatureSessionsPath, getNativeSessionsPath } from '../native-observations.js';
 
 const TEST_DIR = '/tmp/hive-core-sessionservice-test-' + process.pid;
 const PROJECT_ROOT = TEST_DIR;
@@ -716,6 +717,119 @@ describe('SessionService', () => {
       expect(fs.statSync(globalPath()).isDirectory()).toBe(true);
       expect(backups()).toEqual([]);
       expect(warn).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('native observation owners', () => {
+    let v2: SessionService;
+    const v1Path = () => getNativeSessionsPath(PROJECT_ROOT, 'opencode-v1');
+    const v2Path = () => getNativeSessionsPath(PROJECT_ROOT, 'opencode-v2');
+
+    beforeEach(() => {
+      v2 = new SessionService(PROJECT_ROOT, 'opencode-v2');
+    });
+
+    it('defaults to the v1 owner and rejects unknown owners at construction', () => {
+      expect(service.owner).toBe('opencode-v1');
+      expect(v2.owner).toBe('opencode-v2');
+      expect(() => new SessionService(PROJECT_ROOT, '../escape' as never)).toThrow('Unknown native observation owner');
+    });
+
+    it('writes the v2 index under its own runtime directory without touching v1', () => {
+      v2.trackGlobal('sess-v2', { agent: 'hive-master', projectRoot: PROJECT_ROOT });
+
+      expect(v2Path()).toBe(path.join(PROJECT_ROOT, '.hive', 'runtime', 'opencode-v2', 'sessions.json'));
+      expect(JSON.parse(fs.readFileSync(v2Path(), 'utf8')).sessions[0]).toMatchObject({ sessionId: 'sess-v2', agent: 'hive-master', projectRoot: PROJECT_ROOT });
+      expect(fs.existsSync(v1Path())).toBe(false);
+      expect(fs.readdirSync(path.dirname(v2Path())).filter((name) => name.endsWith('.lock'))).toEqual([]);
+    });
+
+    it('never imports legacy v1 sessions into a missing v2 store and reads without creating it', () => {
+      service.trackGlobal('legacy', { standingConstraints: 'Legacy rule', featureName: undefined });
+      const before = fs.readFileSync(v1Path(), 'utf8');
+
+      expect(v2.listGlobal()).toEqual([]);
+      expect(v2.getGlobal('legacy')).toBeUndefined();
+      expect(v2.readStandingConstraints('legacy').entries).toEqual([]);
+      expect(v2.findFeatureBySession('legacy')).toBeNull();
+
+      expect(fs.existsSync(path.join(PROJECT_ROOT, '.hive', 'runtime'))).toBe(false);
+      expect(fs.readFileSync(v1Path(), 'utf8')).toBe(before);
+    });
+
+    it('keeps equal session IDs, routes and constraints isolated per owner', () => {
+      setupFeature('feature-a');
+      setupFeature('feature-b');
+      service.setFeatureRoute('same', 'feature-a');
+      service.addStandingConstraint('same', 'v1 rule');
+      v2.setFeatureRoute('same', 'feature-b');
+      v2.addStandingConstraint('same', 'v2 rule');
+
+      expect(service.getGlobal('same')).toMatchObject({ featureName: 'feature-a', standingConstraints: 'v1 rule' });
+      expect(v2.getGlobal('same')).toMatchObject({ featureName: 'feature-b', standingConstraints: 'v2 rule' });
+
+      service.clearFeatureRoute('same');
+      expect(service.getGlobal('same')?.featureName).toBeUndefined();
+      expect(v2.getGlobal('same')?.featureName).toBe('feature-b');
+
+      v2.snapshotChildSession('same', 'child', { agent: 'forager-worker' });
+      expect(v2.getGlobal('child')).toMatchObject({ parentSessionId: 'same', standingConstraints: 'v2 rule' });
+      expect(service.getGlobal('child')).toBeUndefined();
+    });
+
+    it('stores feature projections beside the resolved feature directory, per owner', () => {
+      setupFeature('03_indexed-feature', 'indexed-feature');
+
+      service.bindFeature('sess', 'indexed-feature');
+      v2.bindFeature('sess', 'indexed-feature');
+
+      const featurePath = path.join(TEST_DIR, '.hive', 'features', '03_indexed-feature');
+      expect(getNativeFeatureSessionsPath(PROJECT_ROOT, 'indexed-feature', 'opencode-v1')).toBe(path.join(featurePath, 'sessions.json'));
+      expect(getNativeFeatureSessionsPath(PROJECT_ROOT, 'indexed-feature', 'opencode-v2')).toBe(path.join(featurePath, 'runtime', 'opencode-v2', 'sessions.json'));
+      expect(JSON.parse(fs.readFileSync(path.join(featurePath, 'runtime', 'opencode-v2', 'sessions.json'), 'utf8')).sessions).toHaveLength(1);
+      expect(service.list('indexed-feature').map((session) => session.sessionId)).toEqual(['sess']);
+      expect(v2.list('indexed-feature').map((session) => session.sessionId)).toEqual(['sess']);
+
+      v2.remove('indexed-feature', 'sess');
+      expect(v2.list('indexed-feature')).toEqual([]);
+      expect(service.list('indexed-feature').map((session) => session.sessionId)).toEqual(['sess']);
+      expect(fs.existsSync(path.join(TEST_DIR, '.hive', 'features', 'indexed-feature'))).toBe(false);
+    });
+
+    it('resets only the corrupt owner store and preserves a backup beside it', () => {
+      const warn = spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        service.trackGlobal('healthy-v1', { agent: 'hive-master' });
+        fs.mkdirSync(path.dirname(v2Path()), { recursive: true });
+        fs.writeFileSync(v2Path(), '{"sessions": [');
+
+        expect(v2.getGlobal('anything')).toBeUndefined();
+
+        const backups = fs.readdirSync(path.dirname(v2Path())).filter((name) => name.startsWith('sessions.json.corrupt-'));
+        expect(backups).toHaveLength(1);
+        expect(fs.readFileSync(path.join(path.dirname(v2Path()), backups[0]!), 'utf8')).toBe('{"sessions": [');
+        expect(warn.mock.calls[0]![0]).toContain(v2Path());
+        expect(service.getGlobal('healthy-v1')?.agent).toBe('hive-master');
+        expect(fs.readdirSync(path.dirname(v1Path())).some((name) => name.startsWith('sessions.json.corrupt-'))).toBe(false);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('leaves a healthy v2 store readable while the v1 store is corrupt', () => {
+      const warn = spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        v2.trackGlobal('healthy-v2', { agent: 'hive-master' });
+        fs.mkdirSync(path.dirname(v1Path()), { recursive: true });
+        fs.writeFileSync(v1Path(), '{');
+        const v2Before = fs.readFileSync(v2Path(), 'utf8');
+
+        expect(v2.getGlobal('healthy-v2')?.agent).toBe('hive-master');
+        expect(fs.readFileSync(v1Path(), 'utf8')).toBe('{');
+        expect(fs.readFileSync(v2Path(), 'utf8')).toBe(v2Before);
+      } finally {
+        warn.mockRestore();
+      }
     });
   });
 });

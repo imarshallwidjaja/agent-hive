@@ -8,8 +8,9 @@ Everything below is relative to the project root, the directory that holds `.hiv
 .hive/
 ├── agent-hive.override.json   optional project model/variant override (see configuration.md)
 ├── repositories.json          optional multi-repo manifest
-├── sessions.json              session bindings, selected feature route, session constraints
-├── background-jobs.json       background board: observational bookkeeping only
+├── sessions.json              session bindings, selected feature route, session constraints (OpenCode v1)
+├── background-jobs.json       background board: observational bookkeeping only (OpenCode v1)
+├── runtime/opencode-v2/       OpenCode v2 owner: sessions.json, background-jobs.json
 ├── context/                   project-scope managed context
 │   ├── index.json             revisioned control index
 │   └── <name>.md
@@ -22,6 +23,7 @@ Everything below is relative to the project root, the directory that holds `.hiv
 │       ├── comments/plan.json plan review threads (`comments.json` is a legacy fallback)
 │       ├── constraints.json   feature-scoped operator constraints
 │       ├── sessions.json      feature-local navigation projection, not canonical
+│       ├── runtime/opencode-v2/sessions.json  the same projection for the OpenCode v2 owner
 │       ├── context/           feature-scope managed context (index.json + <name>.md)
 │       ├── archive/context/   archived feature context
 │       └── tasks/
@@ -82,6 +84,8 @@ Lock files sit beside the file they guard as `<file>.lock` and hold the holder's
 `.hive/repositories.json` holds `{ "schemaVersion": 1, "repositories": [{ "id": "api", "path": "./api" }] }`. Paths are relative to and contained by the project root. Single-repository projects need no manifest. Manage it with `hive_repositories_status`, `hive_repositories_discover`, and `hive_repositories_update`. Global `repositoryRoot` and `repositories` in `agent_hive.json` are migration-only legacy fields.
 
 ## Sessions and constraints
+
+Each native host owns separate stores, so identical session IDs or job aliases under different owners are different records. `.hive/sessions.json` and `.hive/background-jobs.json` belong to OpenCode v1; OpenCode v2 uses the same file names under `.hive/runtime/opencode-v2/`. An absent v2 store is empty, not a lost copy of v1. Read the store of the host you are investigating.
 
 `.hive/sessions.json` holds canonical session bindings: selected feature route (`featureName`, where explicit `null` means featureless), parent session, task folder, and session constraints with a `standingConstraintsRevision`. Feature constraints live in the feature's `constraints.json`. `sessions.json` is not a trace source.
 

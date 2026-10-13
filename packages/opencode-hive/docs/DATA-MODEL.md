@@ -6,8 +6,9 @@
 .hive/
 ├── agent-hive.override.json   # Optional project-local agent model/variant overrides
 ├── repositories.json          # Optional Hive-managed project-local multi-repo manifest
-├── sessions.json              # Canonical session bindings and session constraints
-├── background-jobs.json       # Background board (observational bookkeeping)
+├── sessions.json              # Canonical session bindings and session constraints (OpenCode v1 owner)
+├── background-jobs.json       # Background board (observational bookkeeping, OpenCode v1 owner)
+├── runtime/opencode-v2/       # OpenCode v2 owner: sessions.json and background-jobs.json
 ├── context/                    # Project-wide managed knowledge
 │   ├── index.json              # Schema-v1 operational index
 │   └── {name}.md               # Raw Markdown with discovery frontmatter
@@ -19,7 +20,8 @@
         ├── APPROVED             # Plan approval marker
         ├── comments/plan.json   # Plan review threads
         ├── constraints.json     # Optional feature-scoped operator directives
-        ├── sessions.json        # Optional feature-local navigation projection
+        ├── sessions.json        # Optional feature-local navigation projection (OpenCode v1 owner)
+        ├── runtime/opencode-v2/sessions.json # Optional projection for the OpenCode v2 owner
         ├── context/             # Persistent knowledge files
         │   ├── index.json       # Schema-v1 operational index
         │   ├── .managed-mutation-pending.json # Present only during publication/recovery
@@ -61,7 +63,7 @@ Task status and reports are the execution record. `hive_task_update({ report })`
 
 `hive_task_update({ handoff })` replaces `tasks/{task}/handoff.md` with a nonblank successor note of at most 2048 UTF-8 bytes, independent of status or report updates. A later remediation run can replace it; omitted handoff leaves it unchanged. The result includes `handoffPath` when written; a failed handoff publication identifies the `handoff` stage, path, and `handoffWritten` flag.
 
-`.hive/background-jobs.json` is the background board: acknowledgement, archive, and notification bookkeeping. It observes the originating native parent and call, not the current feature or agent. Stale and unknown observations stay visible. It does not couple to execution, worktree, or task status. Archive, reconcile, and ignore do not stop execution.
+`.hive/background-jobs.json` is the background board: acknowledgement, archive, and notification bookkeeping. It observes the originating native parent and call, not the current feature or agent. Stale and unknown observations stay visible. It does not couple to execution, worktree, or task status. Archive, reconcile, and ignore do not stop execution. The board above belongs to the OpenCode v1 owner; the OpenCode v2 owner keeps its own at `.hive/runtime/opencode-v2/background-jobs.json`. Owners never share records, so equal aliases in two boards are different jobs.
 
 The board file has `schemaVersion: 1`, `jobs: BackgroundJobRecord[]`, and optional `updatedAt`. Each job stores native `taskId` and `sessionId`, required `alias`, agent identity, timestamps, `runtimeState` (`running`, `completed`, `error`, `cancelled`, or `unknown`), and optional `callId`, scope, notification, cancellation, reconciliation, and archive fields. Reconciled and ignored jobs remain stored but are hidden from the default background status view.
 
@@ -321,7 +323,7 @@ Manual-task specs derive their sections from structured metadata and may include
 
 ## Session Metadata
 
-Canonical session bindings and session-scoped constraint entries live in project `.hive/sessions.json`. Feature-local `sessions.json` files are projections for navigation and cannot replace missing canonical provenance. A selected feature route is stored as `featureName`; explicit `null` means featureless, while an absent field leaves route fallback available. Feature-scoped constraints live separately in `.hive/features/{feature-directory}/constraints.json` as `{ "entries": [{ "id": "constraint-...", "text": "..." }], "revision": 1 }`.
+Canonical session bindings and session-scoped constraint entries live in the owner's project session index: `.hive/sessions.json` for OpenCode v1, `.hive/runtime/opencode-v2/sessions.json` for OpenCode v2. A missing v2 index starts empty and never imports v1 sessions; no v1 file is moved, copied or deleted. Feature-local `sessions.json` files (`runtime/opencode-v2/sessions.json` inside the feature directory for v2) are projections for navigation and cannot replace missing canonical provenance. A selected feature route is stored as `featureName`; explicit `null` means featureless, while an absent field leaves route fallback available. Feature-scoped constraints live separately in `.hive/features/{feature-directory}/constraints.json` as `{ "entries": [{ "id": "constraint-...", "text": "..." }], "revision": 1 }`.
 
 ```json
 {
@@ -349,7 +351,7 @@ Canonical session bindings and session-scoped constraint entries live in project
 
 `standingConstraintEntries` holds independently addressable verbatim directives. `standingConstraintsRevision` provides optimistic concurrency for targeted edits and explicit whole-register clears. `standingConstraints` is the rendered aggregate injected into delegated task and worker prompts, capped at 8000 UTF-16 code units. String-only records written by earlier versions are read as one deterministic `legacy` entry and migrate on the next mutation.
 
-When `.hive/sessions.json` exists but does not parse as JSON (including an empty or all-NUL file), the next session read or update reads it again while holding `sessions.json.lock` and, if it is still invalid, copies it unchanged to a new sibling `sessions.json.corrupt-<UTC timestamp>` file before replacing it with `{ "sessions": [] }`. A warning names both paths. Saved session routes and session constraints start fresh; feature-scoped constraints are separate files and are unaffected. Other read errors, such as permissions or a directory at that path, are reported without a reset.
+When an owner's session index (`.hive/sessions.json` for v1) exists but does not parse as JSON (including an empty or all-NUL file), the next session read or update reads it again while holding `sessions.json.lock` and, if it is still invalid, copies it unchanged to a new sibling `sessions.json.corrupt-<UTC timestamp>` file before replacing it with `{ "sessions": [] }`. A warning names both paths. Saved session routes and session constraints start fresh; feature-scoped constraints are separate files and are unaffected. Other read errors, such as permissions or a directory at that path, are reported without a reset. A damaged index resets only its own owner's store.
 
 Task `status.json` records status, summary, and blocker from `hive_task_update`; report history and the latest report are Markdown files under the task directory. Stale generated-assignment keys in older JSON are ignored.
 

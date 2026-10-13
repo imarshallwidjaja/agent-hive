@@ -2493,6 +2493,18 @@ describe('README.md documentation', () => {
     }
   });
 
+  it('documents owner-selected native session and background stores consistently', () => {
+    for (const content of [agentsContent, dataModelContent]) {
+      expect(content).toContain('.hive/runtime/opencode-v2/');
+      expect(content).toContain('runtime/opencode-v2/sessions.json');
+    }
+    expect(agentsContent).toContain('never fake it to redirect storage, import one owner\'s records into another, or accept a path in place of an owner');
+    expect(dataModelContent).toContain('A missing v2 index starts empty and never imports v1 sessions');
+    expect(dataModelContent).toContain('equal aliases in two boards are different jobs');
+    expect(vscodeReadmeContent).toContain('`.hive/runtime/opencode-v2/background-jobs.json` (OpenCode v2)');
+    expect(vscodeReadmeContent).toContain('every row action (open, archive) targets only its own board');
+  });
+
   it('keeps removed assignment-artifact authority out of active prompts and docs', () => {
     for (const content of [
       HIVE_BUILDER_PROMPT,

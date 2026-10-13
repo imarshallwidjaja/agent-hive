@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import * as fs from 'fs';
 import * as path from 'path';
-import { resetVscodeTestState, vscodeTestDouble } from '../test/vscodeTestDouble.js';
+import { resetVscodeTestState, vscodeTestDouble, vscodeTestState } from '../test/vscodeTestDouble.js';
 
 mock.module('vscode', () => vscodeTestDouble);
 
-const { BackgroundJobsProvider } = await import('./backgroundJobsProvider');
+const { BackgroundJobsProvider, archiveBackgroundJobItem, readBackgroundJobTarget } = await import('./backgroundJobsProvider');
+const { BackgroundJobService } = await import('hive-core');
 
 const TEST_ROOT_BASE = `/tmp/vscode-hive-background-jobs-test-${process.pid}`;
 
@@ -60,7 +61,7 @@ describe('BackgroundJobsProvider', () => {
     expect((jobs[0] as any).tooltip).toContain('task-native-1');
     expect((jobs[0] as any).command).toMatchObject({
       command: 'hive.openBackgroundJobInBoard',
-      arguments: [path.join(testRoot, '.hive', 'background-jobs.json'), 'task-07'],
+      arguments: ['opencode-v1', 'task-07'],
     });
   });
 
@@ -212,7 +213,7 @@ describe('BackgroundJobsProvider', () => {
 
     expect((jobs[0] as any).command).toMatchObject({
       command: 'hive.openBackgroundJobInBoard',
-      arguments: [path.join(testRoot, '.hive', 'background-jobs.json'), 'review-job'],
+      arguments: ['opencode-v1', 'review-job'],
     });
   });
 
@@ -273,9 +274,263 @@ describe('BackgroundJobsProvider', () => {
     expect(groups.map(item => item.label)).toEqual(['Ignored']);
   });
 
-  function writeJobs(data: unknown): void {
-    fs.mkdirSync(path.join(testRoot, '.hive'), { recursive: true });
-    fs.writeFileSync(path.join(testRoot, '.hive', 'background-jobs.json'), JSON.stringify(data, null, 2));
+  describe('native observation owners', () => {
+    it('keeps v1 rows unlabeled in the row but names the host in the tooltip', async () => {
+      writeJobs({ schemaVersion: 1, jobs: [job({ alias: 'legacy' })] });
+      const provider = new BackgroundJobsProvider(testRoot);
+
+      const jobs = await provider.getChildren((await provider.getChildren())[0]);
+
+      expect((jobs[0] as any).owner).toBe('opencode-v1');
+      expect((jobs[0] as any).description).toBe('forager-worker · running · Run worker');
+      expect((jobs[0] as any).tooltip).toContain('Host: OpenCode v1');
+    });
+
+    it('shows v2 jobs in the same groups with owner text, tooltip and an owner-based open command', async () => {
+      writeJobs({ schemaVersion: 1, jobs: [job({ alias: 'native-1', agentName: 'scout-researcher' })] }, 'opencode-v2');
+      const provider = new BackgroundJobsProvider(testRoot);
+
+      const groups = await provider.getChildren();
+      const jobs = await provider.getChildren(groups[0]);
+      const item = jobs[0] as any;
+
+      expect(groups.map(group => group.label)).toEqual(['Running']);
+      expect(item.owner).toBe('opencode-v2');
+      expect(item.description).toBe('scout-researcher · running · Run worker · OpenCode v2');
+      expect(item.tooltip).toContain('Host: OpenCode v2');
+      expect(item.command).toMatchObject({ command: 'hive.openBackgroundJobInBoard', arguments: ['opencode-v2', 'native-1'] });
+      expect(item.copyCommand.arguments).toEqual(['native-1']);
+    });
+
+    it('keeps equal aliases from different owners as separate rows that carry their own owner', async () => {
+      writeJobs({ schemaVersion: 1, jobs: [job({ alias: 'parent:job-1', taskId: 'v1-task' })] });
+      writeJobs({ schemaVersion: 1, jobs: [job({ alias: 'parent:job-1', taskId: 'v2-task' })] }, 'opencode-v2');
+      const provider = new BackgroundJobsProvider(testRoot);
+
+      const groups = await provider.getChildren();
+      const jobs = await provider.getChildren(groups[0]) as any[];
+
+      expect(groups.map(group => group.label)).toEqual(['Running']);
+      expect((groups[0] as any).description).toBe('2 job(s)');
+      expect(jobs.map(item => [item.owner, item.taskId, item.alias])).toEqual([
+        ['opencode-v1', 'v1-task', 'parent:job-1'],
+        ['opencode-v2', 'v2-task', 'parent:job-1'],
+      ]);
+    });
+
+    it('reports an unreadable owner board without hiding the healthy one', async () => {
+      writeJobs('{ not json', 'opencode-v2');
+      writeJobs({ schemaVersion: 1, jobs: [job({ alias: 'healthy' })] });
+      const provider = new BackgroundJobsProvider(testRoot);
+
+      const children = await provider.getChildren();
+
+      expect(children.map(item => item.label)).toEqual(['Running', 'Unable to read background jobs']);
+      expect((children[1] as any).description).toBe('Invalid .hive/runtime/opencode-v2/background-jobs.json');
+      expect((children[1] as any).command.arguments).toEqual([boardFile('opencode-v2')]);
+      expect((await provider.getChildren(children[0])).map(item => item.label)).toEqual(['healthy']);
+    });
+
+    for (const [damage, rows] of [
+      ['a null row', [null]],
+      ['a row without an alias', [{ alias: undefined, taskId: 'no-alias' }]],
+      ['a non-string alias', [{ alias: 7 }]],
+      ['an empty alias', [{ alias: '' }]],
+      ['an array row', [['job-1']]],
+      ['duplicate aliases', [{ alias: 'twin', taskId: 'a' }, { alias: 'twin', taskId: 'b' }]],
+      // Row text and tooltip interpolate these fields; JSON objects with a non-callable toString cannot be turned into text.
+      ['unprintable row text', [{ alias: 'poisoned', agentName: { toString: 0 } }]],
+      ['an unprintable description', [{ alias: 'poisoned', description: { toString: 0 } }]],
+      ['an unprintable runtime state', [{ alias: 'poisoned', runtimeState: { toString: 0 } }]],
+      ['an unprintable tooltip task ID', [{ alias: 'poisoned', taskId: { toString: null } }]],
+      ['an unprintable cancel reason', [{ alias: 'poisoned', cancelReason: { toString: 0 } }]],
+      ['an unprintable result summary', [{ alias: 'poisoned', resultSummary: { toString: 0 } }]],
+      ['an unprintable scope feature', [{ alias: 'poisoned', scope: { feature: { toString: 0 } } }]],
+      ['an unprintable scope task', [{ alias: 'poisoned', scope: { task: { toString: null } } }]],
+      ['a non-object scope', [{ alias: 'poisoned', scope: null }]],
+    ] as const) {
+      for (const damaged of ['opencode-v1', 'opencode-v2'] as const) {
+        it(`reports a ${damaged} board with ${damage} as invalid without hiding or rewriting the healthy board`, async () => {
+          const healthy = damaged === 'opencode-v1' ? 'opencode-v2' : 'opencode-v1';
+          const damagedBoard = JSON.stringify({ schemaVersion: 1, jobs: rows.map(row => (row && typeof row === 'object' && !Array.isArray(row) ? job(row) : row)) });
+          writeJobs(damagedBoard, damaged);
+          writeJobs({ schemaVersion: 1, jobs: [job({ alias: 'healthy' })] }, healthy);
+          const provider = new BackgroundJobsProvider(testRoot);
+
+          const children = await provider.getChildren();
+
+          expect(children.map(item => item.label)).toEqual(['Running', 'Unable to read background jobs']);
+          expect((children[1] as any).description).toBe(`Invalid ${path.relative(testRoot, boardFile(damaged))}`);
+          const jobRows = (await Promise.all(children.map(item => provider.getChildren(item)))).flat() as any[];
+          expect(jobRows.map(item => [item.owner, item.alias, item.tooltip.split('\n')[0]])).toEqual([[healthy, 'healthy', 'Task ID: task-native-1']]);
+          expect(fs.readFileSync(boardFile(damaged), 'utf-8')).toBe(damagedBoard);
+        });
+      }
+    }
+
+    it('gives equal-alias rows distinct ids that survive sibling removal and group moves', async () => {
+      writeJobs({ schemaVersion: 1, jobs: [job({ alias: 'parent:job-1', taskId: 'v1-task' })] });
+      writeJobs({ schemaVersion: 1, jobs: [job({ alias: 'parent:job-1', taskId: 'v2-task' })] }, 'opencode-v2');
+      const provider = new BackgroundJobsProvider(testRoot);
+      const rowIds = async () => {
+        const ids = new Map<string, string>();
+        for (const group of await provider.getChildren()) {
+          for (const item of await provider.getChildren(group) as any[]) ids.set(`${item.owner}/${item.taskId}`, item.id);
+        }
+        return ids;
+      };
+
+      const before = await rowIds();
+      expect(new Set(before.values()).size).toBe(2);
+      const v2Id = before.get('opencode-v2/v2-task');
+
+      writeJobs({ schemaVersion: 1, jobs: [] });
+      expect((await rowIds()).get('opencode-v2/v2-task')).toBe(v2Id);
+
+      writeJobs({ schemaVersion: 1, jobs: [job({ alias: 'parent:job-1', taskId: 'v2-task', runtimeState: 'completed' })] }, 'opencode-v2');
+      writeJobs({ schemaVersion: 1, jobs: [job({ alias: 'parent:job-1', taskId: 'v1-task' })] });
+      const groups = await provider.getChildren();
+      expect(groups.map(group => group.label)).toEqual(['Running', 'Finished']);
+      const moved = await rowIds();
+      expect(moved.get('opencode-v2/v2-task')).toBe(v2Id);
+      expect(moved.get('opencode-v1/v1-task')).toBe(before.get('opencode-v1/v1-task'));
+
+      const treeIds = [...groups, ...(await Promise.all(groups.map(group => provider.getChildren(group)))).flat()].map(item => item.id);
+      expect(new Set(treeIds).size).toBe(treeIds.length);
+    });
+
+    it('gives each owner its own stable state-row id when both boards are invalid', async () => {
+      writeJobs('{ not json');
+      writeJobs('{ not json', 'opencode-v2');
+      const provider = new BackgroundJobsProvider(testRoot);
+
+      const first = await provider.getChildren();
+      const second = await provider.getChildren();
+
+      expect(first.map(item => item.label)).toEqual(['Unable to read background jobs', 'Unable to read background jobs']);
+      expect(new Set(first.map(item => item.id)).size).toBe(2);
+      expect(second.map(item => item.id)).toEqual(first.map(item => item.id));
+    });
+
+    it('shows only the invalid state when every readable board is empty or missing', async () => {
+      writeJobs('{ not json');
+      const provider = new BackgroundJobsProvider(testRoot);
+
+      const children = await provider.getChildren();
+
+      expect(children.map(item => item.label)).toEqual(['Unable to read background jobs']);
+      expect((children[0] as any).description).toBe('Invalid .hive/background-jobs.json');
+    });
+
+    it('reports an empty v2 board as empty and never mentions a missing v2 board', async () => {
+      writeJobs({ schemaVersion: 1, jobs: [] }, 'opencode-v2');
+      const provider = new BackgroundJobsProvider(testRoot);
+
+      const children = await provider.getChildren();
+
+      expect(children.map(item => item.label)).toEqual(['No background jobs']);
+      expect((children[0] as any).description).toBe('0 jobs');
+      expect((children[0] as any).command.arguments).toEqual([boardFile('opencode-v2')]);
+    });
+
+    describe('archive command', () => {
+      const launch = (owner: 'opencode-v1' | 'opencode-v2', taskId = 'task-1') => {
+        const service = new BackgroundJobService(testRoot, owner);
+        service.registerLaunch({ taskId, sessionId: `${taskId}-session`, agentName: 'forager-worker', scope: { parentSessionId: 'parent' } });
+        return service;
+      };
+      let refreshes: number;
+      const refresh = () => { refreshes += 1; };
+      beforeEach(() => { refreshes = 0; });
+
+      it('archives only the selected owner record when aliases are equal', async () => {
+        const v1 = launch('opencode-v1');
+        const v2 = launch('opencode-v2');
+        vscodeTestState.confirmations.push('Archive Job');
+        vscodeTestState.inputs.push('stale lane');
+
+        await archiveBackgroundJobItem(testRoot, { owner: 'opencode-v2', alias: 'parent:job-1' }, refresh);
+
+        expect(v2.resolve('parent:job-1')).toMatchObject({ archiveReason: 'ignored', ignoreReason: 'stale lane' });
+        expect(v1.resolve('parent:job-1')?.archivedAt).toBeUndefined();
+        expect(vscodeTestState.warnings[0]).toContain('"parent:job-1" (OpenCode v2)');
+        expect(vscodeTestState.messages).toEqual(['Hive: Background job "parent:job-1" (OpenCode v2) archived.']);
+        expect(vscodeTestState.errors).toEqual([]);
+        expect(refreshes).toBe(1);
+      });
+
+      it('reports a record that disappeared after confirmation and never falls back to another owner', async () => {
+        const v1 = launch('opencode-v1');
+        const v2 = launch('opencode-v2');
+        // The confirmation awaits the operator; the native host rewrites its board meanwhile.
+        vscodeTestState.confirmations.push(() => {
+          fs.writeFileSync(boardFile('opencode-v2'), JSON.stringify({ schemaVersion: 1, jobs: [] }));
+          return 'Archive Job';
+        });
+        vscodeTestState.inputs.push('');
+
+        await archiveBackgroundJobItem(testRoot, { owner: 'opencode-v2', alias: 'parent:job-1' }, refresh);
+
+        expect(vscodeTestState.errors).toEqual([
+          'Hive: Could not archive background job "parent:job-1" (OpenCode v2) - Background job not found: parent:job-1',
+        ]);
+        expect(vscodeTestState.messages).toEqual([]);
+        expect(refreshes).toBe(1);
+        expect(v1.resolve('parent:job-1')?.archivedAt).toBeUndefined();
+        expect(v2.resolve('parent:job-1')).toBeUndefined();
+      });
+
+      it('reports other archive failures without a success notice', async () => {
+        launch('opencode-v1');
+        // A second record whose task ID equals the alias makes the alias ambiguous on this board.
+        launch('opencode-v1', 'parent:job-1');
+        vscodeTestState.confirmations.push('Archive Job');
+        vscodeTestState.inputs.push('');
+
+        await archiveBackgroundJobItem(testRoot, { owner: 'opencode-v1', alias: 'parent:job-1' }, refresh);
+
+        expect(vscodeTestState.errors).toHaveLength(1);
+        expect(vscodeTestState.errors[0]).toStartWith('Hive: Could not archive background job "parent:job-1" (OpenCode v1) - Ambiguous background job identifier');
+        expect(vscodeTestState.messages).toEqual([]);
+        expect(refreshes).toBe(1);
+      });
+
+      it('does nothing when the operator cancels', async () => {
+        const v2 = launch('opencode-v2');
+        vscodeTestState.confirmations.push(undefined);
+
+        await archiveBackgroundJobItem(testRoot, { owner: 'opencode-v2', alias: 'parent:job-1' }, refresh);
+
+        expect(v2.resolve('parent:job-1')?.archivedAt).toBeUndefined();
+        expect([vscodeTestState.messages, vscodeTestState.errors, refreshes]).toEqual([[], [], 0]);
+      });
+
+      it('rejects a row without a finite owner and exact alias before asking', async () => {
+        await archiveBackgroundJobItem(testRoot, { owner: '../.hive', alias: 'parent:job-1' }, refresh);
+
+        expect(vscodeTestState.errors).toEqual(['Hive: No background job selected']);
+        expect(vscodeTestState.warnings).toEqual([]);
+      });
+    });
+
+    it('accepts only a finite owner with a non-empty alias as a row target', () => {
+      expect(readBackgroundJobTarget({ owner: 'opencode-v2', alias: 'a' })).toEqual({ owner: 'opencode-v2', alias: 'a' });
+      for (const item of [undefined, null, {}, { alias: 'a' }, { owner: 'opencode-v1' }, { owner: 'opencode-v1', alias: '' },
+        { owner: '../.hive', alias: 'a' }, { owner: 'opencode-v3', alias: 'a' }, { owner: 'opencode-v1', alias: 7 }]) {
+        expect(readBackgroundJobTarget(item)).toBeUndefined();
+      }
+    });
+  });
+
+  function boardFile(owner: 'opencode-v1' | 'opencode-v2' = 'opencode-v1'): string {
+    return owner === 'opencode-v1'
+      ? path.join(testRoot, '.hive', 'background-jobs.json')
+      : path.join(testRoot, '.hive', 'runtime', 'opencode-v2', 'background-jobs.json');
+  }
+
+  function writeJobs(data: unknown, owner: 'opencode-v1' | 'opencode-v2' = 'opencode-v1'): void {
+    fs.mkdirSync(path.dirname(boardFile(owner)), { recursive: true });
+    fs.writeFileSync(boardFile(owner), typeof data === 'string' ? data : JSON.stringify(data, null, 2));
   }
 
   function job(overrides: Record<string, unknown> = {}): Record<string, unknown> {

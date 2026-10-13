@@ -6,6 +6,7 @@ import plugin from './index.js';
 import { CUSTOM_AGENT_BASES, PlanService, SessionService, TaskService } from 'hive-core';
 import { HIVE_TOOL_NAMES } from './utils/plugin-manifest.js';
 import { createPluginWithHome } from './e2e/plugin-test-home.js';
+import { createHiveServices } from './runtime/hive-services.js';
 import { TASK_TRACE_SUMMARIZER_AGENT } from './task-trace.js';
 
 type PermissionAction = 'allow' | 'ask' | 'deny';
@@ -124,6 +125,29 @@ afterEach(() => {
 });
 
 describe('coordinated runtime hard cut', () => {
+  it('keeps v1 session and background stores in the legacy files and binds a v2 adapter to its own', async () => {
+    const { root, hooks } = createRuntime();
+    const loaded = await hooks;
+    await loaded['chat.message']!({ sessionID: 'shared-id', agent: 'forager-worker' } as any, { message: { agent: 'forager-worker' }, parts: [] } as any);
+    expect(JSON.parse(fs.readFileSync(path.join(root, '.hive', 'sessions.json'), 'utf8')).sessions[0]).toMatchObject({ sessionId: 'shared-id', projectRoot: root });
+    expect(fs.existsSync(path.join(root, '.hive', 'runtime'))).toBe(false);
+
+    const v1 = createHiveServices({ projectRoot: root, nativeObservationOwner: 'opencode-v1' });
+    const v2 = createHiveServices({ projectRoot: root, nativeObservationOwner: 'opencode-v2' });
+    expect([v1.sessionService.owner, v1.backgroundJobService.owner]).toEqual(['opencode-v1', 'opencode-v1']);
+    expect([v2.sessionService.owner, v2.backgroundJobService.owner]).toEqual(['opencode-v2', 'opencode-v2']);
+    expect(v2.projectRoot).toBe(root);
+    expect(v2.sessionService.getGlobal('shared-id')).toBeUndefined();
+
+    v2.sessionService.trackGlobal('shared-id', { agent: 'scout-researcher', projectRoot: v2.projectRoot });
+    v2.backgroundJobService.registerLaunch({ taskId: 'task', sessionId: 'child', agentName: 'scout-researcher', scope: { projectRoot: v2.projectRoot } });
+    const v2Dir = path.join(root, '.hive', 'runtime', 'opencode-v2');
+    expect(JSON.parse(fs.readFileSync(path.join(v2Dir, 'sessions.json'), 'utf8')).sessions[0]).toMatchObject({ agent: 'scout-researcher', projectRoot: root });
+    expect(JSON.parse(fs.readFileSync(path.join(v2Dir, 'background-jobs.json'), 'utf8')).jobs).toHaveLength(1);
+    expect(v1.sessionService.getGlobal('shared-id')?.agent).toBe('forager-worker');
+    expect(fs.existsSync(path.join(root, '.hive', 'background-jobs.json'))).toBe(false);
+  });
+
   it('recovers a malformed global session index during chat.message and tracks the reply session', async () => {
     const { root, hooks } = createRuntime({ hiveConfig: { agents: { 'forager-worker': { variant: 'high' } } } });
     const loaded = await hooks;

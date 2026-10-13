@@ -5,6 +5,7 @@ import { HiveWatcher, Launcher } from './services'
 import { BackgroundJobsProvider, HiveSidebarProvider, PlanCommentController, TrackedRepositoriesProvider } from './providers'
 
 import { archiveContext, isContextScope } from './providers/contextInspection.js'
+import { archiveBackgroundJobItem } from './providers/backgroundJobsProvider.js'
 import { SessionConstraintsProvider } from './providers/sessionConstraintsProvider.js'
 
 import { reviewTargetForDocument, findReviewCommentsPath } from './reviewRouting.js'
@@ -60,7 +61,7 @@ class HiveExtension {
       vscode.workspace.registerTextDocumentContentProvider(SessionConstraintsProvider.scheme, this.sessionConstraintsProvider),
       vscode.workspace.onDidCloseTextDocument(document => this.sessionConstraintsProvider?.close(document.uri)),
     )
-    this.launcher = new Launcher()
+    this.launcher = new Launcher(workspaceRoot)
     this.commentController = new PlanCommentController(workspaceRoot)
 
     vscode.window.registerTreeDataProvider('hive.features', this.sidebarProvider)
@@ -160,24 +161,24 @@ class HiveExtension {
         await this.sessionConstraintsProvider.inspect()
       }),
 
-      vscode.commands.registerCommand('hive.openFile', (filePathOrItem: string | { command?: { command?: string; arguments?: string[] } }) => {
+      vscode.commands.registerCommand('hive.openFile', (filePathOrItem: string | { command?: { command?: string; arguments?: unknown[] } }) => {
         if (typeof filePathOrItem !== 'string' && filePathOrItem?.command?.command === 'hive.openBackgroundJobInBoard') {
-          const [boardPath, alias] = filePathOrItem.command.arguments ?? []
-          if (boardPath && alias) {
-            this.launcher?.openBackgroundJobInBoard(boardPath, alias)
-          }
+          // Any caller can supply these arguments; a non-array reaches the launcher as an invalid reference instead of throwing.
+          const args = filePathOrItem.command.arguments
+          const [owner, alias] = Array.isArray(args) ? args : []
+          this.launcher?.openBackgroundJobInBoard(owner, alias)
           return
         }
         const filePath = typeof filePathOrItem === 'string'
           ? filePathOrItem
           : filePathOrItem?.command?.arguments?.[0]
-        if (filePath) {
+        if (typeof filePath === 'string' && filePath) {
           this.launcher?.openFile(filePath)
         }
       }),
 
-      vscode.commands.registerCommand('hive.openBackgroundJobInBoard', (boardPath: string, alias: string) => {
-        this.launcher?.openBackgroundJobInBoard(boardPath, alias)
+      vscode.commands.registerCommand('hive.openBackgroundJobInBoard', (owner: unknown, alias: unknown) => {
+        this.launcher?.openBackgroundJobInBoard(owner, alias)
       }),
 
       vscode.commands.registerCommand('hive.copyToClipboard', async (valueOrItem: string | { copyCommand?: { arguments?: string[] } }) => {
@@ -285,38 +286,12 @@ class HiveExtension {
         this.sidebarProvider?.refresh()
       }),
 
-      vscode.commands.registerCommand('hive.job.archive', async (jobItem: any) => {
+      vscode.commands.registerCommand('hive.job.archive', async (jobItem: unknown) => {
         if (!this.workspaceRoot) {
           vscode.window.showErrorMessage('Hive: No .hive directory found')
           return
         }
-
-        const alias = jobItem?.alias
-        if (!alias) {
-          vscode.window.showErrorMessage('Hive: No background job selected')
-          return
-        }
-
-        const label = alias
-        const confirmResult = await vscode.window.showWarningMessage(
-          `Archive background job "${label}"? This moves it to the collapsed Ignored group and hides it from normal agent tooling. It does not cancel or kill any running process.`,
-          { modal: true },
-          'Archive Job'
-        )
-        if (confirmResult !== 'Archive Job') return
-
-        const reason = await vscode.window.showInputBox({
-          prompt: 'Reason for archiving (optional)',
-          placeHolder: 'e.g., Operator archived stale lane'
-        })
-        if (reason === undefined) return
-
-        const { BackgroundJobService } = await import('hive-core')
-        const service = new BackgroundJobService(this.workspaceRoot)
-        service.markIgnored(alias, reason || 'Operator archived')
-
-        vscode.window.showInformationMessage(`Hive: Background job "${label}" archived.`)
-        this.backgroundJobsProvider?.refresh()
+        await archiveBackgroundJobItem(this.workspaceRoot, jobItem, () => this.backgroundJobsProvider?.refresh())
       })
     )
   }

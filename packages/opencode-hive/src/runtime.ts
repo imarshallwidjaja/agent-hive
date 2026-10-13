@@ -1,9 +1,9 @@
-import * as path from 'node:path';
 import { tool, type Plugin } from '@opencode-ai/plugin';
 import {
   DEFAULT_COUNCIL_CONFIG,
   canonicalProjectRoot,
   detectContext,
+  getNativeSessionsPath,
   type ConfigService,
   type CustomAgentBase,
   type ResolvedCustomAgentConfig,
@@ -171,7 +171,7 @@ const plugin: Plugin = async (ctx) => {
   const projectRoot = canonicalProjectRoot(detected.projectRoot);
   const runtimeId = `pid-${process.pid}-${Date.now().toString(36)}`;
 
-  const services = createHiveServices({ projectRoot, detectedFeature: detected.feature });
+  const services = createHiveServices({ projectRoot, detectedFeature: detected.feature, nativeObservationOwner: 'opencode-v1' });
   const { sessionService, contextService, taskService, configService, backgroundJobService } = services;
   const runtimeAgentPrompts = new Map<string, string>();
   const runtimeSessionAgents = new Map<string, string>();
@@ -272,7 +272,7 @@ const plugin: Plugin = async (ctx) => {
           sessionService.trackGlobal(input.sessionID, { agent, projectRoot });
         } catch (error) {
           const reason = error instanceof Error ? (error as NodeJS.ErrnoException).code ?? error.name : 'unknown error';
-          console.warn(`[hive:sessions] Could not track session ${input.sessionID} in ${path.join(projectRoot, '.hive', 'sessions.json')} (${reason}); continuing reply.`);
+          console.warn(`[hive:sessions] Could not track session ${input.sessionID} in ${getNativeSessionsPath(projectRoot, services.nativeObservationOwner)} (${reason}); continuing reply.`);
         }
       }
       await createVariantHook(configService)(input, output);

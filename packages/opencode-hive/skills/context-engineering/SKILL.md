@@ -135,7 +135,7 @@ New assignments contain no supporting bodies or catalog snapshots. For bound fea
 
 After compaction, recover by catalog selection and named reads. Keep exact IDs. Do not treat compacted coverage names as evidence. Never replay historical prompt text as a new assignment.
 
-`.hive/sessions.json` is canonical global session truth. Feature-local `sessions.json` is a projection, never alternate recovery truth. Catalogs are live at the current project root; do not follow a stored former root as catalog truth.
+`.hive/sessions.json` is canonical global session truth (OpenCode v2 keeps its own at `.hive/runtime/opencode-v2/sessions.json`; an owner's missing store is never filled from another's). Feature-local `sessions.json` is a projection, never alternate recovery truth. Catalogs are live at the current project root; do not follow a stored former root as catalog truth.
 
 Plugin restart does not continue old live workers. Finish or abandon them first.
 

@@ -15,7 +15,8 @@ PROBLEM  -> CONTEXT  -> EXECUTION -> REPORT
 .hive/                    <- Shared data (all clients)
 ├── context/              <- Managed project knowledge (index.json and Markdown files)
 ├── repositories.json     <- Optional project repository manifest
-├── sessions.json         <- Global session metadata, session constraints, and selected routes
+├── sessions.json         <- Global session metadata, session constraints, and selected routes (OpenCode v1)
+├── runtime/opencode-v2/  <- OpenCode v2 native stores: sessions.json and background-jobs.json
 ├── features/             <- Feature-scoped work
 │   └── 01_feature-name/
 │       ├── feature.json  <- Feature metadata and state
@@ -24,6 +25,7 @@ PROBLEM  -> CONTEXT  -> EXECUTION -> REPORT
 │       ├── comments/plan.json <- Plan review threads (when present)
 │       ├── comments/overview.json <- Overview review threads (when present)
 │       ├── constraints.json <- Feature standing constraints (when present)
+│       ├── runtime/opencode-v2/sessions.json <- OpenCode v2 feature-local session projection (when written)
 │       └── tasks/        <- Individual task folders
 │           └── {task}/
 │               ├── status.json      <- Task state and declared repo IDs
@@ -35,7 +37,7 @@ PROBLEM  -> CONTEXT  -> EXECUTION -> REPORT
 │   └── adhoc/{runId}/    <- Ad-hoc workspace
 │       ├── workspace.json <- Composite placement metadata (composite only)
 │       └── repos/{repoId}/ <- Per-repo worktrees (composite only)
-├── background-jobs.json <- Observational background board
+├── background-jobs.json <- Observational background board (OpenCode v1)
 └── agent-hive.override.json <- Optional model/variant overrides for agents
 
 packages/
@@ -98,6 +100,8 @@ The runtime stores session identity, feature routes, and session constraints in 
 - Native child binding writes `parentSessionId`, `projectRoot`, `agent` when provided, `featureName` when selected, and `standingConstraints`, `standingConstraintEntries`, and `standingConstraintsRevision` from the captured session constraints. Constraint tools also update the session constraint register.
 
 `SessionService.bindFeature` can write a feature-local `sessions.json` projection, but no current runtime path calls it. The global file governs route selection and child dispatch.
+
+Each native host owns its own stores. OpenCode v1 uses the files above; OpenCode v2 writes the same shapes to `.hive/runtime/opencode-v2/sessions.json`, `.hive/runtime/opencode-v2/background-jobs.json` and, for projections, `runtime/opencode-v2/sessions.json` inside the resolved feature directory. A missing v2 store starts empty and never imports v1 records. The VS Code viewers read every owner's store and keep the owner with each row action.
 
 `classifySession` recognizes `primary`, `subagent`, `task-worker`, and `unknown`, but the runtime calls `createVariantHook` without a session service. It does not persist `sessionKind` or `baseAgent`. No production runtime path writes `taskFolder` or `adHocRunId` to session metadata.
 
@@ -249,7 +253,7 @@ Hive uses file-based state with clear ownership boundaries:
 | `comments/plan.json` | VS Code writes threads; `PlanService` clears them on plan write or patch | Primary agent (read-only) |
 | `spec.md` | `TaskService.sync` / `TaskService.create` | Worker (read-only) |
 | `report.md` / `reports/*.md` | `hive_task_update` | All (read-only) |
-| `sessions.json` (global) | `SessionService` | Runtime route and constraint reads |
+| `sessions.json` (global, per native owner) | `SessionService` | Runtime route and constraint reads |
 | `context/index.json` and managed Markdown | `ContextService` via `hive_context_*` | Agent roles according to tool permissions |
 | `repositories.json` | `RepositoryManifestService` | Worktree services (read) |
 

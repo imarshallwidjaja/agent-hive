@@ -1,5 +1,6 @@
 export * from "./types.js";
 export * from "./utils/paths.js";
+export * from "./native-observations.js";
 export * from "./utils/detection.js";
 export * from "./utils/repositoryIds.js";
 export * from "./utils/repositoryConfig.js";

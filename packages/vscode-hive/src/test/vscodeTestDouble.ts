@@ -23,6 +23,7 @@ export const vscodeTestState = {
   messages: [] as string[],
   errors: [] as string[],
   shown: [] as any[],
+  shownOptions: [] as any[],
   pickItems: [] as any[],
   warnings: [] as string[],
 };
@@ -80,6 +81,14 @@ class EventEmitter<T> {
   }
 }
 
+class Position {
+  constructor(public readonly line: number, public readonly character: number) {}
+}
+
+class Selection {
+  constructor(public readonly anchor: Position, public readonly active: Position) {}
+}
+
 class RelativePattern {
   constructor(public base: string, public pattern: string) {}
 }
@@ -104,8 +113,9 @@ const window = {
   showErrorMessage(message: string) {
     vscodeTestState.errors.push(message);
   },
-  async showTextDocument(document: any) {
+  async showTextDocument(document: any, options?: unknown) {
     vscodeTestState.shown.push(document);
+    vscodeTestState.shownOptions.push(options);
   },
 };
 
@@ -148,6 +158,8 @@ export const vscodeTestDouble = {
   window,
   workspace,
   RelativePattern,
+  Position,
+  Selection,
   TreeItem,
   ThemeIcon,
   MarkdownString,

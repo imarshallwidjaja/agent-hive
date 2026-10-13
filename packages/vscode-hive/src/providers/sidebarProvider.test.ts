@@ -724,6 +724,73 @@ describe('HiveSidebarProvider', () => {
     expect(provider.provideTextDocumentContent(second)).not.toContain('second-only');
   });
 
+  it('lists equal session IDs from both native owners and opens each from its own store', async () => {
+    const { SessionConstraintsProvider } = await import('./sessionConstraintsProvider.js');
+    const provider = new SessionConstraintsProvider(testRoot);
+    const v1 = new hiveCore.SessionService(testRoot, 'opencode-v1');
+    const v2 = new hiveCore.SessionService(testRoot, 'opencode-v2');
+    v1.trackGlobal('same', { agent: 'hive', standingConstraints: 'v1-only rule' });
+    v2.trackGlobal('same', { agent: 'hive', standingConstraints: 'v2-only rule' });
+    v2.trackGlobal('no-constraints');
+    const v1Before = fs.readFileSync(hiveCore.getNativeSessionsPath(testRoot, 'opencode-v1'), 'utf8');
+
+    ui.picks.push((items: any[]) => {
+      expect(items.map(item => [item.owner, item.sessionId])).toEqual([['opencode-v1', 'same'], ['opencode-v2', 'same']]);
+      expect(items[0].description).not.toContain('OpenCode');
+      expect(items[1].description).toContain('OpenCode v2');
+      return items[0];
+    });
+    await provider.inspect();
+    ui.picks.push((items: any[]) => items[1]);
+    await provider.inspect();
+
+    const [first, second] = ui.shown.map(document => document.uri);
+    const v1Content = provider.provideTextDocumentContent(first);
+    const v2Content = provider.provideTextDocumentContent(second);
+    expect(v1Content).toContain('Host: OpenCode v1');
+    expect(v1Content).toContain('v1-only rule');
+    expect(v1Content).not.toContain('v2-only rule');
+    expect(v2Content).toContain('Host: OpenCode v2');
+    expect(v2Content).toContain('v2-only rule');
+    expect(v2Content).not.toContain('v1-only rule');
+
+    fs.rmSync(hiveCore.getNativeSessionsPath(testRoot, 'opencode-v2'));
+    expect(provider.provideTextDocumentContent(second)).toBe('The selected session no longer exists.');
+    expect(provider.provideTextDocumentContent(first)).toContain('v1-only rule');
+    expect(fs.readFileSync(hiveCore.getNativeSessionsPath(testRoot, 'opencode-v1'), 'utf8')).toBe(v1Before);
+    provider.dispose();
+  });
+
+  it('keeps a healthy owner store listed when the other owner store cannot be read', async () => {
+    const { SessionConstraintsProvider } = await import('./sessionConstraintsProvider.js');
+    const provider = new SessionConstraintsProvider(testRoot);
+    new hiveCore.SessionService(testRoot, 'opencode-v1').trackGlobal('healthy', { agent: 'hive', standingConstraints: 'still visible' });
+    fs.mkdirSync(hiveCore.getNativeSessionsPath(testRoot, 'opencode-v2'), { recursive: true });
+
+    ui.picks.push((items: any[]) => items[0]);
+    await provider.inspect();
+
+    expect(ui.warnings.at(-1)).toContain('Could not read session constraints for OpenCode v2');
+    expect(ui.pickItems.map((item: any) => item.sessionId)).toEqual(['healthy']);
+    expect(provider.provideTextDocumentContent(ui.shown[0].uri)).toContain('still visible');
+    provider.dispose();
+  });
+
+  it('reports a failure instead of an empty project when no owner store is readable', async () => {
+    const { SessionConstraintsProvider } = await import('./sessionConstraintsProvider.js');
+    const provider = new SessionConstraintsProvider(testRoot);
+    fs.mkdirSync(hiveCore.getNativeSessionsPath(testRoot, 'opencode-v1'), { recursive: true });
+    fs.mkdirSync(hiveCore.getNativeSessionsPath(testRoot, 'opencode-v2'), { recursive: true });
+
+    await provider.inspect();
+
+    expect(ui.warnings.at(-1)).toContain('OpenCode v1');
+    expect(ui.warnings.at(-1)).toContain('OpenCode v2');
+    expect(ui.messages).toEqual([]);
+    expect(ui.shown).toHaveLength(0);
+    provider.dispose();
+  });
+
   it('expands context without writes, shows the empty state, and ignores lock events while refreshing committed changes', async () => {
     const { HiveWatcher } = await import('../services/watcher.js');
     new FeatureService(testRoot).create('absent');

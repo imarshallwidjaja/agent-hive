@@ -1,6 +1,13 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { getFeaturePath, getGlobalSessionsPath, ensureDir, fileExists, readJson, writeJson, acquireLockSync, writeJsonAtomic, syncFile, syncDirectory } from '../utils/paths.js';
+import { ensureDir, fileExists, readJson, writeJson, acquireLockSync, writeJsonAtomic, syncFile, syncDirectory } from '../utils/paths.js';
+import {
+  assertNativeObservationOwner,
+  DEFAULT_NATIVE_OBSERVATION_OWNER,
+  getNativeFeatureSessionsPath,
+  getNativeSessionsPath,
+} from '../native-observations.js';
+import type { NativeObservationOwner } from '../native-observations.js';
 import type { SessionInfo, SessionsJson, StandingConstraintEntry } from '../types.js';
 import {
   addConstraint,
@@ -36,7 +43,15 @@ const CLEARABLE_SESSION_FIELDS = new Set<keyof SessionInfo>([
 ]);
 
 export class SessionService {
-  constructor(private projectRoot: string) {}
+  readonly owner: NativeObservationOwner;
+
+  /**
+   * `projectRoot` is the real project root; it keys feature resolution and visibility. `owner` selects which
+   * native host's session index and feature projections this service reads and writes.
+   */
+  constructor(private projectRoot: string, owner: NativeObservationOwner = DEFAULT_NATIVE_OBSERVATION_OWNER) {
+    this.owner = assertNativeObservationOwner(owner);
+  }
 
   private applySessionPatch(target: SessionInfo, patch?: Partial<SessionInfo>): void {
     if (!patch) {
@@ -109,7 +124,11 @@ export class SessionService {
   }
 
   private getSessionsPath(featureName: string): string {
-    return path.join(getFeaturePath(this.projectRoot, featureName), 'sessions.json');
+    return getNativeFeatureSessionsPath(this.projectRoot, featureName, this.owner);
+  }
+
+  private getGlobalSessionsPath(): string {
+    return getNativeSessionsPath(this.projectRoot, this.owner);
   }
 
   private getSessions(featureName: string): SessionsJson {
@@ -124,7 +143,7 @@ export class SessionService {
   }
 
   private getGlobalSessions(): SessionsJson {
-    const globalPath = getGlobalSessionsPath(this.projectRoot);
+    const globalPath = this.getGlobalSessionsPath();
     try {
       return readJson<SessionsJson>(globalPath) || { sessions: [] };
     } catch (error) {
@@ -164,13 +183,13 @@ export class SessionService {
   }
 
   private saveGlobalSessions(data: SessionsJson): void {
-    const globalPath = getGlobalSessionsPath(this.projectRoot);
+    const globalPath = this.getGlobalSessionsPath();
     ensureDir(path.dirname(globalPath));
     writeJson(globalPath, data);
   }
 
   private updateGlobalSessions<T>(mutator: (data: SessionsJson) => T): T {
-    const globalPath = getGlobalSessionsPath(this.projectRoot);
+    const globalPath = this.getGlobalSessionsPath();
     ensureDir(path.dirname(globalPath));
     const release = acquireLockSync(globalPath);
 

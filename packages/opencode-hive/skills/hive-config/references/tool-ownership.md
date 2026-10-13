@@ -27,7 +27,7 @@ Roles: **P** = full primaries (`hive-master`, `swarm-orchestrator`, `hive-builde
 | Tool | State it changes | Roles | Primary-only |
 |---|---|---|---|
 | `hive_feature_create` | New `features/<NN>_<name>/`, `feature.json` | P, A, Ac | |
-| `hive_feature_select` | Selected route in `.hive/sessions.json` | P, A, RP | yes |
+| `hive_feature_select` | Selected route in the host owner's `sessions.json` (`.hive/sessions.json` for OpenCode v1) | P, A, RP | yes |
 | `hive_feature_complete` | `feature.json` status | P | yes |
 | `hive_plan_write`, `hive_plan_patch` | `plan.md` | P, A, Ac | |
 | `hive_plan_approve` | `APPROVED`, `feature.json`, optional task sync | P, A | yes |
@@ -44,7 +44,7 @@ Roles: **P** = full primaries (`hive-master`, `swarm-orchestrator`, `hive-builde
 | `hive_context_write`, `hive_context_append` | `context/<name>.md`, `context/index.json` (feature or project) | P, A, Ac, RP, F, Rev | |
 | `hive_context_archive` | Moves context into `archive/context/` | P, A | yes |
 | `hive_constraints_add`, `hive_constraints_edit`, `hive_constraints_clear` | Session constraints in `sessions.json`; feature `constraints.json` | P, A, RP | yes |
-| `hive_background_reconcile`, `hive_background_reconcile_batch`, `hive_background_cancel` | `.hive/background-jobs.json` | P, A, RP; experiment-gated | yes |
+| `hive_background_reconcile`, `hive_background_reconcile_batch`, `hive_background_cancel` | Host owner's `background-jobs.json` (`.hive/background-jobs.json` for OpenCode v1) | P, A, RP; experiment-gated | yes |
 
 Roles with none of these: `scout-researcher` (read-only; R plus discover), `hive-helper` (R, I, T only; also denied native edit, `task`, and `question`), native `general`/`explore`, and the hidden trace summarizer (all tools denied).
 

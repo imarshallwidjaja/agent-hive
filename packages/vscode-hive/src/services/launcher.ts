@@ -1,7 +1,10 @@
 import * as vscode from 'vscode'
 import * as fs from 'fs'
+import { getNativeBackgroundJobsPath, isNativeObservationOwner } from 'hive-core'
 
 export class Launcher {
+  constructor(private readonly workspaceRoot: string) {}
+
   /**
    * Open a file in VS Code
    */
@@ -26,13 +29,15 @@ export class Launcher {
     }
   }
 
-  async openBackgroundJobInBoard(boardPath: string, alias: string): Promise<void> {
-    if (!boardPath || !alias) {
+  /** Opens the board of one native owner at a job's exact alias line; the owner selects the file, never a caller-supplied path. */
+  async openBackgroundJobInBoard(owner: unknown, alias: unknown): Promise<void> {
+    if (!isNativeObservationOwner(owner) || typeof alias !== 'string' || alias === '') {
       vscode.window.showWarningMessage('Hive: Invalid background job reference')
       return
     }
 
     try {
+      const boardPath = getNativeBackgroundJobsPath(this.workspaceRoot, owner)
       const uri = vscode.Uri.file(boardPath)
       const content = fs.readFileSync(boardPath, 'utf-8')
       const lineIndex = content.split(/\r?\n/).findIndex(line => line.includes(`"alias": ${JSON.stringify(alias)}`))

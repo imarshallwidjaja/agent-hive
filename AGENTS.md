@@ -121,6 +121,8 @@ Resolve feature paths through `getFeaturePath` in `packages/hive-core/src/utils/
 
 Task status and reports are the execution record. There is no attempt ledger. Old attempt and lease files are unread. Useful plans, tasks, context, reports, and workspace files remain readable. `.hive/background-jobs.json` is observational board bookkeeping.
 
+Native session and background stores belong to a `NativeObservationOwner` (`packages/hive-core/src/native-observations.ts`): `opencode-v1` keeps `.hive/sessions.json`, `.hive/background-jobs.json` and `<feature>/sessions.json`; `opencode-v2` uses `.hive/runtime/opencode-v2/{sessions,background-jobs}.json` and `<feature>/runtime/opencode-v2/sessions.json`. The host adapter chooses the owner when it creates `SessionService` and `BackgroundJobService`. Keep the real `projectRoot` for feature resolution and visibility; never fake it to redirect storage, import one owner's records into another, or accept a path in place of an owner. The same session ID or job alias in two owners is two records, so carry the owner with every identifier a UI or tool acts on.
+
 ## Development Workflow
 
 ### Adding a New Tool

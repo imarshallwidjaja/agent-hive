@@ -1,5 +1,10 @@
-import * as path from 'path';
-import { acquireLockSync, getHivePath, readJson, writeJsonAtomic } from '../utils/paths.js';
+import { acquireLockSync, readJson, writeJsonAtomic } from '../utils/paths.js';
+import {
+  assertNativeObservationOwner,
+  DEFAULT_NATIVE_OBSERVATION_OWNER,
+  getNativeBackgroundJobsPath,
+} from '../native-observations.js';
+import type { NativeObservationOwner } from '../native-observations.js';
 import type {
   BackgroundJobRecord,
   BackgroundJobRuntimeState,
@@ -35,10 +40,18 @@ export interface BackgroundJobListOptions {
 }
 
 export class BackgroundJobService {
-  constructor(private readonly projectRoot: string) {}
+  readonly owner: NativeObservationOwner;
+
+  /**
+   * `projectRoot` stays the real project root recorded in job scopes; `owner` selects which native host's board
+   * this service reads and writes.
+   */
+  constructor(private readonly projectRoot: string, owner: NativeObservationOwner = DEFAULT_NATIVE_OBSERVATION_OWNER) {
+    this.owner = assertNativeObservationOwner(owner);
+  }
 
   private getBoardPath(): string {
-    return path.join(getHivePath(this.projectRoot), 'background-jobs.json');
+    return getNativeBackgroundJobsPath(this.projectRoot, this.owner);
   }
 
   private readBoard(): BackgroundJobsJson {

@@ -14,6 +14,7 @@ import {
   WorktreeService,
   assertValidFeatureName,
   type ContextScope,
+  type NativeObservationOwner,
   type StandingConstraintEntry,
 } from 'hive-core';
 
@@ -40,18 +41,21 @@ const NON_FEATURE_NAMESPACES = new Set(['adhoc', 'review']);
  * Hive's domain services bound to one canonical project root, plus the feature, session and constraint routing
  * every operation shares. Session state is read only when a route or constraint actually needs it, so an
  * operation that takes no feature never touches the session index.
+ *
+ * `nativeObservationOwner` is chosen by the host adapter. It selects only the session and background stores;
+ * the project root stays the real one for every other service.
  */
-export function createHiveServices(options: { projectRoot: string; detectedFeature?: string }) {
-  const { projectRoot, detectedFeature } = options;
+export function createHiveServices(options: { projectRoot: string; detectedFeature?: string; nativeObservationOwner: NativeObservationOwner }) {
+  const { projectRoot, detectedFeature, nativeObservationOwner } = options;
   const featureService = new FeatureService(projectRoot);
   const planService = new PlanService(projectRoot);
   const taskService = new TaskService(projectRoot);
-  const sessionService = new SessionService(projectRoot);
+  const sessionService = new SessionService(projectRoot, nativeObservationOwner);
   const featureConstraintService = new FeatureConstraintService(projectRoot);
   const contextService = new ContextService(projectRoot);
   const configService = new ConfigService(projectRoot);
   const repositoryManifestService = new RepositoryManifestService(projectRoot);
-  const backgroundJobService = new BackgroundJobService(projectRoot);
+  const backgroundJobService = new BackgroundJobService(projectRoot, nativeObservationOwner);
   // Loading the config is what records a fallback warning, so read it once here for status and startup reporting.
   configService.get();
   const configFallbackWarning = configService.getLastFallbackWarning()?.message;
@@ -141,6 +145,7 @@ export function createHiveServices(options: { projectRoot: string; detectedFeatu
 
   return {
     projectRoot,
+    nativeObservationOwner,
     featureService,
     planService,
     taskService,
