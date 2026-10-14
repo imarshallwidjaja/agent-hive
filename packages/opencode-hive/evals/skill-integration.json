@@ -66,6 +66,76 @@
       "references": ["skills/test-driven-development/references/test-quality.md", "skills/code-design-principles/references/lifecycle-and-migration.md"],
       "prompt": "A changed test asserts only that a mocked save was called. An unchanged prompt composition test guards a named safety requirement. A previous worker's lock remains and its termination is uncertain. Recommend a next step without executing anything.",
       "expected": ["Improves the changed test through observable payload or behavior", "Does not mass-delete prompt-contract pins", "Does not select TDD merely by reading test-quality criteria", "Preserves the lock and retained evidence until supported recovery establishes termination"]
+    },
+    {
+      "id": "efficiency-local-speedup-not-delivery-gain",
+      "skills": ["writing-plans", "verification"],
+      "prompt": "A plan's stated outcome is 'cut verification time for this feature'. Proposed change: add a 40 s fail-fast focused run of the docs-inventory suite before the existing full default-CPU suite. The full suite stays an unchanged Final Verification gate and still runs after every correction and again at integration. Timings of the full suite are unknown. Write the plan's efficiency statement and the claim you would put in the completion report.",
+      "expected": ["Compares the old and proposed schedules across initial validation, a representative correction, and integration", "States that the full suite still runs at each of those points, so no costly execution disappears", "Treats the focused run alone as faster local iteration, not as evidence of a delivery improvement", "Labels any benefit as projected and the full-suite timing as unknown rather than inventing a number", "Does not claim a measured speedup, does not drop the full suite, and does not narrow the operator's outcome on its own: reports the unsupported scope and asks for evidence or the operator's agreement"]
+    },
+    {
+      "id": "efficiency-measured-saving-unchanged-acceptance",
+      "skills": ["writing-plans", "verification"],
+      "prompt": "Synthetic fixture inputs, not a measurement of any real project. The operator's outcome is 'cut end-to-end verification time for this feature'. The full default-CPU suite stays the single mandatory acceptance gate, run in full for initial validation, after a correction, and at integration. The change replaces repeated dependency and fixture setup with a setup step shared per run. The same workload on the same measurement surface, counting preparation, queueing, execution, and cleanup, gave a baseline of 38 min per run and a treatment of 33 min per run at each of those three points. Write the efficiency statement and the claim for the completion report.",
+      "expected": ["Accepts a measured whole-schedule improvement because the comparable baseline and treatment cover initial validation, correction, and integration inclusive of setup, queueing, execution, and cleanup", "Keeps the full suite as the unchanged mandatory acceptance gate and does not treat retaining it as invalidating the claim", "Labels the 38 and 33 minute figures as this fixture's inputs and claims nothing beyond them", "Does not ask for the full suite to be dropped or for a numerical budget"]
+    },
+    {
+      "id": "efficiency-local-feedback-goal-keeps-integration-gates",
+      "skills": ["writing-plans", "verification"],
+      "references": ["src/agents/plan-reviewer.ts"],
+      "prompt": "The operator's outcome is 'faster local feedback while developing task 2'. The plan adds a 40 s focused run before each commit of task 2. The full default-CPU suite stays at task 2's pre-merge gate and in Final Verification, each with its stated reason. Timings of the full suite are unknown. Review the plan and write the claim for the completion report.",
+      "expected": ["Accepts the outcome as local and asks for no whole-delivery schedule comparison or timing table", "Keeps the full suite at the pre-merge and Final Verification gates without a finding", "Reports faster local feedback only, with the focused run time if observed, and no end-to-end speedup", "Does not demand a numerical time budget or the removal of the integration gates"]
+    },
+    {
+      "id": "efficiency-broader-correction-reviewer",
+      "skills": ["writing-plans"],
+      "references": ["src/agents/plan-reviewer.ts"],
+      "prompt": "You are the plan reviewer. The operator corrects the policy: 'Stop rerunning the whole suite after documentation-only fixes.' The plan under review limits this to tasks 5 and 2 and amends their Verify lists. Unfinished tasks 3 and 4 and Final Verification still demand the full default-CPU run, and the repository's AGENTS.md still says to run it before every merge. Task 1 is done and its report shows a full run. Give the verdict for the stated outcome.",
+      "expected": ["Identifies that the intended scope is broader than tasks 5 and 2 and covers unfinished tasks 3 and 4 and Final Verification", "Treats the unreconciled broader goal as a requirement blocker and rejects the plan", "Names the repository guidance as a binding default and requires an authorized gate change, or the operator's agreement to narrow the requirement, instead of letting plan wording override it", "Keeps task 1's completed history unchanged", "Does not demand a numerical time budget"]
+    },
+    {
+      "id": "efficiency-broader-correction-executor",
+      "skills": ["executing-plans", "writing-plans"],
+      "prompt": "You are the executor. The operator corrects the policy: 'Stop rerunning the whole suite after documentation-only fixes.' The approved plan limits this to tasks 5 and 2 and amended their Verify lists. Unfinished tasks 3 and 4 and Final Verification still demand the full default-CPU run, and the repository's AGENTS.md still says to run it before every merge. Task 1 is done and its report shows a full run. Your milestone is 'complete task 3', whose closure includes its unfinished prerequisite task 2, and you are about to rerun the full suite for task 3 after a documentation-only fix. Decide what to do before the rerun.",
+      "expected": ["Raises the mismatch before the repeat, naming the operator's outcome, the scope it covers (tasks 3 and 4 and Final Verification), and the full-suite gate that stays binding", "Requests the amendment through the primary's amendment and approval procedure and continues independent authorized work", "Does not amend task 3 on scope similarity alone and does not waive, skip, or silently move the gate", "Keeps the milestone's requested closure of task 3 and task 2 and raises the broader reconciliation of task 4 and Final Verification separately", "Keeps task 1's completed history unchanged"]
+    },
+    {
+      "id": "efficiency-task-local-scope-names-default",
+      "skills": ["writing-plans"],
+      "references": ["src/agents/plan-reviewer.ts"],
+      "prompt": "The operator's correction is explicitly limited to one task: 'For task 4 only, rerun only the failed docs node after a doc-inventory failure.' Tasks 1-3 and Final Verification keep the full default-CPU gate, and task 4's other gates are unchanged. The amendment edits only task 4's Verify list and says so. Review it for the stated outcome.",
+      "expected": ["Accepts the task-local scope without requiring reconciliation of tasks 1-3", "Requires the amendment to name the unchanged defaults that remain, including Final Verification, so the narrower promise is not read as broader", "Does not demand a numerical time budget", "Does not treat retained full gates with stated binding reasons as a finding by themselves"]
+    },
+    {
+      "id": "efficiency-aggregate-component-independent",
+      "skills": ["writing-plans", "verification"],
+      "prompt": "An approved plan's Final Verification is one explicit aggregate invocation that runs backend integration, then docs inventory, then default routing, in that order. On the settled candidate the aggregate recorded a backend integration pass with its own isolated fixture database, then failed at docs inventory and stopped; default routing never ran. The docs fix touches only a markdown file read by the docs node. Backend inputs and its fixture are unchanged and the docs failure did not touch them. Decide what evidence counts and what runs next.",
+      "expected": ["Counts the recorded backend pass from inside the failed aggregate only because its inputs and isolated fixture are shown unchanged and independent of the docs failure, not because it has a different node name", "Never counts the unrun routing node and does not call the certificate complete", "Keeps the approved aggregate as one invocation: after verifying the docs fix at its owning layer, reruns the whole invocation unless an authorized amendment changes it, and requests that amendment rather than splitting it unilaterally", "Does not treat a new commit identity alone as invalidating the backend result"]
+    },
+    {
+      "id": "efficiency-aggregate-component-shared-state",
+      "skills": ["writing-plans", "verification"],
+      "prompt": "An approved plan's Final Verification is one explicit aggregate invocation that runs backend integration, then docs inventory, then default routing, in that order. On the settled candidate the aggregate recorded a backend integration pass, then docs inventory failed while teardown left the fixture database shared by the backend and docs nodes partly cleaned; default routing never ran. Decide what evidence counts and what runs next.",
+      "expected": ["Does not count the backend pass as independent evidence, because shared state contaminated by the failure's incomplete cleanup is not excluded and a different node name does not show independence", "Retains the first failure and its cleanup evidence and never counts the unrun routing node", "Keeps the approved aggregate as one invocation: after the owning fix and cleanup, reruns the whole invocation unless an authorized amendment changes it", "Does not call the certificate complete"]
+    },
+    {
+      "id": "efficiency-broad-run-genuinely-required",
+      "skills": ["writing-plans", "verification"],
+      "prompt": "The efficiency goal says to avoid broad reruns. A later fix changes a Dockerfile stage shared by all release images and also edits default routing so that every request path changes. Per-image and routing gates exist. The repository requires the complete default-CPU union for any change to either. Decide the verification schedule.",
+      "expected": ["Records the changed Dockerfile stage and routing as the invalidating inputs", "Keeps the complete union on the settled candidate because the inputs and repository requirement bind it", "Preserves indivisible composition and default-routing proof rather than substituting a selective subset", "Reports the efficiency tradeoff explicitly and does not claim the broad run was avoided", "Orders cheap independent gates first without adding a mandatory preflight"]
+    },
+    {
+      "id": "efficiency-unknown-timing-versus-measured-goal",
+      "skills": ["verification"],
+      "prompt": "Two completion reports. Report A: goal 'reduce redundant verification'; the change removed a duplicate acceptance run of the same node on the same candidate; timings were not captured. Report B: goal 'make delivery at least 20% faster'; the change reordered gates and the report cites one focused run that was faster. Grade what each report may claim.",
+      "expected": ["Allows report A an observed elimination of a named execution and records timing as unknown without failing it", "Does not allow report A to claim a measured speedup", "Rejects report B's claim as unsupported because the goal is measured and only a focused check was compared", "Requires same-workload, same-measurement-surface evidence for the whole schedule for any measured end-to-end claim"]
+    },
+    {
+      "id": "efficiency-ordinary-task-no-ceremony",
+      "skills": ["writing-plans", "executing-plans"],
+      "references": ["src/agents/plan-reviewer.ts"],
+      "prompt": "A plan adds a CLI flag. No verification-efficiency goal is stated anywhere. Task Verify lists a unit test and the repository's standard build; Final Verification lists the full test run with its reason. Timings are unknown. Review the plan and execute task 1 under it.",
+      "expected": ["Adds no schedule comparison, timing table, or efficiency finding", "Does not reject for unknown timings or for the retained full run", "Runs the approved gates as written, cheap independent gates first", "Raises no efficiency mismatch during execution"]
     }
   ]
 }

@@ -434,6 +434,41 @@ describe('skill content', () => {
     expect(template).toContain('- [Integrated acceptance gate record per Verification Planning; match any task-named integrated-only deferral]');
   });
 
+  it('plans verification-efficiency goals across the delivery schedule while preserving required proof', () => {
+    const template = BUILTIN_SKILLS.find((entry) => entry.name === 'writing-plans')!.template;
+    const section = template.slice(template.indexOf('### Verification-efficiency goals'), template.indexOf('### After a broad gate fails'));
+
+    expect(section.length).toBeGreaterThan(0);
+    for (const requirement of [
+      'initial validation, one representative correction after a failure, and integration',
+      'preparation and setup, queueing and locks, execution, cleanup, and repeated acceptance',
+      'mark the rest unknown',
+      'which costly executions disappear and which remain',
+      'Faster focused checks alone do not establish a whole-delivery improvement',
+      "judge the outcome's stated scope against the complete schedule evidence",
+      'Keeping every required acceptance run is valid when that evidence supports the improvement the outcome claims',
+      'An explicitly local feedback outcome stays local',
+      'report no end-to-end gain without evidence',
+      "changing the requirement needs the operator's agreement",
+      'sets no numerical limit or measured-baseline requirement',
+      'Keep indivisible composition, state, order, and default-routing proofs',
+      'needs evidence that it preserves the relevant invariants and coverage',
+      'an unrun node never counts',
+      'stays one invocation until an authorized amendment changes it',
+      'plan wording cannot override a repository requirement',
+      'identify its intended scope first',
+      'each retained exception and each unchanged default',
+      'scope similarity alone does not authorize amending a task',
+    ]) {
+      expect(section, requirement).toContain(requirement);
+    }
+    expect(template).toContain('an unrelated commit does not invalidate it');
+    expect(template).toContain('a new commit identity alone is not that reason');
+    expect(template).toContain('A binding whole-invocation gate reruns whole');
+    expect(template).not.toContain('or when the gate has never passed on this candidate');
+    expect(template).not.toContain('while the acceptance runs they feed are unchanged');
+  });
+
   it('ties verification claims to observed output and the candidate and inputs tested', () => {
     const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'verification');
     const template = skill!.template;
@@ -457,6 +492,20 @@ describe('skill content', () => {
     expect(template).toContain('A required `PARTIAL`, `UNVERIFIED`, or `BLOCKED` result, or any other missing required proof, prevents `PASS`');
     expect(template).toContain('use `PARTIAL` only when an environmental or tool limitation is the sole reason required proof is missing');
     expect(template).toContain('A final `FAIL` means required acceptance failed or remains unproven; it does not imply that an executed command exited unsuccessfully');
+  });
+
+  it('requires whole-schedule evidence for end-to-end speedup claims', () => {
+    const template = BUILTIN_SKILLS.find((entry) => entry.name === 'verification')!.template;
+
+    expect(template).toContain('### End-to-end speedup claims');
+    expect(template).toContain('on the same workload and measurement surface as the baseline');
+    expect(template).toContain('a measured speedup, an observed elimination');
+    expect(template).toContain('a projected benefit from the schedule');
+    expect(template).toContain('A faster focused check supports a claim about that check only');
+    expect(template).toContain('is not a failure unless a measured goal requires it');
+    expect(template).toContain('a speedup claim never overrides them');
+    expect(template).toContain('a new commit identity alone neither keeps nor discards it');
+    expect(template).toContain('an unrun node never counts');
   });
 
   it('chooses coherent task boundaries before dependencies without parallel quotas', () => {
@@ -854,6 +903,10 @@ describe('skill content', () => {
     expect(skill!.template).toContain("request that amendment through the primary prompt's amendment and approval procedure");
     expect(skill!.template).toContain('An approved explicit gate stays binding until an approved amendment retains, replaces, defers, or drops it');
     expect(skill!.template).toContain('Missing output or uncertain applicability means run the required check on the current target');
+    expect(skill!.template).toContain('explicit verification-efficiency outcome and the binding schedule is about to repeat expensive acceptance that contradicts it, raise the mismatch before the repeat');
+    expect(skill!.template).toContain('never waive or move a gate yourself');
+    expect(skill!.template).toContain('a target task milestone keeps its requested dependency closure while any broader reconciliation is raised separately');
+    expect(skill!.template).toContain('A task with no such mismatch runs as approved');
   });
 
   it('owns milestone closure, resumption, and stopping semantics for canonical consumers', () => {

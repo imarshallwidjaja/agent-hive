@@ -61,7 +61,7 @@ For each coherent claim group:
 
 - Evidence applies to the candidate and relevant inputs it actually tested. A branch result proves that branch only; it does not prove integrated acceptance.
 - Record enough identity to distinguish the tested candidate, including relevant dirty changes and mutable fixture, configuration, toolchain, generated-artifact, or live-state inputs. Do not require exhaustive path manifests or result hashes for every check.
-- Reuse evidence while the candidate and relevant inputs remain applicable. A later change may leave a result valid when there is a concrete, brief reason it cannot affect the tested behavior; elapsed time or a new session alone does not invalidate it.
+- Reuse evidence while the candidate and relevant inputs remain applicable. A later change may leave a result valid when there is a concrete, brief reason it cannot affect the tested behavior; elapsed time or a new session alone does not invalidate it, and a new commit identity alone neither keeps nor discards it. Component results from a failed aggregate count only with their actual recorded result and established independence of the relevant inputs and state from the failure; an unrun node never counts, and an approved aggregate is one invocation until an authorized amendment changes it.
 - A required early, feasibility, or pre-merge gate stays at its approved boundary. Each task-named integrated-only deferral must match a `## Final Verification` obligation with an owner, prerequisite, command, and expected signal. Resolve every such obligation on the integrated candidate before claiming acceptance.
 - If ownership or impact cannot be bounded, select a broader coherent existing check and report any missing check. Unknown impact is not an empty green result.
 - Required checks that are skipped, unrun, failed, or blocked are not PASS. Optional skips may be reported as skipped.
@@ -81,6 +81,10 @@ For each coherent claim group:
 | Data or migration | Verify schema/data shape, empty/boundary inputs, and data preservation where relevant |
 
 Scale up when the change touches persistence, auth, public APIs, deployment, concurrency, payments, or destructive operations. Scale down for typo-only or documentation-only changes.
+
+### End-to-end speedup claims
+
+A claim that a delivery schedule is faster needs evidence for the whole schedule the claim covers (initial validation, correction, integration) on the same workload and measurement surface as the baseline. Label each statement as a measured speedup, an observed elimination (a named costly execution that no longer runs), or a projected benefit from the schedule. A faster focused check supports a claim about that check only. Unknown timing is reported as unknown and is not a failure unless a measured goal requires it. Required coverage, candidate applicability, and aggregate authority are decided as above and by the plan's Verification Planning; a speedup claim never overrides them.
 
 ## Adversarial Probes
 

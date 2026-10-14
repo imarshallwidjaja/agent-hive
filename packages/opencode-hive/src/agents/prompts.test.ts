@@ -2429,6 +2429,23 @@ describe('Plan reviewer prompt', () => {
     expect(PLAN_REVIEWER_PROMPT).toContain('When an amendment changes gates, include the amended tasks and affected `## Final Verification` records in the sample');
   });
 
+  it('treats an unsupported explicit verification-efficiency outcome as a requirement blocker', () => {
+    expect(PLAN_REVIEWER_PROMPT).toContain('10. Verification-efficiency outcome: when the request, plan, or an amendment states an explicit verification-efficiency outcome, treat it as a requirement');
+    expect(PLAN_REVIEWER_PROMPT).toContain('initial validation, one representative correction, and integration');
+    expect(PLAN_REVIEWER_PROMPT).toContain('judge its stated scope against the complete schedule evidence');
+    expect(PLAN_REVIEWER_PROMPT).toContain('Faster focused checks alone do not establish a whole-delivery improvement');
+    expect(PLAN_REVIEWER_PROMPT).toContain('retaining every required run is valid when the improvement the outcome claims is supported across that schedule');
+    expect(PLAN_REVIEWER_PROMPT).toContain('An explicitly local outcome such as faster local feedback stays local');
+    expect(PLAN_REVIEWER_PROMPT).toContain('A plan cannot narrow an operator-defined outcome on its own authority');
+    expect(PLAN_REVIEWER_PROMPT).toContain('without naming a retained exception contradicts the outcome');
+    expect(PLAN_REVIEWER_PROMPT).not.toContain('Faster focused checks that leave the same costly acceptance runs unchanged');
+    expect(PLAN_REVIEWER_PROMPT).toContain('A costly gate with a binding reason and unknown timing is not a finding by itself, and no numerical budget is required unless a requirement sets one');
+    expect(PLAN_REVIEWER_PROMPT).toContain('An unsupported or contradicted outcome is a blocker under the verdict rules, not a Verification Observation');
+    expect(PLAN_REVIEWER_PROMPT).toContain('A retained mandatory full gate, unknown timing, or an explicitly local outcome is not a blocker by itself');
+    expect(PLAN_REVIEWER_PROMPT).toContain("the operator's agreement to narrow the requirement, or an authorized gate change");
+    expect(PLAN_REVIEWER_PROMPT).toContain('narrows the outcome on its own or silently waives the gate stays blocked');
+  });
+
   it('blocks unresolved material public contracts before approval', () => {
     for (const [name, prompt] of [
       ['Architect', ARCHITECT_BEE_PROMPT],
