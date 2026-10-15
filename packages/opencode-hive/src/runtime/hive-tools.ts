@@ -52,10 +52,70 @@ function operation<Shape extends ArgShape>(definition: {
 }
 
 const targetIdentitySchema = z.object({
-  path: z.string(),
-  ref: z.string().nullable(),
-  commit: z.string(),
+  path: z.string().describe('Canonical absolute destination root.'),
+  ref: z.string().nullable().describe('Full refs/heads/... name, or null when the destination is detached.'),
+  commit: z.string().describe('Full destination commit ID.'),
 });
+
+// Field notes shared by the feature-task and ad-hoc merge tools. Descriptions explain argument relationships and
+// results; the merge service and normalizeMergePins below enforce them.
+const mergeOptionArgs = {
+  strategy: z.enum(['merge', 'squash', 'rebase']).optional()
+    .describe("Default 'squash'. 'rebase' rejects a nonblank message."),
+  message: z.string().optional()
+    .describe('Integration commit message: nonblank one-line subject, blank line, nonblank body. Needed whenever the operation creates a commit; omit it for rebase.'),
+  preserveConflicts: z.boolean().optional()
+    .describe('Default false: a conflicting integration is aborted and the destination restored. true leaves the conflict in the destination checkout (MERGE_CONFLICT_PRESERVED); do not merge again while that Git operation is active.'),
+  cleanup: z.enum(['none', 'worktree', 'worktree+branch']).optional()
+    .describe("Default 'none'. Removes the worktree (and branch) in the same call once integration succeeds. When integration succeeded but cleanup did not complete, the result is CLEANUP_FAILED with action cleanup_only: repeat only the cleanup, not the merge."),
+  sourceCommit: z.string().optional()
+    .describe('Full source commit SHA for a legacy single-root workspace; a singleton composite also accepts it for its one repository. Cannot be combined with sourceCommits. A value that differs from the currently inspected source commit is rejected before any mutation. Omitted, the API selects the currently inspected source: that is what is observed now and does not show it was verified, so pass the verified pin a worker returned unchanged.'),
+  sourceCommits: z.record(z.string(), z.string()).optional()
+    .describe('Source commits for a composite workspace, keyed by repository ID. Keys must exactly match every inspected repository and each value must equal that repository\'s current source commit. Rejected for a legacy single-root workspace and together with sourceCommit. Omitted, the currently inspected source commits are selected (observed, not verified).'),
+  expectedTarget: targetIdentitySchema.optional()
+    .describe('Destination identity copied unchanged from the inspect result `target`, for a legacy single-root workspace or a singleton composite. Exactly one of expectedTarget and expectedTargets is required; neither, both, or the wrong form for the workspace returns INVALID_ARGUMENTS with no mutation. A destination that no longer matches returns TARGET_MISMATCH, also with no mutation: inspect again instead of retrying.'),
+  expectedTargets: z.record(z.string(), targetIdentitySchema).optional()
+    .describe('Destination identities for a composite workspace, keyed by repository ID and copied unchanged from the inspect result `repos[repoId].target`. Keys must exactly match every candidate repository. See expectedTarget for the exactly-one rule and TARGET_MISMATCH.'),
+};
+
+const contextScopeArg = z.enum(['feature', 'project']).optional()
+  .describe("Default 'feature'. Use 'project' explicitly for .hive/context; project scope rejects feature and task selectors.");
+
+const cleanupOptionArgs = {
+  deleteBranch: z.boolean().optional()
+    .describe('Also delete the worktree branch. Each step (worktree removal, branch deletion, prune) reports its own status in cleanup, and a branch with unmerged commits is not deleted unless discard is true.'),
+  discard: z.boolean().optional()
+    .describe('Allows deleteBranch to delete a branch holding unmerged commits; cleanup never implies it. There is no force fallback for dirty, untracked, ignored or unmerged worktree data.'),
+};
+
+const taskRepoIdsArgs = {
+  repoIds: z.array(z.string()).optional()
+    .describe('Omit unless the task has a persisted repository selection. When given, it must match that selection exactly or the call is rejected before any worktree work.'),
+};
+
+const candidateArg = {
+  candidate: z.string().optional()
+    .describe('Selects a separate workspace and branch for this candidate of the task; omitted, the default workspace. Pass the same value on every later call for that workspace.'),
+};
+
+const adhocRepoIdsArg = {
+  repoIds: z.array(z.string()).optional()
+    .describe('Repository selection for the run; the persisted placement is located by runId. Cannot be combined with a foreign sourceDirectory.'),
+};
+
+const adhocSourceDirectoryArg = {
+  sourceDirectory: z.string().optional()
+    .describe('Absolute path of the foreign checkout the run was created from; omit it for the active project root. Cannot be combined with repoIds.'),
+};
+
+function mergeDescription(subject: string, inspectTool: string): string {
+  return `Integrate the committed source of ${subject} into its destination checkout as a local integration commit; nothing is pushed. `
+    + `Requires a clean source and a destination with a clean index and tracked working tree, and exactly one target expectation copied unchanged from ${inspectTool}. `
+    + 'Source pins are optional at this API: omitted, the currently inspected source is merged, which is an observation, not evidence that it was verified. '
+    + 'A missing worktree, an unresolved feature, a repoIds mismatch or a source pin that conflicts with the inspection throws an error before any mutation. Failures the merge service classifies return success: false with phase, reasonCode, mutation, retryable and action; follow action, and repeat the identical call only when retryable is true. '
+    + 'Read reasonCode, action and cleanup even when success is true: an integration that succeeded can still report CLEANUP_FAILED with action cleanup_only, and then only the cleanup is repeated. '
+    + 'Composite repositories integrate one after another, and an earlier integration is not rolled back when a later one fails (COMPOSITE_PARTIAL).';
+}
 
 function normalizeMergePins(
   inspected: { commit: string; repos?: Record<string, { commit: string }> },
@@ -230,8 +290,13 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
       },
     }),
     hive_plan_approve: operation({
-      description: 'Approve the plan with explicit persistence-stage outcomes. Optional sync requires the reviewed expectedRevision, returns separate approval and task-sync outcomes, and rechecks approval after sync.',
-      args: { feature: z.string().optional(), expectedRevision: z.string().optional(), sync: z.boolean().optional(), refreshPending: z.boolean().optional() },
+      description: 'Approve the plan with explicit persistence-stage outcomes. With sync: true it also syncs tasks, requires the reviewed expectedRevision, returns separate { approval, sync } outcomes, and rechecks approval after sync; the two are sequential, not one transaction. Inspect approvalPersisted and the failure reason/stage before retrying: an approval that persisted while only sync failed is retried with hive_tasks_sync, while approval_superseded_during_sync or approval_verification_failed means read and review the current plan before approving and syncing again. A validation rejection writes nothing.',
+      args: {
+        feature: z.string().optional(),
+        expectedRevision: z.string().optional().describe('Plan revision from hive_plan_read that was reviewed. Guards content, comments and approval state. Required when sync is true.'),
+        sync: z.boolean().optional().describe('true also runs task sync after approval (same logic as hive_tasks_sync) and returns { approval, sync }; omitted or false returns the approval outcome alone and does not sync.'),
+        refreshPending: z.boolean().optional().describe('Valid only with sync: true (otherwise refresh_pending_requires_sync). Pending plan tasks take their title, dependencies, repositories and spec from the current plan.'),
+      },
       execute: ({ feature, expectedRevision, sync, refreshPending }, invocation) => {
         const selected = requireFeature(feature, invocation);
         if (sync !== true && refreshPending !== undefined) {
@@ -270,8 +335,11 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
       },
     }),
     hive_tasks_sync: operation({
-      description: 'Sync tasks from the approved plan.',
-      args: { feature: z.string().optional(), refreshPending: z.boolean().optional() },
+      description: 'Sync tasks from the numbered headings under ## Tasks of the approved plan. Manual tasks and plan tasks whose current status is not pending (cancelled included) are kept with their files, whether or not the plan still lists them. A pending plan task no longer in the plan is removed with its whole task folder, including any report or handoff, even when it was reset to pending after work began. A rejected sync (for example an invalid dependency graph) writes nothing, but sync is not transactional against a filesystem failure partway through.',
+      args: {
+        feature: z.string().optional(),
+        refreshPending: z.boolean().optional().describe('Pending plan tasks still in the plan take their title, dependencies, repositories and spec from the current plan; default false keeps them as stored.'),
+      },
       execute: ({ feature, refreshPending }, invocation) => taskService.sync(requireFeature(feature, invocation), { refreshPending }),
     }),
     hive_task_create: operation({
@@ -286,14 +354,18 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
       execute: ({ name, order, feature, repos, ...metadata }, invocation) => taskService.create(requireFeature(feature, invocation), name, order, { ...metadata, repoIds: repos } as any),
     }),
     hive_task_update: operation({
-      description: `Update task state, optionally persist an immutable report (next reports/{N}.md, mirrored to report.md; returns reportPath), and optionally replace the successor handoff (handoff.md, at most ${TASK_HANDOFF_MAX_BYTES} UTF-8 bytes). Omitted fields are preserved. Validation rejections write nothing. On success: false or an unknown result, inspect the files named by failedStage, reportPath, and the written/published flags before retrying; the flags are hints, and a report already in history must not be resubmitted.`,
+      description: `Update task state, optionally persist an immutable report (next reports/{N}.md, mirrored to report.md; returns reportPath), and optionally replace the successor handoff (handoff.md, at most ${TASK_HANDOFF_MAX_BYTES} UTF-8 bytes). Omitted fields are preserved. Every supplied field is validated before any write, and a validation rejection writes nothing; writes then run in order: report history, report.md, handoff.md, status. On success: false or an unknown result (a lost response may still have written earlier stages), inspect the files named by failedStage, reportPath, and the written/published flags before retrying; the flags are hints, and a report already in history must not be resubmitted.`,
       args: {
         task: z.string(),
-        status: z.enum(['pending', 'in_progress', 'done', 'cancelled', 'blocked', 'failed', 'partial']).optional(),
+        status: z.enum(['pending', 'in_progress', 'done', 'cancelled', 'blocked', 'failed', 'partial']).optional()
+          .describe('Omitted preserves the stored status. An explicit status that leaves blocked clears the blocker.'),
         summary: z.string().optional(),
-        blocker: z.object({ reason: z.string(), options: z.array(z.string()).optional(), recommendation: z.string().optional(), context: z.string().optional() }).nullable().optional(),
-        report: z.string().optional(),
-        handoff: z.string().optional(),
+        blocker: z.object({ reason: z.string(), options: z.array(z.string()).optional(), recommendation: z.string().optional(), context: z.string().optional() }).nullable().optional()
+          .describe("An object requires status 'blocked' or a task that is already blocked; null clears the blocker."),
+        report: z.string().optional()
+          .describe('Nonblank text stored unchanged as the next numbered report. It is not a status field, and a report already in history is not resubmitted.'),
+        handoff: z.string().optional()
+          .describe(`Nonblank successor notes of at most ${TASK_HANDOFF_MAX_BYTES} UTF-8 bytes (rejected, not truncated). Replaces handoff.md; other updates leave it intact.`),
         feature: z.string().optional(),
       },
       execute: ({ task, feature, ...updates }, invocation) => {
@@ -305,8 +377,8 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
       },
     }),
     hive_worktree_create: operation({
-      description: 'Create a task worktree without changing task state and return its initial inspection, including source cleanliness and destination identity/comparison; later checkpoints still require hive_worktree_inspect.',
-      args: { feature: z.string().optional(), task: z.string(), baseRef: z.string().optional(), repoIds: z.array(z.string()).optional(), candidate: z.string().optional() },
+      description: 'Create a task worktree without changing task state and return its initial inspection, including source cleanliness and destination identity/comparison; later checkpoints still require hive_worktree_inspect. An existing worktree for the same task and candidate is reused and inspected again, so the result reflects its current state.',
+      args: { feature: z.string().optional(), task: z.string(), baseRef: z.string().optional().describe('Ref the new worktree branch starts from; omitted, the current HEAD of the destination checkout.'), ...taskRepoIdsArgs, ...candidateArg },
       execute: async ({ feature, task, baseRef, repoIds, candidate }, invocation) => {
         const selected = requireFeature(feature, invocation);
         assertTaskRepoIds(selected, task, repoIds);
@@ -317,8 +389,8 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
       },
     }),
     hive_worktree_inspect: operation({
-      description: 'Inspect a task worktree.',
-      args: { feature: z.string().optional(), task: z.string(), repoIds: z.array(z.string()).optional(), candidate: z.string().optional() },
+      description: 'Inspect a task worktree: placement, source commit, clean state (including untracked and ignored files) and the destination identity `target` with its `comparison` (per repository under `repos` for composites). Returns null when no such worktree exists. It never fetches. Copy `target` unchanged into the merge expectation, and inspect again after the destination may have moved.',
+      args: { feature: z.string().optional(), task: z.string(), ...taskRepoIdsArgs, ...candidateArg },
       execute: async ({ feature, task, repoIds, candidate }, invocation) => {
         const selected = requireFeature(feature, invocation);
         assertTaskRepoIds(selected, task, repoIds);
@@ -326,13 +398,8 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
       },
     }),
     hive_worktree_merge: operation({
-      description: 'Merge an exact task worktree source into the current target.',
-      args: {
-        feature: z.string().optional(), task: z.string(), repoIds: z.array(z.string()).optional(), candidate: z.string().optional(),
-        strategy: z.enum(['merge', 'squash', 'rebase']).optional(), message: z.string().optional(), preserveConflicts: z.boolean().optional(),
-        cleanup: z.enum(['none', 'worktree', 'worktree+branch']).optional(), sourceCommit: z.string().optional(), sourceCommits: z.record(z.string(), z.string()).optional(),
-        expectedTarget: targetIdentitySchema.optional(), expectedTargets: z.record(z.string(), targetIdentitySchema).optional(),
-      },
+      description: mergeDescription('a feature-task worktree', 'hive_worktree_inspect'),
+      args: { feature: z.string().optional(), task: z.string(), ...taskRepoIdsArgs, ...candidateArg, ...mergeOptionArgs },
       execute: async ({ feature, task, repoIds, candidate, strategy = 'squash', message, ...options }, invocation) => {
         const selected = requireFeature(feature, invocation);
         assertTaskRepoIds(selected, task, repoIds);
@@ -344,8 +411,8 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
       },
     }),
     hive_worktree_cleanup: operation({
-      description: 'Clean up a task worktree. Set discard to explicitly retire unintegrated work.',
-      args: { feature: z.string().optional(), task: z.string(), repoIds: z.array(z.string()).optional(), candidate: z.string().optional(), deleteBranch: z.boolean().optional(), discard: z.boolean().optional() },
+      description: 'Clean up a task worktree. Set discard to explicitly retire unintegrated work. Use this for state retained or left incomplete after a merge, not as part of a merge that already succeeded with cleanup requested.',
+      args: { feature: z.string().optional(), task: z.string(), ...taskRepoIdsArgs, ...candidateArg, ...cleanupOptionArgs },
       execute: async ({ feature, task, repoIds, candidate, deleteBranch, discard }, invocation) => {
         const selected = requireFeature(feature, invocation);
         assertTaskRepoIds(selected, task, repoIds);
@@ -353,8 +420,12 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
       },
     }),
     hive_adhoc_worktree_create: operation({
-      description: 'Create the matching ad-hoc Hive worktree and return its initial inspection, including source cleanliness and destination identity/comparison; later checkpoints still require hive_adhoc_worktree_inspect. An absolute sourceDirectory resolving to the active project root is treated as omitted; foreign sourceDirectory cannot be combined with repoIds.',
-      args: { runId: z.string().optional(), repoIds: z.array(z.string()).optional(), sourceDirectory: z.string().optional() },
+      description: 'Create the matching ad-hoc Hive worktree and return its initial inspection, including source cleanliness and destination identity/comparison; later checkpoints still require hive_adhoc_worktree_inspect. An absolute sourceDirectory resolving to the active project root is treated as omitted; foreign sourceDirectory cannot be combined with repoIds. Calling it again with an existing runId reuses that run and inspects it again.',
+      args: {
+        runId: z.string().optional().describe('Run identifier and branch suffix: [A-Za-z0-9][A-Za-z0-9._-]{0,127}. Generated when omitted; the returned runId locates the run on every later call.'),
+        repoIds: z.array(z.string()).optional().describe('Repositories owned by this run. A manifest-backed project needs a nonempty selection here; later calls locate the persisted placement by runId. Cannot be combined with a foreign sourceDirectory.'),
+        sourceDirectory: z.string().optional().describe('Absolute path of a foreign checkout to work from. An absolute path resolving to the active project root is treated as omitted.'),
+      },
       execute: async ({ sourceDirectory, ...options }) => {
         let normalizedSourceDirectory = sourceDirectory;
         if (sourceDirectory !== undefined) {
@@ -375,18 +446,13 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
       },
     }),
     hive_adhoc_worktree_inspect: operation({
-      description: 'Inspect an ad-hoc worktree.',
-      args: { runId: z.string(), repoIds: z.array(z.string()).optional(), sourceDirectory: z.string().optional() },
+      description: 'Inspect an ad-hoc worktree: placement, source commit, clean state (including untracked and ignored files) and the destination identity `target` with its `comparison` (per repository under `repos` for composites). It never fetches. Copy `target` unchanged into the merge expectation, and inspect again after the destination may have moved.',
+      args: { runId: z.string(), ...adhocRepoIdsArg, ...adhocSourceDirectoryArg },
       execute: ({ runId, repoIds, sourceDirectory }) => adhocService(sourceDirectory, repoIds).inspect(runId),
     }),
     hive_adhoc_worktree_merge: operation({
-      description: 'Merge an exact ad-hoc source into the selected target.',
-      args: {
-        runId: z.string(), repoIds: z.array(z.string()).optional(), sourceDirectory: z.string().optional(),
-        strategy: z.enum(['merge', 'squash', 'rebase']).optional(), message: z.string().optional(), preserveConflicts: z.boolean().optional(), cleanup: z.enum(['none', 'worktree', 'worktree+branch']).optional(),
-        sourceCommit: z.string().optional(), sourceCommits: z.record(z.string(), z.string()).optional(),
-        expectedTarget: targetIdentitySchema.optional(), expectedTargets: z.record(z.string(), targetIdentitySchema).optional(),
-      },
+      description: mergeDescription('an ad-hoc worktree', 'hive_adhoc_worktree_inspect'),
+      args: { runId: z.string(), ...adhocRepoIdsArg, ...adhocSourceDirectoryArg, ...mergeOptionArgs },
       execute: async ({ runId, repoIds, sourceDirectory, strategy = 'squash', message, ...options }) => {
         const service = adhocService(sourceDirectory, repoIds);
         const inspected = await service.inspect(runId);
@@ -397,13 +463,23 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
       },
     }),
     hive_adhoc_worktree_cleanup: operation({
-      description: 'Clean up an ad-hoc worktree. Set discard to explicitly retire unintegrated work.',
-      args: { runId: z.string(), repoIds: z.array(z.string()).optional(), sourceDirectory: z.string().optional(), deleteBranch: z.boolean().optional(), discard: z.boolean().optional() },
+      description: 'Clean up an ad-hoc worktree. Set discard to explicitly retire unintegrated work. Use this for state retained or left incomplete after a merge, not as part of a merge that already succeeded with cleanup requested.',
+      args: { runId: z.string(), ...adhocRepoIdsArg, ...adhocSourceDirectoryArg, ...cleanupOptionArgs },
       execute: ({ runId, repoIds, sourceDirectory, deleteBranch, discard }) => adhocService(sourceDirectory, repoIds).cleanup(runId, deleteBranch, { discard }),
     }),
     hive_context_read: operation({
-      description: 'Read managed project or feature context.',
-      args: { name: z.string().optional(), scope: z.enum(['feature', 'project']).optional(), feature: z.string().optional(), view: z.enum(['summary', 'catalog']).optional(), query: z.string().optional(), limit: z.number().optional(), cursor: z.string().optional(), maxBytes: z.number().optional(), scanChars: z.boolean().optional() },
+      description: 'Read managed project or feature context. Without name it lists: the summary view (default) or the durable catalog. With name it returns one exact document in chunks, with the revision and file.contentHash that later mutations require; follow nextCursor until complete is true before relying on or replacing the document. A cursor that no longer matches the document, revision or content fails as stale_context_cursor: restart the read.',
+      args: {
+        name: z.string().optional().describe('Reads that document in chunks (cursor, maxBytes). Cannot be combined with view, query, limit or scanChars.'),
+        scope: contextScopeArg,
+        feature: z.string().optional(),
+        view: z.enum(['summary', 'catalog']).optional().describe("Without name: 'summary' (default, rejects query, limit and cursor) or 'catalog' of durable files (query, limit, cursor)."),
+        query: z.string().optional().describe('Literal text filter for the catalog view.'),
+        limit: z.number().optional().describe('Maximum catalog entries for the catalog view.'),
+        cursor: z.string().optional().describe('The nextCursor returned by the previous page of this same catalog or named read, passed unchanged.'),
+        maxBytes: z.number().optional().describe('Named reads only: 256 to 65536 bytes, default 16384.'),
+        scanChars: z.boolean().optional().describe('Summary view only.'),
+      },
       execute: ({ name, scope, feature, view, query, limit, cursor, maxBytes, scanChars }, invocation) => {
         const resolved = contextScope(scope, feature, invocation);
         if (name) {
@@ -420,8 +496,17 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
       },
     }),
     hive_context_write: operation({
-      description: 'Create or replace managed context.',
-      args: { name: z.string(), content: z.string(), kind: z.enum(['durable', 'evidence']).optional(), task: z.string().optional(), expectedRevision: z.number().optional(), expectedContentHash: z.string().optional(), scope: z.enum(['feature', 'project']).optional(), feature: z.string().optional() },
+      description: 'Create a missing context file, or replace one whole document. Create: omit expectedRevision and expectedContentHash; an existing name fails with context_already_exists. Replace: both come from a read of the complete current document (finish its chunks first), and a stale pair is rejected as a changed context: read again before retrying. On context_index_invalid or context_reconciliation_required, stop managed mutations and report the error; this tool does not repair control files.',
+      args: {
+        name: z.string(),
+        content: z.string().describe('The whole document. A durable file needs frontmatter description and read_when (project scope also owner and review_after).'),
+        kind: z.enum(['durable', 'evidence']).optional().describe("Default 'durable', listed in the catalog. 'evidence' holds raw logs and historical verification and is omitted from the catalog but readable by name. Reserved names (overview, draft, execution-decisions) reject kind."),
+        task: z.string().optional().describe('Feature scope only: associates the file with a task as a relevance hint, not a filter or authority.'),
+        expectedRevision: z.number().optional().describe('The revision from the read. Supply it with expectedContentHash to replace; omit both to create.'),
+        expectedContentHash: z.string().optional().describe("The named read's file.contentHash, required with expectedRevision."),
+        scope: contextScopeArg,
+        feature: z.string().optional(),
+      },
       execute: ({ name, content, kind, task, expectedRevision, expectedContentHash, scope, feature }, invocation) => {
         const resolved = contextScope(scope, feature, invocation, task);
         return expectedRevision === undefined
@@ -430,13 +515,29 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
       },
     }),
     hive_context_append: operation({
-      description: 'Append to managed context.',
-      args: { name: z.string(), content: z.string(), section: z.string().optional(), task: z.string().optional(), expectedRevision: z.number(), expectedContentHash: z.string(), scope: z.enum(['feature', 'project']).optional(), feature: z.string().optional() },
+      description: 'Append a dated block to an existing context file, keeping its prior bytes. Needs the current revision and file.contentHash from a named read; a stale pair is rejected, so read again before retrying. After an append, use the returned revision and hash for the next mutation.',
+      args: {
+        name: z.string(),
+        content: z.string().describe('The block to append.'),
+        section: z.string().optional().describe('Optional heading the block is appended under.'),
+        task: z.string().optional().describe('Feature scope only: associates the file with a task as a relevance hint, not a filter or authority.'),
+        expectedRevision: z.number().describe('The revision from the read.'),
+        expectedContentHash: z.string().describe("The named read's file.contentHash."),
+        scope: contextScopeArg,
+        feature: z.string().optional(),
+      },
       execute: ({ name, content, section, task, expectedRevision, expectedContentHash, scope, feature }, invocation) => contextService.append(contextScope(scope, feature, invocation, task), name, content, expectedRevision, expectedContentHash, { section, task }),
     }),
     hive_context_archive: operation({
-      description: 'Archive selected managed context.',
-      args: { names: z.array(z.string()), reason: z.string(), expectedRevision: z.number(), expectedContentHashes: z.record(z.string(), z.string()), scope: z.enum(['feature', 'project']).optional(), feature: z.string().optional() },
+      description: 'Archive the named context files with a recorded reason. Primary-only. Needs the current revision and each named file\'s content hash from a read; a stale revision or hash is rejected.',
+      args: {
+        names: z.array(z.string()),
+        reason: z.string().describe('Nonblank; recorded with the archive.'),
+        expectedRevision: z.number().describe('The current context revision.'),
+        expectedContentHashes: z.record(z.string(), z.string()).describe('Content hash for every name in names, from a named read of each.'),
+        scope: contextScopeArg,
+        feature: z.string().optional(),
+      },
       execute: ({ names, reason, expectedRevision, expectedContentHashes, scope, feature }, invocation) => contextService.archiveSelected(contextScope(scope, feature, invocation), names, reason, expectedRevision, expectedContentHashes),
     }),
     hive_constraints_read: operation({

@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import plugin from '../index.js';
 import { HIVE_TOOL_NAMES } from '../utils/plugin-manifest.js';
 import { createPluginWithHome } from '../e2e/plugin-test-home.js';
+import { createHiveOperations } from './hive-tools.js';
 import { z } from './schema.js';
 
 // Contract tests for the shared Hive operations, exercised through the registered v1 plugin so they pin what a host
@@ -139,6 +140,83 @@ describe('ordinary Hive operation arguments', () => {
     const schema = z.object((hooks.tool as any).hive_feature_select.args);
     expect(schema.parse({ feature: null })).toEqual({ feature: null });
     expect(schema.safeParse({}).success).toBe(false);
+  });
+});
+
+// Fields whose meaning depends on another argument, an effect or a retry rule carry a description beside the argument.
+const DESCRIBED_FIELDS: Record<string, string[]> = {
+  hive_plan_approve: ['expectedRevision', 'sync', 'refreshPending'],
+  hive_tasks_sync: ['refreshPending'],
+  hive_task_update: ['status', 'blocker', 'report', 'handoff'],
+  hive_worktree_create: ['baseRef', 'repoIds', 'candidate'],
+  hive_worktree_inspect: ['repoIds', 'candidate'],
+  hive_worktree_cleanup: ['repoIds', 'candidate', 'deleteBranch', 'discard'],
+  hive_adhoc_worktree_create: ['runId', 'repoIds', 'sourceDirectory'],
+  hive_adhoc_worktree_inspect: ['repoIds', 'sourceDirectory'],
+  hive_adhoc_worktree_cleanup: ['repoIds', 'sourceDirectory', 'deleteBranch', 'discard'],
+  hive_context_read: ['name', 'scope', 'view', 'query', 'limit', 'cursor', 'maxBytes', 'scanChars'],
+  hive_context_write: ['content', 'kind', 'task', 'expectedRevision', 'expectedContentHash', 'scope'],
+  hive_context_append: ['content', 'section', 'task', 'expectedRevision', 'expectedContentHash', 'scope'],
+  hive_context_archive: ['reason', 'expectedRevision', 'expectedContentHashes', 'scope'],
+  ...Object.fromEntries(['hive_worktree_merge', 'hive_adhoc_worktree_merge'].map((name) => [name, [
+    'strategy', 'message', 'preserveConflicts', 'cleanup', 'sourceCommit', 'sourceCommits', 'expectedTarget', 'expectedTargets',
+  ]])),
+};
+
+describe('ordinary Hive operation metadata', () => {
+  it('delivers each operation description and argument schema to the v1 host unchanged', async () => {
+    const { hooks } = await createRuntime();
+    const operations = createHiveOperations({} as any);
+    for (const [name, operation] of Object.entries(operations)) {
+      const registered = (hooks.tool as Record<string, { description: string; args: any }>)[name]!;
+      expect(registered.description, name).toBe(operation.description);
+      expect(z.toJSONSchema(z.object(registered.args)), name).toEqual(z.toJSONSchema(z.object(operation.args)));
+    }
+  });
+
+  it('describes the fields that depend on another argument, an effect or a retry rule', async () => {
+    const { hooks } = await createRuntime();
+    for (const [name, fieldNames] of Object.entries(DESCRIBED_FIELDS)) {
+      const schema = z.toJSONSchema(z.object((hooks.tool as any)[name].args)) as any;
+      for (const field of fieldNames) {
+        expect(schema.properties[field]?.description, `${name}.${field}`).toEqual(expect.any(String));
+        expect(schema.properties[field].description.trim().length, `${name}.${field}`).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it('states the exactly-one target expectation, the repository-key rule and the omitted-pin meaning on both merge tools', async () => {
+    const { hooks } = await createRuntime();
+    for (const name of ['hive_worktree_merge', 'hive_adhoc_worktree_merge']) {
+      const registered = (hooks.tool as any)[name] as { description: string; args: any };
+      const schema = z.toJSONSchema(z.object(registered.args)) as any;
+      const { expectedTarget, expectedTargets, sourceCommit, sourceCommits } = schema.properties;
+      expect(expectedTarget.description, name).toContain('Exactly one of expectedTarget and expectedTargets');
+      expect(expectedTargets.description, name).toContain('Keys must exactly match every candidate repository');
+      expect(expectedTarget.properties.ref.description, name).toContain('null when the destination is detached');
+      expect(sourceCommits.description, name).toContain('Keys must exactly match every inspected repository');
+      expect(sourceCommit.description, name).toContain('does not show it was verified');
+      expect(registered.description, name).toContain('not evidence that it was verified');
+      // Boundary errors throw, classified failures return success: false, and success: true can still need cleanup recovery.
+      expect(registered.description, name).toContain('a source pin that conflicts with the inspection throws an error');
+      expect(registered.description, name).toContain('Failures the merge service classifies return success: false');
+      expect(registered.description, name).toContain('even when success is true');
+      // Descriptions explain the relationships; the argument shape still leaves both expectations optional.
+      expect(schema.required, name).not.toContain('expectedTarget');
+      expect(schema.required, name).not.toContain('expectedTargets');
+    }
+  });
+});
+
+describe('ordinary Hive operation metadata retention and naming', () => {
+  it('describes task sync retention by current status and keeps candidate naming out of the argument text', async () => {
+    const { hooks } = await createRuntime();
+    const tools = hooks.tool as Record<string, { description: string; args: any }>;
+    expect(tools.hive_tasks_sync!.description).toContain('whose current status is not pending');
+    expect(tools.hive_tasks_sync!.description).toContain('including any report or handoff');
+    expect(tools.hive_tasks_sync!.description).not.toContain('execution history');
+    const candidate = (z.toJSONSchema(z.object(tools.hive_worktree_create!.args)) as any).properties.candidate.description as string;
+    expect(candidate).not.toMatch(/\{task\}|--/);
   });
 });
 

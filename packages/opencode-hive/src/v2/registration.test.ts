@@ -247,6 +247,21 @@ describe('v2 tool registration', () => {
     expect(host.tools().get('hive_task_create').output).toBeUndefined();
   });
 
+  it('delivers each ordinary operation description and field descriptions unchanged through the JSON Schema export', async () => {
+    const operations = createHiveOperations({} as any);
+    const tools = (await activate()).tools();
+    for (const [name, operation] of Object.entries(operations)) {
+      const info = tools.get(name);
+      expect(info.description, name).toBe(operation.description);
+      expect(info.input['~standard'].jsonSchema.input({ target: 'draft-2020-12' }), name)
+        .toEqual(z.toJSONSchema(z.object(operation.args), { io: 'input', target: 'draft-2020-12' }));
+    }
+    const merge = tools.get('hive_worktree_merge').input['~standard'].jsonSchema.input({ target: 'draft-2020-12' }) as any;
+    expect(merge.properties.expectedTarget.description).toBe((operations.hive_worktree_merge!.args.expectedTarget as any).description);
+    expect(merge.properties.expectedTarget.description).toContain('Exactly one of expectedTarget and expectedTargets');
+    expect(merge.required).toEqual(['task']);
+  });
+
   it('returns the structured domain result with its v1 JSON text, and plain text for text operations', async () => {
     const host = await activate();
     const exit = await host.execute('hive_repositories_status', {}, { sessionID: 'primary', agent: 'hive-master' });

@@ -206,7 +206,7 @@ hive_tasks_sync({ refreshPending: true })
 - Updates `status.json.repoIds` from `Repos:` in the plan (or removes it if the plan no longer declares repositories)
 - Regenerates `spec.md`
 - Deletes pending plan-backed tasks removed from `plan.md`
-- Preserves manual tasks, cancelled tasks, and any task with execution history (`in_progress`, `done`, `blocked`, `failed`, `partial`)
+- Preserves manual tasks and any plan task whose current status is not `pending` (`in_progress`, `done`, `blocked`, `failed`, `partial`, `cancelled`); a plan task reset to `pending` is deleted with its folder when the plan no longer lists it
 - Rejects the whole sync, before any write, when the resulting unfinished-task graph is invalid; refreshing a pending task's outdated dependencies is one of the repair routes
 
 Ad-hoc orchestration uses `hive_adhoc_worktree_create`, `hive_adhoc_worktree_merge`, and `hive_adhoc_worktree_cleanup` for Git worktree placement. Manual tasks remain for full Hive DAG follow-ups. Route sequencing or scope changes back through `plan.md`, then refresh pending tasks from that graph.

@@ -866,6 +866,52 @@ describe('coordinated runtime hard cut', () => {
     });
   });
 
+  // Convenience semantics only: an omitted pin selects whatever the source is at merge time. It does not show that
+  // source was ever verified, which is why orchestration still passes the worker-returned pin unchanged.
+  it('selects the currently inspected source when the pin is omitted and rejects a stale explicit pin', async () => {
+    const runtime = createRuntime();
+    git(runtime.root, ['init']);
+    git(runtime.root, ['config', 'user.email', 'test@example.com']);
+    git(runtime.root, ['config', 'user.name', 'Test']);
+    fs.writeFileSync(path.join(runtime.root, 'tracked.txt'), 'base\n');
+    git(runtime.root, ['add', '.']);
+    git(runtime.root, ['commit', '-m', 'test: observed source base']);
+    const loaded = await runtime.hooks;
+    const created = JSON.parse(await loaded.tool!.hive_adhoc_worktree_create.execute({ runId: 'observed-source' }, {}));
+    const commitSource = (content: string) => {
+      fs.writeFileSync(path.join(created.path, 'tracked.txt'), content);
+      git(created.path, ['add', '.']);
+      git(created.path, ['commit', '-m', `test: source ${content.trim()}`]);
+      return git(created.path, ['rev-parse', 'HEAD']);
+    };
+
+    const candidateA = commitSource('candidate A\n');
+    expect(JSON.parse(await loaded.tool!.hive_adhoc_worktree_inspect.execute({ runId: created.runId }, {})).commit).toBe(candidateA);
+    const candidateB = commitSource('candidate B\n');
+    const inspected = JSON.parse(await loaded.tool!.hive_adhoc_worktree_inspect.execute({ runId: created.runId }, {}));
+    expect(inspected.commit).toBe(candidateB);
+    const treeB = git(created.path, ['rev-parse', 'HEAD^{tree}']);
+    const targetBefore = git(runtime.root, ['rev-parse', 'HEAD']);
+
+    await expect(loaded.tool!.hive_adhoc_worktree_merge.execute({
+      runId: created.runId,
+      sourceCommit: candidateA,
+      expectedTarget: inspected.target,
+      message: 'test: merge stale source\n\nThe explicit pin predates the current source.',
+    }, {})).rejects.toThrow('sourceCommit does not match the inspected candidate');
+    expect(git(runtime.root, ['rev-parse', 'HEAD'])).toBe(targetBefore);
+
+    const result = JSON.parse(await loaded.tool!.hive_adhoc_worktree_merge.execute({
+      runId: created.runId,
+      expectedTarget: inspected.target,
+      message: 'test: merge observed source\n\nOmitting the pin merges the source inspected at merge time.',
+      cleanup: 'worktree+branch',
+    }, {}));
+    expect(result.success).toBe(true);
+    expect(fs.readFileSync(path.join(runtime.root, 'tracked.txt'), 'utf8')).toBe('candidate B\n');
+    expect(git(runtime.root, ['rev-parse', 'HEAD^{tree}'])).toBe(treeB);
+  });
+
   it('binds the same complete snapshot when the after hook arrives before the event hook', async () => {
     const { root, hooks } = createRuntime();
     const loaded = await hooks;
