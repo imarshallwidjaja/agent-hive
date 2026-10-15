@@ -394,6 +394,27 @@ describe(`release ${releaseVersion} artifact contract on main`, () => {
     }
   });
 
+  it('declares MIT in every manifest and ships the MIT text beside each package, keeping the copyright lines', () => {
+    const packageLock = readJson('package-lock.json');
+    const expectedLicenses = [
+      ['LICENSE', 'package.json', 'Copyright (c) 2024 tctinh'],
+      ['packages/hive-core/LICENSE', 'packages/hive-core/package.json', 'Copyright (c) 2024 tctinh'],
+      ['packages/opencode-hive/LICENSE', 'packages/opencode-hive/package.json', 'Copyright (c) 2024 tctinh'],
+      ['packages/vscode-hive/LICENSE', 'packages/vscode-hive/package.json', 'Copyright (c) 2025 tctinh'],
+    ];
+
+    for (const [licensePath, manifestPath, copyright] of expectedLicenses) {
+      const text = readText(licensePath);
+      assert.equal(readJson(manifestPath).license, 'MIT', `${manifestPath} should declare MIT`);
+      assert.ok(text.startsWith(`MIT License\n\n${copyright}\n\nPermission is hereby granted`), `${licensePath} should be the MIT text with its copyright line`);
+      assert.doesNotMatch(text, /Commons Clause|Creative Commons|NonCommercial/i, `${licensePath} should carry no non-commercial restriction`);
+      assert.equal(text, readText('LICENSE').replace('Copyright (c) 2024 tctinh', copyright), `${licensePath} should differ from the root MIT text only in its copyright year`);
+    }
+    for (const workspacePath of ['packages/hive-core', 'packages/opencode-hive', 'packages/vscode-hive']) {
+      assert.equal(packageLock.packages[workspacePath].license, 'MIT', `package-lock.json should record MIT for ${workspacePath}`);
+    }
+  });
+
   it(`refreshes tracked OpenCode lockfile markers to ${releaseVersion}`, () => {
     const packageLock = readJson('package-lock.json');
     const bunLock = readText('bun.lock');
@@ -542,6 +563,8 @@ describe(`release ${releaseVersion} artifact contract on main`, () => {
   it('packs every oc-arkive asset and type-checks the tarball in a clean consumer', () => {
     withPackedPackage(opencodeHiveRoot, (packageRoot, packedFiles, tarballPath) => {
       assertPackedFile(packedFiles, 'dist/index.js', 'oc-arkive');
+      assertPackedFile(packedFiles, 'LICENSE', 'oc-arkive');
+      assert.equal(fs.readFileSync(path.join(packageRoot, 'LICENSE'), 'utf8'), readText('LICENSE'), 'packed oc-arkive LICENSE should be the root MIT text');
       assertPackedFile(packedFiles, 'schema/agent_hive.schema.json', 'oc-arkive');
       assertPackedFile(packedFiles, 'schema/agent_hive.override.schema.json', 'oc-arkive');
       assert.ok(

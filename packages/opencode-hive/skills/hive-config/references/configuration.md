@@ -4,16 +4,28 @@
 
 | File | Scope | Notes |
 |---|---|---|
-| `~/.config/opencode/agent_hive.json` | Global, authoritative | Path is built from `$HOME` (`USERPROFILE` on Windows). `OPENCODE_CONFIG_DIR` and `XDG_CONFIG_HOME` do not move it. The plugin creates it with defaults and three `*-example-template` custom agents on startup when it is missing |
+| `~/.config/opencode/agent_hive.json` | Global, authoritative | Path is built from `$HOME` (`USERPROFILE` on Windows). `OPENCODE_CONFIG_DIR` and `XDG_CONFIG_HOME` do not move it |
 | `<project>/.hive/agent-hive.override.json` | Project | Only `model` and `variant` for agents already present in the effective global or default config |
 | `<project>/.hive/agent-hive.json`, `<project>/.opencode/agent_hive.json` | none | Ignored. Moving settings here does nothing |
 | `opencode.json` | OpenCode | Plugin list, providers, model `variants`, global `permission`, `skills.paths`/`skills.urls`. Not Agent Hive config |
 
-Configuration is read when the plugin's config hook runs at host startup and is then cached. After editing either Agent Hive file:
+<!-- hive-host opencode-v1 -->
+When the global file is missing, the plugin's config hook creates it at host startup with the defaults and three `*-example-template` custom agents. Configuration is read at that point and then cached.
+<!-- /hive-host -->
+<!-- hive-host opencode-v2 -->
+The v2 entry never creates the global file. When it is missing, Hive uses the built-in defaults without the example custom agents, and writing the file is a manual step. Configuration is read once when the plugin activates and then cached.
+<!-- /hive-host -->
+
+After editing either Agent Hive file:
 
 1. If OpenCode loads the plugin from a local checkout (a `file://.../packages/opencode-hive/dist/index.js` plugin entry), rebuild that checkout first (`bun run build`). A build inside a Hive worktree updates only that worktree's bundle.
 2. Identify the long-lived OpenCode process that loaded the plugin, name it, and ask the operator before restarting it: restarting the host interrupts every session it serves. It may be an `opencode` TUI, an `opencode serve` process, or a service unit that runs one. One operator's setup, for example, runs `opencode serve` as the `opencode.service` user unit (`systemctl --user restart opencode.service`); do not assume that unit exists elsewhere. Restarting a client that attaches to a server does not reload the server's plugin.
+<!-- hive-host opencode-v1 -->
 3. Start fresh sessions. Existing child sessions keep their creation-time permissions and prompts.
+<!-- /hive-host -->
+<!-- hive-host opencode-v2 -->
+3. Send a new message in each session and launch fresh child sessions. Hive adds role instructions to every request from the catalog built at activation, so an open session picks up the reloaded settings on its next request. A child captures its route and constraints when it is dispatched.
+<!-- /hive-host -->
 4. Confirm that no `Failed to read global config` or `Failed to read project agent override` warning appeared. The plugin raises it as an "Agent Hive Config Warning" notification (or a `[hive:config]` host log line when notifications are unavailable), and `hive_status` repeats it in its `warning` field. Either warning means that file was ignored.
 
 ## Validation failure falls back to defaults
@@ -92,7 +104,7 @@ Shipped default models and temperatures live in hive-core `DEFAULT_AGENT_MODELS`
 - `autoLoadSkills`: merged with the base agent's effective list.
 - Tools and permissions: exactly the base's. Config cannot add tools.
 - IDs must not contain `*` or `?`, and must not be reserved: every built-in name, `dash-reviewer`, `vulnerability-review-primary`, `__hive_task_trace_summarizer`, `general`, `explore`, `hive`, `architect`, `swarm`, `scout`, `forager`, `hygienic`, `hygienic-reviewer`, `receiver`, `build`, `builder`, `plan`, `code`. Reserved or invalid entries are skipped with a warning.
-- The seeded `*-example-template` entries are placeholders; rename or delete them before use.
+- The `*-example-template` entries that a v1 startup seeds into a new file are placeholders; rename or delete them before use.
 
 ## Project override (`.hive/agent-hive.override.json`)
 

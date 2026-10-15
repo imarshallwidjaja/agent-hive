@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 960 624" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="native-state-ownership-title native-state-ownership-desc" id="native-state-ownership-root">
+        <title id="native-state-ownership-title">Shared and host-owned Agent Hive state</title>
+        <desc id="native-state-ownership-desc">Plans, tasks, context, constraints and worktree metadata under .hive are shared by both OpenCode hosts, while each host owns a separate Hive observation store and a separate native home whose records are never copied or merged.</desc>
+        <defs>
+      <style>#native-state-ownership-root { font-family: 'Geist', system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; color: #1d2127; }
+      #native-state-ownership-root .lede { max-width: 44rem; font-size: 1rem; line-height: 1.55; color: #4b5361; margin-bottom: 2rem; }
+      #native-state-ownership-root .diagram-container { width: 100%; overflow-x: auto; }
+      #native-state-ownership-root .note { max-width: 44rem;
+      margin-top: 1.5rem;
+      padding-top: 1rem;
+      border-top: 1px solid #d6d6d1;
+      font-size: 0.9rem;
+      line-height: 1.55;
+      color: #4b5361; }
+      #native-state-ownership-root code { font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; font-size: 0.85em; }
+      #native-state-ownership-root .name { font-family: 'Geist', system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; font-size: 16px; font-weight: 600; fill: #1d2127; }
+      #native-state-ownership-root .desc { font-family: 'Geist', system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; font-size: 12px; font-weight: 400; fill: #4b5361; }
+      #native-state-ownership-root .path { font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; font-size: 12px; fill: #4b5361; }
+      #native-state-ownership-root .label { font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; font-size: 12px; font-weight: 500; letter-spacing: 0.08em; fill: #5b616b; }
+      #native-state-ownership-root .label-accent { fill: #985500; }
+      #native-state-ownership-root .diagram-container { overflow-x: visible; }</style>
+          <marker id="native-state-ownership-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4b5361"/></marker>
+        </defs>
+
+        <rect width="100%" height="100%" fill="#f7f6f3"/>
+
+        <!-- Zones -->
+        <rect x="40" y="40" width="880" height="168" rx="8" fill="#f6efe4" stroke="#985500" stroke-width="1.2"/>
+        <rect x="40" y="272" width="416" height="288" rx="8" fill="none" stroke="#b4b7bc" stroke-width="1"/>
+        <rect x="504" y="272" width="416" height="288" rx="8" fill="none" stroke="#b4b7bc" stroke-width="1"/>
+
+        <!-- Arrows -->
+        <line x1="248" y1="272" x2="248" y2="209" stroke="#4b5361" stroke-width="1.2" marker-end="url(#native-state-ownership-arrow)"/>
+        <line x1="712" y1="272" x2="712" y2="209" stroke="#4b5361" stroke-width="1.2" marker-end="url(#native-state-ownership-arrow)"/>
+
+        <!-- Arrow labels and zone labels -->
+        <rect x="256" y="232" width="120" height="16" rx="2" fill="#f7f6f3"/>
+        <text class="label" x="262" y="244">READS, WRITES</text>
+        <rect x="720" y="232" width="120" height="16" rx="2" fill="#f7f6f3"/>
+        <text class="label" x="726" y="244">READS, WRITES</text>
+        <rect x="52" y="32" width="180" height="16" rx="2" fill="#f7f6f3"/>
+        <text class="label label-accent" x="60" y="44">SHARED BY BOTH HOSTS</text>
+        <rect x="52" y="264" width="148" height="16" rx="2" fill="#f7f6f3"/>
+        <text class="label" x="60" y="276">OPENCODE V1 ONLY</text>
+        <rect x="516" y="264" width="148" height="16" rx="2" fill="#f7f6f3"/>
+        <text class="label" x="524" y="276">OPENCODE V2 ONLY</text>
+
+        <!-- Shared domain state -->
+        <rect x="56" y="72" width="272" height="112" rx="6" fill="#ffffff" stroke="#4b5361" stroke-width="1"/>
+        <text class="name" x="72" y="100">Plans and tasks</text>
+        <text class="path" x="72" y="122">features/&lt;feature&gt;/</text>
+        <text class="desc" x="72" y="148">Plans, task status, specs,</text>
+        <text class="desc" x="72" y="165">reports and handoffs</text>
+
+        <rect x="344" y="72" width="272" height="112" rx="6" fill="#ffffff" stroke="#4b5361" stroke-width="1"/>
+        <text class="name" x="360" y="100">Context and constraints</text>
+        <text class="path" x="360" y="122">context/ · feature constraints</text>
+        <text class="desc" x="360" y="148">Project and feature context,</text>
+        <text class="desc" x="360" y="165">and feature directives</text>
+
+        <rect x="632" y="72" width="272" height="112" rx="6" fill="#ffffff" stroke="#4b5361" stroke-width="1"/>
+        <text class="name" x="648" y="100">Worktree metadata</text>
+        <text class="path" x="648" y="122">repositories.json · .worktrees/</text>
+        <text class="desc" x="648" y="148">Repository manifest and</text>
+        <text class="desc" x="648" y="165">registered workspaces</text>
+
+        <!-- OpenCode v1 owner -->
+        <rect x="56" y="304" width="384" height="128" rx="6" fill="#ebeae5" stroke="#4b5361" stroke-width="1"/>
+        <text class="name" x="72" y="332">Hive observation store</text>
+        <text class="path" x="72" y="356">.hive/sessions.json</text>
+        <text class="path" x="72" y="374">.hive/background-jobs.json</text>
+        <text class="path" x="72" y="392">&lt;feature&gt;/sessions.json</text>
+        <text class="desc" x="72" y="416">Bindings, routes, session constraints, board</text>
+
+        <rect x="56" y="448" width="384" height="96" rx="6" fill="#f2f1ee" stroke="#7d838c" stroke-width="1"/>
+        <text class="name" x="72" y="476">Native host home</text>
+        <text class="desc" x="72" y="500">Conversation database, config, data, cache</text>
+        <text class="desc" x="72" y="518">Hive reads agent_hive.json from this HOME</text>
+
+        <!-- OpenCode v2 owner -->
+        <rect x="520" y="304" width="384" height="128" rx="6" fill="#ebeae5" stroke="#4b5361" stroke-width="1"/>
+        <text class="name" x="536" y="332">Hive observation store</text>
+        <text class="path" x="536" y="356">.hive/runtime/opencode-v2/sessions.json</text>
+        <text class="path" x="536" y="374">.hive/runtime/opencode-v2/background-jobs.json</text>
+        <text class="path" x="536" y="392">&lt;feature&gt;/runtime/opencode-v2/sessions.json</text>
+        <text class="desc" x="536" y="416">Bindings, routes, session constraints, board</text>
+
+        <rect x="520" y="448" width="384" height="96" rx="6" fill="#f2f1ee" stroke="#7d838c" stroke-width="1"/>
+        <text class="name" x="536" y="476">Native host home</text>
+        <text class="desc" x="536" y="500">Conversation database, config, data, cache</text>
+        <text class="desc" x="536" y="518">Hive reads agent_hive.json from this HOME</text>
+
+        <!-- Footer rule -->
+        <line x1="40" y1="580" x2="920" y2="580" stroke="#d6d6d1" stroke-width="1"/>
+        <text class="desc" x="40" y="604">Equal session IDs or job aliases in two owners are separate records. Never copy, merge or rename a native store.</text>
+      </svg>

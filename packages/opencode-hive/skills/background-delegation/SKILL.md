@@ -204,7 +204,7 @@ The owning workflow determines placement; create the matching worktree before di
 <!-- /hive-host -->
 8. Treat `native_completion_pending` as a wait state, not a command to reconcile, cancel, or duplicate the lane.
 9. Treat prompt acknowledgment as notification only: a terminal job may stop repeating in prompt detail after Hive showed it once, but it is not reconciled until you consume or intentionally ignore the result.
-10. Use `hive_background_reconcile` for one terminal job or `hive_background_reconcile_batch` for multiple terminal jobs after native jobs reach terminal state and you have acted on their results. Reconciliation returns compact per-item acknowledgements (`identifier`, `decision`, `success`, archived `state`, and `requiresHiveStatusRefresh`, or failure `reason`/`error`/`hint`); it archives terminal jobs and hides them from normal status output. Batch success requires every item to succeed; inspect each failure, since successful items remain archived and a persistence failure may have published. A malformed item fails alone. A successful archive with feature/task scope sets `requiresHiveStatusRefresh: true`; the batch flag is true when any successful item sets it. Refresh `hive_status` when requested and before dependent feature/task or merge decisions. Follow failure hints: `job_not_terminal` means wait for native completion, while stale/uncertain hints give an exact `decision: "ignored"` call with the canonical alias. Inspect before ignoring; archiving an observation does not prove native termination or authorize a replacement writer. Scheduler guidance and full job records come from `hive_background_status`; do not edit `.hive/background-jobs.json` directly.
+10. Use `hive_background_reconcile` for one terminal job or `hive_background_reconcile_batch` for multiple terminal jobs after native jobs reach terminal state and you have acted on their results. Reconciliation returns compact per-item acknowledgements (`identifier`, `decision`, `success`, archived `state`, and `requiresHiveStatusRefresh`, or failure `reason`/`error`/`hint`); it archives terminal jobs and hides them from normal status output. Batch success requires every item to succeed; inspect each failure, since successful items remain archived and a persistence failure may have published. A malformed item fails alone. A successful archive with feature/task scope sets `requiresHiveStatusRefresh: true`; the batch flag is true when any successful item sets it. Refresh `hive_status` when requested and before dependent feature/task or merge decisions. Follow failure hints: `job_not_terminal` means wait for native completion, while stale/uncertain hints give an exact `decision: "ignored"` call with the canonical alias. Inspect before ignoring; archiving an observation does not prove native termination or authorize a replacement writer. Scheduler guidance and full job records come from `hive_background_status`; do not edit the active host's `background-jobs.json` board file directly.
 11. Use `orchestrationBurden` from `hive_background_status` to report pending completion notifications and reconcile items per visible and actionable lane; it supports the recommended action but does not replace it.
 12. Use `hive_background_cancel` only when a background lane is stale, wrong, or no longer needed.
 
@@ -323,7 +323,7 @@ const { sessionID } = subagent({
 });
 hive_background_status({});
 // Wait for the native background completion notification, then refresh the Hive board
-// instead of repeatedly refreshing or manually mutating .hive/background-jobs.json.
+// instead of repeatedly refreshing or manually mutating .hive/runtime/opencode-v2/background-jobs.json.
 hive_background_status({});
 hive_background_reconcile({
   identifier: boardAlias, // the handle hive_background_status lists for this lane
@@ -373,7 +373,7 @@ const { sessionID } = subagent({
 });
 hive_background_status({});
 // Wait for the native background completion notification, then refresh the Hive board
-// instead of repeatedly refreshing or manually mutating .hive/background-jobs.json.
+// instead of repeatedly refreshing or manually mutating .hive/runtime/opencode-v2/background-jobs.json.
 hive_background_status({});
 hive_background_reconcile({
   identifier: boardAlias, // the handle hive_background_status lists for this lane
@@ -428,7 +428,7 @@ Result: wait for final native task evidence, then refresh `hive_background_statu
 - Forgotten terminal jobs: treating a prompt-acknowledged terminal result as reconciled, or forgetting to wait for native completion, refresh, reconcile, or cancel before using background results or ending the turn.
 - Empty-board false negatives: treating `jobs: []` as proof that no native background work exists while completion evidence is unresolved.
 - Wait-only polling: repeatedly calling `hive_background_status` while `schedulerGuidance.reason` is `wait_for_native_completion_notification`.
-- Manual board mutation: editing `.hive/background-jobs.json` instead of using `hive_background_status`, `hive_background_reconcile`, `hive_background_reconcile_batch`, or `hive_background_cancel`.
+- Manual board mutation: editing the active host's `background-jobs.json` board file instead of using `hive_background_status`, `hive_background_reconcile`, `hive_background_reconcile_batch`, or `hive_background_cancel`.
 <!-- hive-host opencode-v1 -->
 - Inventing a native task ID instead of using the identity returned by the native `task()` call.
 <!-- /hive-host -->

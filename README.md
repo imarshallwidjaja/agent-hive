@@ -14,15 +14,15 @@ https://github.com/user-attachments/assets/6290b435-1566-46b4-ac98-0420ed321204
 
 ## Requirements
 
-Tracked feature writes use matching Git worktrees; non-Git or report-only work follows the documented direct-work exceptions. Worktree tools do not assign workers or change task status. See the [Operator Guide](docs/OPERATOR-GUIDE.md).
+- [OpenCode](https://opencode.ai) v1, with a floor of `1.18.30`, or v2, qualified on `2.0.26`. `oc-arkive@5.0.0` is the first release with both host entries, and releases through 4.2.0 support v1 only. The v2 qualification covers 2.0.26 and is not a support claim for later v2 releases.
+- For worktree workflows, a project whose work resolves to one or more Git repositories. Single-repo projects need no manifest. For a multi-repo root, ask Hive to inspect, discover, and update the topology instead of hand-creating `<project>/.hive/repositories.json`.
+- Optional: [VS Code](https://code.visualstudio.com/) for sidebar plan review through `vscode-arkive`.
 
-- [OpenCode](https://opencode.ai): the v1 floor remains `1.18.30`; this unreleased checkout also provides the v2 entry qualified on `2.0.26`. Published `oc-arkive@4.1.0` contains the v1 plugin. Install the checkout's packed artifact to try v2; `@latest` does not supply this unreleased port.
-- Worktree workflows require a project whose work resolves to one or more git repositories. Single-repo projects need no manifest; multi-repo topology is optional. When a multi-repo root needs explicit topology, ask Hive to inspect, discover, and update it; do not hand-create `<project>/.hive/repositories.json`.
-- Optional: [VS Code](https://code.visualstudio.com/) for sidebar plan review via `vscode-arkive`
+## Install
 
-## Quick start
+### OpenCode v1
 
-1. On OpenCode v1, append `oc-arkive@latest` to the existing `plugin` array in your OpenCode config (`opencode.json` or `opencode.jsonc`). Keep your existing plugin entries, preserve unrelated settings, and retain the surrounding config. This JSONC fragment uses placeholders:
+1. Append `oc-arkive@latest` (or a pinned version such as `oc-arkive@5.0.0`) to the existing `plugin` array in your OpenCode config (`opencode.json` or `opencode.jsonc`). Keep your existing plugin entries and unrelated settings. This JSONC fragment uses placeholders:
 
 ```jsonc
 {
@@ -35,46 +35,29 @@ Tracked feature writes use matching Git worktrees; non-Git or report-only work f
 }
 ```
 
-For a brand-new config, a plugin array containing only `"oc-arkive@latest"` is sufficient.
+For a brand-new config, a plugin array containing only `"oc-arkive@latest"` is enough.
 
 2. Restart OpenCode so it loads the plugin.
 
-### OpenCode v2 checkout setup
+### OpenCode v2
 
-Build this checkout with `bun install && bun run build`, then run `npm pack` in `packages/opencode-hive`. Install that tarball with npm into a dedicated directory. Configure v2's `plugins` entry to the absolute installed `oc-arkive/dist` directory, with `readTransport: "direct"` when `execute` is denied, and an explicit running-server URL/auth environment reference for history and continuation qualification. Set `experimental.subagent_depth` to `2` for delegated Architect helpers. The [plugin setup reference](packages/opencode-hive/README.md#opencode-v2-unreleased-checkout) contains the complete fragment and model-selection rules.
+Install the released package with npm into a dedicated directory (`npm install oc-arkive@5.0.0`) and point the v2 `plugins` entry at the absolute installed `node_modules/oc-arkive/dist` directory. Set `readTransport: "direct"` when `execute` is denied, give the running server's URL and password environment-variable name for history reads and continuation checks, and set `experimental.subagent_depth` to `2` so a delegated Architect can call its helpers. The [v2 setup reference](packages/opencode-hive/README.md#opencode-v2) has the complete fragment, the contributor build path, and the model-selection rules.
 
-The one package selects its native entry for the host. V2 user settings own supported agent selection, presentation, model/variant, limits and tool visibility; Hive adds canonical instructions at request time and enforces role/child boundaries before effects. A visible tool can still be denied by Hive. Use the [handover procedure](docs/OPERATOR-GUIDE.md#switching-opencode-hosts-and-rollback) when reusing a project across hosts.
+Your v2 settings own agent selection, presentation, model and variant, limits, and tool visibility. Hive adds its role instructions to each request and checks role and child authority before every effect, so a tool your settings make visible can still be refused. Before moving a project from one host to the other, follow the [handover procedure](docs/OPERATOR-GUIDE.md#switching-opencode-hosts-and-rollback).
+
+### Upgrade
+
+Update the plugin entry or the installed package first, then restart the long-lived process that loaded the plugin. Restarting a host that still points at an older install keeps running the older version. The [Operator Guide](docs/OPERATOR-GUIDE.md#upgrade) lists configuration keys to remove before upgrading and what to do with live workers.
 
 ## First feature loop
 
-1. Open the project and ask for a feature in plain language, or use `/hive-plan`.
-2. The primary agent discusses the scope and writes a plan. Review it in chat or
-   VS Code, add comments, and request changes until the plan is clear.
-3. Approve the plan with `/approve-sync-plan` or ask the agent to approve and
-   sync it. Hive creates the executable task records.
-4. Start execution with `/start-execution`. The primary resolves repository-backed
-   placement, delegates work, and tracks dependencies and progress.
-5. For a worktree implementation assignment, the worker runs selected checks,
-   commits assigned changes, and returns the exact source commit pin with
-   evidence for the tested candidate. In-place, non-Git, report-only, and
-   diagnosis-only assignments return evidence without a source commit. An
-   implementation worker bound to a feature task also writes its own task report
-   and successor handoff; the primary reads the report and records status with
-   `hive_task_update`.
-6. Inspect the worktree and merge completed task branches with
-   `hive_worktree_merge`, supplying the worker's source pin and the previously
-   inspected destination identity (`expectedTarget` or `expectedTargets`).
-   Non-Git or report-only work has no Hive Git merge step.
-7. Run selected integrated acceptance on the merged candidate, including
-   binding repository/operator checks and every named `## Final Verification`
-   obligation. Keep required pre-merge checks before merge.
-8. Mark the feature complete only after applicable required evidence and reviews
-   pass. A task-branch result does not establish integrated acceptance.
+1. Ask for a feature in plain language, or run `/hive-plan`. The planner discusses scope and writes a plan.
+2. Review the plan in chat or in VS Code, add comments, and ask for changes until it is clear.
+3. Approve it with `/approve-sync-plan`, which also creates the executable task records.
+4. Start execution with `/start-execution`. The primary places each task's tracked Git work in a matching worktree, delegates it, reviews the result, and merges the worker's committed changes.
+5. The primary runs the plan's final verification on the merged result and completes the feature only after the required checks and reviews pass. A task-branch result does not establish integrated acceptance.
 
-The planner selects checks from changed behavior, risk, repository requirements,
-canonical owners, and affected consumers. If impact is unclear, the operator
-guide explains how to broaden checks, preserve failure evidence, and decide when
-existing results still apply.
+The [Operator Guide](docs/OPERATOR-GUIDE.md) covers each step in depth: source commit pins and destination checks at merge, task reports and handoffs, and how checks are chosen and when earlier results still apply.
 
 ## What you can run
 
@@ -86,12 +69,10 @@ existing results still apply.
 | Ad-hoc (`hive-builder`) | Bounded non-feature work that should not create feature or task records | Talk to `hive-builder` (dedicated mode) or `hive-master` (unified) |
 | `/dash-review` | Read-only review of a folder, inline text, or the current checkout | `/dash-review [intent]` |
 | `/vuln-review` | Authorized read-only security review of a requested source | `/vuln-review [intent]` |
-| Native `complexity-review` | Explicit one-shot complexity review of an explicit diff or bounded named scope; otherwise current staged, unstaged, and relevant nonignored untracked changes | `/complexity-review <scope/philosophy prose>` |
-| Native `complexity-audit` | Explicit one-shot complexity audit of named roots or codebases | `/complexity-audit <scope/philosophy prose>` |
+| `complexity-review` skill | Explicit one-shot complexity review of a diff or bounded named scope; without one, the current staged, unstaged, and relevant nonignored untracked changes | Ask for `complexity-review` by name with the scope in ordinary prose; on the v2 TUI, `@complexity-review <scope>` |
+| `complexity-audit` skill | Explicit one-shot complexity audit of named roots or codebases | Ask for `complexity-audit` by name with the roots; on the v2 TUI, `@complexity-audit <scope>` |
 
-`/dash-review` and `/vuln-review` bind to separate review primaries.
-
-For ad-hoc work with multiple independently verifiable outcomes, dependency waves, shared write/runtime resources, possible background execution, or an expected need for more than one worker attempt or turn, either ad-hoc seat loads `orchestrating-ad-hoc-work` before worktree create or delegated dispatch. Rejected feature escalation continues ad-hoc only after material scope, contracts, and risks are resolved.
+`/dash-review` and `/vuln-review` bind to separate review primaries. For ad-hoc work with multiple independently verifiable outcomes, dependency waves, shared write/runtime resources, possible background execution, or an expected need for more than one worker attempt or turn, the ad-hoc seat loads `orchestrating-ad-hoc-work` before creating worktrees or dispatching workers. The [Operator Guide](docs/OPERATOR-GUIDE.md#choose-a-workflow) explains when each workflow fits.
 
 ## Agents at a glance
 
@@ -114,38 +95,9 @@ and the subagents below are available in both modes.
 | `approach-advisor` | Read-only architecture and tradeoff advice. |
 | `vulnerability-reviewer` | Read-only attacker-to-impact review. |
 
-Why each seat exists, how it behaves, and the full ad-hoc / dash-review /
-vuln-review loops are in the [Operator Guide](docs/OPERATOR-GUIDE.md).
+The [Operator Guide](docs/OPERATOR-GUIDE.md#agents) explains why each seat exists and how it behaves, including the read-only `hive-helper` for feature and ad-hoc trace questions, interrupted-worker evidence, and destination drift. Each role gets only the Hive tools it needs, and primaries alone own merge, cleanup, approval, constraints, and other control actions. The [tool-access matrix](packages/opencode-hive/docs/HIVE-TOOLS.md#agent-tool-access) lists every grant and how each host enforces it.
 
-OpenCode v1 enforces Hive-tool access through ordered agent permissions. V2 also checks canonical role and child authority inside every Hive executor and the native effect hook, even when user allow rules expose a forbidden tool. Primaries own
-merge, cleanup, approval/sync, constraints, and other control mutations; child
-sessions receive explicit denials. Workers retain the metadata and report tools
-their assignments need, reviewers can read plans/status/constraints and write
-authorized context, and native `general`/`explore` have no Hive authority.
-Use runtime-only `hive-helper` for feature and ad-hoc trace questions,
-interrupted-worker evidence, destination-drift relevance, and runtime-state
-clarification when multi-step forensics are needed. Primaries perform single direct
-status/inspection reads and known-event spot-checks themselves and own acceptance,
-lifecycle decisions, integration, and cleanup. Helper returns cited evidence. Custom agents
-inherit their base role's permissions. Helper and reviewer shell/research access
-remains available under operator permissions; inspection-only scope for shell and
-external effects is instruction-bound, an operator-accepted risk. Native edit and
-role-denied Hive mutations are enforced. A failed Hive tool is reported rather
-than reproduced through shell. Delegated Architect retains feature creation,
-repository registration, and blocking terminal calls to Scout, plan-reviewer,
-approach-advisor, their configured derivatives, and `hive-helper`. Architect as
-primary or child routes multi-step trace/evidence questions to Helper and returns
-board/control requests to its parent when delegated. See the [tool-access matrix](packages/opencode-hive/docs/HIVE-TOOLS.md#agent-tool-access).
-
-Runtime configuration lives in `~/.config/opencode/agent_hive.json`. A project
-may override `model` and/or `variant` for matching built-in or configured custom
-agents in `.hive/agent-hive.override.json`, under the `agents` or `customAgents`
-keys. Unknown names do not create agents. The global file remains authoritative
-for all other settings. Project `.hive/agent-hive.json` and
-`.opencode/agent_hive.json` files remain ignored. Restart OpenCode after changing
-either config file. For agent-mode settings and existing-config compatibility,
-see the [plugin README](packages/opencode-hive/README.md#agent-mode) and its
-[existing-config section](packages/opencode-hive/README.md#existing-opencode-configurations).
+Agent Hive's runtime configuration lives in `~/.config/opencode/agent_hive.json` on both hosts, and a project can override only agent `model` and `variant` in `.hive/agent-hive.override.json`. The v2 entry also reads `readTransport` and `server` from its `plugins` entry. Restart the host after changing any of these. See [Configuration](packages/opencode-hive/README.md#configuration) and the [v2 options](packages/opencode-hive/README.md#options).
 
 ## Packages
 
@@ -169,4 +121,4 @@ see the [plugin README](packages/opencode-hive/README.md#agent-mode) and its
 
 ## License
 
-MIT with Commons Clause. See [LICENSE](LICENSE).
+Agent Hive's code is released under the [MIT License](LICENSE), including the `oc-arkive` plugin, `hive-core` and the VS Code extension. Skills imported from other projects keep their upstream licenses, listed in the `LICENSE*` and `UPSTREAM.md` files inside each skill directory.

@@ -1,17 +1,19 @@
 # oc-arkive
 
 [![npm version](https://img.shields.io/npm/v/oc-arkive)](https://www.npmjs.com/package/oc-arkive)
-[![License: MIT with Commons Clause](https://img.shields.io/badge/License-MIT%20with%20Commons%20Clause-blue.svg)](../../LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 OpenCode workflow plugin for plan-first feature development and ad-hoc work: feature plans, approval and task sync, Git worktrees, durable `.hive/` state, and review commands.
 
-The OpenCode v1 floor is **1.18.30**. This unreleased checkout also has a native v2 entry, qualified on **2.0.26**. Published **4.1.0** is v1-only; its npm installation does not include this port. Open your project and ask Hive to work.
+Version **5.0.0** is the first release that serves both OpenCode hosts from one package: the v1 entry, with a host floor of **1.18.30**, and a native v2 entry qualified on **2.0.26**. Releases through 4.2.0 are v1-only. The v2 qualification covers 2.0.26; it is not a support claim for later v2 releases.
 
-Human onboarding starts in the [root README](../../README.md). This README is the detailed npm and operator reference.
+Human onboarding starts in the [root README](../../README.md). This README is the detailed npm and configuration reference.
 
 ## Install
 
-For a brand-new config, add the plugin to `opencode.json` or `opencode.jsonc`. OpenCode resolves the npm package; you do not need a separate `npm install` for normal use.
+### OpenCode v1
+
+For a brand-new config, add the plugin to `opencode.json` or `opencode.jsonc`. OpenCode resolves the npm package; you do not need a separate `npm install` on v1.
 
 ```json
 {
@@ -20,9 +22,11 @@ For a brand-new config, add the plugin to `opencode.json` or `opencode.jsonc`. O
 }
 ```
 
-Restart OpenCode after changing plugins.
+Pin `oc-arkive@5.0.0` instead of `@latest` when you want a fixed version. Restart OpenCode after changing plugins.
 
-In the current checkout, the package declares `@opencode/plugin`, `@opencode/client` (both pinned to the qualified v2 host release) and `@types/json-schema` as required dependencies, because its public type declarations import them. The plugin entry and the standalone reader at `oc-arkive/dist/v2/client.js` type-check after a plain install with `skipLibCheck` off. `effect` and `@opencode-ai/plugin` remain peer dependencies.
+### Package dependencies
+
+The package declares `@opencode/plugin` and `@opencode/client` (both pinned to `2.0.26`, the qualified v2 host release) and `@types/json-schema` as required dependencies, because its public type declarations import them. The plugin entry and the standalone reader at `oc-arkive/dist/v2/client.js` type-check after a plain install with `skipLibCheck` off. `effect` and `@opencode-ai/plugin` are peer dependencies: a v1 host resolves the package's one eager `effect` import from the peer, and a v2 host supplies its own copy. npm 7 and later installs these peers during an ordinary `npm install` unless peer installation is turned off, for example with `--legacy-peer-deps`.
 
 ### Existing OpenCode configurations
 
@@ -39,11 +43,29 @@ The config hook intentionally mutates these OpenCode fields:
 - `skills.paths`: when Hive skills are materialized, registers the generated Hive skill path first, followed by resolved user-configured paths.
 - `experimental.primary_tools`: preserves existing entries and adds `question` and the primary-only Hive operations in the [access matrix](docs/HIVE-TOOLS.md#agent-tool-access).
 
-### OpenCode v2 (unreleased checkout)
+### OpenCode v2
 
-The same package loads through its `server` entry on v1 and synchronous `effect` entry on v2. The checkout registers all **37 Hive tools** and **11 commands**, dedicated/unified modes, custom agents, packaged skills, native dispatch/background observation and forensic/recovery tools. Qualification is against stock v1.18.30 and v2.0.26; this is not a claim about every later host release. Final integrated host and security acceptance is recorded in the feature reports before release.
+The same package loads through its `server` entry on v1 and its synchronous `effect` entry on v2. On v2 it registers all **37 Hive tools** and **11 commands**, dedicated and unified modes, custom agents, packaged skills, native dispatch and background observation, and the forensic and recovery tools. Qualification ran against stock v1.18.30 and v2.0.26 with scripted model providers, which establishes wiring rather than real-model judgment. On both hosts it loaded a package already installed with plain npm; host-side registry resolution at first use was not part of it.
 
-For contributor use, run `bun install && bun run build` at the checkout root. Create the artifact directory before packing: in `packages/opencode-hive`, run `mkdir -p /absolute/artifact-directory && npm pack --pack-destination /absolute/artifact-directory`. In a clean installation directory, run `npm install /absolute/artifact-directory/oc-arkive-4.2.0.tgz`. Point the v2 entry at the absolute installed **dist directory**, which contains `index.js`; the tested local-directory loader needs that entry at the directory root. This uses the installed package without another cold registry resolution at first prompt. A package-name file specifier such as `oc-arkive@file:/absolute/artifact-directory/oc-arkive-4.2.0.tgz` is also supported by the tested host loader, but resolves its dependencies into the host's cache on first use. Preserve server logs if first use stalls before the `loading plugin` event; a green retry does not explain that failure.
+Install the released package with npm into a dedicated directory that the v2 host can read:
+
+```bash
+mkdir -p /absolute/install
+cd /absolute/install
+npm install oc-arkive@5.0.0
+```
+
+Point the v2 `plugins` entry at the absolute installed **dist directory**, `/absolute/install/node_modules/oc-arkive/dist`, which contains `index.js`; the tested local-directory loader needs that entry at the directory root. The host then uses the installed package without another cold registry resolution at first prompt. Preserve server logs if first use stalls before the `loading plugin` event; the cause of that stall is still unknown, and a green retry does not explain it.
+
+#### Contributor build
+
+To load a checkout instead of a release, run `bun install && bun run build` at the checkout root. Create the artifact directory before packing: in `packages/opencode-hive`, run `mkdir -p /absolute/artifact-directory && npm pack --pack-destination /absolute/artifact-directory`. The tarball name carries the package version from `packages/opencode-hive/package.json`, for example `oc-arkive-5.0.0.tgz`. In a clean installation directory, run `npm install /absolute/artifact-directory/oc-arkive-5.0.0.tgz`, then point the v2 entry at that installation's `node_modules/oc-arkive/dist` directory as above. A package-name file specifier such as `oc-arkive@file:/absolute/artifact-directory/oc-arkive-5.0.0.tgz` is also supported by the tested host loader, but resolves its dependencies into the host's cache on first use.
+
+#### Upgrade on v2
+
+Install the new version into the same directory (`npm install oc-arkive@<version>`), or install the new tarball, and then restart the long-lived host process that loaded the plugin. A restart reloads whatever the `plugins` entry points at, so restarting before the installed package changes keeps the old version running.
+
+#### Options
 
 The v2 entry takes options in the plugin list. The schema is [`schema/opencode-v2.options.schema.json`](schema/opencode-v2.options.schema.json):
 
@@ -112,12 +134,14 @@ Use the feature flow when work needs plan review, a task DAG, and a durable audi
 | `/vuln-review [scope]` | Review requested source for evidenced vulnerabilities with configured specialists. |
 | `/compact-summary` | Produce a compact recovery summary for the current session. |
 
-### Native Skill Commands
+### Complexity skills
 
-OpenCode exposes these packaged skills as native slash commands. They are not Hive plugin-registered commands. Both are complexity-only passes that report findings and do not apply fixes. Ordinary tooling and delegation contracts apply.
+`complexity-review` and `complexity-audit` are packaged skills, not Hive plugin commands. Both are complexity-only passes that report findings and do not apply fixes. Ordinary tooling and delegation contracts apply.
 
-- `/complexity-review <scope/philosophy prose>` reviews an explicit diff or bounded named scope, or current staged, unstaged, and relevant nonignored untracked changes when no scope is supplied. An empty review stops without becoming an audit.
-- `/complexity-audit <scope/philosophy prose>` audits named roots or codebases, or the current worktree when no roots are supplied.
+- `complexity-review` reviews an explicit diff or bounded named scope, or current staged, unstaged, and relevant nonignored untracked changes when no scope is supplied. An empty review stops without becoming an audit.
+- `complexity-audit` audits named roots or codebases, or the current worktree when no roots are supplied.
+
+On either host, ask for the skill by name with the scope and any philosophy or preferences in ordinary prose, for example "Run complexity-review on the diff against main; prefer deleting code." On the v2 TUI you can also mention the skill directly, as in `@complexity-review <scope>` or `@complexity-audit <scope>`. OpenCode v2.0.26 does not register skills as slash commands, and slash invocation has not been verified on the v1.18.30 floor.
 
 `/hive` has been removed. Feature creation now belongs to the planning flow and the Hive tools, usually `hive_feature_create` followed by explicitly targeted plan writes, review, per-feature approval and task sync, execution, and merge.
 
@@ -143,7 +167,7 @@ Use `/dash-review` for one read-only Git, process/concept, or local-artifact rev
 
 For an ad-hoc run, review the existing run or branch, then give a later fix instruction to the ad-hoc orchestrator. For a Hive feature run, review the task, feature, or branch, then give the active planner or orchestrator a later fix instruction.
 
-Background instructions appear only when `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL` has a truthy value (empty, `0`, `false`, and `no` keep the gate closed) and the bundled background protocol is available. Use the [Background Orchestration](#background-orchestration) section and the `background-delegation` skill for the scheduler protocol. The `/dash-review` command template does not add background instructions, though its private primary has access to the background board tools when the gate is open ([command renderer](src/commands/renderers.ts), [runtime grants](src/runtime/role-policy.ts)).
+On v1, background instructions appear only when `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL` has a truthy value (empty, `0`, `false`, and `no` keep the gate closed) and the bundled background protocol is available. On v2, native background support takes the place of that experiment variable. Use the [Background Orchestration](#background-orchestration) section and the `background-delegation` skill for the scheduler protocol. The `/dash-review` command template does not add background instructions, though its private primary has access to the background board tools when the gate is open ([command renderer](src/commands/renderers.ts), [runtime grants](src/runtime/role-policy.ts)).
 
 ### Vulnerability Review
 
@@ -159,7 +183,7 @@ During planning, "don't execute" means "don't implement" (no code edits, no work
 
 When delegation is warranted, synthesize the task before handing it off: name the file paths or search target, state the expected result, and say what done looks like. Workers do not inherit planner context.
 
-Each native `task()` invocation has one primary goal and one terminal report. Every returned result is terminal, including completed, failed, empty, partial, blocked, unsatisfactory, review-remediation, retry, new-test-evidence, and operator-decision results. Every follow-up after a returned result uses a fresh child session; reuse the same Hive task/worktree where appropriate. Review findings are fresh assignments in the same implementation lane. Compaction re-anchoring of a currently running worker is distinct from follow-up work. Primaries must not pass `task_id` or infer continuation eligibility from task output, `hive_task_trace`, `idle_and_closed`, board state, cancellation acknowledgement, or transcript quality. Pass `task_id` only when an explicit operator instruction or explicit runtime-owned interruption-recovery mechanism authorizes continuation; otherwise launch fresh. If the child may still be active or its lifecycle is uncertain, inspect, wait, or reattach as supported; do not send another prompt or launch an overlapping writer. Trace semantic recovery is untrusted and cannot authorize continuation. A primary goal may include tightly coupled code, tests, docs, and multiple files; do not split it by file or step. Give complete constraints and acceptance criteria only for that goal, then split independently verifiable outcomes into fresh launches. Returned IDs are also observe-only handles for status, reconciliation, cancellation, and runtime-visible session trace inspection. An orchestrator delegates plan creation or editing to `architect-planner`; Architect may call one layer of configured Scout, plan-reviewer, or approach-advisor helpers and `hive-helper`.
+Each native subagent invocation (`task()` on v1, `subagent()` on v2) has one primary goal and one terminal report. Every returned result is terminal, including completed, failed, empty, partial, blocked, unsatisfactory, review-remediation, retry, new-test-evidence, and operator-decision results. Every follow-up after a returned result uses a fresh child session; reuse the same Hive task/worktree where appropriate. Review findings are fresh assignments in the same implementation lane. Compaction re-anchoring of a currently running worker is distinct from follow-up work. Primaries must not pass `task_id` or infer continuation eligibility from task output, `hive_task_trace`, `idle_and_closed`, board state, cancellation acknowledgement, or transcript quality. Pass `task_id` only when an explicit operator instruction or explicit runtime-owned interruption-recovery mechanism authorizes continuation; otherwise launch fresh. If the child may still be active or its lifecycle is uncertain, inspect, wait, or reattach as supported; do not send another prompt or launch an overlapping writer. Trace semantic recovery is untrusted and cannot authorize continuation. A primary goal may include tightly coupled code, tests, docs, and multiple files; do not split it by file or step. Give complete constraints and acceptance criteria only for that goal, then split independently verifiable outcomes into fresh launches. Returned IDs are also observe-only handles for status, reconciliation, cancellation, and runtime-visible session trace inspection. An orchestrator delegates plan creation or editing to `architect-planner`; Architect may call one layer of configured Scout, plan-reviewer, or approach-advisor helpers and `hive-helper`.
 
 One implementation assignment normally maps to one numbered task. Amend the DAG or create an append-only manual task for a new independent deliverable. A blocked feature continuation follows `hive_task_update` with blocked status and blocker, the operator decision, then `hive_task_update` with an explicit status leaving blocked. Failed or retry work starts a new worker with a concise self-contained handoff. For ad-hoc work, use multiple fresh one-goal launches on worktrees whose registered identities do not intersect, or sequence writers that share a worktree. Architect is the only subagent allowed one terminal layer of read-only planning helpers; every other subagent is terminal. The `question` tool is reserved for primary sessions. Any subagent that needs operator clarification returns the exact question in its terminal response for the parent orchestrator to ask.
 
@@ -181,11 +205,17 @@ When an operator explicitly requires a skill, include the exact name in the assi
 
 ### Enforced agent access
 
-Hive registers ordered OpenCode `agent.permission` rules: `'hive_*': 'deny'` first, then each role's exact allows. Agent rules override global `{"*":"allow"}`. Custom variants inherit their base role. `experimental.primary_tools` adds child-session denials for integration/cleanup, ad-hoc creation, feature routing/completion, approval/sync/task creation, constraint mutation, context archive, parent-owned background tools, and `question`. Architect keeps feature creation, repository registration, and bounded planning-helper delegation as a child and hands primary-only requests back to its parent.
+The role authority below is the same on both hosts; the enforcement mechanism differs.
+
+On v1, Hive registers ordered OpenCode `agent.permission` rules: `'hive_*': 'deny'` first, then each role's exact allows. Agent rules override global `{"*":"allow"}`. Custom variants inherit their base role. `experimental.primary_tools` adds child-session denials for integration/cleanup, ad-hoc creation, feature routing/completion, approval/sync/task creation, constraint mutation, context archive, parent-owned background tools, and `question`.
+
+On v2, your native permission rules decide which tools are visible, and Hive does not rewrite them. Every Hive executor and the native `execute.before` hook check the agent's base role and the session's actual parent before any effect, as described under [OpenCode v2](#opencode-v2). A visible tool can therefore still be refused.
+
+On both hosts, Architect keeps feature creation, repository registration, and bounded planning-helper delegation as a child and hands primary-only requests back to its parent.
 
 All Hive roles can read context, constraints, plans, status, repository scope, and Git snapshots. Scout adds repository discovery. Forager adds context write/append, feature/ad-hoc inspection, recovery traces, assigned feature-worktree creation, and its own report/handoff update. Helper's Hive tools are limited to state/worktree/trace inspection. Reviewers and advisors add authorized context write/append. Hive, Swarm, and Builder have the full Hive set; Architect has planning and primary-control tools; review primaries have metadata/context, inspection/trace, constraints, routing/background, and authorized ad-hoc review placement/cleanup. The [complete access matrix](docs/HIVE-TOOLS.md#agent-tool-access) names every grant and native boundary.
 
-Native `general`/`explore` have no Hive tools, recursion, or questions. Helper/reviewer role-specific Hive-tool denials and native edit denial are enforced, while shell and research integrations remain available under operator permissions. Their inspection-only scope for shell and external effects is instruction-bound, an operator-accepted risk; these capabilities must not substitute for denied Hive operations. Use Helper first for session-trace retrieval; it returns evidence and mutation requests to the primary. Changes take effect after the OpenCode host reloads; use fresh child sessions so OpenCode applies the creation-time primary-tool denials.
+Native `general`/`explore` have no Hive tools, recursion, or questions. Helper/reviewer role-specific Hive-tool denials and native edit denial are enforced, while shell and research integrations remain available under operator permissions. Their inspection-only scope for shell and external effects is instruction-bound, an operator-accepted risk; these capabilities must not substitute for denied Hive operations. Use Helper first for session-trace retrieval; it returns evidence and mutation requests to the primary. Changes take effect after the OpenCode host reloads; on v1, use fresh child sessions so OpenCode applies the creation-time primary-tool denials.
 
 When Architect is task-spawned, its one permitted terminal helper layer includes `hive-helper` and uses blocking calls, including same-message independent fan-out. Architect as primary or child routes multi-step trace/evidence questions to Helper and performs single direct spot-check reads itself. It returns board/control requests to the parent; child-role rules take precedence over an inherited background appendix without loading the primary-only `background-delegation` skill, and child board tools remain unavailable. Primaries issue independent Hive calls in one response/step and serialize dependent mutations or merges sharing a destination.
 
@@ -265,13 +295,13 @@ Native `general` is an ordinary delegation with ordinary tools only; it cannot d
 
 ### Background Orchestration
 
-With the env gate unset (`OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`) on v1, Hive keeps normal blocking `task()` wait mode. Background board tools report `background_tools_disabled`, and no background appendix is injected into primary prompts. V2 provides native `subagent({ background: true, ... })` and the board without that experiment gate.
+With the env gate unset on v1 (`OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`), Hive keeps normal blocking `task()` wait mode. Background board tools report `background_tools_disabled`, and no background appendix is injected into primary prompts. V2 provides native `subagent({ background: true, ... })` and the board without that experiment gate. The rest of this section applies with the env gate set on v1, and on v2 wherever the host supports native background subagents.
 
-With the env gate set, board tools are active. Primary orchestrators receive background wait-mode guidance when `background-delegation` is available. This is the background-first scheduler contract under the experimental gate, not always-on behavior. It does not add agents or change custom-agent preservation: primary agents still choose built-in or configured custom specialists by descriptor, not by a fixed routing table.
+With the env gate set, board tools are active. Primary orchestrators receive background wait-mode guidance when `background-delegation` is available. This is the background-first scheduler contract; on v1 it exists only under the experimental gate. It does not add agents or change custom-agent preservation: primary agents still choose built-in or configured custom specialists by descriptor, not by a fixed routing table.
 
 Gate-open orchestration uses lane kind to decide how much management is needed. Exploratory/read-only and review lanes are lightweight background candidates. Writing/change and execution lanes require state tracking, verification routing, unresolved-lane checks, integration control, and a context packet. Declared file ownership is tracking metadata, not a concurrency guarantee. See `docs/HIVE-TOOLS.md` and the `background-delegation` skill for the full scheduler protocol.
 
-With the env gate set, primary agents can launch independent native background tasks when useful foreground work can continue, inspect the scoped board with `hive_background_status`, wait for OpenCode's native completion notification, refresh `hive_background_status`, reconcile terminal jobs with `hive_background_reconcile` or `hive_background_reconcile_batch`, and request cancellation with `hive_background_cancel`. Reconciliation archives terminal jobs and hides them from normal status output; agents should not edit `.hive/background-jobs.json` directly. Wait-only scheduler guidance from status means wait for the native notification instead of refreshing repeatedly.
+With the env gate set, primary agents can launch independent native background tasks when useful foreground work can continue, inspect the scoped board with `hive_background_status`, wait for OpenCode's native completion notification, refresh `hive_background_status`, reconcile terminal jobs with `hive_background_reconcile` or `hive_background_reconcile_batch`, and request cancellation with `hive_background_cancel`. Reconciliation archives terminal jobs and hides them from normal status output; agents should not edit either host's board file (`.hive/background-jobs.json` on v1, `.hive/runtime/opencode-v2/background-jobs.json` on v2) directly. Wait-only scheduler guidance from status means wait for the native notification instead of refreshing repeatedly.
 
 `hive_background_status` returns board-local scheduler outputs such as `recommendedNextAction` and `requiresHiveStatusRefresh`. Reconciliation returns compact per-item acknowledgements with failure hints and a refresh flag when an archived job had feature/task scope; a batch requests refresh when any successful item does. Refresh `hive_status` when requested and before dependent task or merge decisions.
 
@@ -322,7 +352,7 @@ When using Dynamic Context Pruning (DCP), use a Hive-safe config in `~/.config/o
   - `strategies.supersedeWrites.enabled: false`
   - `strategies.purgeErrors.enabled: false`
 
-For normal usage, set the OpenCode plugin entry to `"oc-arkive@latest"`. Keep a local file path entry only for contributor testing with a checkout.
+For normal v1 usage, set the OpenCode plugin entry to `"oc-arkive@latest"` or a pinned version. Keep a local file path entry only for contributor testing with a checkout. V2 setup is under [OpenCode v2](#opencode-v2).
 
 ### Task worker recovery
 
@@ -385,7 +415,7 @@ For example, a shared DTO task can verify the DTO owner suite before merge and d
 
 ## Configuration
 
-Hive reads runtime configuration from `~/.config/opencode/agent_hive.json`. The only project-local override file is `.hive/agent-hive.override.json`; it accepts only `model` and `variant` under `agents` and `customAgents`, and affects matching agents already present in the effective global/default configuration. Unknown names are ignored and never create agents. Project-local `.hive/agent-hive.json` and `.opencode/agent_hive.json` files remain ignored. Hive uses defaults when the global config is missing, unreadable, invalid JSON, or rejected by runtime validation. That validation rejects unknown top-level keys (including removed `disableMcps`) and wrong types for known fields, but does not enforce every restriction in the published schema: unknown keys inside `agents` declarations and some malformed `customAgents` entries do not invalidate the whole file ([config service](../hive-core/src/services/configService.ts), [schema](schema/agent_hive.schema.json)). An invalid project override is ignored with a runtime warning. Restart OpenCode after changing either config file.
+Hive reads runtime configuration from `~/.config/opencode/agent_hive.json` on both hosts. `~` is the `HOME` environment variable (or `USERPROFILE` when `HOME` is unset); `XDG_CONFIG_HOME` does not move this file. The v2 entry's own `readTransport` and `server` options live in its `plugins` entry instead, as shown under [OpenCode v2](#opencode-v2). The only project-local override file is `.hive/agent-hive.override.json`; it accepts only `model` and `variant` under `agents` and `customAgents`, and affects matching agents already present in the effective global/default configuration. Unknown names are ignored and never create agents. Project-local `.hive/agent-hive.json` and `.opencode/agent_hive.json` files remain ignored. Hive uses defaults when the global config is missing, unreadable, invalid JSON, or rejected by runtime validation. That validation rejects unknown top-level keys (including removed `disableMcps`) and wrong types for known fields, but does not enforce every restriction in the published schema: unknown keys inside `agents` declarations and some malformed `customAgents` entries do not invalidate the whole file ([config service](../hive-core/src/services/configService.ts), [schema](schema/agent_hive.schema.json)). An invalid project override is ignored with a runtime warning. Restart OpenCode after changing either config file.
 
 Global config remains authoritative for runtime policy, agent definitions, and auto-load skill settings. See [`agent_hive.override.schema.json`](schema/agent_hive.override.schema.json) for the project override shape.
 
@@ -577,7 +607,7 @@ See [Skill ownership](docs/SKILL-OWNERSHIP.md) for the responsibility map and so
 
 **URL-scan conservative behavior:** If configured `skills.urls` cannot be scanned for conflicts (invalid response, network error), Hive skips bundled skill materialization and Hive bundled autoload guidance for that run and logs a warning rather than risking a native conflict. Local native skills discovered before the URL failure can still be advertised in guidance; partially scanned URL skills are not advertised.
 
-`background-delegation` is bundled and materialized like other Hive skills, but primary prompt references are env-gated and compact. Delegation-first orchestration lives in the base primary prompts; when the env flag is set, primary agent prompts add background wait-mode and board protocol guidance and point to the skill for the full protocol. The skill can still be loaded manually with OpenCode's native `skill` tool like any other bundled or user skill.
+`background-delegation` is bundled and materialized like other Hive skills, but primary prompt references are gated and compact. Delegation-first orchestration lives in the base primary prompts; when the v1 env flag is set, or on v2 with native background support, primary agent prompts add background wait-mode and board protocol guidance and point to the skill for the full protocol. The skill can still be loaded manually with OpenCode's native `skill` tool like any other bundled or user skill.
 
 `orchestrating-ad-hoc-work` is loaded conditionally by Hive Builder or unified `hive-master` when a request has multiple independently verifiable outcomes, dependency waves, shared write/runtime resources, possible background execution, or an expected need for more than one worker attempt or turn. It is not a default `autoLoadSkills` entry and may retain one coherent lane after decomposition. Content tests establish bundling and routing only; they do not establish first-attempt model reliability.
 
@@ -619,7 +649,7 @@ See [Skill ownership](docs/SKILL-OWNERSHIP.md) for the responsibility map and so
 | `approach-advisor` | (none) |
 | `vulnerability-reviewer` | (none) |
 
-`background-delegation` is not a default `autoLoadSkills` entry for any agent. For ad-hoc orchestration, delegation-first guidance is in the base prompt; the env flag (`OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`) only appends background wait-mode and board guidance without adding it to the default autoload set.
+`background-delegation` is not a default `autoLoadSkills` entry for any agent. For ad-hoc orchestration, delegation-first guidance is in the base prompt; the v1 env flag (`OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`), or native background support on v2, only appends background wait-mode and board guidance without adding it to the default autoload set.
 
 ### Per-Agent Model Variants
 
@@ -785,6 +815,4 @@ For the full OpenCode-first workflow, install `vscode-arkive.vsix` from the GitH
 
 ## License
 
-MIT with Commons Clause - Free for personal and non-commercial use. See [LICENSE](../../LICENSE) for details.
-
----
+`oc-arkive` is released under the [MIT License](LICENSE). Skills imported from other projects keep their upstream licenses, listed in the `LICENSE*` and `UPSTREAM.md` files inside each skill directory.

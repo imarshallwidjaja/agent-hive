@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 960 536" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="dual-host-architecture-title dual-host-architecture-desc" id="dual-host-architecture-root">
+        <title id="dual-host-architecture-title">Agent Hive dual-host architecture</title>
+        <desc id="dual-host-architecture-desc">OpenCode v1 loads the oc-arkive server entry and OpenCode v2 loads its effect entry, one host at a time per project, and both entries call the same shared Hive operations, role policy, trace engine and host profiles.</desc>
+        <defs>
+      <style>#dual-host-architecture-root { font-family: 'Geist', system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; color: #1d2127; }
+      #dual-host-architecture-root .lede { max-width: 44rem; font-size: 1rem; line-height: 1.55; color: #4b5361; margin-bottom: 2rem; }
+      #dual-host-architecture-root .diagram-container { width: 100%; overflow-x: auto; }
+      #dual-host-architecture-root .note { max-width: 44rem;
+      margin-top: 1.5rem;
+      padding-top: 1rem;
+      border-top: 1px solid #d6d6d1;
+      font-size: 0.9rem;
+      line-height: 1.55;
+      color: #4b5361; }
+      #dual-host-architecture-root code { font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; font-size: 0.85em; }
+      #dual-host-architecture-root .name { font-family: 'Geist', system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; font-size: 16px; font-weight: 600; fill: #1d2127; }
+      #dual-host-architecture-root .desc { font-family: 'Geist', system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; font-size: 12px; font-weight: 400; fill: #4b5361; }
+      #dual-host-architecture-root .path { font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; font-size: 12px; fill: #4b5361; }
+      #dual-host-architecture-root .label { font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; font-size: 12px; font-weight: 500; letter-spacing: 0.08em; fill: #5b616b; }
+      #dual-host-architecture-root .label-accent { fill: #985500; }
+      #dual-host-architecture-root .diagram-container { overflow-x: visible; }</style>
+          <marker id="dual-host-architecture-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4b5361"/></marker>
+        </defs>
+
+        <rect width="100%" height="100%" fill="#f7f6f3"/>
+
+        <!-- Zones -->
+        <rect x="40" y="136" width="880" height="360" rx="8" fill="none" stroke="#b4b7bc" stroke-width="1"/>
+        <rect x="56" y="328" width="848" height="144" rx="8" fill="#f6efe4" stroke="#985500" stroke-width="1.2"/>
+
+        <!-- Arrows -->
+        <line x1="228" y1="104" x2="228" y2="175" stroke="#4b5361" stroke-width="1.2" marker-end="url(#dual-host-architecture-arrow)"/>
+        <line x1="732" y1="104" x2="732" y2="175" stroke="#4b5361" stroke-width="1.2" marker-end="url(#dual-host-architecture-arrow)"/>
+        <line x1="228" y1="280" x2="228" y2="327" stroke="#4b5361" stroke-width="1.2" marker-end="url(#dual-host-architecture-arrow)"/>
+        <line x1="732" y1="280" x2="732" y2="327" stroke="#4b5361" stroke-width="1.2" marker-end="url(#dual-host-architecture-arrow)"/>
+
+        <!-- Arrow labels and zone labels -->
+        <rect x="236" y="112" width="112" height="16" rx="2" fill="#f7f6f3"/>
+        <text class="label" x="242" y="124">LOADS SERVER</text>
+        <rect x="740" y="112" width="112" height="16" rx="2" fill="#f7f6f3"/>
+        <text class="label" x="746" y="124">LOADS EFFECT</text>
+        <rect x="52" y="128" width="156" height="16" rx="2" fill="#f7f6f3"/>
+        <text class="label" x="60" y="140">OC-ARKIVE PACKAGE</text>
+        <rect x="68" y="320" width="104" height="16" rx="2" fill="#f7f6f3"/>
+        <text class="label label-accent" x="76" y="332">SHARED CODE</text>
+        <text class="label" x="480" y="60" text-anchor="middle">ONE HOST</text>
+        <text class="label" x="480" y="76" text-anchor="middle">AT A TIME</text>
+        <text class="label" x="480" y="92" text-anchor="middle">PER PROJECT</text>
+
+        <!-- Hosts -->
+        <rect x="56" y="40" width="344" height="64" rx="6" fill="#f2f1ee" stroke="#7d838c" stroke-width="1"/>
+        <text class="name" x="72" y="66">OpenCode v1 host</text>
+        <text class="path" x="72" y="88">qualified on 1.18.30</text>
+
+        <rect x="560" y="40" width="344" height="64" rx="6" fill="#f2f1ee" stroke="#7d838c" stroke-width="1"/>
+        <text class="name" x="576" y="66">OpenCode v2 host</text>
+        <text class="path" x="576" y="88">qualified on 2.0.26</text>
+
+        <!-- Adapters -->
+        <rect x="56" y="176" width="344" height="104" rx="6" fill="#ffffff" stroke="#1d2127" stroke-width="1"/>
+        <text class="name" x="72" y="204">v1 server entry</text>
+        <text class="path" x="72" y="226">src/runtime.ts</text>
+        <text class="desc" x="72" y="250">Config hook registers agents, commands</text>
+        <text class="desc" x="72" y="267">and Hive permissions</text>
+
+        <rect x="560" y="176" width="344" height="104" rx="6" fill="#ffffff" stroke="#1d2127" stroke-width="1"/>
+        <text class="name" x="576" y="204">v2 effect entry</text>
+        <text class="path" x="576" y="226">src/v2/ · imported on first activation</text>
+        <text class="desc" x="576" y="250">Native user settings take precedence.</text>
+        <text class="desc" x="576" y="267">Hive checks role and parent on each call</text>
+
+        <!-- Shared modules -->
+        <rect x="72" y="360" width="192" height="88" rx="6" fill="#ffffff" stroke="#4b5361" stroke-width="1"/>
+        <text class="name" x="88" y="388">Hive operations</text>
+        <text class="desc" x="88" y="412">31 ordinary tools with</text>
+        <text class="desc" x="88" y="429">Zod schemas, core services</text>
+
+        <rect x="280" y="360" width="192" height="88" rx="6" fill="#ffffff" stroke="#4b5361" stroke-width="1"/>
+        <text class="name" x="296" y="388">Role policy</text>
+        <text class="desc" x="296" y="412">Tool grants, delegation</text>
+        <text class="desc" x="296" y="429">and primary-only tools</text>
+
+        <rect x="488" y="360" width="192" height="88" rx="6" fill="#ffffff" stroke="#4b5361" stroke-width="1"/>
+        <text class="name" x="504" y="388">Trace engine</text>
+        <text class="desc" x="504" y="412">Forensic index and</text>
+        <text class="desc" x="504" y="429">semantic recovery</text>
+
+        <rect x="696" y="360" width="192" height="88" rx="6" fill="#ffffff" stroke="#4b5361" stroke-width="1"/>
+        <text class="name" x="712" y="388">Host profiles</text>
+        <text class="desc" x="712" y="412">Each host's native call</text>
+        <text class="desc" x="712" y="429">names for prompts, skills</text>
+      </svg>

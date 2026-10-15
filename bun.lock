@@ -7,7 +7,7 @@
     },
     "packages/hive-core": {
       "name": "hive-core",
-      "version": "4.2.0",
+      "version": "5.0.0",
       "dependencies": {
         "simple-git": "^3.27.0",
         "yaml": "^2.9.0",
@@ -20,7 +20,7 @@
     },
     "packages/opencode-hive": {
       "name": "oc-arkive",
-      "version": "4.2.0",
+      "version": "5.0.0",
       "dependencies": {
         "@opencode/client": "2.0.26",
         "@opencode/plugin": "2.0.26",
@@ -34,7 +34,7 @@
         "@types/bun": "^1.2.0",
         "@types/node": "^20.0.0",
         "effect": "4.0.0-rc.112",
-        "hive-core": "4.2.0",
+        "hive-core": "5.0.0",
         "typescript": "^5.0.0",
         "zod": "4.1.8",
       },
@@ -45,9 +45,9 @@
     },
     "packages/vscode-hive": {
       "name": "vscode-arkive",
-      "version": "4.2.0",
+      "version": "5.0.0",
       "dependencies": {
-        "hive-core": "4.2.0",
+        "hive-core": "5.0.0",
       },
       "devDependencies": {
         "@types/vscode": "1.64.0",

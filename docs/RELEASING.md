@@ -1,9 +1,5 @@
 # Releasing Arkive Packages
 
-## Upgrade note
-
-Restart OpenCode after upgrade. Finish or abandon old live workers first. Remove stale copied user-authored workflow instructions yourself; Hive does not silently overwrite global settings. Old attempt and lease files are left unread. Useful plans, tasks, context, reports, and workspace files remain readable.
-
 This fork's release workflow builds the shared `hive-core` package, builds and tests `packages/opencode-hive` and `packages/vscode-hive`, publishes `oc-arkive` to npm, attaches `vscode-arkive.vsix` to the GitHub Release, and creates the GitHub Release from the matching release note file.
 
 The `Release` workflow publishes only on tags matching `v*`. Manual `workflow_dispatch` runs default to `rehearse`: they build and test the candidate without publishing to npm or creating a GitHub Release. Recovery mode is only for existing `vX.Y.Z` tags and reuses that tagged commit.
@@ -56,13 +52,11 @@ These checks are not preparation shortcuts:
 - `npm access list collaborators oc-arkive --json` lists package collaborators for human inspection. It does not verify GitHub OIDC Trusted Publishing or authority to make the first publish.
 - `bun run release:check` installs dependencies; builds `hive-core` and `vscode-arkive`; checks release artifacts, the workflow, and VS Code bundle reproducibility; then builds `oc-arkive` and runs the three package test suites. The artifact check also builds and packs `oc-arkive` and runs the release documentation contract in an isolated staging tree.
 
-The documentation contract checks that canonical documents exist, the 37-tool manifest contains required tools, the manifest and runtime omit retired tools, and the release guide includes `workflow_dispatch` without a preparation shortcut. `release-artifacts.test.mjs` also runs it in an isolated staging tree without Git metadata:
+The documentation contract checks that canonical documents exist, the 37-tool manifest contains required tools, the manifest and runtime omit retired tools, the release guide includes `workflow_dispatch` without a preparation shortcut, and the host setup guidance matches the shipped entries. Run it on its own with:
 
 ```bash
 node --test release-docs.test.mjs
 ```
-
-An isolated staging copy does not need a staging-only Git index.
 
 The npm checks are optional local validation only and are not CI gates: CI authenticates with the GitHub OIDC token exchanged by npm Trusted Publishing and never uses a static npm token.
 
@@ -96,7 +90,7 @@ That tag triggers `.github/workflows/release.yml` to build, test, publish `oc-ar
 
 If you push the wrong tag before release prep is complete, do not use recovery mode to publish from that bad tag. Prepare the correct release commit first, then decide explicitly whether to recreate the tag or move to the next patch version.
 
-Users can then install the forked OpenCode plugin with:
+OpenCode v1 users can then install the plugin with:
 
 ```json
 {
@@ -104,6 +98,8 @@ Users can then install the forked OpenCode plugin with:
   "plugin": ["oc-arkive@latest"]
 }
 ```
+
+OpenCode v2 users install the released version into a dedicated directory with npm and point their `plugins` entry at its installed `dist` directory, as described in the [plugin README](../packages/opencode-hive/README.md#opencode-v2).
 
 VS Code users can download `vscode-arkive.vsix` from the GitHub Release and install it locally:
 

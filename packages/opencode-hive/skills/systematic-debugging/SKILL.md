@@ -176,7 +176,7 @@ You MUST complete each phase before proceeding to the next.
 1. **Select Durable Testing and Verification**
    - Reproduction or equivalent root-cause evidence is required before a fix.
    - Select the durable testing and verification strategy from the defect, repository evidence, and mission.
-   - Use strict TDD only when that strategy is selected; then load \`test-driven-development\` and observe the expected failure before implementation.
+   - Use strict TDD only when that strategy is selected; then load `test-driven-development` and observe the expected failure before implementation.
    - Other valid strategies include characterization tests before changing uncertain legacy behavior, tests alongside or after implementation when behavior is clear or design needs exploration, existing contract coverage for a pure internal refactor, and proportionate no-new-test verification with concrete rationale.
 
 2. **Prepare Safely When Needed**
@@ -294,5 +294,7 @@ Before calling the cause external, state which local hypotheses were tested and 
 <!-- hive-host opencode-v2 -->
 - **skill({ id })** for the catalog entry named "verification" - Verify fix worked before claiming success
 <!-- /hive-host -->
+
+The four-phase process is adapted from obra/superpowers (MIT, Copyright (c) 2025 Jesse Vincent); see `UPSTREAM.md` and `LICENSE.superpowers` in this skill for the source revision and the adapted passages.
 
 The premise, restart-state, and hypothesis-reversal guidance is adapted from pstack; see `UPSTREAM.md` and `LICENSE.pstack` in this skill. These additions do not replace Hive's source/candidate evidence or recovery contracts.

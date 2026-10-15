@@ -1,6 +1,6 @@
 # vscode-arkive
 
-[![License: MIT with Commons Clause](https://img.shields.io/badge/License-MIT%20with%20Commons%20Clause-blue.svg)](../../LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 VS Code companion for reviewing and commenting on Hive `.hive/` output: sidebar, `plan.md` and `overview.md` review, and inline comments.
 
@@ -117,4 +117,4 @@ It does not start worktrees, commit changes, merge branches, cancel jobs, or rec
 
 ## License
 
-MIT with Commons Clause — Free for personal and non-commercial use. See [LICENSE](../../LICENSE) for details.
+`vscode-arkive` is released under the [MIT License](LICENSE).

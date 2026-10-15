@@ -72,7 +72,7 @@ Before critique, validate the inputs:
 - Any supplied command output is fresh enough for the claim being reviewed.
 - The artifact was not changed during review. If mutation is detected or suspected, stop and report it.
 
-For git-backed code reviews, useful checks include `git status --short`, `git diff --name-only`, and the supplied plan/task reference. Do not run broad commands when the caller already provided enough bounded evidence.
+For git-backed code reviews, useful checks include `git --no-optional-locks status --short`, `git diff --name-only`, and the supplied plan/task reference. Do not run broad commands when the caller already provided enough bounded evidence.
 
 ### 3. Baseline Pass
 

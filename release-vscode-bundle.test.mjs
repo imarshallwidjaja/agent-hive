@@ -36,4 +36,11 @@ describe('vscode release bundle drift', () => {
       'packages/vscode-hive/vscode-arkive.vsix should exist after rebuild'
     );
   });
+
+  it('includes the extension LICENSE in the VSIX file list', () => {
+    const vsce = path.join(workspaceRoot, 'node_modules', '.bin', process.platform === 'win32' ? 'vsce.cmd' : 'vsce');
+    const files = run(vsce, ['ls', '--no-dependencies'], vscodePackageDir).split(/\r?\n/);
+
+    assert.ok(files.includes('LICENSE'), 'vsce should include packages/vscode-hive/LICENSE in the VSIX');
+  });
 });

@@ -83,7 +83,11 @@ describe('release documentation and runtime contract', () => {
     const agents = read('AGENTS.md');
     assert.doesNotMatch(plugin, /background orchestration and session-trace tools are not yet/);
     assert.match(plugin, /37 Hive tools.*11 commands/);
-    assert.match(plugin, /Published.*4\.1\.0.*v1-only/);
+    assert.match(plugin, /\*\*5\.0\.0\*\* is the first release that serves both OpenCode hosts/);
+    assert.match(plugin, /Releases through 4\.2\.0 are v1-only/);
+    assert.match(plugin, /^### OpenCode v2$/m);
+    assert.match(plugin, /npm install oc-arkive@5\.0\.0/);
+    assert.match(plugin, /host-side registry resolution at first use was not part of it/);
     assert.match(plugin, /"readTransport": "direct"/);
     assert.match(plugin, /"package": "\/absolute\/install\/node_modules\/oc-arkive\/dist"/);
     assert.match(plugin, /"subagent_depth": 2/);
@@ -106,7 +110,61 @@ describe('release documentation and runtime contract', () => {
     assert.match(guide, /Never copy, merge or rename a native store/);
     assert.match(guide, /separate native config\/data\/cache home/);
     assert.match(guide, /Database is not empty and has no session table/);
+    assert.match(guide, /Hive reads `~\/\.config\/opencode\/agent_hive\.json` from `HOME`.*not from `XDG_CONFIG_HOME`/);
+    assert.match(guide, /does not configure native authentication/);
     assert.match(agents, /Set direct reads when `execute` is denied/);
     assert.match(agents, /existing native direct child whose Hive binding is missing or has no parent/);
+    assert.match(agents, /5\.0\.0 is the first dual-host release; releases through 4\.2\.0 are v1-only/);
+  });
+
+  it('retires pre-release v2 wording and keeps host setup links on their canonical anchor', () => {
+    const current = [
+      'README.md',
+      'AGENTS.md',
+      'docs/OPERATOR-GUIDE.md',
+      'docs/RELEASING.md',
+      'packages/opencode-hive/README.md',
+      'packages/opencode-hive/docs/HIVE-TOOLS.md',
+    ];
+    for (const relativePath of current) {
+      const text = read(relativePath);
+      assert.doesNotMatch(text, /unreleased checkout/i, relativePath);
+      assert.doesNotMatch(text, /opencode-v2-unreleased-checkout/, relativePath);
+      assert.doesNotMatch(text, /[Pp]ublished `?(?:oc-arkive@)?4\.1\.0`? is v1-only/, relativePath);
+    }
+    for (const relativePath of ['README.md', 'docs/OPERATOR-GUIDE.md', 'packages/opencode-hive/docs/HIVE-TOOLS.md']) {
+      assert.match(read(relativePath), /README\.md#opencode-v2\)/, relativePath);
+    }
+  });
+
+  it('provisions Hive configuration in the new home before the host handover starts the new host', () => {
+    const guide = read('docs/OPERATOR-GUIDE.md');
+    const steps = guide.split('To hand over one project sequentially:\n\n')[1].split('\n\n')[0].split('\n');
+    steps.forEach((step, index) => assert.ok(step.startsWith(`${index + 1}. `), step));
+    const indexOf = (pattern) => steps.findIndex((step) => pattern.test(step));
+    const home = indexOf(/^\d+\. Give the other host a separate native config\/data\/cache home before you start it/);
+    const config = indexOf(/^\d+\. Provision Agent Hive's own configuration in that home before the first start.*agent_hive\.json/);
+    const start = indexOf(/^\d+\. Start the other host/);
+    assert.ok(home >= 0 && config > home && start > config, `home ${home}, config ${config}, start ${start}`);
+    assert.doesNotMatch(steps[start], /agent_hive\.json.*(copy|recreate)/);
+  });
+
+  it('keeps the current release body free of repository-relative Markdown links', () => {
+    const version = JSON.parse(read('package.json')).version;
+    const body = read(`docs/releases/v${version}.md`);
+    const targets = [...body.matchAll(/!?\[[^\]]*\]\(([^)\s]+)/g)].map(([, target]) => target);
+    assert.ok(targets.length > 0, 'release body should link its guides');
+    for (const target of targets) assert.match(target, /^(?:https?:\/\/|#)/, `${target} would not resolve in a GitHub Release body`);
+  });
+
+  it('links every changelog release heading from the current release onward', () => {
+    const changelog = read('CHANGELOG.md');
+    const version = JSON.parse(read('package.json')).version;
+    const escaped = version.replace(/\./g, '\\.');
+    assert.match(changelog, new RegExp(`^\\[Unreleased\\]: .*/compare/v${escaped}\\.\\.\\.HEAD$`, 'm'));
+    for (const [, heading] of changelog.matchAll(/^## \[(\d+\.\d+\.\d+)\]/gm)) {
+      if (heading.split('.').map(Number)[0] < 4) break;
+      assert.match(changelog, new RegExp(`^\\[${heading.replace(/\./g, '\\.')}\\]: https://`, 'm'), heading);
+    }
   });
 });

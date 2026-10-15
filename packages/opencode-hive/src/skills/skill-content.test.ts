@@ -236,6 +236,7 @@ describe('skill content', () => {
     expect(skill!.template).toContain('If any review step mutates the artifact under review, stop and report the mutation');
     expect(skill!.template).toContain('Report missing, empty, stale, or invalid review inputs');
     expect(skill!.template).toContain('Host output format wins');
+    expect(skill!.template).toContain('`git --no-optional-locks status --short`');
   });
 
   it('bundles adversarial-review mode detection and lens coverage', () => {
@@ -615,6 +616,21 @@ describe('skill content', () => {
     expect(template).not.toContain('available in this directory');
   });
 
+  it('ships the obra/superpowers license and a pinned source record beside the retained systematic-debugging text', () => {
+    const skillDir = path.join(resolvePackagedSkillsDir(), 'systematic-debugging');
+    const license = readFileSync(path.join(skillDir, 'LICENSE.superpowers'), 'utf8');
+    const upstream = readFileSync(path.join(skillDir, 'UPSTREAM.md'), 'utf8');
+    const template = BUILTIN_SKILLS.find((entry) => entry.name === 'systematic-debugging')!.template;
+
+    expect(license.startsWith('MIT License\n\nCopyright (c) 2025 Jesse Vincent\n')).toBe(true);
+    expect(upstream).toContain('https://github.com/obra/superpowers');
+    expect(upstream).toContain('030a222af19c1f3a93c6eb876a7422d8e4fc0162');
+    expect(upstream).toContain('LICENSE.superpowers');
+    expect(upstream).toContain('LICENSE.pstack');
+    expect(template).toContain('obra/superpowers');
+    expect(template).toContain('`LICENSE.superpowers`');
+  });
+
   it('documents task() fan-out paths for parallel-exploration', () => {
     const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'parallel-exploration');
 
@@ -628,7 +644,7 @@ describe('skill content', () => {
     expect(skill!.template).toContain('Dependency decides serial vs parallel');
     expect(skill!.template).toContain('Wait mode decides blocking foreground vs background');
     expect(skill!.template).toContain('Blocking does not mean serial');
-    expect(skill!.template).toContain('If the only reason for serializing is `task()` is blocking, that is incorrect');
+    expect(skill!.template).toContain('If the only reason for serializing is that `task()` is blocking, that is incorrect');
     expect(skill!.template).toContain('one primary goal');
     expect(skill!.template).toContain('Every returned result is terminal');
     expect(skill!.template).toContain('Every returned result is terminal, so every follow-up uses a fresh child session');
@@ -949,14 +965,11 @@ describe('skill content', () => {
     expect(executing).toContain('repeat only within its combined unfinished prerequisite closure until all requested roots are done');
     expect(executing).toContain('For whole-feature execution, after all tasks complete');
 
-    const hiveTemplate = readRepoFile('packages/hive-core/templates/skills/hive.md');
     const dispatch = BUILTIN_SKILLS.find((entry) => entry.name === 'dispatching-parallel-agents')!.template;
-    for (const consumer of [hiveTemplate, dispatch]) {
-      expect(consumer).toContain('run/continue a feature until a target task is complete/done');
-      expect(consumer).toContain('executing-plans');
-      expect(consumer).toContain('apply Target Task Milestones before');
-      expect(consumer).toContain('Explicit companion suffixes use the same procedure');
-    }
+    expect(dispatch).toContain('run/continue a feature until a target task is complete/done');
+    expect(dispatch).toContain('executing-plans');
+    expect(dispatch).toContain('apply Target Task Milestones before');
+    expect(dispatch).toContain('Explicit companion suffixes use the same procedure');
   });
 
   it('routes accepted review work without promoting optional feedback to automatic fixes', () => {
@@ -979,25 +992,10 @@ describe('skill content', () => {
   it('defers task report ownership and interruption recovery to the primary prompt', () => {
     const executing = BUILTIN_SKILLS.find((entry) => entry.name === 'executing-plans')!.template;
     const context = BUILTIN_SKILLS.find((entry) => entry.name === 'context-engineering')!.template;
-    const hiveSkill = readRepoFile('packages/hive-core/templates/skills/hive.md');
     expect(executing).toContain("read the report it published and record status and a compact summary under the primary prompt's Task Report Ownership rules");
     expect(executing).toContain("follow the primary prompt's Interrupted Worker Recovery rules; a failed run does not fail the task");
     expect(executing).not.toContain('record its summary and terminal report');
     expect(context).toContain('Task reports and `handoff.md` are task records, not managed context. Do not copy report history into context.');
-    expect(hiveSkill).toContain('A failed or interrupted worker run does not fail the task');
-    expect(hiveSkill).not.toContain('hive_task_update({ task, status: "failed", summary, report })');
-    const recoverySteps = [
-      '1. Confirm the prior worker and any in-flight subprocess or external effect have stopped',
-      '2. Inspect before any cleanup',
-      '3. Record what you observed',
-      '4. Call `hive_status()`, select the feature only when the selected route is unset or differs, or selection evidence is missing or uncertain under Create Feature above, and launch a fresh worker in the retained worktree',
-    ].map((step) => hiveSkill.indexOf(step));
-    expect(recoverySteps.every((index) => index >= 0)).toBe(true);
-    expect(recoverySteps).toEqual([...recoverySteps].sort((a, b) => a - b));
-    expect(hiveSkill).toContain('Do not delete locks, reset, or clean the worktree');
-    expect(hiveSkill).toContain('ask Helper for an interrupted-worker evidence packet');
-    expect(hiveSkill).toContain('A discovered HEAD is observed, not a verified pin');
-    expect(hiveSkill).toContain('If inspection is unavailable, keep known facts and unknowns in your current response; do not claim saved state. Stop before writing or retrying and escalate for supported or operator recovery');
   });
 
   it('finishes executing-plans through verification and Hive merge instead of a generic finish menu', () => {
@@ -1023,47 +1021,6 @@ describe('skill content', () => {
     expect(completeDevelopment).not.toContain('execute choice');
     expect(template).not.toContain('verify tests, present options, execute choice');
     expect(template).not.toContain('finishing-a-development-branch');
-  });
-
-  it('uses native Forager examples in the core hive skill', () => {
-    const hiveSkill = readRepoFile('packages/hive-core/templates/skills/hive.md');
-
-    expect(hiveSkill).toContain('hive_worktree_create({ feature: "feature-name", task: "01-task-name" })');
-    expect(hiveSkill).toContain('hive_worktree_create({ feature: "feature-name", task: "02-task-a" })');
-    expect(hiveSkill).toContain('hive_feature_select({ feature: "feature-name" })');
-    expect(hiveSkill).toContain('subagent_type: "forager-worker"');
-    expect(hiveSkill).toContain('hive_task_update({ task: "01-task-name", status: "done", summary, report: closureReport })  # Primary closure report: explains the problem, how the solution works, material issues and their resolutions; cites the worker\'s reportPath');
-    expect(hiveSkill).toContain('hive_task_update({ task, status: "blocked"');
-    expect(hiveSkill).toContain('strategy: "squash", message:');
-    expect(hiveSkill).toContain('Do not call `hive_worktree_merge` again while preserved conflict state is active');
-    expect(hiveSkill).not.toContain('hive_worktree_start');
-    expect(hiveSkill).not.toContain('taskToolCall');
-  });
-
-  it('delegates research by capability and evidence contract in the core hive skill', () => {
-    const hiveSkill = readRepoFile('packages/hive-core/templates/skills/hive.md');
-
-    expect(hiveSkill).toContain('Delegate research by operation, required source authority and freshness');
-    expect(hiveSkill).toContain('The child selects among capabilities exposed in its own session');
-    expect(hiveSkill).toContain('do not prescribe provider or tool IDs');
-  });
-
-  it('documents tracked worktree execution and non-Git/report-only exceptions in the core hive skill', () => {
-    const hiveSkill = readRepoFile('packages/hive-core/templates/skills/hive.md');
-
-    expect(hiveSkill).toContain('hive_worktree_create');
-    expect(hiveSkill).toContain('Non-Git or report-only work may use an explicit existing target');
-    expect(hiveSkill).toContain('returns sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present');
-    expect(hiveSkill).toContain('hive_worktree_merge({ task: "01-task-name", sourceCommit, expectedTarget,');
-    expect(hiveSkill).toContain('hive_worktree_merge({ task: "01-task-name", sourceCommits, expectedTargets,');
-    expect(hiveSkill).toContain('Pass its topology-aware source pin plus the unchanged inspected `expectedTarget`');
-    expect(hiveSkill).toContain('singleton composites accept matching scalar conveniences');
-    expect(hiveSkill).toContain('marking the feature task done');
-    expect(hiveSkill).toContain('hive_task_update');
-    expect(hiveSkill).toContain('do not reconstruct them from worker prose');
-    expect(hiveSkill).toContain('hive_task_update({ task, status: "pending" })');
-    expect(hiveSkill).not.toContain('hive_execution_prepare');
-    expect(hiveSkill).not.toContain('Executes tasks in worktrees');
   });
 
   it('includes task() parallel guidance for dispatching-parallel-agents', () => {
@@ -1268,7 +1225,7 @@ describe('skill content', () => {
     expect(skill!.template).toContain('second patch/test loop');
     expect(skill!.template).toContain('behavior-contract change');
     expect(skill!.template).toContain('manual task or plan amendment');
-    expect(skill!.template).toContain('do not edit `.hive/background-jobs.json` directly');
+    expect(skill!.template).toContain("do not edit the active host's `background-jobs.json` board file directly");
     expect(skill!.template).toContain('archived by the tool and hidden from normal status');
     expect(skill!.template).toContain('Forgotten terminal jobs');
     expect(skill!.template).toContain('Wait-only polling');
@@ -1574,7 +1531,7 @@ describe('skill content', () => {
     expect(template).toContain('expectedContentHashes');
     expect(template).toContain('scanChars');
     expect(template).toContain('context_inventory_too_large');
-    expect(template).toContain('context_cursor_stale');
+    expect(template).toContain('stale_context_cursor');
     expect(template).toContain('start a new named read without a cursor');
     expect(template).toContain('Never delete an index to restore classification');
     expect(template).toContain('accountability');
@@ -1629,6 +1586,7 @@ describe('skill content', () => {
     expect(existsSync(path.join(writingSkillDir, 'SKILL-MECHANICS.md'))).toBe(true);
     expect(existsSync(path.join(writingSkillDir, 'LICENSE'))).toBe(true);
     expect(existsSync(path.join(writingSkillDir, 'UPSTREAM.md'))).toBe(true);
+    expect(readFileSync(path.join(writingSkillDir, 'SKILL-MECHANICS.md'), 'utf8')).toContain('`disableSkills` in the global `~/.config/opencode/agent_hive.json` only');
   });
 
   it('discovers both complexity skills with distinct scopes and one operator-request placeholder', () => {
@@ -1662,8 +1620,14 @@ describe('skill content', () => {
       readRepoFile('packages/opencode-hive/README.md'),
       readRepoFile('docs/OPERATOR-GUIDE.md'),
     ]) {
-      expect(content).toContain('/complexity-review <scope/philosophy prose>');
-      expect(content).toContain('/complexity-audit <scope/philosophy prose>');
+      // The docs request the skills by name or by v2 TUI @-mention, never by slash command.
+      expect(content).toMatch(/Ask for `complexity-review` by name|ask for the skill by name/);
+      expect(content).toContain('`@complexity-review <scope>`');
+      expect(content).toContain('`@complexity-audit <scope>`');
+      expect(content).not.toMatch(/\/complexity-(review|audit)/);
+    }
+    for (const content of [readRepoFile('packages/opencode-hive/README.md'), readRepoFile('docs/OPERATOR-GUIDE.md')]) {
+      expect(content).toContain('does not register skills as slash commands');
     }
 
     expect(readRepoFile('docs/OPERATOR-GUIDE.md')).toContain(conversationFallback);
@@ -1708,6 +1672,10 @@ describe('host sections in packaged skills', () => {
         expect(out, relative).not.toMatch(/\{\{|@@|%HOST%/);
       }
     }
+  });
+
+  it('contains no backslash-escaped backticks in packaged skill Markdown', () => {
+    for (const relative of markdownFiles()) expect(rawText(relative), relative).not.toContain('\\`');
   });
 
   it('keeps every host section readable in the raw package source with no placeholders', () => {
@@ -1874,5 +1842,33 @@ describe('host sections in packaged skills', () => {
     expect(v2).toContain('Hive does not rewrite it');
     expect(v2).not.toContain('OPENCODE_EXPERIMENTAL');
     expect(sectionTexts('hive-config', OPENCODE_V1_PROFILE)).toContain('OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS');
+  });
+
+  it('names each host\'s own board store and keeps the shared board rule host-neutral', () => {
+    const v1 = rendered('background-delegation/SKILL.md', OPENCODE_V1_PROFILE);
+    const v2 = rendered('background-delegation/SKILL.md', V2);
+    expect(v1).toContain('.hive/background-jobs.json');
+    expect(v1).not.toContain('opencode-v2/background-jobs.json');
+    expect(v2).toContain('.hive/runtime/opencode-v2/background-jobs.json');
+    expect(v2).not.toMatch(/\.hive\/background-jobs\.json/);
+    for (const text of [v1, v2]) {
+      expect(text).toContain("do not edit the active host's `background-jobs.json` board file directly");
+      expect(text).toContain("Manual board mutation: editing the active host's `background-jobs.json` board file");
+    }
+  });
+
+  it('words the OpenCode v2 serialization rule as a complete sentence', () => {
+    expect(rendered('parallel-exploration/SKILL.md', V2)).toContain('If the only reason for serializing is that `subagent()` is blocking, that is incorrect.');
+  });
+
+  it('attributes global config creation and creation-time child state to OpenCode v1 only', () => {
+    const v1 = rendered('hive-config/references/configuration.md', OPENCODE_V1_PROFILE);
+    const v2 = rendered('hive-config/references/configuration.md', V2);
+    expect(v1).toContain("the plugin's config hook creates it at host startup");
+    expect(v1).toContain('Existing child sessions keep their creation-time permissions and prompts.');
+    expect(v2).toContain('The v2 entry never creates the global file.');
+    expect(v2).toContain('catalog built at activation');
+    expect(v2).not.toContain('creation-time permissions');
+    expect(v2).not.toContain("config hook creates it");
   });
 });

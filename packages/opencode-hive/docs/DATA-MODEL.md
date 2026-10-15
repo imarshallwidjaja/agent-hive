@@ -6,9 +6,9 @@
 .hive/
 ├── agent-hive.override.json   # Optional project-local agent model/variant overrides
 ├── repositories.json          # Optional Hive-managed project-local multi-repo manifest
-├── sessions.json              # Canonical session bindings and session constraints (OpenCode v1 owner)
+├── sessions.json              # Project session index: bindings, routes, session constraints (OpenCode v1 owner)
 ├── background-jobs.json       # Background board (observational bookkeeping, OpenCode v1 owner)
-├── runtime/opencode-v2/       # OpenCode v2 owner: sessions.json and background-jobs.json
+├── runtime/opencode-v2/       # OpenCode v2 owner: its own sessions.json and background-jobs.json
 ├── context/                    # Project-wide managed knowledge
 │   ├── index.json              # Schema-v1 operational index
 │   └── {name}.md               # Raw Markdown with discovery frontmatter
@@ -63,7 +63,7 @@ Task status and reports are the execution record. `hive_task_update({ report })`
 
 `hive_task_update({ handoff })` replaces `tasks/{task}/handoff.md` with a nonblank successor note of at most 2048 UTF-8 bytes, independent of status or report updates. A later remediation run can replace it; omitted handoff leaves it unchanged. The result includes `handoffPath` when written; a failed handoff publication identifies the `handoff` stage, path, and `handoffWritten` flag.
 
-`.hive/background-jobs.json` is the background board: acknowledgement, archive, and notification bookkeeping. It observes the originating native parent and call, not the current feature or agent. Stale and unknown observations stay visible. It does not couple to execution, worktree, or task status. Archive, reconcile, and ignore do not stop execution. The board above belongs to the OpenCode v1 owner; the OpenCode v2 owner keeps its own at `.hive/runtime/opencode-v2/background-jobs.json`. Owners never share records, so equal aliases in two boards are different jobs.
+The background board, `.hive/background-jobs.json` on OpenCode v1, holds acknowledgement, archive, and notification bookkeeping. It observes the originating native parent and call, not the current feature or agent. Stale and unknown observations stay visible. It does not couple to execution, worktree, or task status. Archive, reconcile, and ignore do not stop execution. The OpenCode v2 owner keeps its own board at `.hive/runtime/opencode-v2/background-jobs.json`. Owners never share records, so equal aliases in two boards are different jobs.
 
 The board file has `schemaVersion: 1`, `jobs: BackgroundJobRecord[]`, and optional `updatedAt`. Each job stores native `taskId` and `sessionId`, required `alias`, agent identity, timestamps, `runtimeState` (`running`, `completed`, `error`, `cancelled`, or `unknown`), and optional `callId`, scope, notification, cancellation, reconciliation, and archive fields. Reconciled and ignored jobs remain stored but are hidden from the default background status view.
 
@@ -73,7 +73,7 @@ Ad-hoc worktrees are temporary workspace metadata only: no run history, evidence
 
 ## Prompt Files
 
-The primary authors the native Forager prompt. At native `task()` dispatch, the runtime appends a route-snapshot footer with `projectRoot`, the selected feature route, session constraints, and feature constraints. A selected feature-task Forager bound by `Hive task: <task-folder>` as its first non-empty authored line also receives a bounded path-only task brief after that footer. It does not inject context documents or catalogs; there is no project constraint register. Standing constraints are operator directives, not tool permissions.
+The primary authors the native Forager prompt. At native subagent dispatch (`task()` on v1, `subagent()` on v2), the runtime appends a route-snapshot footer with `projectRoot`, the selected feature route, session constraints, and feature constraints. A selected feature-task Forager bound by `Hive task: <task-folder>` as its first non-empty authored line also receives a bounded path-only task brief after that footer. It does not inject context documents or catalogs; there is no project constraint register. Standing constraints are operator directives, not tool permissions.
 
 ## Reserved Overview Convention
 
@@ -325,19 +325,19 @@ Manual-task specs derive their sections from structured metadata and may include
 
 Canonical session bindings and session-scoped constraint entries live in the owner's project session index: `.hive/sessions.json` for OpenCode v1, `.hive/runtime/opencode-v2/sessions.json` for OpenCode v2. A missing v2 index starts empty and never imports v1 sessions; no v1 file is moved, copied or deleted. Feature-local `sessions.json` files (`runtime/opencode-v2/sessions.json` inside the feature directory for v2) are projections for navigation and cannot replace missing canonical provenance. A selected feature route is stored as `featureName`; explicit `null` means featureless, while an absent field leaves route fallback available. Feature-scoped constraints live separately in `.hive/features/{feature-directory}/constraints.json` as `{ "entries": [{ "id": "constraint-...", "text": "..." }], "revision": 1 }`.
 
+A child session's entry in the project session index looks like this:
+
 ```json
 {
-  "master": "ses_abc123",
   "sessions": [
     {
       "sessionId": "ses_abc123",
       "parentSessionId": "ses_parent",
+      "agent": "forager-worker",
       "featureName": "feature-a",
-      "taskFolder": "01-first-task",
       "projectRoot": "/trusted/project",
       "startedAt": "2025-01-05T09:00:00Z",
       "lastActiveAt": "2025-01-05T10:30:00Z",
-      "messageCount": 42,
       "standingConstraints": "Australian English.\n\nNo emojis.",
       "standingConstraintEntries": [
         { "id": "constraint-...", "text": "Australian English." },

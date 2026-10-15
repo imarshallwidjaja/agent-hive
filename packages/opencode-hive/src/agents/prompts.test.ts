@@ -814,7 +814,6 @@ describe('Multi-plan feature routing guidance', () => {
         'AGENTS.md',
         'docs/DESIGN.md',
         'docs/OPERATOR-GUIDE.md',
-        'packages/hive-core/templates/skills/hive.md',
         'packages/opencode-hive/README.md',
         'packages/opencode-hive/docs/HIVE-TOOLS.md',
         'packages/opencode-hive/skills/dispatching-parallel-agents/SKILL.md',
@@ -1011,7 +1010,6 @@ describe('Active native-task guidance contradiction checks', () => {
     'AGENTS.md',
     'CHANGELOG.md',
     'docs/OPERATOR-GUIDE.md',
-    'packages/hive-core/templates/skills/hive.md',
     'packages/opencode-hive/README.md',
     'packages/opencode-hive/docs/HIVE-TOOLS.md',
     'packages/opencode-hive/skills/background-delegation/SKILL.md',
@@ -1320,6 +1318,15 @@ describe('Task report reliability', () => {
     ]) {
       expect(INTERRUPTED_WORKER_RECOVERY_PROMPT).toContain(requirement);
     }
+    const recoverySteps = [
+      '1. Confirm the prior writer is truly terminal',
+      '2. Inspect before any cleanup',
+      '3. Treat what survived as attributed evidence',
+      '4. For a managed feature task, append an interruption observation as an attributed report',
+      '5. Launch a fresh recovery worker in the same retained worktree',
+    ].map((step) => INTERRUPTED_WORKER_RECOVERY_PROMPT.indexOf(step));
+    expect(recoverySteps.every((index) => index >= 0)).toBe(true);
+    expect(recoverySteps).toEqual([...recoverySteps].sort((a, b) => a - b));
   });
 });
 

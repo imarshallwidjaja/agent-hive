@@ -93,10 +93,10 @@ If several subagent tasks are independent, emit all of their `subagent()` calls 
 - Background parallel fan-out: background-mode task calls only when the primary agent can do unrelated foreground work. Follow the `background-delegation` skill before using background mode.
 
 <!-- hive-host opencode-v1 -->
-If the only reason for serializing is `task()` is blocking, that is incorrect.
+If the only reason for serializing is that `task()` is blocking, that is incorrect.
 <!-- /hive-host -->
 <!-- hive-host opencode-v2 -->
-If the only reason for serializing is `subagent()` is blocking, that is incorrect.
+If the only reason for serializing is that `subagent()` is blocking, that is incorrect.
 <!-- /hive-host -->
 Blocking applies after dispatch, not between independent dispatches.
 

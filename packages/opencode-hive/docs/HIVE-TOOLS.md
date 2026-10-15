@@ -4,7 +4,7 @@ Tool availability plus instructions govern action. Each tool validates its own o
 
 ## Host entries and read transport
 
-The unreleased checkout supplies one package with native v1/v2 entries, all 37 tools and 11 commands. Published 4.1.0 is v1-only. The qualified hosts are v1.18.30 and v2.0.26. Installation, `plugins` options and actual model-selection semantics are in the [plugin README](../README.md#opencode-v2-unreleased-checkout).
+From 5.0.0, one package supplies native v1 and v2 entries, each with all 37 tools and 11 commands. Releases through 4.2.0 are v1-only. The qualified hosts are v1.18.30 and v2.0.26. Installation, `plugins` options and actual model-selection semantics are in the [plugin README](../README.md#opencode-v2).
 
 V2 registers every tool through one validating registrar. `readTransport: "codemode"` (default) explicitly admits only `hive_repositories_status`, `hive_git_snapshot` and `hive_task_trace_content` to Code Mode; controls, repairing reads, worktree inspections and mixed `hive_task_trace` stay direct. `readTransport: "direct"` makes all 37 direct, with the same IDs and authority. Use direct mode when global, per-role or custom-agent permissions deny `execute`. Hive diagnoses unavailable Code Mode reads and preserves the denial.
 
@@ -12,9 +12,9 @@ The access matrix below names canonical role authority on both hosts. Its config
 
 ## Agent Tool Access
 
-Hive registers ordered `agent.permission` rules in OpenCode. Each Hive role starts with `'hive_*': 'deny'`, followed by exact allows and native permissions. OpenCode v1.18.30 appends these rules after global permissions and evaluates the last matching wildcard rule, so a global `{"*":"allow"}` cannot reopen a role-denied Hive tool. The rule also covers future `hive_*` names. Custom agents inherit their base role's permissions.
+On v1, Hive registers ordered `agent.permission` rules in OpenCode. Each Hive role starts with `'hive_*': 'deny'`, followed by exact allows and native permissions. OpenCode v1.18.30 appends these rules after global permissions and evaluates the last matching wildcard rule, so a global `{"*":"allow"}` cannot reopen a role-denied Hive tool. The rule also covers future `hive_*` names. Custom agents inherit their base role's permissions.
 
-OpenCode's `experimental.primary_tools` adds session-level deny rules when native `task()` creates a child. These come after agent rules, including for delegated Architect. Hive preserves operator-supplied entries and adds `question` plus these primary-only Hive operations:
+On v1, OpenCode's `experimental.primary_tools` adds session-level deny rules when native `task()` creates a child. These come after agent rules, including for delegated Architect. Hive preserves operator-supplied entries and adds `question` plus the primary-only Hive operations below. On v2, Hive refuses the same operations and `question` in any child session at execution time, whatever the native permission rules show:
 
 - Feature control: `hive_feature_complete`, `hive_feature_select`.
 - Plan/task control: `hive_plan_approve`, `hive_tasks_sync`, `hive_task_create`.
@@ -457,7 +457,7 @@ Only native `task()` dispatches whose agent resolves to base `forager-worker` (b
 - `Plan: <abs path>[ lines a-b]` is omitted if `plan.md` is missing. Unowned-heading line numbers after the task's section follow when present.
 - `Handoff: <abs path>` appears when this task has a successor handoff.
 - `Dependencies:` lists `- <folder> (<status>)[ handoff: <abs path>]` entries from the task record's `dependsOn`, with `unknown` for unknown folders, or `Dependencies: none`.
-- The durable catalog count includes the `hive_context_read` call; `Execution decisions: <abs path>` appears when present. No document bodies are included.
+- `Feature context: <n> durable catalog entries; read with hive_context_read({ feature: "<feature>", view: "catalog" }).` gives the durable count (`unknown` when it cannot be read) and the exact catalog call. `Execution decisions: <abs path>` follows when that file exists. No document bodies are included.
 
 To fit the budget, trailing dependency entries are dropped with `- (+<k> more; see hive_status)`. If still too long, retain core lines plus unowned-heading and handoff lines, then core lines alone; never cut a path. When locators cannot fit, the result is `Hive task brief unavailable: locators exceed 2048 bytes.` An eligible unbound dispatch gets one line under the heading: `No Hive task binding: ...` (missing/invalid marker or unknown folder); composition errors give `Hive task brief unavailable: <message>`. On each task dispatch, only generated blocks (a start marker immediately followed by its heading line) are replaced, for any agent; marker text quoted elsewhere in an authored assignment is preserved. Reviewers, scouts, advisors, and helpers never receive a brief. For task-scoped review, the primary supplies feature/task identity, plan path and current section, spec path, and current `specStale`/`specStaleReason` from `hive_status`; reviewers may query status with the explicit feature to clarify current state.
 
@@ -471,7 +471,7 @@ Each snapshot has `repository`, `scope`, `consistency`, `limits`, `changedPaths`
 
 ## Skill Loading
 
-Skills are loaded via OpenCode's native `skill` tool. Hive bundles are materialized into the global OpenCode config directory under `agent-hive/generated/opencode-skills/` and registered through `skills.paths`. The `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL` env flag enables the primary-agent background-first scheduler contract and background management tools for sessions where OpenCode exposes native background subagents.
+Skills are loaded via OpenCode's native `skill` tool. Hive bundles are materialized into the global OpenCode config directory under `agent-hive/generated/opencode-skills/` and registered through `skills.paths`. On v1, the `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL` env flag enables the primary-agent background-first scheduler contract and background management tools for sessions where OpenCode exposes native background subagents. On v2, native background support enables them without an env flag.
 
 ## Standard Tool Categories Summary
 
