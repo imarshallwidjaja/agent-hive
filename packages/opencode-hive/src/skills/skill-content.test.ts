@@ -1569,6 +1569,27 @@ describe('skill content', () => {
       expect(template).toContain("Joined in order, those chunks' `content` is the document at that read's `revision` and `contentHash`, and it is the base for a replacement you are authorized to make");
       expect(template).toContain('A chunk or cursor you were only told about, such as one quoted in an assignment or an earlier result, is not part of your read; start a new named read without a cursor');
       expect(template).toContain("Once your read is complete, carry out the requested edit: change only what was asked, keep every other byte of the document, and pass that read's revision and hash");
+      expect(template).toContain('When you replace the whole document with `hive_context_write`, your read must be complete');
+      expect(template).not.toContain('the ordinary route to a section edit');
+      // A bounded edit needs the observed passage plus surrounding text, not unrelated chunks, and states what the guards do not prove.
+      expect(template).toContain('To change one passage, use `hive_context_edit` instead; it does not need a complete read');
+      expect(template).toContain('continue only until you hold the whole passage and enough surrounding text to justify the change');
+      expect(template).toContain('do not report a partial read as a check of the whole document');
+      expect(template).toContain('read the document and establish whether the edit applied before retrying');
+      expect(template).toContain('finding `newText` in the document does not prove this call put it there');
+      // The no-write promise covers refusals before publication; a publication error can leave the prior bytes or a pending marker.
+      expect(template).toContain('A call refused before publication (invalid text, stale revision or hash, no match, ambiguous match, identical text, invalid metadata) writes nothing');
+      expect(template).toContain('the prior bytes are restored, or a pending marker remains and the next managed mutation reports `context_reconciliation_required`');
+      expect(template).toContain('do not assume an identical retry is safe');
+      expect(template).not.toContain('A failed edit writes nothing');
+      expect(reference).toContain('A refusal before publication, which covers every result in the table, leaves the document, index, and revision unchanged');
+      expect(reference).toContain('An error while publishing restores the prior bytes or leaves the pending marker described below');
+      expect(reference).not.toContain('Every failure leaves the document');
+      expect(reference).toContain('hive_context_edit({');
+      expect(reference).toContain('A process that writes the file directly while a publication is in progress is outside that guarantee');
+      for (const reason of ['context_edit_no_match', 'context_edit_ambiguous', 'context_edit_no_change', 'stale_revision']) {
+        expect(reference, reason).toContain(`\`${reason}\``);
+      }
       expect(template).toContain('Stop managed mutations and report the exact error');
       expect(template).toContain('never authorizes an agent to hand-edit them');
       // Recovery stays operator work, stated before the procedure and again inline.

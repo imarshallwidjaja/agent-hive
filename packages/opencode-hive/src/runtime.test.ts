@@ -1070,7 +1070,7 @@ describe('coordinated runtime hard cut', () => {
     await loaded.config!(config);
 
     const reads = ['hive_context_read', 'hive_constraints_read', 'hive_plan_read', 'hive_status', 'hive_repositories_status', 'hive_git_snapshot'];
-    const contextWrites = ['hive_context_write', 'hive_context_append'];
+    const contextWrites = ['hive_context_write', 'hive_context_append', 'hive_context_edit'];
     const traces = ['hive_task_trace', 'hive_task_trace_content'];
     const inspections = ['hive_worktree_inspect', 'hive_adhoc_worktree_inspect'];
     const constraints = ['hive_constraints_add', 'hive_constraints_edit', 'hive_constraints_clear'];
@@ -1103,7 +1103,7 @@ describe('coordinated runtime hard cut', () => {
     };
     for (const base of CUSTOM_AGENT_BASES) matrix[`audit-${base}`] = matrix[base]!;
 
-    expect(HIVE_TOOL_NAMES).toHaveLength(37);
+    expect(HIVE_TOOL_NAMES).toHaveLength(38);
     // The operator's entries stay first and `question` is not repeated; the policy's entries follow in policy order.
     expect(config.experimental.primary_tools).toEqual(['operator_tool', 'question', ...primaryOnly]);
     const bare: any = {};
@@ -1251,7 +1251,7 @@ describe('coordinated runtime hard cut', () => {
       const allowed = [...reads, ...(base === 'hive-helper'
         ? ['hive_worktree_inspect', 'hive_adhoc_worktree_inspect', 'hive_task_trace', 'hive_task_trace_content']
         : base === 'scout-researcher'
-          ? ['hive_repositories_discover'] : ['hive_context_write', 'hive_context_append'])];
+          ? ['hive_repositories_discover'] : ['hive_context_write', 'hive_context_append', 'hive_context_edit'])];
       for (const tool of [...HIVE_TOOL_NAMES, 'hive_future_tool', 'operator_tool']) {
         expect(evaluatePermission(tool, '*', config.permission, helper, grandchildSession), `${target}:${tool}`)
           .toBe(allowed.includes(tool) ? 'allow' : 'deny');

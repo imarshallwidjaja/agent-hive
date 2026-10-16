@@ -97,6 +97,7 @@ const ORDINARY_OPERATION_SIGNATURES = [
   'hive_context_read(name?:string, scope?:feature|project, feature?:string, view?:summary|catalog, query?:string, limit?:number, cursor?:string, maxBytes?:number, scanChars?:boolean)',
   'hive_context_write(name:string, content:string, kind?:durable|evidence, task?:string, expectedRevision?:number, expectedContentHash?:string, scope?:feature|project, feature?:string)',
   'hive_context_append(name:string, content:string, section?:string, task?:string, expectedRevision:number, expectedContentHash:string, scope?:feature|project, feature?:string)',
+  'hive_context_edit(name:string, oldText:string, newText:string, expectedRevision:number, expectedContentHash:string, scope?:feature|project, feature?:string)',
   'hive_context_archive(names:string[], reason:string, expectedRevision:number, expectedContentHashes:record<string>, scope?:feature|project, feature?:string)',
   'hive_constraints_read(scope?:session|feature, feature?:string)',
   'hive_constraints_add(constraints:string, scope?:session|feature, feature?:string)',
@@ -112,7 +113,7 @@ const NATIVE_TRACE_AND_BACKGROUND_TOOLS = [
 ];
 
 describe('ordinary Hive operation arguments', () => {
-  it('registers the 31 ordinary operations after the trace and background tools, with their argument shapes', async () => {
+  it('registers the 32 ordinary operations after the trace and background tools, with their argument shapes', async () => {
     const { hooks } = await createRuntime();
     const registered = Object.entries(hooks.tool as Record<string, { args: any }>);
     const ordinary = registered.filter(([name]) => !NATIVE_TRACE_AND_BACKGROUND_TOOLS.includes(name));
@@ -157,6 +158,7 @@ const DESCRIBED_FIELDS: Record<string, string[]> = {
   hive_context_read: ['name', 'scope', 'view', 'query', 'limit', 'cursor', 'maxBytes', 'scanChars'],
   hive_context_write: ['content', 'kind', 'task', 'expectedRevision', 'expectedContentHash', 'scope'],
   hive_context_append: ['content', 'section', 'task', 'expectedRevision', 'expectedContentHash', 'scope'],
+  hive_context_edit: ['name', 'oldText', 'newText', 'expectedRevision', 'expectedContentHash', 'scope', 'feature'],
   hive_context_archive: ['reason', 'expectedRevision', 'expectedContentHashes', 'scope'],
   ...Object.fromEntries(['hive_worktree_merge', 'hive_adhoc_worktree_merge'].map((name) => [name, [
     'strategy', 'message', 'preserveConflicts', 'cleanup', 'sourceCommit', 'sourceCommits', 'expectedTarget', 'expectedTargets',
@@ -205,6 +207,20 @@ describe('ordinary Hive operation metadata', () => {
       expect(schema.required, name).not.toContain('expectedTarget');
       expect(schema.required, name).not.toContain('expectedTargets');
     }
+  });
+});
+
+describe('context edit failure guarantees', () => {
+  it('promises no write only for refusals before publication and names the publication-error recovery', async () => {
+    const { hooks } = await createRuntime();
+    const edit = (hooks.tool as any).hive_context_edit as { description: string; args: any };
+    const schema = z.toJSONSchema(z.object(edit.args)) as any;
+    expect(edit.description).toContain('A call refused before publication (invalid or oversized text, a stale revision or hash, no match, an ambiguous match, identical text, invalid metadata) writes nothing');
+    expect(edit.description).toContain('An error while publishing can leave the document or index uncertain');
+    expect(edit.description).toContain('a pending marker remains and managed mutations then report context_reconciliation_required');
+    expect(edit.description).toContain('do not assume a same-argument retry is safe');
+    expect(edit.description).not.toContain('Nothing is written on any failure');
+    expect(schema.properties.feature.description).toContain('Project scope forbids it');
   });
 });
 
@@ -316,6 +332,15 @@ describe('ordinary Hive operation results', () => {
     expect(await failure('hive_context_append', { feature: 'guarded', name: 'notes', content: '## Again', expectedRevision: 1, expectedContentHash: named.file.contentHash })).toBe(stale);
     expect(await failure('hive_context_write', { feature: 'guarded', name: 'notes', content: 'replaced', expectedRevision: 1, expectedContentHash: named.file.contentHash })).toBe(stale);
     expect(await failure('hive_context_archive', { feature: 'guarded', names: ['notes'], reason: 'r', expectedRevision: 1, expectedContentHashes: { notes: named.file.contentHash } })).toBe(stale);
+    expect(await failure('hive_context_edit', { feature: 'guarded', name: 'notes', oldText: '## More', newText: '## Less', expectedRevision: 1, expectedContentHash: named.file.contentHash })).toBe(stale);
+    const current = await callJson('hive_context_read', { feature: 'guarded', name: 'notes' });
+    const edit = { feature: 'guarded', name: 'notes', expectedRevision: current.revision, expectedContentHash: current.file.contentHash };
+    expect(await failure('hive_context_edit', { ...edit, oldText: '# notes', newText: '# Log' })).toContain('oldText does not occur in context "notes"');
+    expect(await failure('hive_context_edit', { ...edit, oldText: 'e', newText: 'E' })).toContain('Include enough surrounding text to match exactly one passage');
+    const edited = await callJson('hive_context_edit', { ...edit, oldText: '# Notes', newText: '# Log' });
+    expect(edited).toMatchObject({ revision: 3, file: { name: 'notes', kind: 'durable' } });
+    expect((await callJson('hive_context_read', { feature: 'guarded', name: 'notes' })).file.content).toStartWith(frontmatter.replace('# Notes', '# Log'));
+    expect(await failure('hive_context_edit', { scope: 'project', feature: 'guarded', name: 'notes', oldText: 'a', newText: 'b', expectedRevision: 0, expectedContentHash: current.file.contentHash })).toBe('Project context does not accept feature or task selectors');
     expect(await failure('hive_context_write', { scope: 'project', feature: 'guarded', name: 'x', content: 'x' })).toBe('Project context does not accept feature or task selectors');
     expect(await failure('hive_context_read', { feature: 'guarded', name: 'notes', maxBytes: 100 })).toBe('maxBytes must be between 256 and 65536.');
     expect(await failure('hive_context_read', { feature: 'guarded', name: 'notes', cursor: 'invalid' })).toBe('The named-read cursor is invalid, expired, or belongs to another document.');

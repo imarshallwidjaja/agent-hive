@@ -24,7 +24,7 @@ import {
 } from './run.mjs';
 import {
   ARTIFACT_CAP, ATTEMPT_LOG_HEADER, FINAL_TEXT_CAP, STOP_INSTRUCTION_CAP, allowlistArgs, attemptCount, clipText, clipToolArgs, codeModeBlocks, codeModeFieldDocs, commandDelivery,
-  containerSecrets, deliveredBodySentence, evidenceLimits, exportDecision, hiveResultFailed, interruptSession, messagePages, mockDecision, preflightReply, readHistories, render, runPrompt, safeName, scenarioOverrides,
+  classifyEditAttempt, containerSecrets, deliveredBodySentence, evidenceLimits, exportDecision, hiveResultFailed, interruptSession, messagePages, mockDecision, preflightReply, readHistories, render, runPrompt, safeName, refusalKind, scenarioOverrides,
   scriptDirective, skillReferencePointers, toolFieldContract, toolOutcome,
 } from './fixture.ts';
 
@@ -1046,10 +1046,27 @@ describe('artifacts, runtime identity and model selection', () => {
     }
   });
 
-  test('the frozen model must be shared and tool-capable on both hosts', () => {
-    const catalogs = { v1: [{ id: 'a', toolCall: true }, { id: 'b', toolCall: true }], v2: [{ id: 'b', toolCall: true }, { id: 'a', toolCall: false }] };
-    expect(selectSharedModel(['a', 'b'], catalogs)).toBe('b');
-    expect(selectSharedModel(['c'], catalogs)).toBeNull();
+  test('only the first preference is frozen, and only when every requested catalog marks it tool-capable', () => {
+    const both = { v1: [{ id: 'a', toolCall: true }, { id: 'b', toolCall: true }], v2: [{ id: 'a', toolCall: true }, { id: 'b', toolCall: true }] };
+    expect(selectSharedModel(['a', 'b'], both)).toBe('a');
+    // A lower preference is never substituted when the first is missing or not tool-capable on a requested host.
+    const firstNotToolCapable = { ...both, v2: [{ id: 'b', toolCall: true }, { id: 'a', toolCall: false }] };
+    expect(selectSharedModel(['a', 'b'], firstNotToolCapable)).toBeNull();
+    expect(selectSharedModel(['a', 'b'], { v1: both.v1, v2: [{ id: 'b', toolCall: true }] })).toBeNull();
+    expect(selectSharedModel(['a', 'b'], { v2: [{ id: 'a', toolCall: true }] })).toBe('a');
+    expect(selectSharedModel(['a'], { v1: [], v2: [] })).toBeNull();
+    expect(selectSharedModel([], both)).toBeNull();
+    // The real preference list keeps its order and null variant.
+    expect(SCENARIOS.model.preference[0]).toBe('gpt-6-luna');
+    expect(SCENARIOS.model.variant).toBeNull();
+  });
+
+  test('an unavailable first preference stops runPhase before any preflight or paid case', () => {
+    const source = readFileSync(join(import.meta.dir, 'run.mjs'), 'utf8');
+    const refusal = source.indexOf("throw new HarnessError('no_shared_model'");
+    expect(refusal).toBeGreaterThan(source.indexOf('selectSharedModel(scenarios.model.preference, catalogs)'));
+    expect(refusal).toBeLessThan(source.indexOf('await hostPreflight(ctx, host)'));
+    expect(refusal).toBeLessThan(source.indexOf('await paidCase(ctx, host, group)'));
   });
 });
 
@@ -1509,6 +1526,23 @@ describe('native history reads', () => {
     expect((await messagePages('v2', 's1', pages(down).get)).failure).toBe('history_request_failed');
   });
 
+  test('a failed tool call carries its locally classified refusal on both hosts without the error text', async () => {
+    const tool = 'hive_context_edit';
+    const v1Part = (error: string) => ({ type: 'tool', tool, state: { status: 'error', input: {}, error } });
+    const v2Part = (message: string) => ({ type: 'tool', name: tool, state: { status: 'error', input: {}, error: { type: 'unknown', message } } });
+    const v1 = await messagePages('v1', 's1', pages({ status: 200, ok: true, body: [{ info: { role: 'assistant' }, parts: [
+      v1Part('The user has specified a rule which prevents you from using this specific tool call. Here are some of the relevant rules []'), v1Part('Tool execution aborted'),
+      { type: 'tool', tool, state: { status: 'completed', input: {}, output: '{}' } },
+    ] }] }).get);
+    expect(v1.history[0].tools.map((t: any) => t.refusal)).toEqual(['authority', 'other', null]);
+    const v2 = await messagePages('v2', 's1', pages(v2Page([{ ...v2Message('x'), content: [
+      v2Part(`${tool} is not granted to the helper role.`), v2Part('Invalid tool input: boom'), v2Part(`No tool named "${tool}" is currently available. Please use a tool from the available tool list.`),
+    ] }])).get);
+    expect(v2.history[0].tools.map((t: any) => t.refusal)).toEqual(['authority', 'other', 'unavailable']);
+    // The error text stays out of the exported error name.
+    expect(v2.history[0].tools.map((t: any) => t.errorName)).toEqual(['unknown', 'unknown', 'unknown']);
+  });
+
   test('v2: the page cap ends a still-continuing history as incomplete without calling it a failure', async () => {
     const endless = pages(v2Page([v2Message('x')], 'more'));
     const capped = await messagePages('v2', 's1', endless.get);
@@ -1731,8 +1765,21 @@ describe('model-selection probes', () => {
 });
 
 describe('wiring contract', () => {
+  const writes = (edit = true) => ({ hive_context_write: true, hive_context_append: true, hive_context_edit: edit });
+  const target = { targetSha256Before: 'a'.repeat(64), targetSha256After: 'a'.repeat(64), targetUnchanged: true };
+  const contextEdit = (overrides: any = {}) => ({
+    setup: true,
+    schema: { direct: true, codeMode: false, required: ['expectedContentHash', 'expectedRevision', 'name', 'newText', 'oldText'] },
+    allowed: { agent: 'forager-worker', observed: true, exposed: true, call: 'completed', matchesExpected: true },
+    denied: [
+      { agent: 'scout-researcher', observed: true, exposed: false, reached: true, readOk: true, argsValid: false, call: 'absent', refusal: null, ...target },
+      { agent: 'hive-helper', observed: true, exposed: true, reached: true, readOk: true, argsValid: true, call: 'error', refusal: 'authority', ...target },
+    ],
+    ...overrides,
+  });
   const host = (overrides: any = {}) => ({
-    roles: { 'forager-worker': true }, commands: { council: true }, roleExposure: { 'code-reviewer': { observed: true } },
+    roles: { 'forager-worker': true }, commands: { council: true }, roleExposure: { 'code-reviewer': { observed: true, contextWrites: writes() } },
+    contextEdit: contextEdit(),
     toolContract: { expected: 2, missing: [], unexpected: [], undescribed: [], paramNames: { hive_status: ['feature'] }, undescribedParams: {} },
     fieldContract: { checked: 40, absentTools: [], absentFields: [], undescribed: [] },
     references: { pointers: { 'hive-config': { pointed: ['a.md'], broken: [], unpointed: [] } }, reads: [{ skill: 'hive-config', file: 'a.md', readCompleted: true }] },
@@ -1765,6 +1812,83 @@ describe('wiring contract', () => {
       'command_consumer_reference_failed:v1:task-milestones.md', 'override_not_user_skill:v1', 'override_body_not_loaded:v1', 'tool_params_differ:hive_status',
     ]));
     expect(wiringFor({ v1: host({ toolContract: { expected: 0, missing: [], unexpected: [], undescribed: [], paramNames: {} } }) })).toContain('tool_manifest_unread:v1');
+  });
+
+  test('the installed bounded-edit proof fails when the schema, the allowed edit, a denial or exposure parity is missing', () => {
+    const only = (edit: any, extra: any = {}) => wiringFor({ v1: host({ contextEdit: edit, ...extra }) });
+    expect(only(undefined)).toEqual(['context_edit_unobserved:v1']);
+    expect(only(contextEdit({ setup: false }))).toEqual(['context_edit_setup_failed:v1']);
+    expect(only(contextEdit({ schema: { direct: false, codeMode: true, required: [] } }))).toEqual(['context_edit_not_direct:v1', 'context_edit_required_fields:v1']);
+    expect(only(contextEdit({ schema: { direct: true, codeMode: false, required: ['name', 'oldText'] } }))).toEqual(['context_edit_required_fields:v1']);
+    for (const allowed of [{ call: 'error' }, { call: 'absent' }, { call: 'failed' }, { matchesExpected: false }, { observed: false }]) {
+      expect(only(contextEdit({ allowed: { ...contextEdit().allowed, ...allowed } }))).toEqual(['context_edit_not_applied:v1']);
+    }
+    const [scout, helper] = contextEdit().denied;
+    expect(only(contextEdit({ denied: [scout] }))).toEqual(['context_edit_denial_unobserved:v1:hive-helper']);
+    expect(only(contextEdit({ denied: [{ ...scout, targetUnchanged: false }, helper] }))).toEqual(['context_edit_denial_breached:v1:scout-researcher']);
+    expect(only(contextEdit({ denied: [scout, { ...helper, call: 'completed' }] }))).toEqual(['context_edit_denial_breached:v1:hive-helper']);
+    // A shown schema is not authority: an exposed tool must be refused by the executor, not reach the operation.
+    for (const call of ['failed', 'absent', 'other']) {
+      expect(only(contextEdit({ denied: [scout, { ...helper, call }] }))).toEqual(['context_edit_denial_unrefused:v1:hive-helper']);
+    }
+    // An error is a refusal only when it is classified as one and the call carried the concrete guards of a successful read.
+    for (const notRefusal of [{ refusal: 'other' }, { refusal: null }, { refusal: 'unavailable' }, { argsValid: false }]) {
+      expect(only(contextEdit({ denied: [scout, { ...helper, ...notRefusal }] }))).toEqual(['context_edit_denial_unrefused:v1:hive-helper']);
+    }
+    expect(only(contextEdit({ denied: [scout, { ...helper, exposed: false, refusal: 'unavailable' }] }))).toEqual([]);
+    expect(only(contextEdit({ denied: [{ ...scout, exposed: true }, helper] }))).toEqual(['context_edit_denial_unrefused:v1:scout-researcher']);
+    // Without the child's own successful read or a completed edit step, neither absence nor an error says anything.
+    for (const missing of [{ readOk: false }, { reached: false }, { readOk: undefined }]) {
+      expect(only(contextEdit({ denied: [{ ...scout, ...missing }, helper] }))).toEqual(['context_edit_denial_unproven:v1:scout-researcher']);
+      expect(only(contextEdit({ denied: [scout, { ...helper, ...missing }] }))).toEqual(['context_edit_denial_unproven:v1:hive-helper']);
+    }
+    expect(only(contextEdit(), { roleExposure: { 'scout-researcher': { observed: true, contextWrites: writes(true) } } })).toEqual([]);
+    expect(only(contextEdit(), { roleExposure: { 'code-reviewer': { observed: true, contextWrites: writes(false) } } })).toEqual(['context_edit_exposure_parity:v1:code-reviewer']);
+    expect(only(contextEdit(), { roleExposure: { 'code-reviewer': { observed: true } } })).toEqual(['context_write_exposure_unrecorded:v1:code-reviewer']);
+  });
+
+  test('stock tool error text is classified locally into a fixed word, never exported', () => {
+    const tool = 'hive_context_edit';
+    // v1.18.30 PermissionDeniedError, then the two role-guard messages in role-policy.ts.
+    expect(refusalKind('The user has specified a rule which prevents you from using this specific tool call. Here are some of the relevant rules []', tool)).toBe('authority');
+    expect(refusalKind(`${tool} is not granted to the scout role.`, tool)).toBe('authority');
+    expect(refusalKind(`The native explore subagent has no Hive tool access; ${tool} is denied.`, tool)).toBe('authority');
+    expect(refusalKind(`No tool named "${tool}" is currently available. Please use a tool from the available tool list.`, tool)).toBe('unavailable');
+    // Schema, stale state, abort, runtime and another tool's refusal are not authority refusals.
+    for (const message of [
+      'Invalid tool input: Expected number, got null', 'stale_revision: the context changed', 'Tool execution aborted',
+      'ENOENT: no such file', 'hive_context_write is not granted to the scout role.', `Invalid tool input: ${tool} is not granted to the scout role.`, '', undefined, { message: 'x' },
+    ]) expect(refusalKind(message, tool), String(message)).toBe('other');
+  });
+
+  test('an edit attempt is judged from its own successful read, concrete guard arguments and a classified error', () => {
+    const name = 'wiring-edit-denied';
+    const hash = 'b'.repeat(64);
+    const read = { agent: 'hive-helper', tool: 'hive_context_read', status: 'completed', args: {}, output: JSON.stringify({ revision: 4, file: { contentHash: hash } }) };
+    const args = { scope: 'project', name, oldText: 'Tone: formal', newText: 'Tone: plain', expectedRevision: 4, expectedContentHash: hash };
+    const edit = { agent: 'hive-helper', tool: 'hive_context_edit', status: 'error', args, output: '', refusal: 'authority' };
+    const judge = (calls: any[], overrides: any = {}) => classifyEditAttempt({
+      name, revision: 4, hashBefore: hash, hashAfter: hash, observed: true, exposed: true, calls, text: 'edit attempted', ...overrides,
+    });
+    expect(judge([read, edit])).toEqual({
+      observed: true, exposed: true, reached: true, readOk: true, argsValid: true, call: 'error', refusal: 'authority', targetSha256Before: hash, targetSha256After: hash,
+    });
+    // An unresolved guard becomes null arguments: the host answers with a schema error, which is neither valid arguments nor a refusal.
+    const unresolved = { ...edit, args: { ...args, expectedRevision: null, expectedContentHash: null }, refusal: 'other' };
+    expect(judge([{ ...read, status: 'error', output: '' }, unresolved])).toMatchObject({ readOk: false, argsValid: false, call: 'error', refusal: 'other' });
+    for (const wrong of [{ expectedRevision: 5 }, { expectedContentHash: 'c'.repeat(64) }, { newText: 'Tone: loud' }, { scope: 'feature' }, { name: 'other' }]) {
+      expect(judge([read, { ...edit, args: { ...args, ...wrong } }]).argsValid, JSON.stringify(wrong)).toBe(false);
+    }
+    // The read must be the target's current state, not merely a successful call.
+    expect(judge([{ ...read, output: JSON.stringify({ revision: 3, file: { contentHash: hash } }) }, edit]).readOk).toBe(false);
+    expect(judge([{ ...read, output: JSON.stringify({ revision: 4, file: { contentHash: 'c'.repeat(64) } }) }, edit]).readOk).toBe(false);
+    expect(judge([{ ...read, output: JSON.stringify({ success: false, error: 'x', revision: 4, file: { contentHash: hash } }) }, edit]).readOk).toBe(false);
+    expect(judge([read, edit], { revision: null }).readOk).toBe(false);
+    // Absence, a completed call that failed, an aborted script and an unclassified error each keep their own word.
+    expect(judge([read])).toMatchObject({ call: 'absent', refusal: null, readOk: true, argsValid: false });
+    expect(judge([read, { ...edit, status: 'completed', output: JSON.stringify({ success: false }), refusal: null }])).toMatchObject({ call: 'failed', refusal: null });
+    expect(judge([read, { ...edit, refusal: undefined }])).toMatchObject({ call: 'error', refusal: 'other' });
+    expect(judge([read, edit], { text: '' }).reached).toBe(false);
   });
 
   // The body arrived and the references were read, then the run stalled, errored or waited on an operator.

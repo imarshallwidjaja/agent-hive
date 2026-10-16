@@ -61,7 +61,7 @@ Roles: **P** = full primaries (`hive-master`, `swarm-orchestrator`, `hive-builde
 | `hive_adhoc_worktree_merge` | Destination branch (integration commit) | P | yes |
 | `hive_adhoc_worktree_cleanup` | Removes ad-hoc worktree, optionally its branch | P, RP | yes |
 | `hive_repositories_update` | `.hive/repositories.json` | P, A, Ac | |
-| `hive_context_write`, `hive_context_append` | `context/<name>.md`, `context/index.json` (feature or project) | P, A, Ac, RP, F, Rev | |
+| `hive_context_write`, `hive_context_append`, `hive_context_edit` | `context/<name>.md`, `context/index.json` (feature or project); edit changes one exact passage of an existing file | P, A, Ac, RP, F, Rev | |
 | `hive_context_archive` | Moves context into `archive/context/` | P, A | yes |
 | `hive_constraints_add`, `hive_constraints_edit`, `hive_constraints_clear` | Session constraints in `sessions.json`; feature `constraints.json` | P, A, RP | yes |
 <!-- hive-host opencode-v1 -->

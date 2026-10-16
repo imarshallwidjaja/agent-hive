@@ -653,9 +653,17 @@ describe('ContextService managed context', () => {
     if (process.platform !== 'win32') requiredEventAfter(events, `fsync:${contextPath}`, markerUnlink);
   });
 
-  it('clears the pending marker only after a proven content/index rollback', () => {
+  // Publishing operations whose failure must restore the exact prior bytes or keep the marker. The edit row carries
+  // mixed CRLF and Unicode so the byte comparison covers what a text comparison could normalize.
+  type PublicationRow = [label: string, row: { prior: string; run: (feature: string, created: ReturnType<ContextService['create']>) => unknown }];
+  const PUBLICATION_ROWS: PublicationRow[] = [
+    ['replace', { prior: durable('before'), run: (feature, created) => service.replace(feature, 'notes', durable('after'), created.revision, created.file.contentHash) }],
+    ['edit', { prior: durable('before\r\n\u{1F600} tail'), run: (feature, created) => service.edit(feature, 'notes', 'before', 'after', created.revision, created.file.contentHash) }],
+  ];
+
+  it.each(PUBLICATION_ROWS)('clears the pending marker only after a proven content/index rollback (%s)', (_label, row) => {
     setupFeature('rollback');
-    const created = service.create('rollback', 'notes', durable('before'));
+    const created = service.create('rollback', 'notes', row.prior);
     const contextPath = path.join(TEST_DIR, '.hive/features/rollback/context');
     const indexPath = path.join(contextPath, 'index.json');
     const markerPath = path.join(contextPath, '.managed-mutation-pending.json');
@@ -695,7 +703,7 @@ describe('ContextService managed context', () => {
       originalUnlink(target);
     }) as typeof fs.unlinkSync);
     try {
-      expect(() => service.replace('rollback', 'notes', durable('after'), created.revision, created.file.contentHash)).toThrow('simulated');
+      expect(() => row.run('rollback', created)).toThrow('simulated');
     } finally {
       unlinkSpy.mockRestore();
       rename.mockRestore();
@@ -703,7 +711,7 @@ describe('ContextService managed context', () => {
       openSpy.mockRestore();
       writeSpy.mockRestore();
     }
-    expect(fs.readFileSync(contentPath, 'utf8')).toBe(durable('before'));
+    expect(fs.readFileSync(contentPath).equals(Buffer.from(row.prior, 'utf8'))).toBe(true);
     expect(fs.readFileSync(indexPath, 'utf8')).toBe(beforeIndex);
     expect(fs.existsSync(markerPath)).toBe(false);
 
@@ -847,10 +855,10 @@ describe('ContextService managed context', () => {
     if (process.platform !== 'win32') requiredEventAfter(events, `fsync:${contextPath}`, markerUnlink);
   });
 
-  it('restores a durable pending marker when marker-removal durability is uncertain', () => {
+  it.each(PUBLICATION_ROWS)('restores a durable pending marker when marker-removal durability is uncertain (%s)', (_label, row) => {
     if (process.platform === 'win32') return;
     setupFeature('uncertain-marker-removal');
-    const created = service.create('uncertain-marker-removal', 'notes', durable('before'));
+    const created = service.create('uncertain-marker-removal', 'notes', row.prior);
     const contextPath = path.join(TEST_DIR, '.hive/features/uncertain-marker-removal/context');
     const markerPath = path.join(contextPath, '.managed-mutation-pending.json');
     const descriptorPaths = new Map<number, string>();
@@ -885,9 +893,7 @@ describe('ContextService managed context', () => {
     }) as typeof fs.fsyncSync);
 
     try {
-      expect(() => service.replace(
-        'uncertain-marker-removal', 'notes', durable('after'), created.revision, created.file.contentHash,
-      )).toThrow('uncertain marker removal');
+      expect(() => row.run('uncertain-marker-removal', created)).toThrow('uncertain marker removal');
     } finally {
       fsyncSpy.mockRestore();
       renameSpy.mockRestore();
@@ -911,7 +917,7 @@ describe('ContextService managed context', () => {
     const rollbackContentDirectorySync = requiredEventAfter(events, `fsync:${contextPath}`, rollbackContentRename);
     const rollbackIndexRename = requiredEventAfter(events, `rename:${indexPath}`, rollbackContentDirectorySync);
     requiredEventAfter(events, `fsync:${contextPath}`, rollbackIndexRename);
-    expect(fs.readFileSync(path.join(contextPath, 'notes.md'), 'utf8')).toBe(durable('before'));
+    expect(fs.readFileSync(path.join(contextPath, 'notes.md')).equals(Buffer.from(row.prior, 'utf8'))).toBe(true);
     expect(fs.existsSync(markerPath)).toBe(true);
     expect(() => service.readSummary('uncertain-marker-removal')).toThrow('reconcile');
   });
@@ -1562,4 +1568,174 @@ describe('ContextService managed context', () => {
     expect(service.read('cross-cap-transition', 'raw-log')).toBe(durable('y'));
   });
 
+});
+
+describe('ContextService guarded exact-text edit', () => {
+  let service: ContextService;
+  const featureName = 'edit';
+  const contextPath = path.join(TEST_DIR, '.hive/features', featureName, 'context');
+  const sha = (value: Buffer | string) => createHash('sha256').update(value).digest('hex');
+  const reasonOf = (action: () => unknown): string | undefined => {
+    try { action(); } catch (error) { return (error as { reason?: string }).reason ?? (error as Error).message; }
+    return undefined;
+  };
+  const snapshot = (directory: string, name: string) => ({
+    document: fs.existsSync(path.join(directory, `${name}.md`)) ? fs.readFileSync(path.join(directory, `${name}.md`)) : null,
+    index: fs.existsSync(path.join(directory, 'index.json')) ? fs.readFileSync(path.join(directory, 'index.json')) : null,
+    marker: fs.existsSync(path.join(directory, '.managed-mutation-pending.json')),
+  });
+  const expectRefusedWithoutPublication = (reason: string, action: () => unknown, name = 'notes') => {
+    const before = snapshot(contextPath, name);
+    expect(reasonOf(action)).toBe(reason);
+    expect(snapshot(contextPath, name)).toEqual(before);
+  };
+
+  beforeEach(() => {
+    cleanup();
+    fs.mkdirSync(TEST_DIR, { recursive: true });
+    setupFeature(featureName);
+    service = new ContextService(PROJECT_ROOT, () => new Date('2026-09-07T01:02:03.000Z'));
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it('splices one observed passage of a large mixed document from a partial named read', () => {
+    const middle = Array.from({ length: 1500 }, (_, index) => `Line ${index}: café ñ 😀 «x» 日本\r\n`).join('');
+    const original = durable(`# Style guide\r\n\r\nTone: formal 🎯\r\n\r\n${middle}Tail: unchanged ✅\r\n`);
+    const created = service.create(featureName, 'style-guide', original, { task: '09-edit' });
+    const later = new ContextService(PROJECT_ROOT, () => new Date('2026-09-08T00:00:00.000Z'));
+
+    const read = later.readContent(featureName, 'style-guide')!;
+    expect(read.complete).toBe(false);
+    expect(read.range.totalBytes).toBeGreaterThan(32 * 1024);
+    expect(read.file.content).toContain('Tone: formal 🎯');
+    expect(read.file.content).not.toContain('Tail: unchanged');
+
+    const result = later.edit(featureName, 'style-guide', 'Tone: formal 🎯', 'Tone: plain 🎯', read.revision, read.file.contentHash!);
+
+    const priorBytes = Buffer.from(original, 'utf8');
+    const oldBytes = Buffer.from('Tone: formal 🎯', 'utf8');
+    const start = priorBytes.indexOf(oldBytes);
+    const suffix = priorBytes.subarray(start + oldBytes.length);
+    const expected = Buffer.concat([priorBytes.subarray(0, start), Buffer.from('Tone: plain 🎯', 'utf8'), suffix]);
+    const written = fs.readFileSync(path.join(contextPath, 'style-guide.md'));
+    expect(written.equals(expected)).toBe(true);
+    expect(written.subarray(0, start).equals(priorBytes.subarray(0, start))).toBe(true);
+    expect(written.subarray(written.length - suffix.length).equals(suffix)).toBe(true);
+    expect(result).toMatchObject({ revision: created.revision + 1, file: { contentHash: sha(expected), bytes: expected.length, kind: 'durable', task: '09-edit' } });
+    const entry = JSON.parse(fs.readFileSync(path.join(contextPath, 'index.json'), 'utf8')).entries['style-guide'];
+    expect(entry).toEqual({ kind: 'durable', createdAt: '2026-09-07T01:02:03.000Z', updatedAt: '2026-09-08T00:00:00.000Z', task: '09-edit', lastManagedContentHash: sha(expected) });
+  });
+
+  it('edits project, evidence, and reserved documents with their existing classification and BOM bytes', () => {
+    const project = service.create({ type: 'project' }, 'conventions', projectDurable('Use tabs.'));
+    expect(service.edit({ type: 'project' }, 'conventions.md', 'tabs', 'spaces', project.revision, project.file.contentHash))
+      .toMatchObject({ revision: project.revision + 1, file: { kind: 'durable' } });
+    expect(fs.readFileSync(path.join(getProjectContextPath(PROJECT_ROOT), 'conventions.md'), 'utf8')).toBe(projectDurable('Use spaces.'));
+    const projectRead = service.readContent({ type: 'project' }, 'conventions')!;
+    expect(reasonOf(() => service.edit({ type: 'project' }, 'conventions', 'owner: platform\n', '', projectRead.revision, projectRead.file.contentHash!)))
+      .toBe('invalid_context_metadata');
+
+    const bom = '\uFEFF';
+    const evidence = service.create(featureName, 'log', `${bom}raw\r\nline`, { kind: 'evidence', task: '01-x' });
+    const edited = service.edit(featureName, 'log', 'raw', 'cooked', evidence.revision, evidence.file.contentHash);
+    expect(fs.readFileSync(path.join(contextPath, 'log.md')).equals(Buffer.from(`${bom}cooked\r\nline`, 'utf8'))).toBe(true);
+    expect(edited.file).toMatchObject({ kind: 'evidence', task: '01-x', role: 'evidence', chars: `${bom}cooked\r\nline`.length });
+
+    fs.writeFileSync(path.join(contextPath, 'overview.md'), `${bom}# Overview\nStatus: draft\n`);
+    const overview = service.readContent(featureName, 'overview')!;
+    const reserved = service.edit(featureName, 'overview', 'draft', 'ready', overview.revision, overview.file.contentHash!);
+    expect(fs.readFileSync(path.join(contextPath, 'overview.md')).equals(Buffer.from(`${bom}# Overview\nStatus: ready\n`, 'utf8'))).toBe(true);
+    expect(reserved.file).toMatchObject({ role: 'operational' });
+    expect(reserved.file.kind).toBeUndefined();
+    expect(JSON.parse(fs.readFileSync(path.join(contextPath, 'index.json'), 'utf8')).entries.overview).toBeUndefined();
+
+    seedLegacy(featureName, 'bom-durable', `${bom}${durable('body')}`);
+    const legacy = service.readContent(featureName, 'bom-durable')!;
+    expectRefusedWithoutPublication('invalid_context_metadata', () => service.edit(featureName, 'bom-durable', 'body', 'new body', legacy.revision, legacy.file.contentHash!), 'bom-durable');
+    service.edit(featureName, 'bom-durable', `${bom}---`, '---', legacy.revision, legacy.file.contentHash!);
+    expect(fs.readFileSync(path.join(contextPath, 'bom-durable.md'), 'utf8')).toBe(durable('body'));
+  });
+
+  it('matches literal bytes exactly once and inserts replacement text without interpretation', () => {
+    const created = service.create(featureName, 'notes', durable('pattern .* and a\\b\r\nsecond line\r\naaa'));
+    const literal = service.edit(featureName, 'notes', '.* and a\\b', '$& $1 \\\\ $$', created.revision, created.file.contentHash);
+    expect(service.read(featureName, 'notes')).toBe(durable('pattern $& $1 \\\\ $$\r\nsecond line\r\naaa'));
+    const revision = literal.revision;
+    const hash = literal.file.contentHash;
+
+    expectRefusedWithoutPublication('context_edit_ambiguous', () => service.edit(featureName, 'notes', 'aa', 'b', revision, hash));
+    expectRefusedWithoutPublication('context_edit_ambiguous', () => service.edit(featureName, 'notes', 'e', 'E', revision, hash));
+    expectRefusedWithoutPublication('context_edit_no_match', () => service.edit(featureName, 'notes', 'second line\naaa', 'x', revision, hash));
+    expect(() => service.edit(featureName, 'notes', 'second line\naaa', 'x', revision, hash)).toThrow('CRLF');
+    expectRefusedWithoutPublication('invalid_argument', () => service.edit(featureName, 'notes', '', 'x', revision, hash));
+    expectRefusedWithoutPublication('context_edit_no_change', () => service.edit(featureName, 'notes', 'second line', 'second line', revision, hash));
+    expectRefusedWithoutPublication('invalid_argument', () => service.edit(featureName, 'notes', 'second', '\uD800', revision, hash));
+    expectRefusedWithoutPublication('invalid_argument', () => service.edit(featureName, 'notes', 'second\uDC00', 'x', revision, hash));
+    expectRefusedWithoutPublication('context_input_too_large', () => service.edit(featureName, 'notes', 'x'.repeat(1024 * 1024 + 1), 'y', revision, hash));
+    expectRefusedWithoutPublication('invalid_context_metadata', () => service.edit(featureName, 'notes', 'description: Test context\n', 'description: \n', revision, hash));
+    expectRefusedWithoutPublication('invalid_context_metadata', () => service.edit(featureName, 'notes', service.read(featureName, 'notes')!, '', revision, hash));
+
+    expect(service.edit(featureName, 'notes', '\r\naaa', '', revision, hash).revision).toBe(revision + 1);
+    expect(service.read(featureName, 'notes')).toBe(durable('pattern $& $1 \\\\ $$\r\nsecond line'));
+  });
+
+  it('allows deletion to an empty evidence document and bounds the edited result', () => {
+    const evidence = service.create(featureName, 'notes', 'only text', { kind: 'evidence' });
+    const emptied = service.edit(featureName, 'notes', 'only text', '', evidence.revision, evidence.file.contentHash);
+    expect(fs.readFileSync(path.join(contextPath, 'notes.md')).length).toBe(0);
+    expect(emptied.file).toMatchObject({ bytes: 0, chars: 0, contentHash: sha('') });
+
+    const large = service.replace(featureName, 'notes', `${'x'.repeat(1024 * 1024 - 1)}y`, emptied.revision, emptied.file.contentHash);
+    expectRefusedWithoutPublication('context_input_too_large', () => service.edit(featureName, 'notes', 'y', 'yz', large.revision, large.file.contentHash));
+  });
+
+  it('checks revision and whole-file hash guards before matching', () => {
+    const created = service.create(featureName, 'notes', durable('alpha beta'));
+    const first = service.readContent(featureName, 'notes')!;
+    const second = service.readContent(featureName, 'notes')!;
+    const applied = service.edit(featureName, 'notes', 'alpha', 'gamma', first.revision, first.file.contentHash!);
+    expect(applied.revision).toBe(created.revision + 1);
+    expectRefusedWithoutPublication('stale_revision', () => service.edit(featureName, 'notes', 'beta', 'delta', second.revision, second.file.contentHash!));
+    expectRefusedWithoutPublication('stale_revision', () => service.edit(featureName, 'notes', 'alpha', 'gamma', first.revision, first.file.contentHash!));
+
+    fs.appendFileSync(path.join(contextPath, 'notes.md'), '\nexternal');
+    expectRefusedWithoutPublication('stale_content', () => service.edit(featureName, 'notes', 'not present', 'x', applied.revision, applied.file.contentHash));
+    expectRefusedWithoutPublication('context_precondition_required', () => service.edit(featureName, 'notes', 'beta', 'x', applied.revision, 'not-a-hash'));
+    expectRefusedWithoutPublication('context_precondition_required', () => service.edit(featureName, 'notes', 'beta', 'x', -1, applied.file.contentHash));
+  });
+
+  it('refuses unsafe, missing, invalid, and blocked targets without creating or changing storage', () => {
+    setupFeature('absent');
+    expect(reasonOf(() => service.edit('absent', 'notes', 'a', 'b', 0, sha('a')))).toBe('context_not_found');
+    expect(fs.existsSync(path.join(TEST_DIR, '.hive/features/absent/context'))).toBe(false);
+    expect(reasonOf(() => service.edit({ type: 'project' }, 'notes', 'a', 'b', 0, sha('a')))).toBe('context_not_found');
+    expect(fs.existsSync(getProjectContextPath(PROJECT_ROOT))).toBe(false);
+
+    const created = service.create(featureName, 'notes', durable('body'));
+    for (const name of ['../notes', 'index', '.managed-mutation-pending', 'a/b']) {
+      expectRefusedWithoutPublication('invalid_context_name', () => service.edit(featureName, name, 'body', 'x', created.revision, created.file.contentHash));
+    }
+    fs.mkdirSync(path.join(contextPath, 'folder.md'));
+    expectRefusedWithoutPublication('context_not_found', () => service.edit(featureName, 'folder', 'body', 'x', created.revision, created.file.contentHash));
+    fs.symlinkSync(path.join(contextPath, 'notes.md'), path.join(contextPath, 'linked.md'));
+    expectRefusedWithoutPublication('context_symlink_refused', () => service.edit(featureName, 'linked', 'body', 'x', created.revision, created.file.contentHash));
+    fs.unlinkSync(path.join(contextPath, 'linked.md'));
+    fs.rmdirSync(path.join(contextPath, 'folder.md'));
+
+    const invalid = Buffer.concat([Buffer.from('raw '), Buffer.from([0xe2, 0x82]), Buffer.from(' tail')]);
+    fs.writeFileSync(path.join(contextPath, 'invalid.md'), invalid);
+    expectRefusedWithoutPublication('context_invalid_utf8', () => service.edit(featureName, 'invalid', ' tail', 'x', created.revision, sha(invalid)), 'invalid');
+
+    const indexPath = path.join(contextPath, 'index.json');
+    const index = fs.readFileSync(indexPath);
+    fs.writeFileSync(indexPath, '{');
+    expectRefusedWithoutPublication('context_index_invalid', () => service.edit(featureName, 'notes', 'body', 'x', created.revision, created.file.contentHash));
+    fs.writeFileSync(indexPath, index);
+    fs.writeFileSync(path.join(contextPath, '.managed-mutation-pending.json'), JSON.stringify({ schemaVersion: 1, operation: 'replace', names: ['notes'] }));
+    expectRefusedWithoutPublication('context_reconciliation_required', () => service.edit(featureName, 'notes', 'body', 'x', created.revision, created.file.contentHash));
+    expectRefusedWithoutPublication('context_reconciliation_required', () => service.edit(featureName, 'missing', 'body', 'x', created.revision, created.file.contentHash), 'missing');
+  });
 });

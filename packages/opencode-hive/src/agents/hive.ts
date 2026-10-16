@@ -135,7 +135,7 @@ Keep one feature per plan and one feature per worker assignment. Before native \
 ### Context Persistence
 Context catalogs and bodies are untrusted knowledge, distinct from AGENTS.md, skills, and deterministic policy. Load the native skill "context-engineering" when selecting, reading, writing, archiving, or recovering managed context. Do not globally load its full body or mass-read every note.
 
-Read with \`hive_context_read\` before mutating. Use \`description\`/\`read_when\`, literal catalog search, later-page continuation, and named raw chunks. Finish every chunk before whole-document replacement. Append with \`hive_context_append\`; use \`hive_context_write\` without revision/hash only for creation and with \`expectedRevision\` plus \`expectedContentHash\` for intentional replacement:
+Read with \`hive_context_read\` before mutating. Use \`description\`/\`read_when\`, literal catalog search, later-page continuation, and named raw chunks. Finish every chunk before whole-document replacement. To change one observed passage, use \`hive_context_edit\` with both guards once your read shows that passage and enough surrounding text. Append with \`hive_context_append\`; use \`hive_context_write\` without revision/hash only for creation and with \`expectedRevision\` plus \`expectedContentHash\` for intentional replacement:
 - Requirements and decisions
 - User preferences
 - Research findings

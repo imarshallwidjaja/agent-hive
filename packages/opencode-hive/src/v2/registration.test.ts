@@ -214,8 +214,8 @@ function denied(exit: Exit.Exit<unknown, unknown>): string | undefined {
 }
 
 describe('v2 tool registration', () => {
-  it('registers all 37 Hive tools once, with an explicit Code Mode flag from the selected transport', async () => {
-    expect(HIVE_TOOL_NAMES).toHaveLength(37);
+  it('registers all 38 Hive tools once, with an explicit Code Mode flag from the selected transport', async () => {
+    expect(HIVE_TOOL_NAMES).toHaveLength(38);
     for (const transport of ['codemode', 'direct'] as const) {
       const host = await activate({ readTransport: transport });
       const tools = host.tools();
@@ -391,6 +391,14 @@ describe('v2 execution guards', () => {
     ['security-scout', 'child', 'hive_status', {}, true],
     ['security-scout', 'child', 'hive_plan_write', {}, false],
     ['security-scout', 'child', 'edit', {}, false],
+    // Bounded context edits follow write/append authority.
+    ['architect-planner', 'child', 'hive_context_edit', {}, true],
+    ['forager-worker', 'child', 'hive_context_edit', {}, true],
+    ['code-reviewer', 'child', 'hive_context_edit', {}, true],
+    ['scout-researcher', 'child', 'hive_context_edit', {}, false],
+    ['hive-helper', 'child', 'hive_context_edit', {}, false],
+    ['general', 'child', 'hive_context_edit', {}, false],
+    ['security-scout', 'child', 'hive_context_edit', {}, false],
   ];
 
   it.each(cases)('%s in a %s session calling %s', async (agent, sessionID, tool, input, allowed) => {
@@ -402,6 +410,20 @@ describe('v2 execution guards', () => {
       const executorDenied = denied(exit);
       if (!allowed) expect(executorDenied).toBe(hook);
     }
+  });
+
+  it('applies a child Forager bounded context edit through the v2 executor', async () => {
+    const host = await activate();
+    const content = '---\ndescription: Style.\nread_when: Always.\nowner: test\nreview_after: 2099-01-01\n---\nTone: formal\r\nTail\r\n';
+    const output = (exit: Exit.Exit<any, unknown>) => (exit as Exit.Success<any>).value.output;
+    output(await host.execute('hive_context_write', { scope: 'project', name: 'style-guide', content }, { sessionID: 'primary', agent: 'hive-master' }));
+    const forager = { sessionID: 'child', agent: 'forager-worker' };
+    const read = output(await host.execute('hive_context_read', { scope: 'project', name: 'style-guide' }, forager));
+    const args = { scope: 'project', name: 'style-guide', oldText: 'Tone: formal', newText: 'Tone: plain', expectedRevision: read.revision, expectedContentHash: read.file.contentHash };
+    expect(denied(await host.before({ tool: 'hive_context_edit', ...forager }))).toBeUndefined();
+    expect(output(await host.execute('hive_context_edit', args, forager))).toMatchObject({ revision: read.revision + 1, file: { name: 'style-guide' } });
+    expect(fs.readFileSync(path.join(host.root, '.hive', 'context', 'style-guide.md'), 'utf8')).toBe(content.replace('formal', 'plain'));
+    expect(denied(await host.execute('hive_context_edit', args, forager))).toContain(`Context changed since revision ${read.revision}`);
   });
 
   it('denies a primary orchestrator as a delegation target even when native configuration makes it callable', async () => {

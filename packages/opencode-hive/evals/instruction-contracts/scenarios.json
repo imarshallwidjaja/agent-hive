@@ -901,7 +901,7 @@
         "approval persisted while sync failed: retry sync, not approval",
         "report history written while handoff failed: never resubmit the report",
         "invalid context index: stop managed mutation and report the actual error; never repair control files by hand",
-        "incomplete context read: after a fresh complete own read the Tone edit is expected through a guarded replacement; a supplied or incomplete read never permits replacement"
+        "incomplete context read: after a fresh own named read that shows the Tone passage and enough surrounding text, the Tone edit is expected through a guarded hive_context_edit with both guards; a supplied chunk is not the caller's read, and whole-document replacement still needs a complete own read"
       ],
       "agentMode": "dedicated",
       "primary": "swarm-orchestrator",
@@ -1108,6 +1108,7 @@
             "name": [
               "hive_context_write",
               "hive_context_append",
+              "hive_context_edit",
               "hive_context_archive"
             ],
             "count": {

@@ -582,6 +582,21 @@ export function safeName(value: Json): string | null {
   return typeof value === 'string' && /^[A-Za-z][A-Za-z0-9_.:-]{0,79}$/.test(value) ? value : 'other';
 }
 
+/**
+ * Classifies a tool error's text into a fixed word inside the container; the text itself never leaves it. `authority`
+ * is a refusal by permission or Hive role policy: v1.18.30's PermissionDeniedError message and the two role-guard
+ * messages in `role-policy.ts` that name the called tool. `unavailable` is the stock v2 runtime's unknown-tool error.
+ * Anything else, including a schema failure, stale state, an abort or a runtime error, is `other`.
+ */
+export type ToolRefusal = 'authority' | 'unavailable' | 'other';
+export function refusalKind(message: unknown, tool: string): ToolRefusal {
+  if (typeof message !== 'string' || message.startsWith('Invalid tool input')) return 'other';
+  if (message.startsWith('The user has specified a rule which prevents you from using this specific tool call')) return 'authority';
+  if (message.startsWith(`${tool} is not granted to the `) || (message.startsWith('The native ') && message.includes(` subagent has no Hive tool access; ${tool} is denied.`))) return 'authority';
+  if (message.startsWith(`No tool named "${tool}" is currently available.`)) return 'unavailable';
+  return 'other';
+}
+
 export type HistoryRead = { history: Json[]; complete: boolean; failure: 'history_request_failed' | 'history_body_malformed' | null };
 
 /**
@@ -606,6 +621,7 @@ export async function messagePages(host: string, sessionId: string, get: (path: 
       tools: (m.parts ?? []).filter((p: Json) => p.type === 'tool').map((p: Json) => ({
         name: p.tool, status: p.state?.status, input: p.state?.input, metadata: p.state?.metadata ?? null,
         output: p.state?.output ?? p.state?.error, errorName: p.state?.status === 'error' ? 'tool_error' : null,
+        refusal: p.state?.status === 'error' ? refusalKind(p.state?.error, p.tool) : null,
       })),
     }));
     return { history, complete: true, failure: null };
@@ -632,6 +648,7 @@ export async function messagePages(host: string, sessionId: string, get: (path: 
           name: p.name, status: p.state?.status, input: p.state?.input, metadata: p.state?.metadata ?? null,
           output: p.state?.output ?? (Array.isArray(p.state?.content) ? p.state.content.map((c: Json) => c.text ?? '').join('') : undefined) ?? '',
           errorName: p.state?.status === 'error' ? safeName(p.state?.error?.type ?? p.state?.error?._tag ?? p.state?.error?.name) ?? 'tool_error' : null,
+          refusal: p.state?.status === 'error' ? refusalKind(p.state?.error?.message, p.name) : null,
         })),
       });
     }
@@ -1278,11 +1295,115 @@ async function toolCallsUnder(host: string, rootId: string | null): Promise<Json
   for (const node of tree) {
     for (const m of await messages(host, node.id)) {
       for (const t of m.tools) {
-        calls.push({ session: node.id, agent: node.agent, tool: neutralTool(t.name), status: t.status, args: allowlistArgs(t.name, t.input), output: typeof t.output === 'string' ? t.output : '' });
+        calls.push({ session: node.id, agent: node.agent, tool: neutralTool(t.name), status: t.status, args: allowlistArgs(t.name, t.input), output: typeof t.output === 'string' ? t.output : '', refusal: t.refusal ?? null });
       }
     }
   }
   return calls;
+}
+
+async function assistantTextUnder(host: string, rootId: string | null, agent: string): Promise<string> {
+  const tree = rootId ? await sessionTree(host, rootId) : [];
+  let text = '';
+  for (const node of tree) {
+    if (node.agent !== agent) continue;
+    for (const m of await messages(host, node.id)) if (m.role === 'assistant') text += m.text;
+  }
+  return text;
+}
+
+const CONTEXT_WRITE_TOOLS = ['hive_context_write', 'hive_context_append', 'hive_context_edit'];
+// Synthetic project files used only by wiring; no scenario or paid case reads or writes these names.
+const EDIT_TARGETS = { allowed: 'wiring-edit-allowed', denied: 'wiring-edit-denied' };
+const EDIT_BODY = 'Tone: formal\r\nTail: unchanged \u2705\r\n';
+const EDIT_RESULT = 'Tone: plain\r\nTail: unchanged \u2705\r\n';
+const EDIT_OLD = 'Tone: formal';
+const EDIT_NEW = 'Tone: plain';
+const EDIT_REACHED = 'edit attempted';
+
+function requestExposes(request: Json, tool: string): boolean {
+  return (request?.tools ?? []).some((t: Json) => (t?.function?.name ?? t?.name) === tool);
+}
+
+/**
+ * One scripted child's edit attempt, judged from its own recorded calls. `readOk` is its named read completing with the
+ * target's current revision and hash, `argsValid` the recorded edit carrying exactly the intended text and those two
+ * concrete guards (so a schema failure from an unresolved `$result` cannot pass as a refusal), `reached` the script
+ * running past the edit step, and `refusal` the locally classified error word. Only booleans and fixed words result.
+ */
+export function classifyEditAttempt(input: { name: string; revision: number | null; hashBefore: string | null; hashAfter: string | null; observed: boolean; exposed: boolean; calls: Json[]; text: string }): Json {
+  const { name, revision, hashBefore, calls } = input;
+  const read = calls.find((c) => c.tool === 'hive_context_read');
+  const readResult = read?.status === 'completed' ? parseToolOutput(read.output) : null;
+  const readOk = revision !== null && hashBefore !== null && readResult !== null && !hiveResultFailed(readResult)
+    && readResult.revision === revision && readResult.file?.contentHash === hashBefore;
+  const edit = calls.find((c) => c.tool === 'hive_context_edit');
+  const a = edit?.args ?? {};
+  const argsValid = Boolean(edit) && revision !== null && hashBefore !== null && a.scope === 'project' && a.name === name
+    && a.oldText === EDIT_OLD && a.newText === EDIT_NEW && a.expectedRevision === revision && a.expectedContentHash === hashBefore;
+  const call = !edit ? 'absent'
+    : edit.status === 'completed' ? (hiveResultFailed(parseToolOutput(edit.output)) ? 'failed' : 'completed')
+      : edit.status === 'error' ? 'error' : 'other';
+  return {
+    observed: input.observed, exposed: input.exposed, reached: input.text.includes(EDIT_REACHED), readOk, argsValid, call,
+    refusal: call === 'error' ? (edit.refusal ?? 'other') : null,
+    targetSha256Before: hashBefore, targetSha256After: input.hashAfter,
+  };
+}
+
+/**
+ * Installed `hive_context_edit` proof: the direct schema the full-access role was shown, one allowed child writer's
+ * actual guarded edit of a synthetic project file, and read-only children that leave another synthetic file unchanged.
+ * Only booleans, fixed status words and synthetic-file hashes leave the container.
+ */
+async function contextEditProof(host: string, mockRef: string, builder: Json): Promise<Json> {
+  const shown = (builder?.tools ?? []).map((t: Json) => t.function ?? t).find((fn: Json) => fn?.name === 'hive_context_edit');
+  const schema = {
+    direct: Boolean(shown),
+    codeMode: Boolean(builder && /tools\.hive_context_edit\b/.test(builder.system)),
+    required: Array.isArray(shown?.parameters?.required) ? [...shown.parameters.required].sort() : [],
+  };
+  const file = (name: string) => join(PROJ, '.hive', 'context', `${name}.md`);
+  const hash = (name: string) => existsSync(file(name)) ? sha256(readFileSync(file(name))) : null;
+  for (const name of Object.values(EDIT_TARGETS)) {
+    const created = await hiveCall(host, 'hive_context_write', { scope: 'project', name, content: EDIT_BODY, kind: 'evidence' });
+    if (created.status !== 'completed' || hiveResultFailed(created.parsed)) return { setup: false, schema };
+  }
+  const revisionOf = (): number | null => {
+    try { return JSON.parse(readFileSync(join(PROJ, '.hive', 'context', 'index.json'), 'utf8')).revision ?? null; } catch { return null; }
+  };
+  const attempt = async (agent: string, name: string): Promise<Json> => {
+    const before = requests().length;
+    const revision = revisionOf();
+    const targetBefore = hash(name);
+    const marker = `wiring-context-edit-${agent}`;
+    const guard = (path: string) => ({ $result: { tool: 'hive_context_read', path } });
+    const run = await runPrompt(host, {
+      agent: 'hive-builder', modelRef: mockRef,
+      prompt: `wiring context edit\n${scriptDirective([{ op: 'dispatch', agent, prompt: marker, script: [
+        { op: 'hive', tool: 'hive_context_read', args: { scope: 'project', name } },
+        { op: 'hive', tool: 'hive_context_edit', args: { scope: 'project', name, oldText: EDIT_OLD, newText: EDIT_NEW, expectedRevision: guard('revision'), expectedContentHash: guard('file.contentHash') } },
+        { op: 'text', text: EDIT_REACHED },
+      ] }, { op: 'text', text: 'ok' }])}`,
+    }, 180_000);
+    if (run.sessionId && (run.exit !== 0 || run.timedOut || run.asked)) await interruptSession(host, run.sessionId);
+    const calls = (await toolCallsUnder(host, run.sessionId)).filter((c) => c.agent === agent);
+    const seen = requests().slice(before).find((r) => r.lastUser.includes(marker));
+    return {
+      agent,
+      ...classifyEditAttempt({
+        name, revision, hashBefore: targetBefore, hashAfter: hash(name), observed: Boolean(seen), exposed: requestExposes(seen, 'hive_context_edit'),
+        calls, text: await assistantTextUnder(host, run.sessionId, agent),
+      }),
+    };
+  };
+  const allowed = await attempt('forager-worker', EDIT_TARGETS.allowed);
+  const denied = [await attempt('scout-researcher', EDIT_TARGETS.denied), await attempt('hive-helper', EDIT_TARGETS.denied)];
+  return {
+    setup: true, schema,
+    allowed: { ...allowed, matchesExpected: allowed.targetSha256After === sha256(Buffer.from(EDIT_RESULT, 'utf8')) },
+    denied: denied.map((row) => ({ ...row, targetUnchanged: row.targetSha256Before !== null && row.targetSha256Before === row.targetSha256After })),
+  };
 }
 
 async function wiring(input: Json): Promise<Json> {
@@ -1302,7 +1423,10 @@ async function wiring(input: Json): Promise<Json> {
     }
     const seen = requests().slice(before).find((r) => r.lastUser.includes(marker) && r.tools.length > 0);
     roleExposure[role] = seen
-      ? { observed: true, systemBytes: Buffer.byteLength(seen.system), systemSha256: sha256(seen.system), toolCount: seen.tools.length, toolSchemaBytes: Buffer.byteLength(JSON.stringify(seen.tools)) }
+      ? {
+        observed: true, systemBytes: Buffer.byteLength(seen.system), systemSha256: sha256(seen.system), toolCount: seen.tools.length, toolSchemaBytes: Buffer.byteLength(JSON.stringify(seen.tools)),
+        contextWrites: Object.fromEntries(CONTEXT_WRITE_TOOLS.map((tool) => [tool, requestExposes(seen, tool)])),
+      }
       : { observed: false };
   }
   results.roleExposure = roleExposure;
@@ -1338,6 +1462,7 @@ async function wiring(input: Json): Promise<Json> {
       .filter(([, v]) => (v as string[]).length > 0)),
   };
   results.fieldContract = toolFieldContract(descriptors, results.codeModeDeclarations);
+  results.contextEdit = await contextEditProof(host, mockRef, builder);
 
   // Every reference an installed skill points to must be readable by a child under stock permissions. A same-name
   // user skill replaces the packaged one, so its packaged pointers are not reachable and are reported apart.

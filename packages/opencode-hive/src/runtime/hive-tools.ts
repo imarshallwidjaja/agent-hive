@@ -224,7 +224,7 @@ function createNamedContextReader(services: HiveServices) {
 }
 
 /**
- * The 31 ordinary Hive operations, keyed by tool name in registration order. Trace and background tools stay with
+ * The 32 ordinary Hive operations, keyed by tool name in registration order. Trace and background tools stay with
  * their own owners. Each operation takes the caller's identity explicitly and resolves feature or session state
  * only through the services it needs.
  */
@@ -468,7 +468,7 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
       execute: ({ runId, repoIds, sourceDirectory, deleteBranch, discard }) => adhocService(sourceDirectory, repoIds).cleanup(runId, deleteBranch, { discard }),
     }),
     hive_context_read: operation({
-      description: 'Read managed project or feature context. Without name it lists: the summary view (default) or the durable catalog. With name it returns one exact document in chunks, with the revision and file.contentHash that later mutations require; follow nextCursor until complete is true before relying on or replacing the document. A cursor that no longer matches the document, revision or content fails as stale_context_cursor: restart the read.',
+      description: 'Read managed project or feature context. Without name it lists: the summary view (default) or the durable catalog. With name it returns one exact document in chunks, with the revision and file.contentHash that later mutations require; every chunk carries the whole-file hash. Follow nextCursor until complete is true before relying on the whole document or replacing it with hive_context_write; for hive_context_edit, read until you have the passage and enough surrounding text. A cursor that no longer matches the document, revision or content fails as stale_context_cursor: restart the read.',
       args: {
         name: z.string().optional().describe('Reads that document in chunks (cursor, maxBytes). Cannot be combined with view, query, limit or scanChars.'),
         scope: contextScopeArg,
@@ -496,7 +496,7 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
       },
     }),
     hive_context_write: operation({
-      description: 'Create a missing context file, or replace one whole document. Create: omit expectedRevision and expectedContentHash; an existing name fails with context_already_exists. Replace: both come from a read of the complete current document (finish its chunks first), and a stale pair is rejected as a changed context: read again before retrying. On context_index_invalid or context_reconciliation_required, stop managed mutations and report the error; this tool does not repair control files.',
+      description: 'Create a missing context file, or replace one whole document. Create: omit expectedRevision and expectedContentHash; an existing name fails with context_already_exists. Replace: both come from your own read of the complete current document (finish its chunks first), and a stale pair is rejected as a changed context: read again before retrying. To change one passage without reproducing the rest, use hive_context_edit. On context_index_invalid or context_reconciliation_required, stop managed mutations and report the error; this tool does not repair control files.',
       args: {
         name: z.string(),
         content: z.string().describe('The whole document. A durable file needs frontmatter description and read_when (project scope also owner and review_after).'),
@@ -527,6 +527,19 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
         feature: z.string().optional(),
       },
       execute: ({ name, content, section, task, expectedRevision, expectedContentHash, scope, feature }, invocation) => contextService.append(contextScope(scope, feature, invocation, task), name, content, expectedRevision, expectedContentHash, { section, task }),
+    }),
+    hive_context_edit: operation({
+      description: 'Replace one exact passage of an existing context file, keeping every other byte. Take revision and file.contentHash from your own named read, continued until it shows the whole passage and enough surrounding text to justify the change; unrelated chunks need not be read. The hash covers the whole file, so the guards refuse a changed document, but a partial read does not verify text you did not see. oldText must occur exactly once, byte for byte (whitespace, CRLF, Unicode): context_edit_no_match and context_edit_ambiguous mean re-read and copy a longer exact passage; identical text fails context_edit_no_change. Empty newText deletes the passage; the result keeps its kind and task and a durable file still needs valid metadata. A call refused before publication (invalid or oversized text, a stale revision or hash, no match, an ambiguous match, identical text, invalid metadata) writes nothing. An error while publishing can leave the document or index uncertain: the prior bytes are restored, or a pending marker remains and managed mutations then report context_reconciliation_required. After any error or unknown result, read the document and confirm whether the edit applied before retrying, and do not assume a same-argument retry is safe: after success it fails stale_revision, and seeing newText does not prove this call applied it. On context_index_invalid or context_reconciliation_required, stop managed mutations and report the error.',
+      args: {
+        name: z.string().describe('An existing context document.'),
+        oldText: z.string().describe('Nonempty literal text copied exactly from your read; must match exactly once. Replacement patterns such as $& are not interpreted.'),
+        newText: z.string().describe('Literal replacement text; empty deletes the passage.'),
+        expectedRevision: z.number().describe('The revision from your named read.'),
+        expectedContentHash: z.string().describe("The named read's file.contentHash (whole-file SHA-256)."),
+        scope: contextScopeArg,
+        feature: z.string().optional().describe('Feature scope only: the feature for this call alone. Omitted, the selected route, detected feature worktree or sole live feature applies. Project scope forbids it.'),
+      },
+      execute: ({ name, oldText, newText, expectedRevision, expectedContentHash, scope, feature }, invocation) => contextService.edit(contextScope(scope, feature, invocation), name, oldText, newText, expectedRevision, expectedContentHash),
     }),
     hive_context_archive: operation({
       description: 'Archive the named context files with a recorded reason. Primary-only. Needs the current revision and each named file\'s content hash from a read; a stale revision or hash is rejected.',

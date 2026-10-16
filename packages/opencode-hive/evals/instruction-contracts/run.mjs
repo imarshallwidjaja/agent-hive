@@ -932,12 +932,15 @@ export function classifyCase({ timedOut, run, record, fixtureInvalid, host, mode
   return { outcome: 'collected' };
 }
 
-/** Selects the frozen model: the first preference that both exact host catalogs list as tool-capable. */
+/**
+ * Selects the frozen model: the first configured preference, only when every requested host catalog lists it as
+ * tool-capable. A lower preference is never substituted, so a missing first choice stops the run (null) before any
+ * preflight or case instead of observing a different model.
+ */
 export function selectSharedModel(preference, catalogs) {
-  for (const id of preference) {
-    if (Object.values(catalogs).every((models) => models.some((m) => m.id === id && m.toolCall))) return id;
-  }
-  return null;
+  const [id] = preference;
+  if (id === undefined) return null;
+  return Object.values(catalogs).every((models) => models.some((m) => m.id === id && m.toolCall)) ? id : null;
 }
 
 /** The named scenarios in the order given. An unknown name is refused before any build or credential. */
@@ -1140,6 +1143,54 @@ export function modelSelectionFailures(host, observed, invalid, model) {
   return failures;
 }
 
+const CONTEXT_EDIT_REQUIRED = ['expectedContentHash', 'expectedRevision', 'name', 'newText', 'oldText'];
+const CONTEXT_EDIT_DENIED_ROLES = ['scout-researcher', 'hive-helper'];
+
+/**
+ * A denied child's attempt shows a refusal only when it is not some other failure. Either the tool was never shown and
+ * no call ran, or the call carried the intended text and the concrete guards of the child's own successful read and
+ * the host's error was classified locally as an authority refusal (a hidden tool's unknown-tool error counts only when
+ * the request did not list it). Schema, stale-state, abort and runtime errors are `other` and never count.
+ */
+function editDenialRefused(row) {
+  if (row.call === 'absent') return row.exposed === false;
+  return row.call === 'error' && row.argsValid === true
+    && (row.refusal === 'authority' || (row.refusal === 'unavailable' && row.exposed === false));
+}
+
+/**
+ * Installed bounded-edit proof on one host: a direct schema requiring the five principal fields, an allowed child
+ * writer's actual edit, read-only children that left their target unchanged after a successful own read and a
+ * completed edit step, and edit exposure matching write and append for every observed role. On v2 a shown schema is
+ * not authority, so the executor must refuse it with an authority refusal.
+ */
+export function contextEditFailures(host, w) {
+  const edit = w.contextEdit;
+  if (!edit) return [`context_edit_unobserved:${host}`];
+  const failures = [];
+  if (!edit.schema?.direct || edit.schema.codeMode) failures.push(`context_edit_not_direct:${host}`);
+  if (JSON.stringify(edit.schema?.required ?? []) !== JSON.stringify(CONTEXT_EDIT_REQUIRED)) failures.push(`context_edit_required_fields:${host}`);
+  if (!edit.setup) return [...failures, `context_edit_setup_failed:${host}`];
+  const allowed = edit.allowed;
+  if (!allowed?.observed || allowed.call !== 'completed' || !allowed.matchesExpected) failures.push(`context_edit_not_applied:${host}`);
+  for (const role of CONTEXT_EDIT_DENIED_ROLES) {
+    const row = (edit.denied ?? []).find((d) => d.agent === role);
+    if (!row?.observed) failures.push(`context_edit_denial_unobserved:${host}:${role}`);
+    else if (!row.targetUnchanged || row.call === 'completed') failures.push(`context_edit_denial_breached:${host}:${role}`);
+    else if (row.readOk !== true || row.reached !== true) failures.push(`context_edit_denial_unproven:${host}:${role}`);
+    else if (!editDenialRefused(row)) failures.push(`context_edit_denial_unrefused:${host}:${role}`);
+  }
+  for (const [role, exposure] of Object.entries(w.roleExposure ?? {})) {
+    if (!exposure.observed) continue;
+    const writes = exposure.contextWrites;
+    if (!writes) failures.push(`context_write_exposure_unrecorded:${host}:${role}`);
+    else if (writes.hive_context_edit !== writes.hive_context_write || writes.hive_context_edit !== writes.hive_context_append) {
+      failures.push(`context_edit_exposure_parity:${host}:${role}`);
+    }
+  }
+  return failures;
+}
+
 /** Wiring requirements on each host's observation, plus cross-host parity of the direct tool parameters. */
 export function wiringFailures(results, model) {
   const failures = [];
@@ -1176,6 +1227,7 @@ export function wiringFailures(results, model) {
     if (!w.override?.resolvesToUserSkill) failures.push(`override_not_user_skill:${host}`);
     if (!w.override?.loadedUserBody) failures.push(`override_body_not_loaded:${host}`);
     failures.push(...modelSelectionFailures(host, w.modelSelection, w.invalidModelSelection, model));
+    failures.push(...contextEditFailures(host, w));
   }
   const [a, b] = Object.values(results);
   if (a?.toolContract && b?.toolContract) {
@@ -1653,7 +1705,8 @@ async function runPhase(run) {
     for (const host of options.hosts) catalogs[host] = await hostCatalog(ctx, host);
     const id = selectSharedModel(scenarios.model.preference, catalogs);
     manifest.catalogs = Object.fromEntries(Object.entries(catalogs).map(([h, m]) => [h, m.map((x) => x.id)]));
-    if (!id) throw new HarnessError('no_shared_model');
+    // The first preference is unavailable or not tool-capable on a requested host: stop before preflight and cases.
+    if (!id) throw new HarnessError('no_shared_model', { preferred: scenarios.model.preference[0] ?? null });
     ctx.model = { id, variant: scenarios.model.variant };
     journal.write('model', { model: ctx.model, catalogs: manifest.catalogs });
   }

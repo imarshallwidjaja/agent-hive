@@ -103,6 +103,7 @@ export const TOOL_FIELD_CONTRACT = Object.freeze({
   hive_context_read: ['name', 'scope', 'view', 'query', 'limit', 'cursor', 'maxBytes', 'scanChars'],
   hive_context_write: ['content', 'kind', 'task', 'expectedRevision', 'expectedContentHash', 'scope'],
   hive_context_append: ['content', 'section', 'task', 'expectedRevision', 'expectedContentHash', 'scope'],
+  hive_context_edit: ['name', 'oldText', 'newText', 'expectedRevision', 'expectedContentHash', 'scope', 'feature'],
   hive_context_archive: ['reason', 'expectedRevision', 'expectedContentHashes', 'scope'],
 });
 

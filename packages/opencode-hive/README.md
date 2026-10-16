@@ -45,7 +45,7 @@ The config hook intentionally mutates these OpenCode fields:
 
 ### OpenCode v2
 
-The same package loads through its `server` entry on v1 and its synchronous `effect` entry on v2. On v2 it registers all **37 Hive tools** and **11 commands**, dedicated and unified modes, custom agents, packaged skills, native dispatch and background observation, and the forensic and recovery tools. Qualification ran against stock v1.18.30 and v2.0.26 with scripted model providers, which establishes wiring rather than real-model judgment. On both hosts it loaded a package already installed with plain npm; host-side registry resolution at first use was not part of it.
+The same package loads through its `server` entry on v1 and its synchronous `effect` entry on v2. On v2 it registers all **38 Hive tools** and **11 commands**, dedicated and unified modes, custom agents, packaged skills, native dispatch and background observation, and the forensic and recovery tools. Qualification ran against stock v1.18.30 and v2.0.26 with scripted model providers, which establishes wiring rather than real-model judgment. On both hosts it loaded a package already installed with plain npm; host-side registry resolution at first use was not part of it.
 
 Install the released package with npm into a dedicated directory that the v2 host can read:
 
@@ -317,7 +317,7 @@ Primary orchestrators can inspect any explicitly identified native OpenCode sess
 
 ### Managed Context
 
-`hive_context_read`, `hive_context_write`, `hive_context_append`, and `hive_context_archive` manage project (`.hive/context/`) or feature (`.hive/features/<name>/context/`) knowledge. Feature is the default scope; pass `scope: "project"` for project knowledge. Read the summary or search the catalog by name, `description`, and `read_when`, then read a named file in chunks. Before replacing, appending, or selectively archiving, read its revision and content hash and pass `expectedRevision` and `expectedContentHash` (or `expectedContentHashes` for archive). Only primary agents can archive. The `hive_context_read` catalog lists durable files; evidence files remain available through named reads ([context service](../hive-core/src/services/contextService.ts)). See [Hive Tools](docs/HIVE-TOOLS.md) for the read and mutation contracts.
+`hive_context_read`, `hive_context_write`, `hive_context_append`, `hive_context_edit`, and `hive_context_archive` manage project (`.hive/context/`) or feature (`.hive/features/<name>/context/`) knowledge. Feature is the default scope; pass `scope: "project"` for project knowledge. Read the summary or search the catalog by name, `description`, and `read_when`, then read a named file in chunks. Before replacing, editing, appending, or selectively archiving, read its revision and content hash and pass `expectedRevision` and `expectedContentHash` (or `expectedContentHashes` for archive). A whole-document replacement needs every chunk; `hive_context_edit` replaces one exact passage and needs only the chunks that show it and enough surrounding text. Only primary agents can archive. The `hive_context_read` catalog lists durable files; evidence files remain available through named reads ([context service](../hive-core/src/services/contextService.ts)). See [Hive Tools](docs/HIVE-TOOLS.md) for the read and mutation contracts.
 
 ### Operator Constraints
 

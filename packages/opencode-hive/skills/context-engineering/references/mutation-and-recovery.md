@@ -1,6 +1,6 @@
 # Context mutation and recovery
 
-Read this reference when you need an exact call shape for a summary, catalog, named read, write, append, or archive; when you create a durable file and need its frontmatter; when a hygiene warning or a ceiling error appears; or when a context tool returns `context_index_invalid` or `context_reconciliation_required`. The rules that protect context hold without it and stay in `SKILL.md`: finish a named read before replacing, pass the revision and hash from that read, and stop managed mutation on an index or reconciliation error. This reference adds examples and limits, not authority.
+Read this reference when you need an exact call shape for a summary, catalog, named read, write, edit, append, or archive; when you create a durable file and need its frontmatter; when a hygiene warning or a ceiling error appears; or when a context tool returns `context_index_invalid` or `context_reconciliation_required`. The rules that protect context hold without it and stay in `SKILL.md`: finish a named read before replacing, pass the revision and hash from that read, and stop managed mutation on an index or reconciliation error. This reference adds examples and limits, not authority.
 
 ## Frontmatter
 
@@ -47,9 +47,17 @@ Pass `nextCursor` unchanged until `complete: true`. Do not invent byte offsets. 
 
 ## Write calls
 
-Replacement, append, and archive need the current revision and the actual SHA-256 from the named read, after every chunk is read and the whole document is reconstructed.
+Replacement, append, and archive need the current revision and the actual SHA-256 from the named read, after every chunk is read and the whole document is reconstructed. A bounded edit needs the same pair from your own named read, continued until it shows the whole passage and enough surrounding text; it does not need the unrelated chunks.
 
 ```
+hive_context_edit({
+  name: "auth-decisions",
+  oldText: "Sessions bind at launch.",
+  newText: "Sessions bind at first tool call.",
+  expectedRevision: 12,
+  expectedContentHash: "sha256-from-named-read"
+})
+
 hive_context_write({
   name: "auth-decisions",
   content: reconstructedMarkdown,
@@ -74,6 +82,25 @@ hive_context_archive({
 
 Omit revision and hash only when creating a missing file.
 
+### Edit outcomes
+
+`hive_context_edit` changes an existing named document only; a missing file fails `context_not_found` and creates nothing. Matching is literal over UTF-8 bytes: `$&` and backslashes in `newText` are inserted as written, and every byte outside the match, including BOM, CRLF, and Unicode, is kept. The revision and hash guards run before matching.
+
+| Result | Meaning | Next step |
+|---|---|---|
+| `stale_revision`, `stale_content` | The document or its store changed after your read. | Read again; edit only if the passage still needs the change. |
+| `context_edit_no_match` | `oldText` does not occur byte for byte; the message names CRLF line endings when the document has them. | Re-read and copy the passage exactly. |
+| `context_edit_ambiguous` | `oldText` occurs more than once; overlapping occurrences count. | Copy enough surrounding text to match one passage. |
+| `context_edit_no_change` | `oldText` and `newText` are identical. | Nothing to do. |
+| `invalid_context_metadata` | The edited durable file would lack valid frontmatter. | Keep `description` and `read_when` (project: `owner`, `review_after`) valid. |
+| `invalid_argument` | Empty `oldText`, or text with an unpaired UTF-16 surrogate. | Supply valid literal text. |
+
+Empty `newText` deletes the passage. An evidence or reserved file may become empty; a durable file still needs its metadata. Deletion never archives. A refusal before publication, which covers every result in the table, leaves the document, index, and revision unchanged. An error while publishing restores the prior bytes or leaves the pending marker described below.
+
+When a call errors or its result is unknown, read the document and establish whether the edit applied before retrying; do not assume an identical retry is safe. A successful edit advances the revision, so an identical retry fails `stale_revision`. If the next context call reports `context_reconciliation_required` or `context_index_invalid`, stop managed mutations and report the error. Do not re-read and replay blindly: when `newText` contains `oldText`, a replay can apply the change twice, and seeing `newText` does not prove this call put it there.
+
+The revision lock and both guards prevent lost updates among writers that go through Hive's context tools. A process that writes the file directly while a publication is in progress is outside that guarantee. A publication failure rolls back or leaves the pending marker described below.
+
 ## Hygiene, units, ceilings
 
 These are review signals, not aggregate admission rejection:
@@ -85,7 +112,7 @@ These are review signals, not aggregate admission rejection:
 
 Renew project knowledge only after re-reviewing it against evidence: a whole-document hash-guarded replace and re-date, or an archive with a reason and a replacement reference.
 
-Resource ceilings: 10,000 Markdown candidates, 20,000 namespace entries, 64 MiB scanned headers, 8 KiB frontmatter scan, 16 KiB catalog responses, 1 MiB managed write or append, 1,024 and 4,096 UTF-8 bytes for query and cursor inputs. Exceeding construction bounds returns `context_inventory_too_large`, never a partial `complete: true`. Exact named reads bypass inventory. Overlarge write, query, or catalog-cursor input is `context_input_too_large`; an oversized named-read cursor instead returns `stale_context_cursor`, so restart the named read without a cursor.
+Resource ceilings: 10,000 Markdown candidates, 20,000 namespace entries, 64 MiB scanned headers, 8 KiB frontmatter scan, 16 KiB catalog responses, 1 MiB managed write or append (for an edit, each of `oldText`, `newText`, and the edited document), 1,024 and 4,096 UTF-8 bytes for query and cursor inputs. Exceeding construction bounds returns `context_inventory_too_large`, never a partial `complete: true`. Exact named reads bypass inventory. Overlarge write, edit, query, or catalog-cursor input is `context_input_too_large`; an oversized named-read cursor instead returns `stale_context_cursor`, so restart the named read without a cursor.
 
 ## Invalid or pending state
 

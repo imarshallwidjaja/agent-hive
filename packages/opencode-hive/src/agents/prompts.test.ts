@@ -2114,6 +2114,13 @@ describe('Architect (Planner) prompt', () => {
       'hive_context_append({ feature: "feature-name", name: "execution-decisions", expectedRevision, expectedContentHash, ... })',
     );
     expect(SWARM_BEE_PROMPT).toContain('Append execution decisions with `hive_context_append`');
+    // Full reads gate whole replacement; a bounded edit needs only the observed passage and its surrounding text.
+    for (const prompt of [SWARM_BEE_PROMPT, QUEEN_BEE_PROMPT, FORAGER_BEE_PROMPT]) {
+      expect(prompt).toMatch(/Finish every (named )?chunk before (a )?whole-document/);
+      expect(prompt).toContain('`hive_context_edit`');
+      expect(prompt).toContain('passage and enough surrounding text');
+      expect(prompt).not.toContain('finish named chunks and pass');
+    }
     expect(SCOUT_BEE_PROMPT).toContain('Scout is read-only');
     expect(QUEEN_BEE_PROMPT).toContain(
       'If multiple live features remain after path and session resolution',
@@ -2567,6 +2574,7 @@ describe('Scout (Explorer/Researcher) prompt', () => {
 
   it('gives a durable-create example with frontmatter the runtime accepts', () => {
     expect(SCOUT_BEE_PROMPT).toContain('Do not call `hive_context_write`');
+    expect(SCOUT_BEE_PROMPT).toContain('`hive_context_edit`, or `hive_context_archive`');
     expect(SCOUT_BEE_PROMPT).toContain('hive_context_read');
   });
 

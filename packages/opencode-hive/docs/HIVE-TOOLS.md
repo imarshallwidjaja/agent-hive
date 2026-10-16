@@ -4,9 +4,9 @@ Tool availability plus instructions govern action. Each tool validates its own o
 
 ## Host entries and read transport
 
-From 5.0.0, one package supplies native v1 and v2 entries, each with all 37 tools and 11 commands. Releases through 4.2.0 are v1-only. The qualified hosts are v1.18.30 and v2.0.26. Installation, `plugins` options and actual model-selection semantics are in the [plugin README](../README.md#opencode-v2).
+From 5.0.0, one package supplies native v1 and v2 entries, each with all 38 tools and 11 commands. Releases through 4.2.0 are v1-only. The qualified hosts are v1.18.30 and v2.0.26. Installation, `plugins` options and actual model-selection semantics are in the [plugin README](../README.md#opencode-v2).
 
-V2 registers every tool through one validating registrar. `readTransport: "codemode"` (default) explicitly admits only `hive_repositories_status`, `hive_git_snapshot` and `hive_task_trace_content` to Code Mode; controls, repairing reads, worktree inspections and mixed `hive_task_trace` stay direct. `readTransport: "direct"` makes all 37 direct, with the same IDs and authority. Use direct mode when global, per-role or custom-agent permissions deny `execute`. Hive diagnoses unavailable Code Mode reads and preserves the denial.
+V2 registers every tool through one validating registrar. `readTransport: "codemode"` (default) explicitly admits only `hive_repositories_status`, `hive_git_snapshot` and `hive_task_trace_content` to Code Mode; controls, repairing reads, worktree inspections and mixed `hive_task_trace` stay direct. `readTransport: "direct"` makes all 38 direct, with the same IDs and authority. Use direct mode when global, per-role or custom-agent permissions deny `execute`. Hive diagnoses unavailable Code Mode reads and preserves the denial.
 
 Both hosts deliver the same tool descriptions and argument descriptions to the model, built from one definition per operation. Those descriptions explain how arguments relate, what an operation changes, what its result means and when a retry is unsafe. They do not enforce anything: the Zod argument shapes, the services and the role guards do, and this document is the reference for operators and engineers. The runtime does not read it.
 
@@ -33,7 +33,7 @@ Delegated Architect retains its inherited route and uses explicit feature argume
 Abbreviations enumerate exact tools:
 
 - **R**: `hive_context_read`, `hive_constraints_read`, `hive_plan_read`, `hive_status`, `hive_repositories_status`, `hive_git_snapshot`.
-- **C**: `hive_context_write`, `hive_context_append`.
+- **C**: `hive_context_write`, `hive_context_append`, `hive_context_edit`.
 - **I**: `hive_worktree_inspect`, `hive_adhoc_worktree_inspect`.
 - **T**: `hive_task_trace`, `hive_task_trace_content`.
 - **B**: all four `hive_background_*` tools listed above; experiment-gated on v1 and native on v2.
@@ -43,9 +43,9 @@ Abbreviations enumerate exact tools:
 
 | Agent | Hive tools | Native boundary / usage |
 |-------|------------|-------------------------|
-| `hive-master` | All 37 registered Hive tools | Primary; integration and cleanup owner |
-| `swarm-orchestrator` | All 37 | Primary; integration and cleanup owner |
-| `hive-builder` | All 37 | Primary; ad-hoc integration and cleanup owner |
+| `hive-master` | All 38 registered Hive tools | Primary; integration and cleanup owner |
+| `swarm-orchestrator` | All 38 | Primary; integration and cleanup owner |
+| `hive-builder` | All 38 | Primary; ad-hoc integration and cleanup owner |
 | `architect-planner` (primary) | R + C + I + T + B + M + P | Planning only; terminal planning helpers and Helper investigation; edit denied |
 | `architect-planner` (task child) | R + C + I + T + `hive_feature_create`, `hive_plan_write`, `hive_plan_patch`, `hive_repositories_discover`, `hive_repositories_update` | Feature/plan/context authoring, repository registration, terminal planning helpers and Helper investigation; edit/question/board denied |
 | `scout-researcher` | R + `hive_repositories_discover` | Read-only retrieval; edit/task/question denied; trace retrieval goes to Helper |
@@ -400,16 +400,17 @@ Use these paths instead of runtime exports or `.hive/sessions.json`; neither is 
 
 Configure an optional recovery model under global `taskTraceSummarizer` (`model`, and `variant` only with `model`). Operator reference: [Task trace summarizer](../README.md#task-trace-summarizer).
 
-## Context (4 tools)
+## Context (5 tools)
 
 | Tool | Purpose |
 |------|---------|
 | `hive_context_read` | Read a scoped summary, bounded durable catalog, or chunked exact document |
 | `hive_context_write` | Explicitly create a scoped file, or replace one whole document with revision and hash preconditions |
 | `hive_context_append` | Append a dated block while preserving prior bytes and checking revision plus content hash |
+| `hive_context_edit` | Replace one exact passage of an existing file, keeping every other byte, with revision and hash preconditions |
 | `hive_context_archive` | Selectively archive named files with a reason, revision, and per-name hashes |
 
-All four context tools accept optional `scope: 'feature' | 'project'` (default `feature`) and optional `feature` for feature scope. Read also accepts `name`, `view: 'summary' | 'catalog'`, `query`, `limit`, `cursor`, `maxBytes`, and `scanChars`, subject to the view restrictions below. Write requires `name` and `content`, with optional `kind`, `task`, `expectedRevision`, and `expectedContentHash`; omit the preconditions only when creating a missing file. Append requires `name`, `content`, `expectedRevision`, and `expectedContentHash`, with optional `section` and `task`. Archive requires `names`, `reason`, `expectedRevision`, and `expectedContentHashes`.
+All five context tools accept optional `scope: 'feature' | 'project'` (default `feature`) and optional `feature` for feature scope. Read also accepts `name`, `view: 'summary' | 'catalog'`, `query`, `limit`, `cursor`, `maxBytes`, and `scanChars`, subject to the view restrictions below. Write requires `name` and `content`, with optional `kind`, `task`, `expectedRevision`, and `expectedContentHash`; omit the preconditions only when creating a missing file. Append requires `name`, `content`, `expectedRevision`, and `expectedContentHash`, with optional `section` and `task`. Edit requires `name`, `oldText`, `newText`, `expectedRevision`, and `expectedContentHash`, and takes no `kind`, `task`, or section option. Archive requires `names`, `reason`, `expectedRevision`, and `expectedContentHashes`.
 
 Omitted `scope` retains feature-default behavior. Use `scope: "project"` explicitly for `.hive/context/`. Tool scope selects data. Foragers and reviewers write feature and project context through revision and content-hash checks. Scouts are read-only. Archive is primary-only.
 
@@ -419,7 +420,9 @@ For shared contracts, repository-wide conventions, or cross-feature decisions, p
 
 A named read pages through one document. Its `nextCursor` binds the document, scope, revision and content hash, so a cursor from another document, an earlier revision or another activation fails as `stale_context_cursor`; restart the read. Finish the chunks (`complete: true`) before replacing a document, because a partial read does not cover the whole file. Creating a name that exists fails with `context_already_exists`. On `context_index_invalid` or `context_reconciliation_required`, stop managed mutations and report the actual error; reading about repair does not authorize an agent to edit Hive control files.
 
-Call `hive_context_read` before replacement, append, or archive. Existing-content mutations require the current revision and actual SHA-256 `contentHash`. Non-reserved files default to `durable`. Mark raw logs and historical verification material as `evidence`. Feature hygiene warnings begin above 8 durable files or 40,000 UTF-16 code units; project warnings begin above 32 files or 160,000 units. These are review signals, not aggregate admission limits.
+`hive_context_edit` changes one passage without reproducing the rest. The caller's own named read needs to show the whole passage and enough surrounding text to justify the change; unrelated chunks may stay unread. Every chunk carries the whole-file hash, so the revision and hash guards refuse a document that changed after the read, but they do not show what unread bytes say. Under the context lock the service checks the revision, then the hash, then requires `oldText` to occur exactly once as literal UTF-8 bytes, counting overlapping occurrences. It splices `newText` between the untouched prefix and suffix bytes, so BOM, CRLF, Unicode and replacement patterns such as `$&` are preserved as written. Failures are `context_not_found` (no namespace is created), `context_edit_no_match` (the message names CRLF when the document has it), `context_edit_ambiguous`, `context_edit_no_change` for identical text, `invalid_argument` for empty `oldText` or an unpaired surrogate, `context_invalid_utf8`, `context_input_too_large` when an operand or the edited document exceeds 1 MiB, and `invalid_context_metadata`. Each is refused before publication and writes nothing. Empty `newText` deletes the passage; evidence and reserved files may become empty, while durable files keep their required metadata. The edit keeps the index kind, task and `createdAt`, advances the revision once and returns the same result shape as write. After an error or unknown result, read and confirm whether the edit applied before retrying: an identical retry after success fails `stale_revision`, a blind replay can apply twice when `newText` contains `oldText`, and seeing `newText` does not prove this call applied it. The lock and guards cover writers that use the context tools; a direct file write during publication is outside that guarantee, and a publication error restores the prior bytes or leaves the pending marker, after which managed mutations report `context_reconciliation_required`.
+
+Call `hive_context_read` before replacement, edit, append, or archive. Existing-content mutations require the current revision and actual SHA-256 `contentHash`. Non-reserved files default to `durable`. Mark raw logs and historical verification material as `evidence`. Feature hygiene warnings begin above 8 durable files or 40,000 UTF-16 code units; project warnings begin above 32 files or 160,000 units. These are review signals, not aggregate admission limits.
 
 `overview`, `draft`, and `execution-decisions` are reserved and excluded from the durable catalog and durable-context hygiene counts. They remain readable by name. They do not accept a caller-provided `kind`; the per-document size limit still applies. Plan approval does not archive `draft`. Archive an obsolete draft explicitly after approval.
 

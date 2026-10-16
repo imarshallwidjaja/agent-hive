@@ -75,7 +75,10 @@ export type ContextMutationErrorReason =
   | 'invalid_context_metadata'
   | 'context_invalid_utf8'
   | 'context_changed_during_read'
-  | 'context_symlink_refused';
+  | 'context_symlink_refused'
+  | 'context_edit_no_match'
+  | 'context_edit_ambiguous'
+  | 'context_edit_no_change';
 
 export class ContextMutationError extends Error {
   constructor(
@@ -732,6 +735,66 @@ export class ContextService {
     });
   }
 
+  /**
+   * Replace exactly one literal occurrence of oldText in an existing named document.
+   * Bytes outside the match are spliced unchanged; kind and task association are preserved.
+   */
+  edit(
+    scope: string | ContextScope,
+    fileName: string,
+    oldText: string,
+    newText: string,
+    expectedRevision: number,
+    expectedContentHash: string,
+  ): ContextMutationResult {
+    const name = this.normalizeName(fileName);
+    this.assertEditOperand(oldText, 'oldText');
+    this.assertEditOperand(newText, 'newText');
+    if (oldText.length === 0) throw new ContextMutationError('invalid_argument', 'oldText must not be empty. Copy the exact passage to replace from your own named read.');
+    if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
+      throw new ContextMutationError('context_precondition_required', 'Read the current revision before mutating existing context.');
+    }
+    this.assertExpectedHash(expectedContentHash);
+    // Read-only preflight so a missing target never creates the context namespace.
+    const preflight = this.resolveScope(scope);
+    this.readControl(preflight, false);
+    this.requireRegularFile(this.contentPath(preflight, name), name);
+    return this.mutate(scope, expectedRevision, (control, resolved) => {
+      const filePath = this.contentPath(resolved, name);
+      this.requireRegularFile(filePath, name);
+      const prior = this.requireCurrentContent(filePath, name, expectedContentHash);
+      try { new TextDecoder('utf-8', { fatal: true }).decode(prior); }
+      catch { throw new ContextMutationError('context_invalid_utf8', `Context "${name}" is not valid UTF-8.`); }
+      const oldBytes = Buffer.from(oldText, 'utf8');
+      const start = prior.indexOf(oldBytes);
+      if (start < 0) {
+        const lineEndings = prior.includes('\r\n') ? ' The document contains CRLF line endings; oldText must match them byte for byte.' : '';
+        throw new ContextMutationError('context_edit_no_match', `oldText does not occur in context "${name}". Matching is exact and literal, including whitespace and line endings.${lineEndings} Re-read the passage and copy it exactly.`, { name });
+      }
+      // Overlapping occurrences count, so the search resumes one byte after the first match.
+      if (prior.indexOf(oldBytes, start + 1) >= 0) {
+        throw new ContextMutationError('context_edit_ambiguous', `oldText occurs more than once in context "${name}" (overlapping occurrences count). Include enough surrounding text to match exactly one passage.`, { name });
+      }
+      if (oldText === newText) {
+        throw new ContextMutationError('context_edit_no_change', `oldText and newText are identical, so the edit would not change context "${name}". Nothing was written.`, { name });
+      }
+      const next = Buffer.concat([prior.subarray(0, start), Buffer.from(newText, 'utf8'), prior.subarray(start + oldBytes.length)]);
+      if (next.length > CONTEXT_DOCUMENT_MAX_BYTES) {
+        throw new ContextMutationError('context_input_too_large', `The edited context would exceed ${CONTEXT_DOCUMENT_MAX_BYTES} bytes.`, { bytes: next.length });
+      }
+      const existing = control.index.entries[name];
+      const kind = this.resolveMutableKind(name, existing?.kind);
+      const metadata = parseContextMetadata(next);
+      if (kind === 'durable') this.assertMetadata(metadata, resolved.scope.type);
+      const timestamp = this.now().toISOString();
+      const hash = sha256(next);
+      const nextIndex = this.withEntry(control.index, name, kind, timestamp, existing?.task, existing, hash);
+      this.publishContent(control, resolved, 'edit', name, filePath, prior, next, nextIndex);
+      const decoded = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(next);
+      return this.mutationResult(resolved, name, decoded, timestamp, kind, existing?.task, nextIndex.revision, filePath, hash, metadata);
+    });
+  }
+
   archiveSelected(
     scope: string | ContextScope,
     names: string[],
@@ -1049,7 +1112,7 @@ export class ContextService {
     }
   }
 
-  private publishContent(control: ControlState, resolved: ResolvedScope, operation: string, name: string, filePath: string, prior: Buffer | null, content: string, nextIndex: ContextIndex): void {
+  private publishContent(control: ControlState, resolved: ResolvedScope, operation: string, name: string, filePath: string, prior: Buffer | null, content: string | Buffer, nextIndex: ContextIndex): void {
     this.publish(control, resolved, operation, [name], [], () => {
       writeAtomicDurable(filePath, content);
       writeJsonAtomicDurable(this.indexPath(resolved), nextIndex);
@@ -1225,6 +1288,21 @@ export class ContextService {
     if (typeof content !== 'string') throw new ContextMutationError('invalid_argument', 'Context content must be a string.');
     const bytes = Buffer.byteLength(content, 'utf8');
     if (bytes > CONTEXT_DOCUMENT_MAX_BYTES) throw new ContextMutationError('context_input_too_large', `Managed context content exceeds ${CONTEXT_DOCUMENT_MAX_BYTES} bytes.`, { bytes });
+  }
+
+  private assertEditOperand(value: string, field: 'oldText' | 'newText'): void {
+    if (typeof value !== 'string') throw new ContextMutationError('invalid_argument', `${field} must be a string.`);
+    this.assertBoundedText(value, CONTEXT_DOCUMENT_MAX_BYTES, field);
+    // Lone surrogates would encode as U+FFFD and silently change the requested bytes.
+    if (Buffer.from(value, 'utf8').toString('utf8') !== value) {
+      throw new ContextMutationError('invalid_argument', `${field} contains an unpaired UTF-16 surrogate and cannot be encoded as UTF-8.`);
+    }
+  }
+
+  private requireRegularFile(filePath: string, name: string): void {
+    const stat = this.safeStat(filePath);
+    if (!stat) throw new ContextMutationError('context_not_found', `Context "${name}" does not exist. Edit changes an existing document; create it first.`, { name });
+    if (!stat.isFile()) throw new ContextMutationError('context_not_found', `Context "${name}" is not a regular file.`, { name });
   }
 
   private assertExpectedHash(hash: string | undefined): void {

@@ -51,6 +51,7 @@ export const HIVE_TOOL_NAMES = [
   'hive_context_read',
   'hive_context_write',
   'hive_context_append',
+  'hive_context_edit',
   'hive_context_archive',
   'hive_constraints_read',
   'hive_constraints_add',
