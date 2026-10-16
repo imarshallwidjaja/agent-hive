@@ -45,7 +45,7 @@ Read only the file your question needs:
 
 This skill states where state lives and who owns it. These owners keep their policy:
 
-- Managed context selection and hash-guarded mutation: `context-engineering`.
-- Background board wait mode, reconciliation, and cancellation: `background-delegation`.
+- Managed context selection and hash-guarded mutation: `context-engineering`. Its mutation-and-recovery reference holds the operator recovery procedure for `context_index_invalid` and `context_reconciliation_required`; this skill only says where those files live.
+- Background board wait mode, reconciliation, and cancellation: `background-delegation`, with the board field meanings in its board protocol reference.
 - Tool input and output contracts: each tool's schema and description, which are authoritative over any summary here.
 - Completion claims: `verification`.

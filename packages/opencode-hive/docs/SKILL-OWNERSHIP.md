@@ -46,6 +46,26 @@ Packaged skills are rendered by the materializer (`src/skills/host-renderer.ts`)
 - Keep a section to the sentence, bullet or example whose syntax differs. Rules, strength and exceptions stay in shared text; a section that adds or drops a rule is a policy fork.
 - Historical host-specific material, such as the OpenCode v1 database recipes in `hive-config`, is labelled with its version and never stands in for the public APIs another host provides.
 
+## Disclosed references
+
+A skill keeps its decision-changing rules, authority boundaries and stop conditions in `SKILL.md`. Worked examples, long procedures, ceilings and exceptional recovery sit in `references/` behind a read-when pointer in `SKILL.md`. The pointer is a relative link inside the skill directory; no pointer names an absolute or installed path, or a file outside the directory.
+
+| Skill | Reference | What it discloses |
+|---|---|---|
+| `background-delegation` | `board-protocol.md` | Meaning of the `hive_background_status` fields, wait and reconcile steps, failed-reconcile hints, and the one observation and reconciliation example |
+| `dispatching-parallel-agents` | `launch-examples.md` | Complete Forager launches, the ad-hoc placement check, diagnosis fan-out, and a worked assignment prompt |
+| `parallel-exploration` | `research-examples.md` | Sample decompositions, Scout fan-out calls, and slice prompt templates |
+| `executing-plans` | `task-milestones.md` | Two sections for two consumers: suggesting milestones (targets, companions, recommendation table, incremental counts, continuation prompts) and executing a requested milestone (fresh status, closure, resumption, stopping) |
+| `writing-plans` | `verification-planning.md` | Gate records, evidence decisions and amendments, efficiency outcomes, recovery after a broad gate fails, certificates, and examples |
+| `context-engineering` | `mutation-and-recovery.md` | Call shapes, frontmatter, hygiene thresholds and ceilings, and the operator recovery procedure |
+
+- A reference adds method and examples, never authority. Reading one grants no tool or role access.
+- The `SKILL.md` baseline holds when a reference is missing. A same-name user or native skill replaces the whole packaged directory: on v1 Hive leaves a detected conflict out of the materialized copy, and on v2 the copy can still hold the bundle while the effective skill catalog resolves the name to the unique user skill. A disabled skill is not materialized, and nothing falls back to an older generated copy. No caller searches generated skill caches for another copy.
+- A command that runs under a non-Hive primary cannot assume the skill is present. `/approve-sync-plan` keeps approval, sync and readback authority, the persisted-outcome meanings, the scope and count meaning of a milestone, and the copyable continuation prompts. When `executing-plans` or its milestone reference is unavailable, it reports the persisted outcomes and withholds the projection. `/start-execution` dispatches no milestone work in that case and says why.
+- Delivery of a reference is shown by an installed-package run on both hosts (a child reads each pointed reference under stock permissions, and a native `build` agent invoking `/start-execution` reads the milestone reference), not by the file existing in the source tree. The wiring run is credential-free; whether a model selects and follows a reference is a separate, qualitative question.
+- Authority clarification: repair of context control files (`index.json`, the pending marker, manifests) is separately authorized operator recovery. `context-engineering` says so inline, and its recovery reference describes the operator procedure without granting an agent permission to run it. Tool behavior is unchanged: the tools never repair those files.
+- The verification-planning method moved verbatim from `writing-plans`; its inline section keeps the gate, boundary, evidence and deferral rules. Imported passages stay in their `SKILL.md` files, so `dispatching-parallel-agents/UPSTREAM.md` and the pstack license are unchanged.
+
 ## Source-preserving maintenance
 
 Imported skills carry source provenance, applicable license notices, and adaptation notes in their skill directories.

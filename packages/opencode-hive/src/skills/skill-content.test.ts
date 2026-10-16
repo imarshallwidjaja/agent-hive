@@ -51,6 +51,14 @@ function readRepoFile(relativePath: string): string {
   return readFileSync(path.resolve(import.meta.dir, '../../../../', relativePath), 'utf8');
 }
 
+function readSkillReference(skill: string, file: string): string {
+  return readFileSync(path.join(resolvePackagedSkillsDir(), skill, 'references', file), 'utf8');
+}
+
+function readSkillTemplate(skill: string): string {
+  return BUILTIN_SKILLS.find((entry) => entry.name === skill)!.template;
+}
+
 function expectInSessionDesignDocumentationPolicy(content: string) {
   expect(content).not.toContain('docs/plans/YYYY-MM-DD-<topic>-design.md');
   expect(content).not.toContain('Commit the design document to git');
@@ -393,15 +401,32 @@ describe('skill content', () => {
   });
 
   it('plans candidate-bound gates and reconciles amendment evidence before approval', () => {
-    const template = BUILTIN_SKILLS.find((entry) => entry.name === 'writing-plans')!.template;
-    const section = template.slice(template.indexOf('## Verification Planning'), template.indexOf('## Worker-Branch Task Granularity'));
+    const template = readSkillTemplate('writing-plans');
+    const baseline = template.slice(template.indexOf('## Verification Planning'), template.indexOf('## Worker-Branch Task Granularity'));
+    const method = readSkillReference('writing-plans', 'verification-planning.md');
 
+    // Baseline: what a planner must hold even when the reference is missing or overridden.
+    for (const token of ['local iteration', 'task acceptance', 'integration checkpoint', 'release certification']) {
+      expect(baseline, token).toContain(`\`${token}\``);
+    }
+    for (const requirement of [
+      'candidate and input identity',
+      "replaces the task's current `Verify` list and decision table",
+      'an approved explicit gate stays binding until an approved amendment',
+      'Name an integrated-only deferral in the task and mirror it under `## Final Verification`',
+      'A later commit neither keeps nor discards evidence by itself',
+      'a plan cannot narrow an operator-defined outcome on its own',
+    ]) {
+      expect(baseline, requirement).toContain(requirement);
+    }
+
+    // Method: the disclosed reference carries the full decision model.
     for (const token of [
       'local iteration', 'task acceptance', 'integration checkpoint', 'release certification',
       'passed and applies', 'invalidated', 'not run', 'failed', 'blocked',
       'retain', 'replace', 'invalidate', 'defer', 'drop',
     ]) {
-      expect(section, token).toContain(`\`${token}\``);
+      expect(method, token).toContain(`\`${token}\``);
     }
     for (const requirement of [
       'canonical test layer',
@@ -421,23 +446,27 @@ describe('skill content', () => {
       'Physical-STAC correction.',
       'Justified broad rerun.',
     ]) {
-      expect(section, requirement).toContain(requirement);
+      expect(method, requirement).toContain(requirement);
     }
     const recovery = [
       'Retain the first failure and its cleanup evidence',
       'Reproduce the failure red with the smallest valid check at the owning layer',
       'Verify the owner and affected consumers',
       'Decide from input impact whether the certificate is invalidated',
-    ].map((step) => section.indexOf(step));
+    ].map((step) => method.indexOf(step));
     expect(recovery.every((index) => index >= 0)).toBe(true);
     expect(recovery).toEqual([...recovery].sort((a, b) => a - b));
     expect(template).toContain('replacing each rather than appending');
     expect(template).toContain('- [Integrated acceptance gate record per Verification Planning; match any task-named integrated-only deferral]');
+    // The inline baseline does not carry the disclosed method a second time.
+    expect(template).not.toContain('Physical-STAC correction.');
+    expect(template).not.toContain('A certificate is the set of candidate-bound gate records');
   });
 
   it('plans verification-efficiency goals across the delivery schedule while preserving required proof', () => {
-    const template = BUILTIN_SKILLS.find((entry) => entry.name === 'writing-plans')!.template;
-    const section = template.slice(template.indexOf('### Verification-efficiency goals'), template.indexOf('### After a broad gate fails'));
+    const template = readSkillTemplate('writing-plans');
+    const method = readSkillReference('writing-plans', 'verification-planning.md');
+    const section = method.slice(method.indexOf('## Verification-efficiency goals'), method.indexOf('## After a broad gate fails'));
 
     expect(section.length).toBeGreaterThan(0);
     for (const requirement of [
@@ -463,11 +492,16 @@ describe('skill content', () => {
     ]) {
       expect(section, requirement).toContain(requirement);
     }
-    expect(template).toContain('an unrelated commit does not invalidate it');
-    expect(template).toContain('a new commit identity alone is not that reason');
-    expect(template).toContain('A binding whole-invocation gate reruns whole');
-    expect(template).not.toContain('or when the gate has never passed on this candidate');
-    expect(template).not.toContain('while the acceptance runs they feed are unchanged');
+    expect(method).toContain('an unrelated commit does not invalidate it');
+    expect(method).toContain('a new commit identity alone is not that reason');
+    expect(method).toContain('A binding whole-invocation gate reruns whole');
+    for (const text of [template, method]) {
+      expect(text).not.toContain('or when the gate has never passed on this candidate');
+      expect(text).not.toContain('while the acceptance runs they feed are unchanged');
+    }
+    // Baseline selects the reference for an efficiency outcome and keeps the outcome scope binding without it.
+    expect(template).toContain('A stated verification-efficiency outcome is planned against the scope it states');
+    expect(template).toContain('work from a stated verification-efficiency outcome');
   });
 
   it('ties verification claims to observed output and the candidate and inputs tested', () => {
@@ -635,7 +669,9 @@ describe('skill content', () => {
     const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'parallel-exploration');
 
     expect(skill).toBeDefined();
-    expect(skill!.template).toContain('task({');
+    // The complete fan-out calls are disclosed examples; the rules that make them safe stay inline.
+    expect(readSkillReference('parallel-exploration', 'research-examples.md')).toContain('task({');
+    expect(readSkillReference('parallel-exploration', 'research-examples.md')).toContain('// BAD: Wait for each before spawning next');
     expect(skill!.template).toContain(
       'Launch every currently known, necessary, non-duplicative independent question before waiting for any results.'
     );
@@ -860,8 +896,10 @@ describe('skill content', () => {
     expect(exploration).toContain('Hive Builder or unified Hive ad-hoc mode loads `orchestrating-ad-hoc-work`');
     expect(background).toContain('`orchestrating-ad-hoc-work` supplies the already-defined lanes');
     expect(background).toContain('owns background observation, reconciliation, cancellation, and wait-mode protocol');
-    expect(background).toContain('return verification state to `orchestrating-ad-hoc-work`; no feature plan or task artifact is required');
+    // Final-verification placement is owned by writing-plans and orchestrating-ad-hoc-work, not repeated here.
+    expect(background).not.toContain('## Final Verification');
     expect(background).toContain('consume the lane boundaries and ready wave from `orchestrating-ad-hoc-work`; do not redefine them here');
+    expect(background).toContain('`dispatching-parallel-agents` owns launch mechanics and writer isolation');
   });
 
   it('removes numeric fan-out policy from Scout and background delegation skills', () => {
@@ -925,47 +963,125 @@ describe('skill content', () => {
     expect(skill!.template).toContain('A task with no such mismatch runs as approved');
   });
 
-  it('owns milestone closure, resumption, and stopping semantics for canonical consumers', () => {
-    const executing = BUILTIN_SKILLS.find((entry) => entry.name === 'executing-plans')!.template;
-    expect(executing).toContain('hive_status({ feature })');
-    expect(executing).toContain('one unique task folder/title within that feature');
-    expect(executing).toContain('Ask for clarification if the feature, target, or any companion is ambiguous or missing');
-    expect(executing).toContain('A bare target request has no companions; never infer them from task numbers, readiness, or topic');
-    expect(executing).toContain('Only if all requested roots are already `done`');
-    expect(executing).toContain('an already-done target does not short-circuit unfinished companions');
-    expect(executing).toContain('milestone satisfied without dispatch');
-    expect(executing).toContain("union of each requested root's own stored `dependsOn` edges recursively, including each root");
-    expect(executing).toContain('Deduplicate roots and shared prerequisites');
-    expect(executing).toContain('Include companion prerequisites even when numbered beyond the target');
-    expect(executing).toContain('resolved implicit sequential shorthand');
-    expect(executing).toContain('never infer edges from numbering or follow reverse dependents');
-    expect(executing).toContain('Stop traversal at `done` tasks: their outgoing edges are historical');
-    expect(executing).toContain('Only `done` satisfies a dependency');
-    expect(executing).toContain('Cancelled or missing prerequisites are blockers');
-    expect(executing).toContain('`pending`, `in_progress`, `blocked`, `failed`, and `partial` are unfinished, not satisfied');
-    expect(executing).toContain('A cancelled requested root is a blocker');
-    expect(executing).toContain('Companions expand requested scope, not dependency edges');
-    expect(executing).toContain('Schedule only the combined unfinished closure by actual dependencies and existing ownership/resource rules');
-    expect(executing).toContain('Inspect live or uncertain workers before dispatch; do not launch overlapping replacements');
-    expect(executing).toContain('Exclude unrelated tasks and descendants unless the operator explicitly expands scope');
-    expect(executing).toContain('Re-read status between batches and on each new run/continue request');
-    expect(executing).toContain('recompute the union for all requested roots from updated stored edges each time, including approved and synced dependency amendments');
-    expect(executing).toContain('target AND every explicitly named companion verified, integrated where applicable, and marked `done`');
-    expect(executing).toContain('Wait for a slower independent companion even if the target finishes first');
-    expect(executing).toContain('applicable checks, required review, and cleanup completed');
-    expect(executing).toContain('call `hive_feature_complete` merely because the milestone was achieved while other tasks remain');
-    expect(executing).toContain('completed and remaining combined closure scope, other remaining feature tasks');
-    expect(executing).toContain('concrete continuation prompt');
-    expect(executing).toContain('When no unfinished feature tasks remain after achievement, emit `Run final verification for feature "<feature>" and complete it only after the required checks pass.` with the exact feature substituted');
-    expect(executing).toContain('Stop at the requested milestone and hand off final verification instead of executing it in that request');
-    expect(executing).toContain('Apply the primary prompt\'s existing full-feature verification/completion procedure');
-    expect(executing).toContain('including every `## Final Verification` obligation and deferred check, required review, and applicable cleanup');
-    expect(executing).toContain('Call `hive_feature_complete` only after the required checks pass');
-    expect(executing).toContain('milestone completion does not waive whole-feature final verification');
+  it('keeps the milestone safety baseline inline and the full procedure in the disclosed reference', () => {
+    const executing = readSkillTemplate('executing-plans');
+    const reference = readSkillReference('executing-plans', 'task-milestones.md');
+    const suggesting = reference.slice(reference.indexOf('## Suggesting milestones'), reference.indexOf('## Executing requested milestones'));
+    const running = reference.slice(reference.indexOf('## Executing requested milestones'));
+
+    // Baseline: holds when the reference is missing, overridden or unreadable.
+    for (const rule of [
+      'hive_status({ feature })',
+      'ask for clarification if the feature, target, or any companion is ambiguous or missing',
+      'A bare target request has no companions; never infer them from task numbers, readiness, or topic',
+      'A cancelled requested root is a blocker',
+      "each requested root's own stored `dependsOn` edges recursively, including each root",
+      'stop traversal at `done` tasks',
+      'Only `done` satisfies a dependency',
+      'Never infer edges from numbering or follow reverse dependents',
+      'Inspect live or uncertain workers before dispatch; do not launch overlapping replacements',
+      'Exclude unrelated tasks and descendants unless the operator explicitly expands scope',
+      'Re-read status between batches and on each new run/continue request',
+      'target AND every explicitly named companion verified, integrated where applicable, and marked `done`',
+      'A source commit or worker completion alone is insufficient',
+      'do not call `hive_feature_complete` merely because the milestone was achieved while other tasks remain',
+      'hand off final verification instead of executing it in that request',
+      'If the reference cannot be read, dispatch no new milestone work',
+      'do not search generated skill caches for another copy',
+    ]) {
+      expect(executing, rule).toContain(rule);
+    }
+
+    // Procedure: two sections for two different consumers, each self-sufficient for its job.
+    expect(reference).toContain('Numerical ranges such as "tasks 2-8" never define scope.');
+    expect(reference.indexOf('## Shared definitions')).toBeLessThan(reference.indexOf('## Suggesting milestones'));
+    expect(suggesting.length).toBeGreaterThan(0);
+    expect(running.length).toBeGreaterThan(0);
+    for (const rule of [
+      'projected NEW unfinished task count',
+      'actual task folders counted',
+      'companions: none',
+      'U_i be the current unfinished union of the closures of suggested target i and its explicitly listed companions',
+      'U_i minus the union of the preceding suggested U_j',
+      'Run feature "<feature>" until task "<task-folder>" (<task-title>) is complete.',
+      'Continue feature "<feature>" until task "<next-task-folder>" (<next-task-title>) is done.',
+      'Also complete companion task "<companion-folder>" (<companion-title>) before stopping.',
+      'Run final verification for feature "<feature>" and complete it only after the required checks pass.',
+      'Do not produce a projection from numbering',
+      'Approval and sync outcomes stay as they were persisted',
+    ]) {
+      expect(suggesting, rule).toContain(rule);
+    }
+    // The consumers stay distinct: the execution section does not carry the recommendation-table method.
+    expect(running).not.toContain('projected NEW unfinished task count');
+    expect(running).not.toContain('U_i');
+    for (const rule of [
+      'preserve the exact feature, target, and explicitly named companions from the suggested prompt',
+      'ask only when a material scheduling or authority decision remains unresolved',
+      'hive_status({ feature })',
+      'one unique task folder/title within that feature',
+      'Ask for clarification if the feature, target, or any companion is ambiguous or missing',
+      'A bare target request has no companions; never infer them from task numbers, readiness, or topic',
+      'Only if all requested roots are already `done`',
+      'an already-done target does not short-circuit unfinished companions',
+      'milestone satisfied without dispatch',
+      "union of each requested root's own stored `dependsOn` edges recursively, including each root",
+      'Deduplicate roots and shared prerequisites',
+      'Include companion prerequisites even when numbered beyond the target',
+      'resolved implicit sequential shorthand',
+      'never infer edges from numbering or follow reverse dependents',
+      'Stop traversal at `done` tasks: their outgoing edges are historical',
+      'Only `done` satisfies a dependency',
+      'Cancelled or missing prerequisites are blockers',
+      '`pending`, `in_progress`, `blocked`, `failed`, and `partial` are unfinished, not satisfied',
+      'A cancelled requested root is a blocker',
+      'Companions expand requested scope, not dependency edges',
+      'Schedule only the combined unfinished closure by actual dependencies and existing ownership/resource rules',
+      'Inspect live or uncertain workers before dispatch; do not launch overlapping replacements',
+      'Exclude unrelated tasks and descendants unless the operator explicitly expands scope',
+      'Re-read status between batches and on each new run/continue request',
+      'recompute the union for all requested roots from updated stored edges each time, including approved and synced dependency amendments',
+      'target AND every explicitly named companion verified, integrated where applicable, and marked `done`',
+      'Wait for a slower independent companion even if the target finishes first',
+      'applicable checks, required review, and cleanup completed',
+      'call `hive_feature_complete` merely because the milestone was achieved while other tasks remain',
+      'completed and remaining combined closure scope, other remaining feature tasks',
+      'concrete continuation prompt',
+      'When no unfinished feature tasks remain after achievement, emit `Run final verification for feature "<feature>" and complete it only after the required checks pass.` with the exact feature substituted',
+      'Stop at the requested milestone and hand off final verification instead of executing it in that request',
+      'milestone completion does not waive whole-feature final verification',
+    ]) {
+      expect(running, rule).toContain(rule);
+    }
+    // Situations a consumer must get right: non-contiguous scope, shared prerequisites, a done target with an unfinished companion.
+    expect(running).toContain('If task 8 is already done and task 1 is unfinished, execute task 1\'s unfinished closure');
+    expect(running).toContain('share `03-storage` count and run it once');
+    expect(running).toContain('A cancelled task in a requested root\'s closure blocks the milestone');
+    for (const rule of [
+      'State what the operator or system can do at that point and the verifiable signal',
+      'citing the source task or plan section instead of a subsystem label',
+      'Describe expected capability, not proven readiness before execution',
+      'do not invent capabilities or evidence',
+      'list it as an explicit companion in that milestone',
+      'suggest separate milestones and list the remaining work',
+      'Never fabricate a dependency to force a linear split',
+      'never sweep in earlier-numbered or all-ready tasks',
+      'Deduplicate shared prerequisites, and count each requested root unless it is already covered or done',
+      'Show the exact folders in each counted set',
+    ]) {
+      expect(suggesting, rule).toContain(rule);
+    }
+    expect(suggesting).toContain('Task 1 is non-contiguous with the rest of its row');
+    expect(suggesting).toContain('the projected count is 8');
+
+    // Step 5/6 of the execution skill now defer to the reference for the stopping boundary and whole-feature completion.
     expect(executing).toContain('repeat only within its combined unfinished prerequisite closure until all requested roots are done');
     expect(executing).toContain('For whole-feature execution, after all tasks complete');
+    expect(executing).toContain('Call `hive_feature_complete` only after the required checks pass');
+    expect(executing).toContain('Apply the primary prompt\'s existing full-feature verification/completion procedure');
+    expect(executing).toContain('including every `## Final Verification` obligation and deferred check, required review, and applicable cleanup');
 
-    const dispatch = BUILTIN_SKILLS.find((entry) => entry.name === 'dispatching-parallel-agents')!.template;
+    const dispatch = readSkillTemplate('dispatching-parallel-agents');
     expect(dispatch).toContain('run/continue a feature until a target task is complete/done');
     expect(dispatch).toContain('executing-plans');
     expect(dispatch).toContain('apply Target Task Milestones before');
@@ -1027,9 +1143,12 @@ describe('skill content', () => {
     const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'dispatching-parallel-agents');
 
     expect(skill).toBeDefined();
-    expect(skill!.template).toContain('task({');
+    const launches = readSkillReference('dispatching-parallel-agents', 'launch-examples.md');
+    expect(launches).toContain('task({');
+    expect(launches).toContain('Gate-open only: use background: true');
+    expect(launches).toContain('Blocking alternative, including every gate-closed session');
+    expect(skill!.template).toContain('references/launch-examples.md');
     expect(skill!.template).toContain('Independent Forager worktrees may be created and dispatched under one parent');
-    expect(skill!.template).toContain('Gate-open only: use background: true');
     expect(skill!.template).toContain('hive_worktree_create');
     expect(skill!.template).not.toContain('hive_existing_workspace_start');
     expect(skill!.template).toContain('In feature-task mode, pass each returned topology-aware pin unchanged');
@@ -1037,7 +1156,6 @@ describe('skill content', () => {
     expect(skill!.template).toContain('In ad-hoc mode, return result state and its exact pin to `orchestrating-ad-hoc-work`');
     expect(skill!.template).toContain('hive_adhoc_worktree_merge');
     expect(skill!.template).toContain('Treat installs, builds, formatters, generators, and tests as mutations');
-    expect(skill!.template).toContain('Blocking alternative, including every gate-closed session');
     expect(skill!.template).toContain('Ordinary Scout, advisor, and reviewer launches remain eligible for same-message parallel dispatch');
     expect(skill!.template).toContain('one primary goal');
     expect(skill!.template).toContain('disjoint path ownership or sequence overlapping writers');
@@ -1046,10 +1164,14 @@ describe('skill content', () => {
     expect(skill!.template).toContain('execution-decisions');
     expect(skill!.template).toContain('Dependencies guide sequencing');
     expect(skill!.template).toContain('Explicit null suppresses fallback');
-    // One complete example per host: the raw source holds both, and each host's rendering holds exactly one.
-    expect(skill!.template.match(/hive_feature_select\(\{ feature: "feature-name" \}\)/g)).toHaveLength(2);
+    expect(skill!.template).toContain('**One writer per worktree:**');
+    expect(skill!.template).toContain('**Destination checkpoints:**');
+    expect(skill!.template).toContain('it does not trigger an overlapping replacement writer');
+    expect(skill!.template).toContain('Distinct worktrees do not isolate fixed-path fixtures, ports, databases, containers, generated outputs, or external mutable resources');
+    // One complete example per host: the raw reference holds both, and each host's rendering holds exactly one.
+    expect(launches.match(/hive_feature_select\(\{ feature: "feature-name" \}\)/g)).toHaveLength(2);
     for (const host of [OPENCODE_V1_PROFILE, createHostProfile('opencode-v2')]) {
-      expect(renderHostMarkdown(skill!.template, host, 'dispatching-parallel-agents').match(/hive_feature_select\(\{ feature: "feature-name" \}\)/g)).toHaveLength(1);
+      expect(renderHostMarkdown(launches, host, 'dispatching-parallel-agents/references/launch-examples.md').match(/hive_feature_select\(\{ feature: "feature-name" \}\)/g)).toHaveLength(1);
     }
     expect(skill!.template).toContain('Batch independent Hive calls in one response/step');
     expect(skill!.template).toContain("same-call `cleanup: 'worktree+branch'`");
@@ -1060,7 +1182,14 @@ describe('skill content', () => {
   it('includes every native-required field in managed Forager examples', () => {
     let exampleCount = 0;
 
-    for (const skill of BUILTIN_SKILLS) {
+    // Disclosed references carry the complete launches, so they are scanned with every skill entry point.
+    const packagedMarkdown = BUILTIN_SKILLS.flatMap((skill) => {
+      const dir = path.join(resolvePackagedSkillsDir(), skill.name, 'references');
+      const refs = existsSync(dir) ? readdirSync(dir).filter((file) => file.endsWith('.md')) : [];
+      return [{ name: skill.name, template: skill.template }, ...refs.map((file) => ({ name: `${skill.name}/${file}`, template: readFileSync(path.join(dir, file), 'utf8') }))];
+    });
+
+    for (const skill of packagedMarkdown) {
       for (const match of skill.template.matchAll(/(?:await\s+)?task\(\{([\s\S]*?)\}\)/g)) {
         const fields = match[1];
         if (!fields.includes('forager-worker')) continue;
@@ -1099,12 +1228,18 @@ describe('skill content', () => {
       'hive_execution_finish',
     ];
 
-    for (const name of ['background-delegation', 'dispatching-parallel-agents', 'executing-plans']) {
+    // The general/helper exception is owned by the two skills that dispatch writers; background only schedules them.
+    for (const name of ['dispatching-parallel-agents', 'executing-plans']) {
       const skill = BUILTIN_SKILLS.find((entry) => entry.name === name);
 
       expect(skill).toBeDefined();
       expect(skill!.template, name).toContain('ordinary `task()` call');
       expect(skill!.template, name).toContain('Native helpers keep only their bounded operational permissions');
+    }
+    for (const name of ['background-delegation', 'dispatching-parallel-agents', 'executing-plans']) {
+      const skill = BUILTIN_SKILLS.find((entry) => entry.name === name);
+
+      expect(skill).toBeDefined();
       expect(skill!.template, name).not.toContain('reserve the active root');
       for (const symbol of removed) expect(skill!.template, `${name}: ${symbol}`).not.toContain(symbol);
     }
@@ -1146,101 +1281,124 @@ describe('skill content', () => {
 
   it('bundles background-delegation with baseline delegation and env-gated wait-mode guidance', () => {
     const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'background-delegation');
+    const protocol = readSkillReference('background-delegation', 'board-protocol.md');
+    const launches = readSkillReference('dispatching-parallel-agents', 'launch-examples.md');
 
     expect(skill).toBeDefined();
     expect(skill!.description).toContain('Agent Hive');
+    // Wait mode and the safe-stop conditions stay inline.
     expect(skill!.template).toContain('OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS');
     expect(skill!.template).toContain('OPENCODE_EXPERIMENTAL');
     expect(skill!.template).toContain('task({ background: true');
     expect(skill!.template).toContain('native background completion notification');
-    expect(skill!.template).toContain('hive_background_status');
-    expect(skill!.template).toContain('hive_background_reconcile');
-    expect(skill!.template).toContain('hive_background_reconcile_batch');
-    expect(skill!.template).toContain('hive_background_cancel');
+    for (const tool of ['hive_background_status', 'hive_background_reconcile', 'hive_background_reconcile_batch', 'hive_background_cancel']) {
+      expect(skill!.template).toContain(tool);
+    }
     expect(skill!.template).not.toContain('task_status');
     expect(skill!.template).toContain('Delegation-first orchestration is the baseline');
     expect(skill!.template).toContain('Background mode only changes wait mode and board protocol');
     expect(skill!.template).toContain('background-delegation governs scheduling and wait mode');
-    expect(skill!.template).toContain('Direct vs Delegated Work');
-    expect(skill!.template).toContain('Delegation Kind Reference');
-    expect(skill!.template).toContain('Context Packet');
-    expect(skill!.template).toContain('Put the complete Forager context packet directly in the unchanged native `task.prompt`');
-    expect(skill!.template).toContain('Ordinary Scout, advisor, and reviewer packets also go in `task.prompt`');
-    expect(skill!.template).toContain('descriptor is a closer match');
-    expect(skill!.template).toContain('Orchestrator owns final confidence');
-    expect(skill!.template).toContain('terminal-unreconciled');
-    expect(skill!.template).toContain('Reconcile and ignore are bookkeeping only');
-    expect(skill!.template).toContain('Claiming cancel acknowledgement proves the worker stopped');
-    expect(skill!.template).toContain('Treat installs, builds, formatters, generators, and tests as mutations');
-    expect(skill!.template).toContain('`hive_status` is not that surface');
     expect(skill!.template).toContain('Allowed foreground/blocking escape reasons: dependency, risk, simplicity, user interaction, ownership conflict, or lifecycle/board concerns.');
     expect(skill!.template).toContain('Gate-closed sessions use normal blocking `task()` wait mode');
     expect(skill!.template).toContain('Background is a wait mode, not the definition of parallelism');
     expect(skill!.template).toContain('Independent ordinary Scout, advisor, and reviewer tasks can run in parallel');
+    expect(skill!.template).toContain('Lane count never selects wait mode');
     expect(skill!.template).toContain('Every Forager lane, including report-only diagnosis');
     expect(skill!.template).toContain('The owning workflow determines placement; create the matching worktree before dispatch for tracked Git writes');
-    expect(skill!.template).not.toContain('hive_existing_workspace_start');
-    expect(skill!.template).not.toContain('hive_execution_prepare');
     expect(skill!.template).toContain('Direct checkout work is unmanaged OpenCode work');
-    expect(skill!.template).not.toContain('binding-in-progress');
-    expect(skill!.template).not.toContain('wait for the native correlation event');
-    expect(skill!.template).toContain('Gate-closed Forager launch (blocking wait mode)');
-    expect(skill!.template).toContain('Gate-open Forager launch (background wait mode)');
-    expect(skill!.template).toContain('hive_adhoc_worktree_create');
-    expect(skill!.template).not.toContain('hive_adhoc_worktree_create({});');
-    expect(skill!.template).toContain('Reconcile each board row exactly once');
-    expect(skill!.template).toContain("subagent_type: 'forager-worker'");
-    expect(skill!.template).toContain("Nested delegation outside Architect's permitted blocking terminal planning-helper layer");
-    expect(skill!.template).toContain('When Architect runs as a primary');
-    expect(skill!.template).toContain('When Architect is task-spawned');
-    expect(skill!.template).toContain('Background board tools and primary-control operations are denied in children');
-    expect(skill!.template).toContain('return board/control requests');
-    expect(skill!.template).toContain('Treat prompt acknowledgment as notification only');
-    expect(skill!.template).toContain('waitingForNativeCompletion');
-    expect(skill!.template).toContain('completionNotificationsPending > 0');
-    expect(skill!.template).toContain('reconcileItemsRequired == 0');
-    expect(skill!.template).toContain('schedulerGuidance.reason');
-    expect(skill!.template).toContain('wait_for_native_completion_notification');
-    expect(skill!.template).toContain('recommendedNextAction');
-    expect(skill!.template).toContain('orchestrationBurden');
-    expect(skill!.template).toContain('pure final verification outside `## Tasks`');
-    expect(skill!.template).toContain('## Final Verification');
     expect(skill!.template).toContain('one small, local, immediately verified integration fix');
     expect(skill!.template).toContain('There is no exact-one-read or exact-one-write quota');
     expect(skill!.template).toContain('one independently answerable question or one primary goal');
     expect(skill!.template).toContain('one owner, one expected output, and one verification/return contract');
+    expect(skill!.template).toContain('manual task or plan amendment');
     expect(skill!.template).toContain('Every returned result is terminal');
     expect(skill!.template).toContain('Every follow-up after a returned result uses a fresh child session');
     expect(skill!.template).toContain('observe-only board handles');
     expect(skill!.template).toContain('Pass `task_id` only when an explicit operator instruction or explicit runtime-owned interruption-recovery mechanism authorizes continuation');
     expect(skill!.template).toContain('If the child may still be active or its lifecycle is uncertain');
     expect(skill!.template).toContain('Compaction re-anchoring of a currently running worker is distinct from follow-up work');
-    expect(skill!.template).toContain('Lane count never selects wait mode');
-    expect(skill!.template).toContain(
-      'Waiting, pending, terminal-unreconciled, stale, or ownership-overlapping lanes need a board action'
-    );
-    expect(skill!.template).not.toContain('Treat unresolved lanes as blockers.');
     expect(skill!.template).toContain('tightly coupled code, tests, docs, and multiple files');
-    expect(skill!.template).toContain('consume the lane boundaries and ready wave from `orchestrating-ad-hoc-work`; do not redefine them here');
     expect(skill!.template).toContain('second patch/test loop');
     expect(skill!.template).toContain('behavior-contract change');
-    expect(skill!.template).toContain('manual task or plan amendment');
+    expect(skill!.template).toContain('consume the lane boundaries and ready wave from `orchestrating-ad-hoc-work`; do not redefine them here');
+    expect(skill!.template).toContain('terminal-unreconciled');
+    expect(skill!.template).toContain('Waiting, pending, terminal-unreconciled, stale, or ownership-overlapping lanes need a board action');
+    expect(skill!.template).toContain('Reconcile and ignore are bookkeeping only');
+    expect(skill!.template).toContain('Cancel acknowledgement does not prove the worker stopped');
+    expect(skill!.template).toContain('Treat installs, builds, formatters, generators, and tests as mutations');
+    expect(skill!.template).toContain('`hive_status` is not that surface');
     expect(skill!.template).toContain("do not edit the active host's `background-jobs.json` board file directly");
-    expect(skill!.template).toContain('archived by the tool and hidden from normal status');
-    expect(skill!.template).toContain('Forgotten terminal jobs');
-    expect(skill!.template).toContain('Wait-only polling');
-    expect(skill!.template).toContain('Manual board mutation');
-    expect(skill!.template).not.toContain('poll when available');
-    expect(skill!.template).not.toContain('@explorer');
-    expect(skill!.template).not.toContain('subtask');
-    expect(skill!.template).not.toContain('tmux');
-    expect(skill!.template).not.toContain('zellij');
-    expect(skill!.template).not.toContain('hive_background_task');
-    expect(skill!.template).not.toContain('hive_background_output');
+    expect(skill!.template).toContain('never guess the latest child');
+    expect(skill!.template).toContain('do not send another prompt or launch an overlapping writer');
+    expect(skill!.template).toContain('waitingForNativeCompletion');
+    expect(skill!.template).toContain('recommendedNextAction');
+    expect(skill!.template).toContain("Nested delegation outside Architect's permitted blocking terminal planning-helper layer");
+    expect(skill!.template).toContain('When Architect runs as a primary');
+    expect(skill!.template).toContain('When Architect is task-spawned');
+    expect(skill!.template).toContain('Background board tools and primary-control operations are denied in children');
+    expect(skill!.template).toContain('return board/control requests');
+    expect(skill!.template).toContain('references/board-protocol.md');
+    expect(skill!.template).not.toContain('Treat unresolved lanes as blockers.');
+
+    // Disclosed: field meanings, reconcile and hint handling, the one observation example and board mistakes.
+    for (const detail of [
+      'Treat prompt acknowledgment as notification only',
+      'completionNotificationsPending > 0',
+      'reconcileItemsRequired == 0',
+      'schedulerGuidance.reason',
+      'wait_for_native_completion_notification',
+      'orchestrationBurden',
+      'hive_background_reconcile_batch',
+      'requiresHiveStatusRefresh',
+      '`job_not_terminal` means wait for native completion',
+      'Reconcile each board row exactly once',
+      'archived by the tool and hidden from normal status',
+      'Forgotten terminal jobs',
+      'Wait-only polling',
+      'Manual board mutation',
+    ]) {
+      expect(protocol, detail).toContain(detail);
+    }
+    expect(protocol.match(/^```ts$/gm)).toHaveLength(2); // the one example, once per host
+    expect(skill!.template).not.toContain('requiresHiveStatusRefresh');
+
+    // Launch mechanics are owned by dispatch, so the background skill carries no launch recipe.
+    expect(launches).toContain('Blocking launch (gate-closed sessions):');
+    expect(launches).toContain('Background launch (gate-open sessions):');
+    expect(launches).toContain('hive_adhoc_worktree_create({ repoIds })');
+    expect(launches).not.toContain('hive_adhoc_worktree_create({});');
+    expect(launches).toContain("subagent_type: 'forager-worker'");
+    expect(skill!.template).not.toContain('hive_adhoc_worktree_create');
+    expect(skill!.template).not.toContain('Gate-closed Forager launch');
+
+    // Placement, final-verification, specialist and verification-routing manuals belong to roles and owning workflows.
+    for (const retired of ['## Specialist Selection', '## Verification Routing', '## Feature-Task Final Verification Gates', '## Decision Examples', '## Context Packet']) {
+      expect(skill!.template, retired).not.toContain(retired);
+    }
+    for (const text of [skill!.template, protocol]) {
+      expect(text).not.toContain('hive_existing_workspace_start');
+      expect(text).not.toContain('hive_execution_prepare');
+      expect(text).not.toContain('binding-in-progress');
+      expect(text).not.toContain('wait for the native correlation event');
+      expect(text).not.toContain('poll when available');
+      expect(text).not.toContain('@explorer');
+      expect(text).not.toContain('subtask');
+      expect(text).not.toContain('tmux');
+      expect(text).not.toContain('zellij');
+      expect(text).not.toContain('hive_background_task');
+      expect(text).not.toContain('hive_background_output');
+    }
+
+    // The packet fields and prompt placement are launch mechanics, now owned by dispatch.
+    const dispatch = readSkillTemplate('dispatching-parallel-agents');
+    expect(dispatch).toContain('Put the complete Forager packet directly in the unchanged native `task.prompt`');
+    expect(dispatch).toContain('ordinary Scout, advisor, and reviewer packets also go in `task.prompt`');
+    expect(dispatch).toContain('objective and done criteria, known findings and file or reference pointers, prior failures or attempts');
   });
 
-  it('keeps both Forager examples lane-scoped and the gate-open example reconciled after native completion', () => {
-    const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'background-delegation')!;
+  it('keeps both Forager launches lane-scoped and shows the board observation once, after native completion', () => {
+    const launches = readSkillReference('dispatching-parallel-agents', 'launch-examples.md');
+    const protocol = readSkillReference('background-delegation', 'board-protocol.md');
     const fence = '`'.repeat(3);
     const launchExample = (text: string, heading: string, label: string) => {
       const opening = `${heading}\n\n${label}\n\n${fence}ts\n`;
@@ -1252,9 +1410,9 @@ describe('skill content', () => {
       [OPENCODE_V1_PROFILE, 'OpenCode v1:', 'hive_repositories_status()'],
       [createHostProfile('opencode-v2'), 'OpenCode v2:', '// repositories: the repositories array from the hive_repositories_status result'],
     ] as const) {
-      const text = renderHostMarkdown(skill.template, host, 'background-delegation');
-      const gateClosed = launchExample(text, 'Gate-closed Forager launch (blocking wait mode):', label);
-      const example = launchExample(text, 'Gate-open Forager launch (background wait mode):', label);
+      const text = renderHostMarkdown(launches, host, 'dispatching-parallel-agents/references/launch-examples.md');
+      const gateClosed = launchExample(text, 'Blocking launch (gate-closed sessions):', label);
+      const example = launchExample(text, 'Background launch (gate-open sessions):', label);
       expect(gateClosed, label).toBeDefined();
       expect(example, label).toBeDefined();
       for (const launch of [gateClosed!, example!]) {
@@ -1267,9 +1425,74 @@ describe('skill content', () => {
         expect(launch).toContain('const repoIds = selectedRepoIds;');
         expect(launch).toContain('hive_adhoc_worktree_create({ repoIds })');
       }
-      expect(example!.indexOf('hive_adhoc_worktree_create')).toBeLessThan(example!.indexOf('hive_background_reconcile'));
       expect(example).toContain('background: true');
+      // The launch stops where the board protocol starts; reconciliation is not duplicated here.
+      expect(example).not.toContain('hive_background_reconcile');
+
+      const board = renderHostMarkdown(protocol, host, 'background-delegation/references/board-protocol.md');
+      const observation = launchExample(board, 'Launch an independent read-only lane in the background, keep doing unrelated foreground work, observe the board, then reconcile once.', label);
+      expect(observation, label).toBeDefined();
+      expect(observation).toContain('background: true');
+      expect(observation!.indexOf('hive_background_status({})')).toBeLessThan(observation!.lastIndexOf('hive_background_status({})'));
+      expect(observation!.lastIndexOf('hive_background_status({})')).toBeLessThan(observation!.indexOf('hive_background_reconcile({'));
     }
+  });
+
+  describe('disclosed references of the workflow and context skills', () => {
+    const REFERENCES: Record<string, string> = {
+      'background-delegation': 'board-protocol.md',
+      'dispatching-parallel-agents': 'launch-examples.md',
+      'parallel-exploration': 'research-examples.md',
+      'executing-plans': 'task-milestones.md',
+      'writing-plans': 'verification-planning.md',
+      'context-engineering': 'mutation-and-recovery.md',
+    };
+
+    it('points to each reference with a read-when line and a link that stays inside the skill directory', () => {
+      for (const [skill, file] of Object.entries(REFERENCES)) {
+        const template = readSkillTemplate(skill);
+        expect(template, skill).toMatch(new RegExp(`^Read \\[references/${file.replace('.', '\\.')}\\]\\(references/${file.replace('.', '\\.')}\\) (when|before) `, 'm'));
+        const dir = path.join(resolvePackagedSkillsDir(), skill);
+        for (const text of [template, readSkillReference(skill, file)]) {
+          // No installed path, generated-cache path, parent-directory link or checkout-relative document is required.
+          expect(text, skill).not.toMatch(/\/home\/|\.config\/opencode|agent-hive\/generated|\]\(\.\.\/|\]\(\//);
+        }
+        expect(existsSync(path.join(dir, 'references', file)), `${skill}/${file}`).toBe(true);
+        expect(readdirSync(path.join(dir, 'references')), skill).toEqual([file]);
+      }
+    });
+
+    it('states in each reference that it adds method and not authority', () => {
+      for (const [skill, file] of Object.entries(REFERENCES)) {
+        expect(readSkillReference(skill, file), `${skill}/${file}`).toMatch(/not authority|no authority|never authority|not authorization/);
+      }
+    });
+
+    it('keeps incomplete context reads from supporting a replacement and corruption from licensing a hand repair', () => {
+      const template = readSkillTemplate('context-engineering');
+      const reference = readSkillReference('context-engineering', 'mutation-and-recovery.md');
+      // Routine safety is inline: an incomplete read cannot be replaced, and a missing file is the only unguarded write.
+      expect(template).toContain('`complete: false` means the document is incomplete, so it cannot support a replacement');
+      expect(template).toContain('Finish every chunk before constructing a whole-document replacement');
+      expect(template).toContain('Omit revision and hash only when creating a missing file');
+      expect(template).toContain('hive_context_read({ name: "auth-decisions" })\n');
+      expect(template).toContain('A named read starts without a cursor');
+      expect(template).toContain('Stop managed mutations and report the exact error');
+      expect(template).toContain('never authorizes an agent to hand-edit them');
+      // Recovery stays operator work, stated before the procedure and again inline.
+      const stop = reference.indexOf('An agent that meets either error stops managed mutations');
+      const operator = reference.indexOf('Repair is separately authorized operator recovery');
+      const steps = reference.indexOf('1. Quiesce writers.');
+      expect(stop).toBeGreaterThan(-1);
+      expect(stop).toBeLessThan(operator);
+      expect(operator).toBeLessThan(steps);
+      expect(reference).toContain('Reading this section does not authorize an agent to edit, delete, or rewrite `index.json`, the pending marker, or any manifest');
+      expect(reference).toContain('the honest outcome is a stopped mutation and a report');
+      expect(template).toContain('Repairing context control files is separately authorized operator recovery');
+      for (const text of [template, reference]) {
+        expect(text).not.toMatch(/(?:edit|rewrite|delete|remove|restore) (?:the )?`?index\.json`? (?:to|so that|and then retry)/i);
+      }
+    });
   });
 
   describe('hive-config', () => {
@@ -1387,6 +1610,18 @@ describe('skill content', () => {
         else process.env.HOME = previousHome;
         rmSync(root, { recursive: true, force: true });
       }
+    });
+
+    it('states the same-name skill override per host and names no fallback copy', () => {
+      const configuration = reference('configuration.md');
+      const ownership = readRepoFile('packages/opencode-hive/docs/SKILL-OWNERSHIP.md');
+      for (const text of [configuration, ownership]) {
+        expect(text).toMatch(/[Oo]n v1/);
+        expect(text).toMatch(/[Oo]n v2,? the (materialized )?copy can still hold the bundle/);
+        expect(text).toContain('resolves the name to the unique user skill');
+        expect(text).toContain('nothing falls back to an older generated copy');
+      }
+      expect(configuration).not.toContain('are not materialized for that name');
     });
 
     it('lists every specStaleReason hive_status can report', () => {
@@ -1552,8 +1787,13 @@ describe('skill content', () => {
     expect(template).toContain('Archive is primary-only');
     expect(template).toContain('there is no extra role runtime authorization');
     expect(template).toContain('Error notices are not empty/current catalogs');
-    expect(template).toContain('`.hive/sessions.json` is canonical global session truth');
-    expect(template).toContain('`.hive/runtime/opencode-v2/sessions.json`; an owner\'s missing store is never filled from another\'s');
+    // Session-store layout is a runtime fact owned by hive-config; context selection only points there.
+    expect(template).toContain('are runtime facts owned by `hive-config`');
+    expect(template).toContain('a feature-local `sessions.json` is a projection and never alternate recovery truth');
+    expect(template).not.toContain('`.hive/sessions.json`');
+    const layout = readSkillReference('hive-config', 'runtime-layout.md');
+    expect(layout).toContain('feature-local navigation projection, not canonical');
+    expect(layout).toContain('It holds canonical session bindings');
     expect(template).toContain('Never replay historical prompt text as a new assignment');
     expect(template).toContain('Plugin restart does not continue old live workers');
     expect(template).toContain('do not follow a stored former root as catalog truth');
@@ -1748,7 +1988,7 @@ describe('host sections in packaged skills', () => {
   it('obtains repository status through the selected read transport on every profile', () => {
     const profiles = [OPENCODE_V1_PROFILE, V2, createHostProfile('opencode-v2', { readTransport: 'direct' })];
     for (const host of profiles) {
-      const skill = sectionTexts('background-delegation', host);
+      const skill = sectionTexts('dispatching-parallel-agents', host);
       const system = renderHiveSystemPrompt(host);
       if (host.host === 'opencode-v1') {
         // Direct host: the example reads the status as an ordinary call.
@@ -1815,13 +2055,18 @@ describe('host sections in packaged skills', () => {
 
   it('keeps native dispatch rules at the same strength on both hosts', () => {
     for (const host of HOSTS) {
-      const text = sectionTexts('background-delegation', host);
+      const dispatch = sectionTexts('dispatching-parallel-agents', host);
+      const background = rendered('background-delegation/SKILL.md', host);
       const call = host.nativeTask.tool + '()';
-      expect(text).toContain(`Each native \`${call}\` invocation has one primary goal and one terminal report.`);
-      expect(text).toContain(`Primaries must not pass \`${host.nativeTask.continuationField}\` or infer continuation eligibility`);
-      expect(text).toContain(`only when an explicit operator instruction or explicit runtime-owned interruption-recovery mechanism authorizes continuation; otherwise launch fresh.`);
-      expect(text).toContain(`A rare native \`general\` exception is an ordinary \`${call}\` call with ordinary tools only: no Hive authority, recursion, or questions.`);
-      expect(text).toContain(`${host.nativeTask.agentField}: 'forager-worker'`);
+      const field = host.nativeTask.continuationField;
+      expect(dispatch).toContain(`Dispatch one primary goal per native \`${call}\` invocation and expect one terminal report.`);
+      expect(dispatch).toContain(`Primaries must not pass \`${field}\` or infer continuation eligibility`);
+      expect(dispatch).toContain(`only when explicit operator instruction or runtime-owned interruption recovery authorizes continuation; otherwise launch fresh.`);
+      expect(dispatch).toContain(`A rare native \`general\` exception is an ordinary \`${call}\` call with ordinary tools only: no Hive authority, recursion, or questions.`);
+      expect(dispatch).toContain(`${host.nativeTask.agentField}: 'forager-worker'`);
+      // Background schedules launches; its safe-launch rule keeps the same continuation strength without the launch recipes.
+      expect(background).toContain(`Pass \`${field}\` only when an explicit operator instruction or explicit runtime-owned interruption-recovery mechanism authorizes continuation; otherwise launch fresh.`);
+      expect(background).toContain(`Every Forager lane, including report-only diagnosis, needs a native \`${call}\` call with a Forager or Forager-derived agent.`);
     }
   });
 
@@ -1845,15 +2090,15 @@ describe('host sections in packaged skills', () => {
   });
 
   it('names each host\'s own board store and keeps the shared board rule host-neutral', () => {
-    const v1 = rendered('background-delegation/SKILL.md', OPENCODE_V1_PROFILE);
-    const v2 = rendered('background-delegation/SKILL.md', V2);
+    const v1 = sectionTexts('background-delegation', OPENCODE_V1_PROFILE);
+    const v2 = sectionTexts('background-delegation', V2);
     expect(v1).toContain('.hive/background-jobs.json');
     expect(v1).not.toContain('opencode-v2/background-jobs.json');
     expect(v2).toContain('.hive/runtime/opencode-v2/background-jobs.json');
     expect(v2).not.toMatch(/\.hive\/background-jobs\.json/);
-    for (const text of [v1, v2]) {
-      expect(text).toContain("do not edit the active host's `background-jobs.json` board file directly");
-      expect(text).toContain("Manual board mutation: editing the active host's `background-jobs.json` board file");
+    for (const host of HOSTS) {
+      expect(rendered('background-delegation/SKILL.md', host)).toContain("do not edit the active host's `background-jobs.json` board file directly");
+      expect(rendered('background-delegation/references/board-protocol.md', host)).toContain("Manual board mutation: editing the active host's `background-jobs.json`");
     }
   });
 

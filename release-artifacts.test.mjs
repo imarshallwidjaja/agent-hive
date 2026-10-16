@@ -571,6 +571,23 @@ describe(`release ${releaseVersion} artifact contract on main`, () => {
         [...packedFiles].some((filePath) => filePath.startsWith('skills/')),
         'README-promised oc-arkive asset missing from npm pack: skills/'
       );
+      // Disclosed skill references ship inside their skill directory, and the repository-only evaluation harness does not.
+      for (const reference of [
+        'background-delegation/references/board-protocol.md',
+        'dispatching-parallel-agents/references/launch-examples.md',
+        'parallel-exploration/references/research-examples.md',
+        'executing-plans/references/task-milestones.md',
+        'writing-plans/references/verification-planning.md',
+        'context-engineering/references/mutation-and-recovery.md',
+      ]) {
+        assertPackedFile(packedFiles, `skills/${reference}`, 'oc-arkive');
+        assert.ok(fs.statSync(path.join(packageRoot, 'skills', reference)).size > 0, `packed ${reference} should not be empty`);
+      }
+      assert.equal(
+        [...packedFiles].filter((filePath) => filePath.startsWith('evals/') || /(^|\/)(credentials|auth)[^/]*\.(json|mjs)$|(^|\/)\.env/.test(filePath)).length,
+        0,
+        'the evaluation harness and credential-shaped files should not ship in the oc-arkive tarball'
+      );
       const packedManifest = JSON.parse(fs.readFileSync(path.join(packageRoot, 'package.json'), 'utf8'));
       // The public declarations import @opencode/plugin and, through it, JSON Schema types, so an installed consumer
       // can only resolve them if the tarball's required dependencies bring them.

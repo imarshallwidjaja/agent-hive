@@ -32,102 +32,33 @@ When shared contracts, repository-wide conventions, or cross-feature decisions m
 
 Omitted `scope` is feature scope. Project requires `scope: "project"` and rejects `feature` and `task`. Tool availability and assignment scope govern access; isolated review lanes do not fetch live context metadata or bodies.
 
-## Frontmatter
-
-Durable creates need YAML frontmatter with nonblank `description` and `read_when`. Project durable documents also need accountability `owner` and `review_after` as strict `YYYY-MM-DD`. Owner and date are accountability labels, not authorization or correctness.
-
-```markdown
----
-description: Auth session binding decisions for worker launches.
-read_when: Read before changing assignment identity, catalog delivery, or restart recovery.
-owner: hive-maintainers
-review_after: 2026-12-01
----
-
-# Auth session binding
-```
-
-Unknown keys cannot change inclusion. Index kind/task and reserved-name rules control classification. Malformed metadata warns; it does not hide a correctly classified durable file.
-
 ## Read, continue, mutate
 
-Summary (`scanChars` is a management scan for exact UTF-16 totals):
-
-```
-hive_context_read({ view: "summary" })
-hive_context_read({ view: "summary", scanChars: true })
-hive_context_read({ scope: "project", view: "summary" })
-```
-
-Catalog (no bodies; literal `query`; follow `cursor`):
+Read [references/mutation-and-recovery.md](references/mutation-and-recovery.md) when you need an exact call shape for a read, write, append, or archive, the frontmatter for a durable create, the hygiene thresholds and ceilings behind a warning or size error, or the handling of `context_index_invalid` and `context_reconciliation_required`.
 
 ```
 hive_context_read({ view: "catalog", query: "auth binding", limit: 10 })
-hive_context_read({ view: "catalog", query: "auth binding", cursor: nextCursor })
-```
-
-Named raw chunks (`maxBytes` is the serialized UTF-8 JSON budget, 16 KiB default, 64 KiB maximum):
-
-```
 hive_context_read({ name: "auth-decisions" })
-hive_context_read({ name: "auth-decisions", cursor: nextCursor, maxBytes: 16384 })
+hive_context_read({ name: "auth-decisions", cursor: nextCursor })
 ```
 
-Pass `nextCursor` unchanged until `complete: true`. Do not invent byte offsets. `complete: false` means the document is incomplete. A named-read cursor that is oversized, malformed, expired after a plugin restart, or bound to another recipient or document fails as `stale_context_cursor`; start a new named read without a cursor. A catalog page with `complete: true` is complete for that query, not proof that every note was read.
+Catalog reads carry no bodies and take a literal `query`; named reads return raw chunks. A named read starts without a cursor. Each later call names the same document and passes the previous result's `nextCursor` unchanged until `complete: true`; a catalog page's `cursor` continues only that catalog query. Do not invent byte offsets. `complete: false` means the document is incomplete, so it cannot support a replacement. A named-read cursor that is oversized, malformed, expired after a plugin restart, or bound to another recipient or document fails as `stale_context_cursor`; start a new named read without a cursor. A catalog page with `complete: true` is complete for that query, not proof that every note was read.
 
-Replacement, append, and archive require the current revision and the actual SHA-256 from the named read. Finish every chunk before constructing a whole-document replacement. Preserve revision and hash.
-
-```
-hive_context_write({
-  name: "auth-decisions",
-  content: reconstructedMarkdown,
-  expectedRevision: 12,
-  expectedContentHash: "sha256-from-named-read"
-})
-
-hive_context_append({
-  name: "auth-decisions",
-  content: "## 2026-09-13\n\nNew fact.",
-  expectedRevision: 12,
-  expectedContentHash: "sha256-from-named-read"
-})
-
-hive_context_archive({
-  names: ["auth-decisions"],
-  reason: "Superseded by auth-session-binding; see that file.",
-  expectedRevision: 12,
-  expectedContentHashes: { "auth-decisions": "sha256-from-named-read" }
-})
-```
-
-Omit revision and hash only when creating a missing file. Foragers and reviewers write feature and project context through that hash check. Scout is read-only. Archive is primary-only. Tool availability governs who can call which tool; there is no extra role runtime authorization.
+Replacement, append, and archive require the current revision and the actual SHA-256 from the named read: `expectedRevision` with `expectedContentHash` (`expectedContentHashes`, keyed by name, for archive). Finish every chunk before constructing a whole-document replacement, and preserve revision and hash. Omit revision and hash only when creating a missing file; a durable create needs frontmatter with nonblank `description` and `read_when`, and project documents add accountability `owner` and `review_after`. Foragers and reviewers write feature and project context through that hash check. Scout is read-only. Archive is primary-only. Tool availability governs who can call which tool; there is no extra role runtime authorization.
 
 ## Governance
 
-Project and feature context are separate stores. Feature context follows the implementation lifecycle. Project context needs an accountable owner and review date.
+Project and feature context are separate stores. Feature context follows the implementation lifecycle. Project context needs an accountable owner and review date, which are accountability labels, not authorization or correctness.
 
-Re-review project knowledge against evidence, then whole-document hash-guarded replace/re-date, or archive with a reason and replacement reference. There is no auto-renewal, metadata-only renewal command, auto-promotion, auto-consolidation, or archive on feature completion.
+Re-review project knowledge against evidence before replacing, re-dating, or archiving it. There is no auto-renewal, metadata-only renewal command, auto-promotion, auto-consolidation, or archive on feature completion. Hygiene warnings and `durable.chars` (exact only after a `scanChars` summary scan) are review signals, not admission rejection; thresholds are in the reference. A construction-bound error such as `context_inventory_too_large` is never a partial `complete: true`.
 
 Task reports and `handoff.md` are task records, not managed context. Do not copy report history into context. When a report surfaces reusable knowledge, write that knowledge to durable context deliberately; raw logs belong in evidence context.
 
 Changed project knowledge does not update a running assignment. Newer notes cannot override standing constraints or an approved task contract. Adopting a binding decision requires plan amendment or a new assignment; surface conflicts with the fixed assignment.
 
-## Hygiene, units, ceilings
+## Invalid or pending state
 
-These are review signals, not aggregate admission rejection:
-
-- Feature warnings: strictly above 8 durable files or 40,000 UTF-16 units.
-- Project warnings: strictly above 32 durable files or 160,000 UTF-16 units. Nine project files do not warn.
-
-`durable.bytes` is the stat-byte total. `durable.chars` is an exact UTF-16 count only after an explicit summary `scanChars` management scan; otherwise it is unavailable or stale. Catalog reads and status do not read all bodies for totals. When warnings appear, review counts, due/missing metadata, and metric availability, then call the explicit management tools. Do not auto-consolidate.
-
-Resource ceilings: 10,000 Markdown candidates, 20,000 namespace entries, 64 MiB scanned headers, 8 KiB frontmatter scan, 16 KiB catalog responses, 1 MiB managed write/append, 1,024/4,096 UTF-8 bytes for query/cursor inputs. Exceeding construction bounds returns `context_inventory_too_large`, never a partial `complete: true`. Exact named reads bypass inventory. Overlarge write, query, or catalog-cursor input is `context_input_too_large`; an oversized named-read cursor instead returns `stale_context_cursor`, so restart the named read without a cursor.
-
-## Invalid, pending, and out-of-band repair
-
-`context_index_invalid` and `context_reconciliation_required` block `hive_context_read` catalogs and managed mutations. Error notices are not empty/current catalogs.
-
-Repair is out of band through trusted local editing: quiesce writers, preserve and inspect bytes and known records, correct or restore the index/manifest, then explicitly reconcile the pending marker. Never delete an index to restore classification. Hive does not infer classification, rewrite control files, or retry repairs automatically.
+`context_index_invalid` and `context_reconciliation_required` block `hive_context_read` catalogs and managed mutations. Error notices are not empty/current catalogs. Stop managed mutations and report the exact error with the tool name and inputs. Repairing context control files is separately authorized operator recovery: reading this skill or its reference never authorizes an agent to hand-edit them. Never delete an index to restore classification. Hive does not infer classification, rewrite control files, or retry repairs automatically.
 
 ## Assignments, sessions, compaction
 
@@ -135,9 +66,7 @@ New assignments contain no supporting bodies or catalog snapshots. For bound fea
 
 After compaction, recover by catalog selection and named reads. Keep exact IDs. Do not treat compacted coverage names as evidence. Never replay historical prompt text as a new assignment.
 
-`.hive/sessions.json` is canonical global session truth (OpenCode v2 keeps its own at `.hive/runtime/opencode-v2/sessions.json`; an owner's missing store is never filled from another's). Feature-local `sessions.json` is a projection, never alternate recovery truth. Catalogs are live at the current project root; do not follow a stored former root as catalog truth.
-
-Plugin restart does not continue old live workers. Finish or abandon them first.
+Catalogs are live at the current project root; do not follow a stored former root as catalog truth. Session-store layout and ownership, including that a feature-local `sessions.json` is a projection and never alternate recovery truth, are runtime facts owned by `hive-config`. Plugin restart does not continue old live workers. Finish or abandon them first.
 
 ## Reviews and direct requirements
 

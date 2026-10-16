@@ -308,6 +308,59 @@ describe('prepareNativeHiveSkills - materialization behavior', () => {
     expect(listRelativeFiles(result.materializedPath!).some((file) => file.startsWith('test-driven-development/') || file.startsWith('adversarial-review/'))).toBe(false);
   });
 
+  it('delivers each pointed workflow reference inside its materialized skill directory on both hosts', async () => {
+    // Presence and pointer resolution only: that a consumer selects and reads the reference is shown by the
+    // installed-package wiring run and judged qualitatively, not by this materialization check.
+    const pointed = {
+      'background-delegation': 'board-protocol.md',
+      'dispatching-parallel-agents': 'launch-examples.md',
+      'parallel-exploration': 'research-examples.md',
+      'executing-plans': 'task-milestones.md',
+      'writing-plans': 'verification-planning.md',
+      'context-engineering': 'mutation-and-recovery.md',
+    };
+    for (const host of [OPENCODE_V1_PROFILE, createHostProfile('opencode-v2')]) {
+      const worktree = createTempDir();
+      const result = await prepareNativeHiveSkills({ directory: worktree, worktree, packagedSkillsDir: resolvePackagedSkillsDir(), env: { HOME: worktree }, host });
+      for (const [skill, file] of Object.entries(pointed)) {
+        const dir = path.join(result.materializedPath!, skill);
+        expect(fs.readFileSync(path.join(dir, 'SKILL.md'), 'utf8'), `${host.host}/${skill}`).toContain(`](references/${file})`);
+        const resolved = path.resolve(dir, 'references', file);
+        expect(resolved.startsWith(dir + path.sep), `${host.host}/${skill}`).toBe(true);
+        expect(fs.readFileSync(resolved, 'utf8'), `${host.host}/${skill}/${file}`).not.toContain('hive-host');
+      }
+    }
+  });
+
+  it('leaves no packaged reference behind a same-name override and never selects a stale generated copy', async () => {
+    const worktree = createTempDir();
+    const home = path.join(worktree, 'home');
+    const configDir = path.join(home, '.config/opencode');
+    const native = createNativeSkill(home, '.agents/skills/executing-plans/SKILL.md', 'executing-plans');
+    const staleDir = path.join(configDir, 'agent-hive', 'generated', 'opencode-skills', 'stale-hash');
+    const staleReference = createSkillFile(staleDir, 'executing-plans/references/task-milestones.md', '# Stale copy\n');
+    createSkillFile(staleDir, 'executing-plans/SKILL.md', '---\nname: executing-plans\ndescription: Stale copy\n---\n# Stale\n');
+
+    const result = await prepareNativeHiveSkills({
+      directory: worktree,
+      worktree,
+      packagedSkillsDir: resolvePackagedSkillsDir(),
+      env: { HOME: home, OPENCODE_CONFIG_DIR: configDir, OPENCODE_DISABLE_EXTERNAL_SKILLS: '0' },
+    });
+
+    // The user's skill is the only executing-plans in play, and it carries no reference.
+    expect(result.nativeSkillsByName.has('executing-plans')).toBe(true);
+    expect(result.skillsByName.has('executing-plans')).toBe(false);
+    expect(fs.existsSync(path.join(path.dirname(native), 'references'))).toBe(false);
+    expect(listRelativeFiles(result.materializedPath!).some((file) => file.startsWith('executing-plans/'))).toBe(false);
+    // Other packaged skills still ship their references, so the override affects only the overridden name.
+    expect(fs.existsSync(path.join(result.materializedPath!, 'context-engineering', 'references', 'mutation-and-recovery.md'))).toBe(true);
+    // The stale generated copy is neither a skill path nor modified or pruned.
+    expect(result.skillPaths).not.toContain(staleDir);
+    expect(result.skillPaths.every((skillPath) => !skillPath.startsWith(staleDir))).toBe(true);
+    expect(fs.readFileSync(staleReference, 'utf8')).toBe('# Stale copy\n');
+  });
+
   it('copies whole eligible skill directories, including support files', async () => {
     const worktree = createTempDir();
     const directory = worktree;

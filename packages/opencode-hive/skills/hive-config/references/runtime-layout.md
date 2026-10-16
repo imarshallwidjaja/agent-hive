@@ -60,7 +60,7 @@ Lock files sit beside the file they guard as `<file>.lock` and hold the holder's
 - Feature context: the feature directory's `context/`. Project context: `.hive/context/`.
 - `index.json` carries `schemaVersion: 1`, a monotonic `revision`, and per-name `kind` (`durable` or `evidence`).
 - `overview`, `draft`, and `execution-decisions` are reserved names, outside the durable catalog.
-- `.managed-mutation-pending.json` in a context directory means an interrupted publication. Context tools then return `context_reconciliation_required`; recovery is an operator procedure.
+- `.managed-mutation-pending.json` in a context directory means an interrupted publication. Context tools then return `context_reconciliation_required`; recovery is a separately authorized operator procedure (`context-engineering` holds it), and an agent that meets the error stops and reports it.
 - Read and mutate through `hive_context_*`; the `context-engineering` skill owns how.
 
 ## Worktrees and branches
@@ -116,7 +116,7 @@ So read the session index directly, with a shell or file read, before any sessio
 <!-- hive-host opencode-v2 -->
 The OpenCode v2 background board records background `subagent()` launches in its own store (`schemaVersion: 1`, `jobs[]` with native `taskId`, `sessionId`, `alias`, `runtimeState`).
 <!-- /hive-host -->
-It observes the originating parent and call, not feature or task status, and never tracks foreground calls. Archive and cancel acknowledgements do not prove a worker stopped. Agents never edit it; `background-delegation` owns the protocol.
+It observes the originating parent and call, not feature or task status, and never tracks foreground calls. Archive and cancel acknowledgements do not prove a worker stopped. Agents never edit it; `background-delegation` owns the protocol and the meaning of the board's status fields.
 
 ## Integrity signals
 

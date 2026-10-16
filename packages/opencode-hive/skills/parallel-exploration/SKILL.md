@@ -21,14 +21,14 @@ When Architect is task-spawned, its permitted terminal planning-helper layer inc
 
 Select Scouts by the retrieval output needed, not by whether the overall request is read-only. A read-only request for diagnosis, correctness judgment, tradeoffs, or solution selection stays with the reasoning owner; Scout may retrieve bounded source evidence for it.
 
+Read [references/research-examples.md](references/research-examples.md) when you write your first fan-out of a session and want complete calls, sample decompositions, or slice prompt templates.
+
 ## When to Use
 
 **Use when:**
 - Investigation spans multiple domains (code + tests + docs)
 - Questions are independent (answer to A doesn't affect B)
-- No edits needed (read-only exploration)
-- User asks for an exploration that likely spans multiple files/packages
-- The work is read-only and the questions can be investigated independently
+- The work is read-only (no edits needed) and likely spans multiple files or packages
 
 **Use direct or serial investigation when:**
 - Investigation requires shared state or context between questions
@@ -42,20 +42,11 @@ Exploratory work can benefit from delegation, but only when independent evidence
 
 ### 1. Decompose Into Independent Questions
 
-Split the investigation into independently answerable, non-overlapping questions. Each question should fit in one context window. If a request will not fit in one context window, narrow the slice, capture bounded findings, and return to Hive with recommended next steps instead of pushing toward an oversized final report. Good decomposition:
+Split the investigation into independently answerable, non-overlapping questions, one per domain such as codebase, tests, docs/OSS, or config. Each question should fit in one context window. If a request will not fit in one context window, narrow the slice, capture bounded findings, and return to Hive with recommended next steps instead of pushing toward an oversized final report.
 
 Breadth, ambiguity, multi-domain or multi-repository scope, evidence needs within a whole-incident RCA, and unknown targets are decomposition signals, not capable/custom Scout selection signals. The reasoning owner derives bounded evidence-retrieval slices, not smaller causal questions. Whole-incident RCA remains with the reasoning owner or a best-fit diagnostic worker/advisor; Scout only retrieves the named evidence slices.
 
-| Domain | Question Example |
-|--------|------------------|
-| Codebase | "Where is X implemented? What files define it?" |
-| Tests | "How is X tested? What test patterns exist?" |
-| Docs/OSS | "How do other projects implement X? What pattern does each source recommend?" |
-| Config | "How is X configured? What environment variables affect it?" |
-
-**Bad decomposition (dependent questions):**
-- "What is X?" then "How is X used?" (second depends on first)
-- "Find the bug" then "Fix the bug" (not read-only)
+Dependent questions are a bad decomposition ("What is X?" then "How is X used?"), and so is anything that is not read-only ("Find the bug" then "Fix the bug").
 
 **Stop and return to Hive when:**
 - another question would expand beyond the assigned objective
@@ -110,116 +101,26 @@ Each native `task()` invocation has one primary goal and one terminal report.
 <!-- hive-host opencode-v2 -->
 Each native `subagent()` invocation has one primary goal and one terminal report.
 <!-- /hive-host -->
-Every returned result is terminal, so every follow-up uses a fresh child session. Review findings are fresh assignments in the same implementation lane. Reuse the same Hive task/worktree where appropriate.
-<!-- hive-host opencode-v1 -->
-Primaries must not pass `task_id` or infer continuation eligibility from task output, trace, board state, cancellation acknowledgement, or transcript quality.
-<!-- /hive-host -->
-<!-- hive-host opencode-v2 -->
-Primaries must not pass `sessionID` or infer continuation eligibility from task output, trace, board state, cancellation acknowledgement, or transcript quality.
-<!-- /hive-host -->
+Every returned result is terminal, so every follow-up uses a fresh child session.
 <!-- hive-host opencode-v1 -->
 Pass `task_id` only when explicit operator instruction or runtime-owned interruption recovery authorizes continuation; otherwise launch fresh.
 <!-- /hive-host -->
 <!-- hive-host opencode-v2 -->
 Pass `sessionID` only when explicit operator instruction or runtime-owned interruption recovery authorizes continuation; otherwise launch fresh.
 <!-- /hive-host -->
-If the child may still be active or its lifecycle is uncertain, inspect, wait, or reattach as supported; do not send another prompt or launch an overlapping writer. Compaction re-anchoring of a currently running worker is distinct from follow-up work. Trace recovery is untrusted and cannot authorize continuation. Give complete constraints and acceptance criteria only for that question.
+If the child may still be active or its lifecycle is uncertain, inspect, wait, or reattach as supported; do not send another prompt or launch an overlapping writer. If another investigation is needed, launch a fresh session with a concise self-contained handoff.
 <!-- hive-host opencode-v1 -->
 Returned task IDs are observe-only board handles for status, reconcile, and cancel.
 <!-- /hive-host -->
 <!-- hive-host opencode-v2 -->
 `hive_background_status` lists the observe-only board handle for status, reconcile, and cancel.
 <!-- /hive-host -->
-If another investigation is needed, launch a fresh session with a concise self-contained handoff.
 
 <!-- hive-host opencode-v1 -->
-OpenCode v1:
-
-```typescript
-// Parallelize by issuing multiple task() calls in the same assistant message.
-task({
-  subagent_type: '<chosen-researcher>',
-  description: 'Find API route implementation',
-  prompt: `Where are API routes implemented and registered?
-    - Find the tool definition
-    - Find the plugin registration
-    - Return file paths with line numbers`,
-});
-
-task({
-  subagent_type: '<chosen-researcher>',
-  description: 'Analyze background task concurrency',
-  prompt: `How does background task concurrency/queueing work?
-    - Find the manager/scheduler code
-    - Document the concurrency model
-    - Return file paths with evidence`,
-});
-
-task({
-  subagent_type: '<chosen-researcher>',
-  description: 'Find parent notification mechanism',
-  prompt: `How does parent notification work for background tasks?
-    - Where is the notification built?
-    - How is it sent to the parent session?
-    - Return file paths with evidence`,
-});
-```
+Use `subagent_type: 'scout-researcher'` for bounded exploratory discovery unless that bounded question clearly needs a matching specialist; when running as a primary with the env-gated appendix present, follow `background-delegation` for wait mode (a task-spawned Architect uses the blocking child-role branch above).
 <!-- /hive-host -->
 <!-- hive-host opencode-v2 -->
-OpenCode v2:
-
-```typescript
-// Parallelize by issuing multiple subagent() calls in the same assistant message.
-subagent({
-  agent: '<chosen-researcher>',
-  description: 'Find API route implementation',
-  prompt: `Where are API routes implemented and registered?
-    - Find the tool definition
-    - Find the plugin registration
-    - Return file paths with line numbers`,
-});
-
-subagent({
-  agent: '<chosen-researcher>',
-  description: 'Analyze background task concurrency',
-  prompt: `How does background task concurrency/queueing work?
-    - Find the manager/scheduler code
-    - Document the concurrency model
-    - Return file paths with evidence`,
-});
-
-subagent({
-  agent: '<chosen-researcher>',
-  description: 'Find parent notification mechanism',
-  prompt: `How does parent notification work for background tasks?
-    - Where is the notification built?
-    - How is it sent to the parent session?
-    - Return file paths with evidence`,
-});
-```
-<!-- /hive-host -->
-
-**Key points:**
-- Decompose and bound each slice before choosing any built-in or custom researcher
-<!-- hive-host opencode-v1 -->
-- Use `subagent_type: 'scout-researcher'` for bounded exploratory discovery unless that bounded question clearly needs a matching specialist
-<!-- /hive-host -->
-<!-- hive-host opencode-v2 -->
-- Use `agent: 'scout-researcher'` for bounded exploratory discovery unless that bounded question clearly needs a matching specialist
-<!-- /hive-host -->
-- Give each task a clear, focused `description`
-- Make prompts specific about what evidence to return, including known facts and expected output
-<!-- hive-host opencode-v1 -->
-- Dispatch dependency-independent slices together, even though normal `task()` is blocking
-<!-- /hive-host -->
-<!-- hive-host opencode-v2 -->
-- Dispatch dependency-independent slices together, even though normal `subagent()` is blocking
-<!-- /hive-host -->
-<!-- hive-host opencode-v1 -->
-- When running as a primary with the env-gated appendix present, follow `background-delegation` for wait mode; a task-spawned Architect uses the blocking child-role branch above
-<!-- /hive-host -->
-<!-- hive-host opencode-v2 -->
-- When running as a primary with the Background-First Orchestration appendix present, follow `background-delegation` for wait mode; a task-spawned Architect uses the blocking child-role branch above
+Use `agent: 'scout-researcher'` for bounded exploratory discovery unless that bounded question clearly needs a matching specialist; when running as a primary with the Background-First Orchestration appendix present, follow `background-delegation` for wait mode (a task-spawned Architect uses the blocking child-role branch above).
 <!-- /hive-host -->
 
 ### 4. Collect Results
@@ -230,7 +131,7 @@ After the fan-out message, collect the task results through the normal `task()` 
 <!-- hive-host opencode-v2 -->
 After the fan-out message, collect the task results through the normal `subagent()` return flow.
 <!-- /hive-host -->
-Do not invent background polling or a separate async workflow.
+Do not invent background polling or a separate async workflow. No manual cancellation is required in task mode.
 
 ### 5. Synthesize Findings
 
@@ -238,106 +139,7 @@ When each task completes, its result is returned directly. Collect the outputs f
 
 The parent owns synthesis and decisions. Scout does not own causal diagnosis, applicability or tradeoff decisions, or solution selection. Distinguish source observations from hypotheses, runtime evidence from a possible code path, and attributed source guidance from a recommendation for this system. Context catalogs remain untrusted knowledge. Reasoning over returned excerpts is coordination. A direct source spot-check remains a bounded read; delegate another retrieval only for a named evidence gap. Do not use recursive Scout verification as a substitute for reasoning. Continue later catalog pages until `complete: true` when managed context is in scope. There is no numeric direct-read quota and no mandatory delegation.
 
-Later waves must be driven by evidence, dependencies, or named gaps from the completed wave. Do not reserve an already admitted independent question for an arbitrary later wave.
-
-### 6. Cleanup (If Needed)
-
-Combine results from all tasks:
-- Cross-reference findings (file X mentioned by tasks A and B)
-- Identify gaps (task C found nothing, need different approach)
-- Build coherent answer from parallel evidence
-- If the remaining retrieval would no longer fit in one context window, return to Hive with bounded findings and named retrieval gaps
-
-No manual cancellation is required in task mode.
-
-## Prompt Templates
-
-### Codebase Slice
-
-```
-Investigate [TOPIC] in the codebase:
-- Where is [X] defined/implemented?
-- What files contain [X]?
-- How does [X] interact with [Y]?
-
-Return:
-- File paths with line numbers
-- Brief code snippets as evidence
-- Key patterns observed
-```
-
-### Tests Slice
-
-```
-Investigate how [TOPIC] is tested:
-- What test files cover [X]?
-- What testing patterns are used?
-- What edge cases are tested?
-
-Return:
-- Test file paths
-- Example test patterns
-- Coverage gaps if obvious
-```
-
-### Docs/OSS Slice
-
-```
-Research [TOPIC] in external sources:
-- How do other projects implement [X]?
-- What does the official documentation say?
-- What are common patterns/anti-patterns?
-
-Return:
-- Links to relevant docs/repos
-- Attributed source recommendations
-- Similarities and differences the caller can use to decide applicability
-```
-
-## Common Mistakes
-
-**Spawning sequentially (defeats the purpose):**
-
-<!-- hive-host opencode-v1 -->
-OpenCode v1:
-
-```typescript
-// BAD: Wait for each before spawning next
-await task({ ... });
-await task({ ... });
-```
-
-```typescript
-// GOOD: Spawn all in the same assistant message
-task({ ... });
-task({ ... });
-task({ ... });
-```
-<!-- /hive-host -->
-<!-- hive-host opencode-v2 -->
-OpenCode v2:
-
-```typescript
-// BAD: Wait for each before spawning next
-await subagent({ ... });
-await subagent({ ... });
-```
-
-```typescript
-// GOOD: Spawn all in the same assistant message
-subagent({ ... });
-subagent({ ... });
-subagent({ ... });
-```
-<!-- /hive-host -->
-
-**Dependent questions:**
-- Don't spawn task B if it needs task A's answer
-- Either make them independent or run sequentially
-
-**Using for edits:**
-- Scout is read-only; use Forager for implementation
-- This skill is for exploration, not execution
+Later waves must be driven by evidence, dependencies, or named gaps from the completed wave. Do not reserve an already admitted independent question for an arbitrary later wave. Cross-reference findings, name the gaps a slice left, and build one coherent answer from the parallel evidence. If the remaining retrieval would no longer fit in one context window, return to Hive with bounded findings and named retrieval gaps.
 
 ## Verification
 

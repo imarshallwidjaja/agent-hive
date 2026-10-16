@@ -38,6 +38,8 @@ If the child may still be active or its lifecycle is uncertain, inspect, wait, o
 - **Destination checkpoints:** Put the primary-owned inspected destination path/ref/commit in every writing handoff. Long workers check it at coherent committed milestones and terminal return. Relevant or uncertain drift returns control to the primary for same-worktree reconciliation; it does not trigger an overlapping replacement writer.
 - **Read-only fan-out:** Scouts and reviewers do not write code and can run concurrently anywhere.
 
+Read [references/launch-examples.md](references/launch-examples.md) when you write your first launch of a session and want complete calls, need the ad-hoc placement check before `hive_adhoc_worktree_create`, or write an assignment prompt.
+
 When `## Background-First Orchestration` is present, load `background-delegation` for scheduler and wait-mode decisions. This skill covers task independence, scope, and prompt quality; the background skill governs whether each independent lane runs blocking or background.
 
 ## Workflow Mode
@@ -79,9 +81,9 @@ digraph when_to_use {
 - No shared state between investigations
 
 **Don't use when:**
-- Failures are related (fix one might fix others)
-- Need to understand full system state
-- Agents would interfere with each other
+- Failures are related (fix one might fix others) or need full system state to understand
+- You don't yet know what is broken (exploratory debugging)
+- Agents would interfere with each other: editing the same files or using the same resources
 
 ## The Pattern
 
@@ -104,62 +106,22 @@ Each agent gets:
 - **Constraints:** Don't change other code
 - **Expected output:** Summary of what you found and fixed
 
-Apply the native task contract above to every launch. Give complete constraints and acceptance criteria only for that goal. Point at catalog names and IDs rather than pasting every context body.
+Apply the native task contract above to every launch. Give complete constraints and acceptance criteria only for that goal. Each prompt is a context packet: objective and done criteria, known findings and file or reference pointers, prior failures or attempts, constraints, non-goals, ownership boundaries, expected output, verification or return requirements, and how to find missing context. Point at catalog names and IDs rather than pasting every context body.
 <!-- hive-host opencode-v1 -->
-Returned task IDs are also observe-only board handles for status, reconcile, and cancel.
+Put the complete Forager packet directly in the unchanged native `task.prompt`; ordinary Scout, advisor, and reviewer packets also go in `task.prompt`. Returned task IDs are also observe-only board handles for status, reconcile, and cancel.
 <!-- /hive-host -->
 <!-- hive-host opencode-v2 -->
-`hive_background_status` lists the observe-only board handle for status, reconcile, and cancel.
+Put the complete Forager packet directly in the unchanged native `subagent.prompt`; ordinary Scout, advisor, and reviewer packets also go in `subagent.prompt`. `hive_background_status` lists the observe-only board handle for status, reconcile, and cancel.
 <!-- /hive-host -->
+At dispatch, the runtime appends a route snapshot (project root and selected feature) plus session and feature constraints.
 
 In feature-task mode, one implementation assignment normally maps to one numbered task; an independently verifiable new deliverable requires a DAG amendment or append-only manual task. In ad-hoc mode, use multiple fresh one-goal launches with disjoint path ownership or sequence overlapping writers.
 
 ### 3. Dispatch in Parallel
 
-The example below is feature-task mode. In ad-hoc mode, consume the ready wave from `orchestrating-ad-hoc-work`.
+In feature-task mode, create each Forager worktree with `hive_worktree_create`, passing the feature explicitly, and capture the destination from its inspection-shaped result; later checkpoints remain required. Start each assignment's first non-empty line with `Hive task: <task-folder>`. Independent Forager worktrees may be created and dispatched under one parent. In ad-hoc mode, consume the ready wave from `orchestrating-ad-hoc-work`.
 
-<!-- hive-host opencode-v1 -->
-OpenCode v1:
-
-```typescript
-// Gate-open only: use background: true when independent foreground work can continue.
-// Issue independent creates together; capture each destination from its create result.
-hive_worktree_create({ feature: "feature-name", task: "01-fix-abort-tests" })
-hive_worktree_create({ feature: "feature-name", task: "02-fix-batch-tests" })
-// When the route is unset/different or matching selection evidence is missing/uncertain:
-hive_feature_select({ feature: "feature-name" })
-// Issue independent task calls together; reuse this selection for both.
-task({ subagent_type: "forager-worker", description: "Fix abort tests", prompt: "Hive task: 01-fix-abort-tests\n\nImplement and commit assigned changes; return sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present.", background: true })
-task({ subagent_type: "forager-worker", description: "Fix batch tests", prompt: "Hive task: 02-fix-batch-tests\n\nImplement and commit assigned changes; return sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present.", background: true })
-
-// Blocking alternative, including every gate-closed session:
-hive_worktree_create({ feature: "feature-name", task: "03-fix-cleanup-tests" })
-// Capture the create result; reuse only a visible same-feature selection (see below).
-await task({ subagent_type: "forager-worker", description: "Fix cleanup tests", prompt: "Hive task: 03-fix-cleanup-tests\n\nImplement and commit assigned changes; return sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present." })
-```
-<!-- /hive-host -->
-<!-- hive-host opencode-v2 -->
-OpenCode v2:
-
-```typescript
-// Gate-open only: use background: true when independent foreground work can continue.
-// Issue independent creates together; capture each destination from its create result.
-hive_worktree_create({ feature: "feature-name", task: "01-fix-abort-tests" })
-hive_worktree_create({ feature: "feature-name", task: "02-fix-batch-tests" })
-// When the route is unset/different or matching selection evidence is missing/uncertain:
-hive_feature_select({ feature: "feature-name" })
-// Issue independent task calls together; reuse this selection for both.
-subagent({ agent: "forager-worker", description: "Fix abort tests", prompt: "Hive task: 01-fix-abort-tests\n\nImplement and commit assigned changes; return sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present.", background: true })
-subagent({ agent: "forager-worker", description: "Fix batch tests", prompt: "Hive task: 02-fix-batch-tests\n\nImplement and commit assigned changes; return sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present.", background: true })
-
-// Blocking alternative, including every gate-closed session:
-hive_worktree_create({ feature: "feature-name", task: "03-fix-cleanup-tests" })
-// Capture the create result; reuse only a visible same-feature selection (see below).
-await subagent({ agent: "forager-worker", description: "Fix cleanup tests", prompt: "Hive task: 03-fix-cleanup-tests\n\nImplement and commit assigned changes; return sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present." })
-```
-<!-- /hive-host -->
-
-Independent Forager worktrees may be created and dispatched under one parent. In feature-task mode, pass the feature explicitly to `hive_worktree_create` and capture the destination from its inspection-shaped result; later checkpoints remain required.
+Gate-open sessions may add `background: true` when independent foreground work can continue; the blocking alternative serves every gate-closed session.
 <!-- hive-host opencode-v1 -->
 Before native `task()` dispatch, call `hive_feature_select` only when the selected route is unset or differs from the dispatch target, or the selection evidence below is missing or uncertain.
 <!-- /hive-host -->
@@ -189,23 +151,6 @@ Native helpers keep only their bounded operational permissions. Unknown targets 
 See `background-delegation` for board recovery.
 For read-only research, use `parallel-exploration`; this skill owns writing/change and execution dispatch.
 
-<!-- hive-host opencode-v1 -->
-OpenCode v1:
-
-```typescript
-task({ subagent_type: '<chosen-advisor-or-reviewer>', prompt: 'Diagnose failure A and report without edits' })
-task({ subagent_type: '<chosen-advisor-or-reviewer>', prompt: 'Diagnose failure B and report without edits' })
-```
-<!-- /hive-host -->
-<!-- hive-host opencode-v2 -->
-OpenCode v2:
-
-```typescript
-subagent({ agent: '<chosen-advisor-or-reviewer>', prompt: 'Diagnose failure A and report without edits' })
-subagent({ agent: '<chosen-advisor-or-reviewer>', prompt: 'Diagnose failure B and report without edits' })
-```
-<!-- /hive-host -->
-
 Choose the best-fit available descriptor for the requested output. Scout is for bounded source retrieval, not causal diagnosis or solution selection. A Forager diagnosis-only lane reports evidence, hypotheses tested and untested, a supported conclusion or unresolved status, and options when asked; it must not fix, edit, commit, or perform destructive reproduction unless the mission separately authorizes implementation in appropriate isolation.
 
 ### 4. Review and Integrate
@@ -223,47 +168,7 @@ Good agent prompts are:
 2. **Self-contained** - All context needed to understand the problem, as pointers and known facts, not a dump of every note
 3. **Specific about output** - What should the agent return?
 
-```markdown
-Fix the 3 failing tests in src/agents/agent-tool-abort.test.ts:
-
-1. "should abort tool with partial output capture" - expects 'interrupted at' in message
-2. "should handle mixed completed and aborted tools" - fast tool aborted instead of completed
-3. "should properly track pendingToolCount" - expects 3 results but gets 0
-
-These are timing/race condition issues. Your task:
-
-1. Read the test file and understand what each test verifies
-2. Identify root cause - timing issues or actual bugs?
-3. Fix by:
-   - Replacing arbitrary timeouts with event-based waiting
-   - Fixing bugs in abort implementation if found
-   - Adjusting test expectations if testing changed behavior
-
-Do NOT just increase timeouts - find the real issue.
-
-Return: Summary of what you found and what you fixed.
-```
-
-## Common Mistakes
-
-**❌ Too broad:** "Fix all the tests" - agent gets lost
-**✅ Specific:** "Fix agent-tool-abort.test.ts" - focused scope
-
-**❌ No context:** "Fix the race condition" - agent doesn't know where
-**✅ Context:** Paste the error messages and test names
-
-**❌ No constraints:** Agent might refactor everything
-**✅ Constraints:** "Do NOT change production code" or "Fix tests only"
-
-**❌ Vague output:** "Fix it" - you don't know what changed
-**✅ Specific:** "Return summary of root cause and changes"
-
-## When NOT to Use
-
-**Related failures:** Fixing one might fix others - investigate together first
-**Need full context:** Understanding requires seeing entire system
-**Exploratory debugging:** You don't know what's broken yet
-**Shared state:** Agents would interfere (editing same files, using same resources)
+The reference has a worked prompt and the contrasts between weak and strong versions.
 
 ## Method selection
 

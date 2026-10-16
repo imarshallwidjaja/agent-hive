@@ -144,9 +144,12 @@ describe('HIVE_COMMANDS', () => {
         "only when this session's most recent route-changing call visible in context is `hive_feature_select` for that same feature",
         'no later explicit-null or other-feature selection',
         'When that evidence is not visible (for example after compaction or a summary, at session start, or in mixed ad-hoc/feature batches), or you are uncertain, call `hive_feature_select` for the dispatch target',
-        'load executing-plans and apply its Target Task Milestones procedure before dispatch and on resumption',
+        'load executing-plans, apply its Target Task Milestones procedure, and read its references/task-milestones.md section "Executing requested milestones" before dispatch and on resumption',
         'including an explicit companion suffix',
         'Preserve the exact feature, target, and explicitly named companions from the suggested prompt',
+        // A bare build agent may lack the skill or its reference; the command says what to do then.
+        'dispatch no milestone work: report the exact feature, target, and companions requested, the status you could read, and that the procedure was unavailable',
+        'do not infer scope from task numbers or search generated skill caches',
       ];
       for (const obligation of once) expect(count(output, obligation), obligation).toBe(1);
       expect(output).not.toContain('Retry or resume native workers directly');
@@ -183,28 +186,16 @@ describe('HIVE_COMMANDS', () => {
     expect(output).toContain('status: null integrity entries need inspection and repair, never execution');
     expect(output).toContain('synced stored dependsOn graph');
     expect(output).toContain('resolved implicit sequential shorthand');
-    expect(output).toContain('meaningful outcome or join tasks');
     expect(output).toContain('own dependsOn recursively');
     expect(output).toContain('exact feature name and task folder/title, not numerical A-to-B ranges');
     expect(output).toContain('Require a table under ## Recommended Execution Order');
     expect(output).toContain('exact target task number/folder/title');
-    expect(output).toContain('expected observable behavior at that stopping point');
+    expect(output).toContain('expected observable behavior at that stopping point grounded in approved plan outcomes');
     expect(output).toContain('projected NEW unfinished task count');
     expect(output).toContain('actual task folders counted (inline or bounded per-row accompanying lists)');
-    expect(output).toContain('Ground behavior in approved plan outcomes/acceptance criteria');
-    expect(output).toContain('what the operator or system can do and the relevant verifiable signal');
-    expect(output).toContain('citing the source task or plan section rather than subsystem/topic labels');
-    expect(output).toContain('expected capability, not proven readiness before execution');
-    expect(output).toContain('do not invent capabilities or evidence');
     expect(output).toContain('Companions are explicit requested scope, not dependsOn edges');
-    expect(output).toContain('exact folders/titles and their source justification; show companions: none when unnecessary');
-    expect(output).toContain('Distinguish target/prerequisites from named companions and their prerequisites');
-    expect(output).toContain('U_i is the current unfinished union of the prerequisite closures of suggested target i and its explicitly listed companions');
-    expect(output).toContain('including every requested root; traversal stops at done tasks');
-    expect(output).toContain('First projected work is U_1');
-    expect(output).toContain('U_i minus the union of preceding suggested U_j');
-    expect(output).toContain('Deduplicate shared prerequisites and count every requested root unless already covered or done');
-    expect(output).toContain('Show the exact task folders in each counted set');
+    expect(output).toContain('showing companions: none when unnecessary');
+    expect(output).toContain('every counted set shows its exact task folders');
     expect(output).toContain('never calculate counts from numerical intervals');
     expect(output).toContain('cancelled or missing roots/prerequisites and invalid graphs as blockers');
     expect(output).toContain('projected incremental counts assuming prior listed milestones completed');
@@ -212,9 +203,12 @@ describe('HIVE_COMMANDS', () => {
     expect(output).toContain('omitted milestones or changed order can change counts');
     expect(output).toContain('Execution must re-read current status');
     expect(output).toContain('recompute scope on every request');
+    // The calculation and its worked cases are delegated to the disclosed reference, with the command's own stop outcome.
+    expect(output).toContain('load executing-plans and read its references/task-milestones.md section "Suggesting milestones"');
+    expect(output).toContain('stop after the status readback: report the approval and sync outcomes exactly as persisted, say that the milestone projection was not produced');
+    expect(output).toContain('do not infer scope from task numbers or search generated skill caches');
+    expect(output).not.toContain('U_i');
     expect(output).toContain('In ## Session Strategy, link copy-paste run/continue prompts to the table targets without duplicating the detailed table');
-    expect(output).toContain('suggest separate branch milestones');
-    expect(output).toContain('Never fabricate dependencies');
     expect(output).toContain('Run feature "<feature>" until task "<task-folder>" (<task-title>) is complete');
     expect(output).toContain('Continue feature "<feature>" until task "<next-task-folder>" (<next-task-title>) is done');
     expect(output).toContain('Also complete companion task "<companion-folder>" (<companion-title>) before stopping');
@@ -224,6 +218,40 @@ describe('HIVE_COMMANDS', () => {
     expect(output).toContain('excludes unrelated and descendant tasks');
     expect(output).toContain('terminal verification handoff in Session Strategy with the concrete feature name: Run final verification for feature "<feature>" and complete it only after the required checks pass');
     expect(output).toContain('a separate continuation after no unfinished feature tasks remain, routed to executing-plans Step 6 and the existing full-feature verification/completion procedure, carrying deferred checks and applicable cleanup');
+  });
+
+  it('keeps approval authority and the honest stop in the milestone commands when the reference is unavailable', () => {
+    // The commands run under a native build agent that may lack executing-plans or its references (disabled or
+    // overridden skill, stale cache). Their own text must stop projection or dispatch without guessing from numbering.
+    for (const host of [OPENCODE_V1_PROFILE, createHostProfile('opencode-v2'), createHostProfile('opencode-v2', { readTransport: 'direct' })]) {
+      const commands = buildHiveCommandMap(hiveCommandRenderers, () => ({
+        agentMode: 'unified', host, backgroundGuidance: { available: false }, council: {} as never, agents: {},
+        dashReviewLanes: [], vulnerabilityReviewLanes: [],
+      }));
+      const approve = commands['approve-sync-plan'].run('');
+      const start = commands['start-execution'].run('');
+      // approve-sync keeps its own authority, outcomes and copyable forms, whatever the skill provides.
+      for (const kept of [
+        'hive_plan_approve({ feature, expectedRevision, sync: true })',
+        'approvalPersisted',
+        'retry hive_tasks_sync alone',
+        'projected incremental counts assuming prior listed milestones completed',
+        'Run feature "<feature>" until task "<task-folder>" (<task-title>) is complete',
+        'Continue feature "<feature>" until task "<next-task-folder>" (<next-task-title>) is done',
+        'Also complete companion task "<companion-folder>" (<companion-title>) before stopping',
+        'Run final verification for feature "<feature>" and complete it only after the required checks pass',
+      ]) expect(approve, kept).toContain(kept);
+      const readback = approve.indexOf('Then read back status and its single top-level tasks list');
+      const loadReference = approve.indexOf('load executing-plans and read its references/task-milestones.md');
+      expect(readback).toBeGreaterThanOrEqual(0);
+      expect(loadReference).toBeGreaterThan(readback);
+      expect(approve).toContain('report the approval and sync outcomes exactly as persisted');
+      expect(start).toContain('dispatch no milestone work');
+      for (const output of [approve, start]) {
+        expect(output).toContain('overridden without its references');
+        expect(output).not.toMatch(/generated\/opencode-skills|\/home\/|\.config\/opencode/);
+      }
+    }
   });
 
   it('keeps dash-review steering and ordered challenge in the command handoff', () => {

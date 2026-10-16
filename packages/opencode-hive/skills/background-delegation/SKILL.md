@@ -58,72 +58,24 @@ When Architect is task-spawned, use blocking `subagent()` calls for its one term
 <!-- /hive-host -->
 Emit independent permitted calls together, then wait for their results. Background board tools and primary-control operations are denied in children; return board/control requests and parent-owned lifecycle decisions with known identities to the parent. Trace/evidence investigation may go directly to Helper, which remains read-only and terminal. Keep the inherited feature route and use explicit feature arguments for planning. This branch takes precedence over an inherited Background-First Orchestration heading.
 
-For Hive Builder or unified Hive ad-hoc work, `orchestrating-ad-hoc-work` supplies the already-defined lanes and owns lane-level recovery and integration. This skill owns background observation, reconciliation, cancellation, and wait-mode protocol, then returns those outcomes to the ad-hoc workflow.
+For Hive Builder or unified Hive ad-hoc work, `orchestrating-ad-hoc-work` supplies the already-defined lanes and owns lane-level recovery, integration, and verification state. This skill owns background observation, reconciliation, cancellation, and wait-mode protocol, then returns those outcomes to the ad-hoc workflow. For ad-hoc work, consume the lane boundaries and ready wave from `orchestrating-ad-hoc-work`; do not redefine them here. `dispatching-parallel-agents` owns launch mechanics and writer isolation.
 
-## Direct vs Delegated Work
+## Scheduling by Delegation Kind
 
-Default to delegating implementation/test work and non-trivial verification actions. The primary agent is the scheduler, not the default implementer.
+Choose direct work, delegation, or a worktree from the situation. There is no exact-one-read or exact-one-write quota. The cheap direct fix is one small, local, immediately verified integration fix. Direct checkout work is unmanaged OpenCode work, not a Hive worktree.
 
-Choose direct work, delegation, or a worktree from the situation. There is no exact-one-read or exact-one-write quota. The cheap direct fix is one small, local, immediately verified integration fix.
+Read-only exploration and review lanes are the natural background candidates, and their verdicts can gate downstream decisions. Writing, change, and execution lanes are managed lanes: the owning workflow defines their boundaries, dependencies, verification, and integration, and this skill only chooses their wait mode. Prefer targeted tasks over broad ambiguous ones. The smallest meaningful delegation unit is one independently answerable question or one primary goal with one owner, one expected output, and one verification/return contract. Independently verifiable new work in feature-task mode needs a manual task or plan amendment first.
+
+## Launch Safety
+
+Every returned result is terminal. Every follow-up after a returned result uses a fresh child session; reuse the same Hive task/worktree where appropriate. A second patch/test loop, behavior-contract change, or broadened scope is a fresh native assignment.
 <!-- hive-host opencode-v1 -->
-A second patch/test loop, behavior-contract change, or broadened scope should be delegated as a fresh native assignment; only explicit operator or runtime-owned interruption recovery in the native task contract may pass `task_id`.
+Pass `task_id` only when an explicit operator instruction or explicit runtime-owned interruption-recovery mechanism authorizes continuation; otherwise launch fresh. Do not infer continuation eligibility from task output, `hive_task_trace`, `idle_and_closed`, board state, cancellation acknowledgement, or transcript quality.
 <!-- /hive-host -->
 <!-- hive-host opencode-v2 -->
-A second patch/test loop, behavior-contract change, or broadened scope should be delegated as a fresh native assignment; only explicit operator or runtime-owned interruption recovery in the native task contract may pass `sessionID`.
+Pass `sessionID` only when an explicit operator instruction or explicit runtime-owned interruption-recovery mechanism authorizes continuation; otherwise launch fresh. Do not infer continuation eligibility from task output, `hive_task_trace`, `idle_and_closed`, board state, cancellation acknowledgement, or transcript quality.
 <!-- /hive-host -->
-In feature-task mode, independently verifiable new work requires a manual task or plan amendment.
-
-Direct checkout work is unmanaged OpenCode work, not a Hive worktree.
-
-<!-- hive-host opencode-v1 -->
-A rare native `general` exception is an ordinary `task()` call with ordinary tools only: no Hive authority, recursion, or questions.
-<!-- /hive-host -->
-<!-- hive-host opencode-v2 -->
-A rare native `general` exception is an ordinary `subagent()` call with ordinary tools only: no Hive authority, recursion, or questions.
-<!-- /hive-host -->
-Native helpers keep only their bounded operational permissions.
-
-Use Forager or a Forager-derived custom worker for delegated execution. General is exceptional: state the required capability unavailable in those lanes before dispatch.
-
-Direct work normally includes clarifying the request, minimal routing reads, classifying the delegation kind, choosing specialists, maintaining todos and task IDs, launching and monitoring lanes, synthesizing results, running cheap final checks, validating outcomes, and communicating decisions.
-
-## Feature-Task Final Verification Gates
-
-In feature-task mode, keep pure final verification outside `## Tasks` in `## Final Verification` when no tracked artifacts are written. Treat that section as a non-branching plan gate, not a worktree-backed task. If verification writes tracked artifacts, model it as a normal numbered task and list those files. In ad-hoc mode, return verification state to `orchestrating-ad-hoc-work`; no feature plan or task artifact is required.
-
-## Delegation Kind Reference
-
-- Exploratory/read-only: small targeted tasks, light management, and independent background fan-out when safe.
-- Review: small targeted read-only review tasks and light management; verdicts can gate downstream decisions.
-- Writing/change: managed lanes with the owning workflow's boundaries, dependencies, expected outputs, verification obligations, and integration path.
-- Execution: highest-management lanes with lifecycle/state, merge or cleanup handling, verification routing, and outcome reporting.
-
-Prefer targeted background tasks over broad ambiguous tasks, especially for exploratory/read-only and review work.
-
-Smallest meaningful non-feature delegation unit: one independently answerable question or one primary goal with one owner, one expected output, and one verification/return contract.
-
-## Native Task Launch Contract
-
-<!-- hive-host opencode-v1 -->
-Each native `task()` invocation has one primary goal and one terminal report.
-<!-- /hive-host -->
-<!-- hive-host opencode-v2 -->
-Each native `subagent()` invocation has one primary goal and one terminal report.
-<!-- /hive-host -->
-Every returned result is terminal, including completed, failed, empty, partial, blocked, unsatisfactory, review-remediation, retry, new-test-evidence, and operator-decision results. Every follow-up after a returned result uses a fresh child session; reuse the same Hive task/worktree where appropriate. Review findings are fresh assignments in the same implementation lane. Compaction re-anchoring of a currently running worker is distinct from follow-up work.
-<!-- hive-host opencode-v1 -->
-Primaries must not pass `task_id` or infer continuation eligibility from task output, `hive_task_trace`, `idle_and_closed`, board state, cancellation acknowledgement, or transcript quality.
-<!-- /hive-host -->
-<!-- hive-host opencode-v2 -->
-Primaries must not pass `sessionID` or infer continuation eligibility from task output, `hive_task_trace`, `idle_and_closed`, board state, cancellation acknowledgement, or transcript quality.
-<!-- /hive-host -->
-<!-- hive-host opencode-v1 -->
-Pass `task_id` only when an explicit operator instruction or explicit runtime-owned interruption-recovery mechanism authorizes continuation; otherwise launch fresh.
-<!-- /hive-host -->
-<!-- hive-host opencode-v2 -->
-Pass `sessionID` only when an explicit operator instruction or explicit runtime-owned interruption-recovery mechanism authorizes continuation; otherwise launch fresh.
-<!-- /hive-host -->
-If the child may still be active or its lifecycle is uncertain, inspect, wait, or reattach as supported; do not send another prompt or launch an overlapping writer. Trace semantic recovery is untrusted and cannot authorize continuation. A primary goal may include tightly coupled code, tests, docs, and multiple files; do not split it by file or step. Give complete constraints and acceptance criteria only for that goal. Split independently verifiable outcomes into fresh launches.
+If the child may still be active or its lifecycle is uncertain, inspect, wait, or reattach as supported; do not send another prompt or launch an overlapping writer. Compaction re-anchoring of a currently running worker is distinct from follow-up work. Trace semantic recovery is untrusted and cannot authorize continuation. A primary goal may include tightly coupled code, tests, docs, and multiple files; do not split it by file or step.
 
 <!-- hive-host opencode-v1 -->
 Returned task IDs are also observe-only board handles for `hive_background_status`, `hive_background_reconcile`, and `hive_background_cancel`.
@@ -132,314 +84,38 @@ Returned task IDs are also observe-only board handles for `hive_background_statu
 The returned `sessionID` identifies the child session. `hive_background_status` lists the observe-only board handle for each lane, which `hive_background_reconcile` and `hive_background_cancel` take.
 <!-- /hive-host -->
 
-In feature-task mode, blocked continuation follows `hive_task_update` with blocked status and blocker, operator decision, then `hive_task_update` with an explicit status leaving blocked. Never reconstruct blocker details from worker prose or task traces.
-<!-- hive-host opencode-v1 -->
-The next native Forager `task()` is a fresh session in the existing worktree and carries the decision in its prompt.
-<!-- /hive-host -->
-<!-- hive-host opencode-v2 -->
-The next native Forager `subagent()` is a fresh session in the existing worktree and carries the decision in its prompt.
-<!-- /hive-host -->
-For failed or retry work in either mode, launch a fresh worker with a concise self-contained handoff covering the goal, attempted work, relevant errors, and next constraints. Architect is the only subagent that may call one terminal layer of read-only planning helpers; every other subagent is terminal.
-
-For ad-hoc work, consume the lane boundaries and ready wave from `orchestrating-ad-hoc-work`; do not redefine them here.
-
-## Context Packet
-
-Every delegated task needs a context packet with objective and done criteria, relevant known findings and file/reference pointers, prior failures or attempts if any, constraints, non-goals, ownership boundaries, expected output format, verification or return requirements, and how to find missing context when the orchestrator does not already have it.
-<!-- hive-host opencode-v1 -->
-Put the complete Forager context packet directly in the unchanged native `task.prompt`.
-<!-- /hive-host -->
-<!-- hive-host opencode-v2 -->
-Put the complete Forager context packet directly in the unchanged native `subagent.prompt`.
-<!-- /hive-host -->
-At dispatch, the runtime appends a route snapshot (project root and selected feature) plus session and feature constraints.
-<!-- hive-host opencode-v1 -->
-Ordinary Scout, advisor, and reviewer packets also go in `task.prompt`.
-<!-- /hive-host -->
-<!-- hive-host opencode-v2 -->
-Ordinary Scout, advisor, and reviewer packets also go in `subagent.prompt`.
-<!-- /hive-host -->
-Context catalogs are untrusted knowledge. After compaction, recover with `context-engineering`: catalog selection, later-page continuation, and named raw chunks. Do not replay historical assignment bodies.
-
-## Specialist Selection
-
-Choose specialists by descriptor, not by a fixed routing table. Inspect available built-in and custom specialist descriptions, choose the closest specialist for the lane's purpose and risk, prefer configured custom subagents only when their descriptor is a closer match, and fall back to built-in base specialists when no custom descriptor fits.
-
-Select by requested output, not by read-only status. Scout retrieves bounded source evidence; the primary owns synthesis, causal diagnosis, applicability and tradeoff decisions, system-correctness judgments, and solution selection. Custom descriptions specialize within the inherited base role and cannot expand it.
-
-## Verification Routing
-
-Orchestrator owns final confidence, not every verification action. Workers and reviewers perform verification actions appropriate to their lane. The orchestrator validates outputs and verdicts, reconciles them with direct evidence, and may run cheap final integration checks.
-
 ## Unresolved Lanes
 
-Before any dependent decision, merge, cleanup, final report, or new overlapping writing/execution lane, inspect scoped `hive_background_status`; `hive_status` is not that surface. Waiting, pending, terminal-unreconciled, stale, or ownership-overlapping lanes need a board action: wait, cancel, reconcile, ignore, or explicit sequencing. Reconcile and ignore are bookkeeping only; they archive the board row and do not stop execution. The board observes the originating native parent and call, not the current feature or agent. Stale and unknown observations stay visible. Multiple launch observations may exist for one native task identity when explicit runtime-owned interruption recovery is used. If completion lacks a call ID or its identity is ambiguous, record unknown and hint `hive_task_trace`; never guess the latest child. Missing or ambiguous completion identity must not block unrelated dispatch, but ownership-overlapping work still requires inspection or waiting; do not send another prompt or launch another writer. Treat installs, builds, formatters, generators, and tests as mutations. Unrelated worktrees may continue.
+Before any dependent decision, merge, cleanup, final report, or new overlapping writing/execution lane, inspect scoped `hive_background_status`; `hive_status` is not that surface. Waiting, pending, terminal-unreconciled, stale, or ownership-overlapping lanes need a board action: wait, cancel, reconcile, ignore, or explicit sequencing. Reconcile and ignore are bookkeeping only; they archive the board row and do not stop execution. Cancel acknowledgement does not prove the worker stopped, and neither do expiry, restart, archive, reconcile, or ignore. The board observes the originating native parent and call, not the current feature or agent. Stale and unknown observations stay visible. If completion lacks a call ID or its identity is ambiguous, record unknown and hint `hive_task_trace`; never guess the latest child. Missing or ambiguous completion identity must not block unrelated dispatch, but ownership-overlapping work still requires inspection or waiting; do not send another prompt or launch another writer. Treat installs, builds, formatters, generators, and tests as mutations. Unrelated worktrees may continue. Do not copy mutable progress out of a worktree while the old worker may still be running, and do not edit the active host's `background-jobs.json` board file directly.
 
-The board protocol is primary-owned. Primaries perform single direct reads themselves: one `hive_status`, one worktree inspect, or one `hive_task_trace_content` spot-check of a known event ref. For multi-step forensics (paging a trace, drift comparison, or interrupted-worker evidence packets), send `hive-helper` one named question and known session/call/worktree/source/destination identities, then spot-check decisive cited event refs. Helper returns evidence, not a termination or replacement-writer decision. A delegated Architect may call Helper for trace/evidence investigation but hands board/control and lifecycle decisions to its parent.
+The board protocol is primary-owned. Multi-step trace or evidence questions go to `hive-helper` with one named question and known identities; Helper returns evidence, not a termination or replacement-writer decision.
 
 ## Protocol (Primary Sessions)
 
-1. Consume the owning workflow's ready lanes, delegation kinds, ownership boundaries, and safe independent foreground work.
-2. Build the context packet for each supplied lane without changing its boundary.
+Read [references/board-protocol.md](references/board-protocol.md) when you interpret `hive_background_status` fields, wait for or reconcile a completion, cancel a lane, or meet a completion with a missing or ambiguous identity.
+
+1. Consume the owning workflow's ready lanes, delegation kinds, ownership boundaries, and safe independent foreground work. Build each lane's launch packet with `dispatching-parallel-agents` without changing its boundary.
 <!-- hive-host opencode-v1 -->
-3. Every Forager lane, including report-only diagnosis, needs a native `task()` call with a Forager or Forager-derived agent.
+2. Every Forager lane, including report-only diagnosis, needs a native `task()` call with a Forager or Forager-derived agent.
 <!-- /hive-host -->
 <!-- hive-host opencode-v2 -->
-3. Every Forager lane, including report-only diagnosis, needs a native `subagent()` call with a Forager or Forager-derived agent.
+2. Every Forager lane, including report-only diagnosis, needs a native `subagent()` call with a Forager or Forager-derived agent.
 <!-- /hive-host -->
-The owning workflow determines placement; create the matching worktree before dispatch for tracked Git writes. The primary authors that prompt. At dispatch, the runtime appends a route snapshot (project root and selected feature) plus session and feature constraints. After the worker returns, call `hive_task_update` as needed. Ordinary Scout, advisor, and reviewer calls do not need a worktree.
+The owning workflow determines placement; create the matching worktree before dispatch for tracked Git writes. Ordinary Scout, advisor, and reviewer calls do not need a worktree.
 <!-- hive-host opencode-v1 -->
-4. Record returned `task_id` values and inspect the scoped board with `hive_background_status`.
+3. Record returned `task_id` values and inspect the scoped board with `hive_background_status`.
 <!-- /hive-host -->
 <!-- hive-host opencode-v2 -->
-4. Record the returned `sessionID` values and inspect the scoped board with `hive_background_status`.
+3. Record the returned `sessionID` values and inspect the scoped board with `hive_background_status`.
 <!-- /hive-host -->
-5. Follow `recommendedNextAction` from `hive_background_status` when present; use `nextActions` and `orchestrationBurden` as supporting detail for visible lanes and operator reporting. Treat `waitingForNativeCompletion` as wait-only state; an empty `jobs` list is not proof that no native background work exists.
-6. Continue only foreground work that does not depend on the background result.
-<!-- hive-host opencode-v1 -->
-7. Do not repeatedly refresh the board while visible lanes are only listed under `waitingForNativeCompletion`. If `completionNotificationsPending > 0` and `reconcileItemsRequired == 0`, wait for OpenCode's native background completion notification before calling `hive_background_status` again, unless a lane is stale, wrong, no longer needed, or a new task ID must be registered.
-<!-- /hive-host -->
-<!-- hive-host opencode-v2 -->
-7. Do not repeatedly refresh the board while visible lanes are only listed under `waitingForNativeCompletion`. If `completionNotificationsPending > 0` and `reconcileItemsRequired == 0`, wait for OpenCode's native background completion notification before calling `hive_background_status` again, unless a lane is stale, wrong, no longer needed, or a new `sessionID` must be recorded.
-<!-- /hive-host -->
-8. Treat `native_completion_pending` as a wait state, not a command to reconcile, cancel, or duplicate the lane.
-9. Treat prompt acknowledgment as notification only: a terminal job may stop repeating in prompt detail after Hive showed it once, but it is not reconciled until you consume or intentionally ignore the result.
-10. Use `hive_background_reconcile` for one terminal job or `hive_background_reconcile_batch` for multiple terminal jobs after native jobs reach terminal state and you have acted on their results. Reconciliation returns compact per-item acknowledgements (`identifier`, `decision`, `success`, archived `state`, and `requiresHiveStatusRefresh`, or failure `reason`/`error`/`hint`); it archives terminal jobs and hides them from normal status output. Batch success requires every item to succeed; inspect each failure, since successful items remain archived and a persistence failure may have published. A malformed item fails alone. A successful archive with feature/task scope sets `requiresHiveStatusRefresh: true`; the batch flag is true when any successful item sets it. Refresh `hive_status` when requested and before dependent feature/task or merge decisions. Follow failure hints: `job_not_terminal` means wait for native completion, while stale/uncertain hints give an exact `decision: "ignored"` call with the canonical alias. Inspect before ignoring; archiving an observation does not prove native termination or authorize a replacement writer. Scheduler guidance and full job records come from `hive_background_status`; do not edit the active host's `background-jobs.json` board file directly.
-11. Use `orchestrationBurden` from `hive_background_status` to report pending completion notifications and reconcile items per visible and actionable lane; it supports the recommended action but does not replace it.
-12. Use `hive_background_cancel` only when a background lane is stale, wrong, or no longer needed.
-
-<!-- hive-host opencode-v1 -->
-Placement starts from the repository status, which `hive_repositories_status` returns as an ordinary direct tool call on this host. The examples below read it that way.
-<!-- /hive-host -->
-<!-- hive-host opencode-v2 -->
-Placement starts from the repository status: `hive_repositories_status` is a Hive read, so obtain its result through the Hive read transport your system prompt names before the launch. When reads run in Code Mode, call it from code passed to `execute`, using the exact path the Code Mode catalog lists; when your system prompt says Hive reads are direct tool calls, call it directly. That result is a status envelope; the examples below bind its `repositories` array property, not the whole result, as `repositories`. The Hive control tools and the native `subagent()` call in them are direct calls.
-<!-- /hive-host -->
-
-Gate-closed Forager launch (blocking wait mode):
-
-<!-- hive-host opencode-v1 -->
-OpenCode v1:
-
-```ts
-const { repositories } = hive_repositories_status();
-const requestedRepoIds = lane.repoIds;
-const selectedRepoIds = repositories.filter(({ id }) => requestedRepoIds.includes(id)).map(({ id }) => id);
-if (
-  requestedRepoIds.length === 0 ||
-  new Set(requestedRepoIds).size !== requestedRepoIds.length ||
-  requestedRepoIds.some((id) => !selectedRepoIds.includes(id))
-) {
-  throw new Error('Placement blocker: lane.repoIds must exactly match repository status IDs');
-}
-const repoIds = selectedRepoIds;
-hive_adhoc_worktree_create({ repoIds });
-await task({
-  subagent_type: 'forager-worker',
-  description: 'Implement the ad-hoc change',
-  prompt: 'Concrete work with done criteria; commit changes; return sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present.',
-});
-```
-<!-- /hive-host -->
-<!-- hive-host opencode-v2 -->
-OpenCode v2:
-
-```ts
-// repositories: the repositories array from the hive_repositories_status result, read through the Hive read transport first.
-const requestedRepoIds = lane.repoIds;
-const selectedRepoIds = repositories.filter(({ id }) => requestedRepoIds.includes(id)).map(({ id }) => id);
-if (
-  requestedRepoIds.length === 0 ||
-  new Set(requestedRepoIds).size !== requestedRepoIds.length ||
-  requestedRepoIds.some((id) => !selectedRepoIds.includes(id))
-) {
-  throw new Error('Placement blocker: lane.repoIds must exactly match repository status IDs');
-}
-const repoIds = selectedRepoIds;
-hive_adhoc_worktree_create({ repoIds });
-await subagent({
-  agent: 'forager-worker',
-  description: 'Implement the ad-hoc change',
-  prompt: 'Concrete work with done criteria; commit changes; return sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present.',
-});
-```
-<!-- /hive-host -->
-
-Gate-open Forager launch (background wait mode):
-
-<!-- hive-host opencode-v1 -->
-OpenCode v1:
-
-```ts
-const { repositories } = hive_repositories_status();
-const requestedRepoIds = lane.repoIds;
-const selectedRepoIds = repositories.filter(({ id }) => requestedRepoIds.includes(id)).map(({ id }) => id);
-if (
-  requestedRepoIds.length === 0 ||
-  new Set(requestedRepoIds).size !== requestedRepoIds.length ||
-  requestedRepoIds.some((id) => !selectedRepoIds.includes(id))
-) {
-  throw new Error('Placement blocker: lane.repoIds must exactly match repository status IDs');
-}
-const repoIds = selectedRepoIds;
-hive_adhoc_worktree_create({ repoIds });
-const { task_id } = task({
-  subagent_type: 'forager-worker',
-  description: 'Implement the independent ad-hoc change',
-  prompt: 'Concrete independent work with done criteria; commit changes; return sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present.',
-  background: true,
-});
-hive_background_status({});
-// Wait for the native background completion notification, then refresh the Hive board
-// instead of repeatedly refreshing or manually mutating .hive/background-jobs.json.
-hive_background_status({});
-hive_background_reconcile({
-  identifier: task_id,
-  decision: 'reconciled',
-  summary: 'Consumed the background result.',
-});
-```
-<!-- /hive-host -->
-<!-- hive-host opencode-v2 -->
-OpenCode v2:
-
-```ts
-// repositories: the repositories array from the hive_repositories_status result, read through the Hive read transport first.
-const requestedRepoIds = lane.repoIds;
-const selectedRepoIds = repositories.filter(({ id }) => requestedRepoIds.includes(id)).map(({ id }) => id);
-if (
-  requestedRepoIds.length === 0 ||
-  new Set(requestedRepoIds).size !== requestedRepoIds.length ||
-  requestedRepoIds.some((id) => !selectedRepoIds.includes(id))
-) {
-  throw new Error('Placement blocker: lane.repoIds must exactly match repository status IDs');
-}
-const repoIds = selectedRepoIds;
-hive_adhoc_worktree_create({ repoIds });
-const { sessionID } = subagent({
-  agent: 'forager-worker',
-  description: 'Implement the independent ad-hoc change',
-  prompt: 'Concrete independent work with done criteria; commit changes; return sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present.',
-  background: true,
-});
-hive_background_status({});
-// Wait for the native background completion notification, then refresh the Hive board
-// instead of repeatedly refreshing or manually mutating .hive/runtime/opencode-v2/background-jobs.json.
-hive_background_status({});
-hive_background_reconcile({
-  identifier: boardAlias, // the handle hive_background_status lists for this lane
-  decision: 'reconciled',
-  summary: 'Consumed the background result.',
-});
-```
-<!-- /hive-host -->
-
-Reconcile each board row exactly once. Reconciliation archives board bookkeeping; it does not apply task state.
-
-Exempt ordinary Scout, advisor, or reviewer launch:
-
-<!-- hive-host opencode-v1 -->
-OpenCode v1:
-
-```ts
-const { task_id } = task({
-  subagent_type: '<chosen-primary-delegated-agent>',
-  description: 'Short task label',
-  prompt: 'Concrete independent work with done criteria',
-  background: true,
-});
-hive_background_status({});
-// Wait for the native background completion notification, then refresh the Hive board
-// instead of repeatedly refreshing or manually mutating .hive/background-jobs.json.
-hive_background_status({});
-hive_background_reconcile({
-  identifier: task_id,
-  decision: 'reconciled',
-  summary: 'Consumed the background research result.',
-});
-// Reconciled or ignored jobs are archived by the tool and hidden from normal status.
-// For multiple different terminal lanes, batch reconciliation is an alternative to
-// individual reconciliation, not a second pass over rows already archived.
-```
-<!-- /hive-host -->
-<!-- hive-host opencode-v2 -->
-OpenCode v2:
-
-```ts
-const { sessionID } = subagent({
-  agent: '<chosen-primary-delegated-agent>',
-  description: 'Short task label',
-  prompt: 'Concrete independent work with done criteria',
-  background: true,
-});
-hive_background_status({});
-// Wait for the native background completion notification, then refresh the Hive board
-// instead of repeatedly refreshing or manually mutating .hive/runtime/opencode-v2/background-jobs.json.
-hive_background_status({});
-hive_background_reconcile({
-  identifier: boardAlias, // the handle hive_background_status lists for this lane
-  decision: 'reconciled',
-  summary: 'Consumed the background research result.',
-});
-// Reconciled or ignored jobs are archived by the tool and hidden from normal status.
-// For multiple different terminal lanes, batch reconciliation is an alternative to
-// individual reconciliation, not a second pass over rows already archived.
-```
-<!-- /hive-host -->
-
-## Decision Examples
-
-### Parallel exploration
-
-Action: start independent codebase research while you read another bounded area in the foreground.
-
-Decision: use background when the foreground read does not need the research answer. Use a blocking escape only when dependency, risk, simplicity, user interaction, ownership conflict, or lifecycle/board concerns makes foreground scheduling wrong.
-
-Result: continue foreground work, wait for the native background completion notification, then refresh `hive_background_status` before using the findings.
-
-### Planning validation
-
-Action: ask a reviewer agent to check assumptions while you inspect references named in the plan.
-
-Decision: use background when the validation cannot change the immediate file reads.
-
-Result: wait for the native background completion notification, then refresh `hive_background_status` before finalising plan confidence.
-
-### Review and recovery support
-
-Action: request an independent review of a failure transcript while you reproduce the failure locally.
-
-Decision: use background when local reproduction can proceed without review output.
-
-Result: compare the review result with observed evidence before changing code.
-
-### Execution orchestration
-
-Action: run independent verification or inspection while a foreground implementation step continues.
-
-Decision: use background when the running check cannot affect the current edit.
-
-Result: wait for final native task evidence, then refresh `hive_background_status`, before reporting completion or making the next dependent decision.
+4. Follow `recommendedNextAction` from `hive_background_status` when present, and continue only foreground work that does not depend on the background result. `waitingForNativeCompletion` lanes are wait-only: wait for the native background completion notification instead of polling, and treat `native_completion_pending` as a wait state, not a command to reconcile, cancel, or duplicate the lane. An empty `jobs` list is not proof that no native background work exists.
+5. After native jobs reach terminal state and you have acted on their results, reconcile each board row once with `hive_background_reconcile` or `hive_background_reconcile_batch`. Reconciliation archives board bookkeeping and does not apply task state; a prompt acknowledgement alone is notification, not reconciliation.
+6. Use `hive_background_cancel` only when a lane is stale, wrong, or no longer needed.
 
 ## Anti-Patterns
 
 - Using background when the next step depends on the result.
-- Launching speculative work without a clear decision point.
+- Launching speculative work without a clear decision point, or just because the feature exists.
 - Nested delegation outside Architect's permitted blocking terminal planning-helper layer.
-- Forgotten terminal jobs: treating a prompt-acknowledged terminal result as reconciled, or forgetting to wait for native completion, refresh, reconcile, or cancel before using background results or ending the turn.
-- Empty-board false negatives: treating `jobs: []` as proof that no native background work exists while completion evidence is unresolved.
-- Wait-only polling: repeatedly calling `hive_background_status` while `schedulerGuidance.reason` is `wait_for_native_completion_notification`.
-- Manual board mutation: editing the active host's `background-jobs.json` board file instead of using `hive_background_status`, `hive_background_reconcile`, `hive_background_reconcile_batch`, or `hive_background_cancel`.
-<!-- hive-host opencode-v1 -->
-- Inventing a native task ID instead of using the identity returned by the native `task()` call.
-<!-- /hive-host -->
-<!-- hive-host opencode-v2 -->
-- Inventing a native session ID instead of using the identity returned by the native `subagent()` call.
-<!-- /hive-host -->
-- Claiming cancel acknowledgement proves the worker stopped.
-- Treating expiry, restart, archive, reconcile, or ignore as proof that an uncertain running worker stopped.
-- Copying mutable progress out of a worktree while the old worker may still be running.
-- Using `hive_status` to inspect unresolved board lanes; that surface is `hive_background_status`.
-- Discarding a failed ad-hoc worktree instead of inspecting it with `hive_adhoc_worktree_inspect`.
-- Launching background work just because the feature exists.
 - Broad ambiguous delegation without ownership boundaries or done criteria.
-- Choosing a custom specialist because the work is important rather than because the descriptor is the closest match.
+- Board mistakes (forgotten terminal jobs, wait-only polling, manual board mutation, inventing a native identity) are listed in the board protocol reference.

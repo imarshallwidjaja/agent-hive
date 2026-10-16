@@ -119,6 +119,6 @@ Full primaries are never valid `subagent()` targets, and `hive-helper` is not a 
 <!-- hive-host opencode-v2 -->
 - No experiment variable gates background subagents on OpenCode v2.
 <!-- /hive-host -->
-- Skills load through OpenCode's native `skill` tool, which every Hive role except the hidden trace summarizer may call.
+- Skills load through OpenCode's native `skill` tool, which every Hive role except the hidden trace summarizer may call. A skill's references are knowledge read from the skill's own directory: reading one grants no tool or role authority, and a missing or overridden reference is never a reason to search generated skill caches or read another copy.
 
 When the agent-hive source is available, the enforced matrix lives in `packages/opencode-hive/src/runtime/role-policy.ts` (applied by the config hook in `runtime.ts`) and is documented in `packages/opencode-hive/docs/HIVE-TOOLS.md` under "Agent Tool Access". Prefer those over this table if they disagree.
