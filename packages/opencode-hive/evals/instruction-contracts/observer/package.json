@@ -1,0 +1,6 @@
+{
+  "name": "ic-observer",
+  "private": true,
+  "type": "module",
+  "main": "index.js"
+}

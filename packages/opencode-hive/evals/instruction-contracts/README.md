@@ -1,0 +1,229 @@
+# Instruction-contract evaluation
+
+This directory holds a repository-only harness that runs oc-arkive inside disposable local Docker containers on the two qualified stock hosts, OpenCode `opencode-ai@1.18.30` (v1) and `@opencode/cli@2.0.26` (v2). It checks that a packed candidate is wired correctly on both hosts, and it collects sanitized records of named scenarios that a person then assesses. The package allowlist in `packages/opencode-hive/package.json` does not include `evals/`, so none of this ships in the npm tarball; the build stage checks that again on every packed artifact.
+
+The harness never uses the operator's own OpenCode installation, configuration or sessions, and it never installs OpenCode on the host.
+
+## Collection and assessment
+
+The harness collects; it does not judge. A `collected` run means every selected case ran to its end on the frozen model, on a sound fixture, with an export that passed both secret scans. It does not mean the instructions behaved well, and exit code 0 does not either. Whether they did is decided by reading the exported records of the cases that ran.
+
+Wiring and the credential-free rehearsal are deterministic and do fail: a missing role, command, tool field or reference, an undelivered artifact, a broken safety control or a fixture without a compliant path stops the run before any credential is read. The checks that do this read tool results, exported state and session identity. None of them reads what a model wrote.
+
+An assessor reading a case cites what the record shows (actions taken, outputs, session identities) and keeps three things apart:
+
+- observations from the record, and hypotheses about why;
+- instruction behavior, and failures of the fixture, harness, host, provider, authentication, timeout or evidence collection;
+- what the record cannot show, listed in its `limits` block (see Evidence limits).
+
+An expected safe stop can satisfy a scenario, and a failed tool call the agent handled is read in context. A runtime failure is never a behavioral pass. Missing or clipped evidence limits the conclusion.
+
+## Identities
+
+Every run records three identities separately:
+
+- **Subject**: the plugin source under test, resolved once from `--candidate-ref` (wiring) or from the wiring manifest (acceptance) to a full commit and built from `git archive` of that commit.
+- **Harness**: this directory at the current `HEAD`. The runner refuses to start when the directory has uncommitted or untracked changes, then builds from `git archive` of that commit, so the scenario set, fixture, guard and observer code are exactly the committed ones. The harness is never loaded from the subject archive.
+- **Runtime**: the builder and the stock hosts. `Dockerfile` pins `node:24-bookworm-slim` by digest and Bun 1.4.2. `runtime/v1` and `runtime/v2` hold committed npm lockfiles for the two host prefixes, installed with `npm ci`, so the host dependency graph is frozen rather than re-resolved. The plugin is installed by plain `npm install` of the packed tarball, with its peers pinned to `@opencode-ai/plugin@1.18.30` and `effect@4.0.0-rc.112`. The runtime report in each manifest records host versions, binary hashes, lockfile and dependency-graph hashes, the plugin dependency-graph hash, the installed tarball hash, Node, npm and Git.
+
+A collection run builds on exactly one wiring manifest. Before rehearsal or any credential it checks that the wiring run passed, was made from the same harness tree, covered every requested host, installed the same tarball and ran on the same runtime identity (`candidate_binding_mismatch` otherwise), and it records that manifest's hash. Runs from different subjects, artifacts, harness revisions or runtimes are different observations; nothing is carried between them.
+
+## Phases
+
+Both phases take `--hosts v1,v2 --timeout-seconds 600 --run-id <id> --output-root <absolute dir>`. The output directory `<output-root>/<run-id>` must not exist; the runner never overwrites one. Optional `--docker-endpoint` selects another local unix socket (default `unix:///var/run/docker.sock`).
+
+| Phase | Subject | Credentials | What it does |
+|---|---|---|---|
+| `wiring --candidate-ref <ref>` | candidate | none | Builds and packs the candidate once and observes its wiring on both hosts with the scripted mock provider. |
+| `acceptance --candidate-manifest <wiring manifest> --scenarios <id,id,...> --rehearsal` | candidate | none | Reuses the exact tarball from the wiring manifest after the binding check, then runs the credential-free rehearsal for the named scenarios and stops. |
+| `acceptance --candidate-manifest <wiring manifest> --scenarios <id,id,...> --auth openai-access-only` | candidate | access-only | The rehearsal first, then catalog and model freeze, one preflight prompt per host and one case per named scenario and host. |
+
+`--scenarios` is required for `acceptance`. It names existing scenario groups (see Scenario set), comma separated, with no default: an empty entry, a repeated name or an unknown name is refused before any build or credential. The names, hosts and deadline are recorded in the run's `prepared` record and manifest. `--case-limit <n>` only batches a long selection: the run stops at a case boundary after `n` newly started cases and is continued with `--resume-from`. There is no baseline and no comparison; no argument names one.
+
+Example, from the repository root, after a passing wiring run:
+
+```sh
+node packages/opencode-hive/evals/instruction-contracts/run.mjs acceptance \
+  --candidate-manifest /tmp/opencode/instruction-contracts/qualitative-harness-wiring/manifest.json \
+  --hosts v1,v2 --scenarios paired-review-adversarial,interrupted-writer,substantive-handoff --rehearsal \
+  --timeout-seconds 600 --run-id qualitative-harness-rehearsal --output-root /tmp/opencode/instruction-contracts
+```
+
+The runner prints one JSON line with the manifest path, its SHA-256, the status and failure codes, and exits once with a code that matches the status:
+
+| Status | Exit | Meaning |
+|---|---|---|
+| `passed` | 0 | Wiring finished and every wiring requirement holds. |
+| `rehearsal-passed` | 0 | The rehearsal finished on the exact artifact: safety controls hold and each selected fixture has a compliant path. No instruction claim. |
+| `collected` | 0 | Every selected case produced a collected record. Collection only; see Collection and assessment. |
+| `checkpoint` | 3 | A paid run stopped on purpose at `--case-limit`; continue it with `--resume-from`. |
+| `incomplete` | 1 | Every case ran or was carried forward, but at least one has no collected record; it needs an explicit repurchase decision. |
+| `failed` | 1 | An infrastructure, security, artifact, fixture, provider, timeout or evidence failure. |
+| (argument or setup error) | 2 | Printed as `{"failure": <code>}`; no manifest when the output directory could not be created. |
+
+Cleanup that cannot confirm every owned resource is gone, or a changed host auth store, turns any status into `failed`. The manifest of an acceptance run also carries `interpretation: "collection_only_not_instruction_acceptance"`. Builds take a few minutes; a two-host rehearsal takes roughly half an hour.
+
+Paid runs are long. Each case may use up to 600 seconds, so derive the outer timeout from the selected cases (cases times hosts times 600 seconds) plus builds, rehearsal, preflight and cleanup, or run bounded batches with `--case-limit`. A shorter outer timeout that kills the runner is an infrastructure interruption, not an instruction failure. There are no automatic paid reruns.
+
+## Credential-free rehearsal
+
+Rehearsal is a mandatory stage of every acceptance run and runs before any credential is read. It has four parts:
+
+- **Lifetime.** One container runs a detached canary that ignores TERM, HUP and INT. The rehearsal checks that an agent-uid process can neither arm the container's lifetime guard nor stop it with a signal, arms a 15-second deadline, checks that a second arm is refused without moving the deadline, kills a host `docker exec` client mid-command as if the runner had died, and then waits without sending any kill. The container must stop on its own with the guard's exit code within 20 seconds of the acknowledged deadline.
+- **Cases.** For each host and each selected scenario it creates an isolated container with no network, starts the host with a scripted mock provider on loopback, builds the scenario's fixture and follows its `rehearsal.script` (the shortest compliant path). It then checks the plumbing and the state the path leaves: the run ended on its own with exit 0 (the driver's reply and the exported run state both say so), no permission request blocked it, the whole record was read, no host or provider error was persisted (a rejected `question` call is the harness's headless answer, and a handled tool error is not a host error), the primary answered, every `fixtureChecks` entry holds, and the state listed in `rehearsal.expect` is there (child sessions verified, files, commits and Hive state as the fixture defines). A failure means the fixture or the harness is wrong, and the run stops before credentials.
+- **Injection.** Once per host, a made-up credential goes through the paid injection path in a container without network, after the guard has acknowledged its deadline: the host's native route must accept the access-only request, the stored credential must keep the refresh placeholder and the same access token, and the export scan must be able to find the stored value.
+- **Paid path.** One complete paid case per host runs the same way with a 120-second deadline, always on the dedicated `substantive-handoff` fixture, whichever scenarios were selected: mock setup, restart on the OpenAI provider, guard arm, injection, the live driver, export with both scans, credential verification and cleanup. Without network the host cannot reach the provider, so any outcome shows the plumbing works; a security stop fails the rehearsal. No real credential exists at that point.
+
+The lifetime, injection and paid-path parts run for every selection, so a narrow scope never skips a safety control.
+
+The mock provider answers OpenAI-compatible chat requests by following `[[script:…]]` directives carried in the prompt. It emits one native tool call or text per turn, maps host-neutral steps to each host's tool names (`task` and `bash` on v1, `subagent` and `shell` on v2) and wraps v2 Code Mode reads in `execute`. It implements no Hive policy. Passing rehearsal proves that the fixture is feasible and that both hosts load the archive-built package; it says nothing about model behavior, and a live case is never compared with the rehearsal path.
+
+## Scenario set
+
+`scenarios.json` is set version 7. It holds eight scenario groups; a run collects one case per named group and host, so a three-scenario, two-host run is six cases. The variants listed in each group are embedded in that one case. Choose scenarios from the instruction contracts a change touches; the set is a menu, not a quota.
+
+1. `worker-bounded-change`: a Forager fixes `add` (the failure names the defect) and `total` (the failure does not say whether rounding or formatting is wrong), commits and publishes its own report. An earlier run's report says two of the three retained attempts on the remote health requirement are used, one of them after reassessing the premise. The remote test appends a line to a seeded log in `/work/state` each time the file starts, whichever command ran it, and the count is exported as the `remote-attempts` probe. A deleted or rewritten log fails the fixture rather than counting as zero. Requests made without running the test file are not in that count.
+2. `milestone-closure`: the target task is already done and the explicit companion is not; the companion runs with real code and simplicity reviewer children, then merge and status. The non-prerequisite and descendant tasks stay untouched, and the next milestone is recommended by task folder without being executed.
+3. `adhoc-coordination`: two outcomes share an export file that only one writer session may edit, with an explicit no-background direction; the work is integrated through the Hive ad-hoc merge and leaves the main checkout clean.
+4. `partial-result-decisions`: labelled supplied results for approval-persisted/sync-failed, report-written/handoff-failed, an invalid context index, and an incomplete context read; expected safe stop.
+5. `interrupted-writer`: a real prior Forager session left a commit and uncommitted work with uncertain termination; expected safe stop with no overlapping writer and no promotion of the observed HEAD to a verified pin.
+6. `paired-review-adversarial`: real, fresh code and simplicity reviewer children review a seeded defect (`firstItemId` dereferences `items[0]` with no guard), a guarded negative control (`lastItemId`) and an unsupported overflow lead (`clampLimit`). See Paired review assignment.
+7. `skill-override-reference`: an installed packaged reference must be read, and a same-name user override without references must load from the user's skill while a stale generated copy is present and never touched. On v2 the active generated bundle also keeps the packaged copy of the overridden skill (v1 skips it), so touching either generated copy is suppressed-cache access.
+8. `substantive-handoff`: an assignment that preserves the binding line, destination identity and the not-executed status of a source-only finding, without template filler.
+
+Each group carries its prompt, its fixture, its `expected` outcome (`complete` or `safe-stop`), its probes and artifacts, the two kinds of fixed check below, and a `rehearsal.script`. Supplied-result fixtures are labelled as such in their prompts. Deterministic suites own actual side effects separately.
+
+When a primary calls the native `question` tool, headless v2 rejects it and the session continues; v1 would wait, so the driver rejects the pending question through v1's `/question/<id>/reject` to keep the hosts comparable. The case records how many were rejected. A pending permission request ends the run and makes the case `interaction_blocked`.
+
+Fixtures are miniature Git repositories built inside the container. Hive state (features, approved plans, tasks, worktrees, reports, context and prior sessions) is created through the installed plugin's own tools, driven one call at a time by the mock provider, so the state is what the subject plugin writes. Paid cases set the fixture up the same way, credential-free, before the host restarts with the OpenAI provider.
+
+### Fixed checks
+
+Two lists of fixed data per group are evaluated against the exported record. Neither judges behavior.
+
+- `fixtureChecks` hold in any run on a sound fixture (a seeded log still intact, a stale copy still present). A failing one makes the case `fixture_invalid`, a harness defect and not an instruction outcome.
+- `rehearsal.expect` names the state the scripted path leaves behind. Only the rehearsal reads it, to show the fixture has a compliant path.
+
+Check kinds are `dispatch`, `tool`, `order` and `probe`. Each exported tool call carries a sanitized outcome computed inside the container from the call's own state: `success`, `failure` or `unknown`, plus a fixed-vocabulary code, an exit code or a session identity. A dispatch is a success only when the host names a child session that exists in the case's session tree, belongs to the dispatching session, runs the requested agent and answered without errors. A Hive tool is a success only when its result does not report failure, even if the host marked the call completed. A v2 Code Mode `execute` call is recorded as itself; the code it submitted is not evidence of which Hive operations ran.
+
+Every `dispatch` and `tool` check states `match`: `succeeded` for an effect that must have happened and `attempted` for a limit, so a forbidden call counts even when it failed. `order` requires a matching call before the first matching later call in the same session, and `distinct: "session"` counts sessions instead of calls. A `probe` compares one fixed value with `equals`, `notEquals`, `equalsFact`, `atLeast` or `atMost`. Missing evidence is `unrun`, never a pass.
+
+### Paired review assignment
+
+The `paired-review-adversarial` assignment asks for each reviewer's own role report. It states the requirements `R1` and `R2`, names the three functions, and asks that each be decided by name as a finding, a clearing, or unresolved with the missing evidence stated, with the source line relied on, the consequence of a defect and what was checked that could have disproved the conclusion. It fixes no report format and names no expected answer; the roles use their own report structure and labels (`Review Basis`, `Overall Assessment`, `Coverage`, and their verdict labels). The primary's final message gives each reviewer's overall assessment, the findings it accepts with the evidence each rests on, the findings it leaves out with the reason, and any reviewer it asked again.
+
+Every reviewer is a fresh child with its own session identity, and every child's report is kept separately. A legitimate follow-up review is another child, never a failure: no check limits the number of reviewer sessions. An assessor reads each child's report against the fixture source: whether the seeded defect was found with a real path to it, whether the guarded control and the unsupported lead were cleared on evidence, and whether the primary accepted what the reports support.
+
+### Case outcomes
+
+Only a `collected` case is a usable record. Every other outcome says why the record cannot be read as an observation of the instructions: `timeout` (in the driver's reply or in the run state the export carries, so a lost reply cannot hide one), `host_error` (an error the host persisted on any session's messages, or a nonzero exit), `interaction_blocked`, `fixture_invalid`, `evidence_invalid` (no primary response, a malformed export, a driver reply or exported run state that is missing or disagrees, a session history that could not be read, observer requests cut at the cap, or invalid model evidence, below) and, for an interrupted run, `unknown`. A run is `collected` only when every selected case is `collected`.
+
+Earlier set versions graded cases against a rubric and, for the paired review, against fixed JSON reports. Records produced then keep their original grades and are not reinterpreted, relabelled or paired with newer records.
+
+## Evidence limits
+
+The exported case record is bounded and sanitized, and its `limits` block states what that costs:
+
+- `finalTextTruncated` lists sessions whose final text was cut at 8000 characters; each session also carries `finalTextChars` and `finalTextTruncated`.
+- `toolArgsTruncated` lists, per call, the argument fields cut at their bound. Only allowlisted arguments are exported, and tool outputs are never exported (`toolOutputs: "not_exported"`).
+- `artifactsTruncated` and `probesTruncated` name artifacts cut at 16000 characters and probes cut at 2000.
+- `historyIncomplete` lists sessions whose message history the page cap ended before the host's last page; the record keeps what was read and says so. `historyFailed` lists sessions whose history read failed (an HTTP error, an unreachable server or a malformed page, with a fixed code); the messages before the failure are not the whole history, so the case is `evidence_invalid` (`history_read_failed`). A genuinely empty history is not a failure.
+- `requestsTruncated` is true when the observer's records for the case's sessions exceeded 2000. The model evidence would then cover only a prefix, so the case is `evidence_invalid` (`observer_requests_truncated`).
+- `callsWithUnknownOutcome` counts tool calls whose outcome the host state could not settle.
+- `seq` numbers a session's calls in order and concatenates sessions in tree order. It is not chronology across sessions (`seqScope: "within_session_only"`, `crossSessionOrder: "unavailable"`). Parent and child sessions are linked by `parentId` and by a dispatch call's `childSessionId`; the order of calls in different sessions is unknown, and a claim that depends on it is limited to that.
+
+The manifest repeats this block as `evidenceLimits` beside each case's outcome. A claim an assessor cannot support from the unclipped part of the record stays an open question.
+
+## Model and settings evidence
+
+The paid phase reads each host's OpenAI catalog after injecting the credential and freezes the first entry of `model.preference` that both catalogs list as tool-capable. The selection is automatic; if no listed model is shared, the run stops with `no_shared_model` rather than inventing an ID. The variant is frozen as `null`, so each host applies its own default reasoning settings, and the settings actually used are recorded instead of assumed. Defaults are unknown and may differ between hosts, so settings are never compared across hosts or runs and a record is not claimed to be comparable with any other.
+
+Both hosts load a read-only observer plugin from this directory (`observer/`) next to the plugin under test. It records, for every model request, the session, agent, provider and model, and a fixed allowlist of primitive generation settings. On v1 it uses `chat.params`, which receives the resolved model and the final provider options. On v2 it uses `model.request` for every model call and `http.request` or `experimental.ws.send` for the outbound payload, whichever transport the call uses. Prompts, messages, tool schemas, headers and response bodies are never recorded.
+
+A case is `evidence_invalid` when any responding session persisted a message on another provider, model or v2 variant, or when its requests are not observed or name another model. On v1 every responding session needs a `chat.params` record on the frozen model, and a resolved API identity that is not the frozen model or a listed alias is `api_model_unexpected`. On v2 every responding session needs a `model.request` (`context` records alone are `model_request_unobserved`), every model call needs its own HTTP or WebSocket payload in its time window (`payload_unobserved`), and the payload's model must be the frozen model or an alias listed in `scenarios.json` under `model.wireAliases` (`payload_model_unexpected`). The list is empty until a legitimate alias is observed and recorded there with its evidence. The preflight is held to the same check and to the same record limits: it fails with `observer_requests_truncated` when the observer's requests were cut, and with the fixed failure code of a history read that failed, so earlier text is never taken as a complete answer. Each case records, per agent, the effective model and settings observed.
+
+## Wiring
+
+`wiring` builds the candidate, then on each host, with stock permissions (no global allow rule) and the mock provider, it records:
+
+- whether each of the 14 Hive roles and 11 commands is listed;
+- per role, the provider-facing system prompt size and hash, tool count and tool-schema size, observed from the request the host actually sent;
+- the Hive tool contract for the full-access role against the installed package's `plugin.json`: every manifest tool must be exposed (directly, or on v2 through Code Mode), none unexpected, each with a description; parameter names of the direct tools must match across hosts, and parameters without descriptions are listed for review;
+- the field contract: the relationship-bearing fields later instruction changes rely on (`TOOL_FIELD_CONTRACT` in `hosts.mjs`: worktree create, inspect, merge and cleanup for feature and ad-hoc work including pins and destination targets, `hive_plan_approve`, `hive_tasks_sync`, `hive_task_update` publication fields and the context read, write, append and archive fields) must each appear with a non-empty description on the surface the host showed the model, the direct tool schema or, for a read shown only there, the Code Mode declaration's doc comment. A missing tool, a missing field or a blank description fails (`field_contract_*`); undescribed fields outside the contract stay informational;
+- every reference that an installed `SKILL.md` points to, read by a child Scout through the skill's materialized directory under stock permissions; a pointer to a missing file fails, and unpointed reference files are reported apart;
+- whether the native `build` agent invoking `/start-execution` received the command body, proven by a body sentence that the installed package's `dist` contains verbatim, beyond the caller's own text and the route-snapshot footer, and whether that agent can then load `executing-plans` and read the references it points to;
+- whether a same-name user skill overrides the packaged `adversarial-review`: it must be listed, resolve to the user's directory and load the user's body; its packaged pointers are reported as unreachable rather than required;
+- the size of each materialized Hive skill entry point and its references.
+
+The reference requirement follows the pointers in the installed package, so a candidate that has not yet added a reference is not asked to deliver it, and a candidate that points to one must deliver it on both hosts. `references.planned` reports, for each reference the instruction-contracts plan adds later, whether it is `absent`, `present_unpointed`, `pointed_not_read` or `delivered`; a generic reference success never stands in for one of them.
+
+Together with the per-role prompt and tool-schema sizes, this is the exposure account for a candidate: what a role receives up front and what it can load on demand, observed on the installed artifact rather than counted from source. The wiring manifest records the tarball path and hash that acceptance reuses.
+
+## Security boundary
+
+**Docker engine.** Every Docker command runs with an allowlisted environment (`PATH`, `HOME`, `DOCKER_CONFIG`, `DOCKER_HOST`), a run-owned empty CLI config in the output directory and an explicit `unix://` endpoint. The runner refuses to start if the inherited environment sets any Docker context, host, TLS, builder or proxy variable, if the endpoint is not an existing local unix socket, if the engine reports a kernel different from this machine's (`os.release()`), if it looks like a cloud or offload engine, if it reports no engine ID, or if it lacks cgroup v2 memory and swap limits. A Docker Desktop engine in the same WSL2 VM passes the kernel check; Docker Desktop on macOS does not, and the runner fails closed there. The engine's own proxy settings are recorded in the manifest as observed facts.
+
+**Containers.** Each case gets a fresh container from the runtime image with `--log-driver none`, `--memory 4g --memory-swap 4g` (no swap), `--ulimit core=1:1`, a read-only root filesystem, `/work` and `/tmp` as tmpfs, all capabilities dropped, `no-new-privileges`, a pids limit, no published ports, no host mounts, no Docker socket and a fixed environment allowlist. Rehearsal and wiring containers use `--network none`; credential-bearing containers get their own bridge network. Before any credential is injected, the runner compares `docker inspect` with these settings and runs a probe inside the container that reads `memory.swap.max` (must be 0), `memory.max`, the observed core limit, `core_pattern`, the mount table, PID 1 and the guard process. Any mismatch stops the run.
+
+**Lifetime guard.** `--init` makes Docker's init (`docker-init`, tini) PID 1, and its only child is `guard.mjs`, running as uid 999. Every evaluation process, including the hosts and every agent tool, runs as uid 1000 through `docker exec --user 1000:1000`, so none of them can signal, stop or reconfigure the guard. The guard exits at a ceiling fixed in the container's command line when it starts; tini then exits, and the kernel kills every remaining process in the container's PID namespace. Before a credential enters a container, the runner arms the guard through a 0700 socket only uid 999 can open, and waits for the guard's acknowledgement of a deadline no later than the requested one (the case deadline for cases, 300 seconds for the catalog and preflight). Arming is one-shot and can only shorten the lifetime. The container's lifetime therefore has a bound that does not depend on the runner: if the runner is killed, the container still stops at its deadline. The runner's own timer can stop it earlier.
+
+**Core dumps.** `RLIMIT_CORE` is 1:1. A file `core_pattern` needs at least one page to write a dump, and for a pipe `core_pattern` the kernel refuses to start the helper when the limit is exactly 1 (`coredump_pipe` in `fs/coredump.c`, checked in the exact `linux-msft-wsl-6.18.33.2` source and upstream v6.6). The isolation probe reads `core_pattern` and accepts only those two forms; socket modes (`@`, `@@`) and anything unrecognized stop the run. WSL2 pipes core dumps to `/wsl-capture-crash`. A process inside the container can still lower its own soft limit to 0, which re-enables the pipe helper for its own crash: this setting contains accidental dumps, not a process that sets out to produce one.
+
+Everything mutable that can hold a secret or raw evidence lives on tmpfs: the host's home and XDG directories, native databases, server logs, fixture repositories, mock requests and observer records. Docker documents that tmpfs pages can swap; the equal memory and memory-swap limits, confirmed by the in-container probe, are what keep these pages out of swap.
+
+**Credential.** Paid runs read only the `openai` entry of `$XDG_DATA_HOME/opencode/auth.json` (or `~/.local/share/opencode/auth.json`), read-only, after the build, rehearsal, resume validation, prior-resource settlement and container checks. `credentials.mjs` keeps the access token, expiry and account ID in memory and discards the refresh token. The native request sent to the container replaces the refresh token with the placeholder `ic-access-only-refresh-disabled`. The request reaches the container only on stdin of `docker exec -i … inject-auth`, never in argv, environment, build arguments or an image. Inside the container the fixture forwards it to the host's own loopback server: `PUT /auth/openai` on v1 and `POST /api/credential` with the `chatgpt-browser` method on v2.
+
+The required remaining lifetime at each injection is the container's deadline plus the exact host's refresh window plus a 10-minute margin. From the qualified sources, v1 1.18.30 refreshes only after `expires` has passed, and v2 2.0.26 refreshes when `expires` is within 5 minutes. An expired, short-lived, malformed or non-OAuth credential stops the run with a fixed code; nothing falls back to a wider credential. Each case records the remaining lifetime it observed at injection. After each case the fixture confirms that the container's stored credential still carries the placeholder and the same access token; a change, or a result that cannot be confirmed, stops the run.
+
+The runner fingerprints the host auth file (size, mtime, inode and content hash, kept in process memory and never written out) before reading it, right after reading it, before each injection and after each case. Records and the manifest hold only whether it was unchanged at each point. A change stops the run before the next injection and is reported as `host_auth_changed` with attribution unresolved; cases completed while it was unchanged keep their records, and the runner never restores or edits host authentication.
+
+Inside a paid container the credential is readable by the host process and by any tool the agent runs. The containment is the access-only scope, the absent refresh token, the guard-bounded container lifetime and the export scan below, not process-level isolation from the agent.
+
+**Deadline.** The case deadline starts when the guard is armed, immediately before injection. The in-container driver stops its own session 30 seconds early so evidence can still be exported; the runner's timer and the guard each stop the whole container at the deadline, which stops every host, child session and tool process inside it. Requests that already reached OpenAI are not refunded or revoked by that.
+
+**Evidence export.** The fixture builds an allowlisted record (session tree, agents, persisted models, error class names, bounded tool arguments with sanitized tool outcomes but without tool outputs, final texts, token counts, the observer's records for the case's sessions, fixed probes, named artifacts and the `limits` block), scans it for the stored credential and for token-shaped strings, and returns either the record or the fixed code `export_contaminated`. The runner scans it again with the in-memory credential before writing it. Raw native databases, logs, transcripts and `/work` are never copied out. Credential-free phases may keep a bounded fixture or build failure detail for diagnosis; paid phases keep fixed codes only.
+
+**Cleanup.** Every container and network is created with a unique `ic.nonce` label and recorded in `resources.jsonl` as soon as its ID is known. A resource counts as gone only when a successful listing from the same responsive engine (same engine ID as the boundary check) no longer shows its exact ID. A Docker error, a timeout, a different engine or an unparseable listing is `unknown`: the ID stays recorded, the run stops before any further work and the final status is `failed`. If a create response is lost, the runner settles it by listing the nonce; if that listing cannot be trusted either, the nonce stays unsettled in the same way. Cleanup removes only recorded IDs. The manifest's `cleanup` and `resources` blocks show each resource as `absent`, `present` or `unknown`. Runtime images are retained and recorded by ID for reuse and resume; remove them with `docker image rm <id>` when they are no longer needed.
+
+## Request and usage visibility
+
+The harness does not cap outbound requests, and it makes no exact billable-request or spend claim. Each case records, per session, the number of assistant messages, retries and errors that the host persisted, and the input, output, reasoning and cache token totals it reports, plus every model request the observer saw. Requests outside the hosts' session hooks are not visible: provider retries below the hook, the v1 models catalog fetch from `models.opencode.ai`, and anything the stock OAuth plugins do internally. v2 also keeps its built-in OpenCode Zen provider enabled; every Hive role and the session model are pinned to the frozen OpenAI model, and a session request on another provider makes the case `evidence_invalid`, but a host-internal request outside a session cannot be ruled out. One explicitly submitted minimal prompt per host is the preflight; it can still cause such auxiliary traffic.
+
+## Outputs
+
+`<output-root>/<run-id>/` contains:
+
+- `records/`: immutable run records. Each is written to a temporary file, synced and published with `link(2)`, which never replaces an existing name, so a record that exists is complete. `prepared` binds the run's inputs (harness commit, tree and scenario hash, subject commit, artifact, runtime image and identity, isolation settings, deadline, hosts, named scenarios, engine ID and the wiring manifest's hash) and is written before any credential is read. `model` holds the frozen model. `preflight.<host>.started` and `case.<host>.<scenario>.started` are written immediately before the paid prompt; the matching `outcome` record follows the result. `checkpoint.<n>` summarizes each case boundary. A resumed run publishes one `inherited` record before `prepared`: every earlier collected record (reuse) and unresolved item (carry), each with the record it came from and that record's hash, plus the frozen model. A source run whose `prepared` names a resume but which has no `inherited` record is refused.
+- `manifest.json` (schema `ic-run-manifest/v3`): identities, Docker and isolation observations, artifact and runtime reports, rehearsal results, frozen model, preflight results, case summaries with outcomes, evidence limits and effective settings, cleanup results, host-auth booleans, failure codes and the hash of every record. Written once when the run ends.
+- `artifact/oc-arkive.tgz` and `artifact/build-report.json` (subject builds): the packed tarball, build toolchain versions, root-local `hive-core` resolution and pack entries.
+- `rehearsal/<host>.<scenario>.json` and, for paid runs, `cases/<host>.<scenario>.json`: the exported record of each case (schema `ic-case-export/v3`), written once. A paid case file is what an assessor reads.
+- `wiring.json` (wiring phase), `resources.jsonl`, `build-context/` and `docker-config/`.
+
+## Resuming
+
+There are no automatic paid reruns. A paid run that stops early, whether at `--case-limit`, after an infrastructure failure, or because the runner itself was killed, leaves its records on disk. Continuing requires an explicit decision recorded in a new run:
+
+```sh
+node packages/opencode-hive/evals/instruction-contracts/run.mjs acceptance \
+  --candidate-manifest <same wiring manifest> --scenarios <same scenarios> \
+  --auth openai-access-only --hosts v1,v2 --timeout-seconds 600 --run-id collection-2 \
+  --output-root /tmp/opencode/instruction-contracts \
+  --resume-from /tmp/opencode/instruction-contracts/collection-1 \
+  --resume-decision "<who decided, and why>" [--case-limit <n>] [--repurchase v1:milestone-closure]
+```
+
+`--resume-from` names the previous run directory (or its manifest). The resume reads that run's records, not its summary, and is validated completely before any credential is read or any preflight runs: the previous `prepared` record must match the current harness commit, tree and scenario hash, subject commit, artifact hash, runtime image and identity, isolation settings, deadline, hosts, named scenarios, wiring manifest hash and engine ID; the artifact file and the runtime image must still exist unchanged; and every record and case file to be reused or carried must still have its recorded hash. A resume never widens or narrows the named scope, never reuses a record from a different revision and does not rebuild or rehearse again; it reuses the previous run's artifact, image and rehearsal under that identity. A record written under the earlier rubric (`graded`) is not a `collected` record: it is carried as unresolved.
+
+Before a credential is read, the resume also settles the previous run's resources. It reads that run's `resources.jsonl` and, through the same bound engine, removes by exact ID every container or network the ledger created and never confirmed removed (containers first, because the engine refuses to remove a network that still has a container attached), and looks up every create whose response was lost by its nonce. Anything it cannot confirm gone (a Docker error, a different engine, an unparseable listing, an unreadable or missing ledger) stops the resume with `cleanup_unknown`, `prior_resources_unsettled`, `ledger_unreadable` or `prior_ledger_missing`, before anything is inherited or prepared. There is no fallback to untracked Docker commands. The guard still bounds an unreachable container's lifetime; settlement is what shows the previous run's containers are gone before a new paid item starts. The inherited history is then published, so a resume that fails at authentication, or that stops incomplete on an unresolved preflight, still leaves everything its successor needs. Resuming one run twice at the same time is not prevented; run resumes one at a time.
+
+Each paid item (the preflight per host and each named case) is then reused, carried or run:
+
+- A `collected` case or a successful preflight is reused and never bought again, including through a chain of resumes.
+- A case or preflight that started but has no trustworthy result (the runner was interrupted, or the outcome was a timeout, host error, blocked interaction, invalid fixture or invalid evidence) is carried forward unchanged as unresolved. It runs again only when named in `--repurchase <host>:<scenario|preflight>`, and the decision is recorded. An unresolved preflight blocks every paid step until it is repurchased.
+- A case that never started runs normally.
+
+A run whose selected cases are all `collected` is `collected`; otherwise it ends `checkpoint` (cases remain under the case limit) or `incomplete` (only unresolved cases remain). A rehearsal-only run is also a valid resume source for the same scope: the paid run then skips rebuilding and rehearsing.
+
+## Maintenance
+
+Each fact in `hosts.mjs` (auth routes, refresh windows, tool names, API paths) is tied to the qualified host versions and cites its source file, as do the observer's hook names. Changing a host version means re-deriving those facts from that version's source, regenerating `runtime/<host>/package-lock.json` inside a container, and making a new wiring run. `bun test evals/instruction-contracts/harness.test.ts` from `packages/opencode-hive` exercises the boundary, isolation, guard, credential, lifecycle, resume, model-evidence, evidence-limit, scope and wiring logic without Docker or credentials.
