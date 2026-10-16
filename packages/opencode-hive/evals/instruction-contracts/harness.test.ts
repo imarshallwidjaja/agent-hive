@@ -18,9 +18,9 @@ import {
   rehearseLifetime, rehearsePaidPath, rehearseSelection, resumePlan, runEndFailure, runtimeFailures, selectScenarios, selectSharedModel, verifyArtifact, verifyResumeOrigins, wiringFailures,
 } from './run.mjs';
 import {
-  ARTIFACT_CAP, ATTEMPT_LOG_HEADER, FINAL_TEXT_CAP, allowlistArgs, attemptCount, clipText, clipToolArgs, codeModeBlocks, codeModeFieldDocs, deliveredBodySentence,
-  evidenceLimits, hiveResultFailed, messagePages, mockDecision, preflightReply, readHistories, render, safeName, scriptDirective, skillReferencePointers,
-  toolFieldContract, toolOutcome,
+  ARTIFACT_CAP, ATTEMPT_LOG_HEADER, FINAL_TEXT_CAP, STOP_INSTRUCTION_CAP, allowlistArgs, attemptCount, clipText, clipToolArgs, codeModeBlocks, codeModeFieldDocs, commandDelivery,
+  deliveredBodySentence, evidenceLimits, hiveResultFailed, interruptSession, messagePages, mockDecision, preflightReply, readHistories, render, runPrompt, safeName, scenarioOverrides,
+  scriptDirective, skillReferencePointers, toolFieldContract, toolOutcome,
 } from './fixture.ts';
 
 const SCENARIOS = JSON.parse(readFileSync(join(import.meta.dir, 'scenarios.json'), 'utf8'));
@@ -1255,12 +1255,61 @@ describe('scenario set, fixture checks and rehearsal paths', () => {
     expect(verdict(g, 'override-loaded', liveRecord({ toolCalls: [load('generated')] }))).toBe('fail');
   });
 
+  // The probes a sound skill-override-reference fixture leaves: both stale copies in place, the milestone override
+  // without references, and the command's own stop instruction delivered.
+  const SOUND_OVERRIDE_PROBES = {
+    'stale-copy-present': true, 'stale-milestone-copy-present': true, 'milestone-override-reference-files': 0, 'command-stop-instruction-delivered': true,
+  };
+
   test('a failed fixture check marks the fixture invalid, whatever the agent did', () => {
     const g = group('skill-override-reference');
-    const record = { ...liveRecord(), probes: { 'stale-copy-present': false } };
-    expect(failedChecks(g.fixtureChecks, record)).toEqual(['stale-copy-fixture-intact']);
-    expect(failedChecks(g.fixtureChecks, { ...liveRecord(), probes: { 'stale-copy-present': true } })).toEqual([]);
-    expect(rehearsalPathFailures(g, { run: RAN, record })).toContain('fixture:stale-copy-fixture-intact');
+    const withProbes = (probes: any) => ({ ...liveRecord(), probes: { ...SOUND_OVERRIDE_PROBES, ...probes } });
+    expect(failedChecks(g.fixtureChecks, withProbes({}))).toEqual([]);
+    expect(failedChecks(g.fixtureChecks, withProbes({ 'stale-copy-present': false }))).toEqual(['stale-copy-fixture-intact']);
+    expect(failedChecks(g.fixtureChecks, withProbes({ 'stale-milestone-copy-present': false }))).toEqual(['stale-milestone-copy-intact']);
+    expect(failedChecks(g.fixtureChecks, withProbes({ 'milestone-override-reference-files': 1 }))).toEqual(['milestone-override-ships-no-reference']);
+    expect(rehearsalPathFailures(g, { run: RAN, record: withProbes({ 'stale-copy-present': false }) })).toContain('fixture:stale-copy-fixture-intact');
+  });
+
+  test('the milestone request starts through the native /start-execution command with the stop instruction as a fixed fixture check', () => {
+    const g = group('skill-override-reference');
+    expect(g.command).toEqual({ name: 'start-execution', stopMarker: 'overridden without its references' });
+    // The prompt is the command's argument: it asks for a milestone and names no expected answer or wording.
+    expect(g.prompt).toContain('Run feature "notes-pipeline" until task "02-add-pipeline-module"');
+    expect(g.prompt).not.toContain(g.command.stopMarker);
+    const delivered = (value: any) => ({ ...liveRecord(), probes: { ...SOUND_OVERRIDE_PROBES, 'command-stop-instruction-delivered': value } });
+    // An undelivered instruction is a harness defect, and a record without run state cannot show it either way.
+    expect(failedChecks(g.fixtureChecks, delivered(false))).toEqual(['command-stop-instruction-delivered']);
+    expect(failedChecks(g.fixtureChecks, delivered(null))).toEqual(['command-stop-instruction-delivered']);
+    expect(verdict(g, 'command-stop-instruction-delivered', delivered(true))).toBe('pass');
+    // Only the checked data differs; no check reads what the model wrote.
+    expect(checksOf(g).every((c: any) => ['dispatch', 'tool', 'order', 'probe'].includes(c.kind))).toBe(true);
+  });
+
+  test('a user skill override of executing-plans loads from the user directory; the stale generated milestone copy is ignored', () => {
+    const g = group('skill-override-reference');
+    const load = (source: string) => ({ seq: 0, session: 's1', tool: 'skill', status: 'completed', args: { name: 'executing-plans' }, outcome: { result: 'success', source } });
+    expect(verdict(g, 'milestone-override-loaded', liveRecord({ toolCalls: [load('user')] }))).toBe('pass');
+    expect(verdict(g, 'milestone-override-loaded', liveRecord({ toolCalls: [load('generated')] }))).toBe('fail');
+    const overrides = scenarioOverrides(g, false);
+    expect(Object.keys(overrides.userSkills).sort()).toEqual(['adversarial-review/SKILL.md', 'executing-plans/SKILL.md']);
+    expect(overrides.userSkills['executing-plans/SKILL.md']).toContain('name: executing-plans');
+    // The override ships no reference file and the stale generated copy sits in a bundle the harness never selects.
+    expect(Object.keys(overrides.userSkills).some((path) => path.startsWith('executing-plans/references'))).toBe(false);
+    const stale = Object.entries(overrides.homeFiles).filter(([path]) => path.includes('/executing-plans/'));
+    expect(stale.map(([path]) => path).every((path) => path.includes('/opencode-skills/0000stale/'))).toBe(true);
+    expect(stale.some(([path, body]) => path.endsWith('references/task-milestones.md') && /STALE-REFERENCE-MARKER/.test(body as string))).toBe(true);
+  });
+
+  test('wiring installs no case-only override, so the packaged executing-plans and its references stay the active ones', () => {
+    const g = group('skill-override-reference');
+    const wiring = scenarioOverrides(g, true);
+    expect(Object.keys(wiring.userSkills)).toEqual(['adversarial-review/SKILL.md']);
+    expect(Object.keys(wiring.homeFiles).some((path) => path.includes('/executing-plans/'))).toBe(false);
+    expect(Object.keys(wiring.homeFiles).some((path) => path.includes('/adversarial-review/'))).toBe(true);
+    expect(scenarioOverrides(null, true)).toEqual({ homeFiles: {}, userSkills: {} });
+    // Only this group carries case-only overrides.
+    expect(SCENARIOS.groups.filter((x: any) => x.fixture.caseOverrides).map((x: any) => x.id)).toEqual(['skill-override-reference']);
   });
 
   test('missing evidence is unrun, which never counts as a pass', () => {
@@ -1558,7 +1607,7 @@ describe('wiring contract', () => {
     toolContract: { expected: 2, missing: [], unexpected: [], undescribed: [], paramNames: { hive_status: ['feature'] }, undescribedParams: {} },
     fieldContract: { checked: 40, absentTools: [], absentFields: [], undescribed: [] },
     references: { pointers: { 'hive-config': { pointed: ['a.md'], broken: [], unpointed: [] } }, reads: [{ skill: 'hive-config', file: 'a.md', readCompleted: true }] },
-    nonHiveCommand: { command: 'start-execution', bodyDelivered: true, skillLoaded: true, referenceReads: [] },
+    nonHiveCommand: { command: 'start-execution', result: 0, timedOut: false, asked: null, bodyDelivered: true, skillLoaded: true, referenceReads: [] },
     override: { listed: true, resolvesToUserSkill: true, loadedUserBody: true },
     ...overrides,
   });
@@ -1572,7 +1621,7 @@ describe('wiring contract', () => {
       v1: host({
         toolContract: { expected: 2, missing: ['hive_plan_read'], unexpected: [], undescribed: ['hive_status'], paramNames: { hive_status: ['feature'] } },
         references: { pointers: { 'hive-config': { pointed: [], broken: ['gone.md'], unpointed: [] } }, reads: [{ skill: 'hive-config', file: 'a.md', readCompleted: false }] },
-        nonHiveCommand: { command: 'start-execution', bodyDelivered: false, skillLoaded: false, referenceReads: [{ file: 'task-milestones.md', readCompleted: false }] },
+        nonHiveCommand: { command: 'start-execution', result: 0, bodyDelivered: false, skillLoaded: false, referenceReads: [{ file: 'task-milestones.md', readCompleted: false }] },
         override: { listed: true, resolvesToUserSkill: false, loadedUserBody: false },
       }),
       v2: host({ toolContract: { expected: 2, missing: [], unexpected: [], undescribed: [], paramNames: { hive_status: ['feature', 'extra'] } } }),
@@ -1583,6 +1632,15 @@ describe('wiring contract', () => {
       'command_consumer_reference_failed:v1:task-milestones.md', 'override_not_user_skill:v1', 'override_body_not_loaded:v1', 'tool_params_differ:hive_status',
     ]));
     expect(wiringFailures({ v1: host({ toolContract: { expected: 0, missing: [], unexpected: [], undescribed: [], paramNames: {} } }) })).toContain('tool_manifest_unread:v1');
+  });
+
+  // The body arrived and the references were read, then the run stalled, errored or waited on an operator.
+  test('a command run that did not finish fails wiring even when its delivery and reference reads are positive', () => {
+    const delivered = { command: 'start-execution', result: 0, timedOut: false, asked: null, bodyDelivered: true, skillLoaded: true, referenceReads: [{ file: 'task-milestones.md', readCompleted: true }] };
+    expect(wiringFailures({ v1: host({ nonHiveCommand: delivered }), v2: host({ nonHiveCommand: delivered }) })).toEqual([]);
+    for (const unfinished of [{ result: -1 }, { result: 1 }, { timedOut: true }, { asked: 'permission' }, { result: undefined }]) {
+      expect(wiringFailures({ v2: host({ nonHiveCommand: { ...delivered, ...unfinished } }) })).toEqual(['command_run_unsuccessful:v2:start-execution']);
+    }
   });
 
   // The relied-upon fields as a host showed them: every contract tool with every contract field described.
@@ -1651,6 +1709,95 @@ describe('wiring contract', () => {
     mkdirSync(join(root, 'plain'));
     writeFileSync(join(root, 'plain', 'SKILL.md'), 'no references');
     expect(skillReferencePointers(root)).toEqual({ 'executing-plans': { pointed: ['task-milestones.md'], broken: ['missing.md'], unpointed: ['orphan.md'] } });
+  });
+
+  test('a native command counts as delivered with its stop instruction only when that package sentence reached a user message', () => {
+    const stopSentence = 'When executing-plans or that reference is unavailable (disabled, overridden without its references, or no skill access), dispatch no milestone work.';
+    const otherSentence = 'Execute the approved plan through explicit tasks and ordinary native subagents.';
+    const dist = `const a = \`${otherSentence} ${stopSentence}\`;`;
+    const caller = 'Run feature "x" until task "y" is complete.';
+    const marker = 'overridden without its references';
+    const both = commandDelivery([`Context: ${caller}\n- ${otherSentence} ${stopSentence}`], caller, dist, marker);
+    expect(both).toMatchObject({ userMessages: 1, bodyDelivered: true, stopInstructionDelivered: true, stopInstruction: stopSentence });
+    // The body arrived but the stop sentence did not.
+    expect(commandDelivery([`Context: ${caller}\n${otherSentence}`], caller, dist, marker)).toMatchObject({ bodyDelivered: true, stopInstructionDelivered: false, stopInstruction: null });
+    // The caller's own text, even quoting the marker, is not a delivered instruction; nor is a sentence the package lacks.
+    expect(commandDelivery([caller], caller, dist, marker)).toMatchObject({ bodyDelivered: false, stopInstructionDelivered: false });
+    expect(commandDelivery([`${caller}\nYou may continue when something is overridden without its references, whatever else holds.`], caller, dist, marker).stopInstructionDelivered).toBe(false);
+    expect(commandDelivery([], caller, dist, marker)).toEqual({
+      userMessages: 0, bodyDelivered: false, stopInstructionDelivered: false, stopInstruction: null, stopInstructionChars: 0, stopInstructionTruncated: false,
+    });
+  });
+
+  test('an exported stop instruction is bounded by the shared clip and says whether it was cut and how long it was', () => {
+    const marker = 'overridden without its references';
+    const caller = 'Run feature "x" until task "y" is complete.';
+    const long = `When executing-plans is ${marker}, dispatch no milestone work ${'and keep this instruction in view '.repeat(15)}until it is restored.`;
+    expect(long.length).toBeGreaterThan(STOP_INSTRUCTION_CAP);
+    const cut = commandDelivery([`${caller}\n${long}`], caller, long, marker);
+    expect(cut).toMatchObject({ stopInstructionDelivered: true, stopInstruction: long.slice(0, STOP_INSTRUCTION_CAP), stopInstructionChars: long.length, stopInstructionTruncated: true });
+    const whole = `When executing-plans is ${marker}, dispatch no milestone work.`;
+    expect(commandDelivery([`${caller}\n${whole}`], caller, whole, marker)).toMatchObject({ stopInstruction: whole, stopInstructionChars: whole.length, stopInstructionTruncated: false });
+  });
+
+  test('v2 user messages carry their prompt as text, which command delivery reads', async () => {
+    const user = { type: 'user', text: 'Context: Run feature x', time: { created: 1 } };
+    const read = await messagePages('v2', 's1', async () => ({ status: 200, ok: true, body: { data: [user], cursor: {} } }));
+    expect(read.history).toMatchObject([{ role: 'user', text: 'Context: Run feature x' }]);
+  });
+
+  describe('a v2 command run', () => {
+    // Stands in for the host API: the command is accepted and `wait` answers as the case requires.
+    const hostApi = async (wait: (init: any) => Promise<Response>, body: () => Promise<any>) => {
+      const real = globalThis.fetch;
+      const calls: string[] = [];
+      const reply = (status: number, data: any = {}) => new Response(JSON.stringify({ data }), { status });
+      globalThis.fetch = (async (url: any, init: any = {}) => {
+        const path = new URL(String(url)).pathname;
+        calls.push(`${init.method ?? 'GET'} ${path}`);
+        if (path === '/api/session') return reply(200, { id: 'ses_1' });
+        if (path.endsWith('/command')) return reply(200);
+        if (path.endsWith('/wait')) return wait(init);
+        return reply(200, []);
+      }) as any;
+      try { return { run: await body(), calls }; } finally { globalThis.fetch = real; }
+    };
+    const start = (timeoutMs = 60_000) => runPrompt('v2', { agent: 'build', modelRef: 'mock/x', command: 'start-execution', prompt: 'p' }, timeoutMs);
+
+    test('exits 0 only when the host acknowledged the wait', async () => {
+      const { run, calls } = await hostApi(async () => new Response('{}', { status: 200 }), start);
+      expect(run).toMatchObject({ exit: 0, sessionId: 'ses_1', asked: null, timedOut: false });
+      expect(calls).toContain('POST /api/experimental/session/ses_1/wait');
+    });
+
+    test('a failed wait after an accepted command is not a completion', async () => {
+      const { run } = await hostApi(async () => new Response('{}', { status: 503 }), start);
+      expect(run).toMatchObject({ exit: -1, sessionId: 'ses_1', asked: null, timedOut: false });
+    });
+
+    test('a pending wait past the deadline is aborted and reported as a timeout', async () => {
+      let aborted = false;
+      const pending = (init: any) => new Promise<Response>((_, reject) => init.signal.addEventListener('abort', () => { aborted = true; reject(new Error('aborted')); }));
+      const { run } = await hostApi(pending, () => start(1));
+      expect(aborted).toBe(true);
+      expect(run).toMatchObject({ exit: -1, sessionId: 'ses_1', timedOut: true });
+    }, 15_000);
+  });
+
+  test('an unfinished run is stopped through each host\'s own session route, and the host must acknowledge it', async () => {
+    const real = globalThis.fetch;
+    const seen: string[] = [];
+    let status = 200;
+    globalThis.fetch = (async (url: any, init: any = {}) => { seen.push(`${init.method} ${new URL(String(url)).pathname}`); return new Response('{}', { status }); }) as any;
+    try {
+      expect(await interruptSession('v1', 's1')).toBe(true);
+      expect(await interruptSession('v2', 's1')).toBe(true);
+      status = 500;
+      expect(await interruptSession('v2', 's1')).toBe(false);
+    } finally {
+      globalThis.fetch = real;
+    }
+    expect(seen).toEqual(['POST /session/s1/abort', 'POST /api/session/s1/interrupt', 'POST /api/session/s1/interrupt']);
   });
 
   test('command delivery needs a body sentence from the installed artifact beyond the caller text and the route footer', () => {

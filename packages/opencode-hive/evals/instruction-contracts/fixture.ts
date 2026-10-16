@@ -307,21 +307,33 @@ function detach(command: string, args: string[], logName: string, env: Json = {}
   return child.pid ?? -1;
 }
 
-function prepareHome(scenario: Json | null): string | null {
+/**
+ * The home files and user skills a scenario installs. `fixture.caseOverrides` holds the files only scenario cases and
+ * their rehearsal install; wiring skips them so the packaged skills it reads references from stay the active ones.
+ */
+export function scenarioOverrides(scenario: Json | null, wiring: boolean): { homeFiles: Json; userSkills: Json } {
+  const caseOverrides = wiring ? {} : scenario?.fixture?.caseOverrides ?? {};
+  return {
+    homeFiles: { ...(scenario?.fixture?.homeFiles ?? {}), ...(caseOverrides.homeFiles ?? {}) },
+    userSkills: { ...(scenario?.fixture?.userSkills ?? {}), ...(caseOverrides.userSkills ?? {}) },
+  };
+}
+
+function prepareHome(scenario: Json | null, wiring = false): string | null {
   mkdirSync(join(HOME, '.config', 'opencode'), { recursive: true });
-  for (const [path, content] of Object.entries(scenario?.fixture?.homeFiles ?? {})) writeFile(join(HOME, path), content as string);
-  const skills = scenario?.fixture?.userSkills;
-  if (!skills) return null;
+  const { homeFiles, userSkills } = scenarioOverrides(scenario, wiring);
+  for (const [path, content] of Object.entries(homeFiles)) writeFile(join(HOME, path), content as string);
+  if (Object.keys(userSkills).length === 0) return null;
   const dir = join(WORK, 'user-skills');
-  for (const [path, content] of Object.entries(skills)) writeFile(join(dir, path), content as string);
+  for (const [path, content] of Object.entries(userSkills)) writeFile(join(dir, path), content as string);
   return dir;
 }
 
 async function serve(input: Json): Promise<Json> {
-  const { host, provider, model, variant, agentMode, scenario, permissive } = input;
+  const { host, provider, model, variant, agentMode, scenario, permissive, wiring } = input;
   mkdirSync(STATE, { recursive: true });
   mkdirSync(PROJ, { recursive: true });
-  const userSkillsDir = prepareHome(scenario ? group(scenario) : null);
+  const userSkillsDir = prepareHome(scenario ? group(scenario) : null, wiring === true);
   const config = hostConfig(host, { provider, model, mockPort: MOCK_PORT, serverPort: SERVER_PORT, userSkillsDir, observer: join(HARNESS, 'observer'), permissive });
   writeFile(join(PROJ, hostSpec(host).configFile), JSON.stringify(config, null, 2));
   writeFile(join(HOME, '.config', 'opencode', 'agent_hive.json'), JSON.stringify(hiveConfig({ provider, model, variant, agentMode }), null, 2));
@@ -369,13 +381,32 @@ export async function runPrompt(host: string, { agent, modelRef, prompt, command
   const created = await api(create.path, { method: 'POST', body: JSON.stringify(create.body) });
   const sessionId = unwrap(created.body)?.id ?? null;
   if (!sessionId) return { exit: -1, sessionId: null, events: [], asked: null, timedOut: false, durationMs: 0 };
-  const args = runArgs(host, { port: SERVER_PORT, session: sessionId, agent, modelRef, prompt, command });
   const started = Date.now();
-  // Native CLI output is not evidence; history is read back through the server API after the run.
-  const child = spawn(hostSpec(host).binary, args, {
-    cwd: PROJ, env: { ...process.env, OPENCODE_PASSWORD: process.env.OPENCODE_SERVER_PASSWORD }, stdio: ['ignore', 'ignore', 'ignore'],
-  });
-  const exited = new Promise<number>((resolve) => child.on('exit', (code) => resolve(code ?? -1)));
+  let exited: Promise<number>;
+  let stop: () => void;
+  if (command && host === 'v2') {
+    // The v2 CLI has no command flag; the public session command route is the native consumer.
+    const abort = new AbortController();
+    stop = () => abort.abort();
+    exited = (async () => {
+      try {
+        const sent = await api(`/api/session/${sessionId}/command`, { method: 'POST', body: JSON.stringify({ name: command, text: prompt }), signal: abort.signal });
+        if (!sent.ok) return -1;
+        // An HTTP failure is a response, not an exception: only an acknowledged wait shows the session reached idle.
+        const waited = await api(`/api/experimental/session/${sessionId}/wait`, { method: 'POST', signal: abort.signal });
+        return waited.ok ? 0 : -1;
+      } catch {
+        return -1;
+      }
+    })();
+  } else {
+    // Native CLI output is not evidence; history is read back through the server API after the run.
+    const child = spawn(hostSpec(host).binary, runArgs(host, { port: SERVER_PORT, session: sessionId, agent, modelRef, prompt, command }), {
+      cwd: PROJ, env: { ...process.env, OPENCODE_PASSWORD: process.env.OPENCODE_SERVER_PASSWORD }, stdio: ['ignore', 'ignore', 'ignore'],
+    });
+    stop = () => child.kill('SIGTERM');
+    exited = new Promise<number>((resolve) => child.on('exit', (code) => resolve(code ?? -1)));
+  }
   let asked: Json = null;
   let timedOut = false;
   const questions: string[] = [];
@@ -394,13 +425,19 @@ export async function runPrompt(host: string, { agent, modelRef, prompt, command
     asked = pending;
     if (asked || Date.now() > deadline) {
       timedOut = !asked;
-      child.kill('SIGTERM');
+      stop();
       await exited;
       break;
     }
   }
   const exit = await exited;
   return { exit, sessionId, asked, questionsRejected: questions.length, timedOut, durationMs: Date.now() - started };
+}
+
+/** Stops the native session behind a run that did not finish. Ending the driver's process or request leaves that session running. */
+export async function interruptSession(host: string, sessionId: string): Promise<boolean> {
+  const res = await (host === 'v1' ? api(`/session/${sessionId}/abort`, { method: 'POST' }) : api(`/api/session/${sessionId}/interrupt`, { method: 'POST' }));
+  return res.ok;
 }
 
 async function pendingInteraction(host: string): Promise<Json> {
@@ -588,7 +625,8 @@ export async function messagePages(host: string, sessionId: string, get: (path: 
         tokens: m.tokens ?? null,
         retries: m.retry ? 1 : 0,
         error: m.error ? safeName(m.error.type ?? m.error._tag ?? m.error.name) ?? 'other' : null,
-        text: (m.content ?? []).filter((p: Json) => p.type === 'text').map((p: Json) => p.text).join(''),
+        // A v2 user message carries its prompt as `text`; assistant messages carry text parts in `content`.
+        text: m.type === 'user' && typeof m.text === 'string' ? m.text : (m.content ?? []).filter((p: Json) => p.type === 'text').map((p: Json) => p.text).join(''),
         tools: (m.content ?? []).filter((p: Json) => p.type === 'tool').map((p: Json) => ({
           name: p.name, status: p.state?.status, input: p.state?.input, metadata: p.state?.metadata ?? null,
           output: p.state?.output ?? (Array.isArray(p.state?.content) ? p.state.content.map((c: Json) => c.text ?? '').join('') : undefined) ?? '',
@@ -733,7 +771,7 @@ export function attemptCount(text: string | null): number | Json {
 /** A stdout probe keeps this many characters; one more is read so a longer output can be reported as cut. */
 const PROBE_STDOUT_CAP = 2000;
 
-function runProbe(probe: Json, facts: Json): Json {
+function runProbe(probe: Json, facts: Json, run: Json = {}): Json {
   const dir = render(probe.dir ?? PROJ, facts);
   const path = probe.path ? render(probe.path, facts) : null;
   const abs = path ? (path.startsWith('/') ? path : join(dir, path)) : null;
@@ -747,6 +785,8 @@ function runProbe(probe: Json, facts: Json): Json {
       case 'attempts': return attemptCount(existsSync(abs!) ? readFileSync(abs!, 'utf8') : null);
       case 'contains': return existsSync(abs!) && readFileSync(abs!, 'utf8').includes(probe.pattern);
       case 'count': return existsSync(abs!) ? readdirSync(abs!).length : 0;
+      // A fixed field of the run state the driver recorded, such as whether a native command's instruction was delivered.
+      case 'run': return getPath(run, probe.field) ?? null;
       default: return { error: 'unknown_probe_kind' };
     }
   } catch {
@@ -779,6 +819,7 @@ const TOKEN_SHAPES = [/eyJ[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\./, /\bsk-[A-Za
 /** A session's final text leaves the container clipped at this length; the record says when it was. */
 export const FINAL_TEXT_CAP = 8000;
 export const ARTIFACT_CAP = 16000;
+export const STOP_INSTRUCTION_CAP = 300;
 
 /**
  * What the exported record could not show, so an assessor reads a clipped or partial record as such. A history cut by
@@ -850,7 +891,7 @@ async function exportCase(input: Json): Promise<Json> {
   const ordered = [...(scenario.probes ?? [])].sort((a: Json, b: Json) => Number(b.kind === 'attempts') - Number(a.kind === 'attempts'));
   const probesTruncated: string[] = [];
   for (const probe of ordered) {
-    const value = runProbe(probe, facts);
+    const value = runProbe(probe, facts, run);
     if (typeof value === 'string' && value.length > PROBE_STDOUT_CAP) {
       probesTruncated.push(probe.name);
       probes[probe.name] = value.slice(0, PROBE_STDOUT_CAP);
@@ -868,7 +909,10 @@ async function exportCase(input: Json): Promise<Json> {
   const observed = observedRequests(new Set(sessions.map((x) => x.id)));
   const record = {
     schema: 'ic-case-export/v3', host, scenario: scenario.id, facts,
-    run: { exit: run.exit, timedOut: run.timedOut, asked: run.asked, questionsRejected: run.questionsRejected ?? 0, durationMs: run.durationMs },
+    run: {
+      exit: run.exit, timedOut: run.timedOut, asked: run.asked, questionsRejected: run.questionsRejected ?? 0, durationMs: run.durationMs,
+      ...(run.commandDelivery ? { commandDelivery: run.commandDelivery } : {}),
+    },
     // Only the case's own sessions: fixture setup ran earlier on the mock provider in the same container.
     sessions, toolCalls, probes, artifacts, requests: observed.requests,
     limits: evidenceLimits({
@@ -891,11 +935,16 @@ async function runScenario(input: Json): Promise<Json> {
   let prompt = render(scenario.prompt, facts);
   if (mode === 'mock') prompt = `${prompt}\n${scriptDirective(render(scenario.rehearsal.script, facts))}`;
   const modelRef = mode === 'mock' ? `mock/${SCENARIOS.model.mock}` : `openai/${model}`;
-  const run = await runPrompt(host, { agent: scenario.primary, modelRef, prompt }, timeoutMs);
-  if ((run.asked || run.timedOut) && run.sessionId) {
-    await (host === 'v1' ? api(`/session/${run.sessionId}/abort`, { method: 'POST' }) : api(`/api/session/${run.sessionId}/interrupt`, { method: 'POST' }));
-  }
-  const summary = { exit: run.exit, sessionId: run.sessionId, asked: run.asked, questionsRejected: run.questionsRejected, timedOut: run.timedOut, durationMs: run.durationMs };
+  const run = await runPrompt(host, { agent: scenario.primary, modelRef, prompt, command: scenario.command?.name }, timeoutMs);
+  if ((run.asked || run.timedOut) && run.sessionId) await interruptSession(host, run.sessionId);
+  // A native command's delivery is read back from the primary's own user messages, so it holds for rehearsal and paid cases alike.
+  const delivery = scenario.command && run.sessionId
+    ? commandDelivery((await messages(host, run.sessionId)).filter((m) => m.role === 'user').map((m) => m.text), prompt, packageDistText(), scenario.command.stopMarker)
+    : null;
+  const summary = {
+    exit: run.exit, sessionId: run.sessionId, asked: run.asked, questionsRejected: run.questionsRejected, timedOut: run.timedOut, durationMs: run.durationMs,
+    ...(delivery ? { commandDelivery: { command: scenario.command.name, ...delivery } } : {}),
+  };
   writeFile(join(STATE, 'run.json'), JSON.stringify(summary));
   return { ok: Boolean(run.sessionId), ...summary };
 }
@@ -1157,18 +1206,34 @@ export function skillReferencePointers(skillsRoot: string): Json {
  * A sentence of the command body the consumer received that the installed artifact itself contains. Neither host's
  * catalog exposes a v2 command template, so delivery is proven against the package bytes: the prompt must carry, beyond
  * the caller's own text and the route-snapshot footer, at least one body sentence found verbatim in the plugin dist.
+ * With `marker`, only a delivered sentence that contains it counts.
  */
-export function deliveredBodySentence(received: string, callerText: string, distText: string): string | null {
+export function deliveredBodySentence(received: string, callerText: string, distText: string, marker?: string): string | null {
   const body = received.split(callerText).join('\n');
   const footer = /route snapshot|standing constraints|session constraints|feature constraints|hive-route-snapshot/i;
   for (const line of body.split('\n')) {
     if (footer.test(line)) continue;
     for (const sentence of line.split(/(?<=\.)\s+/)) {
       const candidate = sentence.trim();
-      if (candidate.length >= 40 && distText.includes(candidate)) return candidate;
+      if (candidate.length >= 40 && distText.includes(candidate) && (marker === undefined || candidate.includes(marker))) return candidate;
     }
   }
   return null;
+}
+
+/**
+ * What the primary's user messages show of a native command: whether any body sentence of the installed package was
+ * delivered, and whether the one carrying the scenario's `stopMarker` was. Only booleans and the delivered package
+ * sentence leave the container, never the prompt.
+ */
+export function commandDelivery(userTexts: string[], callerText: string, distText: string, stopMarker: string): Json {
+  const find = (marker?: string) => userTexts.map((text) => deliveredBodySentence(text, callerText, distText, marker)).find((sentence) => sentence !== null) ?? null;
+  const stop = find(stopMarker);
+  const clipped = stop === null ? null : clipText(stop, STOP_INSTRUCTION_CAP);
+  return {
+    userMessages: userTexts.length, bodyDelivered: find() !== null, stopInstructionDelivered: stop !== null,
+    stopInstruction: clipped?.text ?? null, stopInstructionChars: clipped?.chars ?? 0, stopInstructionTruncated: clipped?.truncated ?? false,
+  };
 }
 
 function packageDistText(): string {
@@ -1283,25 +1348,17 @@ async function wiring(input: Json): Promise<Json> {
   const before = requests().length;
   const followUp = (pointers['executing-plans']?.pointed ?? []).map((file: string) => ({ op: 'read', path: `{{skillDir:executing-plans}}/references/${file}` }));
   const commandText = `wiring-command ${scriptDirective([{ op: 'skill', name: 'executing-plans' }, ...followUp, { op: 'text', text: 'ok' }])}`;
-  let commandResult: Json;
-  let commandSession: string | null = null;
-  if (host === 'v1') {
-    const run = await runPrompt(host, { agent: 'build', modelRef: mockRef, command: commandName, prompt: commandText }, 120_000);
-    commandResult = run.exit;
-    commandSession = run.sessionId;
-  } else {
-    // The v2 CLI has no command flag; the public session command route is the native consumer.
-    const create = sessionCreateRequest(host, { agent: 'build', directory: PROJ });
-    commandSession = unwrap((await api(create.path, { method: 'POST', body: JSON.stringify(create.body) })).body)?.id ?? null;
-    const sent = await api(`/api/session/${commandSession}/command`, { method: 'POST', body: JSON.stringify({ name: commandName, text: commandText }) });
-    await api(`/api/experimental/session/${commandSession}/wait`, { method: 'POST', signal: AbortSignal.timeout(120_000) });
-    commandResult = sent.status;
-  }
+  const commandRun = await runPrompt(host, { agent: 'build', modelRef: mockRef, command: commandName, prompt: commandText }, 120_000);
+  const commandResult = commandRun.exit;
+  const commandSession = commandRun.sessionId;
+  // A run that did not finish leaves its native session live; stop it before any other wiring work uses the host.
+  const commandInterrupted = commandSession && (commandResult !== 0 || commandRun.timedOut || commandRun.asked) ? await interruptSession(host, commandSession) : null;
   const cmdRequest = requests().slice(before).find((r) => r.lastUser.includes('wiring-command'));
   const commandCalls = await toolCallsUnder(host, commandSession);
   const bodySentence = cmdRequest ? deliveredBodySentence(cmdRequest.lastUser, commandText, packageDistText()) : null;
   results.nonHiveCommand = {
-    command: commandName, result: commandResult, observed: Boolean(cmdRequest),
+    command: commandName, result: commandResult, timedOut: commandRun.timedOut, asked: commandRun.asked?.kind ?? null, interrupted: commandInterrupted,
+    observed: Boolean(cmdRequest),
     bodyDelivered: bodySentence !== null, bodySentence: bodySentence?.slice(0, 200) ?? null,
     bodyBytes: cmdRequest ? Buffer.byteLength(cmdRequest.lastUser) : 0,
     skillLoaded: commandCalls.some((c) => c.tool === 'skill' && c.args.name === 'executing-plans' && c.status === 'completed'),

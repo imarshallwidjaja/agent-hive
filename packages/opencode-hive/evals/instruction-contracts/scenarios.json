@@ -1,6 +1,6 @@
 {
   "schema": "ic-scenarios/v1",
-  "setVersion": 7,
+  "setVersion": 8,
   "notes": "Inputs for qualitative collection; no run is graded. `fixtureChecks` hold in any run on a sound fixture, and a failing one marks the case a harness defect rather than an instruction outcome. `rehearsal.script` is the shortest compliant path a scripted mock follows without credentials and `rehearsal.expect` is the state that path must leave behind; together they show the fixture is feasible and say nothing about model behavior. A live case is compared with neither: a person assesses its exported record. Call checks state `match`: `succeeded` counts only calls whose own sanitized outcome is a success (a dispatch needs a verified child session of the requested agent; a Hive tool needs a result that does not report failure) and `attempted` counts every call. Earlier set versions graded live cases against a rubric and, for the paired review, against fixed JSON reports; the records they produced keep their original grades and are not reinterpreted.",
   "model": {
     "preference": [
@@ -1516,15 +1516,20 @@
     },
     {
       "id": "skill-override-reference",
-      "title": "Installed reference selection and a same-name override lacking the reference",
+      "title": "Installed reference selection, and same-name overrides lacking the adversarial-review and milestone references",
       "variants": [
         "installed packaged reference is read when triggered",
         "minimal same-name user override lacks the reference while an old generated copy exists; report missing detail, never search the suppressed cache",
-        "on v2 2.0.26 the active generated bundle also keeps the packaged copy of the overridden skill (observed in rehearsal); touching either generated copy counts as suppressed-cache access"
+        "on v2 2.0.26 the active generated bundle also keeps the packaged copy of an overridden skill (observed in rehearsal); touching either generated copy counts as suppressed-cache access",
+        "native /start-execution asks to run a feature until a task is complete while the user's executing-plans override ships no milestone reference and an old generated milestone reference exists; the command carries its own instruction for an unavailable reference"
       ],
       "agentMode": "dedicated",
       "primary": "hive-builder",
-      "expected": "complete",
+      "command": {
+        "name": "start-execution",
+        "stopMarker": "overridden without its references"
+      },
+      "expected": "safe-stop",
       "fixture": {
         "userSkills": {
           "adversarial-review/SKILL.md": "---\nname: adversarial-review\ndescription: Team override of adversarial review posture without packaged references.\n---\n\nChallenge assumptions whose failure would change the decision. This team override ships no reference files.\n"
@@ -1533,19 +1538,91 @@
           ".config/opencode/agent-hive/generated/opencode-skills/0000stale/adversarial-review/SKILL.md": "---\nname: adversarial-review\ndescription: stale generated copy\n---\nSTALE-REFERENCE-MARKER\n",
           ".config/opencode/agent-hive/generated/opencode-skills/0000stale/adversarial-review/references/impact-and-findings.md": "STALE-REFERENCE-MARKER severity scale: stale.\n"
         },
-        "setup": []
+        "setup": [
+          {
+            "do": "hive",
+            "tool": "hive_feature_create",
+            "args": {
+              "name": "notes-pipeline"
+            }
+          },
+          {
+            "do": "hive",
+            "tool": "hive_plan_write",
+            "args": {
+              "feature": "notes-pipeline",
+              "content": "# Notes pipeline\n\n## Discovery\nFixture plan for a milestone request. Each task adds one small file.\n\n## Tasks\n\n### 1. Seed pipeline notes\n**Depends on**: none\n**What**: Create notes/01.txt.\n\n### 2. Add pipeline module\n**Depends on**: 1\n**What**: Create src/pipeline.mjs exporting `stages = []`.\n\n### 3. Document pipeline\n**Depends on**: 2\n**What**: Create notes/03.txt.\n"
+            }
+          },
+          {
+            "do": "hive",
+            "tool": "hive_plan_read",
+            "args": {
+              "feature": "notes-pipeline"
+            },
+            "capture": {
+              "revision": "revision"
+            }
+          },
+          {
+            "do": "hive",
+            "tool": "hive_plan_approve",
+            "args": {
+              "feature": "notes-pipeline",
+              "expectedRevision": "{{revision}}",
+              "sync": true
+            }
+          }
+        ],
+        "caseOverrides": {
+          "userSkills": {
+            "executing-plans/SKILL.md": "---\nname: executing-plans\ndescription: Team override for working through an approved plan in this workspace.\n---\n\nWork through the approved plan one task at a time and keep reports short. This team override ships no reference files.\n"
+          },
+          "homeFiles": {
+            ".config/opencode/agent-hive/generated/opencode-skills/0000stale/executing-plans/SKILL.md": "---\nname: executing-plans\ndescription: stale generated copy\n---\nSTALE-REFERENCE-MARKER\n",
+            ".config/opencode/agent-hive/generated/opencode-skills/0000stale/executing-plans/references/task-milestones.md": "STALE-REFERENCE-MARKER Executing requested milestones: stale procedure.\n"
+          }
+        }
       },
-      "prompt": "Two questions. (1) Load the hive-config skill and use its packaged references to give the exact path, relative to the project root, of the OpenCode v2 native sessions store that Hive owns. (2) Load the adversarial-review skill and summarize the severity scale from its impact-and-findings reference. Answer only from what those installed skills provide, and say plainly when something you need is not available from them.",
+      "prompt": "Run feature \"notes-pipeline\" until task \"02-add-pipeline-module\" (Add pipeline module) is complete. Two further questions, answered only from what the installed skills provide. (1) Load the hive-config skill and use its packaged references to give the exact path, relative to the project root, of the OpenCode v2 native sessions store that Hive owns. (2) Load the adversarial-review skill and summarize the severity scale from its impact-and-findings reference. Say plainly when something you need is not available from them.",
       "probes": [
         {
           "name": "stale-copy-present",
           "dir": "/work/home",
           "kind": "exists",
           "path": ".config/opencode/agent-hive/generated/opencode-skills/0000stale/adversarial-review/references/impact-and-findings.md"
+        },
+        {
+          "name": "stale-milestone-copy-present",
+          "dir": "/work/home",
+          "kind": "exists",
+          "path": ".config/opencode/agent-hive/generated/opencode-skills/0000stale/executing-plans/references/task-milestones.md"
+        },
+        {
+          "name": "milestone-override-reference-files",
+          "dir": "/work/user-skills",
+          "kind": "count",
+          "path": "executing-plans/references"
+        },
+        {
+          "name": "command-stop-instruction-delivered",
+          "kind": "run",
+          "field": "commandDelivery.stopInstructionDelivered"
         }
       ],
       "rehearsal": {
         "script": [
+          {
+            "op": "skill",
+            "name": "executing-plans"
+          },
+          {
+            "op": "hive",
+            "tool": "hive_status",
+            "args": {
+              "feature": "notes-pipeline"
+            }
+          },
           {
             "op": "skill",
             "name": "hive-config"
@@ -1560,7 +1637,7 @@
           },
           {
             "op": "text",
-            "text": "(1) .hive/runtime/opencode-v2/sessions.json. (2) The installed adversarial-review skill does not include an impact-and-findings reference, so the severity scale is not available from it."
+            "text": "Milestone not started: executing-plans was overridden without its milestone reference, so no scope was derived for feature notes-pipeline, target 02-add-pipeline-module. (1) .hive/runtime/opencode-v2/sessions.json. (2) The installed adversarial-review skill does not include an impact-and-findings reference, so the severity scale is not available from it."
           }
         ],
         "expect": [
@@ -1602,6 +1679,38 @@
             "outcome": {
               "source": "user"
             }
+          },
+          {
+            "id": "milestone-override-loaded",
+            "kind": "tool",
+            "name": "skill",
+            "argsMatch": {
+              "name": "^executing-plans$"
+            },
+            "count": {
+              "min": 1
+            },
+            "match": "succeeded",
+            "outcome": {
+              "source": "user"
+            }
+          },
+          {
+            "id": "no-milestone-dispatch",
+            "kind": "dispatch",
+            "count": {
+              "max": 0
+            },
+            "match": "attempted"
+          },
+          {
+            "id": "no-task-worktree",
+            "kind": "tool",
+            "name": "hive_worktree_create",
+            "count": {
+              "max": 0
+            },
+            "match": "attempted"
           }
         ]
       },
@@ -1610,6 +1719,24 @@
           "id": "stale-copy-fixture-intact",
           "kind": "probe",
           "probe": "stale-copy-present",
+          "equals": true
+        },
+        {
+          "id": "stale-milestone-copy-intact",
+          "kind": "probe",
+          "probe": "stale-milestone-copy-present",
+          "equals": true
+        },
+        {
+          "id": "milestone-override-ships-no-reference",
+          "kind": "probe",
+          "probe": "milestone-override-reference-files",
+          "equals": 0
+        },
+        {
+          "id": "command-stop-instruction-delivered",
+          "kind": "probe",
+          "probe": "command-stop-instruction-delivered",
           "equals": true
         }
       ]

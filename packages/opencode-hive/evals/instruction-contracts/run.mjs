@@ -1102,8 +1102,8 @@ export async function rehearseInjection(ctx, host) {
 async function wiringHost(ctx, host) {
   const id = await openContainer(ctx, { network: 'none', ceilingSeconds: CEILING.wiring });
   try {
-    // Stock permissions: no permissive allow rule. The override fixture supplies a same-name user skill.
-    await step(ctx, id, 'serve', { host, provider: 'mock', model: ctx.scenarios.model.mock, agentMode: 'dedicated', scenario: 'skill-override-reference', permissive: false });
+    // Stock permissions: no permissive allow rule. The override fixture supplies a same-name user skill; its case-only overrides stay out of wiring.
+    await step(ctx, id, 'serve', { host, provider: 'mock', model: ctx.scenarios.model.mock, agentMode: 'dedicated', scenario: 'skill-override-reference', permissive: false, wiring: true });
     return (await step(ctx, id, 'wiring', { host }, { timeoutMs: 2_700_000 })).wiring;
   } finally {
     await ctx.resources.remove(id);
@@ -1137,6 +1137,8 @@ export function wiringFailures(results) {
     for (const row of w.references?.reads ?? []) if (!row.readCompleted) failures.push(`reference_read_failed:${host}:${row.skill}/${row.file}`);
     if ((w.references?.reads ?? []).length === 0) failures.push(`reference_reads_missing:${host}`);
     const command = w.nonHiveCommand ?? {};
+    // Delivery and reference reads can be positive for a run that then stalled, errored or waited on an operator.
+    if (command.result !== 0 || command.timedOut || command.asked) failures.push(`command_run_unsuccessful:${host}:${command.command ?? 'unknown'}`);
     if (!command.bodyDelivered) failures.push(`command_body_not_delivered:${host}:${command.command ?? 'unknown'}`);
     if (!command.skillLoaded) failures.push(`command_consumer_skill_not_loaded:${host}`);
     for (const row of command.referenceReads ?? []) if (!row.readCompleted) failures.push(`command_consumer_reference_failed:${host}:${row.file}`);
