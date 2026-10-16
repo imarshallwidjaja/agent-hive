@@ -114,6 +114,7 @@ export type DiagnosticCode =
   | 'transport_error'
   | 'provider_error'
   | 'variant_unavailable'
+  | 'caller_model_unavailable'
   | 'request_too_large'
   | 'no_text'
   | 'response_too_large'

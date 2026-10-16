@@ -81,7 +81,6 @@ describe('buildCustomSubagents', () => {
     const baseAgents = {
       'scout-researcher': {
         model: 'base/scout-model',
-        temperature: 0.5,
         variant: 'low',
         mode: 'subagent' as const,
         description: 'Base Scout',
@@ -90,7 +89,6 @@ describe('buildCustomSubagents', () => {
       },
       'forager-worker': {
         model: 'base/forager-model',
-        temperature: 0.3,
         variant: 'medium',
         mode: 'subagent' as const,
         description: 'Base Forager',
@@ -99,7 +97,6 @@ describe('buildCustomSubagents', () => {
       },
       'plan-reviewer': {
         model: 'base/plan-model',
-        temperature: 0.3,
         variant: 'low',
         mode: 'subagent' as const,
         description: 'Base Plan Reviewer',
@@ -108,7 +105,6 @@ describe('buildCustomSubagents', () => {
       },
       'code-reviewer': {
         model: 'base/code-model',
-        temperature: 0.3,
         variant: 'low',
         mode: 'subagent' as const,
         description: 'Base Code Reviewer',
@@ -117,7 +113,6 @@ describe('buildCustomSubagents', () => {
       },
       'simplicity-reviewer': {
         model: 'base/simplicity-model',
-        temperature: 0.3,
         variant: 'low',
         mode: 'subagent' as const,
         description: 'Base Simplicity Reviewer',
@@ -126,7 +121,6 @@ describe('buildCustomSubagents', () => {
       },
       'approach-advisor': {
         model: 'base/advisor-model',
-        temperature: 0.3,
         variant: 'low',
         mode: 'subagent' as const,
         description: 'Base Approach Advisor',
@@ -135,7 +129,6 @@ describe('buildCustomSubagents', () => {
       },
       'vulnerability-reviewer': {
         model: 'base/security-model',
-        temperature: 0.1,
         variant: 'high',
         mode: 'subagent' as const,
         description: 'Base Vulnerability Reviewer',
@@ -149,7 +142,6 @@ describe('buildCustomSubagents', () => {
         baseAgent: 'scout-researcher',
         description: 'Use for documentation-heavy research tasks.',
         model: 'custom/scout-model',
-        temperature: 0.4,
         variant: 'medium',
         autoLoadSkills: [],
       },
@@ -157,7 +149,6 @@ describe('buildCustomSubagents', () => {
         baseAgent: 'forager-worker',
         description: 'Use for UI-heavy implementation tasks.',
         model: 'custom/model',
-        temperature: 0.2,
         variant: 'high',
         autoLoadSkills: ['test-driven-development'],
       },
@@ -165,7 +156,6 @@ describe('buildCustomSubagents', () => {
         baseAgent: 'code-reviewer',
         description: 'Use for security-focused review passes.',
         model: 'base/code-model',
-        temperature: 0.3,
         variant: 'low',
         autoLoadSkills: [],
       },
@@ -178,7 +168,6 @@ describe('buildCustomSubagents', () => {
         baseAgent: 'vulnerability-reviewer',
         description: 'Use for dependency and build-chain attack paths.',
         model: 'custom/security-model',
-        temperature: 0.2,
         variant: 'xhigh',
         autoLoadSkills: [],
       },
@@ -204,7 +193,6 @@ describe('buildCustomSubagents', () => {
     expect(derived['scout-docs'].permission!.bash).toEqual({ '*': 'ask', 'git status*': 'allow' });
     expect(derived['scout-docs'].description).toBe('Use for documentation-heavy research tasks.');
     expect(derived['scout-docs'].model).toBe('custom/scout-model');
-    expect(derived['scout-docs'].temperature).toBe(0.4);
     expect(derived['scout-docs'].variant).toBe('medium');
 
     expect(derived['forager-ui'].mode).toBe('subagent');
@@ -213,7 +201,6 @@ describe('buildCustomSubagents', () => {
     expect(derived['forager-ui'].permission).toEqual(baseAgents['forager-worker'].permission);
     expect(derived['forager-ui'].description).toBe('Use for UI-heavy implementation tasks.');
     expect(derived['forager-ui'].model).toBe('custom/model');
-    expect(derived['forager-ui'].temperature).toBe(0.2);
     expect(derived['forager-ui'].variant).toBe('high');
     expect(countOccurrences(derived['forager-ui'].prompt!, ENGINEERING_JUDGMENT_PROMPT)).toBe(1);
 
@@ -229,12 +216,13 @@ describe('buildCustomSubagents', () => {
     expect(derived['reviewer-minimalist'].prompt).toContain('# reviewer-minimalist auto-load guidance');
     expect(derived['reviewer-minimalist'].permission).toEqual(baseAgents['simplicity-reviewer'].permission);
     expect(derived['reviewer-minimalist'].description).toBe('Use for adversarial deletion-biased cleanup passes.');
-    expect(derived['reviewer-minimalist'].model).toBe('base/simplicity-model');
+    // A custom agent without a resolved Hive model registers none and inherits the native model.
+    expect(derived['reviewer-minimalist']).not.toHaveProperty('model');
+    expect(derived['reviewer-minimalist']).not.toHaveProperty('variant');
     expect(derived['security-supply-chain']).toMatchObject({
       mode: 'subagent',
       description: 'Use for dependency and build-chain attack paths.',
       model: 'custom/security-model',
-      temperature: 0.2,
       variant: 'xhigh',
       permission: baseAgents['vulnerability-reviewer'].permission,
     });

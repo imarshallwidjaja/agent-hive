@@ -6,8 +6,12 @@
   "type": "object",
   "additionalProperties": false,
   "dependentRequired": {
-    "repositoryRoot": ["repositories"],
-    "repositories": ["repositoryRoot"]
+    "repositoryRoot": [
+      "repositories"
+    ],
+    "repositories": [
+      "repositoryRoot"
+    ]
   },
   "properties": {
     "$schema": {
@@ -70,11 +74,11 @@
     },
     "taskTraceSummarizer": {
       "$ref": "#/$defs/taskTraceSummarizerConfig",
-      "description": "Optional model settings for the hidden, tool-less recovery interpreter used by hive_task_trace({ recovery: true }). Does not affect forensic (non-recovery) traces."
+      "description": "Optional model for the hidden, tool-less recovery interpreter used by hive_task_trace({ recovery: true }). Does not affect forensic (non-recovery) traces."
     },
     "agents": {
       "type": "object",
-      "description": "Global agent model configuration overrides.",
+      "description": "Global per-role Hive settings. A role without model and variant uses the native OpenCode model selection.",
       "additionalProperties": false,
       "properties": {
         "hive-master": {
@@ -177,26 +181,25 @@
     "taskTraceSummarizerConfig": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Model settings for hive_task_trace recovery interpretation. Omitted model/variant use OpenCode defaults; temperature defaults to 0. An unavailable configured model/variant yields deterministic partial fallback without provider retry.",
+      "description": "Model for hive_task_trace recovery interpretation. Without settings, each recovery uses the invoking caller session's native model and variant. A model alone uses that model's default variant; a variant requires a model. An unavailable configured model or variant yields deterministic partial fallback without provider retry.",
       "properties": {
         "model": {
           "type": "string",
           "minLength": 1,
-          "pattern": ".*\\S.*",
+          "pattern": "^\\s*[^\\s/#]+/[^\\s#]+\\s*$",
           "description": "Provider/model-id for the hidden recovery interpreter (for example, anthropic/claude-sonnet-4-20250514)."
         },
         "variant": {
           "type": "string",
           "minLength": 1,
-          "pattern": ".*\\S.*",
-          "description": "Optional variant key for the configured model (must exist under opencode.json provider.<provider>.models.<model>.variants)."
-        },
-        "temperature": {
-          "type": "number",
-          "minimum": 0,
-          "maximum": 2,
-          "description": "Sampling temperature for recovery interpretation. Default: 0."
+          "pattern": "^\\s*[^\\s#]+\\s*$",
+          "description": "Variant key for the configured model (must exist under opencode.json provider.<provider>.models.<model>.variants). Requires model."
         }
+      },
+      "dependentRequired": {
+        "variant": [
+          "model"
+        ]
       }
     },
     "councilConfig": {
@@ -283,13 +286,8 @@
       "properties": {
         "model": {
           "type": "string",
-          "description": "Model to use (provider/model-id)"
-        },
-        "temperature": {
-          "type": "number",
-          "minimum": 0,
-          "maximum": 2,
-          "description": "Sampling temperature"
+          "description": "Model to use (provider/model-id). Omitted: the native OpenCode model for this role.",
+          "pattern": "^\\s*[^\\s/#]+/[^\\s#]+\\s*$"
         },
         "skills": {
           "type": "array",
@@ -307,7 +305,8 @@
         },
         "variant": {
           "type": "string",
-          "description": "Variant key for model reasoning/effort level (e.g., 'low', 'medium', 'high', 'max'). Must match a key in opencode.json provider.<provider>.models.<model>.variants"
+          "description": "Variant key for model reasoning/effort level (e.g., 'low', 'medium', 'high', 'max'). Must match a key in opencode.json provider.<provider>.models.<model>.variants. A variant needs an explicit Hive model on the same effective declaration: this entry, its matching .hive/agent-hive.override.json entry, or (for a custom agent) its Hive base role. Omit both model and variant to use the native OpenCode model.",
+          "pattern": "^\\s*[^\\s#]+\\s*$"
         }
       }
     },
@@ -321,13 +320,8 @@
         },
         "model": {
           "type": "string",
-          "description": "Model to use (provider/model-id)"
-        },
-        "temperature": {
-          "type": "number",
-          "minimum": 0,
-          "maximum": 2,
-          "description": "Sampling temperature"
+          "description": "Model to use (provider/model-id). Omitted: the native OpenCode model for this role.",
+          "pattern": "^\\s*[^\\s/#]+/[^\\s#]+\\s*$"
         },
         "skills": {
           "type": "array",
@@ -345,7 +339,8 @@
         },
         "variant": {
           "type": "string",
-          "description": "Variant key for model reasoning/effort level (e.g., 'low', 'medium', 'high', 'max'). Must match a key in opencode.json provider.<provider>.models.<model>.variants"
+          "description": "Variant key for model reasoning/effort level (e.g., 'low', 'medium', 'high', 'max'). Must match a key in opencode.json provider.<provider>.models.<model>.variants. A variant needs an explicit Hive model on the same effective declaration: this entry, its matching .hive/agent-hive.override.json entry, or (for a custom agent) its Hive base role. Omit both model and variant to use the native OpenCode model.",
+          "pattern": "^\\s*[^\\s#]+\\s*$"
         }
       }
     },
@@ -378,17 +373,13 @@
         },
         "model": {
           "type": "string",
-          "description": "Model override (provider/model-id)"
-        },
-        "temperature": {
-          "type": "number",
-          "minimum": 0,
-          "maximum": 2,
-          "description": "Sampling temperature override"
+          "description": "Model override (provider/model-id). Omitted: the base role's Hive model, if any; otherwise the native OpenCode model.",
+          "pattern": "^\\s*[^\\s/#]+/[^\\s#]+\\s*$"
         },
         "variant": {
           "type": "string",
-          "description": "Variant override for model reasoning/effort level"
+          "description": "Variant override for model reasoning/effort level. A variant needs an explicit Hive model on the same effective declaration: this entry, its matching .hive/agent-hive.override.json entry, or (for a custom agent) its Hive base role. Omit both model and variant to use the native OpenCode model.",
+          "pattern": "^\\s*[^\\s#]+\\s*$"
         },
         "autoLoadSkills": {
           "type": "array",

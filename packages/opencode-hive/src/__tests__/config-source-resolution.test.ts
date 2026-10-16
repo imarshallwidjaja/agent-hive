@@ -104,6 +104,7 @@ describe('plugin config source resolution', () => {
     fs.writeFileSync(globalConfigPath, JSON.stringify({
       agents: {
         'forager-worker': { model: 'global/forager', variant: 'medium', temperature: 0.7 },
+        'scout-researcher': { autoLoadSkills: ['research-extra'] },
       },
       customAgents: {
         'forager-inherited': {
@@ -140,23 +141,47 @@ describe('plugin config source resolution', () => {
     expect(opencodeConfig.agent['forager-worker']).toMatchObject({
       model: 'project/forager',
       variant: 'high',
-      temperature: 0.7,
     });
     expect(opencodeConfig.agent['forager-inherited']).toMatchObject({
       model: 'project/forager',
       variant: 'high',
-      temperature: 0.7,
     });
     expect(opencodeConfig.agent['forager-direct']).toMatchObject({
       model: 'project/custom-forager',
       variant: 'low',
-      temperature: 0.7,
     });
+    // The legacy global temperature is ignored, and roles without Hive model settings leave the model to OpenCode.
+    for (const entry of Object.values(opencodeConfig.agent)) expect(entry).not.toHaveProperty('temperature');
+    for (const name of ['scout-researcher', 'hive-builder', 'code-reviewer', '__hive_task_trace_summarizer']) {
+      expect(opencodeConfig.agent[name]).not.toHaveProperty('model');
+      expect(opencodeConfig.agent[name]).not.toHaveProperty('variant');
+    }
+    expect(opencodeConfig.agent.existing).toEqual({ model: 'existing/model' });
 
-    const output: any = { message: { agent: 'forager-direct' }, parts: [] };
+    const output: any = { message: { agent: 'forager-direct', model: { providerID: 'project', modelID: 'custom-forager' } }, parts: [] };
     await hooks['chat.message']!({ sessionID: 'sess_project_agent_override', agent: 'forager-direct' } as any, output);
-    expect(output.message.variant).toBe('low');
-    expect(output.message.variant).toBe(opencodeConfig.agent['forager-direct'].variant);
+    expect(output.message.model.variant).toBe('low');
+    expect(output.message.model.variant).toBe(opencodeConfig.agent['forager-direct'].variant);
+    expect(output.message).not.toHaveProperty('variant');
+  });
+
+  it('fails plugin startup with the semantic model error instead of registering an invalid Hive variant', async () => {
+    const globalConfigPath = path.join(testRoot, '.config', 'opencode', 'agent_hive.json');
+    fs.mkdirSync(path.dirname(globalConfigPath), { recursive: true });
+    const bytes = JSON.stringify({ agents: { 'forager-worker': { variant: 'high' } } });
+    fs.writeFileSync(globalConfigPath, bytes);
+    const ctx: any = {
+      directory: testRoot,
+      worktree: testRoot,
+      serverUrl: new URL('http://localhost:1'),
+      project: createProject(testRoot),
+      client: { notify: () => true },
+    };
+
+    // A native OpenCode model for the role would only arrive in the config hook, which never runs.
+    await expect(plugin.server(ctx)).rejects.toThrow('agents.forager-worker.variant is set without a Hive model');
+    await expect(plugin.server(ctx)).rejects.toThrow(globalConfigPath);
+    expect(fs.readFileSync(globalConfigPath, 'utf-8')).toBe(bytes);
   });
 
 });

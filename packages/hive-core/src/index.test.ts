@@ -36,14 +36,15 @@ describe("hive-core", () => {
     expect(CUSTOM_AGENT_BASES).toContain('simplicity-reviewer');
   });
 
-  it("includes hive-builder defaults in DEFAULT_HIVE_CONFIG", () => {
-    expect(DEFAULT_HIVE_CONFIG.agents?.['hive-builder']).toBeDefined();
-    expect(DEFAULT_HIVE_CONFIG.agents?.['hive-builder']?.temperature).toBe(0.4);
-    expect(DEFAULT_HIVE_CONFIG.agents?.['hive-builder']?.model).toBe('github-copilot/gpt-5.2-codex');
-    expect(DEFAULT_HIVE_CONFIG.agents?.['hive-builder']?.autoLoadSkills).toEqual([
-      'verification',
-      'parallel-exploration',
-    ]);
+  it("includes hive-builder skill defaults, but no model, in DEFAULT_HIVE_CONFIG", () => {
+    expect(DEFAULT_HIVE_CONFIG.agents?.['hive-builder']).toEqual({
+      autoLoadSkills: ['verification', 'parallel-exploration'],
+    });
+  });
+
+  it("exports no generated model defaults", async () => {
+    const exported = await import('./index');
+    expect(exported).not.toHaveProperty('DEFAULT_AGENT_MODELS');
   });
 
   it("includes hive-builder and builder in CUSTOM_AGENT_RESERVED_NAMES", () => {

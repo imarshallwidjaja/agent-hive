@@ -35,6 +35,43 @@ const STORED_CONFIG_KEYS = new Set([
 
 type ConfigReadFailureReason = 'parse_error' | 'validation_error' | 'read_error';
 
+// A Hive model is `provider/model-id` as both hosts parse it: a provider before the first slash and a non-empty id
+// after it. Whitespace and `#` are rejected because OpenCode v2 reads `#` as the start of a variant.
+const MODEL_REFERENCE = /^[^\s/#]+\/[^\s#]+$/;
+const VARIANT_NAME = /^[^\s#]+$/;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * Removes the retired `temperature` setting from agent, custom-agent and summarizer declarations, whatever its value,
+ * so a legacy key never invalidates the rest of the configuration. Returns copies; the input is not modified.
+ */
+function withoutRemovedSampling(document: Record<string, unknown>): { value: Record<string, unknown>; removed: boolean } {
+  let removed = false;
+  const strip = (entry: unknown): unknown => {
+    if (!isRecord(entry) || !Object.prototype.hasOwnProperty.call(entry, 'temperature')) return entry;
+    removed = true;
+    const { temperature: _removed, ...rest } = entry;
+    return rest;
+  };
+  const value = { ...document };
+  for (const key of ['agents', 'customAgents'] as const) {
+    const declarations = value[key];
+    if (isRecord(declarations)) {
+      value[key] = Object.fromEntries(Object.entries(declarations).map(([name, entry]) => [name, strip(entry)]));
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(value, 'taskTraceSummarizer')) value.taskTraceSummarizer = strip(value.taskTraceSummarizer);
+  return { value, removed };
+}
+
+function removedSamplingWarning(source: string): string {
+  return `[hive:config] Ignoring removed setting temperature in ${source}. Hive no longer sets sampling, so each model's `
+    + 'native defaults apply. Delete temperature from agents, customAgents and taskTraceSummarizer.';
+}
+
 interface AgentModelVariantOverride {
   model?: string;
   variant?: string;
@@ -94,16 +131,16 @@ export class ConfigService {
     }
 
     if (!fs.existsSync(this.configPath)) {
-      return this.cacheEffectiveConfig({ ...DEFAULT_HIVE_CONFIG }, 'defaults');
+      return this.publishEffectiveConfig(this.buildEffectiveConfig({ ...DEFAULT_HIVE_CONFIG }), 'defaults');
     }
 
     const globalStored = this.readStoredConfig(this.configPath);
     if (globalStored.ok) {
-      return this.cacheEffectiveConfig(this.mergeWithDefaults(globalStored.value), 'global');
+      return this.publishEffectiveConfig(this.buildEffectiveConfig(this.mergeWithDefaults(globalStored.value)), 'global');
     }
 
     const fallbackReason = 'reason' in globalStored ? globalStored.reason : 'read_error';
-    return this.cacheEffectiveConfig({ ...DEFAULT_HIVE_CONFIG }, 'defaults', fallbackReason);
+    return this.publishEffectiveConfig(this.buildEffectiveConfig({ ...DEFAULT_HIVE_CONFIG }), 'defaults', fallbackReason);
   }
 
   getActiveReadSourceType(): 'project' | 'global' {
@@ -144,6 +181,7 @@ export class ConfigService {
       const next = { ...stored } as Record<string, unknown>;
       delete next.repositoryRoot;
       delete next.repositories;
+      this.validatePersistable(next as Partial<HiveConfig>);
       writeAtomic(this.configPath, JSON.stringify(next, null, 2));
       this.cachedConfig = null;
       this.cachedCustomAgentConfigs = null;
@@ -171,9 +209,12 @@ export class ConfigService {
     const release = acquireLockSync(this.configPath);
     try {
       const current = this.readStored();
-      const mergedAgentUpdates = updates.agents
+      const sanitized = withoutRemovedSampling(updates as Record<string, unknown>);
+      if (sanitized.removed) console.warn(removedSamplingWarning('the requested update'));
+      const incomingUpdates = sanitized.value as Partial<HiveConfig>;
+      const mergedAgentUpdates = incomingUpdates.agents
         ? Object.fromEntries(
-            Object.entries(updates.agents).map(([agentName, incoming]) => {
+            Object.entries(incomingUpdates.agents).map(([agentName, incoming]) => {
               const declaration: AgentModelConfig & { description?: string } = {
                 ...current.agents?.[agentName as BuiltInAgentName],
                 ...incoming,
@@ -194,15 +235,15 @@ export class ConfigService {
         : undefined;
       const stored: Partial<HiveConfig> = {
         ...current,
-        ...updates,
+        ...incomingUpdates,
         agents: mergedAgentUpdates ? {
           ...current.agents,
           ...mergedAgentUpdates,
         } : current.agents,
-        customAgents: updates.customAgents
+        customAgents: incomingUpdates.customAgents
           ? {
               ...current.customAgents,
-              ...updates.customAgents,
+              ...incomingUpdates.customAgents,
             }
           : current.customAgents,
       };
@@ -214,9 +255,9 @@ export class ConfigService {
         throw new Error(`Repository root does not exist: ${stored.repositoryRoot}`);
       }
 
+      const effective = this.validatePersistable(stored);
       writeAtomic(this.configPath, JSON.stringify(stored, null, 2));
-      const merged = this.mergeWithDefaults(stored);
-      return this.cacheEffectiveConfig(merged, 'global');
+      return this.publishEffectiveConfig(effective, 'global');
     } finally {
       release();
     }
@@ -252,23 +293,8 @@ export class ConfigService {
   getAgentConfig(agent: BuiltInAgentName): AgentModelConfig;
   getAgentConfig(agent: string): AgentModelConfig | ResolvedCustomAgentConfig;
   getAgentConfig(agent: string): AgentModelConfig | ResolvedCustomAgentConfig {
-    const config = this.get();
-
     if (this.isBuiltInAgent(agent)) {
-      const agentConfig = config.agents?.[agent] ?? {};
-      const defaultAutoLoadSkills = DEFAULT_HIVE_CONFIG.agents?.[agent]?.autoLoadSkills ?? [];
-      const effectiveAutoLoadSkills = agent === 'hive-helper'
-        ? defaultAutoLoadSkills
-        : this.resolveAutoLoadSkills(
-            defaultAutoLoadSkills,
-            agentConfig.autoLoadSkills ?? [],
-            this.isPlannerAgent(agent),
-          );
-
-      return {
-        ...agentConfig,
-        autoLoadSkills: effectiveAutoLoadSkills,
-      };
+      return this.resolveBuiltInAgentConfig(this.get(), agent);
     }
 
     const customAgents = this.getCustomAgentConfigs();
@@ -285,7 +311,36 @@ export class ConfigService {
       return this.cachedCustomAgentConfigs;
     }
 
-    const config = this.get();
+    this.cachedCustomAgentConfigs = this.resolveCustomAgentConfigs(this.get(), (message) => console.warn(message));
+    return this.cachedCustomAgentConfigs;
+  }
+
+  private resolveBuiltInAgentConfig(config: HiveConfig, agent: BuiltInAgentName): AgentModelConfig {
+    const agentConfig = config.agents?.[agent] ?? {};
+    const defaultAutoLoadSkills = DEFAULT_HIVE_CONFIG.agents?.[agent]?.autoLoadSkills ?? [];
+    const effectiveAutoLoadSkills = agent === 'hive-helper'
+      ? defaultAutoLoadSkills
+      : this.resolveAutoLoadSkills(
+          defaultAutoLoadSkills,
+          agentConfig.autoLoadSkills ?? [],
+          this.isPlannerAgent(agent),
+        );
+
+    return {
+      ...agentConfig,
+      autoLoadSkills: effectiveAutoLoadSkills,
+    };
+  }
+
+  /**
+   * Resolves custom agents against one configuration snapshot: fieldwise inheritance from the base role's Hive
+   * settings, with invalid declarations skipped and reported through `warn`. A supplied model or variant is used as
+   * given (trimmed); only an omitted field inherits the base value.
+   */
+  private resolveCustomAgentConfigs(
+    config: HiveConfig,
+    warn: (message: string) => void,
+  ): Record<string, ResolvedCustomAgentConfig> {
     const customAgents = this.isObjectRecord(config.customAgents)
       ? config.customAgents
       : {};
@@ -293,19 +348,19 @@ export class ConfigService {
 
     for (const [agentName, declaration] of Object.entries(customAgents)) {
       if (!this.isValidCustomAgentName(agentName)) {
-        console.warn(
+        warn(
           `[hive:config] Skipping custom agent \"${agentName}\": invalid name (native permission wildcard characters \"*\" and \"?\" are not allowed)`,
         );
         continue;
       }
 
       if (this.isReservedCustomAgentName(agentName)) {
-        console.warn(`[hive:config] Skipping custom agent \"${agentName}\": reserved name (managed agent identity; custom replacement could change its tool permissions). Rename the custom agent.`);
+        warn(`[hive:config] Skipping custom agent \"${agentName}\": reserved name (managed agent identity; custom replacement could change its tool permissions). Rename the custom agent.`);
         continue;
       }
 
       if (!this.isObjectRecord(declaration)) {
-        console.warn(
+        warn(
           `[hive:config] Skipping custom agent \"${agentName}\": invalid declaration (expected object)`,
         );
         continue;
@@ -314,7 +369,7 @@ export class ConfigService {
       const baseAgent = declaration['baseAgent'];
 
       if (typeof baseAgent !== 'string' || !this.isSupportedCustomAgentBase(baseAgent)) {
-        console.warn(
+        warn(
           `[hive:config] Skipping custom agent \"${agentName}\": unsupported baseAgent \"${String(baseAgent)}\"`,
         );
         continue;
@@ -324,7 +379,7 @@ export class ConfigService {
       const additionalAutoLoadSkills = Array.isArray(autoLoadSkillsValue)
         ? autoLoadSkillsValue.filter((skill): skill is string => typeof skill === 'string')
         : [];
-      const baseAgentConfig = this.getAgentConfig(baseAgent);
+      const baseAgentConfig = this.resolveBuiltInAgentConfig(config, baseAgent);
       const effectiveAutoLoadSkills = this.resolveAutoLoadSkills(
         baseAgentConfig.autoLoadSkills ?? [],
         additionalAutoLoadSkills,
@@ -336,36 +391,27 @@ export class ConfigService {
         ? descriptionValue.trim()
         : '';
       if (!description) {
-        console.warn(
+        warn(
           `[hive:config] Skipping custom agent "${agentName}": description must be a non-empty string`,
         );
         continue;
       }
 
       const modelValue = declaration['model'];
-      const temperatureValue = declaration['temperature'];
       const variantValue = declaration['variant'];
-      const model = typeof modelValue === 'string'
-        ? modelValue.trim() || baseAgentConfig.model
-        : baseAgentConfig.model;
-      const variant = typeof variantValue === 'string'
-        ? variantValue.trim() || baseAgentConfig.variant
-        : baseAgentConfig.variant;
+      const model = typeof modelValue === 'string' ? modelValue.trim() : baseAgentConfig.model;
+      const variant = typeof variantValue === 'string' ? variantValue.trim() : baseAgentConfig.variant;
 
       resolved[agentName] = {
         baseAgent,
         description,
-        model,
-        temperature: typeof temperatureValue === 'number'
-          ? temperatureValue
-          : baseAgentConfig.temperature,
-        variant,
+        ...(model !== undefined ? { model } : {}),
+        ...(variant !== undefined ? { variant } : {}),
         autoLoadSkills: effectiveAutoLoadSkills,
       };
     }
 
-    this.cachedCustomAgentConfigs = resolved;
-    return this.cachedCustomAgentConfigs;
+    return resolved;
   }
 
   hasConfiguredAgent(agent: string): boolean {
@@ -457,7 +503,9 @@ export class ConfigService {
       if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
         return { ok: false, reason: 'validation_error' };
       }
-      const record = { ...(parsed as Record<string, unknown>) };
+      const sanitized = withoutRemovedSampling(parsed as Record<string, unknown>);
+      const record = sanitized.value;
+      if (sanitized.removed) console.warn(removedSamplingWarning(configPath));
       // Removed setting: keep existing files readable while ignoring the dead key.
       if ('omoSlimEnabled' in record) {
         delete record.omoSlimEnabled;
@@ -501,16 +549,31 @@ export class ConfigService {
     return this.cachedProjectAgentOverrideRead;
   }
 
-  private cacheEffectiveConfig(
-    baseConfig: HiveConfig,
+  /**
+   * Applies the project override to a base configuration and checks the effective model settings. Throws without
+   * touching any cache, so a rejected candidate is never served and the next read checks the files again.
+   */
+  private buildEffectiveConfig(baseConfig: HiveConfig): HiveConfig {
+    const projectRead = this.readProjectAgentOverrides();
+    const projectApplies = projectRead.ok && projectRead.value !== null;
+    const effective = projectApplies
+      ? this.applyProjectAgentOverrides(baseConfig, projectRead.value!)
+      : baseConfig;
+    this.assertModelSelections(
+      effective,
+      projectApplies ? [this.configPath, this.projectAgentOverridePath!] : [this.configPath],
+    );
+    return effective;
+  }
+
+  private publishEffectiveConfig(
+    effective: HiveConfig,
     baseSource: 'global' | 'defaults',
     globalFailureReason?: ConfigReadFailureReason,
   ): HiveConfig {
     const projectRead = this.readProjectAgentOverrides();
     const projectFailureReason = 'reason' in projectRead ? projectRead.reason : undefined;
-    this.cachedConfig = projectRead.ok && projectRead.value
-      ? this.applyProjectAgentOverrides(baseConfig, projectRead.value)
-      : baseConfig;
+    this.cachedConfig = effective;
     this.cachedCustomAgentConfigs = null;
 
     const messages: string[] = [];
@@ -616,22 +679,75 @@ export class ConfigService {
         ) {
           return false;
         }
-        if (
-          'model' in declaration
-          && (typeof declaration.model !== 'string' || declaration.model.trim() === '')
-        ) {
+        // A supplied blank string is structurally a string; effective validation rejects it for a matching role.
+        if ('model' in declaration && typeof declaration.model !== 'string') {
           return false;
         }
-        if (
-          'variant' in declaration
-          && (typeof declaration.variant !== 'string' || declaration.variant.trim() === '')
-        ) {
+        if ('variant' in declaration && typeof declaration.variant !== 'string') {
           return false;
         }
       }
     }
 
     return true;
+  }
+
+  /**
+   * The effective model rule shared by both hosts: a supplied model must be an explicit `provider/model-id`, a supplied
+   * variant a non-empty name, and a variant needs a Hive model on the same effective declaration. A custom agent's
+   * model may come from its base role. Neither field means the host's native model applies. Problems are reported by
+   * file and property path, never by value, and nothing is repaired: no default model, no dropped variant.
+   */
+  private assertModelSelections(config: HiveConfig, files: readonly string[]): void {
+    const problems: string[] = [];
+    const checkSupplied = (path: string, declaration: Record<string, unknown> | undefined) => {
+      const model = declaration?.model;
+      const variant = declaration?.variant;
+      if (model !== undefined && (typeof model !== 'string' || !MODEL_REFERENCE.test(model.trim()))) {
+        problems.push(`${path}.model must be an explicit provider/model-id without spaces or "#". Correct it, or remove model and variant to inherit the native model.`);
+      }
+      if (variant !== undefined && (typeof variant !== 'string' || !VARIANT_NAME.test(variant.trim()))) {
+        problems.push(`${path}.variant must be a variant name without spaces or "#". Correct it, or remove it.`);
+      }
+    };
+    const missingModel = (path: string, modelHint: string) => problems.push(
+      `${path}.variant is set without a Hive model. Set ${modelHint} to an explicit provider/model-id, or remove the variant to inherit the native model.`,
+    );
+
+    for (const agentName of BUILT_IN_AGENT_NAMES) {
+      const declaration = config.agents?.[agentName] as Record<string, unknown> | undefined;
+      checkSupplied(`agents.${agentName}`, declaration);
+      if (declaration?.variant !== undefined && declaration.model === undefined) missingModel(`agents.${agentName}`, `agents.${agentName}.model`);
+    }
+
+    const declarations = this.isObjectRecord(config.customAgents) ? config.customAgents : {};
+    for (const [agentName, resolved] of Object.entries(this.resolveCustomAgentConfigs(config, () => {}))) {
+      const declaration = declarations[agentName] as unknown as Record<string, unknown>;
+      checkSupplied(`customAgents.${agentName}`, declaration);
+      // A variant inherited from the base role is reported once, on the base.
+      if (declaration.variant !== undefined && resolved.model === undefined) {
+        missingModel(`customAgents.${agentName}`, `customAgents.${agentName}.model or agents.${resolved.baseAgent}.model`);
+      }
+    }
+
+    const summarizer = config.taskTraceSummarizer as Record<string, unknown> | undefined;
+    checkSupplied('taskTraceSummarizer', summarizer);
+    if (summarizer?.variant !== undefined && summarizer.model === undefined) missingModel('taskTraceSummarizer', 'taskTraceSummarizer.model');
+
+    if (problems.length > 0) {
+      throw new Error(`[hive:config] Invalid Agent Hive model settings (${files.join(', ')}):\n- ${problems.join('\n- ')}`);
+    }
+  }
+
+  /**
+   * Checks a document before it is written, so every writer shares one rule: the file must be valid on its own (a
+   * project override cannot supply the model a global variant needs) and its effective project view must stay valid.
+   * Returns that effective view for cache publication.
+   */
+  private validatePersistable(stored: Partial<HiveConfig>): HiveConfig {
+    const merged = this.mergeWithDefaults(stored);
+    this.assertModelSelections(merged, [this.configPath]);
+    return this.buildEffectiveConfig(merged);
   }
 
   private mergeWithDefaults(stored: Partial<HiveConfig>): HiveConfig {
@@ -646,6 +762,8 @@ export class ConfigService {
           ...DEFAULT_HIVE_CONFIG.agents?.[agentName],
           ...storedAgent,
         };
+        if (typeof mergedAgent.model === 'string') mergedAgent.model = mergedAgent.model.trim();
+        if (typeof mergedAgent.variant === 'string') mergedAgent.variant = mergedAgent.variant.trim();
         if (
           this.isSupportedCustomAgentBase(agentName)
           && storedAgent
@@ -675,12 +793,13 @@ export class ConfigService {
       },
       customAgents: storedCustomAgents,
       council: this.mergeCouncilConfig(DEFAULT_HIVE_CONFIG.council, stored.council),
-      taskTraceSummarizer: {
-        ...DEFAULT_HIVE_CONFIG.taskTraceSummarizer,
-        ...stored.taskTraceSummarizer,
-        ...(stored.taskTraceSummarizer?.model !== undefined ? { model: stored.taskTraceSummarizer.model.trim() } : {}),
-        ...(stored.taskTraceSummarizer?.variant !== undefined ? { variant: stored.taskTraceSummarizer.variant.trim() } : {}),
-      },
+      ...(stored.taskTraceSummarizer !== undefined ? {
+        taskTraceSummarizer: {
+          ...stored.taskTraceSummarizer,
+          ...(stored.taskTraceSummarizer.model !== undefined ? { model: stored.taskTraceSummarizer.model.trim() } : {}),
+          ...(stored.taskTraceSummarizer.variant !== undefined ? { variant: stored.taskTraceSummarizer.variant.trim() } : {}),
+        },
+      } : {}),
     };
   }
 
@@ -778,15 +897,8 @@ export class ConfigService {
 
   private isValidTaskTraceSummarizerConfig(value: unknown): boolean {
     if (!this.isObjectRecord(value)) return false;
-    const keys = Object.keys(value);
-    if (keys.some((key) => !['model', 'variant', 'temperature'].includes(key))) return false;
-    for (const key of ['model', 'variant'] as const) {
-      const entry = value[key];
-      if (entry !== undefined && (typeof entry !== 'string' || entry.trim().length === 0)) return false;
-    }
-    const temperature = value.temperature;
-    return temperature === undefined
-      || (typeof temperature === 'number' && Number.isFinite(temperature) && temperature >= 0 && temperature <= 2);
+    if (Object.keys(value).some((key) => key !== 'model' && key !== 'variant')) return false;
+    return (['model', 'variant'] as const).every((key) => value[key] === undefined || typeof value[key] === 'string');
   }
 
   private isPositiveInteger(value: unknown): value is number {
@@ -867,10 +979,6 @@ export class ConfigService {
     }
 
     if (declaration.model !== undefined && typeof declaration.model !== 'string') {
-      return false;
-    }
-
-    if (declaration.temperature !== undefined && typeof declaration.temperature !== 'number') {
       return false;
     }
 

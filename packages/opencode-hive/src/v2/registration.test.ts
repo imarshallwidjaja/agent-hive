@@ -437,11 +437,30 @@ describe('v2 native precedence and canonical instructions', () => {
   };
 
   it('registers Hive defaults that native user configuration overrides', async () => {
-    const host = await activate({}, { agents: { 'scout-researcher': { model: 'hive-provider/scout-model', variant: 'high', temperature: 0.3 } } });
+    const host = await activate({}, {
+      agents: {
+        'scout-researcher': { model: 'hive-provider/scout-model', variant: 'high', temperature: 0.3 },
+        'forager-worker': { variant: 'low' },
+      },
+      customAgents: {
+        'scout-fast': { baseAgent: 'scout-researcher', description: 'Fast scout', variant: 'low' },
+        'reviewer-native': { baseAgent: 'code-reviewer', description: 'Native reviewer' },
+      },
+    }, { seed: (root) => {
+      fs.mkdirSync(path.join(root, '.hive'), { recursive: true });
+      fs.writeFileSync(path.join(root, '.hive', 'agent-hive.override.json'), JSON.stringify({ agents: { 'forager-worker': { model: 'project/forager' } } }));
+    } });
     const defaults = host.agents();
     const scout = defaults.registry.get('scout-researcher')!;
     expect(scout.mode).toBe('subagent');
     expect(scout.model).toEqual({ providerID: 'hive-provider', id: 'scout-model', variant: 'high' });
+    // A custom variant completes its Hive base model; a project model completes a global variant.
+    expect(defaults.registry.get('scout-fast')!.model).toEqual({ providerID: 'hive-provider', id: 'scout-model', variant: 'low' });
+    expect(defaults.registry.get('forager-worker')!.model).toEqual({ providerID: 'project', id: 'forager', variant: 'low' });
+    // Roles and custom agents without Hive model settings register no model, so OpenCode's own selection applies.
+    for (const id of ['hive-builder', 'swarm-orchestrator', 'code-reviewer', 'reviewer-native', 'dash-reviewer']) {
+      expect(defaults.registry.get(id)!.model, id).toBeUndefined();
+    }
     expect(scout.system).toContain('Scout');
     expect(scout.permissions).toContainEqual({ action: 'hive_*', resource: '*', effect: 'deny' });
     expect(scout.permissions).toContainEqual({ action: 'opencode_worktree_create', resource: '*', effect: 'deny' });
@@ -452,7 +471,9 @@ describe('v2 native precedence and canonical instructions', () => {
     const user = host.agents(conflicting);
     const overridden = user.registry.get('scout-researcher')!;
     expect(user.selected).toBe('build');
-    expect(overridden).toMatchObject({ system: 'USER SCOUT PROMPT', description: 'user description', mode: 'primary', model: { providerID: 'user', id: 'model' }, steps: 3 });
+    expect(overridden).toMatchObject({ system: 'USER SCOUT PROMPT', description: 'user description', mode: 'primary', steps: 3 });
+    // The user's model reference replaces Hive's whole reference, so Hive's variant does not survive on it.
+    expect(overridden.model).toEqual({ providerID: 'user', id: 'model' });
     // The user's allow comes last, so the host shows the tools; visibility is not authority.
     expect(overridden.permissions.at(-1)).toEqual({ action: 'edit', resource: '*', effect: 'allow' });
     expect(denied(await host.before({ tool: 'edit', sessionID: 'child', agent: 'scout-researcher' }))).toContain('cannot use edit');
@@ -480,28 +501,37 @@ describe('v2 native precedence and canonical instructions', () => {
     expect(unmanaged).toEqual(['BUILD']);
   });
 
-  it('applies a configured Hive temperature as a request option unless the request already chose one', async () => {
-    const host = await activate({}, { agents: { 'scout-researcher': { temperature: 0.3 } } });
-    expect((await host.requestDraft({ sessionID: 'child', agent: 'scout-researcher', system: ['x'] })).options).toEqual({ temperature: 0.3 });
-    expect((await host.requestDraft({ sessionID: 'child', agent: 'scout-researcher', system: ['x'], options: { temperature: 0.9 } })).options).toEqual({ temperature: 0.9 });
-    expect((await host.requestDraft({ sessionID: 'child', agent: 'build', system: ['x'] })).options).toEqual({});
+  it('applies the role instructions to the compaction and generate requests and leaves every request option to the host', async () => {
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      // A legacy stored temperature is ignored; Hive sets no sampling option on any request.
+      const host = await activate({}, { agents: { 'scout-researcher': { temperature: 0.3 } }, customAgents: { 'scout-docs': { baseAgent: 'scout-researcher', description: 'd', temperature: 0.2 } } });
+      const registered = host.agents().registry.get('scout-researcher')!.system!;
+      for (const kind of ['context', 'compaction', 'generate'] as const) {
+        for (const agent of ['scout-researcher', 'scout-docs', 'swarm-orchestrator', 'build']) {
+          expect((await host.requestDraft({ kind, sessionID: 'child', agent, system: ['x'] })).options, `${kind} ${agent}`).toEqual({});
+          expect((await host.requestDraft({ kind, sessionID: 'child', agent, system: ['x'], options: { temperature: 0.9, maxTokens: 10 } })).options).toEqual({ temperature: 0.9, maxTokens: 10 });
+        }
+      }
+      for (const kind of ['compaction', 'generate'] as const) {
+        const draft = await host.requestDraft({ kind, sessionID: 'child', agent: 'scout-researcher', system: ['USER SCOUT PROMPT'], tools: ['read'] });
+        // A child session without `execute` would get the clarification rule and the Code Mode notice on an ordinary turn.
+        expect(draft.system.map((part: { text: string }) => part.text)).toEqual(['USER SCOUT PROMPT', registered]);
+        const unmanaged = await host.requestDraft({ kind, sessionID: 'primary', agent: 'build', system: ['BUILD'] });
+        expect(unmanaged.system).toEqual([{ type: 'text', text: 'BUILD' }]);
+      }
+      const ordinary = await host.request({ sessionID: 'child', agent: 'scout-researcher', system: ['USER SCOUT PROMPT'], tools: ['read'] });
+      expect(ordinary).toContain(SUBAGENT_CLARIFICATION_PROMPT.trim());
+      expect(warn.mock.calls.filter(([message]) => String(message).includes('removed setting temperature'))).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
-  it('applies the same role instructions and temperature to the compaction and generate requests, and only those', async () => {
-    const host = await activate({}, { agents: { 'scout-researcher': { temperature: 0.3 } } });
-    const registered = host.agents().registry.get('scout-researcher')!.system!;
-    for (const kind of ['compaction', 'generate'] as const) {
-      const draft = await host.requestDraft({ kind, sessionID: 'child', agent: 'scout-researcher', system: ['USER SCOUT PROMPT'], tools: ['read'] });
-      // A child session without `execute` would get the clarification rule and the Code Mode notice on an ordinary turn.
-      expect(draft.system.map((part: { text: string }) => part.text)).toEqual(['USER SCOUT PROMPT', registered]);
-      expect(draft.options).toEqual({ temperature: 0.3 });
-      expect((await host.requestDraft({ kind, sessionID: 'child', agent: 'scout-researcher', system: [registered], options: { temperature: 0.9 } })).options).toEqual({ temperature: 0.9 });
-      const unmanaged = await host.requestDraft({ kind, sessionID: 'primary', agent: 'build', system: ['BUILD'] });
-      expect(unmanaged.system).toEqual([{ type: 'text', text: 'BUILD' }]);
-      expect(unmanaged.options).toEqual({});
-    }
-    const ordinary = await host.request({ sessionID: 'child', agent: 'scout-researcher', system: ['USER SCOUT PROMPT'], tools: ['read'] });
-    expect(ordinary).toContain(SUBAGENT_CLARIFICATION_PROMPT.trim());
+  it('stops activation with the semantic model error, so a native model for the role cannot complete the Hive variant', async () => {
+    // The user's native model for the role would apply only after Hive registers, which activation never reaches.
+    await expect(activate({}, { agents: { 'forager-worker': { variant: 'high' } } })).rejects.toThrow('agents.forager-worker.variant is set without a Hive model');
+    await expect(activate({}, { agents: { 'forager-worker': { variant: 'high' } } })).rejects.toThrow('agent_hive.json');
   });
 
   it('diagnoses Code Mode reads that execute denial makes unreachable, and stays silent for direct reads', async () => {
@@ -673,11 +703,10 @@ describe('v2 skills, commands and models', () => {
     expect(host.prompts[1].text).not.toContain('task(');
   });
 
-  it('parses configured models into native references', () => {
+  it('parses configured models into native references and fails loudly on a model validation should have rejected', () => {
     expect(toModelRef('anthropic/claude-x', 'max')).toEqual({ providerID: 'anthropic', id: 'claude-x', variant: 'max' });
     expect(toModelRef('openrouter/vendor/model', undefined)).toEqual({ providerID: 'openrouter', id: 'vendor/model' });
-    expect(toModelRef('invalid', undefined)).toBeUndefined();
-    expect(toModelRef(undefined, 'max')).toBeUndefined();
+    expect(() => toModelRef('invalid', undefined)).toThrow();
   });
 
   it('stops activation on invalid options instead of guessing a transport', async () => {

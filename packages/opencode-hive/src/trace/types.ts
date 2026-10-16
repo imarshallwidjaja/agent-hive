@@ -102,26 +102,45 @@ export interface SummarizerStage {
   system: string;
 }
 
-/** What the host reports about the configured summarizer model; absent fields are unknown. */
+/** What the host reports about the selected summarizer model; absent fields are unknown. */
 export interface ModelMetadata {
   limit?: unknown;
   variants?: readonly string[];
 }
 
+/** A native model selection: a model and, when one is chosen, its variant. */
+export interface ModelSelection {
+  readonly providerID: string;
+  readonly modelID: string;
+  /** Absent: the model's own default variant. */
+  readonly variant?: string;
+}
+
+/**
+ * The model every summarizer request of one recovery runs on. The engine binds it once when the recovery starts, so
+ * the model metadata and every map and reduce generation of that recovery use the same selection.
+ */
+export interface SummarizerSelection extends ModelSelection {
+  /** `caller`: the invoking session's native selection. `configured`: `taskTraceSummarizer.model` (and its variant). */
+  readonly source: 'caller' | 'configured';
+}
+
 /**
  * The native operations one bounded summarizer generation needs. The engine owns deadlines, collision and cleanup
- * accounting; the host only performs each step. Every step receives a signal that aborts it.
+ * accounting and chooses the selection; the host only performs each step. Every step receives a signal that aborts it.
  */
 export interface SummarizerHost {
+  /** Validated configuration: a variant always comes with a model. Empty means recoveries inherit the caller's model. */
   readonly config: TaskTraceSummarizerConfig;
   /** Ephemeral sessions created and not yet confirmed removed. */
   readonly ephemeralSessionIDs: Set<string>;
   /**
-   * Metadata of the configured model. `model` is undefined when the configuration names a variant but no model; a host
-   * that applies the variant to its own default model answers for that model, and one that leaves the choice to the
-   * request answers undefined. Undefined also means the model is not found; throws when the lookup fails.
+   * The model and variant the invoking caller session runs on now, read without changing that session. Undefined
+   * when the host cannot determine it; throws when the lookup fails.
    */
-  modelMetadata(model: { providerID: string; modelID: string } | undefined, signal: AbortSignal): Promise<ModelMetadata | undefined>;
+  callerSelection(callerSessionID: string, signal: AbortSignal): Promise<ModelSelection | undefined>;
+  /** Metadata of the selected model. Undefined means the model is not found; throws when the lookup fails. */
+  modelMetadata(model: ModelSelection, signal: AbortSignal): Promise<ModelMetadata | undefined>;
   /**
    * Names, before `create` runs, the session the next `create` will make. A host whose create can persist the session
    * before it returns the ID (so an interruption in between loses the ID) provides this; the engine owns the named
@@ -129,8 +148,8 @@ export interface SummarizerHost {
    */
   allocateSessionID?(): string;
   /** Creates an ephemeral session and returns its ID; throws when no session was created. `id` is the allocated ID. */
-  create(title: string, signal: AbortSignal, id?: string): Promise<string>;
-  generate(sessionID: string, stage: SummarizerStage, signal: AbortSignal): Promise<SummarizerReply>;
+  create(title: string, selection: SummarizerSelection, signal: AbortSignal, id?: string): Promise<string>;
+  generate(sessionID: string, stage: SummarizerStage, selection: SummarizerSelection, signal: AbortSignal): Promise<SummarizerReply>;
   /** Stops an interrupted generation. A host whose generation stops with its request signal omits this. */
   abort?(sessionID: string, signal: AbortSignal): Promise<boolean>;
   /** True only when the host confirms the session is gone (removed, or never created). */

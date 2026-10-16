@@ -1,6 +1,8 @@
 import { Cause, Effect, Exit } from 'effect';
 import type { Scope } from 'effect';
 import type { Plugin } from '@opencode/plugin/effect';
+import { Model } from '@opencode/schema/model';
+import { Provider } from '@opencode/schema/provider';
 import { SessionID } from '@opencode/schema/session-id';
 import type { SessionGenerate } from '@opencode/plugin/effect/session';
 import type { TaskTraceSummarizerConfig } from 'hive-core';
@@ -31,7 +33,6 @@ import {
 } from '../trace/types.js';
 import { ReadAccessError, type ReadAccessErrorCode, type VerifiedReadAccess } from './client.js';
 import type { V2Catalog } from './registration.js';
-import { toModelRef } from './registration.js';
 
 /**
  * OpenCode v2 evidence: `hive_task_trace` and `hive_task_trace_content` over the shared trace engine.
@@ -276,11 +277,11 @@ type GenerationRequest = { system: string; observed?: { providerID?: unknown; mo
 
 /**
  * The in-process summarizer. Each generation registers its stage contract for its own ephemeral session; the
- * `generate` hook adds that contract to the request's system prompt, applies the configured temperature and records
- * the model the host prepared the request with. Generation runs in a fiber the request signal interrupts, so there
- * is no separate abort step. The session carries the configured model and variant; a configuration with a variant and
- * no model applies the variant to the host's default model, because a v2 session takes its variant only as part of a
- * model reference. No Hive retry or model fallback is added; host-internal provider retries are not observed.
+ * `generate` hook adds that contract to the request's system prompt and records the model the host prepared the
+ * request with. Request options are left as the host and other plugins set them. Generation runs in a fiber the
+ * request signal interrupts, so there is no separate abort step. Each session carries the recovery's bound selection
+ * as its full model reference. No Hive retry or model fallback is added; host-internal provider retries are not
+ * observed.
  */
 export function createV2Summarizer(context: Pick<Plugin.Context, 'session' | 'model' | 'location'>, config: TaskTraceSummarizerConfig, ephemeralSessionIDs = new Set<string>()) {
   const pending = new Map<string, GenerationRequest>();
@@ -288,19 +289,30 @@ export function createV2Summarizer(context: Pick<Plugin.Context, 'session' | 'mo
   const run = <A, E>(effect: Effect.Effect<A, E>, signal: AbortSignal) => Effect.runPromiseExit(effect, { signal });
   const location = { directory: context.location.directory };
   const metadataOf = (model: { limit: unknown; variants: ReadonlyArray<{ id: string }> }) => ({ limit: model.limit, variants: model.variants.map((variant) => variant.id) });
-  const defaultModel = async (signal: AbortSignal) => {
+  // The catalog default is what a session without a model runs on only when it names a provider package. The native
+  // resolver (v2.0.26 `ModelResolver.resolve`) otherwise picks another packaged model, a choice Hive does not reproduce.
+  const nativeDefaultModel = async (signal: AbortSignal) => {
     const exit = await run(context.model.default({ location }), signal);
     if (Exit.isFailure(exit)) throw Cause.squash(exit.cause);
-    return exit.value.data ?? undefined;
+    const selected = exit.value.data;
+    return selected?.package ? selected : undefined;
   };
   const host: SummarizerHost = {
     config,
     ephemeralSessionIDs,
-    async modelMetadata(model, signal) {
-      if (!model) {
-        const selected = await defaultModel(signal);
-        return selected ? metadataOf(selected) : undefined;
+    // A session without a model runs on the host default, which the native runner resolves with no variant. When the
+    // catalog default is not the model the runner would pick, no selection is established and recovery is unavailable.
+    async callerSelection(callerSessionID, signal) {
+      const exit = await run(context.session.get({ sessionID: callerSessionID as never }), signal);
+      if (Exit.isFailure(exit)) throw Cause.squash(exit.cause);
+      const model = exit.value.model;
+      if (model) {
+        return { providerID: model.providerID, modelID: model.id, ...(model.variant !== undefined && model.variant !== 'default' ? { variant: model.variant } : {}) };
       }
+      const selected = await nativeDefaultModel(signal);
+      return selected ? { providerID: selected.providerID, modelID: selected.id } : undefined;
+    },
+    async modelMetadata(model, signal) {
       const exit = await run(context.model.list({ location }), signal);
       if (Exit.isFailure(exit)) throw Cause.squash(exit.cause);
       const selected = exit.value.data.find((entry) => entry.providerID === model.providerID && entry.id === model.modelID);
@@ -309,18 +321,16 @@ export function createV2Summarizer(context: Pick<Plugin.Context, 'session' | 'mo
     // The host persists a session before it returns the ID, so an interruption in between would lose it. Naming the
     // session first, through create's public `id` input, lets cleanup address it whatever becomes of the create.
     allocateSessionID: () => SessionID.create(),
-    async create(title, signal, id) {
-      let model = toModelRef(config.model, config.variant);
-      if (!model && config.variant) {
-        const selected = await defaultModel(signal);
-        if (!selected) throw new Error('The summarizer variant needs a model and the host has no default model.');
-        model = { providerID: selected.providerID, id: selected.id, variant: config.variant };
-      }
+    async create(title, selection, signal, id) {
       const creating = run(context.session.create({
         ...(id === undefined ? {} : { id }),
         title,
         agent: TASK_TRACE_SUMMARIZER_AGENT,
-        ...(model ? { model } : {}),
+        model: Model.Ref.make({
+          providerID: Provider.ID.make(selection.providerID),
+          id: Model.ID.make(selection.modelID),
+          ...(selection.variant !== undefined ? { variant: Model.VariantID.make(selection.variant) } : {}),
+        }),
         permissions: DENY_ALL,
       } as never), signal);
       if (id !== undefined) {
@@ -331,7 +341,7 @@ export function createV2Summarizer(context: Pick<Plugin.Context, 'session' | 'mo
       if (Exit.isFailure(exit)) throw Cause.squash(exit.cause);
       return exit.value.id;
     },
-    async generate(sessionID, stage, signal) {
+    async generate(sessionID, stage, _selection, signal) {
       const request: GenerationRequest = { system: stage.system };
       pending.set(sessionID, request);
       try {
@@ -359,7 +369,6 @@ export function createV2Summarizer(context: Pick<Plugin.Context, 'session' | 'mo
     const request = pending.get(event.sessionID);
     if (!request) return;
     event.system.push({ type: 'text', text: request.system } as never);
-    event.options.temperature = config.temperature ?? 0;
     request.observed = { providerID: event.model.providerID, modelID: event.model.id, variant: event.model.variant };
   });
   return { host, onGenerate };
@@ -398,7 +407,7 @@ export function createV2TraceOperations(readAccess: VerifiedReadAccess, summariz
 /** Registers the hidden summarizer agent, its request hook and both trace tools for this activation. */
 export function registerEvidence(context: Plugin.Context, catalog: V2Catalog): Effect.Effect<void, never, Scope.Scope> {
   return Effect.gen(function* () {
-    const config = catalog.services.configService.get().taskTraceSummarizer ?? { temperature: 0 };
+    const config = catalog.services.configService.get().taskTraceSummarizer ?? {};
     const summarizer = createV2Summarizer(context, config);
     yield* context.agent.transform((editor) => {
       editor.update(TASK_TRACE_SUMMARIZER_AGENT, (agent) => {

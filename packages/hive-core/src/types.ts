@@ -356,12 +356,13 @@ export interface TaskSpec {
   priorTasks: Array<{ folder: string; summary?: string }>;
 }
 
-/** Agent model/temperature configuration */
+/**
+ * Agent model and skill configuration. Without `model` and `variant` the agent inherits the host's native model; a
+ * `variant` requires an explicit Hive `model` on the effective declaration.
+ */
 export interface AgentModelConfig {
   /** Model to use - format: "provider/model-id" (e.g., 'anthropic/claude-sonnet-4-20250514') */
   model?: string;
-  /** Temperature for generation (0-2) */
-  temperature?: number;
   /** Skills to enable for this agent (legacy; native skill visibility is controlled by OpenCode registration, not by this allowlist) */
   skills?: string[];
   /** Native discovered or Hive bundled skill names to inject into this agent prompt at startup */
@@ -443,7 +444,6 @@ export interface CustomAgentConfig {
   baseAgent: CustomAgentBase;
   description: string;
   model?: string;
-  temperature?: number;
   variant?: string;
   /** Additional native discovered or Hive bundled skill names to inject into this custom agent prompt at startup */
   autoLoadSkills?: string[];
@@ -472,10 +472,10 @@ export interface CouncilConfig {
   groups?: Record<string, CouncilGroupConfig>;
 }
 
+/** Recovery summarizer model. Empty: each recovery uses the invoking caller's native model and variant. */
 export interface TaskTraceSummarizerConfig {
   model?: string;
   variant?: string;
-  temperature?: number;
 }
 
 export interface ResolvedRepository {
@@ -533,22 +533,6 @@ export interface HiveConfig {
   hook_cadence?: Record<string, number>;
 }
 
-/** Default models for Hive agents */
-export const DEFAULT_AGENT_MODELS = {
-  'hive-master': 'github-copilot/claude-opus-4.5',
-  'architect-planner': 'github-copilot/gpt-5.2-codex',
-  'swarm-orchestrator': 'github-copilot/claude-opus-4.5',
-  'scout-researcher': 'zai-coding-plan/glm-4.7',
-  'forager-worker': 'github-copilot/gpt-5.2-codex',
-  'hive-helper': 'github-copilot/gpt-5.2-codex',
-  'plan-reviewer': 'github-copilot/gpt-5.2-codex',
-  'code-reviewer': 'github-copilot/gpt-5.2-codex',
-  'simplicity-reviewer': 'github-copilot/gpt-5.2-codex',
-  'approach-advisor': 'github-copilot/gpt-5.2-codex',
-  'vulnerability-reviewer': 'github-copilot/gpt-5.2-codex',
-  'hive-builder': 'github-copilot/gpt-5.2-codex',
-} as const;
-
 export const DEFAULT_COUNCIL_CONFIG: CouncilConfig = {
   defaultGroup: 'decision',
   maxMembers: 4,
@@ -582,9 +566,6 @@ export const STARTER_CUSTOM_AGENTS: Record<string, CustomAgentConfig> = {
   'forager-example-template': {
     baseAgent: 'forager-worker',
     description: 'Example template only: rename or delete this entry before use. Do not expect planners/orchestrators to select this placeholder agent as configured.',
-    model: 'anthropic/claude-sonnet-4-20250514',
-    temperature: 0.2,
-    variant: 'high',
     autoLoadSkills: ['verification'],
   },
   'reviewer-example-template': {
@@ -600,67 +581,42 @@ export const DEFAULT_HIVE_CONFIG: HiveConfig = {
   disableSkills: [],
   agentMode: 'dedicated',
   council: DEFAULT_COUNCIL_CONFIG,
-  taskTraceSummarizer: { temperature: 0 },
   customAgents: {},
   agents: {
     'hive-master': {
-      model: DEFAULT_AGENT_MODELS['hive-master'],
-      temperature: 0.5,
       autoLoadSkills: ['parallel-exploration'],
     },
     'architect-planner': {
-      model: DEFAULT_AGENT_MODELS['architect-planner'],
-      temperature: 0.7,
       autoLoadSkills: ['parallel-exploration'],
     },
     'swarm-orchestrator': {
-      model: DEFAULT_AGENT_MODELS['swarm-orchestrator'],
-      temperature: 0.5,
       autoLoadSkills: ['parallel-exploration'],
     },
     'scout-researcher': {
-      model: DEFAULT_AGENT_MODELS['scout-researcher'],
-      temperature: 0.5,
       autoLoadSkills: [],
     },
     'forager-worker': {
-      model: DEFAULT_AGENT_MODELS['forager-worker'],
-      temperature: 0.3,
       autoLoadSkills: ['verification'],
     },
     'hive-helper': {
-      model: DEFAULT_AGENT_MODELS['hive-helper'],
-      temperature: 0.3,
       autoLoadSkills: ['hive-config'],
     },
     'plan-reviewer': {
-      model: DEFAULT_AGENT_MODELS['plan-reviewer'],
-      temperature: 0.3,
       autoLoadSkills: [],
     },
     'code-reviewer': {
-      model: DEFAULT_AGENT_MODELS['code-reviewer'],
-      temperature: 0.3,
       autoLoadSkills: [],
     },
     'simplicity-reviewer': {
-      model: DEFAULT_AGENT_MODELS['simplicity-reviewer'],
-      temperature: 0.1,
       autoLoadSkills: [],
     },
     'approach-advisor': {
-      model: DEFAULT_AGENT_MODELS['approach-advisor'],
-      temperature: 0.3,
       autoLoadSkills: [],
     },
     'vulnerability-reviewer': {
-      model: DEFAULT_AGENT_MODELS['vulnerability-reviewer'],
-      temperature: 0.3,
       autoLoadSkills: [],
     },
     'hive-builder': {
-      model: DEFAULT_AGENT_MODELS['hive-builder'],
-      temperature: 0.4,
       autoLoadSkills: ['verification', 'parallel-exploration'],
     },
   },

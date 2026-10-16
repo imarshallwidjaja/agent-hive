@@ -45,6 +45,12 @@ export function classifySession(
   return { sessionKind: 'unknown', baseAgent: undefined };
 }
 
+/**
+ * The OpenCode v1 `chat.message` hook. v1.18.30 records the message's model selection as `message.model`
+ * (`{ providerID, modelID, variant }`) and has already applied the caller's variant or the agent's catalog variant
+ * there. Hive fills only a missing variant, and only when the message runs the agent's own Hive model: a variant
+ * belongs to its model, so a message on another model keeps that model's native variant.
+ */
 export function createVariantHook(
   configService: ConfigService,
   sessionService?: SessionService,
@@ -59,12 +65,11 @@ export function createVariantHook(
       variant?: string;
     },
     output: {
-      message: { agent?: string; variant?: string };
+      message: { agent?: string; model?: { providerID: string; modelID: string; variant?: string } };
       parts: unknown[];
     },
   ): Promise<void> => {
-    const { agent } = input;
-    const effectiveAgent = agent ?? output.message.agent;
+    const effectiveAgent = input.agent ?? output.message.agent;
 
     if (effectiveAgent && sessionService) {
       const { sessionKind, baseAgent } = classifySession(effectiveAgent, customAgents);
@@ -75,15 +80,13 @@ export function createVariantHook(
       sessionService.trackGlobal(input.sessionID, patch as any);
     }
 
-    if (!agent) return;
-    if (!configService.hasConfiguredAgent(agent)) return;
-    if (output.message.variant !== undefined) return;
+    if (!effectiveAgent || !configService.hasConfiguredAgent(effectiveAgent)) return;
+    const selected = output.message.model;
+    if (!selected || selected.variant !== undefined) return;
 
-    const agentConfig = configService.getAgentConfig(agent);
-    const configuredVariant = agentConfig.variant?.trim() || undefined;
-
-    if (configuredVariant !== undefined) {
-      output.message.variant = configuredVariant;
-    }
+    const { model, variant } = configService.getAgentConfig(effectiveAgent);
+    if (model === undefined || variant === undefined) return;
+    if (`${selected.providerID}/${selected.modelID}` !== model) return;
+    selected.variant = variant;
   };
 }

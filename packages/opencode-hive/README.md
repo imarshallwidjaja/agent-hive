@@ -89,11 +89,11 @@ Hive keeps its state in the project checkout the host resolves for the session: 
 
 Hive does not rewrite v2 configuration. Its agent registrations are defaults: your v2 settings for the default agent, an agent's description, mode, hidden state, model and variant, step limits and permission rules take precedence. On v1 the config hook behavior above is unchanged. What v2 configuration cannot change:
 
-- Each Hive role's instructions are added at request time to its ordinary turns and to its compaction and generate requests (the title request names no agent and is left alone). An agent you gave your own system prompt keeps it, followed by the Hive instructions. A `temperature` set for the agent in `agent_hive.json` is applied the same way, as a request option, because v2 agent registrations carry no temperature. Skill guidance follows the live catalog, including your configured sources. Auto-load guidance retains resolved catalog ids. For name-based requirements, the request's Hive Skill Name Lookup prefers a unique user skill over a bundled skill even when their folder ids differ. Multiple user entries with the same name are reported as ambiguous; configure or request an exact catalog id to select one. User content stays unchanged.
+- Each Hive role's instructions are added at request time to its ordinary turns and to its compaction and generate requests (the title request names no agent and is left alone). An agent you gave your own system prompt keeps it, followed by the Hive instructions. Hive adds no request options such as temperature; native and provider request settings stay as you configured them. Skill guidance follows the live catalog, including your configured sources. Auto-load guidance retains resolved catalog ids. For name-based requirements, the request's Hive Skill Name Lookup prefers a unique user skill over a bundled skill even when their folder ids differ. Multiple user entries with the same name are reported as ambiguous; configure or request an exact catalog id to select one. User content stays unchanged.
 - Commands render against your agents as they are when you run them, so a disabled agent drops out of a council or review roster and your description, model and variant are the ones shown. A command bound to an agent switches the session to that agent and to its effective model and variant, as native configured commands do.
 - Hive operations and native effects are checked when they run, from the agent's role (a built-in role name or a custom agent's base role) and the session's actual parent, never from its mode or description. A permission rule that allows a tool makes it visible but does not authorize a role to run a Hive operation it lacks, a primary-only operation in a child session, edits for read-only roles, delegation outside the role's targets, delegation to `hive-master`, `swarm-orchestrator` or `hive-builder` by any agent, or `question` in a child session. Native `general` and `explore` get no Hive tools. Hive roles cannot run the native `opencode_worktree_create`, `opencode_worktree_remove` or `opencode_session_move` tools, including from Code Mode. Agents Hive does not register keep native behavior, apart from the child-session limits.
 
-v2 limits subagent nesting with `experimental.subagent_depth` (default 1). Set it to `2` so a delegated Architect can call its Scout, reviewer and Helper agents; Hive does not set it for you. On the tested v2 host, a top-level session uses the explicit CLI/session model or native configured model, rather than its agent's registered model. A native subagent uses the effective agent model/variant; an agent-bound command switches to its effective model/variant. Set participating models deliberately, including recovery models, and check actual requests rather than catalog fields. Hive agent temperature is a request-time option. V1 selection behavior is unchanged. Scripted-provider qualification establishes wiring, not real-model judgment.
+v2 limits subagent nesting with `experimental.subagent_depth` (default 1). Set it to `2` so a delegated Architect can call its Scout, reviewer and Helper agents; Hive does not set it for you. On the tested v2 host, a top-level session uses the explicit CLI/session model or native configured model, rather than its agent's registered model. A subagent uses an explicit native override, then the effective agent model/variant, then its parent's model, so a Hive role without a Hive model inherits like a native subagent; an agent-bound command switches to its effective model/variant. See [Agent models](#agent-models). Check actual requests rather than catalog fields. Scripted-provider qualification establishes wiring, not real-model judgment.
 
 See [Switching OpenCode hosts and rollback](../../docs/OPERATOR-GUIDE.md#switching-opencode-hosts-and-rollback) for shared domain state and separate native observations.
 
@@ -415,7 +415,7 @@ For example, a shared DTO task can verify the DTO owner suite before merge and d
 
 ## Configuration
 
-Hive reads runtime configuration from `~/.config/opencode/agent_hive.json` on both hosts. `~` is the `HOME` environment variable (or `USERPROFILE` when `HOME` is unset); `XDG_CONFIG_HOME` does not move this file. The v2 entry's own `readTransport` and `server` options live in its `plugins` entry instead, as shown under [OpenCode v2](#opencode-v2). The only project-local override file is `.hive/agent-hive.override.json`; it accepts only `model` and `variant` under `agents` and `customAgents`, and affects matching agents already present in the effective global/default configuration. Unknown names are ignored and never create agents. Project-local `.hive/agent-hive.json` and `.opencode/agent_hive.json` files remain ignored. Hive uses defaults when the global config is missing, unreadable, invalid JSON, or rejected by runtime validation. That validation rejects unknown top-level keys (including removed `disableMcps`) and wrong types for known fields, but does not enforce every restriction in the published schema: unknown keys inside `agents` declarations and some malformed `customAgents` entries do not invalidate the whole file ([config service](../hive-core/src/services/configService.ts), [schema](schema/agent_hive.schema.json)). An invalid project override is ignored with a runtime warning. Restart OpenCode after changing either config file.
+Hive reads runtime configuration from `~/.config/opencode/agent_hive.json` on both hosts. `~` is the `HOME` environment variable (or `USERPROFILE` when `HOME` is unset); `XDG_CONFIG_HOME` does not move this file. The v2 entry's own `readTransport` and `server` options live in its `plugins` entry instead, as shown under [OpenCode v2](#opencode-v2). The only project-local override file is `.hive/agent-hive.override.json`; it accepts only `model` and `variant` under `agents` and `customAgents`, and affects matching agents already present in the effective global/default configuration. Unknown names are ignored and never create agents. Project-local `.hive/agent-hive.json` and `.opencode/agent_hive.json` files remain ignored. Hive uses defaults when the global config is missing, unreadable, invalid JSON, or rejected by runtime validation. That validation rejects unknown top-level keys (including removed `disableMcps`) and wrong types for known fields, but does not enforce every restriction in the published schema: unknown keys inside `agents` declarations and some malformed `customAgents` entries do not invalidate the whole file ([config service](../hive-core/src/services/configService.ts), [schema](schema/agent_hive.schema.json)). A structurally invalid project override (unsupported key, non-string value, invalid JSON) is ignored with a runtime warning. Model settings are the exception to falling back: an invalid effective `model` or `variant`, including a blank string in a project entry that matches an agent, stops the plugin with an error, as described under [Agent models](#agent-models). Restart OpenCode after changing either config file.
 
 Global config remains authoritative for runtime policy, agent definitions, and auto-load skill settings. See [`agent_hive.override.schema.json`](schema/agent_hive.override.schema.json) for the project override shape.
 
@@ -464,14 +464,13 @@ Dedicated mode does not auto-switch the live chat agent when you run a slash com
 
 | Field | Required | Default | Notes |
 |-------|----------|---------|-------|
-| `model` | no | OpenCode default model | Nonempty `provider/model-id` string |
-| `variant` | no | OpenCode default / none | Must match a key under `opencode.json` `provider.<provider>.models.<model>.variants` |
-| `temperature` | no | `0` | Number from `0` through `2` |
+| `model` | no | The invoking caller session's native model | Explicit `provider/model-id` |
+| `variant` | no | With no `model`: the caller's native variant. With `model`: that model's default | Requires `model`. Must match a key under `opencode.json` `provider.<provider>.models.<model>.variants` |
 
 Behavior:
 
 - Recovery interpretation is always marked untrusted (`provenance: 'summarizer_interpretation'`).
-- The configured `model` and `variant` are sent with every summarizer request and `temperature` is applied to the hidden agent. Each request carries its own stage output contract (a strict JSON Schema plus the rules it cannot express); replies are validated against the same schema.
+- Each recovery binds one model selection when it starts: the configured `model` (with `variant` when set), or, with no `model`, the model and variant the session that called `hive_task_trace` is running on. The model metadata and every summarizer request of that recovery use it, and `recovery.model.requested` reports it with its `source` (`configured` or `caller`). If the caller's selection cannot be read, recovery is reported unavailable rather than run on a guessed model. Hive sets no sampling options on these requests. Each request carries its own stage output contract (a strict JSON Schema plus the rules it cannot express); replies are validated against the same schema.
 - `recovery.model.observed` reports the provider, model, and variant the host says it ran. A configured variant that provider metadata shows the model does not offer is not sent; recovery returns deterministic partial fallback and does not claim it was applied. If metadata cannot be read, the variant is still sent and `observed` shows what ran.
 - A provider error, an unusable reply, or a request that exceeds the model's input budget produces deterministic partial fallback without provider retry or model fallback. Each affected failure entry may carry up to four `diagnostics`: finite codes, a schema path and step number, the provider error name and HTTP status, finish reason, and reply size. Diagnostics never include provider messages, response bodies, source text, or model text.
 - Only the bare JSON object, or that object inside one enclosing code fence, is accepted. Prose around it is a failure, and nothing is extracted or repaired.
@@ -483,8 +482,7 @@ Behavior:
   "$schema": "https://raw.githubusercontent.com/imarshallwidjaja/agent-hive/main/packages/opencode-hive/schema/agent_hive.schema.json",
   "taskTraceSummarizer": {
     "model": "anthropic/claude-sonnet-4-20250514",
-    "variant": "high",
-    "temperature": 0
+    "variant": "high"
   }
 }
 ```
@@ -668,13 +666,14 @@ You can set a `variant` for each Hive agent to control model reasoning/effort le
       "variant": "medium"
     },
     "scout-researcher": {
+      "model": "anthropic/claude-sonnet-4-20250514",
       "variant": "low"
     }
   }
 }
 ```
 
-The `variant` value must match a key in your OpenCode config at `provider.<provider>.models.<model>.variants`. For example, with Anthropic models you might configure thinking budgets:
+A `variant` needs an explicit Hive `model` for the same agent; see [Agent models](#agent-models). The `variant` value must match a key in your OpenCode config at `provider.<provider>.models.<model>.variants`. For example, with Anthropic models you might configure thinking budgets:
 
 ```json
 // opencode.json
@@ -695,7 +694,7 @@ The `variant` value must match a key in your OpenCode config at `provider.<provi
 }
 ```
 
-**Precedence:** If a prompt already has an explicit variant set, the per-agent config acts as a default and will not override it. Invalid or missing variant keys are treated as no-op (the model runs with default settings).
+**Precedence:** A variant already chosen for the prompt, by the caller or by OpenCode from the agent's own settings, wins. On v1, Hive fills a missing variant only when the message runs the agent's own Hive model; a message on another model keeps that model's native variant, and an unknown variant key is a no-op. On v2 the variant is part of the registered model reference: a native model setting for the agent replaces the whole reference, and the host rejects a variant the model does not offer.
 
 ### Custom Derived Subagents
 
@@ -724,7 +723,7 @@ Primary orchestrators, `hive-builder`, `hive-helper`, `architect-planner`, priva
 
 `simplicity-reviewer` is a custom base agent for specialized cleanup passes. Primary agents still use the built-in `simplicity-reviewer` when no configured simplicity-reviewer-derived custom description is a closer match.
 
-`vulnerability-reviewer` is a custom base agent for selectable `/vuln-review` specialist lenses. It preserves the configured description, model, variant, and temperature and inherits restricted Hive permissions and native edit denial. Its shell/external review-only scope is instruction-bound. Configured reviewer descriptions guide selection.
+`vulnerability-reviewer` is a custom base agent for selectable `/vuln-review` specialist lenses. It preserves the configured description, model and variant and inherits restricted Hive permissions and native edit denial. Its shell/external review-only scope is instruction-bound. Configured reviewer descriptions guide selection.
 
 Published example (validated by `src/e2e/custom-agent-docs-example.test.ts`):
 
@@ -732,10 +731,12 @@ Published example (validated by `src/e2e/custom-agent-docs-example.test.ts`):
 {
   "agents": {
     "scout-researcher": {
+      "model": "github-copilot/gpt-5.2-codex",
       "variant": "low"
     },
     "forager-worker": {
       "description": "Default for ordinary backend implementation.",
+      "model": "github-copilot/gpt-5.2-codex",
       "variant": "medium"
     },
     "code-reviewer": {
@@ -751,7 +752,6 @@ Published example (validated by `src/e2e/custom-agent-docs-example.test.ts`):
       "baseAgent": "forager-worker",
       "description": "Use for UI implementation tasks touching React/Next components, styling, accessibility, or browser-visible behavior.",
       "model": "anthropic/claude-sonnet-4-20250514",
-      "temperature": 0.2,
       "variant": "high"
     },
     "reviewer-security": {
@@ -766,9 +766,8 @@ Inheritance rules when a custom agent field is omitted:
 
 | Field | Inheritance behavior |
 |-------|----------------------|
-| `model` | Inherits resolved base agent model (including user overrides in `agents`) |
-| `temperature` | Inherits resolved base agent temperature |
-| `variant` | Inherits resolved base agent variant |
+| `model` | Inherits the resolved base agent's Hive model (including `agents` settings and the base's project override). With none, the custom agent uses the native OpenCode model |
+| `variant` | Inherits the resolved base agent's Hive variant; a variant needs a Hive model from the custom agent or its base |
 | `autoLoadSkills` | Merges with base agent auto-load defaults/overrides and de-duplicates. `disableSkills` only suppresses Hive bundled guidance/materialization, not native/user skills with the same name. |
 
 ID guardrails:
@@ -787,20 +786,52 @@ Compaction classification follows the base agent:
 
 This ensures custom workers recover with the same execution constraints as their base role.
 
-### Custom Models
+### Agent models
 
-Override models for specific agents:
+Hive ships no model for any role. A built-in role, custom agent or recovery summarizer with neither `model` nor `variant` in `~/.config/opencode/agent_hive.json` uses OpenCode's own model selection, so Hive runs on whichever providers you have connected.
+
+- **Native inheritance.** On v1, a role without a Hive model gets no `model` in its agent entry, so OpenCode uses the model chosen for the prompt or session, or your configured default, and a child task uses its parent's model and variant. On v2, a primary session uses the session model or the host default, a subagent uses an explicit native override, then the agent's effective model, then its parent's model, and an agent-bound command uses the agent's effective native model. Hive never pins an unconfigured role at startup or request time.
+- **Explicit choices.** Set `model` (`provider/model-id`) to pin a role, optionally with a `variant`. A variant needs an explicit Hive model on the same effective declaration: the role's global entry, its project override, or, for a custom agent, its Hive base role. An OpenCode agent, session or default model never completes it. If it is incomplete, or a supplied `model` or `variant` is blank or malformed, the plugin stops at startup with an error that names the file, the property path and the fix (set the model, or remove the variant), without echoing values.
+- **Project overrides and global writes.** A project override can complete a global fragment: a project `model` for a global `variant`, or the reverse. When Hive itself writes the global file (first-run creation on v1, or a settings update), it checks that file on its own, so the stored global configuration never depends on one project.
+- **Custom agents.** An omitted custom `model` or `variant` inherits the base role's Hive value, including the base's project override. A native OpenCode override of the base agent is not copied into the custom agent.
+- **Native precedence.** On v2, your native settings for an agent still win over a valid Hive model and replace the whole model reference, including its variant. On v1, Hive's entries replace native entries with the same agent ID.
+- **Stored models.** Releases before this one wrote a generated model for every role into the global file. Hive keeps every stored model as written, because a generated value and a deliberate choice look the same. To move a role to native inheritance, delete its `model` and `variant` together.
+- **Temperature.** Hive no longer sets sampling. A `temperature` left in `agents`, `customAgents` or `taskTraceSummarizer` is ignored with one warning per read, the rest of the file still applies, and the next Hive write omits it. Each model's native defaults and your provider, model or variant settings apply.
+
+```json
+{
+  "$schema": "https://raw.githubusercontent.com/imarshallwidjaja/agent-hive/main/packages/opencode-hive/schema/agent_hive.schema.json",
+  "agents": {
+    "hive-master": { "model": "anthropic/claude-sonnet-4-20250514" },
+    "forager-worker": { "model": "anthropic/claude-sonnet-4-20250514", "variant": "high" }
+  }
+}
+```
+
+#### Opt-in preset: OpenCode Go DeepSeek V4.1 Flash
+
+[OpenCode Go](https://opencode.ai/en/docs/go) is a separate paid OpenCode subscription with its own API key, connected with `/connect`. If you subscribe, you can pin Hive roles to its DeepSeek V4.1 Flash model with an ordinary `agents` block in `~/.config/opencode/agent_hive.json`. Keep the roles you want and drop the rest; a dropped role inherits your native model.
 
 ```json
 {
   "agents": {
-    "hive-master": {
-      "model": "anthropic/claude-sonnet-4-20250514",
-      "temperature": 0.5
-    }
+    "hive-master": { "model": "opencode-go/deepseek-v4.1-flash" },
+    "architect-planner": { "model": "opencode-go/deepseek-v4.1-flash" },
+    "swarm-orchestrator": { "model": "opencode-go/deepseek-v4.1-flash" },
+    "hive-builder": { "model": "opencode-go/deepseek-v4.1-flash" },
+    "scout-researcher": { "model": "opencode-go/deepseek-v4.1-flash" },
+    "forager-worker": { "model": "opencode-go/deepseek-v4.1-flash" },
+    "hive-helper": { "model": "opencode-go/deepseek-v4.1-flash" },
+    "plan-reviewer": { "model": "opencode-go/deepseek-v4.1-flash" },
+    "code-reviewer": { "model": "opencode-go/deepseek-v4.1-flash" },
+    "simplicity-reviewer": { "model": "opencode-go/deepseek-v4.1-flash" },
+    "approach-advisor": { "model": "opencode-go/deepseek-v4.1-flash" },
+    "vulnerability-reviewer": { "model": "opencode-go/deepseek-v4.1-flash" }
   }
 }
 ```
+
+The preset sets no `variant`. Hive does not check that your account can use the model or that the model is currently offered, and makes no claim about its quality or reliability for Hive work; run `/models` to confirm it is listed. Merge the block into your existing `agents` entries rather than replacing other settings. Hive never adds this preset to defaults or generated files.
 
 ## Focused references
 

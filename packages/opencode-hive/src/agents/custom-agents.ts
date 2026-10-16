@@ -2,10 +2,10 @@ import type { CustomAgentBase, ResolvedCustomAgentConfig } from 'hive-core';
 
 type PermissionAction = 'allow' | 'ask' | 'deny';
 
+/** A registered agent's settings. `model` and `variant` are present only when Hive configuration chose them. */
 export type RuntimeSubagentConfig = {
   model?: string;
   variant?: string;
-  temperature?: number;
   mode: 'subagent';
   description: string;
   prompt?: string;
@@ -44,10 +44,10 @@ export function buildCustomSubagents({
       registerRuntimePrompt?.(agentName, baseRuntimePrompt + autoLoadSkillAppendix);
     }
 
+    // The resolved custom configuration already carries any model and variant inherited from its Hive base role.
     derived[agentName] = {
-      model: customConfig.model ?? baseAgent.model,
-      variant: customConfig.variant ?? baseAgent.variant,
-      temperature: customConfig.temperature ?? baseAgent.temperature,
+      ...(customConfig.model !== undefined ? { model: customConfig.model } : {}),
+      ...(customConfig.variant !== undefined ? { variant: customConfig.variant } : {}),
       mode: 'subagent',
       description: customConfig.description,
       ...(prompt !== undefined ? { prompt } : {}),

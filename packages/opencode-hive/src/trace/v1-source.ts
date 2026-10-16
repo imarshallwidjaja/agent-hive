@@ -1,7 +1,7 @@
 import { isAbsolute } from 'node:path';
 import type { TaskTraceSummarizerConfig } from 'hive-core';
 import { normalizeReply } from '../task-trace-contract.js';
-import { cancellationReason, digest, modelRef, record, recordedChild, stableJson } from './engine.js';
+import { cancellationReason, digest, record, recordedChild, stableJson } from './engine.js';
 import {
   TASK_TRACE_SUMMARIZER_AGENT,
   type RecordedChild,
@@ -224,7 +224,10 @@ export function createV1TraceSource(client: TaskTraceClient, directory: string):
   };
 }
 
-/** Ephemeral summarizer sessions in the v1 server: a hidden deny-all agent prompted with the stage contract. */
+/**
+ * Ephemeral summarizer sessions in the v1 server: a hidden deny-all agent prompted with the stage contract. Every
+ * prompt names the recovery's bound model and variant, so no request falls back to the agent or server default.
+ */
 export function createV1Summarizer(input: {
   client: TaskTraceClient;
   directory: string;
@@ -236,9 +239,17 @@ export function createV1Summarizer(input: {
   return {
     config,
     ephemeralSessionIDs: input.ephemeralSessionIDs,
+    // v1 keeps a session's current agent and model on the session record; `default` names no variant.
+    async callerSelection(callerSessionID, signal) {
+      const response = await client.session.get({ path: { id: callerSessionID }, query, signal });
+      if (response.error !== undefined) throw new Error('The caller session could not be read.');
+      const session = record(response.data);
+      const model = record(session?.model);
+      if (session?.id !== callerSessionID || typeof model?.providerID !== 'string' || typeof model.id !== 'string') return undefined;
+      const variant = typeof model.variant === 'string' && model.variant !== 'default' ? model.variant : undefined;
+      return { providerID: model.providerID, modelID: model.id, ...(variant !== undefined ? { variant } : {}) };
+    },
     async modelMetadata(model, signal) {
-      // A variant-only configuration is sent with the prompt and the server applies it to whatever model it chooses.
-      if (!model) return undefined;
       const response = await client.config.providers({ query, signal });
       const data = record(response.data);
       if (response.error !== undefined || !data || !Array.isArray(data.providers)) return undefined;
@@ -248,21 +259,20 @@ export function createV1Summarizer(input: {
       const variants = record(selected.variants);
       return { limit: selected.limit, ...(variants ? { variants: Object.keys(variants) } : {}) };
     },
-    async create(title, signal) {
+    async create(title, _selection, signal) {
       const created = await client.session.create({ body: { title }, query, signal });
       const session = record(created.data);
       if (!session || typeof session.id !== 'string') throw new Error('create failed');
       return session.id;
     },
-    async generate(sessionID, stage, signal) {
+    async generate(sessionID, stage, selection, signal) {
       const body: RecordValue = {
         agent: TASK_TRACE_SUMMARIZER_AGENT,
         system: stage.system,
         parts: [{ type: 'text', text: stableJson(stage.request) }],
+        model: { providerID: selection.providerID, modelID: selection.modelID },
+        ...(selection.variant !== undefined ? { variant: selection.variant } : {}),
       };
-      const model = modelRef(config.model);
-      if (model) body.model = model;
-      if (config.variant) body.variant = config.variant;
       return normalizeReply(await client.session.prompt({ path: { id: sessionID }, query, body, signal }));
     },
     async abort(sessionID, signal) {

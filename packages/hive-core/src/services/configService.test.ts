@@ -52,25 +52,14 @@ describe("ConfigService defaults", () => {
       "swarm-orchestrator",
       "vulnerability-reviewer",
     ]);
-    expect(config.agents?.["architect-planner"]?.model).toBe(
-      "github-copilot/gpt-5.2-codex",
-    );
-    expect(config.agents?.["hive-master"]?.model).toBe(
-      "github-copilot/claude-opus-4.5",
-    );
-    expect(config.agents?.["swarm-orchestrator"]?.model).toBe(
-      "github-copilot/claude-opus-4.5",
-    );
-    expect(config.agents?.['hive-helper']).toEqual({
-      model: 'github-copilot/gpt-5.2-codex',
-      temperature: 0.3,
-      autoLoadSkills: ['hive-config'],
-    });
+    for (const [agentName, agentConfig] of Object.entries(config.agents ?? {})) {
+      expect(agentConfig, agentName).not.toHaveProperty('model');
+      expect(agentConfig, agentName).not.toHaveProperty('variant');
+      expect(agentConfig, agentName).not.toHaveProperty('temperature');
+    }
+    expect(config.agents?.['hive-helper']).toEqual({ autoLoadSkills: ['hive-config'] });
     expect(config.customAgents).toEqual({});
-  });
-
-  it('defaults task trace summarization to the OpenCode model with deterministic temperature', () => {
-    expect(new ConfigService().get().taskTraceSummarizer).toEqual({ temperature: 0 });
+    expect(config.taskTraceSummarizer).toBeUndefined();
   });
 
   it('ignores removed omoSlimEnabled without invalidating the rest of the config', () => {
@@ -88,6 +77,52 @@ describe("ConfigService defaults", () => {
     warn.mockRestore();
   });
 
+  it('ignores legacy temperature of any value without resetting or rewriting the rest of the config', () => {
+    for (const legacy of [0.4, 7, -1, null, 'warm', { value: 1 }, [0.2]]) {
+      const service = new ConfigService();
+      const warn = spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        fs.mkdirSync(path.dirname(service.getPath()), { recursive: true });
+        const bytes = JSON.stringify({
+          agentMode: 'unified',
+          council: { maxMembers: 2 },
+          agents: {
+            'forager-worker': { model: 'github-copilot/gpt-5.2-codex', variant: 'high', temperature: legacy, autoLoadSkills: ['extra'] },
+            'scout-researcher': { temperature: legacy, description: 'Scout routing' },
+          },
+          customAgents: {
+            'forager-ui': { baseAgent: 'forager-worker', description: 'UI work', temperature: legacy, autoLoadSkills: ['ui'] },
+          },
+          taskTraceSummarizer: { model: 'provider/summary', variant: 'low', temperature: legacy },
+        });
+        fs.writeFileSync(service.getPath(), bytes);
+
+        const config = service.get();
+        expect(service.getLastFallbackWarning()).toBeNull();
+        expect(config.agentMode).toBe('unified');
+        expect(config.council?.maxMembers).toBe(2);
+        expect(config.agents?.['forager-worker']).toEqual({ model: 'github-copilot/gpt-5.2-codex', variant: 'high', autoLoadSkills: ['extra'] });
+        expect(config.agents?.['scout-researcher']).toEqual({ autoLoadSkills: [], description: 'Scout routing' });
+        expect(config.taskTraceSummarizer).toEqual({ model: 'provider/summary', variant: 'low' });
+        expect(service.getCustomAgentConfigs()['forager-ui']).toEqual({
+          baseAgent: 'forager-worker',
+          description: 'UI work',
+          model: 'github-copilot/gpt-5.2-codex',
+          variant: 'high',
+          autoLoadSkills: ['verification', 'extra', 'ui'],
+        });
+        const removalWarnings = warn.mock.calls.map((call) => call.join(' ')).filter((line) => line.includes('temperature'));
+        expect(removalWarnings).toHaveLength(1);
+        expect(removalWarnings[0]).toContain(service.getPath());
+        // The temporary path is random and may contain the probed digits, so only the rest of the message is checked.
+        expect(removalWarnings[0].replace(service.getPath(), '')).not.toContain(JSON.stringify(legacy));
+        expect(fs.readFileSync(service.getPath(), 'utf-8')).toBe(bytes);
+      } finally {
+        warn.mockRestore();
+      }
+    }
+  });
+
   it('loads a strict task trace summarizer override', () => {
     const service = new ConfigService();
     fs.mkdirSync(path.dirname(service.getPath()), { recursive: true });
@@ -95,14 +130,12 @@ describe("ConfigService defaults", () => {
       taskTraceSummarizer: {
         model: 'provider/model',
         variant: 'high',
-        temperature: 0.25,
       },
     }));
 
     expect(service.get().taskTraceSummarizer).toEqual({
       model: 'provider/model',
       variant: 'high',
-      temperature: 0.25,
     });
   });
 
@@ -116,17 +149,12 @@ describe("ConfigService defaults", () => {
     expect(service.get().taskTraceSummarizer).toEqual({
       model: 'provider/model',
       variant: 'high',
-      temperature: 0,
     });
   });
 
-  it('falls back to defaults for invalid task trace summarizer declarations', () => {
+  it('falls back to defaults for structurally invalid task trace summarizer declarations', () => {
     for (const taskTraceSummarizer of [
-      { model: '' },
-      { variant: '   ' },
-      { temperature: -0.1 },
-      { temperature: 2.1 },
-      { temperature: Number.NaN },
+      { model: 5 },
       { unknown: true },
     ]) {
       const service = new ConfigService();
@@ -241,7 +269,6 @@ describe("ConfigService defaults", () => {
               baseAgent: "forager-worker",
               description: "Use for UI-heavy implementation tasks.",
               model: "anthropic/claude-sonnet-4-20250514",
-              temperature: 0.2,
               variant: "high",
               autoLoadSkills: ["ui-focus"],
             },
@@ -257,7 +284,6 @@ describe("ConfigService defaults", () => {
       baseAgent: "forager-worker",
       description: "Use for UI-heavy implementation tasks.",
       model: "anthropic/claude-sonnet-4-20250514",
-      temperature: 0.2,
       variant: "high",
       autoLoadSkills: ["ui-focus"],
     });
@@ -276,6 +302,7 @@ describe("ConfigService defaults", () => {
             description: '  Default for repository-local research.  ',
           },
           'forager-worker': {
+            model: 'provider/forager',
             variant: 'high',
           },
         },
@@ -302,6 +329,7 @@ describe("ConfigService defaults", () => {
         agents: {
           'forager-worker': {
             description: '   ',
+            model: 'provider/forager',
             variant: 'high',
           },
         },
@@ -349,6 +377,7 @@ describe("ConfigService defaults", () => {
           customAgents: null,
           agents: {
             "forager-worker": {
+              model: "provider/forager",
               variant: "high",
             },
           },
@@ -418,6 +447,12 @@ describe("ConfigService defaults", () => {
       expect(fs.existsSync(service.getPath())).toBe(true);
       const stored = JSON.parse(fs.readFileSync(service.getPath(), 'utf-8'));
       expect(stored.customAgents).toEqual(STARTER_CUSTOM_AGENTS);
+      for (const declaration of [...Object.values(stored.agents), ...Object.values(stored.customAgents)]) {
+        expect(declaration).not.toHaveProperty('model');
+        expect(declaration).not.toHaveProperty('variant');
+        expect(declaration).not.toHaveProperty('temperature');
+      }
+      expect(stored).not.toHaveProperty('taskTraceSummarizer');
       for (const baseAgent of CUSTOM_AGENT_BASES) {
         expect(stored.agents?.[baseAgent]).not.toHaveProperty('description');
         expect(service.getRoutingAgentDescription(baseAgent)).toBe(
@@ -429,7 +464,7 @@ describe("ConfigService defaults", () => {
     }
   });
 
-  it("deep-merges agent overrides with defaults", () => {
+  it("keeps stored explicit models, including values equal to former generated defaults", () => {
     const service = new ConfigService();
     const configPath = service.getPath();
 
@@ -439,7 +474,8 @@ describe("ConfigService defaults", () => {
       JSON.stringify(
         {
           agents: {
-            "hive-master": { temperature: 0.8 },
+            "hive-master": { model: "github-copilot/claude-opus-4.5" },
+            "forager-worker": { model: " github-copilot/gpt-5.2-codex ", variant: " high " },
           },
         },
         null,
@@ -447,54 +483,16 @@ describe("ConfigService defaults", () => {
       ),
     );
 
-    const config = service.get();
-    expect(config.agents?.["hive-master"]?.temperature).toBe(0.8);
-    expect(config.agents?.["hive-master"]?.model).toBe(
-      "github-copilot/claude-opus-4.5",
-    );
-
-    const agentConfig = service.getAgentConfig("hive-master");
-    expect(agentConfig.temperature).toBe(0.8);
-    expect(agentConfig.model).toBe("github-copilot/claude-opus-4.5");
-  });
-
-  it("deep-merges variant field from user config", () => {
-    const service = new ConfigService();
-    const configPath = service.getPath();
-
-    fs.mkdirSync(path.dirname(configPath), { recursive: true });
-    fs.writeFileSync(
-      configPath,
-      JSON.stringify(
-        {
-          agents: {
-            "forager-worker": { variant: "high" },
-            "scout-researcher": { variant: "low", temperature: 0.2 },
-          },
-        },
-        null,
-        2,
-      ),
-    );
-
-    const config = service.get();
-    // variant should be merged from user config
-    expect(config.agents?.["forager-worker"]?.variant).toBe("high");
-    expect(config.agents?.["scout-researcher"]?.variant).toBe("low");
-    // other defaults should still be present
-    expect(config.agents?.["forager-worker"]?.model).toBe(
-      "github-copilot/gpt-5.2-codex",
-    );
-    expect(config.agents?.["scout-researcher"]?.temperature).toBe(0.2);
-
-    // getAgentConfig should also return variant
-    const foragerConfig = service.getAgentConfig("forager-worker");
-    expect(foragerConfig.variant).toBe("high");
-    expect(foragerConfig.model).toBe("github-copilot/gpt-5.2-codex");
-
-    const scoutConfig = service.getAgentConfig("scout-researcher");
-    expect(scoutConfig.variant).toBe("low");
-    expect(scoutConfig.temperature).toBe(0.2);
+    expect(service.getAgentConfig("hive-master")).toEqual({
+      model: "github-copilot/claude-opus-4.5",
+      autoLoadSkills: ["parallel-exploration"],
+    });
+    expect(service.getAgentConfig("forager-worker")).toEqual({
+      model: "github-copilot/gpt-5.2-codex",
+      variant: "high",
+      autoLoadSkills: ["verification"],
+    });
+    expect(service.getAgentConfig("scout-researcher")).toEqual({ autoLoadSkills: [] });
   });
 
   it("merges autoLoadSkills defaults and overrides", () => {
@@ -565,49 +563,10 @@ describe("ConfigService defaults", () => {
     expect(config.autoLoadSkills).toEqual(["parallel-exploration", "custom-skill"]);
   });
 
-  it("defaults have no variant set", () => {
-    const service = new ConfigService();
-    const config = service.get();
+  it("getAgentConfig('hive-builder') returns only its default skills, leaving the model to the host", () => {
+    const config = new ConfigService().getAgentConfig("hive-builder");
 
-    // Default config should not have variant set for any agent
-    for (const agentKey of Object.keys(config.agents ?? {})) {
-      const agent = config.agents?.[agentKey as keyof typeof config.agents];
-      expect(agent?.variant).toBeUndefined();
-    }
-  });
-
-  it("getAgentConfig('hive-builder') returns default config", () => {
-    const service = new ConfigService();
-    const config = service.getAgentConfig("hive-builder");
-
-    expect(config.model).toBe("github-copilot/gpt-5.2-codex");
-    expect(config.temperature).toBe(0.4);
-    expect(config.autoLoadSkills).toEqual(["verification", "parallel-exploration"]);
-  });
-
-  it("deep-merges hive-builder overrides with defaults", () => {
-    const service = new ConfigService();
-    const configPath = service.getPath();
-
-    fs.mkdirSync(path.dirname(configPath), { recursive: true });
-    fs.writeFileSync(
-      configPath,
-      JSON.stringify(
-        {
-          agents: {
-            "hive-builder": { temperature: 0.6, variant: "high" },
-          },
-        },
-        null,
-        2,
-      ),
-    );
-
-    const config = service.getAgentConfig("hive-builder");
-    expect(config.temperature).toBe(0.6);
-    expect(config.variant).toBe("high");
-    expect(config.model).toBe("github-copilot/gpt-5.2-codex");
-    expect(config.autoLoadSkills).toEqual(["verification", "parallel-exploration"]);
+    expect(config).toEqual({ autoLoadSkills: ["verification", "parallel-exploration"] });
   });
 
   it("hive-builder merges safe default autoLoadSkills with user overrides", () => {
@@ -707,10 +666,12 @@ describe("ConfigService defaults", () => {
         {
           agents: {
             "scout-researcher": {
+              model: "provider/scout",
               variant: "medium",
               autoLoadSkills: ["onboarding", "research-focus"],
             },
             "forager-worker": {
+              model: "provider/forager",
               variant: "high",
               autoLoadSkills: ["verification", "onboarding", "ui-focus"],
             },
@@ -724,6 +685,7 @@ describe("ConfigService defaults", () => {
             "forager-lite": {
               baseAgent: "forager-worker",
               description: "General forager with inherited defaults.",
+              variant: "low",
             },
             "forager-ui": {
               baseAgent: "forager-worker",
@@ -734,7 +696,10 @@ describe("ConfigService defaults", () => {
               baseAgent: "code-reviewer",
               description: "Security-focused reviewer.",
               model: "anthropic/claude-sonnet-4-20250514",
-              temperature: 0.1,
+            },
+            "reviewer-native": {
+              baseAgent: "code-reviewer",
+              description: "Reviewer on the native model.",
             },
           },
         },
@@ -747,30 +712,29 @@ describe("ConfigService defaults", () => {
 
     expect(custom["scout-docs"]).toMatchObject({
       baseAgent: "scout-researcher",
-      model: "zai-coding-plan/glm-4.7",
-      temperature: 0.5,
+      model: "provider/scout",
       variant: "medium",
     });
     expect(custom["scout-docs"]?.autoLoadSkills).toEqual([
       "research-focus",
     ]);
-
     expect(custom["forager-lite"]).toMatchObject({
       baseAgent: "forager-worker",
-      model: "github-copilot/gpt-5.2-codex",
-      temperature: 0.3,
+      model: "provider/forager",
+      variant: "low",
     });
-
     expect(custom["forager-ui"]?.variant).toBe("high");
     expect(custom["forager-ui"]?.autoLoadSkills).toEqual([
       "verification",
       "ui-focus",
     ]);
-
-    expect(custom["reviewer-security"]?.temperature).toBe(0.1);
-    expect(custom["reviewer-security"]?.model).toBe(
-      "anthropic/claude-sonnet-4-20250514",
-    );
+    expect(custom["reviewer-security"]?.model).toBe("anthropic/claude-sonnet-4-20250514");
+    expect(custom["reviewer-security"]).not.toHaveProperty("variant");
+    expect(custom["reviewer-native"]).toEqual({
+      baseAgent: "code-reviewer",
+      description: "Reviewer on the native model.",
+      autoLoadSkills: [],
+    });
   });
 
   it("skips reserved/invalid custom agent names for runtime lookups", () => {
@@ -969,34 +933,6 @@ describe("ConfigService defaults", () => {
     ).toBe(true);
 
     warnSpy.mockRestore();
-  });
-
-  it("treats empty custom model and variant overrides as unset", () => {
-    const service = new ConfigService();
-    const configPath = service.getPath();
-
-    fs.mkdirSync(path.dirname(configPath), { recursive: true });
-    fs.writeFileSync(
-      configPath,
-      JSON.stringify(
-        {
-          customAgents: {
-            "forager-ui": {
-              baseAgent: "forager-worker",
-              description: "Use for UI-heavy implementation tasks.",
-              model: "   ",
-              variant: "   ",
-            },
-          },
-        },
-        null,
-        2,
-      ),
-    );
-
-    const custom = service.getCustomAgentConfigs();
-    expect(custom["forager-ui"]?.model).toBe("github-copilot/gpt-5.2-codex");
-    expect(custom["forager-ui"]?.variant).toBeUndefined();
   });
 
   it("caches custom agent resolution and emits warnings once per cache cycle", () => {
@@ -1404,7 +1340,6 @@ describe('ConfigService write validation and persistence', () => {
         'forager-worker': {
           model: 'user/forager-model',
           variant: 'high',
-          temperature: 0.4,
           autoLoadSkills: ['custom-skill'],
           description: 'Use for backend implementation.',
         },
@@ -1422,7 +1357,6 @@ describe('ConfigService write validation and persistence', () => {
     const expectedAgent = {
       model: 'user/forager-model',
       variant: 'high',
-      temperature: 0.4,
       autoLoadSkills: ['custom-skill'],
     };
     expect(updated.agents?.['forager-worker']).toMatchObject(expectedAgent);
@@ -1460,7 +1394,7 @@ describe('ConfigService write validation and persistence', () => {
     const updated = service.set({
       agentMode: 'unified',
       agents: {
-        'forager-worker': { variant: 'high' },
+        'forager-worker': { model: 'user/forager-model', variant: 'high' },
       },
       customAgents: {
         'reviewer-local': {
@@ -1474,7 +1408,7 @@ describe('ConfigService write validation and persistence', () => {
       agentMode: 'unified',
       agents: {
         'hive-master': { model: 'user/hive-model' },
-        'forager-worker': { variant: 'high' },
+        'forager-worker': { model: 'user/forager-model', variant: 'high' },
       },
       customAgents: {
         'forager-ui': {
@@ -1488,9 +1422,8 @@ describe('ConfigService write validation and persistence', () => {
       },
     };
     expect(JSON.parse(fs.readFileSync(configPath, 'utf-8'))).toEqual(expectedStored);
-    expect(updated.agents?.['hive-master']?.temperature).toBe(
-      DEFAULT_HIVE_CONFIG.agents?.['hive-master']?.temperature,
-    );
+    expect(updated.agents?.['hive-master']).toEqual({ model: 'user/hive-model', autoLoadSkills: ['parallel-exploration'] });
+    expect(updated.agents?.['scout-researcher']).toEqual({ autoLoadSkills: [] });
     expect(updated.customAgents).not.toHaveProperty('scout-example-template');
     expect(updated.customAgents).not.toHaveProperty('forager-example-template');
     expect(updated.customAgents).not.toHaveProperty('reviewer-example-template');
@@ -1637,8 +1570,8 @@ describe('ConfigService write validation and persistence', () => {
       fs.mkdirSync(path.dirname(configPath), { recursive: true });
       fs.writeFileSync(configPath, JSON.stringify({
         agents: {
-          'forager-worker': { model: 'global/forager', variant: 'medium', temperature: 0.65 },
-          'hive-builder': { model: 'global/builder', temperature: 0.7 },
+          'forager-worker': { model: 'global/forager', variant: 'medium' },
+          'hive-builder': { model: 'global/builder' },
         },
       }));
       writeProjectOverride(projectRoot, {
@@ -1651,12 +1584,10 @@ describe('ConfigService write validation and persistence', () => {
       expect(service.getAgentConfig('forager-worker')).toMatchObject({
         model: 'project/forager',
         variant: 'medium',
-        temperature: 0.65,
       });
       expect(service.getAgentConfig('hive-builder')).toMatchObject({
         model: 'global/builder',
         variant: 'high',
-        temperature: 0.7,
       });
     });
 
@@ -1666,19 +1597,20 @@ describe('ConfigService write validation and persistence', () => {
       writeProjectOverride(projectRoot, {
         agents: {
           'hive-builder': { model: 'project/builder' },
-          'forager-worker': { variant: 'high' },
+          'forager-worker': { model: 'project/forager', variant: 'high' },
         },
       });
 
       expect(fs.existsSync(service.getPath())).toBe(false);
-      expect(service.getAgentConfig('hive-builder')).toMatchObject({
+      expect(service.getAgentConfig('hive-builder')).toEqual({
         model: 'project/builder',
-        temperature: DEFAULT_HIVE_CONFIG.agents?.['hive-builder']?.temperature,
+        autoLoadSkills: ['verification', 'parallel-exploration'],
       });
       expect(service.getAgentConfig('forager-worker')).toMatchObject({
-        model: DEFAULT_HIVE_CONFIG.agents?.['forager-worker']?.model,
+        model: 'project/forager',
         variant: 'high',
       });
+      expect(service.getAgentConfig('scout-researcher')).not.toHaveProperty('model');
       expect(service.getLastFallbackWarning()).toBeNull();
     });
 
@@ -1716,7 +1648,7 @@ describe('ConfigService write validation and persistence', () => {
       fs.mkdirSync(path.dirname(configPath), { recursive: true });
       fs.writeFileSync(configPath, JSON.stringify({
         agents: {
-          'forager-worker': { model: 'global/forager', variant: 'medium', temperature: 0.6 },
+          'forager-worker': { model: 'global/forager', variant: 'medium' },
         },
         customAgents: {
           'forager-inherited': {
@@ -1738,12 +1670,10 @@ describe('ConfigService write validation and persistence', () => {
       expect(service.getCustomAgentConfigs()['forager-inherited']).toMatchObject({
         model: 'project/forager',
         variant: 'high',
-        temperature: 0.6,
       });
       expect(service.getCustomAgentConfigs()['forager-direct']).toMatchObject({
         model: 'project/forager',
         variant: 'low',
-        temperature: 0.6,
       });
     });
 
@@ -1846,21 +1776,270 @@ describe('ConfigService write validation and persistence', () => {
         agents: { 'forager-worker': { model: 'changed/project', variant: 'low' } },
       });
       const updated = service.set({
-        agents: { 'forager-worker': { temperature: 0.8 } },
+        agents: { 'forager-worker': { autoLoadSkills: ['extra'] } },
       });
       const stored = JSON.parse(fs.readFileSync(service.getPath(), 'utf-8'));
 
       expect(updated.agents?.['forager-worker']).toMatchObject({
         model: 'project/forager',
         variant: 'high',
-        temperature: 0.8,
+        autoLoadSkills: ['extra'],
       });
       expect(service.getAgentConfig('forager-worker').model).toBe('project/forager');
-      expect(stored.agents?.['forager-worker']?.model).toBe(
-        DEFAULT_HIVE_CONFIG.agents?.['forager-worker']?.model,
-      );
-      expect(stored.agents?.['forager-worker']?.variant).not.toBe('high');
+      expect(stored.agents?.['forager-worker']).not.toHaveProperty('model');
+      expect(stored.agents?.['forager-worker']).not.toHaveProperty('variant');
       expect(fs.readFileSync(overridePath, 'utf-8')).toContain('changed/project');
     });
+  });
+});
+
+describe('ConfigService effective model settings', () => {
+  const writeGlobal = (service: ConfigService, value: unknown): string => {
+    fs.mkdirSync(path.dirname(service.getPath()), { recursive: true });
+    const bytes = JSON.stringify(value);
+    fs.writeFileSync(service.getPath(), bytes);
+    return bytes;
+  };
+  const rejection = (read: () => unknown): string => {
+    try {
+      read();
+    } catch (error) {
+      return (error as Error).message;
+    }
+    throw new Error('expected the configuration to be rejected');
+  };
+
+  it('rejects a variant without an effective Hive model, naming file, path and remedy without values', () => {
+    const service = new ConfigService();
+    const bytes = writeGlobal(service, {
+      agentMode: 'unified',
+      agents: { 'forager-worker': { variant: 'secret-variant-value' } },
+    });
+
+    const message = rejection(() => service.get());
+    expect(message).toContain(service.getPath());
+    expect(message).toContain('agents.forager-worker.variant is set without a Hive model');
+    expect(message).toContain('Set agents.forager-worker.model to an explicit provider/model-id, or remove the variant');
+    expect(message).not.toContain('secret-variant-value');
+    // The rejected candidate is not cached: every read rejects, and reads never touch the file.
+    expect(() => service.get()).toThrow('agents.forager-worker.variant');
+    expect(() => service.getAgentConfig('scout-researcher')).toThrow('agents.forager-worker.variant');
+    expect(service.getLastFallbackWarning()).toBeNull();
+    expect(fs.readFileSync(service.getPath(), 'utf-8')).toBe(bytes);
+
+    writeGlobal(service, { agentMode: 'unified', agents: { 'forager-worker': { model: 'provider/forager', variant: 'secret-variant-value' } } });
+    expect(service.getAgentConfig('forager-worker')).toMatchObject({ model: 'provider/forager', variant: 'secret-variant-value' });
+    expect(service.get().agentMode).toBe('unified');
+  });
+
+  it('rejects supplied blank or malformed models and variants instead of treating them as omitted', () => {
+    const cases: Array<[unknown, string]> = [
+      [{ agents: { 'hive-builder': { model: '   ' } } }, 'agents.hive-builder.model must be an explicit provider/model-id'],
+      [{ agents: { 'hive-builder': { model: 'no-provider' } } }, 'agents.hive-builder.model must be an explicit provider/model-id'],
+      [{ agents: { 'hive-builder': { model: 'openai/gpt#high' } } }, 'agents.hive-builder.model must be an explicit provider/model-id'],
+      [{ agents: { 'hive-builder': { model: 'openai/gpt 5' } } }, 'agents.hive-builder.model must be an explicit provider/model-id'],
+      [{ agents: { 'hive-builder': { model: 'openai/gpt', variant: ' ' } } }, 'agents.hive-builder.variant must be a variant name'],
+      [{ agents: { 'forager-worker': { model: 'provider/forager' } }, customAgents: { 'forager-ui': { baseAgent: 'forager-worker', description: 'UI', model: '  ' } } }, 'customAgents.forager-ui.model must be'],
+      [{ agents: { 'forager-worker': { model: 'provider/forager', variant: 'high' } }, customAgents: { 'forager-ui': { baseAgent: 'forager-worker', description: 'UI', variant: '' } } }, 'customAgents.forager-ui.variant must be'],
+      [{ customAgents: { 'forager-ui': { baseAgent: 'forager-worker', description: 'UI', model: 42 } } }, 'customAgents.forager-ui.model must be'],
+      [{ taskTraceSummarizer: { model: ' ' } }, 'taskTraceSummarizer.model must be'],
+      [{ taskTraceSummarizer: { model: 'provider/summary', variant: '  ' } }, 'taskTraceSummarizer.variant must be'],
+    ];
+    for (const [config, expected] of cases) {
+      const service = new ConfigService();
+      writeGlobal(service, config);
+      expect(rejection(() => service.get())).toContain(expected);
+    }
+  });
+
+  it('lets global and project fragments complete each other, and rejects either unresolved fragment', () => {
+    const projectRoot = path.join(tempHome, 'project');
+    let service = new ConfigService(projectRoot);
+    writeGlobal(service, { agents: { 'forager-worker': { variant: 'high' }, 'hive-builder': { model: 'global/builder' } } });
+    writeProjectOverride(projectRoot, { agents: { 'forager-worker': { model: 'project/forager' }, 'hive-builder': { variant: 'low' } } });
+
+    expect(service.getAgentConfig('forager-worker')).toMatchObject({ model: 'project/forager', variant: 'high' });
+    expect(service.getAgentConfig('hive-builder')).toMatchObject({ model: 'global/builder', variant: 'low' });
+
+    service = new ConfigService(projectRoot);
+    writeProjectOverride(projectRoot, { agents: { 'scout-researcher': { variant: 'low' } } });
+    const message = rejection(() => service.get());
+    expect(message).toContain(service.getPath());
+    expect(message).toContain(projectOverridePath(projectRoot));
+    expect(message).toContain('agents.forager-worker.variant is set without a Hive model');
+    expect(message).toContain('agents.scout-researcher.variant is set without a Hive model');
+
+    // Without the project fragment, the global variant stands alone and is rejected.
+    expect(rejection(() => new ConfigService().get())).toContain('agents.forager-worker.variant');
+  });
+
+  it('rejects blank project model and variant strings for matching roles instead of ignoring the file', () => {
+    const projectRoot = path.join(tempHome, 'project');
+    const service = new ConfigService(projectRoot);
+    const bytes = writeGlobal(service, {
+      agents: { 'forager-worker': { model: 'global/forager', variant: 'medium' } },
+      customAgents: { 'forager-ui': { baseAgent: 'forager-worker', description: 'UI' } },
+    });
+    const cases: Array<[unknown, string]> = [
+      [{ agents: { 'forager-worker': { model: '   ' } } }, 'agents.forager-worker.model must be an explicit provider/model-id'],
+      [{ agents: { 'forager-worker': { variant: '' } } }, 'agents.forager-worker.variant must be a variant name'],
+      [{ customAgents: { 'forager-ui': { model: '' } } }, 'customAgents.forager-ui.model must be an explicit provider/model-id'],
+      [{ customAgents: { 'forager-ui': { variant: '  ' } } }, 'customAgents.forager-ui.variant must be a variant name'],
+    ];
+    for (const [override, expected] of cases) {
+      const overridePath = writeProjectOverride(projectRoot, override);
+      const fresh = new ConfigService(projectRoot);
+
+      const message = rejection(() => fresh.get());
+      expect(message).toContain(overridePath);
+      expect(message).toContain(expected);
+      // A rejected candidate is neither served nor cached, and no fallback warning hides it.
+      expect(() => fresh.getAgentConfig('forager-worker')).toThrow(expected);
+      expect(fresh.getLastFallbackWarning()).toBeNull();
+      expect(fs.readFileSync(service.getPath(), 'utf-8')).toBe(bytes);
+    }
+
+    // Blank values for roles the project file does not match are inert; a wrong type stays a structural file error.
+    writeProjectOverride(projectRoot, { agents: { 'unknown-role': { model: ' ' } }, customAgents: { 'unknown-custom': { variant: '' } } });
+    expect(new ConfigService(projectRoot).getAgentConfig('forager-worker')).toMatchObject({ model: 'global/forager', variant: 'medium' });
+    writeProjectOverride(projectRoot, { agents: { 'forager-worker': { model: 42 } } });
+    const structural = new ConfigService(projectRoot);
+    expect(structural.getAgentConfig('forager-worker')).toMatchObject({ model: 'global/forager', variant: 'medium' });
+    expect(structural.getLastFallbackWarning()).toMatchObject({ sourceType: 'project', reason: 'validation_error' });
+  });
+
+  it('lets a custom variant use its resolved Hive base model, including a project change to the base', () => {
+    const projectRoot = path.join(tempHome, 'project');
+    const service = new ConfigService(projectRoot);
+    writeGlobal(service, {
+      customAgents: {
+        'forager-fast': { baseAgent: 'forager-worker', description: 'Fast forager', variant: 'low' },
+        'reviewer-native': { baseAgent: 'code-reviewer', description: 'Native reviewer' },
+      },
+    });
+    writeProjectOverride(projectRoot, { agents: { 'forager-worker': { model: 'project/forager' } } });
+
+    expect(service.getCustomAgentConfigs()['forager-fast']).toMatchObject({ model: 'project/forager', variant: 'low' });
+    expect(service.getCustomAgentConfigs()['reviewer-native']).not.toHaveProperty('model');
+    expect(service.getCustomAgentConfigs()['reviewer-native']).not.toHaveProperty('variant');
+
+    const message = rejection(() => new ConfigService().get());
+    expect(message).toContain('customAgents.forager-fast.variant is set without a Hive model');
+    expect(message).toContain('customAgents.forager-fast.model or agents.forager-worker.model');
+    expect(message).not.toContain('reviewer-native');
+  });
+
+  it('rejects a summarizer variant without a summarizer model', () => {
+    const service = new ConfigService();
+    writeGlobal(service, { agents: { 'hive-builder': { model: 'provider/builder' } }, taskTraceSummarizer: { variant: 'high' } });
+
+    expect(rejection(() => service.get())).toContain('taskTraceSummarizer.variant is set without a Hive model. Set taskTraceSummarizer.model');
+  });
+
+  it('accepts a variant-only update when the stored global declaration already has the model', () => {
+    const service = new ConfigService();
+    writeGlobal(service, { agents: { 'forager-worker': { model: 'provider/forager', temperature: 0.3 } } });
+
+    const updated = service.set({ agents: { 'forager-worker': { variant: 'high' } } });
+
+    expect(updated.agents?.['forager-worker']).toMatchObject({ model: 'provider/forager', variant: 'high' });
+    expect(JSON.parse(fs.readFileSync(service.getPath(), 'utf-8'))).toEqual({
+      agents: { 'forager-worker': { model: 'provider/forager', variant: 'high' } },
+    });
+  });
+
+  it('omits legacy temperature from written updates and stored declarations without changing the caller input', () => {
+    const service = new ConfigService();
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    writeGlobal(service, {
+      customAgents: { 'forager-ui': { baseAgent: 'forager-worker', description: 'UI', temperature: 0.2 } },
+    });
+    const update = { agents: { 'hive-builder': { model: 'provider/builder', temperature: 0.9 } }, taskTraceSummarizer: { temperature: 0 } } as unknown as Parameters<ConfigService['set']>[0];
+    const before = JSON.stringify(update);
+
+    try {
+      service.set(update);
+
+      expect(JSON.stringify(update)).toBe(before);
+      expect(JSON.parse(fs.readFileSync(service.getPath(), 'utf-8'))).toEqual({
+        agents: { 'hive-builder': { model: 'provider/builder' } },
+        customAgents: { 'forager-ui': { baseAgent: 'forager-worker', description: 'UI' } },
+        taskTraceSummarizer: {},
+      });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('rejects a global write a project model would complete, leaving bytes and the prior cache unchanged', () => {
+    const projectRoot = path.join(tempHome, 'project');
+    const service = new ConfigService(projectRoot);
+    const bytes = writeGlobal(service, { agentMode: 'dedicated' });
+    writeProjectOverride(projectRoot, { agents: { 'forager-worker': { model: 'project/forager' } } });
+    const prior = service.get();
+
+    const message = rejection(() => service.set({ agentMode: 'unified', agents: { 'forager-worker': { variant: 'high' } } }));
+
+    expect(message).toContain(service.getPath());
+    expect(message).not.toContain(projectOverridePath(projectRoot));
+    expect(message).toContain('agents.forager-worker.variant is set without a Hive model');
+    expect(fs.readFileSync(service.getPath(), 'utf-8')).toBe(bytes);
+    expect(service.get()).toBe(prior);
+    expect(service.get().agentMode).toBe('dedicated');
+  });
+
+  it('rejects a standalone-valid write whose effective project view is invalid', () => {
+    const projectRoot = path.join(tempHome, 'project');
+    const service = new ConfigService(projectRoot);
+    const bytes = writeGlobal(service, { agents: { 'forager-worker': { model: 'global/forager', variant: 'high' } } });
+    writeProjectOverride(projectRoot, { agents: { 'forager-worker': { variant: 'low' } } });
+    const prior = service.get();
+    expect(prior.agents?.['forager-worker']).toMatchObject({ model: 'global/forager', variant: 'low' });
+
+    // Clearing the global model and variant is valid on its own but leaves the project variant without a model.
+    const message = rejection(() => service.set({ agents: { 'forager-worker': { model: undefined, variant: undefined } } }));
+
+    expect(message).toContain(projectOverridePath(projectRoot));
+    expect(message).toContain('agents.forager-worker.variant is set without a Hive model');
+    expect(fs.readFileSync(service.getPath(), 'utf-8')).toBe(bytes);
+    expect(service.get()).toBe(prior);
+  });
+
+  it('rejects legacy topology cleanup that would persist a global variant only a project model completes', () => {
+    const projectRoot = path.join(tempHome, 'project');
+    fs.mkdirSync(projectRoot);
+    const repositories = [{ id: 'api', path: './api' }];
+    const service = new ConfigService(projectRoot);
+    const bytes = writeGlobal(service, {
+      repositoryRoot: projectRoot,
+      repositories,
+      agents: { 'forager-worker': { variant: 'high' } },
+    });
+    writeProjectOverride(projectRoot, { agents: { 'forager-worker': { model: 'project/forager' } } });
+    const prior = service.get();
+    expect(prior.agents?.['forager-worker']).toMatchObject({ model: 'project/forager', variant: 'high' });
+
+    const message = rejection(() => service.removeLegacyRepositoryManifestIfMatches(projectRoot, repositories));
+
+    expect(message).toContain(service.getPath());
+    expect(message).not.toContain(projectOverridePath(projectRoot));
+    expect(message).toContain('agents.forager-worker.variant is set without a Hive model');
+    expect(fs.readFileSync(service.getPath(), 'utf-8')).toBe(bytes);
+    expect(service.get()).toBe(prior);
+  });
+
+  it('init() writes no provider model and rejects before writing when the project view is invalid', () => {
+    const projectRoot = path.join(tempHome, 'project');
+    const service = new ConfigService(projectRoot);
+    const overridePath = writeProjectOverride(projectRoot, { agents: { 'forager-worker': { variant: 'high' } } });
+
+    expect(rejection(() => service.init())).toContain('agents.forager-worker.variant');
+    expect(fs.existsSync(service.getPath())).toBe(false);
+
+    fs.writeFileSync(overridePath, JSON.stringify({ agents: { 'forager-worker': { model: 'project/forager' } } }));
+    const initialized = new ConfigService(projectRoot).init();
+    expect(initialized.agents?.['forager-worker']?.model).toBe('project/forager');
+    expect(initialized.agents?.['scout-researcher']).not.toHaveProperty('model');
+    expect(fs.readFileSync(service.getPath(), 'utf-8')).not.toContain('"model"');
   });
 });

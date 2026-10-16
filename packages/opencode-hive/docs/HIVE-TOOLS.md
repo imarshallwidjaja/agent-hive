@@ -387,7 +387,7 @@ Ordinary v1 trace/content cancellation behavior is unchanged. Ordinary v2 trace/
 
 For v2 recovery, the plugin allocates the summarizer ID before public `session.create({ id })`, excludes the target ID before ownership/create, and keeps allocated IDs cleanup-owned even if creation commits before returning. Cleanup waits for an unsettled create within its 10-second deadline. Native `Session.NotFoundError` or `SessionNotFoundError` confirms absence. A create that commits after that window can leave a known unconfirmed ID; there is no later sweeper. Live failures report `ephemeral_cleanup_failed`; interrupted callers retain unconfirmed IDs in activation-local accounting. V1's acquisition behavior remains unchanged.
 
-With a v2 summarizer `variant` but no `model`, Hive resolves the native default model and applies the variant to that model. Unsupported variants produce `variant_unavailable` before creating a session, rather than silently dropping the request. Observed model/variant comes from the actual native generation hook. Provider-internal retries are not claimed controlled by Hive.
+Each recovery binds one model selection when it starts and uses it for the model metadata and every map and reduce request. With no `taskTraceSummarizer` model, the selection is the invoking caller session's current native model and variant, read without changing that session; a v2 caller session without its own model runs on the host default model, which is bound with no variant only when that default names a provider package, since the v2 runner otherwise picks another model that Hive does not reproduce. A configured `model` alone replaces the caller's model and uses that model's default variant; a configured `model` and `variant` replace both. Configuration validation rejects a `variant` without a `model`. If the caller's selection cannot be established, recovery returns `status: "unavailable"` with a `model`-stage `summarizer_unavailable` failure and the `caller_model_unavailable` diagnostic, and no session is created; Hive never substitutes a guessed model. `recovery.model.requested` reports the bound `model`, `variant` and its `source` (`caller` or `configured`). Unsupported variants produce `variant_unavailable` before creating a session, rather than silently dropping the request. Hive sets no request options such as temperature on summarizer requests. Observed model/variant comes from the actual native generation (the v2 `generate` hook, or the v1 reply info). Provider-internal retries are not claimed controlled by Hive.
 
 ### Foreground children after a restart
 
@@ -398,7 +398,7 @@ The background board tracks only `background: true` launches. Foreground `task()
 
 Use these paths instead of runtime exports or `.hive/sessions.json`; neither is a trace source. Then trace the child, and treat its lifecycle and any evidence-only snapshot under the rules above before deciding to wait, ask, or launch fresh.
 
-Configure optional recovery interpretation under global `taskTraceSummarizer` (`model`, `variant`, `temperature` 0–2). Operator reference: [Task trace summarizer](../README.md#task-trace-summarizer).
+Configure an optional recovery model under global `taskTraceSummarizer` (`model`, and `variant` only with `model`). Operator reference: [Task trace summarizer](../README.md#task-trace-summarizer).
 
 ## Context (4 tools)
 

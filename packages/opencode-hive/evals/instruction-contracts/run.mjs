@@ -27,7 +27,7 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { CredentialError, assertLifetime, fingerprintAuthFile, hostAuthPath, readAccessOnly, sameFingerprint, secretScanner } from './credentials.mjs';
 import { GUARD_EXIT_CODE, GUARD_UID } from './guard.mjs';
-import { HOST_IDS, authRequest, requiredLifetimeMs } from './hosts.mjs';
+import { HOST_IDS, authRequest, requiredLifetimeMs, selectionExpectations } from './hosts.mjs';
 
 const HARNESS_DIR = dirname(fileURLToPath(import.meta.url));
 const HARNESS_REL = 'packages/opencode-hive/evals/instruction-contracts';
@@ -1103,15 +1103,45 @@ async function wiringHost(ctx, host) {
   const id = await openContainer(ctx, { network: 'none', ceilingSeconds: CEILING.wiring });
   try {
     // Stock permissions: no permissive allow rule. The override fixture supplies a same-name user skill; its case-only overrides stay out of wiring.
-    await step(ctx, id, 'serve', { host, provider: 'mock', model: ctx.scenarios.model.mock, agentMode: 'dedicated', scenario: 'skill-override-reference', permissive: false, wiring: true });
-    return (await step(ctx, id, 'wiring', { host }, { timeoutMs: 2_700_000 })).wiring;
+    const base = { host, provider: 'mock', model: ctx.scenarios.model.mock, agentMode: 'dedicated', scenario: 'skill-override-reference', permissive: false, wiring: true };
+    await step(ctx, id, 'serve', base);
+    const wiring = (await step(ctx, id, 'wiring', { host }, { timeoutMs: 2_700_000 })).wiring;
+    // Model-selection probes restart the host with their own Hive and native configuration in the same container.
+    await step(ctx, id, 'stop', {});
+    await step(ctx, id, 'serve', { ...base, selection: 'valid' });
+    wiring.modelSelection = (await step(ctx, id, 'model-selection', { host, probe: 'valid' }, { timeoutMs: 1_200_000 })).selection;
+    await step(ctx, id, 'stop', {});
+    const invalidServe = await step(ctx, id, 'serve', { ...base, selection: 'invalid', allowNotReady: true });
+    wiring.invalidModelSelection = { ready: invalidServe.ready === true, ...(await step(ctx, id, 'model-selection', { host, probe: 'invalid' }, { timeoutMs: 300_000 })).selection };
+    return wiring;
   } finally {
     await ctx.resources.remove(id);
   }
 }
 
+/**
+ * Model-selection requirements on one host's probe results: each probed agent ran, on the wire and in the native
+ * record, on the model its source predicts, with the predicted variant; and a variant with no Hive model was refused
+ * with the actionable error before any Hive role or tool was registered, although a native model named that role.
+ */
+export function modelSelectionFailures(host, observed, invalid, model) {
+  const failures = [];
+  for (const [agent, expected] of Object.entries(selectionExpectations(host, model))) {
+    const seen = observed?.[agent];
+    if (!seen?.observed) { failures.push(`model_selection_unobserved:${host}:${agent}`); continue; }
+    if (seen.wireModel !== expected.model || seen.recordedModel !== expected.model) failures.push(`model_selection_mismatch:${host}:${agent}`);
+    if ((seen.recordedVariant ?? null) !== expected.variant) failures.push(`model_variant_mismatch:${host}:${agent}`);
+  }
+  if (!invalid) failures.push(`invalid_model_config_unobserved:${host}`);
+  else {
+    if (!invalid.errorLogged || !invalid.errorNamesFile) failures.push(`invalid_model_config_error_missing:${host}`);
+    if ((invalid.hiveRolesRegistered ?? []).length > 0 || invalid.hiveToolsExposed) failures.push(`invalid_model_config_registered:${host}`);
+  }
+  return failures;
+}
+
 /** Wiring requirements on each host's observation, plus cross-host parity of the direct tool parameters. */
-export function wiringFailures(results) {
+export function wiringFailures(results, model) {
   const failures = [];
   for (const [host, w] of Object.entries(results)) {
     for (const [role, present] of Object.entries(w.roles)) if (!present) failures.push(`role_missing:${host}:${role}`);
@@ -1145,6 +1175,7 @@ export function wiringFailures(results) {
     if (!w.override?.listed) failures.push(`override_not_listed:${host}`);
     if (!w.override?.resolvesToUserSkill) failures.push(`override_not_user_skill:${host}`);
     if (!w.override?.loadedUserBody) failures.push(`override_body_not_loaded:${host}`);
+    failures.push(...modelSelectionFailures(host, w.modelSelection, w.invalidModelSelection, model));
   }
   const [a, b] = Object.values(results);
   if (a?.toolContract && b?.toolContract) {
@@ -1557,7 +1588,7 @@ async function runPhase(run) {
     for (const host of options.hosts) results[host] = await wiringHost(ctx, host);
     writeOnce(join(outDir, 'wiring.json'), JSON.stringify(results, null, 2));
     manifest.wiring = { file: 'wiring.json', sha256: sha256File(join(outDir, 'wiring.json')) };
-    manifest.failures = wiringFailures(results).map((code) => ({ code }));
+    manifest.failures = wiringFailures(results, scenarios.model.mock).map((code) => ({ code }));
     return manifest.failures.length ? 'failed' : 'passed';
   }
 

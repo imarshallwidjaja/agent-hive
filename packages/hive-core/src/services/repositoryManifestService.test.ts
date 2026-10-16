@@ -354,6 +354,34 @@ describe('RepositoryManifestService', () => {
     });
   });
 
+  it('reports a failed legacy cleanup without rolling back the migrated manifest', () => {
+    withTempEnvironment((projectRoot, configPath) => {
+      initGitRepo(path.join(projectRoot, 'api'));
+      initGitRepo(path.join(projectRoot, 'web'));
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+      const original = JSON.stringify({
+        repositoryRoot: projectRoot,
+        repositories: [{ id: 'api', path: './api' }],
+        agents: { 'forager-worker': { variant: 'high' } },
+      });
+      fs.writeFileSync(configPath, original);
+      // The project model completes the global variant for reads, but cleanup may not persist it standalone.
+      fs.mkdirSync(path.join(projectRoot, '.hive'), { recursive: true });
+      fs.writeFileSync(
+        path.join(projectRoot, '.hive', 'agent-hive.override.json'),
+        JSON.stringify({ agents: { 'forager-worker': { model: 'project/forager' } } }),
+      );
+
+      const result = new RepositoryManifestService(projectRoot).add([{ id: 'web', path: './web' }]);
+
+      expect(result.repositories.map(({ id }) => id)).toEqual(['api', 'web']);
+      expect(result.legacyCleanup).toBe('failed');
+      expect(result.legacyCleanupError).toContain('agents.forager-worker.variant is set without a Hive model');
+      expect(fs.readFileSync(configPath, 'utf-8')).toBe(original);
+      expect(JSON.parse(fs.readFileSync(path.join(projectRoot, '.hive', 'repositories.json'), 'utf-8')).repositories).toHaveLength(2);
+    });
+  });
+
   it('blocks status and update when the local manifest is malformed', () => {
     withTempEnvironment((projectRoot, configPath) => {
       fs.mkdirSync(path.join(projectRoot, '.hive'), { recursive: true });

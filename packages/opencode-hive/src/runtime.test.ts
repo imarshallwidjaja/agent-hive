@@ -149,15 +149,15 @@ describe('coordinated runtime hard cut', () => {
   });
 
   it('recovers a malformed global session index during chat.message and tracks the reply session', async () => {
-    const { root, hooks } = createRuntime({ hiveConfig: { agents: { 'forager-worker': { variant: 'high' } } } });
+    const { root, hooks } = createRuntime({ hiveConfig: { agents: { 'forager-worker': { model: 'hive/forager', variant: 'high' } } } });
     const loaded = await hooks;
     const indexPath = path.join(root, '.hive', 'sessions.json');
     fs.writeFileSync(indexPath, Buffer.alloc(64));
     const warn = spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      const output: any = { message: { agent: 'forager-worker' }, parts: [] };
+      const output: any = { message: { agent: 'forager-worker', model: { providerID: 'hive', modelID: 'forager' } }, parts: [] };
       await loaded['chat.message']!({ sessionID: 'recovered-session', agent: 'forager-worker' } as any, output);
-      expect(output.message.variant).toBe('high');
+      expect(output.message.model.variant).toBe('high');
       const backups = fs.readdirSync(path.dirname(indexPath)).filter((file) => file.startsWith('sessions.json.corrupt-'));
       expect(backups).toHaveLength(1);
       expect(new SessionService(root).getGlobal('recovered-session')).toMatchObject({ agent: 'forager-worker', projectRoot: root });
@@ -172,7 +172,7 @@ describe('coordinated runtime hard cut', () => {
       ['unreadable', null, 'EISDIR'],
       ['backup-collision', Buffer.from('{broken'), 'EEXIST'],
     ] as const) {
-      const { root, hooks } = createRuntime({ hiveConfig: { agents: { 'forager-worker': { variant: 'high' } } } });
+      const { root, hooks } = createRuntime({ hiveConfig: { agents: { 'forager-worker': { model: 'hive/forager', variant: 'high' } } } });
       const loaded = await hooks;
       const indexPath = path.join(root, '.hive', 'sessions.json');
       if (bytes) {
@@ -184,9 +184,9 @@ describe('coordinated runtime hard cut', () => {
       }
       const warn = spyOn(console, 'warn').mockImplementation(() => {});
       try {
-        const output: any = { message: { agent: 'forager-worker' }, parts: [] };
+        const output: any = { message: { agent: 'forager-worker', model: { providerID: 'hive', modelID: 'forager' } }, parts: [] };
         await loaded['chat.message']!({ sessionID: `session-${name}`, agent: 'forager-worker' } as any, output);
-        expect(output.message.variant).toBe('high');
+        expect(output.message.model.variant).toBe('high');
         if (bytes) {
           expect(fs.readFileSync(indexPath)).toEqual(bytes);
           expect(fs.readFileSync(`${indexPath}.corrupt-2026-01-02T03-04-05-678Z`, 'utf8')).toBe('earlier evidence');
@@ -206,11 +206,11 @@ describe('coordinated runtime hard cut', () => {
   });
 
   it('tracks healthy chat.message sessions and still applies the configured variant', async () => {
-    const { root, hooks } = createRuntime({ hiveConfig: { agents: { 'forager-worker': { variant: 'high' } } } });
+    const { root, hooks } = createRuntime({ hiveConfig: { agents: { 'forager-worker': { model: 'hive/forager', variant: 'high' } } } });
     const loaded = await hooks;
-    const output: any = { message: { agent: 'forager-worker' }, parts: [] };
+    const output: any = { message: { agent: 'forager-worker', model: { providerID: 'hive', modelID: 'forager' } }, parts: [] };
     await loaded['chat.message']!({ sessionID: 'healthy-session', agent: 'forager-worker' } as any, output);
-    expect(output.message.variant).toBe('high');
+    expect(output.message.model.variant).toBe('high');
     expect(new SessionService(root).getGlobal('healthy-session')).toMatchObject({ agent: 'forager-worker', projectRoot: root });
   });
 
@@ -1029,16 +1029,19 @@ describe('coordinated runtime hard cut', () => {
     expect(rest.next_offset).toBeNull();
   });
 
-  it('applies the configured summarizer temperature and a prompt that matches the recovery contract', async () => {
-    const configured = async (taskTraceSummarizer?: { model?: string; variant?: string; temperature?: number }) => {
+  it('registers the hidden summarizer without sampling or model settings and with a prompt that matches the recovery contract', async () => {
+    const configured = async (taskTraceSummarizer?: Record<string, unknown>) => {
       const config: any = { agent: {} };
       await (await createRuntime({ hiveConfig: taskTraceSummarizer ? { taskTraceSummarizer } : {} }).hooks).config!(config);
       return config.agent[TASK_TRACE_SUMMARIZER_AGENT];
     };
 
-    expect(await configured()).toMatchObject({ mode: 'primary', hidden: true, temperature: 0, permission: { '*': 'deny' } });
-    expect((await configured({ temperature: 0.4 })).temperature).toBe(0.4);
-    expect((await configured({ model: 'openai/model', variant: 'low' })).temperature).toBe(0);
+    // Each recovery prompt carries its bound model and variant; the agent itself sets neither, nor any sampling.
+    for (const settings of [undefined, { temperature: 0.4 }, { model: 'openai/model', variant: 'low' }]) {
+      const agent = await configured(settings);
+      expect(agent).toMatchObject({ mode: 'primary', hidden: true, permission: { '*': 'deny' } });
+      expect(Object.keys(agent).sort()).toEqual(['hidden', 'mode', 'permission', 'prompt']);
+    }
     expect((await configured()).prompt).toContain('untrusted data');
   });
 

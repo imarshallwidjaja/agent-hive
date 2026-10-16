@@ -117,8 +117,11 @@ function summarizerContext(options: {
   models?: () => Effect.Effect<{ data: unknown[] }, unknown>;
   /** The model `model.default` returns, or null for a host without a default model. */
   defaultModel?: unknown;
+  /** Caller sessions `session.get` returns by ID; an Error fails the lookup. Unknown IDs fail. */
+  sessions?: Record<string, { model?: { providerID: string; id: string; variant?: string } } | Error>;
 } = {}) {
-  const config = options.config ?? { model: 'p/m', variant: 'high', temperature: 0 };
+  const config = options.config ?? { model: 'p/m', variant: 'high' };
+  const sessionReads: string[] = [];
   const created: any[] = [];
   const removed: string[] = [];
   const drafts: any[] = [];
@@ -135,6 +138,11 @@ function summarizerContext(options: {
     tool: { transform: (callback: (editor: { add: (info: Tool.Info) => void }) => void) => Effect.sync(() => { callback({ add: (info) => tools.set(info.name, info) }); return registration; }) },
     session: {
       hook: (name: string, callback: (event: any) => Effect.Effect<void>) => Effect.sync(() => { if (name === 'generate') hook = callback; return registration; }),
+      get: ({ sessionID }: { sessionID: string }) => Effect.suspend(() => {
+        sessionReads.push(sessionID);
+        const session = options.sessions?.[sessionID];
+        return session === undefined || session instanceof Error ? Effect.fail(session ?? new Error('not found')) : Effect.succeed({ id: sessionID, ...session });
+      }),
       create: (input: any) => Effect.suspend(() => {
         created.push(input);
         return options.create?.(input, created.length) ?? Effect.succeed({ id: input.id ?? `ses_summary_${created.length}` });
@@ -158,7 +166,7 @@ function summarizerContext(options: {
   } as unknown as Plugin.Context;
   const summarizer = createV2Summarizer(context, config);
   hook = summarizer.onGenerate as never;
-  return { context, config, summarizer, tools, created, removed, drafts };
+  return { context, config, summarizer, tools, created, removed, drafts, sessionReads };
 }
 
 function semanticReply(request: any): Effect.Effect<{ text: string }> {
@@ -363,7 +371,7 @@ describe('v2 complete history reads', () => {
 describe('v2 in-process summarizer', () => {
   const finished = [user('msg_u1', 'Implement the task.'), assistant('msg_a1', [{ type: 'text', text: 'Implemented and verified.' }])];
 
-  it('summarizes in an ephemeral deny-all session, applies the contract and temperature, reports the observed model and removes the session', async () => {
+  it('summarizes in an ephemeral deny-all session, applies the contract without request options, reports the observed model and removes the session', async () => {
     const { access } = readAccessFor({ sessions: FAMILY, timelines: { ses_child: finished } });
     const setup = summarizerContext();
     const result = await operations(access, setup.summarizer.host).trace({ task_id: 'ses_child', recovery: true });
@@ -371,7 +379,7 @@ describe('v2 in-process summarizer', () => {
       status: 'complete',
       scope: 'closed_turn',
       failures: [],
-      model: { requested: { model: 'p/m', variant: 'high' }, observed: { model: 'p/m', variant: 'high' } },
+      model: { requested: { model: 'p/m', variant: 'high', source: 'configured' }, observed: { model: 'p/m', variant: 'high' } },
       cards_source: 'generated',
       phases_source: 'generated',
     });
@@ -381,7 +389,8 @@ describe('v2 in-process summarizer', () => {
       expect(input).toMatchObject({ agent: TASK_TRACE_SUMMARIZER_AGENT, model: { providerID: 'p', id: 'm', variant: 'high' }, permissions: [{ action: '*', resource: '*', effect: 'deny' }] });
     }
     expect(setup.drafts.map((draft) => draft.system.at(-1).text.includes('Stage: map') || draft.system.at(-1).text.includes('Stage: reduce'))).toEqual([true, true]);
-    expect(setup.drafts.every((draft) => draft.options.temperature === 0)).toBe(true);
+    expect(setup.drafts.map((draft) => draft.options)).toEqual([{}, {}]);
+    expect(setup.sessionReads).toEqual([]);
     expect(setup.removed).toEqual(setup.created.map((input) => input.id));
     expect(setup.summarizer.host.ephemeralSessionIDs.size).toBe(0);
   });
@@ -474,7 +483,7 @@ describe('v2 in-process summarizer', () => {
     let interrupted = false;
     const setup = summarizerContext({ reply: () => Effect.never.pipe(Effect.onInterrupt(() => Effect.sync(() => { interrupted = true; }))) });
     const controller = new AbortController();
-    const pending = setup.summarizer.host.generate('ses_summary_1', { request: { kind: 'map' }, system: 'contract' }, controller.signal);
+    const pending = setup.summarizer.host.generate('ses_summary_1', { request: { kind: 'map' }, system: 'contract' }, { providerID: 'p', modelID: 'm', source: 'configured' }, controller.signal);
     await new Promise((resolve) => setTimeout(resolve, 5));
     controller.abort(new Error('deadline'));
     await expect(pending).rejects.toThrow('deadline');
@@ -482,24 +491,72 @@ describe('v2 in-process summarizer', () => {
   });
 });
 
-describe('v2 summarizer model variant', () => {
+describe('v2 summarizer model selection', () => {
   const finished = [user('msg_u1', 'Implement the task.'), assistant('msg_a1', [{ type: 'text', text: 'Implemented and verified.' }])];
-  const defaultModel = (variants: string[]) => ({ providerID: 'dp', id: 'dm', limit: { context: 100_000, output: 1_000 }, variants: variants.map((id) => ({ id })) });
+  const modelInfo = (providerID: string, id: string, variants: string[], pkg = 'provider-package') => ({ providerID, id, package: pkg, limit: { context: 100_000, output: 1_000 }, variants: variants.map((variant) => ({ id: variant })) });
+  const catalog = () => Effect.succeed({ data: [modelInfo('p', 'm', ['high']), modelInfo('cp', 'cm', ['max']), modelInfo('bp', 'bm', ['low']), modelInfo('dp', 'dm', [])] });
   const recover = async (setup: ReturnType<typeof summarizerContext>) => {
     const { access } = readAccessFor({ sessions: FAMILY, timelines: { ses_child: finished } });
     return operations(access, setup.summarizer.host).trace({ task_id: 'ses_child', recovery: true });
   };
 
-  it('applies a variant-only configuration to the host default model and reports the model that ran', async () => {
-    const setup = summarizerContext({ config: { variant: 'high', temperature: 0 }, defaultModel: defaultModel(['low', 'high']) });
+  it('with no summarizer settings, binds the caller session model and variant for every generation', async () => {
+    const setup = summarizerContext({ config: {}, models: catalog, sessions: { ses_parent: { model: { providerID: 'cp', id: 'cm', variant: 'max' } }, ses_child: { model: { providerID: 'bp', id: 'bm', variant: 'low' } } } });
     const result = await recover(setup);
-    expect(setup.created.map((input) => input.model)).toEqual([{ providerID: 'dp', id: 'dm', variant: 'high' }, { providerID: 'dp', id: 'dm', variant: 'high' }]);
-    expect(setup.drafts.map((draft) => draft.model.variant)).toEqual(['high', 'high']);
-    expect(result.recovery).toMatchObject({ status: 'complete', model: { requested: { variant: 'high' }, observed: { model: 'dp/dm', variant: 'high' } } });
+    expect(setup.sessionReads).toEqual(['ses_parent']);
+    expect(setup.created.map((input) => input.model)).toEqual([{ providerID: 'cp', id: 'cm', variant: 'max' }, { providerID: 'cp', id: 'cm', variant: 'max' }]);
+    expect(result.recovery).toMatchObject({ status: 'complete', model: { requested: { model: 'cp/cm', variant: 'max', source: 'caller' }, observed: { model: 'cp/cm', variant: 'max' } } });
   });
 
-  it('does not create a summarizer session when the default model does not offer the variant', async () => {
-    const setup = summarizerContext({ config: { variant: 'high', temperature: 0 }, defaultModel: defaultModel(['low']) });
+  it('binds the host default without a variant for a caller session that has no model of its own', async () => {
+    const setup = summarizerContext({ config: {}, models: catalog, defaultModel: modelInfo('dp', 'dm', []), sessions: { ses_parent: {} } });
+    const result = await recover(setup);
+    expect(setup.created.map((input) => input.model)).toEqual([{ providerID: 'dp', id: 'dm' }, { providerID: 'dp', id: 'dm' }]);
+    expect(result.recovery).toMatchObject({ status: 'complete', model: { requested: { model: 'dp/dm', source: 'caller' } } });
+  });
+
+  it('reports recovery unavailable when the catalog default has no provider package, which the native runner skips', async () => {
+    // v2.0.26 `ModelResolver.resolve` runs a session without a model on the catalog default only when it has a
+    // package, else on another packaged model. Binding the package-less default would pin a model the runner never picks.
+    const setup = summarizerContext({ config: {}, models: catalog, defaultModel: modelInfo('dp', 'dm', [], ''), sessions: { ses_parent: {} } });
+    const result = await recover(setup);
+    expect(setup.created).toEqual([]);
+    expect(result.recovery).toMatchObject({
+      status: 'unavailable',
+      failures: [{ stage: 'model', reasons: ['summarizer_unavailable'], diagnostics: [{ code: 'caller_model_unavailable' }] }],
+      model: { requested: { source: 'caller' } },
+    });
+    expect(result.recovery.model.requested).not.toHaveProperty('model');
+  });
+
+  it('uses a configured model alone with its own default variant, never the caller variant', async () => {
+    const setup = summarizerContext({ config: { model: 'p/m' }, models: catalog, sessions: { ses_parent: { model: { providerID: 'cp', id: 'cm', variant: 'max' } } } });
+    const result = await recover(setup);
+    expect(setup.sessionReads).toEqual([]);
+    expect(setup.created.map((input) => input.model)).toEqual([{ providerID: 'p', id: 'm' }, { providerID: 'p', id: 'm' }]);
+    expect(result.recovery).toMatchObject({ status: 'complete', model: { requested: { model: 'p/m', source: 'configured' } } });
+    expect(result.recovery.model.requested).not.toHaveProperty('variant');
+  });
+
+  it('reports recovery unavailable without guessing a model when the caller selection cannot be read', async () => {
+    for (const sessions of [{ ses_parent: new Error('lookup failed') }, { ses_parent: {} }]) {
+      const setup = summarizerContext({ config: {}, models: catalog, sessions });
+      const result = await recover(setup);
+      expect(setup.created).toEqual([]);
+      expect(result.recovery).toEqual({
+        status: 'unavailable',
+        scope: null,
+        failures: [{ stage: 'model', reasons: ['summarizer_unavailable'], diagnostics: [{ code: 'caller_model_unavailable' }] }],
+        model: { requested: { source: 'caller' } },
+        cards_source: null,
+        phases_source: null,
+      });
+      expect(result.semantic).toBeNull();
+    }
+  });
+
+  it('does not create a summarizer session when the selected model does not offer the configured variant', async () => {
+    const setup = summarizerContext({ config: { model: 'p/m', variant: 'xhigh' }, models: catalog });
     const result = await recover(setup);
     expect(setup.created).toEqual([]);
     expect(result.recovery).toMatchObject({ status: 'partial', cards_source: 'fallback', phases_source: 'fallback' });
@@ -507,11 +564,45 @@ describe('v2 summarizer model variant', () => {
     expect(result.recovery.model.observed).toBeUndefined();
   });
 
-  it('fails the stage rather than dropping the variant when the host has no default model', async () => {
-    const setup = summarizerContext({ config: { variant: 'high', temperature: 0 } });
-    const result = await recover(setup);
-    expect(setup.created).toEqual([]);
-    expect(result.recovery.failures[0]).toMatchObject({ reasons: ['summarizer_unavailable'], diagnostics: [{ code: 'transport_error' }] });
+  it('keeps each of two interleaved callers on its own selection for metadata and every generation', async () => {
+    const sessions = { ses_a: {}, ses_child_a: { parentID: 'ses_a' }, ses_b: {}, ses_child_b: { parentID: 'ses_b' } };
+    const { access } = readAccessFor({ sessions, timelines: {
+      ses_child_a: [user('msg_u1', 'Implement task alpha.'), assistant('msg_a1', [{ type: 'text', text: 'Done.' }])],
+      ses_child_b: [user('msg_u1', 'Implement task beta.'), assistant('msg_a1', [{ type: 'text', text: 'Done.' }])],
+    } });
+    const seen: Array<{ caller: string; kind: string; model: unknown }> = [];
+    let maps = 0;
+    let reduces = 0;
+    const setup = summarizerContext({
+      config: {},
+      models: catalog,
+      sessions: { ses_a: { model: { providerID: 'cp', id: 'cm', variant: 'max' } }, ses_b: { model: { providerID: 'bp', id: 'bm', variant: 'low' } } },
+      // Each stage waits until both recoveries reach it, so the two callers' map and reduce generations interleave.
+      // The map card carries the caller's marker into its reduce request.
+      reply: (request, draft) => Effect.promise(async () => {
+        const text = JSON.stringify(request);
+        const caller = text.includes('alpha') ? 'alpha' : text.includes('beta') ? 'beta' : 'unknown';
+        seen.push({ caller, kind: request.kind, model: draft.model });
+        if (request.kind === 'map') maps += 1; else reduces += 1;
+        while (request.kind === 'map' ? maps < 2 : reduces < 2) await new Promise((resolve) => setTimeout(resolve, 1));
+        const reply = await Effect.runPromise(semanticReply(request));
+        return request.kind === 'map' ? { text: reply.text.replaceAll('Do the task.', `Do the ${caller} task.`) } : reply;
+      }),
+    });
+    const ops = operations(access, setup.summarizer.host);
+
+    const [alpha, beta] = await Promise.all([
+      ops.trace({ task_id: 'ses_child_a', recovery: true }, 'ses_a'),
+      ops.trace({ task_id: 'ses_child_b', recovery: true }, 'ses_b'),
+    ]);
+
+    expect(alpha.recovery).toMatchObject({ status: 'complete', model: { requested: { model: 'cp/cm', variant: 'max', source: 'caller' }, observed: { model: 'cp/cm', variant: 'max' } } });
+    expect(beta.recovery).toMatchObject({ status: 'complete', model: { requested: { model: 'bp/bm', variant: 'low', source: 'caller' }, observed: { model: 'bp/bm', variant: 'low' } } });
+    expect(seen.map((entry) => `${entry.caller}:${entry.kind}`).sort()).toEqual(['alpha:map', 'alpha:reduce', 'beta:map', 'beta:reduce']);
+    for (const entry of seen) {
+      expect(entry.model).toEqual(entry.caller === 'alpha' ? { providerID: 'cp', id: 'cm', variant: 'max' } : { providerID: 'bp', id: 'bm', variant: 'low' });
+    }
+    expect([...setup.sessionReads].sort()).toEqual(['ses_a', 'ses_b']);
   });
 });
 

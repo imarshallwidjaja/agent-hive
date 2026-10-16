@@ -137,12 +137,61 @@ export function requiredLifetimeMs(id, deadlineMs, marginMs) {
 }
 
 /**
+ * Credential-free model-selection probes. Each source of a model gets its own mock model ID, and each pair its own
+ * variant, so the wire and the native message record show where a selection came from: the host default, the primary
+ * prompt's model and variant (what an inheriting child should get), two explicit Hive pairs, and a native agent model.
+ */
+export const PROBE_VARIANTS = { parent: 'parent-variant', hive: 'hive-variant', advisor: 'advisor-variant' };
+export function probeModels(model) {
+  return { default: model, parent: `${model}-parent`, hive: `${model}-hive`, advisor: `${model}-advisor`, native: `${model}-native` };
+}
+
+/**
+ * Hive's expected selection for each probed agent of the valid probe. `primary` runs with no model of its own; the
+ * children are dispatched by a primary running on `parent` with its variant, which an unconfigured child inherits with
+ * the model. On v2 a native agent model replaces a valid Hive pair whole, so a model-only native setting drops the Hive
+ * variant; on v1 Hive's agent entry replaces the native one. A custom agent resolves its base role's Hive pair, not the
+ * native setting on that base.
+ */
+export function selectionExpectations(id, model) {
+  const m = probeModels(model);
+  const v = PROBE_VARIANTS;
+  return {
+    primary: { model: m.default, variant: null },
+    'scout-researcher': { model: m.parent, variant: v.parent },
+    'probe-native': { model: m.parent, variant: v.parent },
+    'code-reviewer': { model: m.hive, variant: v.hive },
+    'probe-base': { model: m.hive, variant: v.hive },
+    'approach-advisor': id === 'v2' ? { model: m.native, variant: null } : { model: m.advisor, variant: v.advisor },
+    'probe-advisor': { model: m.advisor, variant: v.advisor },
+  };
+}
+
+/** The variant a probe declares on one of its mock models, if any. */
+function probeVariant(probe, modelID) {
+  const key = probe ? Object.keys(probe).find((name) => probe[name] === modelID) : undefined;
+  return key ? PROBE_VARIANTS[key] : undefined;
+}
+
+/** Native agent settings each probe adds: a native model for a Hive role, which must not complete or override wrongly. */
+function probeNativeAgents(selection, model) {
+  const native = `mock/${probeModels(model).native}`;
+  if (selection === 'valid') return { 'approach-advisor': native };
+  if (selection === 'invalid') return { 'forager-worker': native };
+  return {};
+}
+
+/**
  * Native configuration for one host. `provider` is 'mock' (credential-free scripted provider on loopback) or 'openai'.
  * `permissive` adds a global allow rule so headless runs cannot block on permission prompts; Hive's own role guards
- * still apply. Wiring runs `permissive: false` to observe stock permissions.
+ * still apply. Wiring runs `permissive: false` to observe stock permissions. `selection` adds a model-selection probe's
+ * mock models and native agent settings; the paid path never sets it.
  */
-export function hostConfig(id, { provider, model, mockPort, serverPort, userSkillsDir, observer, permissive = true }) {
+export function hostConfig(id, { provider, model, mockPort, serverPort, userSkillsDir, observer, permissive = true, selection }) {
   const modelRef = provider === 'mock' ? `mock/${model}` : `openai/${model}`;
+  const probe = provider === 'mock' && selection ? probeModels(model) : null;
+  const nativeAgents = probe ? probeNativeAgents(selection, model) : {};
+  const mockModelIDs = probe ? Object.values(probe) : [model];
   if (id === 'v1') {
     const cfg = {
       $schema: 'https://opencode.ai/config.json',
@@ -163,10 +212,14 @@ export function hostConfig(id, { provider, model, mockPort, serverPort, userSkil
           npm: '@ai-sdk/openai-compatible',
           name: 'Mock',
           options: { baseURL: `http://127.0.0.1:${mockPort}/v1`, apiKey: 'mock-not-a-secret' },
-          models: { [model]: { name: model, tool_call: true, limit: { context: 200000, output: 8192 } } },
+          models: Object.fromEntries(mockModelIDs.map((id) => [id, {
+            name: id, tool_call: true, limit: { context: 200000, output: 8192 },
+            ...(probeVariant(probe, id) ? { variants: { [probeVariant(probe, id)]: {} } } : {}),
+          }])),
         },
       };
     }
+    if (Object.keys(nativeAgents).length > 0) cfg.agent = Object.fromEntries(Object.entries(nativeAgents).map(([name, ref]) => [name, { model: ref }]));
     return cfg;
   }
   const cfg = {
@@ -186,15 +239,40 @@ export function hostConfig(id, { provider, model, mockPort, serverPort, userSkil
         package: '@ai-sdk/openai-compatible',
         env: ['MOCK_PROVIDER_KEY'],
         settings: { baseURL: `http://127.0.0.1:${mockPort}/v1` },
-        models: { [model]: { name: model, capabilities: { tools: true } } },
+        models: Object.fromEntries(mockModelIDs.map((id) => [id, {
+          name: id, capabilities: { tools: true },
+          ...(probeVariant(probe, id) ? { variants: [{ id: probeVariant(probe, id) }] } : {}),
+        }])),
       },
     };
   }
+  if (Object.keys(nativeAgents).length > 0) cfg.agents = Object.fromEntries(Object.entries(nativeAgents).map(([name, ref]) => [name, { model: ref }]));
   return cfg;
 }
 
-/** Agent Hive global configuration: every Hive role uses the one frozen model so no default provider is contacted. */
-export function hiveConfig({ provider, model, variant, agentMode }) {
+/**
+ * Agent Hive global configuration. Wiring and cases pin every Hive role to the one frozen model so no default provider
+ * is contacted. A `selection` probe instead leaves most roles to native inheritance: the valid probe pins only an
+ * explicit pair and a role that a native setting also names, and derives an inheriting custom agent from each; the
+ * invalid probe configures a variant with no Hive model.
+ */
+export function hiveConfig({ provider, model, variant, agentMode, selection }) {
+  if (selection === 'valid') {
+    const { hive, advisor } = probeModels(model);
+    return {
+      agentMode,
+      agents: {
+        'code-reviewer': { model: `mock/${hive}`, variant: PROBE_VARIANTS.hive },
+        'approach-advisor': { model: `mock/${advisor}`, variant: PROBE_VARIANTS.advisor },
+      },
+      customAgents: {
+        'probe-native': { baseAgent: 'scout-researcher', description: 'Model-selection probe without Hive model settings.' },
+        'probe-base': { baseAgent: 'code-reviewer', description: 'Model-selection probe inheriting its base Hive pair.' },
+        'probe-advisor': { baseAgent: 'approach-advisor', description: 'Model-selection probe inheriting a base Hive pair that a native setting overrides.' },
+      },
+    };
+  }
+  if (selection === 'invalid') return { agentMode, agents: { 'forager-worker': { variant: PROBE_VARIANTS.hive } }, customAgents: {} };
   const modelRef = provider === 'mock' ? `mock/${model}` : `openai/${model}`;
   const agents = {};
   for (const role of HIVE_ROLES) {
@@ -219,12 +297,14 @@ export function sessionCreateRequest(id, { agent, directory }) {
 }
 
 /** Headless prompt arguments for one primary session. */
-export function runArgs(id, { port, session, agent, modelRef, prompt, command }) {
+export function runArgs(id, { port, session, agent, modelRef, variant, prompt, command }) {
   const base = id === 'v1'
     ? ['run', '--attach', `http://127.0.0.1:${port}`]
     : ['run', '--server', `http://127.0.0.1:${port}`];
   const args = [...base, '--session', session, '--agent', agent, '--format', 'json'];
-  if (modelRef) args.push('--model', modelRef);
+  // The v2 CLI selects a variant inside the model reference; the v1 CLI has its own flag.
+  if (modelRef) args.push('--model', variant && id === 'v2' ? `${modelRef}#${variant}` : modelRef);
+  if (variant && id === 'v1') args.push('--variant', variant);
   if (command) args.push('--command', command);
   args.push(prompt);
   return args;

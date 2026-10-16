@@ -10,13 +10,17 @@ import {
   CredentialError, assertLifetime, fingerprintAuthFile, hostAuthPath, readAccessOnly, sameFingerprint, secretScanner,
 } from './credentials.mjs';
 import { GUARD_EXIT_CODE } from './guard.mjs';
-import { HOSTS, REFRESH_SENTINEL, TOOL_FIELD_CONTRACT, authRequest, fieldContractFindings, nativeToolCall, requiredLifetimeMs } from './hosts.mjs';
+import {
+  HIVE_ROLES, HOSTS, PROBE_VARIANTS, REFRESH_SENTINEL, TOOL_FIELD_CONTRACT, authRequest, fieldContractFindings, hiveConfig, hostConfig, nativeToolCall, probeModels,
+  requiredLifetimeMs, runArgs, selectionExpectations,
+} from './hosts.mjs';
 import { payloadFacts, pickSettings } from './observer/index.js';
 import {
   HarnessError, Journal, Resources, STATUS_EXIT, artifactFailures, assessContainerIsolation, assessDockerBoundary, candidateBindingMismatches, caseSummary,
   checkCriterion, classifyCase, classifyCorePattern, containerCreateArgs, createRunDir, effectiveSettings, failedChecks, finalExit, loadRunRecords,
   hostPreflight, modelEvidenceFailures, outstandingFromLedger, paidCase, parseCli, prepareResume, recordReadFailures, rehearsalPathFailures, rehearseInjection,
-  rehearseLifetime, rehearsePaidPath, rehearseSelection, resumePlan, runEndFailure, runtimeFailures, selectScenarios, selectSharedModel, verifyArtifact, verifyResumeOrigins, wiringFailures,
+  modelSelectionFailures, rehearseLifetime, rehearsePaidPath, rehearseSelection, resumePlan, runEndFailure, runtimeFailures, selectScenarios, selectSharedModel, verifyArtifact,
+  verifyResumeOrigins, wiringFailures,
 } from './run.mjs';
 import {
   ARTIFACT_CAP, ATTEMPT_LOG_HEADER, FINAL_TEXT_CAP, STOP_INSTRUCTION_CAP, allowlistArgs, attemptCount, clipText, clipToolArgs, codeModeBlocks, codeModeFieldDocs, commandDelivery,
@@ -1610,6 +1614,122 @@ describe('rehearsal of a named scope', () => {
   });
 });
 
+const passingSelection = (id: string) => Object.fromEntries(Object.entries(selectionExpectations(id, SCENARIOS.model.mock)).map(([agent, expected]) => [agent, {
+  observed: true, wireModel: expected.model, recordedModel: expected.model, recordedVariant: expected.variant,
+}]));
+const REJECTED_INVALID_SELECTION = { ready: true, serving: true, hiveRolesRegistered: [], hiveToolsExposed: false, errorLogged: true, errorNamesFile: true };
+
+describe('model-selection probes', () => {
+  const model = SCENARIOS.model.mock;
+  const models = probeModels(model);
+  const native = (id: 'v1' | 'v2', selection: string) => {
+    const config: any = hostConfig(id, { provider: 'mock', model, mockPort: 1, serverPort: 2, observer: '/o', permissive: false, selection });
+    return { agents: id === 'v1' ? config.agent : config.agents, models: id === 'v1' ? config.provider.mock.models : config.providers.mock.models };
+  };
+
+  test('wiring and cases keep pinning every Hive role to the one frozen model', () => {
+    const pinned = hiveConfig({ provider: 'openai', model: 'gpt-test', variant: 'high', agentMode: 'dedicated' });
+    const roles = HIVE_ROLES.filter((role) => role !== 'dash-reviewer' && role !== 'vulnerability-review-primary');
+    expect(Object.keys(pinned.agents).sort()).toEqual([...roles].sort());
+    for (const role of roles) expect(pinned.agents[role]).toEqual({ model: 'openai/gpt-test', variant: 'high' });
+    for (const id of ['v1', 'v2'] as const) {
+      expect(native(id, undefined as any).agents).toBeUndefined();
+      expect(Object.keys(native(id, undefined as any).models)).toEqual([model]);
+    }
+  });
+
+  test('the valid probe leaves inheriting roles unconfigured and gives each model source its own mock model and variant', () => {
+    const config = hiveConfig({ provider: 'mock', model, agentMode: 'dedicated', selection: 'valid' });
+    expect(config.agents).toEqual({
+      'code-reviewer': { model: `mock/${models.hive}`, variant: PROBE_VARIANTS.hive },
+      'approach-advisor': { model: `mock/${models.advisor}`, variant: PROBE_VARIANTS.advisor },
+    });
+    for (const [name, base] of [['probe-native', 'scout-researcher'], ['probe-base', 'code-reviewer'], ['probe-advisor', 'approach-advisor']]) {
+      expect(config.customAgents[name]).toMatchObject({ baseAgent: base });
+      expect(config.customAgents[name]).not.toHaveProperty('model');
+      expect(config.customAgents[name]).not.toHaveProperty('variant');
+    }
+    expect(new Set(Object.values(models)).size).toBe(5);
+    expect(new Set(Object.values(PROBE_VARIANTS)).size).toBe(3);
+    for (const id of ['v1', 'v2'] as const) {
+      const { agents, models: declared } = native(id, 'valid');
+      // The native setting names the base role of a custom agent, as a model alone with no variant.
+      expect(agents).toEqual({ 'approach-advisor': { model: `mock/${models.native}` } });
+      expect(Object.keys(declared).sort()).toEqual(Object.values(models).sort());
+      const variants = Object.entries(declared).filter(([, entry]: [string, any]) => entry.variants !== undefined).map(([name]) => name);
+      expect(variants.sort()).toEqual([models.parent, models.hive, models.advisor].sort());
+    }
+    for (const key of ['parent', 'hive', 'advisor'] as const) {
+      expect(native('v1', 'valid').models[models[key]].variants).toEqual({ [PROBE_VARIANTS[key]]: {} });
+      expect(native('v2', 'valid').models[models[key]].variants).toEqual([{ id: PROBE_VARIANTS[key] }]);
+    }
+  });
+
+  test('the invalid probe sets a variant without a Hive model while a native model names that role', () => {
+    expect(hiveConfig({ provider: 'mock', model, agentMode: 'dedicated', selection: 'invalid' })).toEqual({
+      agentMode: 'dedicated', agents: { 'forager-worker': { variant: PROBE_VARIANTS.hive } }, customAgents: {},
+    });
+    for (const id of ['v1', 'v2'] as const) expect(native(id, 'invalid').agents).toEqual({ 'forager-worker': { model: `mock/${models.native}` } });
+  });
+
+  test('the parent run selects the model variant through each host CLI', () => {
+    const args = { port: 1, session: 'ses', agent: 'hive-builder', modelRef: `mock/${models.parent}`, variant: PROBE_VARIANTS.parent, prompt: 'p' };
+    const v1 = runArgs('v1', args);
+    expect(v1.slice(v1.indexOf('--model'), v1.indexOf('--model') + 4)).toEqual(['--model', `mock/${models.parent}`, '--variant', PROBE_VARIANTS.parent]);
+    expect(runArgs('v2', args)).toContain(`mock/${models.parent}#${PROBE_VARIANTS.parent}`);
+    expect(runArgs('v2', args)).not.toContain('--variant');
+    expect(runArgs('v1', { ...args, variant: undefined })).not.toContain('--variant');
+  });
+
+  test('expected selections follow each host: parent inheritance with its variant, Hive pairs, v2 whole-reference native precedence, and Hive bases', () => {
+    const v = PROBE_VARIANTS;
+    for (const id of ['v1', 'v2']) {
+      const expected = selectionExpectations(id, model);
+      expect(expected.primary).toEqual({ model: models.default, variant: null });
+      expect(expected['scout-researcher']).toEqual({ model: models.parent, variant: v.parent });
+      expect(expected['probe-native']).toEqual({ model: models.parent, variant: v.parent });
+      expect(expected['code-reviewer']).toEqual({ model: models.hive, variant: v.hive });
+      expect(expected['probe-base']).toEqual({ model: models.hive, variant: v.hive });
+      // A native setting on the base role never reaches a custom agent, which keeps the Hive base pair.
+      expect(expected['probe-advisor']).toEqual({ model: models.advisor, variant: v.advisor });
+    }
+    expect(selectionExpectations('v1', model)['approach-advisor']).toEqual({ model: models.advisor, variant: v.advisor });
+    expect(selectionExpectations('v2', model)['approach-advisor']).toEqual({ model: models.native, variant: null });
+  });
+
+  test('a probe fails when a child did not inherit the parent pair, a Hive pair or base was lost, an agent was not observed, or invalid configuration was not refused', () => {
+    expect(modelSelectionFailures('v2', passingSelection('v2'), REJECTED_INVALID_SELECTION, model)).toEqual([]);
+    const observed = passingSelection('v1');
+    observed['scout-researcher'] = { ...observed['scout-researcher'], wireModel: models.default, recordedModel: models.default };
+    observed['probe-native'] = { ...observed['probe-native'], recordedVariant: null };
+    observed['code-reviewer'] = { ...observed['code-reviewer'], recordedVariant: PROBE_VARIANTS.parent };
+    observed['approach-advisor'] = { ...observed['approach-advisor'], wireModel: models.native };
+    observed['probe-advisor'] = { ...observed['probe-advisor'], wireModel: models.native, recordedModel: models.native, recordedVariant: null };
+    delete observed['probe-base'];
+    expect(modelSelectionFailures('v1', observed, { ...REJECTED_INVALID_SELECTION, hiveRolesRegistered: ['hive-builder'], errorLogged: false }, model)).toEqual([
+      'model_selection_mismatch:v1:scout-researcher',
+      'model_variant_mismatch:v1:probe-native',
+      'model_variant_mismatch:v1:code-reviewer',
+      'model_selection_unobserved:v1:probe-base',
+      'model_selection_mismatch:v1:approach-advisor',
+      'model_selection_mismatch:v1:probe-advisor',
+      'model_variant_mismatch:v1:probe-advisor',
+      'invalid_model_config_error_missing:v1',
+      'invalid_model_config_registered:v1',
+    ]);
+    // On v2 the native model replaces the Hive pair whole: a surviving Hive variant is a mismatch.
+    const kept = passingSelection('v2');
+    kept['approach-advisor'] = { ...kept['approach-advisor'], recordedVariant: PROBE_VARIANTS.advisor };
+    expect(modelSelectionFailures('v2', kept, REJECTED_INVALID_SELECTION, model)).toEqual(['model_variant_mismatch:v2:approach-advisor']);
+    expect(modelSelectionFailures('v2', undefined, undefined, model)).toEqual([
+      ...Object.keys(selectionExpectations('v2', model)).map((agent) => `model_selection_unobserved:v2:${agent}`),
+      'invalid_model_config_unobserved:v2',
+    ]);
+    expect(modelSelectionFailures('v2', passingSelection('v2'), { ...REJECTED_INVALID_SELECTION, hiveToolsExposed: true, errorNamesFile: false }, model))
+      .toEqual(['invalid_model_config_error_missing:v2', 'invalid_model_config_registered:v2']);
+  });
+});
+
 describe('wiring contract', () => {
   const host = (overrides: any = {}) => ({
     roles: { 'forager-worker': true }, commands: { council: true }, roleExposure: { 'code-reviewer': { observed: true } },
@@ -1620,13 +1740,17 @@ describe('wiring contract', () => {
     override: { listed: true, resolvesToUserSkill: true, loadedUserBody: true },
     ...overrides,
   });
+  // Every probe passing, so each test below judges only the observation it changes.
+  const wiringFor = (results: Record<string, any>) => wiringFailures(Object.fromEntries(Object.entries(results).map(([id, w]) => [id, {
+    modelSelection: passingSelection(id), invalidModelSelection: REJECTED_INVALID_SELECTION, ...w,
+  }])), SCENARIOS.model.mock);
 
   test('a complete observation passes', () => {
-    expect(wiringFailures({ v1: host(), v2: host() })).toEqual([]);
+    expect(wiringFor({ v1: host(), v2: host() })).toEqual([]);
   });
 
   test('failures name missing contract metadata, unread references, undelivered command bodies and unresolved overrides', () => {
-    const failures = wiringFailures({
+    const failures = wiringFor({
       v1: host({
         toolContract: { expected: 2, missing: ['hive_plan_read'], unexpected: [], undescribed: ['hive_status'], paramNames: { hive_status: ['feature'] } },
         references: { pointers: { 'hive-config': { pointed: [], broken: ['gone.md'], unpointed: [] } }, reads: [{ skill: 'hive-config', file: 'a.md', readCompleted: false }] },
@@ -1640,15 +1764,15 @@ describe('wiring contract', () => {
       'reference_read_failed:v1:hive-config/a.md', 'command_body_not_delivered:v1:start-execution', 'command_consumer_skill_not_loaded:v1',
       'command_consumer_reference_failed:v1:task-milestones.md', 'override_not_user_skill:v1', 'override_body_not_loaded:v1', 'tool_params_differ:hive_status',
     ]));
-    expect(wiringFailures({ v1: host({ toolContract: { expected: 0, missing: [], unexpected: [], undescribed: [], paramNames: {} } }) })).toContain('tool_manifest_unread:v1');
+    expect(wiringFor({ v1: host({ toolContract: { expected: 0, missing: [], unexpected: [], undescribed: [], paramNames: {} } }) })).toContain('tool_manifest_unread:v1');
   });
 
   // The body arrived and the references were read, then the run stalled, errored or waited on an operator.
   test('a command run that did not finish fails wiring even when its delivery and reference reads are positive', () => {
     const delivered = { command: 'start-execution', result: 0, timedOut: false, asked: null, bodyDelivered: true, skillLoaded: true, referenceReads: [{ file: 'task-milestones.md', readCompleted: true }] };
-    expect(wiringFailures({ v1: host({ nonHiveCommand: delivered }), v2: host({ nonHiveCommand: delivered }) })).toEqual([]);
+    expect(wiringFor({ v1: host({ nonHiveCommand: delivered }), v2: host({ nonHiveCommand: delivered }) })).toEqual([]);
     for (const unfinished of [{ result: -1 }, { result: 1 }, { timedOut: true }, { asked: 'permission' }, { result: undefined }]) {
-      expect(wiringFailures({ v2: host({ nonHiveCommand: { ...delivered, ...unfinished } }) })).toEqual(['command_run_unsuccessful:v2:start-execution']);
+      expect(wiringFor({ v2: host({ nonHiveCommand: { ...delivered, ...unfinished } }) })).toEqual(['command_run_unsuccessful:v2:start-execution']);
     }
   });
 
@@ -1672,7 +1796,7 @@ describe('wiring contract', () => {
     expect(complete.checked).toBeGreaterThan(50);
     const stripped = toolFieldContract(shown(() => ''), {});
     expect(stripped.undescribed).toEqual(expect.arrayContaining(['hive_worktree_merge.expectedTarget', 'hive_plan_approve.sync', 'hive_task_update.handoff', 'hive_context_write.expectedContentHash']));
-    const failures = wiringFailures({ v1: host({ fieldContract: stripped }), v2: host() });
+    const failures = wiringFor({ v1: host({ fieldContract: stripped }), v2: host() });
     expect(failures).toContain('field_contract_undescribed:v1:hive_worktree_merge.expectedTarget');
     expect(failures.some((f) => f.endsWith(':v2') || f.includes(':v2:'))).toBe(false);
     // Whitespace is not a description.
@@ -1688,10 +1812,10 @@ describe('wiring contract', () => {
     expect(findings.absentTools).toContain('hive_plan_approve');
     expect(findings.absentFields).toContain('hive_task_update.handoff');
     expect(findings.undescribed).toEqual([]);
-    const failures = wiringFailures({ v1: host({ fieldContract: findings }) });
+    const failures = wiringFor({ v1: host({ fieldContract: findings }) });
     expect(failures).toEqual(expect.arrayContaining(['field_contract_tool_absent:v1:hive_plan_approve', 'field_contract_field_absent:v1:hive_task_update.handoff']));
-    expect(wiringFailures({ v1: host({ fieldContract: undefined }) })).toContain('field_contract_unread:v1');
-    expect(wiringFailures({ v1: host({ fieldContract: { checked: 0, absentTools: [], absentFields: [], undescribed: [] } }) })).toContain('field_contract_unread:v1');
+    expect(wiringFor({ v1: host({ fieldContract: undefined }) })).toContain('field_contract_unread:v1');
+    expect(wiringFor({ v1: host({ fieldContract: { checked: 0, absentTools: [], absentFields: [], undescribed: [] } }) })).toContain('field_contract_unread:v1');
   });
 
   test('Code Mode declarations are judged by their own field doc comments when a host shows a read only there', () => {

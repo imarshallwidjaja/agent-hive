@@ -2,39 +2,21 @@ import { describe, it, expect } from 'bun:test';
 import { createVariantHook, classifySession } from './variant-hook.js';
 
 const createMockConfigService = (
-  agentVariants: Record<string, string | undefined>,
-  configuredAgents: string[] = Object.keys(agentVariants),
+  agents: Record<string, { model?: string; variant?: string }>,
+  configuredAgents: string[] = Object.keys(agents),
 ) => ({
   hasConfiguredAgent: (agent: string) => configuredAgents.includes(agent),
-  getAgentConfig: (agent: string) => ({ variant: agentVariants[agent] }),
+  getAgentConfig: (agent: string) => ({ ...agents[agent] }),
 });
 
-const createOutput = (variant?: string) => ({ message: { variant }, parts: [] });
+/** The v1.18.30 `chat.message` output: the message records its model selection as `message.model`. */
+const createOutput = (model = 'anthropic/claude-sonnet', variant?: string, agent?: string) => {
+  const [providerID, modelID] = model.split('/');
+  return { message: { ...(agent ? { agent } : {}), model: { providerID, modelID, ...(variant !== undefined ? { variant } : {}) } }, parts: [] as unknown[] };
+};
 
 describe('createVariantHook', () => {
-  describe('applies variant to configured agents', () => {
-    it('sets variant when message has no variant and agent has configured variant', async () => {
-      const configService = createMockConfigService({
-        'forager-worker': 'high',
-      });
-
-      const hook = createVariantHook(configService as any);
-
-      const input = {
-        sessionID: 'session-123',
-        agent: 'forager-worker',
-        model: { providerID: 'anthropic', modelID: 'claude-sonnet' },
-        messageID: 'msg-1',
-        variant: undefined,
-      };
-
-      const output = createOutput(undefined);
-
-      await hook(input, output);
-
-      expect(output.message.variant).toBe('high');
-    });
-
+  describe('fills the Hive variant on the agent\'s own Hive model', () => {
     it.each([
       ['hive-master', 'max'],
       ['architect-planner', 'high'],
@@ -47,117 +29,75 @@ describe('createVariantHook', () => {
       ['approach-advisor', 'medium'],
       ['forager-ui', 'high'],
       ['reviewer-security', 'medium'],
-    ])('applies variant %s = %s', async (agent, variant) => {
-      const hook = createVariantHook(createMockConfigService({ [agent]: variant }) as any);
-      const output = createOutput(undefined);
+    ])('sets message.model.variant for %s = %s', async (agent, variant) => {
+      const hook = createVariantHook(createMockConfigService({ [agent]: { model: 'anthropic/claude-sonnet', variant } }) as any);
+      const output = createOutput();
 
       await hook({ sessionID: 'session-123', agent }, output);
 
-      expect(output.message.variant).toBe(variant);
+      expect(output.message.model.variant).toBe(variant);
+      expect(output.message).not.toHaveProperty('variant');
+    });
+
+    it('uses the message agent when the hook input names none', async () => {
+      const hook = createVariantHook(createMockConfigService({ 'forager-worker': { model: 'anthropic/claude-sonnet', variant: 'high' } }) as any);
+      const output = createOutput('anthropic/claude-sonnet', undefined, 'forager-worker');
+
+      await hook({ sessionID: 'session-123' }, output);
+
+      expect(output.message.model.variant).toBe('high');
     });
   });
 
-  describe('respects explicit variant', () => {
-    it('does not override already-set variant', async () => {
-      const configService = createMockConfigService({
-        'forager-worker': 'high',
-      });
+  describe('keeps the native selection', () => {
+    it('does not replace a variant the caller or the agent catalog already chose', async () => {
+      const hook = createVariantHook(createMockConfigService({ 'forager-worker': { model: 'anthropic/claude-sonnet', variant: 'high' } }) as any);
+      const output = createOutput('anthropic/claude-sonnet', 'low');
 
-      const hook = createVariantHook(configService as any);
+      await hook({ sessionID: 'session-123', agent: 'forager-worker', variant: 'low' }, output);
 
-      const output = createOutput('low'); // Already set
+      expect(output.message.model.variant).toBe('low');
+    });
 
-      await hook(
-        { sessionID: 'session-123', agent: 'forager-worker', variant: 'low' },
-        output,
-      );
+    it('leaves a message on another model with that model\'s native variant', async () => {
+      const hook = createVariantHook(createMockConfigService({ 'forager-worker': { model: 'anthropic/claude-sonnet', variant: 'high' } }) as any);
+      const output = createOutput('openai/gpt-5');
 
-      expect(output.message.variant).toBe('low');
+      await hook({ sessionID: 'session-123', agent: 'forager-worker', model: { providerID: 'openai', modelID: 'gpt-5' } }, output);
+
+      expect(output.message.model).toEqual({ providerID: 'openai', modelID: 'gpt-5' });
+    });
+
+    it.each([
+      ['an inheriting agent', {}],
+      ['a model-only agent', { model: 'anthropic/claude-sonnet' }],
+    ])('sets no variant for %s', async (_label, settings) => {
+      const hook = createVariantHook(createMockConfigService({ 'forager-worker': settings }) as any);
+      const output = createOutput();
+
+      await hook({ sessionID: 'session-123', agent: 'forager-worker' }, output);
+
+      expect(output.message.model).not.toHaveProperty('variant');
     });
   });
 
   describe('does not apply to non-Hive agents', () => {
-    it('does not set variant for unknown agent', async () => {
-      const configService = createMockConfigService({
-        'forager-worker': 'high',
-      });
-
-      const hook = createVariantHook(configService as any);
-
-      const output = createOutput(undefined);
-
-      await hook(
-        { sessionID: 'session-123', agent: 'some-other-agent' },
-        output,
-      );
-
-      expect(output.message.variant).toBeUndefined();
-    });
-
-    it.each(['build', 'plan', 'code'])('does not set variant for built-in OpenCode agent %s', async (agent) => {
-      const configService = createMockConfigService({
-        'forager-worker': 'high',
-      });
-
-      const hook = createVariantHook(configService as any);
-      const output = createOutput(undefined);
+    it.each(['some-other-agent', 'build', 'plan', 'code'])('does not set a variant for %s', async (agent) => {
+      const hook = createVariantHook(createMockConfigService({ 'forager-worker': { model: 'anthropic/claude-sonnet', variant: 'high' } }) as any);
+      const output = createOutput();
 
       await hook({ sessionID: 'session-123', agent }, output);
 
-      expect(output.message.variant).toBeUndefined();
-    });
-  });
-
-  describe('handles edge cases', () => {
-    it('handles missing agent in input', async () => {
-      const configService = createMockConfigService({
-        'forager-worker': 'high',
-      });
-
-      const hook = createVariantHook(configService as any);
-
-      const output = createOutput(undefined);
-
-      await hook(
-        { sessionID: 'session-123', agent: undefined },
-        output,
-      );
-
-      expect(output.message.variant).toBeUndefined();
+      expect(output.message.model).not.toHaveProperty('variant');
     });
 
-    for (const variant of ['', '   ', undefined]) {
-      it(`treats ${String(variant)} as unset`, async () => {
-        const hook = createVariantHook(createMockConfigService({
-          'forager-worker': variant,
-        }) as any);
+    it('does nothing when neither the input nor the message names an agent', async () => {
+      const hook = createVariantHook(createMockConfigService({ 'forager-worker': { model: 'anthropic/claude-sonnet', variant: 'high' } }) as any);
+      const output = createOutput();
 
-        const output = createOutput(undefined);
+      await hook({ sessionID: 'session-123', agent: undefined }, output);
 
-        await hook(
-          { sessionID: 'session-123', agent: 'forager-worker' },
-          output,
-        );
-
-        expect(output.message.variant).toBeUndefined();
-      });
-    }
-
-    it('trims variant before applying', async () => {
-      const configService = createMockConfigService({
-        'forager-worker': '  high  ',
-      });
-
-      const hook = createVariantHook(configService as any);
-
-      const output = createOutput(undefined);
-
-      await hook(
-        { sessionID: 'session-123', agent: 'forager-worker' },
-        output,
-      );
-
-      expect(output.message.variant).toBe('high');
+      expect(output.message.model).not.toHaveProperty('variant');
     });
   });
 });
@@ -229,12 +169,12 @@ describe('createVariantHook with session tracking', () => {
     };
 
     const hook = createVariantHook(
-      createMockConfigService({ 'forager-worker': 'high' }) as any,
+      createMockConfigService({ 'forager-worker': { model: 'anthropic/claude-sonnet', variant: 'high' } }) as any,
       mockSessionService as any,
       { 'forager-ui': { baseAgent: 'forager-worker' } },
     );
 
-    const output = createOutput(undefined);
+    const output = createOutput();
     await hook({ sessionID: 'sess-123', agent: 'forager-ui' }, output);
 
     expect(tracked.length).toBe(1);
@@ -256,11 +196,11 @@ describe('createVariantHook with session tracking', () => {
     };
 
     const hook = createVariantHook(
-      createMockConfigService({ 'hive-master': 'max' }) as any,
+      createMockConfigService({ 'hive-master': { model: 'anthropic/claude-sonnet', variant: 'max' } }) as any,
       mockSessionService as any,
     );
 
-    const output = createOutput(undefined);
+    const output = createOutput();
     await hook({ sessionID: 'sess-primary', agent: 'hive-master' }, output);
 
     expect(tracked.length).toBe(1);
@@ -285,7 +225,7 @@ describe('createVariantHook with session tracking', () => {
       mockSessionService as any,
     );
 
-    const output = createOutput(undefined);
+    const output = createOutput();
     await hook({ sessionID: 'sess-unknown', agent: 'scout-custom' }, output);
 
     expect(tracked.length).toBe(1);
@@ -305,12 +245,12 @@ describe('createVariantHook with session tracking', () => {
     };
 
     const hook = createVariantHook(
-      createMockConfigService({ 'scout-custom': 'low' }, ['scout-custom']) as any,
+      createMockConfigService({ 'scout-custom': { model: 'anthropic/claude-sonnet', variant: 'low' } }, ['scout-custom']) as any,
       mockSessionService as any,
       { 'scout-custom': { baseAgent: 'scout-researcher' } },
     );
 
-    const output = createOutput(undefined);
+    const output = createOutput();
     await hook({ sessionID: 'sess-scout-custom', agent: 'scout-custom' }, output);
 
     expect(tracked.length).toBe(1);
@@ -323,13 +263,13 @@ describe('createVariantHook with session tracking', () => {
 
   it('skips session tracking when no sessionService provided', async () => {
     const hook = createVariantHook(
-      createMockConfigService({ 'forager-worker': 'high' }) as any,
+      createMockConfigService({ 'forager-worker': { model: 'anthropic/claude-sonnet', variant: 'high' } }) as any,
     );
 
-    const output = createOutput(undefined);
+    const output = createOutput();
     await hook({ sessionID: 'sess-no-svc', agent: 'forager-worker' }, output);
 
-    expect(output.message.variant).toBe('high');
+    expect(output.message.model.variant).toBe('high');
   });
 
   it('skips session tracking when no agent in input', async () => {
@@ -346,7 +286,7 @@ describe('createVariantHook with session tracking', () => {
       mockSessionService as any,
     );
 
-    const output = createOutput(undefined);
+    const output = createOutput();
     await hook({ sessionID: 'sess-no-agent' }, output);
 
     expect(tracked.length).toBe(0);

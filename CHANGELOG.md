@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking
+
+- **Native model inheritance.** Hive ships no model for any role. `DEFAULT_HIVE_CONFIG` has no role models, the starter custom-agent templates name no model or variant, and `hive-core` no longer exports `DEFAULT_AGENT_MODELS`. A built-in role, custom agent or recovery summarizer without Hive `model` and `variant` uses the host's native model selection. Stored models, including values equal to the former generated defaults, are kept; delete a role's `model` and `variant` together to inherit.
+- **Explicit model for every variant.** An effective `variant` needs an explicit Hive `provider/model-id` from the role's global entry, its project override, or a custom agent's Hive base role, and a supplied `model` or `variant` must be well formed. An invalid setting stops the plugin at startup with an error naming the file, property path and fix, instead of falling back to defaults; a native OpenCode model does not complete it. Hive's own writes check the global file on its own.
+- **Temperature removed.** `temperature` is gone from `AgentModelConfig`, `CustomAgentConfig`, `TaskTraceSummarizerConfig`, the defaults and the schema. A legacy value of any type is ignored with one warning per read without invalidating the rest of the file, and Hive writes omit it. Hive sets no sampling options on either host.
+- **Recovery summarizer selection.** Without `taskTraceSummarizer.model`, recovery now runs on the invoking caller session's model and variant instead of the host default. A configured model alone uses that model's default variant, `variant` requires `model`, and a caller selection that cannot be established makes recovery unavailable, including a v2 caller session without a model whose catalog default names no provider package. `recovery.model.requested` adds `source`.
+
+### Fixed
+
+- **v1 variants.** The v1 `chat.message` hook sets the Hive variant on `message.model.variant`, as OpenCode 1.18.30 reads it, uses the message agent when the hook input names none, and only fills a missing variant when the message runs the agent's own Hive model.
+- **v2 request options.** The v2 entry no longer adds a role temperature to ordinary, compaction and generate requests, and the recovery summarizer no longer forces temperature 0. A malformed configured model fails registration instead of being dropped.
+
 ## [5.0.0] - 2026-10-15
 
 `oc-arkive` 5.0.0 is the first release that runs on both OpenCode hosts from one package: the existing v1 entry, with a host floor of 1.18.30, and a native v2 entry qualified on 2.0.26. Releases through 4.2.0 are v1-only. The v2 qualification covers 2.0.26 only and makes no claim about later v2 releases. See [v5.0.0 release notes](docs/releases/v5.0.0.md).

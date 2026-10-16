@@ -7,8 +7,8 @@ import { createServer } from 'node:http';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import {
-  HIVE_COMMANDS, HIVE_ROLES, REFRESH_SENTINEL, fieldContractFindings, hiveConfig, hostConfig, hostSpec, nativeToolCall,
-  neutralArgs, neutralTool, runArgs, serveArgs, sessionCreateRequest,
+  HIVE_COMMANDS, HIVE_ROLES, REFRESH_SENTINEL, fieldContractFindings, hiveConfig, hostConfig, hostSpec, nativeToolCall, probeModels,
+  PROBE_VARIANTS, neutralArgs, neutralTool, runArgs, serveArgs, sessionCreateRequest,
 } from './hosts.mjs';
 
 const HARNESS = dirname(new URL(import.meta.url).pathname);
@@ -330,13 +330,13 @@ function prepareHome(scenario: Json | null, wiring = false): string | null {
 }
 
 async function serve(input: Json): Promise<Json> {
-  const { host, provider, model, variant, agentMode, scenario, permissive, wiring } = input;
+  const { host, provider, model, variant, agentMode, scenario, permissive, wiring, selection, allowNotReady } = input;
   mkdirSync(STATE, { recursive: true });
   mkdirSync(PROJ, { recursive: true });
   const userSkillsDir = prepareHome(scenario ? group(scenario) : null, wiring === true);
-  const config = hostConfig(host, { provider, model, mockPort: MOCK_PORT, serverPort: SERVER_PORT, userSkillsDir, observer: join(HARNESS, 'observer'), permissive });
+  const config = hostConfig(host, { provider, model, mockPort: MOCK_PORT, serverPort: SERVER_PORT, userSkillsDir, observer: join(HARNESS, 'observer'), permissive, selection });
   writeFile(join(PROJ, hostSpec(host).configFile), JSON.stringify(config, null, 2));
-  writeFile(join(HOME, '.config', 'opencode', 'agent_hive.json'), JSON.stringify(hiveConfig({ provider, model, variant, agentMode }), null, 2));
+  writeFile(join(HOME, '.config', 'opencode', 'agent_hive.json'), JSON.stringify(hiveConfig({ provider, model, variant, agentMode, selection }), null, 2));
   if (provider === 'mock' && !existsSync(join(STATE, 'mock.pid'))) {
     const pid = detach(process.execPath, [new URL(import.meta.url).pathname, 'mock-provider', JSON.stringify({ host })], 'mock.log');
     writeFileSync(join(STATE, 'mock.pid'), String(pid));
@@ -346,8 +346,9 @@ async function serve(input: Json): Promise<Json> {
     provider === 'mock' ? { MOCK_PROVIDER_KEY: 'mock-not-a-secret' } : {});
   writeFileSync(join(STATE, 'server.pid'), String(pid));
   const ready = await waitReady(host, 120_000);
-  if (!ready) fail('host_not_ready');
-  return { ok: true, startupMs: Date.now() - started };
+  // An invalid-configuration probe may stop the host from serving at all; that outcome is its observation.
+  if (!ready && allowNotReady !== true) fail('host_not_ready');
+  return { ok: true, ready, startupMs: Date.now() - started };
 }
 
 async function listening(): Promise<boolean> {
@@ -376,7 +377,7 @@ async function stopServer(): Promise<Json> {
 }
 
 /** Runs one headless primary prompt. Pending questions or permission requests end the run as an operator stop. */
-export async function runPrompt(host: string, { agent, modelRef, prompt, command }: Json, timeoutMs: number): Promise<Json> {
+export async function runPrompt(host: string, { agent, modelRef, variant, prompt, command }: Json, timeoutMs: number): Promise<Json> {
   const create = sessionCreateRequest(host, { agent, directory: PROJ });
   const created = await api(create.path, { method: 'POST', body: JSON.stringify(create.body) });
   const sessionId = unwrap(created.body)?.id ?? null;
@@ -401,7 +402,7 @@ export async function runPrompt(host: string, { agent, modelRef, prompt, command
     })();
   } else {
     // Native CLI output is not evidence; history is read back through the server API after the run.
-    const child = spawn(hostSpec(host).binary, runArgs(host, { port: SERVER_PORT, session: sessionId, agent, modelRef, prompt, command }), {
+    const child = spawn(hostSpec(host).binary, runArgs(host, { port: SERVER_PORT, session: sessionId, agent, modelRef, variant, prompt, command }), {
       cwd: PROJ, env: { ...process.env, OPENCODE_PASSWORD: process.env.OPENCODE_SERVER_PASSWORD }, stdio: ['ignore', 'ignore', 'ignore'],
     });
     stop = () => child.kill('SIGTERM');
@@ -1416,6 +1417,87 @@ async function wiring(input: Json): Promise<Json> {
   return { ok: true, wiring: results };
 }
 
+async function listedAgents(host: string): Promise<string[]> {
+  try {
+    const res = host === 'v1' ? await api('/agent') : await api(`/api/agent?directory=${encodeURIComponent(PROJ)}`);
+    return (unwrap(res.body) ?? []).map((a: Json) => a.name ?? a.id).filter((name: Json) => typeof name === 'string');
+  } catch {
+    return [];
+  }
+}
+
+/** A mock model ID as the wire showed it; anything else is not exported. */
+function probeModelID(value: Json, models: Json): string | null {
+  return typeof value === 'string' && Object.values(models).includes(value) ? value : value === undefined || value === null ? null : 'other';
+}
+
+/**
+ * The model one probed agent actually ran on: the model ID on the provider wire for the request carrying its marker,
+ * and the model and variant the native message record shows for its session. Only probe model IDs and the probe
+ * variant leave the container.
+ */
+async function observedSelection(host: string, sessionId: string | null, marker: string, before: number, models: Json): Promise<Json> {
+  const request = requests().slice(before).find((r) => r.lastUser.includes(marker));
+  const history = sessionId ? (await messagePages(host, sessionId)).history : [];
+  const recorded = history.find((m) => m.role === 'assistant' && m.model)?.model ?? null;
+  return {
+    observed: Boolean(request),
+    wireModel: probeModelID(request?.model, models),
+    recordedModel: probeModelID(recorded?.modelID, models),
+    recordedVariant: recorded?.variant === undefined || recorded?.variant === null || recorded?.variant === 'default' ? null : safeName(recorded.variant),
+  };
+}
+
+/**
+ * Model-selection probes against the actual installed hosts. The valid probe runs an unconfigured primary with no model
+ * of its own, then dispatches each probed child from a primary on the `parent` model and its variant: an unconfigured
+ * built-in role and custom agent (inheritance of both), an explicit Hive pair, a custom agent inheriting that Hive base,
+ * a role whose Hive pair a model-only native agent setting also names, and a custom agent on that role. The invalid probe starts a host whose Hive configuration has
+ * a variant without a model while the native configuration names a model for that role.
+ */
+async function modelSelection(input: Json): Promise<Json> {
+  const { host, probe } = input;
+  const models = probeModels(SCENARIOS.model.mock);
+  const text = scriptDirective([{ op: 'text', text: 'ok' }]);
+  if (probe === 'invalid') {
+    const marker = 'selection-invalid';
+    const before = requests().length;
+    const serving = await listening();
+    // v2 activates plugins on the first prompt, so a native agent prompt is what triggers Hive's activation there.
+    const run = serving ? await runPrompt(host, { agent: 'build', modelRef: `mock/${models.default}`, prompt: `${marker}\n${text}` }, 120_000) : null;
+    if (run?.sessionId && (run.exit !== 0 || run.timedOut || run.asked)) await interruptSession(host, run.sessionId);
+    const listed = await listedAgents(host);
+    const log = existsSync(join(WORK, 'logs', `serve-${host}.log`)) ? readFileSync(join(WORK, 'logs', `serve-${host}.log`), 'utf8') : '';
+    const request = requests().slice(before).find((r) => r.lastUser.includes(marker));
+    return {
+      ok: true,
+      selection: {
+        serving,
+        hiveRolesRegistered: HIVE_ROLES.filter((role) => role !== 'forager-worker' && listed.includes(role)),
+        hiveToolsExposed: Boolean(request?.tools.some((tool: Json) => String(tool?.function?.name ?? tool?.name ?? '').startsWith('hive_'))),
+        errorLogged: log.includes('agents.forager-worker.variant is set without a Hive model'),
+        errorNamesFile: log.includes('agent_hive.json'),
+      },
+    };
+  }
+  const observed: Json = {};
+  let before = requests().length;
+  const primary = await runPrompt(host, { agent: 'hive-builder', prompt: `selection-primary\n${text}` }, 120_000);
+  observed.primary = await observedSelection(host, primary.sessionId, 'selection-primary', before, models);
+  for (const agent of ['scout-researcher', 'probe-native', 'code-reviewer', 'probe-base', 'approach-advisor', 'probe-advisor']) {
+    before = requests().length;
+    const marker = `selection-child-${agent}`;
+    const run = await runPrompt(host, {
+      agent: 'hive-builder', modelRef: `mock/${models.parent}`, variant: PROBE_VARIANTS.parent,
+      prompt: `selection parent\n${scriptDirective([{ op: 'dispatch', agent, prompt: marker, script: [{ op: 'text', text: 'ok' }] }, { op: 'text', text: 'ok' }])}`,
+    }, 180_000);
+    if (run.sessionId && (run.exit !== 0 || run.timedOut || run.asked)) await interruptSession(host, run.sessionId);
+    const child = run.sessionId ? (await sessionTree(host, run.sessionId)).find((node) => node.agent === agent) : undefined;
+    observed[agent] = await observedSelection(host, child?.id ?? null, marker, before, models);
+  }
+  return { ok: true, selection: observed };
+}
+
 /** Bytes of each materialized Hive skill entry point and its references, the depth a role can load on demand. */
 function materializedSkillSizes(): Json {
   const root = join(HOME, '.config', 'opencode', 'agent-hive', 'generated', 'opencode-skills');
@@ -1528,6 +1610,7 @@ const commands: Record<string, (input: Json) => Promise<Json> | Json> = {
   catalog,
   preflight,
   wiring,
+  'model-selection': modelSelection,
 };
 
 async function main(): Promise<void> {

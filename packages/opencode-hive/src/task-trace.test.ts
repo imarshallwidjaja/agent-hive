@@ -6,6 +6,7 @@ import {
   injectTaskTraceHint,
   TASK_TRACE_SUMMARIZER_AGENT,
 } from './task-trace.js';
+import type { TaskTraceSummarizerConfig } from 'hive-core';
 import { generatedReply, normalizeReply } from './task-trace-contract.js';
 
 type Call = { method: string; input: any };
@@ -138,6 +139,8 @@ function clientFor(messages: unknown[], options: {
   mutateStatus?: (reads: number) => { data?: unknown; error?: unknown };
   statusByDirectory?: (directory: unknown) => { data?: unknown; error?: unknown };
   mutateMessages?: (reads: number) => unknown[];
+  // Messages by session ID, for clients that trace more than one session.
+  messagesBySession?: Record<string, unknown[]>;
   prompt?: (request: any, call: number) => unknown | Promise<unknown>;
   promptError?: (request: any, call: number) => unknown;
   providers?: (input: any) => unknown | Promise<unknown>;
@@ -178,7 +181,8 @@ function clientFor(messages: unknown[], options: {
     messages: async (input: unknown) => {
       calls.push({ method: 'messages', input });
       messageReads += 1;
-      return { data: options.mutateMessages?.(messageReads) ?? messages };
+      const bySession = options.messagesBySession?.[(input as any)?.path?.id];
+      return { data: bySession ?? options.mutateMessages?.(messageReads) ?? messages };
     },
     status: async (input: any) => {
       calls.push({ method: 'status', input });
@@ -239,11 +243,15 @@ function clientFor(messages: unknown[], options: {
   return { client: { session, config }, calls };
 }
 
-function toolsFor(setup: ReturnType<typeof clientFor>, ephemeralSessionIDs = new Set<string>()) {
+function toolsFor(
+  setup: ReturnType<typeof clientFor>,
+  ephemeralSessionIDs = new Set<string>(),
+  summarizer: TaskTraceSummarizerConfig = { model: 'requested/model', variant: 'high' },
+) {
   return createTaskTraceTools({
     client: setup.client,
     directory: '/repo',
-    summarizer: { model: 'requested/model', variant: 'high', temperature: 0 },
+    summarizer,
     ephemeralSessionIDs,
   });
 }
@@ -1249,7 +1257,7 @@ describe('task trace semantic recovery', () => {
         status: 'unavailable',
         scope: null,
         failures: [{ stage: 'eligibility', reasons: [reason] }],
-        model: { requested: { model: 'requested/model', variant: 'high' } },
+        model: { requested: { model: 'requested/model', variant: 'high', source: 'configured' } },
         cards_source: null,
         phases_source: null,
       });
@@ -1401,7 +1409,7 @@ describe('task trace semantic recovery', () => {
       cards_source: 'generated',
       phases_source: 'generated',
       model: {
-        requested: { model: 'requested/model', variant: 'high' },
+        requested: { model: 'requested/model', variant: 'high', source: 'configured' },
         observed: { model: 'observed-provider/observed-model', variant: 'observed-variant' },
       },
     });
@@ -2769,7 +2777,7 @@ describe('task trace semantic recovery', () => {
     const result = await execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true });
 
     expect(result.recovery.model).toEqual({
-      requested: { model: 'requested/model', variant: 'high' },
+      requested: { model: 'requested/model', variant: 'high', source: 'configured' },
       observed: { model: 'real-provider/real-model' },
     });
   });
@@ -2963,6 +2971,118 @@ describe('task trace semantic recovery', () => {
     expect(decoded).toEqual([2, 0, 0, 1, Buffer.byteLength(large), expect.any(String)]);
     const reasoningLocator = Buffer.from(JSON.stringify([2, 0, 1, 7, 7, 'a'.repeat(43)])).toString('base64url');
     expect(await execute(tools, 'hive_task_trace_content', { task_id: 'child', content_id: reasoningLocator })).toEqual({ ok: false, reason: 'invalid_content_id' });
+  });
+});
+
+describe('task trace summarizer model selection', () => {
+  const finished = (marker: string) => [
+    message('u1', 'user', [{ type: 'text', text: `Implement task ${marker}.` }]),
+    message('a1', 'assistant', [{ type: 'text', text: 'Implemented and verified.' }]),
+  ];
+  const providers = () => ({
+    data: {
+      providers: [
+        { id: 'requested', models: { model: { limit: { context: 10_000 }, variants: { high: {} } } } },
+        { id: 'cp', models: { cm: { limit: { context: 10_000 }, variants: { max: {} } } } },
+        { id: 'bp', models: { bm: { limit: { context: 10_000 }, variants: { low: {} } } } },
+      ],
+    },
+  });
+  const callerSession = (id: string, model?: Record<string, string>) => ({ data: { id, directory: '/repo', ...(model ? { model } : {}) } });
+  const prompts = (setup: ReturnType<typeof clientFor>) => setup.calls.filter((call) => call.method === 'prompt').map((call) => ({ model: call.input.body.model, variant: call.input.body.variant }));
+
+  it('with no summarizer settings, sends every prompt on the caller session model and variant', async () => {
+    const setup = clientFor(finished('alpha'), { providers, sessions: { parent: callerSession('parent', { providerID: 'cp', id: 'cm', variant: 'max' }) } });
+    const result = await execute(toolsFor(setup, new Set(), {}), 'hive_task_trace', { task_id: 'child', recovery: true });
+
+    expect(prompts(setup)).toEqual([
+      { model: { providerID: 'cp', modelID: 'cm' }, variant: 'max' },
+      { model: { providerID: 'cp', modelID: 'cm' }, variant: 'max' },
+    ]);
+    expect(result.recovery).toMatchObject({ status: 'complete', model: { requested: { model: 'cp/cm', variant: 'max', source: 'caller' } } });
+  });
+
+  it('treats the caller session variant "default" as no variant', async () => {
+    const setup = clientFor(finished('alpha'), { providers, sessions: { parent: callerSession('parent', { providerID: 'cp', id: 'cm', variant: 'default' }) } });
+    const result = await execute(toolsFor(setup, new Set(), {}), 'hive_task_trace', { task_id: 'child', recovery: true });
+
+    expect(prompts(setup).every((prompt) => prompt.variant === undefined && prompt.model.modelID === 'cm')).toBe(true);
+    expect(result.recovery.model.requested).toEqual({ model: 'cp/cm', source: 'caller' });
+  });
+
+  it('uses a configured model alone without the caller variant, and a configured pair as given', async () => {
+    for (const [summarizer, expected] of [
+      [{ model: 'requested/model' }, { model: { providerID: 'requested', modelID: 'model' }, variant: undefined }],
+      [{ model: 'requested/model', variant: 'high' }, { model: { providerID: 'requested', modelID: 'model' }, variant: 'high' }],
+    ] as const) {
+      const setup = clientFor(finished('alpha'), { providers, sessions: { parent: callerSession('parent', { providerID: 'cp', id: 'cm', variant: 'max' }) } });
+      const result = await execute(toolsFor(setup, new Set(), summarizer), 'hive_task_trace', { task_id: 'child', recovery: true });
+
+      expect(prompts(setup)).toEqual([expected, expected]);
+      expect(setup.calls.some((call) => call.method === 'get' && call.input.path.id === 'parent')).toBe(false);
+      expect(result.recovery.model.requested).toEqual({ ...summarizer, source: 'configured' });
+    }
+  });
+
+  it('reports recovery unavailable without guessing a model when the caller selection cannot be read', async () => {
+    for (const parent of [new Error('lookup failed'), { error: { name: 'NotFound' } }, callerSession('parent')]) {
+      const setup = clientFor(finished('alpha'), { providers, sessions: { parent } });
+      const result = await execute(toolsFor(setup, new Set(), {}), 'hive_task_trace', { task_id: 'child', recovery: true });
+
+      expect(setup.calls.filter((call) => call.method === 'create' || call.method === 'prompt')).toEqual([]);
+      expect(result.recovery).toEqual({
+        status: 'unavailable',
+        scope: null,
+        failures: [{ stage: 'model', reasons: ['summarizer_unavailable'], diagnostics: [{ code: 'caller_model_unavailable' }] }],
+        model: { requested: { source: 'caller' } },
+        cards_source: null,
+        phases_source: null,
+      });
+    }
+  });
+
+  it('keeps each of two interleaved callers on its own selection for metadata and every prompt', async () => {
+    let maps = 0;
+    let reduces = 0;
+    const setup = clientFor([], {
+      providers,
+      messagesBySession: { 'child-a': finished('alpha'), 'child-b': finished('beta') },
+      sessions: {
+        'child-a': { data: { id: 'child-a', directory: '/repo', parentID: 'parent-a' } },
+        'child-b': { data: { id: 'child-b', directory: '/repo', parentID: 'parent-b' } },
+        'parent-a': callerSession('parent-a', { providerID: 'cp', id: 'cm', variant: 'max' }),
+        'parent-b': callerSession('parent-b', { providerID: 'bp', id: 'bm', variant: 'low' }),
+      },
+      // Each stage waits until both recoveries reach it, so the two callers' map and reduce prompts interleave.
+      // The map card carries the caller's marker into its reduce request.
+      prompt: async (request) => {
+        if (request.kind === 'map') maps += 1; else reduces += 1;
+        while (request.kind === 'map' ? maps < 2 : reduces < 2) await new Promise((resolve) => setTimeout(resolve, 1));
+        if (request.kind !== 'map') return undefined;
+        const caller = JSON.stringify(request).includes('alpha') ? 'alpha' : 'beta';
+        const map = semanticMap(request);
+        return { ...map, cards: map.cards.map((card: Record<string, unknown>) => ({ ...card, outcome: `Finished ${caller}.` })) };
+      },
+    });
+    const tools = toolsFor(setup, new Set(), {});
+
+    const [alpha, beta] = await Promise.all([
+      execute(tools, 'hive_task_trace', { task_id: 'child-a', recovery: true }, 'parent-a'),
+      execute(tools, 'hive_task_trace', { task_id: 'child-b', recovery: true }, 'parent-b'),
+    ]);
+
+    expect(alpha.recovery).toMatchObject({ status: 'complete', model: { requested: { model: 'cp/cm', variant: 'max', source: 'caller' } } });
+    expect(beta.recovery).toMatchObject({ status: 'complete', model: { requested: { model: 'bp/bm', variant: 'low', source: 'caller' } } });
+    const sent = setup.calls.filter((call) => call.method === 'prompt').map((call) => {
+      const text = call.input.body.parts[0].text as string;
+      return { caller: text.includes('alpha') ? 'alpha' : text.includes('beta') ? 'beta' : 'unknown', model: call.input.body.model, variant: call.input.body.variant };
+    });
+    expect(sent.map((entry) => entry.caller).sort()).toEqual(['alpha', 'alpha', 'beta', 'beta']);
+    for (const entry of sent) {
+      expect(entry).toEqual(entry.caller === 'alpha'
+        ? { caller: 'alpha', model: { providerID: 'cp', modelID: 'cm' }, variant: 'max' }
+        : { caller: 'beta', model: { providerID: 'bp', modelID: 'bm' }, variant: 'low' });
+    }
   });
 });
 

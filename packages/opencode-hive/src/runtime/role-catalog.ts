@@ -180,7 +180,7 @@ export function buildRoleCatalog(host: HostProfile, configService: ConfigService
   const mk = (name: BuiltInRole, mode: HiveAgentEntry['mode'], description: string): HiveAgentEntry => {
     const settings = configService.getAgentConfig(name);
     if (REQUEST_PROMPT_AGENTS.has(name)) requestPrompts.set(name, prompts[name]);
-    return { model: settings.model, variant: settings.variant, temperature: settings.temperature, mode, description, ...(REQUEST_PROMPT_AGENTS.has(name) ? {} : { prompt: prompts[name] }), permission: agentPermission(policy[name]) };
+    return { ...(settings.model !== undefined ? { model: settings.model } : {}), ...(settings.variant !== undefined ? { variant: settings.variant } : {}), mode, description, ...(REQUEST_PROMPT_AGENTS.has(name) ? {} : { prompt: prompts[name] }), permission: agentPermission(policy[name]) };
   };
   const agents: Record<string, HiveAgentEntry> = {
     'hive-master': { ...mk('hive-master', 'primary', hiveBeeAgent.description), ...(agentMode !== 'unified' ? { hidden: true } : {}) },

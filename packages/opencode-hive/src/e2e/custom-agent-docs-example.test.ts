@@ -10,9 +10,10 @@ const README_PATH = path.resolve(import.meta.dir, '..', '..', 'README.md');
 
 const publishedExample = {
   agents: {
-    'scout-researcher': { variant: 'low' },
+    'scout-researcher': { model: 'github-copilot/gpt-5.2-codex', variant: 'low' },
     'forager-worker': {
       description: 'Default for ordinary backend implementation.',
+      model: 'github-copilot/gpt-5.2-codex',
       variant: 'medium',
     },
     'code-reviewer': { model: 'github-copilot/gpt-5.2-codex' },
@@ -26,7 +27,6 @@ const publishedExample = {
       baseAgent: 'forager-worker',
       description: 'Use for UI implementation tasks touching React/Next components, styling, accessibility, or browser-visible behavior.',
       model: 'anthropic/claude-sonnet-4-20250514',
-      temperature: 0.2,
       variant: 'high',
     },
     'reviewer-security': {
@@ -136,6 +136,12 @@ describe('e2e: published custom-agent docs example', () => {
     expect(opencodeConfig.agent['forager-worker']?.variant).toBe('medium');
     expect(opencodeConfig.agent['scout-researcher']?.variant).toBe('low');
     expect(opencodeConfig.agent['code-reviewer']?.model).toBe('github-copilot/gpt-5.2-codex');
+    // Roles the example leaves unconfigured register no model and inherit the native one; Hive sets no sampling.
+    for (const name of ['plan-reviewer', 'simplicity-reviewer', 'hive-builder', 'swarm-orchestrator']) {
+      expect(opencodeConfig.agent[name]).not.toHaveProperty('model');
+      expect(opencodeConfig.agent[name]).not.toHaveProperty('variant');
+    }
+    for (const entry of Object.values(opencodeConfig.agent)) expect(entry).not.toHaveProperty('temperature');
     for (const [name, description] of Object.entries(resolvedBaseDescriptions)) {
       expect(opencodeConfig.agent[name]?.description).toBe(description);
     }
@@ -147,18 +153,15 @@ describe('e2e: published custom-agent docs example', () => {
     expect(foragerUi).toBeDefined();
     expect(reviewerSecurity).toBeDefined();
 
-    expect(scoutDocs.model).toBe('zai-coding-plan/glm-4.7');
-    expect(scoutDocs.temperature).toBe(0.5);
+    expect(scoutDocs.model).toBe('github-copilot/gpt-5.2-codex');
     expect(scoutDocs.variant).toBe('low');
     expect(scoutDocs.description).toBe('Use for research centered on documentation, release notes, READMEs, or external docs synthesis.');
 
     expect(foragerUi.model).toBe('anthropic/claude-sonnet-4-20250514');
-    expect(foragerUi.temperature).toBe(0.2);
     expect(foragerUi.variant).toBe('high');
     expect(foragerUi.description).toBe('Use for UI implementation tasks touching React/Next components, styling, accessibility, or browser-visible behavior.');
 
     expect(reviewerSecurity.model).toBe('github-copilot/gpt-5.2-codex');
-    expect(reviewerSecurity.temperature).toBe(0.3);
     expect(reviewerSecurity.variant).toBeUndefined();
     expect(reviewerSecurity.description).toBe('Use for review passes focused on auth, permissions, secret handling, injection risk, or other security-sensitive changes.');
 

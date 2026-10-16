@@ -18,6 +18,7 @@ import type {
   RuntimeStatus,
   SourceSnapshot,
   SummarizerHost,
+  SummarizerSelection,
   SummarizerStage,
   TargetRelationship,
   TraceCaller,
@@ -1240,22 +1241,55 @@ interface ModelProfile {
   variantUnavailable: boolean;
 }
 
-async function resolveModelProfile(
+/**
+ * Binds the one selection a recovery uses: the configured summarizer model with its variant (a model alone keeps the
+ * model's default variant rather than the caller's), or, with nothing configured, the invoking caller's own native
+ * model and variant. Undefined when the caller's selection cannot be read; nothing is guessed in its place.
+ */
+async function bindSelection(
   host: SummarizerHost,
+  callerID: string,
   callerSignal: AbortSignal,
   deadline: number,
-): Promise<ModelProfile> {
-  const unknown: ModelProfile = { mapBatchBytes: FALLBACK_MAP_BATCH_BYTES, variantUnavailable: false };
-  const ref = modelRef(host.config.model);
-  if (!ref && host.config.variant === undefined) return unknown;
+): Promise<SummarizerSelection | undefined> {
+  const { model, variant } = host.config;
+  if (model !== undefined) {
+    const ref = modelRef(model);
+    if (!ref) throw new Error('The configured summarizer model was not validated as provider/model-id.');
+    return Object.freeze({ ...ref, ...(variant !== undefined ? { variant } : {}), source: 'configured' as const });
+  }
+  if (variant !== undefined) throw new Error('A summarizer variant without a model was not rejected by configuration validation.');
   try {
-    const selected = await boundedRequest(
-      (signal) => host.modelMetadata(ref, signal),
+    const caller = await boundedRequest(
+      (signal) => host.callerSelection(callerID, signal),
       callerSignal,
       deadline,
       'recovery_deadline_exceeded',
     );
-    const variant = host.config.variant;
+    return caller
+      ? Object.freeze({ providerID: caller.providerID, modelID: caller.modelID, ...(caller.variant !== undefined ? { variant: caller.variant } : {}), source: 'caller' as const })
+      : undefined;
+  } catch {
+    if (callerSignal.aborted) throw cancellationReason(callerSignal);
+    return undefined;
+  }
+}
+
+async function resolveModelProfile(
+  host: SummarizerHost,
+  selection: SummarizerSelection,
+  callerSignal: AbortSignal,
+  deadline: number,
+): Promise<ModelProfile> {
+  const unknown: ModelProfile = { mapBatchBytes: FALLBACK_MAP_BATCH_BYTES, variantUnavailable: false };
+  try {
+    const selected = await boundedRequest(
+      (signal) => host.modelMetadata(selection, signal),
+      callerSignal,
+      deadline,
+      'recovery_deadline_exceeded',
+    );
+    const variant = selection.variant;
     return {
       mapBatchBytes: mapBatchBytesFromModel(selected),
       variantUnavailable: variant !== undefined && selected !== undefined && !(selected.variants?.includes(variant) ?? false),
@@ -1299,6 +1333,7 @@ interface Prompted {
 
 async function promptEphemeral(
   host: SummarizerHost,
+  selection: SummarizerSelection,
   forbiddenSessionID: string,
   title: string,
   stage: SummarizerStage,
@@ -1338,7 +1373,7 @@ async function promptEphemeral(
       host.ephemeralSessionIDs.add(allocated);
     }
     const created = await boundedRequest(
-      (signal) => host.create(title, signal, allocated),
+      (signal) => host.create(title, selection, signal, allocated),
       callerSignal,
       generationDeadline,
       attemptTimeoutReason,
@@ -1355,7 +1390,7 @@ async function promptEphemeral(
     host.ephemeralSessionIDs.add(id);
     try {
       reply = await boundedRequest(
-        (signal) => host.generate(id, stage, signal),
+        (signal) => host.generate(id, stage, selection, signal),
         callerSignal,
         generationDeadline,
         attemptTimeoutReason,
@@ -1750,16 +1785,24 @@ function recoveryAnchors(ir: TraceIR): RecordValue {
   };
 }
 
-function requestedRecoveryModel(host: SummarizerHost): RecordValue {
-  return {
-    ...(host.config.model ? { model: host.config.model } : {}),
-    ...(host.config.variant ? { variant: host.config.variant } : {}),
-  };
+/** The bound selection, or before binding what the configuration asks for: a configured model, or the caller's. */
+function requestedRecoveryModel(host: SummarizerHost, selection?: SummarizerSelection): RecordValue {
+  if (selection) {
+    return {
+      model: `${selection.providerID}/${selection.modelID}`,
+      ...(selection.variant !== undefined ? { variant: selection.variant } : {}),
+      source: selection.source,
+    };
+  }
+  return host.config.model !== undefined
+    ? { model: host.config.model, ...(host.config.variant !== undefined ? { variant: host.config.variant } : {}), source: 'configured' }
+    : { source: 'caller' };
 }
 
 async function recover(
   host: SummarizerHost,
   taskID: string,
+  callerID: string,
   ir: TraceIR,
   relationship: TargetRelationship,
   scope: RecoveryScope,
@@ -1773,7 +1816,21 @@ async function recover(
   const substantiveSteps = new Set(ir.steps.filter((step) => isSubstantive(capabilities.get(step.number)!)).map((step) => step.number));
   // Only substantive assistant steps are worker output; a user step is context and cannot support a completed claim.
   const completionSteps = new Set(ir.steps.filter((step) => step.actor === 'assistant' && substantiveSteps.has(step.number)).map((step) => step.number));
-  const profile = await resolveModelProfile(host, callerSignal, mapDeadline);
+  const selection = await bindSelection(host, callerID, callerSignal, mapDeadline);
+  if (!selection) {
+    return {
+      recovery: {
+        status: 'unavailable',
+        scope: null,
+        failures: [{ stage: 'model', reasons: ['summarizer_unavailable'], diagnostics: [{ code: 'caller_model_unavailable' }] }],
+        model: { requested: requestedRecoveryModel(host) },
+        cards_source: null,
+        phases_source: null,
+      },
+      semantic: null,
+    };
+  }
+  const profile = await resolveModelProfile(host, selection, callerSignal, mapDeadline);
   const batches = batchFragments(recoveryFragments(ir.steps, capabilities), targetChars, profile.mapBatchBytes);
   const generatedCards = new Map<number, Array<{ order: number; card: RecoveryCard }>>();
   const failedSteps = new Set<number>();
@@ -1792,7 +1849,7 @@ async function recover(
       if (callerSignal.aborted) throw cancellationReason(callerSignal);
       if (Date.now() >= mapDeadline) return;
       const { range, steps, ...stage } = buildMapRequest(batches[index], targetChars);
-      const prompted = await promptEphemeral(host, taskID, `Hive task trace map ${index + 1}`, stage, profile, callerSignal, mapDeadline);
+      const prompted = await promptEphemeral(host, selection, taskID, `Hive task trace map ${index + 1}`, stage, profile, callerSignal, mapDeadline);
       outcomes[index] = { range, steps, prompted };
     }
   });
@@ -1806,7 +1863,7 @@ async function recover(
         status: 'unavailable',
         scope: null,
         failures: [{ stage: 'map', range: collision.range, reasons: ['summarizer_id_collision'] }],
-        model: { requested: requestedRecoveryModel(host) },
+        model: { requested: requestedRecoveryModel(host, selection) },
         cards_source: null,
         phases_source: null,
       },
@@ -1873,7 +1930,7 @@ async function recover(
       request: { kind: 'reduce', step_count: ir.steps.length, completion_steps: [...completionSteps], cards, anchors: recoveryAnchors(ir) },
       system: reduceContract(ir.steps.length),
     };
-    const prompted = await promptEphemeral(host, taskID, 'Hive task trace semantic reduction', stage, profile, callerSignal, recoveryDeadline);
+    const prompted = await promptEphemeral(host, selection, taskID, 'Hive task trace semantic reduction', stage, profile, callerSignal, recoveryDeadline);
     if (prompted.reasons.includes('summarizer_id_collision')) {
       return {
         recovery: {
@@ -1881,7 +1938,7 @@ async function recover(
           scope: null,
           failures: [{ stage: 'reduce', reasons: ['summarizer_id_collision'] }],
           model: {
-            requested: requestedRecoveryModel(host),
+            requested: requestedRecoveryModel(host, selection),
             ...(observed ? { observed } : {}),
           },
           cards_source: null,
@@ -1930,7 +1987,7 @@ async function recover(
       scope,
       failures,
       model: {
-        requested: requestedRecoveryModel(host),
+        requested: requestedRecoveryModel(host, selection),
         ...(observed ? { observed } : {}),
       },
       cards_source: cardsSource,
@@ -2129,7 +2186,7 @@ export function createTraceHandlers<Target extends TraceTarget>(source: TraceSou
         null,
       ));
     }
-    const recovered = await recover(summarizer, task_id, ir, target.relationship, scope, signal);
+    const recovered = await recover(summarizer, task_id, caller.sessionID, ir, target.relationship, scope, signal);
     // Everything the summary relied on must still hold: authorization, parent relationship,
     // placement, source, runtime status, and the lifecycle that admitted this scope.
     const resolved = await source.resolveTarget(task_id, caller.sessionID, signal);

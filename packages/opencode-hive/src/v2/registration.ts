@@ -1,6 +1,7 @@
 import * as path from 'node:path';
 import { Effect } from 'effect';
 import type { Scope } from 'effect';
+import { Model } from '@opencode/schema/model';
 import { Tool } from '@opencode/schema/tool';
 import type { Agent, Plugin } from '@opencode/plugin/effect';
 import type { SessionContext } from '@opencode/plugin/effect/session';
@@ -131,11 +132,13 @@ export function createHiveAuthority(context: Pick<Plugin.Context, 'session'>, cu
   };
 }
 
-/** `provider/model` from the Hive configuration, as the v2 model reference the agent registry carries. */
-export function toModelRef(model: string | undefined, variant: string | undefined) {
-  const slash = model?.indexOf('/') ?? -1;
-  if (!model || slash <= 0 || slash === model.length - 1) return undefined;
-  return { providerID: model.slice(0, slash), id: model.slice(slash + 1), ...(variant ? { variant } : {}) };
+/**
+ * A Hive `provider/model-id` and optional variant as the native v2 model reference. Configuration validation has
+ * already rejected malformed models, so the native parser throwing here is an internal error, never an omission.
+ */
+export function toModelRef(model: string, variant: string | undefined): Model.Ref {
+  const ref = Model.Ref.parse(model);
+  return variant === undefined ? ref : Model.Ref.make({ ...ref, variant: Model.VariantID.make(variant) });
 }
 
 /**
@@ -153,8 +156,7 @@ function registerAgents(context: Plugin.Context, roles: RoleCatalog) {
         agent.hidden = entry.hidden ?? false;
         if (entry.description !== undefined) agent.description = entry.description;
         if (entry.prompt !== undefined) agent.system = entry.prompt;
-        const model = toModelRef(entry.model, entry.variant);
-        if (model) agent.model = model as never;
+        if (entry.model !== undefined) agent.model = toModelRef(entry.model, entry.variant);
         agent.permissions.push(...toV2PermissionRules(entry.permission), ...lifecycleDeny);
       });
     }
@@ -246,7 +248,7 @@ function registerCommands(context: Plugin.Context, input: { host: HostProfile; c
 }
 
 /**
- * Keeps each Hive role's canonical instructions, and its configured temperature, in every model request it makes:
+ * Keeps each Hive role's canonical instructions in every model request it makes:
  * ordinary turns (`context`) and the public auxiliary requests that carry the agent (`compaction`, `generate`). An
  * agent the user gave its own system prompt keeps it, and the Hive instructions follow it; nothing the user wrote is
  * replaced. Skill guidance (auto-load names, background delegation) is resolved against the live skill catalog on
@@ -260,9 +262,6 @@ function registerRequestPolicy(context: Plugin.Context, input: { host: HostProfi
     const text = roles.requestPrompts.get(id) ?? entry.prompt;
     return text ? [[id, text] as const] : [];
   }));
-  // v2 agent registrations carry no temperature the runner applies, so a configured Hive temperature is a request
-  // option, set only when nothing earlier in the request chose one.
-  const temperatures = new Map(Object.entries(roles.agents).flatMap(([id, entry]) => entry.temperature === undefined ? [] : [[id, entry.temperature] as const]));
   const warned = new Set<string>();
   const warnOnce = (message: string) => {
     if (warned.has(message)) return;
@@ -272,8 +271,6 @@ function registerRequestPolicy(context: Plugin.Context, input: { host: HostProfi
   const apply = (event: SessionContext, ordinary: boolean) => Effect.gen(function* () {
     const agent: string = event.agent;
     const caller = authority.resolve(agent);
-    const temperature = temperatures.get(agent);
-    if (temperature !== undefined && event.options.temperature === undefined) event.options.temperature = temperature;
     const parts: string[] = [];
     const instructions = canonical.get(agent);
     if (instructions && !event.system.some((part) => 'text' in part && part.text.includes(instructions))) parts.push(instructions);

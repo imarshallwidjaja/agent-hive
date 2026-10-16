@@ -53,7 +53,7 @@ const plugin: Plugin = async (ctx) => {
   const runtimeTaskChildren = new Set<string>();
   const dispatchSnapshots = new Map<string, RouteSnapshot>();
   const ephemeralSessionIDs = new Set<string>();
-  const taskTraceConfig = configService.get().taskTraceSummarizer ?? { temperature: 0 };
+  const taskTraceConfig = configService.get().taskTraceSummarizer ?? {};
   const configFallbackWarning = services.configFallbackWarning;
   if (configFallbackWarning) {
     const message = `[hive:config] ${configFallbackWarning}`;
@@ -203,7 +203,7 @@ const plugin: Plugin = async (ctx) => {
         if (boundary.warning) console.warn(boundary.warning);
         return [name, { ...existing, permission: boundary.permission }];
       }));
-      mutableConfig.agent = { ...(mutableConfig.agent ?? {}), ...nativeAgents, ...agents, [TASK_TRACE_SUMMARIZER_AGENT]: { mode: 'primary', hidden: true, temperature: taskTraceConfig.temperature ?? 0, permission: { '*': 'deny' }, prompt: TASK_TRACE_SUMMARIZER_PROMPT } };
+      mutableConfig.agent = { ...(mutableConfig.agent ?? {}), ...nativeAgents, ...agents, [TASK_TRACE_SUMMARIZER_AGENT]: { mode: 'primary', hidden: true, permission: { '*': 'deny' }, prompt: TASK_TRACE_SUMMARIZER_PROMPT } };
       const commandConfig = Object.fromEntries(await Promise.all(HIVE_COMMANDS.map(async (command) => [command.key, { description: command.description, ...('agent' in command ? { agent: command.agent } : {}), template: await hiveCommandRenderers[command.key]('$ARGUMENTS', createCommandContext()) }])));
       mutableConfig.command = { ...(mutableConfig.command ?? {}), ...commandConfig };
       mutableConfig.default_agent = catalog.defaultAgent;

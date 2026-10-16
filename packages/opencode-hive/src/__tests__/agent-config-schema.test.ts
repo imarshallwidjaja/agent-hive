@@ -221,21 +221,46 @@ describe('agent_hive schema council contract', () => {
   it('defines the strict task trace summarizer configuration', () => {
     expect(schema.properties.taskTraceSummarizer).toEqual({
       $ref: '#/$defs/taskTraceSummarizerConfig',
-      description: 'Optional model settings for the hidden, tool-less recovery interpreter used by hive_task_trace({ recovery: true }). Does not affect forensic (non-recovery) traces.',
+      description: 'Optional model for the hidden, tool-less recovery interpreter used by hive_task_trace({ recovery: true }). Does not affect forensic (non-recovery) traces.',
     });
-    expect(schema.$defs.taskTraceSummarizerConfig.description).toContain('temperature defaults to 0');
+    expect(schema.$defs.taskTraceSummarizerConfig.description).toContain("invoking caller session's native model and variant");
     expect(schema.properties.omoSlimEnabled).toBeUndefined();
     expect(schema.properties.agentMode.description).toContain('hive-master');
     expect(schema.properties.agentMode.description).toContain('architect-planner');
-    expect(validateConfigShape({
-      taskTraceSummarizer: { model: 'provider/model', variant: 'high', temperature: 0 },
-    })).toBe(true);
+    for (const valid of [{}, { model: 'provider/model' }, { model: 'provider/model', variant: 'high' }]) {
+      expect(validateConfigShape({ taskTraceSummarizer: valid })).toBe(true);
+    }
     for (const invalid of [
       { taskTraceSummarizer: { model: '' } },
-      { taskTraceSummarizer: { variant: ' ' } },
-      { taskTraceSummarizer: { temperature: -1 } },
-      { taskTraceSummarizer: { temperature: 3 } },
+      { taskTraceSummarizer: { model: 'no-provider' } },
+      { taskTraceSummarizer: { model: 'provider/model', variant: ' ' } },
+      { taskTraceSummarizer: { variant: 'high' } },
+      { taskTraceSummarizer: { model: 'provider/model', temperature: 0 } },
       { taskTraceSummarizer: { extra: true } },
+    ]) {
+      expect(validateConfigShape(invalid)).toBe(false);
+    }
+  });
+
+  it('declares no Hive sampling setting and keeps role model fragments valid for cross-file completion', () => {
+    for (const definition of ['agentConfig', 'routingAgentConfig', 'customAgentConfig', 'taskTraceSummarizerConfig']) {
+      expect(schema.$defs[definition].properties).not.toHaveProperty('temperature');
+    }
+    // A variant fragment may be completed by a project override or a custom agent's base role, so the schema keeps it valid;
+    // the effective rule is documented and enforced when the configuration loads.
+    expect(validateConfigShape({
+      agents: { 'forager-worker': { variant: 'high' }, 'scout-researcher': { model: 'provider/scout' } },
+      customAgents: { 'scout-fast': { baseAgent: 'scout-researcher', description: 'Fast scout', variant: 'low' } },
+    })).toBe(true);
+    expect(schema.$defs.routingAgentConfig.properties.variant.description).toContain('explicit Hive model on the same effective declaration');
+    expect(schema.$defs.customAgentConfig.properties.variant.description).toContain('its Hive base role');
+    for (const invalid of [
+      { agents: { 'hive-builder': { temperature: 0.4 } } },
+      { agents: { 'hive-builder': { model: 'missing-provider' } } },
+      { agents: { 'hive-builder': { model: 'openai/model#high' } } },
+      { agents: { 'hive-builder': { model: 'openai/model', variant: 'x y' } } },
+      { customAgents: { 'forager-ui': { baseAgent: 'forager-worker', description: 'UI', temperature: 0.2 } } },
+      { customAgents: { 'forager-ui': { baseAgent: 'forager-worker', description: 'UI', model: ' ' } } },
     ]) {
       expect(validateConfigShape(invalid)).toBe(false);
     }
@@ -379,8 +404,8 @@ describe('agent_hive.override schema contract', () => {
       [],
       { agentMode: 'unified' },
       { agents: { 'known-agent': {} } },
-      { agents: { 'known-agent': { model: '   ' } } },
-      { agents: { 'known-agent': { variant: '  ' } } },
+      { agents: { 'known-agent': { model: 42 } } },
+      { agents: { 'known-agent': { variant: null } } },
       { agents: { 'known-agent': { model: 'provider/model', temperature: 0.2 } } },
       { customAgents: { 'known-agent': { skills: ['verification'] } } },
     ];
@@ -392,6 +417,15 @@ describe('agent_hive.override schema contract', () => {
     for (const value of rejected) {
       expect(validateProjectOverrideShape(value)).toBe(false);
       expect(acceptsRuntimeProjectOverride(value)).toBe(false);
+    }
+  });
+
+  it('flags a blank string in the editor, and at runtime reports it as a model-setting error for a matching agent', () => {
+    for (const entry of [{ model: '   ' }, { variant: '  ' }]) {
+      expect(validateProjectOverrideShape({ agents: { 'known-agent': entry } })).toBe(false);
+      // The file is structurally sound, so an unmatched name stays inert like any other unknown name.
+      expect(acceptsRuntimeProjectOverride({ agents: { 'known-agent': entry } })).toBe(true);
+      expect(() => acceptsRuntimeProjectOverride({ agents: { 'forager-worker': entry } })).toThrow('agents.forager-worker.');
     }
   });
 });
