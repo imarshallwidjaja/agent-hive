@@ -794,24 +794,44 @@ function runProbe(probe: Json, facts: Json, run: Json = {}): Json {
   }
 }
 
-/** Values that must never leave the container: the injected credential as the host stores it. */
-async function containerSecrets(host: string): Promise<string[]> {
-  const secrets: string[] = [];
+const V1_AUTH_FILE = join(WORK, 'xdg', 'data', 'opencode', 'auth.json');
+
+/** What the credential lookup reads: the digest `inject-auth` recorded, v1's auth file and v2's credential API. */
+export type SecretSource = { injectedAccessSha: string | null; authFile: string; get: (path: string) => Promise<Json> };
+
+/** The digest of the access token this container received. It exists only after `inject-auth`, so it marks a credentialed container. */
+function containerSource(): SecretSource {
+  const path = join(STATE, 'access.sha256');
+  return { injectedAccessSha: existsSync(path) ? readFileSync(path, 'utf8') : null, authFile: V1_AUTH_FILE, get: api };
+}
+
+/**
+ * Values that must never leave the container: the injected credential as the host stores it. A container that received
+ * a credential yields its values only when the host's own store still shows the injected access token; anything else
+ * (unreadable or malformed store, failed request, no matching entry) returns null, because the exact-value scan then
+ * has no inputs. A credential-free container has none to find.
+ */
+export async function containerSecrets(host: string, source: SecretSource = containerSource()): Promise<string[] | null> {
+  if (source.injectedAccessSha === null) return [];
+  let entries: { access: unknown; account: unknown }[];
   if (host === 'v1') {
-    const entry = readJson(join(WORK, 'xdg', 'data', 'opencode', 'auth.json'))?.openai;
-    if (entry?.access) secrets.push(entry.access);
-    if (entry?.accountId?.length >= 8) secrets.push(entry.accountId);
+    const entry = readJson(source.authFile)?.openai;
+    entries = entry ? [{ access: entry.access, account: entry.accountId }] : [];
   } else {
+    let list: Json;
     try {
-      const res = await api('/api/credential');
-      for (const c of unwrap(res.body) ?? []) {
-        if (c?.value?.access) secrets.push(c.value.access);
-        const account = c?.value?.metadata?.accountID;
-        if (typeof account === 'string' && account.length >= 8) secrets.push(account);
-      }
-    } catch { /* server gone: fall back to shape scan */ }
+      const res = await source.get('/api/credential');
+      list = res.ok ? unwrap(res.body) : null;
+    } catch {
+      return null;
+    }
+    if (!Array.isArray(list)) return null;
+    entries = list.map((c: Json) => ({ access: c?.value?.access, account: c?.value?.metadata?.accountID }));
   }
-  return secrets;
+  const injected = entries.find((e) => typeof e.access === 'string' && sha256(e.access) === source.injectedAccessSha);
+  if (!injected) return null;
+  return entries.flatMap((e) => [e.access, typeof e.account === 'string' && e.account.length >= 8 ? e.account : null])
+    .filter((value): value is string => typeof value === 'string' && value !== '');
 }
 
 const TOKEN_SHAPES = [/eyJ[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\./, /\bsk-[A-Za-z0-9_-]{20,}/];
@@ -920,10 +940,20 @@ async function exportCase(input: Json): Promise<Json> {
       callsWithUnknownOutcome: toolCalls.filter((c) => c.outcome?.result === 'unknown').length,
     }),
   };
+  return exportDecision(record, host, scenario.id);
+}
+
+/**
+ * The in-container export scan. A record leaves only after the exact credential values and token shapes are absent from
+ * it. When the container holds a credential whose values cannot be established, the exact scan has no inputs and the
+ * record does not leave: the reply carries a fixed code and nothing else.
+ */
+export async function exportDecision(record: Json, host: string, scenario: string, source?: SecretSource): Promise<Json> {
+  const secrets = await containerSecrets(host, source);
+  if (secrets === null) return { ok: false, failure: 'secret_scan_unavailable', host, scenario };
   const text = JSON.stringify(record);
-  const secrets = await containerSecrets(host);
   if (secrets.some((s) => text.includes(s)) || TOKEN_SHAPES.some((shape) => shape.test(text))) {
-    return { ok: false, failure: 'export_contaminated', host, scenario: scenario.id };
+    return { ok: false, failure: 'export_contaminated', host, scenario };
   }
   return { ok: true, record };
 }
@@ -972,7 +1002,7 @@ async function verifyCredential(input: Json): Promise<Json> {
   const expected = readFileSync(join(STATE, 'access.sha256'), 'utf8');
   let stored: Json = null;
   if (input.host === 'v1') {
-    const entry = readJson(join(WORK, 'xdg', 'data', 'opencode', 'auth.json'))?.openai;
+    const entry = readJson(V1_AUTH_FILE)?.openai;
     stored = entry ? { access: entry.access, refresh: entry.refresh } : null;
   } else {
     const res = await api('/api/credential');
@@ -987,9 +1017,9 @@ async function verifyCredential(input: Json): Promise<Json> {
   };
 }
 
-/** How many credential values the export scan would look for; never the values themselves. */
+/** How many credential values the export scan would look for (0 when it cannot establish them); never the values themselves. */
 async function secretProbe(input: Json): Promise<Json> {
-  return { ok: true, count: (await containerSecrets(input.host)).length };
+  return { ok: true, count: (await containerSecrets(input.host))?.length ?? 0 };
 }
 
 /** The host's OpenAI catalog. A stored credential reloads providers asynchronously, so an empty list is retried. */

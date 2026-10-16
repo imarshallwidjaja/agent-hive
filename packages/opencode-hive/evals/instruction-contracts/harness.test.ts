@@ -2,6 +2,7 @@
 // the Docker CLI is replaced by an in-memory fake and every credential below is a made-up string.
 import { describe, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -19,7 +20,7 @@ import {
 } from './run.mjs';
 import {
   ARTIFACT_CAP, ATTEMPT_LOG_HEADER, FINAL_TEXT_CAP, STOP_INSTRUCTION_CAP, allowlistArgs, attemptCount, clipText, clipToolArgs, codeModeBlocks, codeModeFieldDocs, commandDelivery,
-  deliveredBodySentence, evidenceLimits, hiveResultFailed, interruptSession, messagePages, mockDecision, preflightReply, readHistories, render, runPrompt, safeName, scenarioOverrides,
+  containerSecrets, deliveredBodySentence, evidenceLimits, exportDecision, hiveResultFailed, interruptSession, messagePages, mockDecision, preflightReply, readHistories, render, runPrompt, safeName, scenarioOverrides,
   scriptDirective, skillReferencePointers, toolFieldContract, toolOutcome,
 } from './fixture.ts';
 
@@ -423,7 +424,7 @@ class FakeDocker {
         serve: { ok: true }, setup: { ok: true, steps: [], facts: {} }, stop: { ok: true },
         'inject-auth': this.behavior.injectFails ? { ok: false, status: 400 } : { ok: true, status: 200 },
         run: { ok: true, exit: 0, timedOut: false, asked: null },
-        export: { ok: true, record: this.behavior.record },
+        export: this.behavior.exportReply ?? { ok: true, record: this.behavior.record },
         'verify-credential': { ok: true, present: true, sentinelRetained: this.behavior.sentinelRetained ?? true, accessUnchanged: true },
         'secret-probe': { ok: true, count: this.behavior.secretsDiscovered ?? 2 },
         preflight: this.behavior.preflight,
@@ -529,6 +530,14 @@ describe('paid case lifecycle', () => {
   test('a contaminated export stops the run and is not returned; the container is still removed', async () => {
     const docker = new FakeDocker({ record: liveRecord({ finalText: `leaked ${FAKE_ACCESS}` }) });
     await expect(paidCase(paidContext(docker, 60_000), 'v1', group('substantive-handoff'))).rejects.toMatchObject({ code: 'export_contaminated' });
+    expect(docker.removed.size).toBeGreaterThanOrEqual(2);
+  });
+
+  test('an export the container could not scan exactly stops the run with its fixed code and no record', async () => {
+    const docker = new FakeDocker({ exportReply: { ok: false, failure: 'secret_scan_unavailable', host: 'v1', scenario: 'substantive-handoff' } });
+    const ctx = paidContext(docker, 60_000);
+    await expect(paidCase(ctx, 'v1', group('substantive-handoff'))).rejects.toMatchObject({ code: 'secret_scan_unavailable' });
+    expect(ctx.journal.read('case.v1.substantive-handoff.outcome')!.value).toMatchObject({ outcome: 'stopped', code: 'secret_scan_unavailable' });
     expect(docker.removed.size).toBeGreaterThanOrEqual(2);
   });
 
@@ -2030,5 +2039,72 @@ describe('in-container fixture helpers', () => {
   test('the guard module only runs as a command, so importing it has no side effects', () => {
     expect(existsSync(join(import.meta.dir, 'guard.mjs'))).toBe(true);
     expect(GUARD_EXIT_CODE).toBe(86);
+  });
+});
+
+describe('in-container export scan', () => {
+  // The scan is the first of two: the host scans again with the in-memory credential. Both must hold on their own, so
+  // these cases use an opaque access token and account ID that no token-shape pattern recognizes.
+  const injectedSha = createHash('sha256').update(FAKE_ACCESS).digest('hex');
+  const v1Entry = { type: 'oauth', access: FAKE_ACCESS, refresh: REFRESH_SENTINEL, expires: 1, accountId: FAKE_ACCOUNT };
+  const v2Entry = { integrationID: 'openai', value: { type: 'oauth', access: FAKE_ACCESS, refresh: REFRESH_SENTINEL, expires: 1, metadata: { accountID: FAKE_ACCOUNT } } };
+  const reply = (body: any, status = 200) => async () => ({ status, ok: status >= 200 && status < 300, body });
+  const v1Source = (auth: string | null) => {
+    const path = join(scratch(), 'auth.json');
+    if (auth !== null) writeFileSync(path, auth);
+    return { injectedAccessSha: injectedSha, authFile: path, get: async () => { throw new Error('v1 reads no API'); } };
+  };
+  const v2Source = (get: (path: string) => Promise<any>) => ({ injectedAccessSha: injectedSha, authFile: '/nonexistent/auth.json', get });
+  const leaking = liveRecord({ finalText: `report mentions ${FAKE_ACCESS} and ${FAKE_ACCOUNT}` });
+  const clean = liveRecord({ finalText: GOOD_HANDOFF });
+
+  // Every way the container's own credential lookup can fail while a credential is present.
+  const unavailable: [string, 'v1' | 'v2', any][] = [
+    ['v1 auth file missing', 'v1', v1Source(null)],
+    ['v1 auth file malformed', 'v1', v1Source('{not json')],
+    ['v1 auth file without an openai entry', 'v1', v1Source(JSON.stringify({ anthropic: v1Entry }))],
+    ['v1 openai entry without the injected access token', 'v1', v1Source(JSON.stringify({ openai: { ...v1Entry, access: 'another-token-0123456789' } }))],
+    ['v1 openai entry with a non-string access token', 'v1', v1Source(JSON.stringify({ openai: { ...v1Entry, access: { value: FAKE_ACCESS } } }))],
+    ['v2 request throws', 'v2', v2Source(async () => { throw new Error(`connect refused ${FAKE_ACCESS}`); })],
+    ['v2 HTTP error', 'v2', v2Source(reply({ data: [v2Entry] }, 500))],
+    ['v2 malformed body', 'v2', v2Source(reply(null))],
+    ['v2 body that is not a list', 'v2', v2Source(reply({ data: { openai: v2Entry } }))],
+    ['v2 empty list', 'v2', v2Source(reply({ data: [] }))],
+    ['v2 entries without the injected access token', 'v2', v2Source(reply({ data: [{ ...v2Entry, value: { ...v2Entry.value, access: 'another-token-0123456789' } }, { integrationID: 'other' }] }))],
+    ['v2 entry without a value', 'v2', v2Source(reply({ data: [{ integrationID: 'openai' }] }))],
+  ];
+
+  test.each(unavailable)('a credentialed container whose lookup fails (%s) exports a fixed code, never a record', async (_name, host, source) => {
+    for (const record of [leaking, clean]) {
+      const decision = await exportDecision(record, host, 'substantive-handoff', source);
+      expect(decision).toEqual({ ok: false, failure: 'secret_scan_unavailable', host, scenario: 'substantive-handoff' });
+      expect(JSON.stringify(decision)).not.toContain(FAKE_ACCESS);
+    }
+    expect(await containerSecrets(host, source)).toBeNull();
+  });
+
+  const healthy: ['v1' | 'v2', any][] = [
+    ['v1', v1Source(JSON.stringify({ openai: v1Entry }))],
+    ['v2', v2Source(reply({ data: [v2Entry] }))],
+    ['v2', v2Source(reply([v2Entry]))],
+  ];
+
+  test.each(healthy)('a healthy exact lookup on %s finds the opaque values and lets a clean record leave', async (host, source) => {
+    expect(await containerSecrets(host, source)).toEqual([FAKE_ACCESS, FAKE_ACCOUNT]);
+    expect(await exportDecision(clean, host, 'substantive-handoff', source)).toEqual({ ok: true, record: clean });
+    for (const text of [FAKE_ACCESS, FAKE_ACCOUNT]) {
+      expect(await exportDecision(liveRecord({ finalText: `x ${text} y` }), host, 'substantive-handoff', source))
+        .toEqual({ ok: false, failure: 'export_contaminated', host, scenario: 'substantive-handoff' });
+    }
+  });
+
+  test('a credential-free container needs no lookup: a clean record leaves and a token-shaped string still stops it', async () => {
+    const credentialFree = { injectedAccessSha: null, authFile: '/nonexistent/auth.json', get: async () => { throw new Error('no host read expected'); } };
+    for (const host of ['v1', 'v2']) {
+      expect(await containerSecrets(host, credentialFree)).toEqual([]);
+      expect(await exportDecision(clean, host, 'substantive-handoff', credentialFree)).toEqual({ ok: true, record: clean });
+      const shaped = liveRecord({ finalText: 'sk-' + 'a'.repeat(24) });
+      expect(await exportDecision(shaped, host, 'substantive-handoff', credentialFree)).toMatchObject({ ok: false, failure: 'export_contaminated' });
+    }
   });
 });
