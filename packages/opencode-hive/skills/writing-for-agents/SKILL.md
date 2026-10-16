@@ -3,9 +3,19 @@ name: writing-for-agents
 description: "Reference for authoring documents agents consume: skills, subagent prompts, instructions, and pointer architecture."
 ---
 
-Reference for writing any document an agent consumes: a skill, an `AGENTS.md` / `CLAUDE.md`, a doc reached by a pointer. The packaging differs; the writing does not: the same levers make each one predictable, since the agent takes the same _process_ every run rather than producing the same output.
+Reference for writing any document an agent consumes: a skill, an `AGENTS.md` / `CLAUDE.md`, a doc reached by a pointer. The packaging differs; the writing does not: the same levers make each one reliable, and what reliable means depends on whether a part of the document is a contract, a protocol, or a technique.
 
 When the document you're writing is a skill, read [`SKILL-MECHANICS.md`](SKILL-MECHANICS.md) for frontmatter, invocation choice, and router skills.
+
+## Contracts, protocols, and techniques
+
+Decide which kind each instruction is before applying the levers below:
+
+- A **contract** states a required outcome: what must be true when the work ends, the evidence that shows it, and the boundary the work stays inside. The agent chooses the route. Make the outcome checkable and the constraints explicit, and show a good result by example when its shape matters. Most role and task instructions are contracts.
+- A **protocol** fixes an order because the order protects state, authority, or evidence: read before replacing, verify identity before merging, record before cleaning up. Keep the order, say what each step protects, and place it where the agent acts, not behind a pointer.
+- A **technique** is a method the agent selects when it answers an open question, such as a diagnostic step or a search strategy. State the question it answers and when it ends, and disclose its detail behind a pointer. A technique written as a stage every run must pass through spends effort where the evidence is already settled.
+
+Different runs may take different routes to the same outcome. Identical process across runs is required only where a protocol protects something.
 
 ## Context pointers
 

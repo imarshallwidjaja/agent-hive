@@ -5,114 +5,56 @@ description: Use when explicitly asked for adversarial, hostile, red-team, stres
 
 # Adversarial Review
 
-Adversarial review is a read-only second-pass review posture. It tries to falsify the artifact's claims, then consolidates evidence-backed findings into a usable verdict or action path. A clean in-scope result is a valid outcome.
+Adversarial review is a read-only posture that sharpens how a reviewer looks for the ways its artifact could fail. It works inside the method, finding bar, output contract, and tool boundaries the reviewing role already has. A clean in-scope result is a valid outcome.
 
-Core rule: the host agent contract still wins. `plan-reviewer`, `code-reviewer`, `approach-advisor`, and `simplicity-reviewer` keep their normal scope, verdict labels, and tool boundaries.
+Core rule: the host agent contract still wins. `plan-reviewer`, `code-reviewer`, `approach-advisor`, `simplicity-reviewer`, and reviewers derived from them keep their own method, verdict labels, and finding bar. Code and simplicity reviewers keep the shared Review Investigation steps; plan review and approach advice keep their own methods and do not adopt those steps. This posture adds no authority, verdict, reviewer, roster, finding quota, or required sequence of passes.
 
 ## Reference Basis
 
-This flat skill distills these adversarial review patterns without importing reference subfiles:
+This flat skill began as a distillation of these adversarial review patterns, without importing reference subfiles:
 
-- `neverinfamous/memory-journal-mcp` adversarial suite: dual-role baseline/adversary phases, phase isolation, consolidated reporting, and domain lenses for planning, skills, workflows, security, and performance.
-- `dementev-dev/adversarial-review`: explicit mode detection for plan/code/code-vs-plan/file review, bounded revise loops, severity-based findings, mutation detection, and failure reporting for invalid reviewer artifacts.
+- `neverinfamous/memory-journal-mcp` adversarial suite: a baseline pass followed by an adversary pass, consolidated reporting, and domain lenses for planning, skills, workflows, security, and performance.
+- `dementev-dev/adversarial-review`: scope detection for plan, code, code-vs-plan, and file review, bounded revise loops, severity-based findings, mutation detection, and failure reporting for invalid reviewer artifacts.
 - `poteto/noodle` adversarial-review: scope and intent declaration, reviewer lenses such as Skeptic/Architect/Minimalist, synthesized verdicts, read-only review, and reporting missing or empty external reviewer output.
+
+It keeps the falsification posture, mutation detection, and honest reporting of missing or empty review inputs. It does not keep their mode detection, lens panels, or fixed baseline-then-attack sequence; `UPSTREAM.md` records that adaptation.
 
 ## When To Use
 
 Use this skill only when the operator or caller explicitly asks for adversarial review, stress testing, red-team review, hostile review, multi-pass review, cross-model review, or similar wording.
 
-Do not use it for ordinary plan review, code review, simplicity review, or approach advice. Adversarial mode searches harder within the host review's finding bar; it does not lower that bar.
+Do not use it for ordinary plan review, code review, simplicity review, or approach advice. Adversarial scrutiny searches harder within the host review's finding bar; it does not lower that bar.
 
-## Non-Negotiables
+## Posture
 
 - Stay read-only. Do not edit files, update plans, commit, merge, or repair issues while acting as the adversarial reviewer.
-- State scope and intent before reviewing. Review whether the artifact achieves the intent, not whether you personally prefer a different goal.
-- Separate baseline from attack. First establish what exists; then switch posture and try to invalidate it.
-- Report missing, empty, stale, or invalid review inputs. Do not silently skip a reviewer, file, plan, diff, or external validation result.
+- Review whether the artifact achieves the intent its author stated, not whether you prefer a different goal.
+- Challenge the assumptions whose failure would change the decision. For each, look for both sides: a counterexample that breaks the assumption, and a guard, contract, or test that already defeats the concern. A concern the artifact's own guard defeats is cleared, and the clearing evidence goes into the role's Coverage entry.
+- Spend the extra attention where a failure costs most: public contracts, persistence, trust boundaries, concurrency, migration, hot paths, and complexity with no current requirement. Include unchanged in-scope code when late evidence implicates it.
+- Try to falsify the claims the artifact depends on. A failed attempt to find a defect is a legitimate clean result; do not invent findings, praise, or extra structure to look thorough.
+- Findings need evidence relevant to the host's decision, such as a discriminating test, an authoritative contract, or a clear source execution path. A plausible failure path alone is a lead, not a mandatory fix.
+- Keep severity separate from certainty, and use the role's own severity terms.
+
+## What the Role's Report Keeps
+
+The posture changes where you look. The report keeps whatever format the role requires: its assessment label, the Review Basis and Coverage entries, and for every finding the file:line anchor, the decisive quoted line, the reachable consequence, and what you did to disprove it. Material leads you rejected keep their clearing evidence in Coverage. Host output format wins: if a role requires `OKAY/REJECT`, `APPROVE/REQUEST_CHANGES`, or advisory output, put the adversarial detail inside the sections it allows. No structured output is added for the adversarial pass.
+
+## Illustration
+
+Fictional diff for review against a stated requirement. A change adds `readTimeout(settings)` returning `settings.network.timeoutMs`, and the requirement says a settings file may omit the `network` section.
+
+- Source supports a defect: the only caller passes the parsed file straight through, an omitted section is valid, and the quoted line `return settings.network.timeoutMs;` dereferences `undefined`. The finding rests on that path and the requirement. It is a source-based finding; it does not show that anything ran or that a test fails.
+- Guarded control: every caller reaches `readTimeout` through a loader that fills defaults, and a test pins that. The same concern is cleared, with the loader and the test named in Coverage. The code reviewer's assessment is APPROVE with No action. A simplicity reviewer finds nothing to remove (ALREADY_MINIMAL), and an extra internal check in `readTimeout` would duplicate the loader's guarantee.
+
+## Review Inputs
+
+- Report missing, empty, stale, or invalid review inputs (artifact, plan or task reference, diff, supplied command output, external reviewer output). Do not silently skip a reviewer, file, plan, diff, or external validation result.
 - If any review step mutates the artifact under review, stop and report the mutation. Continuing would review a moving target.
-- Findings need evidence relevant to the host's decision, such as a discriminating test, authoritative contract, or clear source execution path. A plausible failure path alone is a lead, not a mandatory fix.
-- Host output format wins. If a base reviewer requires `OKAY/REJECT`, `APPROVE/REQUEST_CHANGES`, or advisory output, preserve that contract and put adversarial detail inside the allowed sections.
+- For git-backed code reviews, `git --no-optional-locks status --short` and `git diff --name-only` confirm what is under review. Do not run broad commands when the caller already provided bounded evidence.
 
-## Mode Detection
+## External Validation
 
-Choose the narrowest mode from the caller's explicit request. If the request is ambiguous, infer from available context:
-
-| Signal | Mode | Review Target |
-|---|---|---|
-| Plan text, Hive `plan.md`, task specs, no code diff | `plan` | Worker-readiness and plan failure modes |
-| Code diff only | `code` | Implementation correctness and regression risk |
-| Code diff plus plan/task reference | `code-vs-plan` | Whether implementation satisfies the plan/task |
-| Architecture, migration, integration, persistence, deployment route | `approach` | Whether the proposed direction survives constraints |
-| Completed implementation cleanup request | `simplicity` | Whether complexity is justified by current requirements |
-| Explicit file path | `file` | That file only, unless imports are needed for evidence |
-
-If no artifact is available, return `NEEDS_DISCUSSION` or the host agent's equivalent instead of inventing one.
-
-## Review Protocol
-
-### 1. Scope And Intent
-
-Write a short scope statement:
-
-```markdown
-**Scope**: [plan/code/code-vs-plan/approach/simplicity/file]
-**Intent**: [what the author is trying to achieve]
-**Artifacts Reviewed**: [files, diff, plan/task refs, commands, external reviewer outputs]
-```
-
-If the artifact list is incomplete, say what is missing and how that limits the review.
-
-### 2. Artifact Validation
-
-Before critique, validate the inputs:
-
-- Plan or task references exist when the review claims plan alignment.
-- Diff or file paths exist when reviewing code.
-- External reviewer output exists and is non-empty if external validation was attempted.
-- Any supplied command output is fresh enough for the claim being reviewed.
-- The artifact was not changed during review. If mutation is detected or suspected, stop and report it.
-
-For git-backed code reviews, useful checks include `git --no-optional-locks status --short`, `git diff --name-only`, and the supplied plan/task reference. Do not run broad commands when the caller already provided enough bounded evidence.
-
-### 3. Baseline Pass
-
-Act as the baseline reviewer. Map what the artifact actually does or proposes:
-
-- For `plan`: task sequence, dependencies, references, verification points, assumptions.
-- For `code`: changed files, behavior changes, public contracts, tests, risky boundaries.
-- For `code-vs-plan`: plan requirements mapped to changed files and verification.
-- For `approach`: constraints, chosen route, alternatives explicitly rejected, escalation triggers.
-- For `simplicity`: core purpose, added complexity, current requirement served by each abstraction.
-
-Do not critique in this pass. Build the map the adversarial pass will attack.
-
-### 4. Adversarial Pass
-
-Switch posture. Try to falsify the baseline's important claims and probe high-consequence boundaries, including unchanged in-scope code when late evidence bears on the result. A failed attempt to find a defect is a legitimate clean result.
-
-Use the smallest lens set that fits the risk:
-
-| Size / Risk | Lenses |
-|---|---|
-| Small, local, low-risk | Skeptic |
-| Medium or multi-file | Skeptic + Architect |
-| Large, high-risk, or broad diff | Skeptic + Architect + Minimalist |
-| Security, persistence, concurrency, migration, public API | Add Boundary Breaker |
-| Performance-sensitive path | Add Stress Tester |
-
-Lens definitions:
-
-- Skeptic: looks for false assumptions, missing edge cases, unhandled errors, and weak evidence.
-- Architect: looks for coupling, sequencing failures, integration mismatches, migration risk, and operational blind spots.
-- Minimalist: looks for unnecessary abstraction, compatibility branches, duplicated logic, and speculative flexibility.
-- Boundary Breaker: attacks trust boundaries, auth/authz, data integrity, persistence, concurrency, and public contracts.
-- Stress Tester: attacks hot paths, scaling assumptions, expensive loops, test/runtime cost, and resource leaks.
-
-Apply the host's finding bar to each result. For a supported finding, show the affected artifact, failure mode, evidence, impact, and actionable direction. For a material unresolved question, identify the missing evidence or decision. Discard unsupported hypotheses.
-
-### 5. Optional External Validation
-
-External or cross-model validation is useful but not required. Attempt it only when the environment provides a safe read-only path and the caller requested or approved it.
+External or cross-model validation is useful but not required by this posture. A reviewer, companion pass, or external review that the operator, the role, or the configuration requires remains required; this posture neither adds it nor drops it. Attempt additional validation only when the environment provides a safe read-only path and the caller requested or approved it.
 
 If external validation is attempted:
 
@@ -122,51 +64,32 @@ If external validation is attempted:
 - Treat external output as another evidence source, not automatic truth.
 - Do not let external tools mutate the artifact under review.
 
-If external validation is not available or not safe, say it was skipped and continue with the internal adversarial pass.
+If it is not available or not safe, say it was skipped and continue.
 
-### 6. Consolidation
+## Where Scrutiny Goes By Artifact
 
-Deduplicate by root cause. Keep the clearest evidence and report severity separately from certainty. Drop concerns that are merely stylistic, unsupported, or outside the host review's scope.
+These are places to aim within the role's method, not modes to select.
 
-Read [impact and finding judgment](references/impact-and-findings.md) for a shared-contract safety assumption or a noisy finding set. Other ordinary reviewers may read this reference without adopting the full adversarial workflow. The reference does not expand scope, permissions, or the host's finding bar.
+- **Plan**: hidden blockers, missing references, contradictory dependencies, non-executable verification, and assumptions that affect scope or correctness. `REJECT` still means a capable worker would likely be blocked or seriously misdirected.
+- **Code**: changed behavior, public contracts, error paths, tests, and regression risk. `REQUEST_CHANGES` still needs a supported material failure or applicable quality-requirement violation.
+- **Code against a plan or task**: omissions, behavior the plan did not ask for, unverified acceptance criteria, and code that satisfies a nearby requirement but not the actual one.
+- **Approach**: whether the path survives the constraints, which assumption needs evidence, and what would trigger a different route. Advice stays advisory.
+- **Simplicity**: abstractions, option bags, fallback branches, adapters, compatibility paths, and duplicated checks with no current requirement. Report only worthwhile in-scope simplifications that preserve approved behavior; `MINOR_TWEAKS` remains optional.
 
-Severity:
+## Consolidation
 
-- Critical: breaks correctness, data integrity, security, public contract, or the stated task.
-- High: likely defect, serious missing requirement, unsafe sequence, or major verification gap.
-- Medium: consequential supported edge case, maintainability problem, or important unproven behavior.
-- Low: small cleanup or clarity issue. Include only if the host format has room.
+Deduplicate by root cause and keep the clearest evidence. Drop concerns that are merely stylistic, unsupported, or outside the host review's scope.
 
-## Mode-Specific Bars
+Read [impact and finding judgment](references/impact-and-findings.md) for a shared-contract safety assumption or a noisy finding set. Other ordinary reviewers may read this reference without adopting this posture. The reference does not expand scope, permissions, or the host's finding bar.
 
-### Plan Mode
+## When No Role Format Exists
 
-Preserve `plan-reviewer` semantics. `REJECT` still means a capable worker would likely be blocked or seriously misdirected. Use adversarial findings to expose hidden blockers, missing references, contradictory dependencies, non-executable verification, or assumptions that affect scope/correctness.
-
-### Code Mode
-
-Preserve `code-reviewer` semantics. Findings cite affected files or behavior. REQUEST_CHANGES needs a supported material failure or applicable quality requirement violation; APPROVE can carry optional suggestions. Use NEEDS_DISCUSSION for a material unresolved question and what would settle it.
-
-### Code-Vs-Plan Mode
-
-Map each material plan requirement to implementation evidence. Attack omissions, changed behavior not called for by the plan, unverified acceptance criteria, and code that satisfies a nearby requirement but not the actual one.
-
-### Approach Mode
-
-Preserve `approach-advisor` semantics. Advice remains advisory. Explain whether the path survives constraints, which assumption needs evidence, and what would trigger a different route.
-
-### Simplicity Mode
-
-Preserve `simplicity-reviewer` labels and behavioral-equivalence bar. Probe abstractions, option bags, fallback branches, adapters, compatibility paths, and duplicated checks for unjustified changed complexity. Report only worthwhile in-scope simplifications that preserve approved behavior; MINOR_TWEAKS remains optional.
-
-## Output Template
-
-Use the host agent's required format when one exists. If no format is provided, use:
+When an operator asks a primary or general agent for an adversarial review and no reviewer role frames the output, report in this form:
 
 ```markdown
-**Scope**: [mode]
-**Intent**: [intent]
-**Artifacts Reviewed**: [list]
+**Scope**: [what was reviewed]
+**Intent**: [what the author is trying to achieve]
+**Artifacts Reviewed**: [files, diff, plan/task refs, commands, external reviewer outputs]
 **Validation Notes**: [missing/failed/skipped external validation, mutation checks, stale evidence]
 
 **Adversarial Verdict**: [APPROVED / REVISE / NEEDS_DISCUSSION]
@@ -180,21 +103,17 @@ Use the host agent's required format when one exists. If no format is provided, 
   - Impact: [effect]
   - Recommendation: [specific fix direction]
 
-### Lens Coverage
-- Skeptic: [covered / not used + reason]
-- Architect: [covered / not used + reason]
-- Minimalist: [covered / not used + reason]
-- Boundary Breaker: [covered / not used + reason]
-- Stress Tester: [covered / not used + reason]
+### Coverage
+[leads cleared with the clearing evidence; areas not inspected]
 
 ### Action Path
 [No action | supported actions needed to resolve the review]
 ```
 
-Verdict guidance:
-
 - `APPROVED`: no supported material blocker remains; optional suggestions may remain.
-- `REVISE`: supported material failure or applicable requirement violation needs action under the host's bar, regardless of severity label.
-- `NEEDS_DISCUSSION`: a material artifact, intent, scope, or evidence question prevents a sound decision; name what resolves it.
+- `REVISE`: a supported material failure or applicable requirement violation needs action under the host's bar, regardless of severity label.
+- `NEEDS_DISCUSSION`: a material artifact, intent, scope, or evidence question prevents a sound decision; name what resolves it. If no artifact is available, return `NEEDS_DISCUSSION` instead of inventing one.
 
-When running under a host reviewer, use only its output contract and verdict labels: `plan-reviewer` keeps `OKAY/REJECT`, `code-reviewer` keeps `APPROVE/REQUEST_CHANGES/NEEDS_DISCUSSION`, `simplicity-reviewer` keeps `SIMPLIFY/MINOR_TWEAKS/ALREADY_MINIMAL/NEEDS_DISCUSSION`, and `approach-advisor` gives advice without an approval verdict. The template above applies only when no host format exists.
+Severity: Critical breaks correctness, data integrity, security, a public contract, or the stated task. High is a likely defect, a serious missing requirement, an unsafe sequence, or a major verification gap. Medium is a consequential supported edge case, maintainability problem, or important unproven behavior. Low is a small cleanup or clarity issue; include it only if the format has room.
+
+Under a host reviewer, use only its output contract and verdict labels: `plan-reviewer` keeps `OKAY/REJECT`, `code-reviewer` keeps `APPROVE/REQUEST_CHANGES/NEEDS_DISCUSSION`, `simplicity-reviewer` keeps `SIMPLIFY/MINOR_TWEAKS/ALREADY_MINIMAL/NEEDS_DISCUSSION`, and `approach-advisor` gives advice without an approval verdict. The template above applies only when no host format exists.

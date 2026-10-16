@@ -229,7 +229,7 @@ describe('skill content', () => {
     expect(skill!.template).not.toMatch(/After 2-3|mandatory fan-out|minimum lanes|maximum lanes/i);
   });
 
-  it('bundles adversarial-review with explicit read-only multi-pass constraints', () => {
+  it('bundles adversarial-review as a read-only posture inside the reviewing role', () => {
     const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'adversarial-review');
 
     expect(skill).toBeDefined();
@@ -239,23 +239,47 @@ describe('skill content', () => {
     expect(skill!.description).toContain('explicitly asked');
     expect(skill!.description).toContain('adversarial');
     expect(skill!.template).toContain('Stay read-only. Do not edit files');
-    expect(skill!.template).toContain('State scope and intent before reviewing');
-    expect(skill!.template).toContain('Separate baseline from attack');
     expect(skill!.template).toContain('If any review step mutates the artifact under review, stop and report the mutation');
     expect(skill!.template).toContain('Report missing, empty, stale, or invalid review inputs');
     expect(skill!.template).toContain('Host output format wins');
     expect(skill!.template).toContain('`git --no-optional-locks status --short`');
+    // The posture is an adjuster: roles keep their own method, labels and finding bar, and it adds no authority.
+    expect(skill!.template).toContain('the host agent contract still wins');
+    expect(skill!.template).toContain('Code and simplicity reviewers keep the shared Review Investigation steps; plan review and approach advice keep their own methods and do not adopt those steps');
+    expect(skill!.template).toContain('adds no authority, verdict, reviewer, roster, finding quota, or required sequence of passes');
   });
 
-  it('bundles adversarial-review mode detection and lens coverage', () => {
-    const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'adversarial-review');
+  it('retires the adversarial mode detection, lens roster and baseline-then-attack sequence', () => {
+    const template = BUILTIN_SKILLS.find((entry) => entry.name === 'adversarial-review')!.template;
+    const upstream = readFileSync(path.join(resolvePackagedSkillsDir(), 'adversarial-review', 'UPSTREAM.md'), 'utf8');
 
-    expect(skill).toBeDefined();
-    for (const mode of ['plan', 'code', 'code-vs-plan', 'approach', 'simplicity', 'file']) {
-      expect(skill!.template).toContain(mode);
+    // These competed with each role's own method; the source influences stay named in the Reference Basis.
+    for (const retired of ['## Mode Detection', '## Review Protocol', 'Separate baseline from attack', 'Use the smallest lens set', '### Lens Coverage', 'Boundary Breaker', 'Stress Tester', 'Skeptic + Architect']) {
+      expect(template, retired).not.toContain(retired);
     }
-    for (const lens of ['Skeptic', 'Architect', 'Minimalist', 'Boundary Breaker', 'Stress Tester']) {
-      expect(skill!.template).toContain(lens);
+    expect(template).toContain('does not keep their mode detection, lens panels, or fixed baseline-then-attack sequence');
+    expect(upstream).toContain('Deliberate adaptation');
+    expect(upstream).toContain('a fixed lens roster would add a second reviewer-selection scheme beside configured reviewers');
+    expect(upstream).toContain('the requirement that a required reviewer or companion still runs');
+  });
+
+  it('keeps the role report substance and the clean-result validity under the adversarial posture', () => {
+    const template = BUILTIN_SKILLS.find((entry) => entry.name === 'adversarial-review')!.template;
+
+    expect(template).toContain('its assessment label, the Review Basis and Coverage entries');
+    expect(template).toContain('the file:line anchor, the decisive quoted line, the reachable consequence, and what you did to disprove it');
+    expect(template).toContain('Material leads you rejected keep their clearing evidence in Coverage');
+    expect(template).toContain('No structured output is added for the adversarial pass');
+    expect(template).toContain('do not invent findings, praise, or extra structure to look thorough');
+    expect(template).toContain('look for both sides: a counterexample that breaks the assumption, and a guard, contract, or test that already defeats the concern');
+    // Illustration: a supported source finding, its guarded control, and the limit of source evidence.
+    expect(template).toContain('It is a source-based finding; it does not show that anything ran or that a test fails');
+    expect(template).toContain('Guarded control');
+    expect(template).toContain('APPROVE with No action');
+    expect(template).toContain('ALREADY_MINIMAL');
+    // The fictional example must not reuse identifiers from the evaluation scenarios.
+    for (const fixtureName of ['firstItemId', 'lastItemId', 'clampLimit']) {
+      expect(template).not.toContain(fixtureName);
     }
   });
 
@@ -264,6 +288,7 @@ describe('skill content', () => {
 
     expect(skill).toBeDefined();
     expect(skill!.template).toContain('External or cross-model validation is useful but not required');
+    expect(skill!.template).toContain('remains required; this posture neither adds it nor drops it');
     expect(skill!.template).toContain('Confirm the output exists and is non-empty before using it');
     expect(skill!.template).toContain('Report missing, failed, timed out, or empty output as a validation failure');
     expect(skill!.template).toContain('Do not let external tools mutate the artifact under review');
@@ -271,14 +296,16 @@ describe('skill content', () => {
 
   it('uses host finding bars for adversarial falsification and permits clean results', () => {
     const template = BUILTIN_SKILLS.find((entry) => entry.name === 'adversarial-review')!.template;
-    expect(template).toContain('Try to falsify the baseline');
+    expect(template).toContain('Try to falsify the claims the artifact depends on');
     expect(template).toContain('A failed attempt to find a defect is a legitimate clean result');
     expect(template).toContain('Severity:');
-    expect(template).toContain('severity separately from certainty');
+    expect(template).toContain('severity separate from certainty');
     expect(template).toContain('A plausible failure path alone is a lead');
-    expect(template).toContain('REVISE`: supported material failure or applicable requirement violation');
+    expect(template).toContain('REVISE`: a supported material failure or applicable requirement violation');
     expect(template).toContain('approach-advisor` gives advice without an approval verdict');
     expect(template).toContain('simplicity-reviewer` keeps `SIMPLIFY/MINOR_TWEAKS/ALREADY_MINIMAL/NEEDS_DISCUSSION`');
+    expect(template).toContain('`plan-reviewer` keeps `OKAY/REJECT`');
+    expect(template).toContain('[APPROVED / REVISE / NEEDS_DISCUSSION]');
     expect(template).not.toContain('Assume the baseline missed something material');
     expect(template).not.toContain('at least one critical/high/medium finding needs action');
   });
@@ -519,14 +546,30 @@ describe('skill content', () => {
     expect(template).toContain('fixtures, configuration, toolchain, generated artifacts, and live or deployed state');
     expect(template).toContain('A branch result proves that branch only');
     expect(template).toContain('task-named integrated-only deferral');
-    expect(template).toContain('skipped, unrun, failed, or blocked are not PASS');
-    expect(template).toContain('An unexplained green retry does not resolve an intermittent failure');
     expect(template).toContain('Once applicable required evidence and reviews are sufficient, stop');
     expect(template).toContain('Any required `FAIL` makes the verdict `FAIL`');
     expect(template).toContain('an empty or incomplete set is missing proof');
     expect(template).toContain('A required `PARTIAL`, `UNVERIFIED`, or `BLOCKED` result, or any other missing required proof, prevents `PASS`');
     expect(template).toContain('use `PARTIAL` only when an environmental or tool limitation is the sole reason required proof is missing');
     expect(template).toContain('A final `FAIL` means required acceptance failed or remains unproven; it does not imply that an executed command exited unsuccessfully');
+  });
+
+  it('states each verification obligation once and keeps the observed-failure and worker-prose rules', () => {
+    const template = BUILTIN_SKILLS.find((entry) => entry.name === 'verification')!.template;
+
+    expect(template.match(/skipped, unrun, failed, or blocked are not PASS/g)).toHaveLength(1);
+    expect(template.match(/An unexplained green retry does not resolve an intermittent failure/g)).toHaveLength(1);
+    expect(template).toContain('unaffected results stay under the reuse rule above');
+    expect(template).not.toContain('Retain unaffected results only with a short, defensible non-impact reason');
+    expect(template).not.toContain('Report required skips and unrun checks honestly');
+    expect(template).not.toContain('run the required check on the current target or report the claim as unverified/blocked');
+    // Owners of the condensed repetition remain.
+    expect(template).toContain('Run the check on the current target when required output or applicability is unavailable');
+    expect(template).toContain('report UNVERIFIED or BLOCKED, never PASS');
+    expect(template).toContain('Worker prose alone cannot support a PASS');
+    expect(template).toContain('3. Mark the result FAIL');
+    expect(template).toContain('Do not explain it away unless repository docs or code prove the behavior is intentional');
+    expect(template).toContain('End standalone reports with exactly one verdict line');
   });
 
   it('requires whole-schedule evidence for end-to-end speedup claims', () => {
@@ -650,6 +693,43 @@ describe('skill content', () => {
     expect(template).not.toContain('available in this directory');
   });
 
+  it('asks systematic-debugging for causal evidence and selectable techniques, not a compulsory phase sequence', () => {
+    const template = BUILTIN_SKILLS.find((entry) => entry.name === 'systematic-debugging')!.template;
+    const techniques = readSkillReference('systematic-debugging', 'diagnostic-techniques.md');
+
+    expect(template).toContain('NO FIXES WITHOUT CAUSAL EVIDENCE FIRST');
+    expect(template).toContain('## The Causal-Evidence Bar');
+    expect(template).toContain('No fixed sequence of steps has to run first');
+    for (const criterion of ['**Observed**', '**Located**', '**Explained**']) expect(template).toContain(criterion);
+    expect(template).toContain('Settled evidence ends the search');
+    expect(template).toContain('instrumenting every component only delays the fix');
+    expect(template).toContain('Ambiguous evidence needs a discriminating observation');
+    expect(template).toContain('## Choose Techniques By Uncertainty');
+    // The generic four-phase traversal and per-boundary instrumentation are neither mandatory here nor moved there as a ritual.
+    for (const retired of ['## The Four Phases', 'You MUST complete each phase', 'Phase 1', 'BEFORE proposing fixes, add diagnostic instrumentation', 'For EACH component boundary']) {
+      expect(template, retired).not.toContain(retired);
+      expect(techniques, retired).not.toContain(retired);
+    }
+    expect(techniques).toContain('None is a stage to pass through');
+    expect(techniques).toContain('stop when the causal-evidence bar in `SKILL.md` is met');
+    expect(techniques).toContain('the technique is unnecessary when the failing component is already known');
+    expect(techniques).not.toMatch(/\b(must|always) (complete|run|add|instrument)\b/i);
+    // Retained: first wrong behavior, state protection and the role's attempt budget.
+    expect(template).toContain('## Protect State While Experimenting');
+    expect(template).toContain('do not clear user or Hive-managed files, break locks, or discard retained evidence to test the hypothesis');
+    expect(template).toContain('it never resets or extends the role\'s retained attempt budget');
+    expect(template).toContain('A Forager keeps its three iterations and three failed approaches, and every failed attempt counts toward them');
+    expect(template).toContain('follow the role\'s own safe recovery and reporting');
+    expect(template).toContain('A diagnosis-only assignment stays report-only throughout');
+    expect(techniques).toContain('It neither resets nor extends any attempt budget the role keeps');
+    expect(techniques).toContain('The state protections in `SKILL.md` apply to every experiment');
+    // Fictional examples must not reuse identifiers from the evaluation scenarios.
+    for (const fixtureName of ['calc', 'ledger', 'remote', 'subtract', 'firstItemId']) {
+      expect(template).not.toContain(fixtureName);
+      expect(techniques).not.toContain(fixtureName);
+    }
+  });
+
   it('ships the obra/superpowers license and a pinned source record beside the retained systematic-debugging text', () => {
     const skillDir = path.join(resolvePackagedSkillsDir(), 'systematic-debugging');
     const license = readFileSync(path.join(skillDir, 'LICENSE.superpowers'), 'utf8');
@@ -663,6 +743,12 @@ describe('skill content', () => {
     expect(upstream).toContain('LICENSE.pstack');
     expect(template).toContain('obra/superpowers');
     expect(template).toContain('`LICENSE.superpowers`');
+    // The adaptation account names the four-phase change and no longer claims the phases are retained.
+    expect(upstream).toContain('## Deliberate adaptations');
+    expect(upstream).toContain('Four phases became a causal-evidence bar and selectable techniques');
+    expect(upstream).toContain('references/diagnostic-techniques.md');
+    expect(upstream).toContain('never resets or extends a role\'s retained attempt budget');
+    expect(upstream).not.toContain('the four phase headings with the steps of Phases 1 to 3');
   });
 
   it('documents task() fan-out paths for parallel-exploration', () => {
@@ -1446,6 +1532,7 @@ describe('skill content', () => {
       'executing-plans': 'task-milestones.md',
       'writing-plans': 'verification-planning.md',
       'context-engineering': 'mutation-and-recovery.md',
+      'systematic-debugging': 'diagnostic-techniques.md',
     };
 
     it('points to each reference with a read-when line and a link that stays inside the skill directory', () => {
@@ -1707,6 +1794,14 @@ describe('skill content', () => {
     expect(template).toContain('Do not record rejected alternatives');
     expect(template).toContain('Do not invent build commands');
     expect(template).toContain('writing-for-agents');
+    // Retained: item-level approval, the prune bar and hard-won gotchas. The generic anti-pattern table and closing summary
+    // restated rules that Progressive Placement, Write What Exists, Maintenance Workflow and Red Flags own.
+    expect(template).toContain('Wait for item-level approval');
+    expect(template).toContain('Do not auto-approve');
+    expect(template).toContain('Silence is not evidence that a hard-won safety rule is unnecessary');
+    expect(template).toContain('## Red Flags');
+    expect(template).not.toContain('## Anti-Patterns');
+    expect(template).not.toContain('## Summary');
     expect(template).not.toContain('packages/hive-core');
     expect(template).not.toContain('Keep total under 500 lines');
     expect(template).not.toContain('Gotchas section exists and is populated');
@@ -1730,6 +1825,24 @@ describe('skill content', () => {
     expect(template).toContain('Leading words');
     expect(template).toContain('SKILL-MECHANICS.md');
     expect(template).toContain('Pruning');
+  });
+
+  it('teaches writing-for-agents authors to distinguish contracts, protocols and techniques', () => {
+    const template = BUILTIN_SKILLS.find((entry) => entry.name === 'writing-for-agents')!.template;
+    const upstream = readFileSync(path.join(resolvePackagedSkillsDir(), 'writing-for-agents', 'UPSTREAM.md'), 'utf8');
+
+    expect(template).toContain('## Contracts, protocols, and techniques');
+    expect(template).toContain('A **contract** states a required outcome');
+    expect(template).toContain('A **protocol** fixes an order because the order protects state, authority, or evidence');
+    expect(template).toContain('A **technique** is a method the agent selects when it answers an open question');
+    expect(template).toContain('Identical process across runs is required only where a protocol protects something');
+    expect(template).not.toContain('the agent takes the same _process_ every run');
+    // Hierarchy, pointer and completion-criterion guidance is retained.
+    for (const retained of ['**Progressive disclosure**', '**Co-location**', 'A **context pointer**', 'completion criterion', 'single source of truth']) {
+      expect(template).toContain(retained);
+    }
+    expect(upstream).toContain('Predictability objective');
+    expect(upstream).toContain('Identical process across runs is the goal only where a protocol protects something');
   });
 
   it('bundles context-engineering as on-demand untrusted-knowledge retrieval guidance', () => {

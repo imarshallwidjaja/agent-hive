@@ -141,17 +141,6 @@ Silence is not evidence that a hard-won safety rule is unnecessary. Preserve got
 | Historical "we considered X" | Rejected-alternative leakage | Name the current choice only |
 | Line-count targets (500, 800) as quality | Length is not the prune bar | Use the prune test |
 
-## Anti-Patterns
-
-| Anti-pattern | Better approach |
-| --- | --- |
-| Document everything | Document only what changes a decision |
-| Keep it for history | Git is history |
-| Might be useful someday | Add when proven |
-| Explain the system | Agents read the tree and the owning docs |
-| Comprehensive architecture section | Nested files next to the code |
-| One root file for all future conventions | Progressive placement as directories appear |
-
 ## Verification
 
 Before finalizing AGENTS.md updates:
@@ -163,7 +152,3 @@ Before finalizing AGENTS.md updates:
 - No rejected-alternative history
 - No generic advice that applies to every project
 - A fresh agent session would act differently because of each remaining entry
-
-## Summary
-
-Place rules next to the code they govern as that code appears. Do not draw the tree in the instruction file. Name what exists. Delete any sentence a competent agent would decide the same way without.

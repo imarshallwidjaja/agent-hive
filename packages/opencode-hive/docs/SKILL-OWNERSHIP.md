@@ -10,15 +10,15 @@ oc-arkive ships the skill sources in `packages/opencode-hive/skills/`. OpenCode 
 | Material construction choices | `code-design-principles` | Conditional depth, no separate plan or review verdict |
 | Current-code explanation | `how` | Source-grounded mental model; Scouts retrieve and the primary explains |
 | Historical rationale | `why` | Explicitly requested/assigned history, calibrated claims and source coverage |
-| Diagnosis | `systematic-debugging` | Reproduce/investigate the cause, then fix within authority |
+| Diagnosis | `systematic-debugging` | Causal evidence before a fix, with techniques chosen by the open question. The role keeps its attempt limits and diagnosis-only scope |
 | Selected red-green mechanics | `test-driven-development` | Loading selects TDD; its test-quality reference can be read independently |
 | Completion evidence | `verification` | Candidate/input applicability and observed evidence |
-| Review methods and acceptance | Shared `REVIEW_INVESTIGATION_PROMPT` for implementation reviewers; existing reviewer roles for acceptance | The shared prompt owns the lead -> verify -> disprove method; impact/finding depth lives in the conditional `adversarial-review` reference; roles keep their bars |
+| Review methods and acceptance | Shared `REVIEW_INVESTIGATION_PROMPT` for implementation reviewers; existing reviewer roles for acceptance | The shared prompt owns the lead -> verify -> disprove method; impact/finding depth lives in the conditional `adversarial-review` reference, and the `adversarial-review` skill is a posture inside a role's method; roles keep their bars |
 | Writing routing and propagation | `writing-policy` | Select depth by artifact and defect; no universal overlay activation |
 | Human-facing drafting | `writing-for-humans` | Reader needs, factual preservation, boundaries, finish pass, naming |
 | Staging, cadence, and structure repair | `stop-slop` | Existing prose with staging, rhythm, or structure problems, including the crafted-line budget |
 | Rewrite workflow, vocabulary, and presentation repair | `humanizer` | Rewriting existing prose or composing from a writer's notes or interview answers with a fact audit; vocabulary, register, attribution, hedge-placement, formatting, and chat-residue problems |
-| Agent-facing instructions | `writing-for-agents` | Instruction structure and invocation, not a competing human-prose policy |
+| Agent-facing instructions | `writing-for-agents` | Instruction structure and invocation, separating contracts, protocols and techniques; not a competing human-prose policy |
 | Public PR/review writing | `pr-writing` | Artifact-specific content, source anchoring, and publication authority |
 | Hive runtime layout, state ownership, read-only forensics, and Agent Hive configuration | `hive-config` | Self-contained reference for where `.hive/` state lives, which tool owns each change, read-only task/Git/session-store recipes, and `agent_hive.json`/override editing. It points to owners rather than restating them: managed context selection and mutation stay with `context-engineering`, background board protocol with `background-delegation`, and tool input/output contracts with the tool schemas and `docs/HIVE-TOOLS.md`. `skill-content.test.ts` pins its config keys, agent names, reserved IDs, tool names, and paths to source |
 
@@ -58,6 +58,7 @@ A skill keeps its decision-changing rules, authority boundaries and stop conditi
 | `executing-plans` | `task-milestones.md` | Two sections for two consumers: suggesting milestones (targets, companions, recommendation table, incremental counts, continuation prompts) and executing a requested milestone (fresh status, closure, resumption, stopping) |
 | `writing-plans` | `verification-planning.md` | Gate records, evidence decisions and amendments, efficiency outcomes, recovery after a broad gate fails, certificates, and examples |
 | `context-engineering` | `mutation-and-recovery.md` | Call shapes, frontmatter, hygiene thresholds and ceilings, and the operator recovery procedure |
+| `systematic-debugging` | `diagnostic-techniques.md` | Techniques chosen by the open question: reading the failure, reproducing, recent changes, component boundaries, working examples, one hypothesis, stale state, slowness, timing, validation placement, and a shared premise |
 
 - A reference adds method and examples, never authority. Reading one grants no tool or role access.
 - The `SKILL.md` baseline holds when a reference is missing. A same-name user or native skill replaces the whole packaged directory: on v1 Hive leaves a detected conflict out of the materialized copy, and on v2 the copy can still hold the bundle while the effective skill catalog resolves the name to the unique user skill. A disabled skill is not materialized, and nothing falls back to an older generated copy. No caller searches generated skill caches for another copy.
@@ -65,6 +66,19 @@ A skill keeps its decision-changing rules, authority boundaries and stop conditi
 - Delivery of a reference is shown by an installed-package run on both hosts (a child reads each pointed reference under stock permissions, and a native `build` agent invoking `/start-execution` reads the milestone reference), not by the file existing in the source tree. The wiring run is credential-free; whether a model selects and follows a reference is a separate, qualitative question.
 - Authority clarification: repair of context control files (`index.json`, the pending marker, manifests) is separately authorized operator recovery. `context-engineering` says so inline, and its recovery reference describes the operator procedure without granting an agent permission to run it. Tool behavior is unchanged: the tools never repair those files.
 - The verification-planning method moved verbatim from `writing-plans`; its inline section keeps the gate, boundary, evidence and deferral rules. Imported passages stay in their `SKILL.md` files, so `dispatching-parallel-agents/UPSTREAM.md` and the pstack license are unchanged.
+
+## Adapted engineering and review guidance
+
+Five skills changed what they ask of an agent, and the others in this group were inspected and kept. Each `UPSTREAM.md` records the source passages and the adaptation.
+
+- `adversarial-review` is a posture inside the reviewing role's own method. It asks a reviewer to challenge the assumptions whose failure would change the decision and to look for both a counterexample and a guard or contract that defeats the concern. The mode detection, lens roster and baseline-then-attack sequence it used to prescribe are retired: each role already has a method, and a roster would be a second reviewer-selection scheme. Code and simplicity reviewers keep the shared Review Investigation method. Plan review and approach advice keep their own and do not gain it. Review Basis, Coverage, the decisive quote, the reachable consequence, the attempted disproof, the role's labels and finding bar, and the requirement that a required reviewer or companion still runs are unchanged. `references/impact-and-findings.md` is unchanged depth.
+- `systematic-debugging` asks for causal evidence before a fix: the failure observed, the first wrong behavior located, and the mechanism explained with competing causes excluded or named as open. The four phases and per-component instrumentation became techniques chosen by the open question, in `references/diagnostic-techniques.md`. Settled evidence ends the search, and competing causes call for a discriminating observation. First-wrong-behavior and hidden-write tracing, the choice of testing strategy, protection of retained state and diagnosis-only reporting are kept. Reassessing a failed premise changes the question investigated and never resets or extends a role's attempt budget. A Forager keeps three iterations and three failed approaches.
+- `writing-for-agents` replaces its goal of the same process on every run with a distinction between contracts (required outcomes), protocols (an order that protects state, authority or evidence) and techniques (chosen to answer an open question). The pointer, hierarchy, completion-criterion and pruning guidance is unchanged.
+- `verification` and `agents-md-mastery` each lost only repeated statements. `verification` states the skipped, unrun, failed or blocked rule and the reuse of unaffected results once. Observed failures stay FAIL, worker prose alone still cannot yield PASS, and the standalone verdict labels stay. `agents-md-mastery` lost its generic anti-pattern table and closing summary, which restated Progressive Placement, Write What Exists, the maintenance workflow and Red Flags. Item-level approval, the prune test, placement, grounding and the hard-won-gotcha rule stay.
+
+The remaining coherence skills (`brainstorming`, `grilling`, `code-design-principles`, `complexity-audit`, `complexity-review`, `how`, `why`, `writing-policy`, `writing-for-humans`, `humanizer`, `stop-slop`, `pr-writing`, `test-driven-development`) kept their content. None selects TDD globally, and none gained a style policy.
+
+Static tests show which wording is present and that the reference ships. Whether a model reviews or diagnoses better with this wording is a qualitative question, answered by looking at real interactions, not by these tests.
 
 ## Source-preserving maintenance
 

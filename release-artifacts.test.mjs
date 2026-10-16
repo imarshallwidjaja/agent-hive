@@ -579,6 +579,7 @@ describe(`release ${releaseVersion} artifact contract on main`, () => {
         'executing-plans/references/task-milestones.md',
         'writing-plans/references/verification-planning.md',
         'context-engineering/references/mutation-and-recovery.md',
+        'systematic-debugging/references/diagnostic-techniques.md',
       ]) {
         assertPackedFile(packedFiles, `skills/${reference}`, 'oc-arkive');
         assert.ok(fs.statSync(path.join(packageRoot, 'skills', reference)).size > 0, `packed ${reference} should not be empty`);

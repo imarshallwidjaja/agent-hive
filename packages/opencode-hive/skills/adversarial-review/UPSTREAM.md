@@ -1,3 +1,11 @@
+# Deliberate adaptation of the adversarial review sources
+
+`SKILL.md` lists three public adversarial-review projects (`neverinfamous/memory-journal-mcp`, `dementev-dev/adversarial-review`, `poteto/noodle`) as source influences. No upstream file or license notice is vendored for them. The skill originally adopted from them an explicit mode detection step, a lens roster (Skeptic, Architect, Minimalist, Boundary Breaker, Stress Tester) selected by risk, a baseline pass followed by an adversary pass, and a lens-coverage table in the output.
+
+This is a deliberate change to what the skill asks of an agent. The skill is now a posture inside the reviewing role's existing method: the role is already known from the agent that is reviewing, so there is no mode to detect; the role's own method (the shared Review Investigation steps for code and simplicity review, each role's own method for plan review and approach advice) already orients, lists leads, verifies and disproves, so a second mandatory baseline-then-attack sequence would compete with it; and a fixed lens roster would add a second reviewer-selection scheme beside configured reviewers. What the skill keeps from those sources is the falsification posture, read-only review, mutation detection, honest reporting of missing or empty reviewer output, and optional external validation. Its standalone report keeps the `APPROVED / REVISE / NEEDS_DISCUSSION` labels for the case where no role format exists and replaces the lens-coverage table with a Coverage entry.
+
+Each role's scope, tool access, verdict labels and finding bar stay as they were, and so do the requirement that a required reviewer or companion still runs and the validity of a clean result. The impact-and-findings reference is retained as shared depth.
+
 # Selective pstack material
 
 The impact/finding reference adapts Lauren Tan's `blast-radius` and `interrogate/references/lead-judgment.md` from pstack 0.15.5, `cursor/plugins` revision `fae2c6ed95821bd85f614a73e4842e13229fa5e5`. Source: https://github.com/cursor/plugins/tree/fae2c6ed95821bd85f614a73e4842e13229fa5e5/pstack/skills . `LICENSE.pstack` covers those passages. Evidence descriptions do not create a new verdict scheme, mandatory execution, finding-count cap, or reviewer quorum. Existing source influences remain listed in the skill body.

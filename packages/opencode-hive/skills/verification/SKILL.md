@@ -109,7 +109,7 @@ If a check fails:
 
 Use PARTIAL only for environmental or tool limitations, such as unavailable services, missing credentials, or a server that cannot start for reasons outside the change. Do not use PARTIAL for uncertainty when a check ran.
 
-When output is missing or candidate applicability cannot be established, report UNVERIFIED or BLOCKED, never PASS. After a correction, preserve the original failure, verify the owning regression, and rerun affected consumer and integrated gates. Retain unaffected results only with a short, defensible non-impact reason. An unexplained green retry does not resolve an intermittent failure. Report required skips and unrun checks honestly; do not claim acceptance while a required result is missing.
+When output is missing or candidate applicability cannot be established, report UNVERIFIED or BLOCKED, never PASS. After a correction, preserve the original failure, verify the owning regression, and rerun affected consumer and integrated gates; unaffected results stay under the reuse rule above. An unexplained green retry does not resolve an intermittent failure.
 
 ## Output Formats
 
@@ -167,4 +167,4 @@ Stop and run evidence when you are about to write:
 - "similar tests passed"
 - "this is too small to test"
 
-When output is missing, applicability is uncertain, or a required input changed, run the required check on the current target or report the claim as unverified/blocked. Once applicable required evidence and reviews are sufficient, stop; rerun only for an identified gap, invalidation, or new risk.
+Once applicable required evidence and reviews are sufficient, stop; rerun only for an identified gap, invalidation, or new risk.
