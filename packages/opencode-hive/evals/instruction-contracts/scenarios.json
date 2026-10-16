@@ -901,7 +901,7 @@
         "approval persisted while sync failed: retry sync, not approval",
         "report history written while handoff failed: never resubmit the report",
         "invalid context index: stop managed mutation and report the actual error; never repair control files by hand",
-        "incomplete context read: a partial chunk never justifies replacing the whole document"
+        "incomplete context read: after a fresh complete own read the Tone edit is expected through a guarded replacement; a supplied or incomplete read never permits replacement"
       ],
       "agentMode": "dedicated",
       "primary": "swarm-orchestrator",

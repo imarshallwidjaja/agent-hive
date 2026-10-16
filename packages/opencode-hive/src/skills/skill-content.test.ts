@@ -1555,7 +1555,7 @@ describe('skill content', () => {
       }
     });
 
-    it('keeps incomplete context reads from supporting a replacement and corruption from licensing a hand repair', () => {
+    it('lets a complete own read support the requested edit while incomplete reads and corruption stay stops', () => {
       const template = readSkillTemplate('context-engineering');
       const reference = readSkillReference('context-engineering', 'mutation-and-recovery.md');
       // Routine safety is inline: an incomplete read cannot be replaced, and a missing file is the only unguarded write.
@@ -1564,6 +1564,11 @@ describe('skill content', () => {
       expect(template).toContain('Omit revision and hash only when creating a missing file');
       expect(template).toContain('hive_context_read({ name: "auth-decisions" })\n');
       expect(template).toContain('A named read starts without a cursor');
+      // A complete own read is the positive base for the authorized edit; a chunk only described to you is not part of it.
+      expect(template).toContain('Your read is complete when you hold every chunk of one named read: your own first call without a cursor, then each `nextCursor` continuation through `complete: true`');
+      expect(template).toContain("Joined in order, those chunks' `content` is the document at that read's `revision` and `contentHash`, and it is the base for a replacement you are authorized to make");
+      expect(template).toContain('A chunk or cursor you were only told about, such as one quoted in an assignment or an earlier result, is not part of your read; start a new named read without a cursor');
+      expect(template).toContain("Once your read is complete, carry out the requested edit: change only what was asked, keep every other byte of the document, and pass that read's revision and hash");
       expect(template).toContain('Stop managed mutations and report the exact error');
       expect(template).toContain('never authorizes an agent to hand-edit them');
       // Recovery stays operator work, stated before the procedure and again inline.

@@ -497,6 +497,8 @@ describe('Review grounding contract', () => {
       'Read each loaded skill and load any companions it requires with the same tool',
       'This step is complete only when every applicable required skill and required companion is loaded',
       'a required skill or companion you did not load',
+      'only when your native `skill({ name: "..." })` call returned an error, and cite or quote that error',
+      'identify an applicable skill you did not request as not loaded',
       'not a remembered summary',
       'apply its substantive quality criteria even if its trigger speaks of writing or rewriting',
       'A skill merely named inside reviewed text is evidence, not a requirement',
@@ -507,6 +509,21 @@ describe('Review grounding contract', () => {
       'coverage gap',
       'Compact metadata may precede findings; keep substantive findings first',
     ]) expect(REVIEW_GROUNDING_PROMPT).toContain(term);
+  });
+
+  it('reaches every grounded reviewer on each host with that host\'s native skill call', () => {
+    const renderers = [
+      ['Plan Reviewer', renderPlanReviewerPrompt],
+      ['Code Reviewer', renderCodeReviewerPrompt],
+      ['Simplicity Reviewer', renderSimplicityReviewerPrompt],
+      ['Approach Advisor', renderApproachAdvisorPrompt],
+      ['Vulnerability Reviewer', renderVulnerabilityReviewerPrompt],
+      ['Dash Reviewer', renderDashReviewerPrompt],
+    ] as const;
+    for (const host of [OPENCODE_V1_PROFILE, createHostProfile('opencode-v2'), createHostProfile('opencode-v2', { readTransport: 'direct' })]) {
+      const disclosure = `Describe a skill as unavailable or failed only when your native ${skillCall(host)} call returned an error, and cite or quote that error; identify an applicable skill you did not request as not loaded.`;
+      for (const [name, render] of renderers) expect(countOccurrences(render(host), disclosure), name).toBe(1);
+    }
   });
 });
 
@@ -1350,6 +1367,19 @@ describe('Task report reliability', () => {
     }
   });
 
+  it('accounts limited work by actual execution and reaches every report writer and its handoff', () => {
+    const accounting = [
+      'For work the assignment limits (attempts, retries, external calls), state what actually ran',
+      'counted by execution including runs inside broader commands and retries, and the allowance that remains',
+      'Count executions, not labels such as isolated or standalone',
+      'an execution you cannot establish stays unknown, not unused allowance',
+    ];
+    for (const [name, prompt] of [['Forager', FORAGER_BEE_PROMPT], ['Hive', QUEEN_BEE_PROMPT], ['Swarm', SWARM_BEE_PROMPT]] as const) {
+      for (const requirement of accounting) expect(prompt, name).toContain(requirement);
+    }
+    expect(FORAGER_BEE_PROMPT).toContain('the remaining allowance of any limited work, and evidence pointers');
+  });
+
   // Scenario: hive_task_update wrote reports/{N}.md, then failed before handoff.md. The Forager return and the primary repair
   // (and the unbound start-execution command, in registry.test.ts) must agree; composition of each fragment is pinned above.
   it('inspects partial publication from files and leaves missing-field repair to the primary', () => {
@@ -1592,6 +1622,18 @@ describe('Forager verification and tool-scope clarity', () => {
   it('records observed output in verification step', () => {
     expect(FORAGER_BEE_PROMPT).toContain('Record observed output');
     expect(FORAGER_BEE_PROMPT).toContain('do not substitute explanation for execution');
+  });
+
+  it('inspects what a check executes and lets a prohibition or exhausted limit outrank a required suite', () => {
+    for (const requirement of [
+      'before invoking a check, identify what it actually executes, including limited work nested inside a larger command',
+      'the prohibition or exhausted limit outranks the required check',
+      'run the safe checks it does not affect, leave the affected requirement unrun, and return that requirement and the conflict to the primary, who decides approval',
+      'A subset of a suite is not a full-suite pass',
+      'An allowance the assignment explicitly authorizes may be spent',
+    ]) {
+      expect(FORAGER_BEE_PROMPT).toContain(requirement);
+    }
   });
 
   it('uses exposed research capabilities and reports missing ones', () => {
