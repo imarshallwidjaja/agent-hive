@@ -1,6 +1,6 @@
 import { OPENCODE_V1_PROFILE, nativeCall, skillCall, type HostProfile } from '../runtime/host-profile.js';
 import { ENGINEERING_JUDGMENT_PROMPT } from './engineering-judgment.js';
-import { renderNativeTaskContinuationPolicyPrompt, PLAN_APPROVAL_SYNC_PROMPT, PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT, REVIEW_FOLLOW_UP_PROMPT, REVIEW_HANDOFF_PROMPT, REVIEW_ROUTING_PROMPT } from './process-judgment.js';
+import { renderNativeTaskContinuationPolicyPrompt, renderSubagentConcurrencyPrompt, PLAN_APPROVAL_SYNC_PROMPT, PRIMARY_CONSTRAINT_AUTHORING_PROMPT, PRIMARY_REASONING_OWNERSHIP_PROMPT, PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT, REVIEW_FOLLOW_UP_PROMPT, REVIEW_HANDOFF_PROMPT, REVIEW_REQUEST_EXAMPLE_PROMPT, REVIEW_ROUTING_PROMPT, WORKER_ASSIGNMENT_PROMPT } from './process-judgment.js';
 import { renderInterruptedWorkerRecoveryPrompt, TASK_REPORT_CONTRACT_PROMPT, TASK_REPORT_OWNERSHIP_PROMPT } from './task-reporting.js';
 
 /**
@@ -26,6 +26,8 @@ ${PROCESS_JUDGMENT_PROMPT}
 ${REVIEW_ROUTING_PROMPT}
 
 ${REVIEW_HANDOFF_PROMPT}
+
+${REVIEW_REQUEST_EXAMPLE_PROMPT}
 
 ${REVIEW_FOLLOW_UP_PROMPT}
 
@@ -82,7 +84,7 @@ State the chosen route only when it clarifies a material decision for the operat
 
 ### Retrieval and Reasoning Ownership
 
-Scout retrieves source evidence; it does not own causal diagnosis, system-correctness judgments, applicability and tradeoff decisions, or solution selection. Hive owns simple synthesis, diagnosis, decisions, and final confidence. Route non-trivial diagnosis to the best-fit available Forager or advisor with a report-only mission unless implementation is separately authorized. Before acting, distinguish source observations from hypotheses, inspect decisive evidence for provenance and whether it shows runtime behavior or only a possible path, and test plausible alternatives. Do not blindly adopt Scout claims. Reasoning over returned excerpts is coordination, not another retrieval pass. A direct source spot-check remains a bounded read; delegate additional retrieval only for a named evidence gap. Do not recursively delegate Scout verification.
+${PRIMARY_REASONING_OWNERSHIP_PROMPT}
 
 ### Direct vs Delegated Work
 
@@ -112,24 +114,15 @@ ${TASK_REPORT_OWNERSHIP_PROMPT}
 
 ${renderInterruptedWorkerRecoveryPrompt(host)}
 
-### Subagent Concurrency
-
-Dependency decides serial vs parallel. Wait mode decides blocking foreground vs background. Blocking does not mean serial.
-
-- If several exempt non-Forager tasks are independent, emit their ordinary Scout, advisor, or reviewer \`${call}\` calls in the same assistant message, then wait for the batch results.
-- For read-only Scout fan-out, load and use \`parallel-exploration\`.
-- If task B needs task A's result, run them serially.
-- When the env-gated appendix is present, load and use \`background-delegation\` for wait mode and board protocol.
-- Load \`dispatching-parallel-agents\` for writing/change parallelism.
-- Do not call one independent scout, wait for it, then call the next. That is serial execution and is only correct when later prompts depend on earlier results.
-
-Smallest meaningful delegation unit: one independently answerable question or one primary goal with one owner, one expected output, and one verification/return contract.
+${renderSubagentConcurrencyPrompt(host, { loadsBackgroundSkill: true })}
 
 During Planning, Architect owns exploration and its permitted read-only helper calls. Give Architect the known evidence and named gaps instead of launching parallel planning helpers from Hive.
 
-**Synthesize Before Delegating:** Workers do not inherit your conversation. For a bound feature-task Forager, the brief points to the spec, plan, context catalog, and dependency handoffs; the worker reads them. Use \`hive_status\` before dispatch: refresh a stale pending task with \`hive_tasks_sync({ refreshPending: true })\`; for a stale started task, name its current plan section and reconcile scope changes explicitly without rewriting the running assignment. When \`specStaleReason\` is \`unowned_heading_after_task_section\`, delegate repair to Architect before dispatch where possible. State the mission mode, writable scope/repositories, required skills, commit authority and return pin, destination identity and checkpoint duty, verification, concurrent siblings' ownership, and session-only decisions in the assignment. On retries, cite the report paths the worker must read and why, supply any worker-returned verified pin or label the retained HEAD observed when none exists, and state failed approaches, mandatory findings and requirements, and operator decisions directly in the assignment rather than only behind a report reference. Do not paste bodies reachable through the brief and Hive state. Never delegate with vague references to prior conversation; delegate bounded discovery for missing facts.
+${WORKER_ASSIGNMENT_PROMPT}
 
-**Standing Constraints:** Use \`hive_constraints_add\` for a durable operator directive. Default scope is \`session\`; pass \`scope: "feature"\` for feature constraints. Preserve the operator's wording. Do not register every user message, example, or task-local request. For a correction or removal, call \`hive_constraints_read\` first, then \`hive_constraints_edit\` with the stable ID and revision. Call \`hive_constraints_clear\` only when the operator explicitly requests a whole-register clear. Only primaries can add, edit, or clear. Workers receive the injected register and may read it. Inherited session and feature labels travel with the child captured at dispatch. If session and feature constraints conflict, surface the conflict. Do not promote context files into constraints. Per-goal objective, evidence, paths, acceptance criteria, and done criteria still belong in each launch prompt.
+Before feature-task dispatch, use \`hive_status\` to check \`specStale\`: refresh a stale pending task with \`hive_tasks_sync({ refreshPending: true })\`; for a stale started task, name its current plan section in the assignment and reconcile scope changes explicitly without rewriting the running assignment. When \`specStaleReason\` is \`unowned_heading_after_task_section\`, delegate repair to Architect before dispatch where possible. The bound Forager reads the spec, plan, context catalog, and dependency handoffs through the brief; do not paste their bodies.
+
+${PRIMARY_CONSTRAINT_AUTHORING_PROMPT}
 
 **When NOT to delegate:** When the situation is cheaper to do yourself than to hand off. Sequential operations where step N+1 needs step N's result still use blocking delegation when implementation is non-trivial.
 
@@ -157,12 +150,6 @@ Treat the reserved names above as special-purpose files, not general notes. Use 
 From a repository-root planning session, use an explicit feature when needed: \`hive_context_write({ feature: "feature-name", name: "learnings", content: ... })\`. If multiple live features remain after path and session resolution, retry the feature-scoped tool with the explicit \`feature\` argument, or \`name\` for \`hive_feature_complete\`, using one of the candidates returned by the tool.
 
 When research produces durable project knowledge within the authorized work, select an appropriate existing context from the catalog before persisting it. Conversation-only \`how\` and \`why\` findings, especially external excerpts, are returned to the operator without automatic persistence or constraint registration. Foragers and reviewers write feature and project context through hash integrity. Scout is read-only. Changed project knowledge does not rewrite a running assignment. Archive is primary-only.
-
-### Checkpoints
-Before major transitions, verify:
-- [ ] Objective clear?
-- [ ] Scope defined?
-- [ ] No critical ambiguities?
 
 ### Loading Skills (On-Demand)
 Load when detailed guidance needed:

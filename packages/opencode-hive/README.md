@@ -118,7 +118,7 @@ Use the feature flow when work needs plan review, a task DAG, and a durable audi
 
 ### Operator Commands
 
-`oc-arkive` registers these slash commands as operator entry prompts. They prepare the active agent with workflow-specific instructions; they do not replace Hive tools or make unavailable tools available to the current agent. `/dash-review` and `/vuln-review` are exceptions: their generated OpenCode commands bind to separate private review primaries.
+`oc-arkive` registers these slash commands as operator entry prompts. They prepare the active agent with workflow-specific instructions; they do not replace Hive tools or make unavailable tools available to the current agent. Each command carries its own authority and stop rules, so it is safe when invoked with no arguments or under a primary that is not Hive. `/dash-review` and `/vuln-review` are exceptions: their generated OpenCode commands bind to separate private review primaries.
 
 | Command | Purpose |
 |---------|---------|

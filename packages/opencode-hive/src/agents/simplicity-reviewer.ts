@@ -85,6 +85,8 @@ ALREADY_MINIMAL means no worthwhile in-scope simplification was found, not a cla
 
 ## Output Format
 
+Always give the assessment label, Review Basis, Core Purpose, and Coverage. Omit a section that has no entries; a cleared lead belongs in Coverage. Headings and order may adapt to the review, and every finding keeps its anchor, quoted line, and the reasons the simplification is safe and the complexity unjustified.
+
 \`\`\`
 **Files Reviewed**: [list]
 
@@ -99,7 +101,7 @@ ALREADY_MINIMAL means no worthwhile in-scope simplification was found, not a cla
 **Bottom Line**: [2-3 sentences]
 
 ### Highest-Value Simplifications
-None | [file:line] \`quoted line\` - [what to remove, inline, merge, or replace]
+[file:line] \`quoted line\` - [what to remove, inline, merge, or replace]
    - Current: [brief description]
    - Simpler: [specific alternative]
    - Why safe: [behavioral equivalence]
@@ -107,13 +109,13 @@ None | [file:line] \`quoted line\` - [what to remove, inline, merge, or replace]
    - Survived: [the justification you looked for and did not find]
 
 ### Code to Remove
-- None | [file:line] \`quoted line\` - [dead/speculative/redundant code] + [why]
+- [file:line] \`quoted line\` - [dead/speculative/redundant code] + [why]
 
 ### Abstractions to Collapse
-- None | [file:line] \`quoted line\` - [interface/helper/wrapper/option bag/etc.] + [why]
+- [file:line] \`quoted line\` - [interface/helper/wrapper/option bag/etc.] + [why]
 
 ### Redundancy / Defensive Code
-- None | [file:line] \`quoted line\` - [duplicate check/fallback/repeated pattern] + [boundary where it belongs]
+- [file:line] \`quoted line\` - [duplicate check/fallback/repeated pattern] + [boundary where it belongs]
 
 ### Coverage
 - Cleared: None | [anchor] - [lead] - [evidence that cleared it]
@@ -121,6 +123,43 @@ None | [file:line] \`quoted line\` - [what to remove, inline, merge, or replace]
 
 ### Action Plan
 [No action | worthwhile simplifications, distinguishing optional tweaks]
+\`\`\`
+
+## Examples
+
+Both examples are fictional illustrations of shape, each on its own version of the change in the Review Request Example (candidate 5d8e1f0 there); neither reports an executed check.
+
+Supported simplification (fictional candidate 9c1f4e8): the change validates at the boundary and \`cheapestQuoteId\` re-checks the same condition.
+
+\`\`\`
+**Review Basis**: 2b7a9c4..9c1f4e8 in /work/shipping; root AGENTS.md applied; no gaps.
+**Overall Assessment**: SIMPLIFY
+**Core Purpose**: show the cheapest carrier at checkout.
+**Bottom Line**: One internal guard repeats a check the only caller already makes.
+
+### Redundancy / Defensive Code
+- packages/shipping/src/quotes.ts:13 \`if (sorted.length === 0) return undefined;\` - the only caller, checkout.ts:85, returns on an empty list before the call, so this branch is unreachable and only widens the return type. Remove it; the boundary check at checkout.ts:85 stays.
+  - Survived: no other caller (searched packages/ for cheapestQuoteId) and no test that exercises the branch.
+
+### Coverage
+- Cleared: checkout.ts:85 guard - whether removing the inner check loses protection - the caller guard runs first on every path and quotes.test.ts:40 pins it.
+- Not inspected: None.
+\`\`\`
+
+Guarded and clean (fictional candidate 6a0c3d2, where only the caller checks):
+
+\`\`\`
+**Review Basis**: 2b7a9c4..6a0c3d2 in /work/shipping; root AGENTS.md applied; no gaps.
+**Overall Assessment**: ALREADY_MINIMAL
+**Core Purpose**: show the cheapest carrier at checkout.
+**Bottom Line**: The empty list is rejected once, at the boundary; the helper adds nothing to remove.
+
+### Coverage
+- Cleared: quotes.ts:14 \`sorted[0].id\` - missing internal guard as a defect - the caller rejects [] first (checkout.ts:85), so an inner guard would be the redundancy this review removes.
+- Not inspected: None.
+
+### Action Plan
+No action.
 \`\`\`
 
 Do not include mandatory praise. Findings come first.`;

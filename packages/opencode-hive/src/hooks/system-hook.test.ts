@@ -25,20 +25,20 @@ describe('HIVE_SYSTEM_PROMPT', () => {
   });
 
   it('defines the shared capability-based tool contract', () => {
-    expect(HIVE_SYSTEM_PROMPT).toContain('Inspect the descriptions and input schemas of tools exposed to this agent');
-    expect(HIVE_SYSTEM_PROMPT).toContain('Choose the narrowest existing tool');
-    expect(HIVE_SYSTEM_PROMPT).toContain('Local text or content search');
-    expect(HIVE_SYSTEM_PROMPT).toContain('Syntax-aware structural search or AST/pattern inspection');
-    expect(HIVE_SYSTEM_PROMPT).toContain('Official current or version-relevant library/API documentation');
-    expect(HIVE_SYSTEM_PROMPT).toContain('Public source-code examples from other repositories');
-    expect(HIVE_SYSTEM_PROMPT).toContain('General web discovery or current information');
-    expect(HIVE_SYSTEM_PROMPT).toContain('Direct retrieval of a known URL');
-    expect(HIVE_SYSTEM_PROMPT).toContain('Interactive rendered or stateful browser work');
-    expect(HIVE_SYSTEM_PROMPT).toContain('Establish repository behavior from local source and executed checks');
-    expect(HIVE_SYSTEM_PROMPT).toContain('public code examples as usage evidence, not API authority');
-    expect(HIVE_SYSTEM_PROMPT).toContain('A broader capability is not an automatic substitute');
-    expect(HIVE_SYSTEM_PROMPT).toContain('report the missing capability and what cannot be established or completed');
-    expect(HIVE_SYSTEM_PROMPT).toContain('Use only capabilities already exposed to this agent');
+    // Selection: the exposed definition fixes availability and syntax, and access never widens authority.
+    expect(HIVE_SYSTEM_PROMPT).toContain('Select an exposed tool whose documented capability, evidence source, and permitted effects fit the assignment');
+    expect(HIVE_SYSTEM_PROMPT).toContain('The exposed description and input schema determine availability and syntax');
+    expect(HIVE_SYSTEM_PROMPT).toContain('Tool access does not widen the role, permission, or assignment boundaries');
+    // Evidence suitability: each claim kind names the source that can establish it.
+    expect(HIVE_SYSTEM_PROMPT).toContain('Ground repository claims in local source and executed checks');
+    expect(HIVE_SYSTEM_PROMPT).toContain('first-party documentation for the relevant version');
+    expect(HIVE_SYSTEM_PROMPT).toContain('Public code examples show usage, not API authority');
+    expect(HIVE_SYSTEM_PROMPT).toContain('A text match does not prove a structural invariant');
+    expect(HIVE_SYSTEM_PROMPT).toContain('interactive browsing only for rendered state, forms, downloads, or user-like interaction');
+    // Missing capability stays visible and is never recreated.
+    expect(HIVE_SYSTEM_PROMPT).toContain('report the missing capability and what cannot be established');
+    expect(HIVE_SYSTEM_PROMPT).toContain('continue only independent authorized work');
     expect(HIVE_SYSTEM_PROMPT).toContain('Do not install, configure, or enable tools');
+    expect(HIVE_SYSTEM_PROMPT).toContain('recreate a missing capability with shell commands, scripts, or ad hoc network requests');
   });
 });

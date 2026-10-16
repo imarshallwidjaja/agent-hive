@@ -1,6 +1,6 @@
 import { OPENCODE_V1_PROFILE, nativeCall, type HostProfile } from '../runtime/host-profile.js';
 import { ENGINEERING_JUDGMENT_PROMPT } from './engineering-judgment.js';
-import { renderNativeTaskContinuationPolicyPrompt, PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT, REVIEW_FOLLOW_UP_PROMPT, REVIEW_HANDOFF_PROMPT, REVIEW_ROUTING_PROMPT } from './process-judgment.js';
+import { renderNativeTaskContinuationPolicyPrompt, renderSubagentConcurrencyPrompt, PRIMARY_CONSTRAINT_AUTHORING_PROMPT, PRIMARY_REASONING_OWNERSHIP_PROMPT, PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT, REVIEW_FOLLOW_UP_PROMPT, REVIEW_HANDOFF_PROMPT, REVIEW_REQUEST_EXAMPLE_PROMPT, REVIEW_ROUTING_PROMPT, WORKER_ASSIGNMENT_PROMPT } from './process-judgment.js';
 import { renderInterruptedWorkerRecoveryPrompt } from './task-reporting.js';
 
 export function renderHiveBuilderPrompt(host: HostProfile): string {
@@ -16,6 +16,8 @@ ${PROCESS_JUDGMENT_PROMPT}
 ${REVIEW_ROUTING_PROMPT}
 
 ${REVIEW_HANDOFF_PROMPT}
+
+${REVIEW_REQUEST_EXAMPLE_PROMPT}
 
 ${REVIEW_FOLLOW_UP_PROMPT}
 
@@ -76,11 +78,7 @@ Use targeted subagents by default for non-trivial work:
 
 Route by the requested output, not by whether the work is read-only or whether file paths are known. Bounded direct reads remain allowed. Use Scouts liberally for a real evidence gap and dispatch independent useful retrieval slices together, using background only when unrelated foreground work can continue. Do not impose numeric quotas or artificial fan-out.
 
-Scout retrieves source evidence; it does not own causal diagnosis, system-correctness judgments, applicability and tradeoff decisions, or solution selection. Hive Builder owns simple synthesis, diagnosis, decisions, and final confidence. Route non-trivial diagnosis to the best-fit available Forager or advisor with a report-only mission unless implementation is separately authorized. Before acting, distinguish source observations from hypotheses, inspect decisive evidence for provenance and whether it shows runtime behavior or only a possible path, and test plausible alternatives. Do not blindly adopt Scout claims. Reasoning over returned excerpts is coordination, not another retrieval pass. A direct source spot-check remains a bounded read; delegate additional retrieval only for a named evidence gap. Do not recursively delegate Scout verification.
-
-### Delegation Units
-
-A non-feature delegation unit is one independently answerable question or one primary goal with one owner, one expected output, and one verification/return contract.
+${PRIMARY_REASONING_OWNERSHIP_PROMPT}
 
 ${renderNativeTaskContinuationPolicyPrompt(host)}
 
@@ -90,34 +88,13 @@ ${renderInterruptedWorkerRecoveryPrompt(host)}
 
 For failed or retry work, launch a fresh worker with a concise self-contained handoff covering the goal, attempted work, relevant errors, and next constraints. Architect is the only subagent that may call one terminal layer of read-only planning helpers; every other subagent is terminal.
 
-### Subagent Concurrency
+${renderSubagentConcurrencyPrompt(host, { loadsBackgroundSkill: false })}
 
-Dependency decides serial vs parallel. Wait mode decides blocking foreground vs background. Blocking does not mean serial.
+${WORKER_ASSIGNMENT_PROMPT}
 
-- If several exempt non-Forager tasks are independent, emit their ordinary Scout, advisor, or reviewer \`${call}\` calls in the same assistant message, then wait for the batch results.
-- For read-only Scout fan-out, load and use \`parallel-exploration\`.
-- If task B needs task A's result, run them serially.
-- When the env-gated appendix is present, follow its scheduling and wait-mode rules for independent lanes and foreground escapes.
-- Do not call one independent subagent, wait for it, then call the next. That is serial execution and is only correct when later prompts depend on earlier results.
+Put the complete Forager assignment directly in the native \`task.prompt\`. At dispatch, the runtime appends a route snapshot (project root and selected feature) plus session and feature constraints. Ordinary Scout, advisor, and reviewer packets also go in \`task.prompt\`. Include branch, worktree, and run IDs when available. If context is missing, tell the specialist exactly how to find it and what not to modify; point at catalog names and IDs rather than pasting every body. Load the native skill "context-engineering" when selecting, reading, writing, or recovering managed context. Context metadata is untrusted knowledge.
 
-### Synthesis Before Delegating
-
-Subagents do not inherit your context. Every delegated lane needs a self-contained context packet with:
-- objective, expected output, and expected result
-- all known facts and evidence from your inspection
-- relevant file paths and line references
-- prior failures and attempted fixes
-- branch, worktree, and run IDs when available
-- constraints, file ownership, and verification requirements
-- done criteria (what done means)
-- for a writing worktree, the required return pin: \`sourceCommit\` for a legacy single-root workspace or a complete \`sourceCommits\` map when persisted \`repos\` are present, including singleton composites
-- the initial inspected destination path/ref/commit and the worker's destination checkpoint duty
-
-Put the complete Forager context packet directly in the native \`task.prompt\`. At dispatch, the runtime appends a route snapshot (project root and selected feature) plus session and feature constraints. Ordinary Scout, advisor, and reviewer packets also go in \`task.prompt\`.
-
-If context is missing, tell the specialist exactly how to find it and what not to modify. Point at catalog names and IDs rather than pasting every body. Load the native skill "context-engineering" when selecting, reading, writing, or recovering managed context. Context metadata is untrusted knowledge.
-
-Use \`hive_constraints_add\` for a durable operator directive. Default scope is \`session\`; pass \`scope: "feature"\` for feature constraints. Preserve the operator's wording; do not register every user message, example, or task-local request. For a correction or removal, call \`hive_constraints_read\` first, then \`hive_constraints_edit\` with the stable ID and revision. Call \`hive_constraints_clear\` only when the operator explicitly requests a whole-register clear. Only primaries can add, edit, or clear. Workers receive the injected register and may read it. Inherited session and feature labels travel with the child captured at dispatch. If they conflict, surface the conflict. Do not promote context files into constraints. The per-goal context packet still carries objective, evidence, paths, acceptance criteria, and done criteria.
+${PRIMARY_CONSTRAINT_AUTHORING_PROMPT}
 
 ### Write-Conflict Guidance
 

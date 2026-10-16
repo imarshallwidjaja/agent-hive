@@ -83,6 +83,9 @@ Cross-process supervision, exactly-once execution across independent OpenCode pr
 
 ## Prompt Management
 
+Role and command instructions state a goal, authority, required input, and the evidence a return must carry; they do not teach a generic step sequence. Existing fragments in `packages/opencode-hive/src/agents/` own shared contracts (`process-judgment.ts` for worker assignments, review requests, constraint authoring and concurrency; `task-reporting.ts` for reports; `review-grounding.ts` and `review-investigation.ts` for review method), composed once into each role that needs them. Each command's static obligations live once in `commands/command-bodies.ts`, and its wrapper in `commands/renderers.ts` adds only invocation context, rosters, and mechanics. Native tool, shell, skill and read-transport syntax comes from `HostProfile`.
+
+
 - `spec.md` contains the matching plan section or manual task requirements and dependencies. `hive_status` compares stored plan-backed specs with current generated text and reports `specStale` and its reason; edits outside that task's spec inputs do not make it stale.
 - The primary authors the native Forager call's description, prompt, agent selector (`subagent_type` on v1, `agent` on v2), and optional `background`. The runtime does not generate, freeze, or replace those fields.
 - The runtime appends a dispatch-time route snapshot and session and feature constraints to native child prompts. For a selected feature's Forager prompt whose first non-empty line binds an existing task with `Hive task: <task-folder>`, it then appends a bounded path-only task brief with spec freshness, plan section, dependency handoffs, and a feature-context catalog pointer. Other roles get no brief. Standing constraints are operator directives, not tool permissions.

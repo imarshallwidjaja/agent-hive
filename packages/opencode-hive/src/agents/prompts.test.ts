@@ -42,7 +42,7 @@ import { VULNERABILITY_REVIEW_PRIMARY_PROMPT } from './vulnerability-review-prim
 import { VULNERABILITY_REVIEWER_PROMPT } from './vulnerability-reviewer';
 import { HIVE_SYSTEM_PROMPT } from '../hooks/system-hook';
 import { ENGINEERING_JUDGMENT_PROMPT } from './engineering-judgment';
-import { NATIVE_TASK_CONTINUATION_POLICY_PROMPT, PLAN_APPROVAL_SYNC_PROMPT, PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT, REVIEW_FOLLOW_UP_PROMPT, REVIEW_HANDOFF_PROMPT, REVIEW_ROUTING_PROMPT } from './process-judgment';
+import { NATIVE_TASK_CONTINUATION_POLICY_PROMPT, PLAN_APPROVAL_SYNC_PROMPT, PRIMARY_CONSTRAINT_AUTHORING_PROMPT, PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT, REVIEW_FOLLOW_UP_PROMPT, REVIEW_HANDOFF_PROMPT, REVIEW_REQUEST_EXAMPLE_PROMPT, REVIEW_ROUTING_PROMPT, WORKER_ASSIGNMENT_PROMPT } from './process-judgment';
 import { REVIEW_GROUNDING_PROMPT } from './review-grounding';
 import { REVIEW_INVESTIGATION_PROMPT } from './review-investigation';
 import { INTERRUPTED_WORKER_RECOVERY_PROMPT, TASK_REPORT_CONTRACT_PROMPT, TASK_REPORT_OWNERSHIP_PROMPT } from './task-reporting';
@@ -140,7 +140,7 @@ describe('Engineering judgment prompt reach', () => {
     expect(ARCHITECT_BEE_PROMPT).toContain('Use Engineering Judgment to make requested behavior, call-site contracts, ownership boundaries');
     expect(QUEEN_BEE_PROMPT).toContain('Require the Architect handoff');
     expect(QUEEN_BEE_PROMPT).toContain('material planning, orchestration, and review-routing decisions');
-    expect(FORAGER_BEE_PROMPT).toContain('Apply Engineering Judgment during PLAN and VERIFY');
+    expect(FORAGER_BEE_PROMPT).toContain('Apply Engineering Judgment during planning and verification');
     expect(PLAN_REVIEWER_PROMPT).toContain('Apply Engineering Judgment only as an execution-readiness lens');
     expect(CODE_REVIEWER_PROMPT).toContain('Apply Engineering Judgment to the changed scope');
     expect(SIMPLICITY_REVIEWER_PROMPT).toContain('total cognitive burden and ownership clarity');
@@ -151,9 +151,8 @@ describe('Engineering judgment prompt reach', () => {
     expect(APPROACH_ADVISOR_PROMPT).toContain('Apply Engineering Judgment to implementation route selection');
     expect(APPROACH_ADVISOR_PROMPT).toContain('explicit justification for new libraries, services, or infrastructure');
     expect(DASH_REVIEWER_PROMPT).toContain('Apply Engineering Judgment to reviewer selection and finding synthesis');
-    expect(FORAGER_BEE_PROMPT).toContain(
-      'Place each new test invariant in the canonical owning suite in this change and fold weaker duplicates before commit',
-    );
+    // The test-placement rule has one owner; Forager consumes it through the shared fragment instead of restating it.
+    expect(FORAGER_BEE_PROMPT).toContain(ENGINEERING_JUDGMENT_PROMPT);
     expect(ARCHITECT_BEE_PROMPT).toContain(
       'When tests are selected, name the invariant, owning layer, and canonical suite',
     );
@@ -598,6 +597,118 @@ describe('Review investigation contract', () => {
   });
 });
 
+describe('Review request and return examples', () => {
+  const dispatchers = [
+    ['Hive', QUEEN_BEE_PROMPT],
+    ['Swarm', SWARM_BEE_PROMPT],
+    ['Hive Builder', HIVE_BUILDER_PROMPT],
+  ] as const;
+  const section = (prompt: string, heading: string) => prompt.slice(prompt.indexOf(heading));
+
+  it('composes the request example once, only where an implementation review is dispatched', () => {
+    for (const [name, prompt] of dispatchers) {
+      expect(countOccurrences(prompt, REVIEW_REQUEST_EXAMPLE_PROMPT), name).toBe(1);
+      expect(prompt, name).toContain(`${REVIEW_HANDOFF_PROMPT}\n\n${REVIEW_REQUEST_EXAMPLE_PROMPT}`);
+    }
+    for (const [name, prompt] of [
+      ['Architect', ARCHITECT_BEE_PROMPT], ['Dash Reviewer', DASH_REVIEWER_PROMPT],
+      ['Vulnerability Review Primary', VULNERABILITY_REVIEW_PRIMARY_PROMPT], ['Code Reviewer', CODE_REVIEWER_PROMPT],
+      ['Simplicity Reviewer', SIMPLICITY_REVIEWER_PROMPT], ['Forager', FORAGER_BEE_PROMPT],
+    ] as const) expect(prompt, name).not.toContain(REVIEW_REQUEST_EXAMPLE_PROMPT);
+  });
+
+  it('shows one reviewer lens in the request and keeps dispatch, reviewer choice and count with the parent', () => {
+    const fence = '```';
+    const start = REVIEW_REQUEST_EXAMPLE_PROMPT.indexOf(fence);
+    const end = REVIEW_REQUEST_EXAMPLE_PROMPT.lastIndexOf(fence);
+    const request = REVIEW_REQUEST_EXAMPLE_PROMPT.slice(start, end);
+    const parentText = REVIEW_REQUEST_EXAMPLE_PROMPT.slice(0, start) + REVIEW_REQUEST_EXAMPLE_PROMPT.slice(end);
+    for (const part of [
+      'Review candidate 5d8e1f0 in /work/shipping against base 2b7a9c4 for correctness',
+      'A simplicity review of the same candidate is requested separately',
+      'Purpose:', 'Known consumers:', 'Governing requirements:',
+      'Lead (unverified):', 'Evidence: the worker ran',
+      'Return: your assessment label, Review Basis, each finding with file:line, the decisive quoted line, its consequence, and what you did to disprove it, and Coverage',
+    ]) expect(request).toContain(part);
+    // The enclosed text is what a terminal reviewer reads: it addresses its own lens and asks it to dispatch nobody.
+    expect(request).not.toMatch(/dispatch|delegate|\btask\(|subagent_type|task_id/i);
+    for (const part of [
+      'Each reviewer you dispatch for a settled candidate gets its own request for one assigned lens',
+      'Choose the reviewers under Review Routing, including configured companions; this example fixes no reviewer count',
+      'the simplicity reviewer and any companion get the same target, base, purpose and evidence with their own lens in the first line',
+      'The lead is a question with an anchor, not a conclusion',
+    ]) expect(parentText).toContain(part);
+    expect(REVIEW_REQUEST_EXAMPLE_PROMPT).not.toMatch(/\btask\(|subagent_type|task_id/);
+    expect(REVIEW_REQUEST_EXAMPLE_PROMPT).not.toMatch(/exactly one|one code reviewer and one simplicity reviewer/i);
+  });
+
+  it('gives each implementation reviewer a supported finding and a guarded clean example with stable labels', () => {
+    const code = section(CODE_REVIEWER_PROMPT, '## Examples');
+    expect(code).toContain('neither reports an executed check');
+    expect(code).toContain('**Overall Assessment**: REQUEST_CHANGES');
+    expect(code).toContain('**Overall Assessment**: APPROVE');
+    expect(code).toContain('quotes.ts:14 `return sorted[0].id;`');
+    expect(code).toContain('Survived: no guard in cheapestQuoteId or at checkout.ts:88');
+    expect(code).toContain('same concern cleared');
+    expect(code).toContain('No action.');
+    const simplicity = section(SIMPLICITY_REVIEWER_PROMPT, '## Examples');
+    expect(simplicity).toContain('neither reports an executed check');
+    expect(simplicity).toContain('**Overall Assessment**: SIMPLIFY');
+    expect(simplicity).toContain('**Overall Assessment**: ALREADY_MINIMAL');
+    expect(simplicity).toContain('Survived: no other caller');
+    expect(simplicity).toContain('No action.');
+    for (const example of [code, simplicity]) {
+      expect(example).toContain('**Review Basis**:');
+      expect(example).toContain('### Coverage');
+    }
+  });
+
+  it('gives each differing version of the example change its own fictional candidate identity', () => {
+    const candidates = (text: string) => [...text.matchAll(/2b7a9c4\.\.(\w+)/g)].map((match) => match[1]!);
+    const [supported, guarded] = candidates(section(CODE_REVIEWER_PROMPT, '## Examples'));
+    expect(supported).toBe('5d8e1f0');
+    const simplicity = section(SIMPLICITY_REVIEWER_PROMPT, '## Examples');
+    const [redundantGuard, minimal] = candidates(simplicity);
+    // Same identity only where the code is the same: the guarded and minimal versions are one change, the redundant-guard version is another.
+    expect(guarded).toBe('6a0c3d2');
+    expect(minimal).toBe(guarded);
+    expect(redundantGuard).not.toBe(guarded);
+    expect(redundantGuard).not.toBe(supported);
+    expect(simplicity).toContain(`fictional candidate ${redundantGuard}`);
+    expect(simplicity).toContain(`fictional candidate ${minimal}`);
+    expect(section(CODE_REVIEWER_PROMPT, 'Guarded variant')).toContain(`fictional candidate ${guarded}`);
+    expect(simplicity).toContain('each on its own version of the change in the Review Request Example');
+    expect(simplicity).not.toContain('the request that produced them');
+  });
+
+  it('omits empty severity sections but never Review Basis, Coverage, or the verdict, and forbids required praise', () => {
+    for (const prompt of [CODE_REVIEWER_PROMPT, SIMPLICITY_REVIEWER_PROMPT]) {
+      const output = prompt.slice(prompt.indexOf('## Output Format'), prompt.indexOf('## Examples'));
+      expect(output).toContain('Omit a');
+      expect(output).toContain('has no entries; a cleared lead belongs in Coverage');
+      expect(output).toContain('Headings and order may adapt to the review');
+      expect(output).toContain('**Review Basis**: [target; instruction paths and skills applied; material gaps or conflicts]');
+      expect(output).toContain('### Coverage');
+      expect(output).not.toMatch(/^- None \| \[file:line\]/m);
+      expect(prompt).toContain('Do not include mandatory praise. Findings come first.');
+      expect(prompt).not.toContain('Effort Estimate');
+    }
+    expect(CODE_REVIEWER_PROMPT).toContain('**Overall Assessment**: [APPROVE / REQUEST_CHANGES / NEEDS_DISCUSSION]');
+    expect(SIMPLICITY_REVIEWER_PROMPT).toContain('**Overall Assessment**: [SIMPLIFY / MINOR_TWEAKS / ALREADY_MINIMAL / NEEDS_DISCUSSION]');
+  });
+
+  it('keeps the examples free of the identifiers in the evaluation fixtures', () => {
+    const fixtures = readFileSync(path.resolve(import.meta.dir, '..', '..', 'evals', 'instruction-contracts', 'scenarios.json'), 'utf8');
+    const identifiers = new Set<string>();
+    // Fixture file paths and camelCase function names; plain words such as `add` or `total` are ordinary prose.
+    for (const match of fixtures.matchAll(/export (?:async )?function (\w*[A-Z0-9]\w*)/g)) identifiers.add(match[1]!);
+    for (const match of fixtures.matchAll(/"((?:src|test)\/[\w./-]+)"\s*:/g)) identifiers.add(match[1]!);
+    expect(identifiers.size).toBeGreaterThan(5);
+    const taught = [REVIEW_REQUEST_EXAMPLE_PROMPT, WORKER_ASSIGNMENT_PROMPT, CODE_REVIEWER_PROMPT, SIMPLICITY_REVIEWER_PROMPT].join('\n');
+    for (const identifier of identifiers) expect(taught.includes(identifier), identifier).toBe(false);
+  });
+});
+
 describe('Dash review investigation and challenge', () => {
   it('orders understanding, lead routing, independent challenge, and evidence-led synthesis', () => {
     const sequence = sectionBetween(DASH_REVIEWER_PROMPT, '## Review Sequence', '## Engineering Judgment');
@@ -620,36 +731,67 @@ describe('Dash review investigation and challenge', () => {
   });
 });
 
-describe('Orchestrator synthesis-before-delegation', () => {
-  it('Hive prompt contains synthesis-before-delegating reminder', () => {
-    expect(QUEEN_BEE_PROMPT).toContain('Synthesize Before Delegating');
-    expect(QUEEN_BEE_PROMPT).toContain('Workers do not inherit your conversation');
+describe('Worker assignment contract', () => {
+  const orchestrators = [
+    ['Hive', QUEEN_BEE_PROMPT],
+    ['Swarm', SWARM_BEE_PROMPT],
+    ['Hive Builder', HIVE_BUILDER_PROMPT],
+  ] as const;
+
+  it('composes the assignment contract once in each orchestrator that dispatches workers', () => {
+    for (const [name, prompt] of orchestrators) expect(countOccurrences(prompt, WORKER_ASSIGNMENT_PROMPT), name).toBe(1);
+    for (const [name, prompt] of [['Architect', ARCHITECT_BEE_PROMPT], ['Forager', FORAGER_BEE_PROMPT], ['Code Reviewer', CODE_REVIEWER_PROMPT]] as const) {
+      expect(prompt, name).not.toContain(WORKER_ASSIGNMENT_PROMPT);
+    }
   });
 
-  it('Hive delegation check includes synthesis proof step', () => {
-    expect(QUEEN_BEE_PROMPT).toContain('Use `hive_status` before dispatch: refresh a stale pending task');
+  it('names the substance a worker needs and forbids references to prior conversation', () => {
+    expect(WORKER_ASSIGNMENT_PROMPT).toContain('Workers do not inherit your conversation');
+    for (const field of ['**Goal**', '**Writable scope**', '**Preserved contracts**', '**Evidence you hold**', '**Acceptance and checks**', '**Authority**', '**Destination**']) {
+      expect(WORKER_ASSIGNMENT_PROMPT).toContain(field);
+    }
+    expect(WORKER_ASSIGNMENT_PROMPT).toContain('known facts with file and line references');
+    expect(WORKER_ASSIGNMENT_PROMPT).toContain('what done looks like');
+    expect(WORKER_ASSIGNMENT_PROMPT).toContain('do not write "based on your findings" or "as discussed above"');
+    expect(WORKER_ASSIGNMENT_PROMPT).toContain('assign bounded discovery first');
+    expect(WORKER_ASSIGNMENT_PROMPT).toContain('cite the report paths the worker must read and why');
+    expect(WORKER_ASSIGNMENT_PROMPT).toContain('mandatory findings and requirements, and operator decisions directly in the assignment');
+  });
+
+  it('keeps source-pin authority and destination identity in the assignment', () => {
+    expect(WORKER_ASSIGNMENT_PROMPT).toContain('`sourceCommit` for a legacy single-root workspace, the complete `sourceCommits` map when persisted `repos` are present');
+    expect(WORKER_ASSIGNMENT_PROMPT).toContain("the inspected path, full ref, and commit, with the worker's checkpoint duty");
+    expect(WORKER_ASSIGNMENT_PROMPT).toContain('label the retained HEAD observed when none exists');
+  });
+
+  it('shows a complete worktree assignment whose parts match the contract', () => {
+    const example = WORKER_ASSIGNMENT_PROMPT.slice(WORKER_ASSIGNMENT_PROMPT.indexOf('Example worktree assignment'));
+    expect(example).toContain('Hive task: 04-reject-negative-timeouts');
+    for (const label of ['Goal:', 'Writable scope:', 'Preserve:', 'Acceptance and checks:', 'Authority:', 'Destination:']) expect(example).toContain(label);
+    expect(example).toContain('return the exact sourceCommit unchanged');
+    expect(example).toContain('Do not merge, clean up, push, or record task status');
+    expect(example).toMatch(/Destination: \/work\/client, refs\/heads\/main, [0-9a-f]{7}\./);
+    // Native syntax belongs to HostProfile slots, never to this host-neutral example.
+    expect(example).not.toMatch(/\btask\(|subagent_type|task_id/);
+  });
+
+  it('adds Hive and Swarm freshness checks and the Hive task line on top of the shared contract', () => {
+    for (const [name, prompt] of [['Hive', QUEEN_BEE_PROMPT], ['Swarm', SWARM_BEE_PROMPT]] as const) {
+      expect(prompt, name).toContain('use `hive_status` to check `specStale`: refresh a stale pending task with `hive_tasks_sync({ refreshPending: true })`');
+      expect(prompt, name).toContain('name its current plan section in the assignment');
+      expect(prompt, name).toContain('`unowned_heading_after_task_section`, delegate');
+    }
     expect(QUEEN_BEE_PROMPT).toContain('State the concrete expected outcome');
+    expect(SWARM_BEE_PROMPT).toContain('put `Hive task: <task-folder>` on the first non-empty line');
+    expect(HIVE_BUILDER_PROMPT).toContain('complete Forager assignment directly in the native `task.prompt`');
+    expect(HIVE_BUILDER_PROMPT).toContain('Ordinary Scout, advisor, and reviewer packets also go in `task.prompt`');
+    expect(HIVE_BUILDER_PROMPT).toContain('Include branch, worktree, and run IDs when available');
   });
 
-  it('Swarm prompt has a dedicated synthesis section with rules', () => {
-    expect(SWARM_BEE_PROMPT).toContain('## Synthesize Before Delegating');
-    expect(SWARM_BEE_PROMPT).toContain('Workers do not inherit your conversation');
-  });
-
-  it('Swarm synthesis section forbids vague delegation phrases', () => {
-    expect(SWARM_BEE_PROMPT).toContain('based on your findings');
-    expect(SWARM_BEE_PROMPT).toContain('based on the research');
-  });
-
-  it('Swarm synthesis section includes good/bad delegation example', () => {
-    expect(SWARM_BEE_PROMPT).toContain('<Bad>');
-    expect(SWARM_BEE_PROMPT).toContain('<Good>');
-  });
-
-  it('Swarm synthesis section requires concrete hand-off anchors', () => {
-    expect(SWARM_BEE_PROMPT).toContain('file paths and line ranges when known');
-    expect(SWARM_BEE_PROMPT).toContain('expected result');
-    expect(SWARM_BEE_PROMPT).toContain('what done looks like');
+  it('shares the standing-constraint authoring rules instead of restating them per primary', () => {
+    for (const [name, prompt] of orchestrators) expect(countOccurrences(prompt, PRIMARY_CONSTRAINT_AUTHORING_PROMPT), name).toBe(1);
+    expect(PRIMARY_CONSTRAINT_AUTHORING_PROMPT).toContain('Only primaries can add, edit, or clear');
+    expect(PRIMARY_CONSTRAINT_AUTHORING_PROMPT).toContain('call `hive_constraints_read` first, then `hive_constraints_edit` with the stable ID and revision');
   });
 });
 
@@ -1202,6 +1344,8 @@ describe('Task report reliability', () => {
     }
   });
 
+  // Scenario: hive_task_update wrote reports/{N}.md, then failed before handoff.md. The Forager return and the primary repair
+  // (and the unbound start-execution command, in registry.test.ts) must agree; composition of each fragment is pinned above.
   it('inspects partial publication from files and leaves missing-field repair to the primary', () => {
     for (const requirement of [
       'A validation rejection, such as a blank field or an oversize handoff, writes nothing; correct the named field before retrying',
@@ -1436,7 +1580,7 @@ describe('Forager verification and tool-scope clarity', () => {
 
   it('respects exposed tools and assignment scope', () => {
     expect(FORAGER_BEE_PROMPT).toContain('tool access is scoped to your role');
-    expect(FORAGER_BEE_PROMPT).toContain('Your assignment states scope and verification expectations');
+    expect(FORAGER_BEE_PROMPT).toContain("tool availability does not widen the assignment's scope or verification expectations");
   });
 
   it('records observed output in verification step', () => {
@@ -1445,9 +1589,8 @@ describe('Forager verification and tool-scope clarity', () => {
   });
 
   it('uses exposed research capabilities and reports missing ones', () => {
-    expect(FORAGER_BEE_PROMPT).toContain('Use existing research capabilities');
-    expect(FORAGER_BEE_PROMPT).toContain('Select them through the shared capability contract');
-    expect(FORAGER_BEE_PROMPT).toContain('report the evidence gap and continue only independent work');
+    expect(FORAGER_BEE_PROMPT).toContain('check authoritative documentation through an exposed capability under the shared capability contract');
+    expect(FORAGER_BEE_PROMPT).toContain('A required capability that is not exposed is reported as an evidence gap; continue only independent work');
     expect(FORAGER_BEE_PROMPT).toContain('structural or language-aware inspection');
   });
 });
@@ -1657,7 +1800,7 @@ describe('Hive (Hybrid) prompt', () => {
       expect(QUEEN_BEE_PROMPT).toContain('the scout researcher whose description best fits the research slice');
       expect(QUEEN_BEE_PROMPT).toContain('Use built-in `scout-researcher` when no configured scout-derived custom description is a closer domain/workflow match');
       expect(QUEEN_BEE_PROMPT).toContain('task({ subagent_type: "<chosen-researcher>"');
-      expect(QUEEN_BEE_PROMPT).toContain('mission mode, writable scope/repositories, required skills');
+      expect(QUEEN_BEE_PROMPT).toContain(WORKER_ASSIGNMENT_PROMPT);
     });
 
     it('records blocked status then clears the blocker on an explicit leaving status', () => {
@@ -1814,7 +1957,7 @@ describe('Architect (Planner) prompt', () => {
     });
 
     it('permits research and review delegation via task()', () => {
-      expect(ARCHITECT_BEE_PROMPT).toContain('one terminal layer of permitted Scout, plan-reviewer, or approach-advisor planning help');
+      expect(ARCHITECT_BEE_PROMPT).toContain('one layer of permitted read-only planning and investigation helpers: Scout, plan-reviewer, approach-advisor, custom agents derived from those roles, and `hive-helper`');
       expect(ARCHITECT_BEE_PROMPT).toContain('Never invoke Architect recursively or use this path for Forager, implementation, or coding workers.');
       expect(ARCHITECT_BEE_PROMPT).toContain('Never invoke Architect recursively');
     });
@@ -2260,13 +2403,10 @@ describe('Forager (Worker/Coder) prompt', () => {
     expect(FORAGER_BEE_PROMPT).not.toContain('proposed Conventional Commit subject and body');
   });
 
-  it('contains resolve before blocking', () => {
-    expect(FORAGER_BEE_PROMPT).toContain('Resolve Before Blocking');
+  it('states the assignment contract, work-loop limit, and failure limit', () => {
+    expect(FORAGER_BEE_PROMPT).toContain('## Assignment Contract');
+    expect(FORAGER_BEE_PROMPT).toContain('## Work Loop (max 3 iterations)');
     expect(FORAGER_BEE_PROMPT).toContain('if 3 different approaches fail');
-  });
-
-  it('contains completion checklist', () => {
-    expect(FORAGER_BEE_PROMPT).toContain('Completion Checklist');
   });
 
   it('requires one terminal report without worker finalization', () => {
@@ -2283,20 +2423,19 @@ describe('Forager (Worker/Coder) prompt', () => {
     expect(FORAGER_BEE_PROMPT).not.toContain('Do NOT respond further');
   });
 
-  it('adds resolve-before-blocking guidance', () => {
-    expect(FORAGER_BEE_PROMPT).toContain('## Resolve Before Blocking');
-    expect(FORAGER_BEE_PROMPT).toContain('Default to exploration, questions are LAST resort');
-    expect(FORAGER_BEE_PROMPT).toContain('Context inference: Before asking "what does X do?", READ X first.');
+  it('resolves discoverable facts and returns a precise question for real conflicts', () => {
+    expect(FORAGER_BEE_PROMPT).toContain('Resolve discoverable facts yourself');
+    expect(FORAGER_BEE_PROMPT).toContain('Read the referenced files, callers, sibling patterns, and owning tests before editing');
+    expect(FORAGER_BEE_PROMPT).toContain('Do not speculate about code you have not read');
+    expect(FORAGER_BEE_PROMPT).toContain('return a precise question instead of choosing between the conflicting constraints or guessing');
   });
 
-  it('adds a completion checklist before reporting done', () => {
-    expect(FORAGER_BEE_PROMPT).toContain('## Completion Checklist');
-    expect(FORAGER_BEE_PROMPT).toContain('Record exact commands and results');
-  });
-
-  it('expands the orient step with explicit pre-flight actions', () => {
-    expect(FORAGER_BEE_PROMPT).toContain('Read the referenced files and surrounding code');
-    expect(FORAGER_BEE_PROMPT).toContain('Search for similar patterns in the codebase');
+  it('sets the mode of work from the assignment verb and checks evidence before reporting', () => {
+    for (const mode of ['Implement or add tests', 'Fix: establish the cause', 'Refactor: preserve behavior', 'Diagnose: report evidence only']) {
+      expect(FORAGER_BEE_PROMPT).toContain(mode);
+    }
+    expect(FORAGER_BEE_PROMPT).toContain('check each acceptance criterion against recorded evidence for the candidate you verified');
+    expect(FORAGER_BEE_PROMPT).toContain('Done, Blocked, or Cancelled');
   });
 
   it('directs forager to honor declared repository scope and escalate out-of-scope files through the blocker protocol', () => {
@@ -2911,11 +3050,9 @@ describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
   });
 
   it('contains synthesis-before-delegation wording', () => {
-    expect(HIVE_BUILDER_PROMPT).toContain('Subagents do not inherit');
-    expect(HIVE_BUILDER_PROMPT).toContain('evidence');
-    expect(HIVE_BUILDER_PROMPT).toContain('expected result');
-    expect(HIVE_BUILDER_PROMPT).toContain('done criteria');
-    expect(HIVE_BUILDER_PROMPT).toContain('complete Forager context packet directly in the native `task.prompt`');
+    // The assignment substance is the shared contract; Builder adds only where the packet is delivered.
+    expect(HIVE_BUILDER_PROMPT).toContain(WORKER_ASSIGNMENT_PROMPT);
+    expect(HIVE_BUILDER_PROMPT).toContain('complete Forager assignment directly in the native `task.prompt`');
     expect(HIVE_BUILDER_PROMPT).toContain('Ordinary Scout, advisor, and reviewer packets also go in `task.prompt`');
   });
 
@@ -2966,10 +3103,10 @@ describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
   });
 
   it('requires complete context packets and delegation units in the base prompt', () => {
-    expect(HIVE_BUILDER_PROMPT).toContain('context packet');
+    expect(HIVE_BUILDER_PROMPT).toContain(WORKER_ASSIGNMENT_PROMPT);
     expect(HIVE_BUILDER_PROMPT).toContain('prior failures');
     expect(HIVE_BUILDER_PROMPT).toContain('run IDs');
-    expect(HIVE_BUILDER_PROMPT).toContain('verification requirements');
+    expect(HIVE_BUILDER_PROMPT).toContain('**Acceptance and checks**');
     expect(HIVE_BUILDER_PROMPT).toContain('one independently answerable question or one primary goal');
     expect(HIVE_BUILDER_PROMPT).toContain('one owner, one expected output, and one verification/return contract');
   });
@@ -3255,8 +3392,8 @@ describe('host-rendered policy', () => {
       const context: any = { agentMode: 'unified', host, backgroundGuidance: { available: false }, council: {}, agents: {}, dashReviewLanes: [], vulnerabilityReviewLanes: [] };
       const text = hiveCommandRenderers['start-execution']('', context) as string;
       expect(text).toContain(`issue the native Forager ${host.nativeTask.tool}() call`);
-      expect(text).toContain(`preserve ${host.nativeTask.continuationField} pass-through only`);
       expect(text).toContain(`Pass ${host.nativeTask.continuationField} only when`);
+      expect(text).not.toContain('pass-through only for explicit operator/runtime-owned interruption recovery');
     }
   });
   describe('native skill calls in composed prompts', () => {

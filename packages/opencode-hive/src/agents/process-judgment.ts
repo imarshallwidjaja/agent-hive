@@ -70,6 +70,72 @@ For an implementation review, add a review packet so the reviewer can judge how 
 - **Evidence**: the worker's verification commands and results, stated deviations, and known risks.
 - **Re-review**: prior findings with your decision on each, the prior review's Coverage, the fix range (prior..current candidate), and what the fix can affect.`;
 
+export const REVIEW_REQUEST_EXAMPLE_PROMPT = `## Review Request Example
+
+Each reviewer you dispatch for a settled candidate gets its own request for one assigned lens. Choose the reviewers under Review Routing, including configured companions; this example fixes no reviewer count. Dispatch them together, then judge their returns under Review Follow-Up. The request below is the one for the code reviewer (fictional repository, for shape only); the simplicity reviewer and any companion get the same target, base, purpose and evidence with their own lens in the first line.
+
+\`\`\`
+Review candidate 5d8e1f0 in /work/shipping against base 2b7a9c4 for correctness. Scope: packages/shipping/src/quotes.ts and quotes.test.ts. A simplicity review of the same candidate is requested separately.
+Purpose: cheapestQuoteId(quotes) returns the id of the lowest-priced quote for the checkout form (task acceptance: "shows the cheapest carrier"). Known consumers: packages/web/src/checkout.ts:88 and quotes.test.ts.
+Governing requirements: the root AGENTS.md; the skills it requires are named there.
+Lead (unverified): checkout.ts:88 passes the result of fetchQuotes() straight in, and I did not check whether it can return []. Reading fetchQuotes and its tests would settle it.
+Evidence: the worker ran \`bun test packages/shipping\` on 5d8e1f0 with a clean tree (14 pass); none of those tests covers an empty list.
+Return: your assessment label, Review Basis, each finding with file:line, the decisive quoted line, its consequence, and what you did to disprove it, and Coverage.
+\`\`\`
+
+The lead is a question with an anchor, not a conclusion. A reviewer who confirms it reports a finding; one who finds a guard reports the lead as cleared in Coverage.`;
+
+export const WORKER_ASSIGNMENT_PROMPT = `## Worker Assignments
+
+Workers do not inherit your conversation. An assignment gives one worker one primary goal and what it needs to check its own work:
+- **Goal**: the expected result and what done looks like.
+- **Writable scope**: the repositories, paths, or worktree the worker may change, and the paths concurrent siblings own.
+- **Preserved contracts**: behavior, interfaces, and persisted shapes that must not change.
+- **Evidence you hold**: known facts with file and line references, prior failures, and attempted fixes. Point to catalog names, reports, and Hive records instead of pasting their bodies; a first catalog match is not proof of sufficient evidence.
+- **Acceptance and checks**: observable criteria and the commands to run, so the worker returns output for the candidate it verified.
+- **Authority**: the mission mode (implement, fix, refactor, or report-only diagnosis), whether the worker commits and returns a source pin (\`sourceCommit\` for a legacy single-root workspace, the complete \`sourceCommits\` map when persisted \`repos\` are present), required skills, and decisions made only in this session.
+- **Destination**: the inspected path, full ref, and commit, with the worker's checkpoint duty.
+
+When key facts are unknown, assign bounded discovery first, and do not write "based on your findings" or "as discussed above". On retries, cite the report paths the worker must read and why, supply any worker-returned verified pin or label the retained HEAD observed when none exists, and state failed approaches, mandatory findings and requirements, and operator decisions directly in the assignment rather than only behind a report reference.
+
+Example worktree assignment for a feature-task Forager (fictional repository, for shape only; an ad-hoc assignment omits the first line):
+
+\`\`\`
+Hive task: 04-reject-negative-timeouts
+
+Goal: loadClientConfig (packages/client/src/config.ts:30-58) throws ConfigError('invalid_timeout') for a negative timeoutMs instead of passing it to the socket layer. Done = the new case below passes and valid configurations load as before.
+Writable scope: packages/client/src/config.ts and packages/client/src/config.test.ts in the assigned worktree. packages/server has its own loader and stays untouched.
+Preserve: the ConfigError codes, the exported loadClientConfig signature, and the default timeoutMs of 30000.
+Acceptance and checks: loadClientConfig({ timeoutMs: -1 }) throws invalid_timeout and the existing config.test.ts cases still pass. Run \`bun test packages/client/src/config.test.ts\` and the package type-check, and report their output with the commit you tested.
+Authority: fix and commit in the assigned worktree; return the exact sourceCommit unchanged. Do not merge, clean up, push, or record task status. State the cause you established in your report.
+Destination: /work/client, refs/heads/main, 9f3c2a1. Reinspect it before another substantial chunk and before returning; if it moved, return the observed target with your pin and say whether the movement touches config.ts.
+\`\`\``;
+
+export const PRIMARY_CONSTRAINT_AUTHORING_PROMPT = `## Standing Constraints
+
+Use \`hive_constraints_add\` for a durable operator directive. Default scope is \`session\`; pass \`scope: "feature"\` for feature constraints. Preserve the operator's wording; do not register every user message, example, or task-local request. For a correction or removal, call \`hive_constraints_read\` first, then \`hive_constraints_edit\` with the stable ID and revision. Call \`hive_constraints_clear\` only when the operator explicitly requests a whole-register clear. Only primaries can add, edit, or clear. Workers receive the injected register and may read it. Inherited session and feature labels travel with the child captured at dispatch. If they conflict, surface the conflict. Do not promote context files into constraints. Per-goal objective, evidence, paths, acceptance criteria, and done criteria still belong in each assignment.`;
+
+export const PRIMARY_REASONING_OWNERSHIP_PROMPT = `Scout retrieves source evidence; it does not own causal diagnosis, system-correctness judgments, applicability and tradeoff decisions, or solution selection. The primary owns simple synthesis, diagnosis, decisions, and final confidence. Route non-trivial diagnosis to the best-fit available Forager or advisor with a report-only mission unless implementation is separately authorized. Before acting, distinguish source observations from hypotheses, inspect decisive evidence for provenance and whether it shows runtime behavior or only a possible path, and test plausible alternatives. Do not blindly adopt Scout claims. Reasoning over returned excerpts is coordination, not another retrieval pass. A direct source spot-check remains a bounded read; delegate additional retrieval only for a named evidence gap. Do not recursively delegate Scout verification.`;
+
+/** Hive and Swarm load the background-delegation skill; Hive Builder leaves board and wait-mode protocol to its env-gated appendix. */
+export function renderSubagentConcurrencyPrompt(host: HostProfile, role: { loadsBackgroundSkill: boolean }): string {
+  const call = nativeCall(host);
+  const backgroundBullets = role.loadsBackgroundSkill
+    ? '- When the env-gated appendix is present, load and use `background-delegation` for wait mode and board protocol.\n- Load `dispatching-parallel-agents` for writing/change parallelism.'
+    : '- When the env-gated appendix is present, follow its scheduling and wait-mode rules for independent lanes and foreground escapes.';
+  return `### Subagent Concurrency
+
+Dependency decides serial vs parallel. Wait mode decides blocking foreground vs background. Blocking does not mean serial.
+
+- If several exempt non-Forager tasks are independent, emit their ordinary Scout, advisor, or reviewer \`${call}\` calls in the same assistant message, then wait for the batch results.
+- For read-only Scout fan-out, load and use \`parallel-exploration\`.
+- If task B needs task A's result, run them serially.
+${backgroundBullets}
+- Do not call one independent subagent, wait for it, then call the next. That is serial execution and is only correct when later prompts depend on earlier results.
+
+Smallest meaningful delegation unit: one independently answerable question or one primary goal with one owner, one expected output, and one verification/return contract.`;
+}
+
 export const REVIEW_FOLLOW_UP_PROMPT = `## Review Follow-Up
 
 Collect required reviews of the settled candidate before remediation; honor configured participation and explicit per-revision requirements. Consolidate overlapping root causes. Decide with evidence which findings require material fixes, which are optional improvements, which need material evidence or an operator decision, and which are duplicate, unsupported, or out of scope. Reviewer severity and votes do not decide acceptance. Spot-check the quoted anchor of each material finding. When a material finding is contested, rests on an unverified premise, or would expand scope, and its evidence does not settle it, run the discriminating check it names or have a fresh reviewer session that did not raise it try to disprove it before spending remediation on it. Briefly give counter-evidence for a rejected material concern; keep unresolved acceptance risks open. Fold accepted in-scope minor corrections into the same remediation round; decline other optional suggestions with a one-line reason. Neither declined suggestions nor minor-only results reopen review. The primary confirms a minor-only fix against its fix diff instead of re-reviewing.

@@ -1,6 +1,6 @@
 import type { HiveCommandKey } from './registry.js';
 import type { HiveCommandContext, HiveCommandRenderers } from './types.js';
-import { renderCommandBehavior } from './command-bodies.js';
+import { renderCommandBehavior, type CommandBodyKey } from './command-bodies.js';
 import { nativeCall } from '../runtime/host-profile.js';
 import { resolveCouncilMembers } from './council.js';
 
@@ -31,8 +31,12 @@ function renderSections(input: CommandSectionInput): string {
     sections.push(input.details.join('\n'));
   }
 
-  sections.push(`Do:\n${formatList(input.doItems)}`);
-  sections.push(`Do not:\n${formatList(input.doNotItems)}`);
+  if (input.doItems.length > 0) {
+    sections.push(`Do:\n${formatList(input.doItems)}`);
+  }
+  if (input.doNotItems.length > 0) {
+    sections.push(`Do not:\n${formatList(input.doNotItems)}`);
+  }
 
   if (input.backgroundItems && input.backgroundItems.length > 0) {
     sections.push(`Background:\n${formatList(input.backgroundItems)}`);
@@ -42,8 +46,9 @@ function renderSections(input: CommandSectionInput): string {
   return sections.join('\n\n');
 }
 
+/** Invocation context and mechanics first, then the command's static body (see command-bodies.ts). */
 function renderHybridCommand(
-  command: HiveCommandKey,
+  command: CommandBodyKey,
   context: HiveCommandContext,
   input: CommandSectionInput,
 ): string {
@@ -155,15 +160,10 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
       details: [`Topic: ${topicOrCurrent(args, 'clarify the operator idea for an implementation-brief handoff')}`],
       doItems: [
         'Load the `grilling` skill and use its shared interaction engine.',
-        'Ask exactly one material operator question per turn and wait for the answer before continuing.',
         'Choose the highest-ambiguity, highest-risk, or highest-value missing decision first.',
         'After each answer, show compact progress with settled operator decisions and operator preferences listed separately, unresolved material items, and fact-status counts.',
       ],
-      doNotItems: [
-        'Do not write code, create plans, or mutate Hive state during the interview; do not edit files except to write the confirmed alignment brief to a named destination.',
-        'Do not invent repository facts; verify them or label them as assumptions.',
-        'Do not automatically produce an implementation brief or start follow-on work after alignment.',
-      ],
+      doNotItems: [],
       backgroundItems: backgroundItems(context, [
         'Use direct retrieval, one agent, or multiple agents, including independent background lanes when useful, only for bounded material research questions and based on their evidence needs and dependencies.',
         'Continue asking independent operator decisions while research runs; wait only when all remaining material decisions depend on pending evidence.',
@@ -179,13 +179,9 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
       details: [`Context: ${topicOrCurrent(args, 'the context supplied in this conversation')}`],
       doItems: [
         'Load the `grilling` skill and use its shared interaction engine.',
-        'Ask exactly one material operator question per turn until no unresolved item could materially change shared understanding.',
         'End with the skill\'s explicit three-way alignment confirmation.',
       ],
-      doNotItems: [
-        'Do not assume the context concerns software, implementation, a Hive feature, a plan, or a next command.',
-        'Do not persist grilling state or expose the internal dependency frontier.',
-      ],
+      doNotItems: [],
       backgroundItems: backgroundItems(context, [
         'Use direct retrieval, one agent, or multiple agents, including independent background lanes when useful, only for bounded material research questions and based on their evidence needs and dependencies.',
         'Continue asking independent operator decisions while research runs; wait only when all remaining material decisions depend on pending evidence.',
@@ -199,14 +195,8 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
   'implementation-brief'(args, context) {
     return renderHybridCommand('implementation-brief', context, {
       details: [`Subject: ${topicOrCurrent(args, 'the current operator request')}`],
-      doItems: [
-        'Revalidate important repo paths, symbols, commands, and ownership before treating them as facts.',
-        'Produce one copy-paste-ready brief for /hive-plan to turn into the formal Hive plan.',
-      ],
-      doNotItems: [
-        'Do not write the Hive implementation plan or call plan-writing tools during brief generation.',
-        'Do not present stale paths or unverified codebase claims as facts.',
-      ],
+      doItems: ['Produce one copy-paste-ready brief for /hive-plan to turn into the formal Hive plan.'],
+      doNotItems: [],
       backgroundItems: backgroundItems(context, [
         'Use independent background research only when foreground brief assembly can safely continue without those results.',
       ]),
@@ -218,14 +208,10 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
     return renderHybridCommand('hive-plan', context, {
       details: [`Planning input: ${topicOrCurrent(args, 'the current spec or brief')}`],
       doItems: [
-        'Perform active discovery before writing the plan; inspect relevant files, tests, docs, and constraints first.',
         'Create the feature when needed, then target that feature explicitly in context and plan calls. Feature creation and explicit feature arguments do not change the selected session route. Load context-engineering for hash-guarded reads and writes; do not mass-read every note.',
         'Include documentation updates for non-ad-hoc work when user-facing behavior, setup, install flow, or operator workflow changes.',
       ],
-      doNotItems: [
-        'Do not write a plan from an unverified brief alone.',
-        'Do not assume the active/default agent has every Hive tool; follow the route target and tool boundary.',
-      ],
+      doNotItems: [],
       backgroundItems: backgroundItems(context, [
         'Use independent scout validation in background lanes when it can run without blocking plan framing.',
       ]),
@@ -242,7 +228,6 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
         'Resolve the intended feature, then issue independent explicit hive_status and hive_plan_read calls in one response/step before approval.',
         'Approve and sync that same explicit feature with hive_plan_approve({ feature, expectedRevision, sync: true }), using the reviewed hive_plan_read revision; add refreshPending: true when pending specs need refresh. Inspect both approval and sync outcomes, approvalPersisted, and failure reason/stage; validation writes nothing, metadata failure can leave the marker persisted, and an unchanged retry may return alreadyApproved: true.',
         'When approval remains successful and only sync failed, address the error and retry hive_tasks_sync alone. For approval_superseded_during_sync or approval_verification_failed, re-read and review current state before approving and syncing again; sync may already have written tasks. Then read back status and its single top-level tasks list; status: null integrity entries need inspection and repair, never execution.',
-        'Stop with exact blockers if plan approval, task sync, or readback fails.',
         'Build ## Recommended Execution Order from the synced stored dependsOn graph in that readback, including resolved implicit sequential shorthand. Prefer meaningful outcome or join tasks as target milestones; follow each target\'s own dependsOn recursively to list its prerequisite closure including the target. Use exact feature name and task folder/title, not numerical A-to-B ranges or edges inferred from numbering.',
         'Require a table under ## Recommended Execution Order with columns for exact target task number/folder/title, expected observable behavior at that stopping point, projected NEW unfinished task count, and the actual task folders counted (inline or bounded per-row accompanying lists). In the target cell or accompanying scope list, name independent companion tasks necessary for the stated approved plan outcome, with exact folders/titles and their source justification; show companions: none when unnecessary. Distinguish target/prerequisites from named companions and their prerequisites in counted lists without adding unnecessary columns. Companions are explicit requested scope, not dependsOn edges; never sweep in earlier-numbered or all-ready tasks or infer companions from topic. Ground behavior in approved plan outcomes/acceptance criteria: state what the operator or system can do and the relevant verifiable signal, citing the source task or plan section rather than subsystem/topic labels. Describe expected capability, not proven readiness before execution; do not invent capabilities or evidence.',
         'Compute projected incremental counts using DAG sets: U_i is the current unfinished union of the prerequisite closures of suggested target i and its explicitly listed companions, including every requested root; traversal stops at done tasks. First projected work is U_1; later projected new work is U_i minus the union of preceding suggested U_j. Deduplicate shared prerequisites and count every requested root unless already covered or done. Show the exact task folders in each counted set so non-contiguous scope is inspectable; never calculate counts from numerical intervals. Report cancelled or missing roots/prerequisites and invalid graphs as blockers, not achievable projections.',
@@ -251,10 +236,7 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
         'In ## Session Strategy, link copy-paste run/continue prompts to the table targets without duplicating the detailed table. Give prompts with concrete names substituted: Run feature "<feature>" until task "<task-folder>" (<task-title>) is complete. Then: Continue feature "<feature>" until task "<next-task-folder>" (<next-task-title>) is done. Append Also complete companion task "<companion-folder>" (<companion-title>) before stopping. for each listed companion, omitting that suffix when none. The prompt must carry the whole explicit scope into a fresh session with status alone, without a persistent milestone manifest. Explain that each prompt includes unfinished prerequisites of all named roots, excludes unrelated and descendant tasks, and retains verification, review, integration, and cleanup obligations. Bare target requests include only the target closure; stop only after the target AND every named companion are done with their gates complete.',
         'Include a terminal verification handoff in Session Strategy with the concrete feature name: Run final verification for feature "<feature>" and complete it only after the required checks pass. Explain that this is a separate continuation after no unfinished feature tasks remain, routed to executing-plans Step 6 and the existing full-feature verification/completion procedure, carrying deferred checks and applicable cleanup.',
       ],
-      doNotItems: [
-        'Do not continue into execution unless approval and sync are confirmed by readback.',
-        'Do not silently ignore unresolved plan comments, malformed tasks, or sync failures.',
-      ],
+      doNotItems: [],
       outputItems: [
         '## Feature, ## Plan Readback, ## Task Breakdown, ## Recommended Execution Order, ## Session Strategy, ## Additional Operator Input, ## Decision Points For Operator.',
       ],
@@ -268,14 +250,9 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
         'Follow explicit operator execution direction; otherwise sequence from dependencies, owned paths, and shared resources. Ask only when a material scheduling or authority decision remains unresolved.',
         'When direction is run/continue a feature until a target task is complete/done, including an explicit companion suffix, load executing-plans and apply its Target Task Milestones procedure before dispatch and on resumption. Preserve the exact feature, target, and explicitly named companions from the suggested prompt; report milestone scope and stop at that boundary.',
         'Use todos to track task progress and transitions.',
-        'Create or inspect the task worktree with an explicit feature target when isolation is needed; capture the initial destination identity from the inspection-shaped create result and keep later checkpoints. Before dispatch, call hive_feature_select only when the selected route is unset or differs from the dispatch target, or the selection evidence below is missing or uncertain, then issue the native Forager ' + nativeCall(context.host) + ' call with that path in its authored prompt. Reuse a matching selection across a same-feature batch only when this session\'s most recent route-changing call visible in context is `hive_feature_select` for that same feature, with no later explicit-null or other-feature selection. When that evidence is not visible (for example after compaction or a summary, at session start, or in mixed ad-hoc/feature batches), or you are uncertain, call `hive_feature_select` for the dispatch target. Explicit null stays featureless unless the dispatch intentionally changes target.',
-        'Read the report a bound worker published, then record status, summary, or blocker with hive_task_update under Task Report Ownership; do not retranscribe the report.',
-        'After any returned native task result, launch a fresh child session for follow-up; preserve ' + context.host.nativeTask.continuationField + ' pass-through only for explicit operator/runtime-owned interruption recovery.',
+        'Reinspect the destination at each later checkpoint. Before dispatch, call hive_feature_select only when the selected route is unset or differs from the dispatch target, or the selection evidence below is missing or uncertain, then issue the native Forager ' + nativeCall(context.host) + ' call with that path in its authored prompt. Reuse a matching selection across a same-feature batch only when this session\'s most recent route-changing call visible in context is `hive_feature_select` for that same feature, with no later explicit-null or other-feature selection. When that evidence is not visible (for example after compaction or a summary, at session start, or in mixed ad-hoc/feature batches), or you are uncertain, call `hive_feature_select` for the dispatch target. Explicit null stays featureless unless the dispatch intentionally changes target.',
       ],
-      doNotItems: [
-        'Do not start execution without an approved and synced plan.',
-        'Do not call hive_worktree_merge before worker completion and verification evidence are available.',
-      ],
+      doNotItems: [],
       backgroundItems: backgroundItems(context, [
         'Use independent background-first orchestration only for runnable tasks or validation lanes.',
       ]),
@@ -293,13 +270,8 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
       ],
       doItems: [
         'Ask one question at a time when needed (max 4) to shape a reusable council directive.',
-        'Name objective, direction, include (configured groups/members), constraints, context, assumptions needing validation, and desired output.',
-        'Refer to configured global council groups by role, not stale personal aliases or mutable worker seats.',
       ],
-      doNotItems: [
-        'Do not run council or launch agents.',
-        'Do not create Hive plans, worktrees, patches, or commits.',
-      ],
+      doNotItems: [],
       outputItems: [
         '## Council Directive, ## Recommendation, ## Recommended Invocation, and ## Paste Into New Chat when appropriate.',
       ],
@@ -336,12 +308,10 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
             'Run a read-only council with the resolved councillors in the displayed order.',
             'Give every councillor the directive, relevant evidence, read-only contract, and its actual base role from the rendered roster.',
             'Keep Scout-derived seats to evidence, unknowns, and contradictions; do not infer agreement from a missing Scout verdict.',
-            'Synthesize a recommendation with consensus, dissent, evidence gaps, and next action.',
           ],
       doNotItems: [
         'Do not infer a group from the first free-text token; only --group selects a non-default group.',
         'Do not add unavailable, excluded, template-placeholder, mutable-base, or duplicate councillors back into the run.',
-        'Do not let councillors edit files, create plans, call planning write tools, create worktrees, or commit.',
       ],
       backgroundItems: resolution.error
         ? undefined
@@ -404,16 +374,9 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
   'compact-summary'(args, context) {
     return renderHybridCommand('compact-summary', context, {
       details: args.trim() ? [`Focus: ${args.trim()}`] : undefined,
-      doItems: [
-        'Produce a recovery summary only using conversation and tool evidence.',
-        'Use the exact section order: Goal, Constraints & Preferences, Progress (Done/In Progress/Blocked), Key Decisions, Next Steps, Critical Context, Relevant Files.',
-        'Include verification evidence only when actual command output or tool evidence exists.',
-      ],
-      doNotItems: [
-        'Do not mutate files, start agents, launch background tasks, or change Hive state.',
-        'Do not claim verification, tests, builds, or checks succeeded without actual command output.',
-      ],
-      outputItems: ['Exact compact-summary template sections only.'],
+      doItems: [],
+      doNotItems: [],
+      outputItems: ['A recovery summary built only from conversation and tool evidence, in the exact compact-summary template sections.'],
     });
   },
 };

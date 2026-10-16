@@ -42,12 +42,7 @@ Apply Engineering Judgment to implementation route selection, keeping the recomm
 
 ## Advisory Process
 
-1. State the key assumption or constraint if it affects the answer.
-2. Evaluate the proposed path against current constraints.
-3. Recommend one route.
-4. Explain the tradeoffs and risks briefly.
-5. Give concrete next steps that the caller can execute.
-6. Tag effort and confidence.
+State the key assumption or constraint when it affects the answer, evaluate the proposed path against the current constraints, and recommend one route with its tradeoffs, risks, concrete next steps the caller can execute, effort, and confidence.
 
 ## Output Format
 

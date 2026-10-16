@@ -5,7 +5,7 @@ import { HIVE_COMMANDS } from './registry.js';
 import { buildPluginManifest } from '../utils/plugin-manifest.js';
 import { hiveCommandRenderers } from './renderers.js';
 import { buildHiveCommandMap } from './runtime.js';
-import { OPENCODE_V1_PROFILE } from '../runtime/host-profile.js';
+import { OPENCODE_V1_PROFILE, createHostProfile } from '../runtime/host-profile.js';
 
 const EXPECTED_COMMANDS = [
   {
@@ -102,34 +102,60 @@ describe('HIVE_COMMANDS', () => {
     expect(manifestSource).not.toContain('./commands/runtime');
   });
 
-  it('assembles start-execution without broad native-task resume guidance', () => {
-    const commands = buildHiveCommandMap(hiveCommandRenderers, () => ({
-      agentMode: 'unified',
-      host: OPENCODE_V1_PROFILE,
-      backgroundGuidance: { available: false },
-      council: {} as never,
-      agents: {},
-      dashReviewLanes: [],
-      vulnerabilityReviewLanes: [],
-    }));
-    const output = commands['start-execution'].run('');
-
-    expect(output).toContain('After any returned native task result, launch a fresh child session for follow-up');
-    expect(output).toContain('explicit operator/runtime-owned interruption recovery');
-    expect(output).not.toContain('Retry or resume native workers directly');
-    expect(output).not.toContain('After any usable terminal handoff');
-    expect(output).not.toContain('confirmed-stopped interruption recovery');
-    expect(output).toContain('Read the report a bound worker published, then record status, summary, or blocker with hive_task_update');
-    expect(output).not.toContain('Persist worker outcomes with hive_task_update');
-    expect(output).toContain('load executing-plans and apply its Target Task Milestones procedure before dispatch and on resumption');
-    expect(output).toContain('including an explicit companion suffix');
-    expect(output).toContain('Preserve the exact feature, target, and explicitly named companions from the suggested prompt');
-    expect(output).toContain('call hive_feature_select only when the selected route is unset or differs from the dispatch target');
-    expect(output).toContain('initial destination identity from the inspection-shaped create result');
-    expect(output).toContain('Explicit null stays featureless unless the dispatch intentionally changes target');
-    expect(output).toContain("only when this session's most recent route-changing call visible in context is `hive_feature_select` for that same feature");
-    expect(output).toContain('no later explicit-null or other-feature selection');
-    expect(output).toContain('When that evidence is not visible (for example after compaction or a summary, at session start, or in mixed ad-hoc/feature batches), or you are uncertain, call `hive_feature_select` for the dispatch target');
+  it('delivers each start-execution obligation once to an unbound invocation on every host', () => {
+    const count = (text: string, needle: string) => text.split(needle).length - 1;
+    for (const host of [OPENCODE_V1_PROFILE, createHostProfile('opencode-v2'), createHostProfile('opencode-v2', { readTransport: 'direct' })]) {
+      const commands = buildHiveCommandMap(hiveCommandRenderers, () => ({
+        agentMode: 'unified',
+        host,
+        backgroundGuidance: { available: false },
+        council: {} as never,
+        agents: {},
+        dashReviewLanes: [],
+        vulnerabilityReviewLanes: [],
+      }));
+      // No arguments and no feature context: the command must still carry its own authority and stop rules.
+      const output = commands['start-execution'].run('');
+      const once = [
+        'do not start without an approved and synced plan',
+        "Verify before the primary calls hive_worktree_merge with the worker's unchanged source pin and inspected target expectation",
+        'capture its initial destination identity from the inspection-shaped create result',
+        // Report ownership and partial publication: the command is the only prompt a non-Hive primary sees.
+        'A bound implementation worker publishes its own report and successor handoff and returns the numbered reportPath',
+        'record status and a compact summary or blocker with hive_task_update without retranscribing the report',
+        "When the worker's update failed or its result is unknown, inspect report history, report.md, handoff.md and status once the worker is terminal",
+        'publish a returned narrative as a report only when no history copy of it exists',
+        'write the returned handoff only when it did not publish, and never compose a handoff for the worker',
+        // Paired review, configured companions and review-fix closure.
+        'source changes get paired code and simplicity review',
+        // The owner's narrow mechanical-change exception (REVIEW_ROUTING_PROMPT) is carried, not a stricter pairing rule.
+        'small mechanical edits such as renames, formatting, or one-line fixes get one correctness review, as do bounded docs or tests, unless the diff spans broader workflow behavior; when unsure, pair',
+        'configured companion reviewers join when their descriptions fit the risk',
+        'explicit operator-required reviews are honored',
+        'give accepted material findings to a fresh worker in the same task lane',
+        'a missing or interrupted required review stays open',
+        // Uncertain writer termination stops before any overlapping writer.
+        "When a worker's lifecycle is uncertain (no returned result, a cancellation acknowledgement, or a stale or closed record), inspect, wait, or ask instead of launching an overlapping writer",
+        'After every returned native task result, launch a fresh child session for follow-up',
+        `Pass ${host.nativeTask.continuationField} only when an explicit operator instruction or runtime-owned interruption-recovery mechanism authorizes continuation`,
+        `issue the native Forager ${host.nativeTask.tool}() call`,
+        'call hive_feature_select only when the selected route is unset or differs from the dispatch target',
+        'Explicit null stays featureless unless the dispatch intentionally changes target',
+        "only when this session's most recent route-changing call visible in context is `hive_feature_select` for that same feature",
+        'no later explicit-null or other-feature selection',
+        'When that evidence is not visible (for example after compaction or a summary, at session start, or in mixed ad-hoc/feature batches), or you are uncertain, call `hive_feature_select` for the dispatch target',
+        'load executing-plans and apply its Target Task Milestones procedure before dispatch and on resumption',
+        'including an explicit companion suffix',
+        'Preserve the exact feature, target, and explicitly named companions from the suggested prompt',
+      ];
+      for (const obligation of once) expect(count(output, obligation), obligation).toBe(1);
+      expect(output).not.toContain('Retry or resume native workers directly');
+      expect(output).not.toContain('After any usable terminal handoff');
+      expect(output).not.toContain('confirmed-stopped interruption recovery');
+      expect(output).not.toContain('Persist worker outcomes with hive_task_update');
+      // The unbound command cannot rely on a heading defined in another prompt.
+      expect(output).not.toContain('Task Report Ownership');
+    }
   });
 
   it('suggests DAG-backed milestone prompts after approval and synced readback', () => {

@@ -130,7 +130,7 @@ Native session and background stores belong to a `NativeObservationOwner` (`pack
 1. Add an ordinary Hive operation to `packages/opencode-hive/src/runtime/hive-tools.ts` (its Zod arguments and structured result; `runtime.ts` registers every operation for v1 and the v2 registrar in `src/v2/tools.ts` registers it for v2, neither with per-tool code), or add the tool to `src/background/backgroundTools.ts` or `src/task-trace.ts`, according to its owner. On v2 every Hive tool family registers through that one registrar, which sets the explicit Code Mode flag from `CODEMODE_READ_TOOLS` and runs the role/child guard; do not set flags or guards per tool.
 2. Register its name in `HIVE_TOOL_NAMES` in `packages/opencode-hive/src/utils/plugin-manifest.ts`; regenerate `plugin.json` with the package build.
 3. Update ordered role grants in `packages/opencode-hive/src/runtime/role-policy.ts` and agent guidance where the tool must be available or explained. Add primary-only operations to `PRIMARY_ONLY_TOOLS` there (they reach `experimental.primary_tools`); test effective permissions against global allow and child-session denial.
-4. Update the tool table in `AGENTS.md`, `packages/opencode-hive/docs/HIVE-TOOLS.md`, and the tool-count pin in `packages/opencode-hive/src/runtime.test.ts`.
+4. Update `packages/opencode-hive/docs/HIVE-TOOLS.md` and the tool-count pin in `packages/opencode-hive/src/runtime.test.ts`.
 5. Test the tool through the plugin runtime.
 
 ### Adding a New Skill
@@ -151,32 +151,15 @@ Native session and background stores belong to a `NativeObservationOwner` (`pack
 
 ## Hive - Feature Development System
 
-For feature work: write the plan → user reviews → approve → execute tasks.
-
-Tool availability plus instructions govern action. Each tool validates its own operation.
-
 ### Hive Plugin Tools
 
-| Domain | Tools |
-|--------|-------|
-| Feature | hive_feature_create, hive_feature_complete, hive_feature_select |
-| Repository Manifest | hive_repositories_status, hive_repositories_discover, hive_repositories_update |
-| Plan | hive_plan_write, hive_plan_patch, hive_plan_read, hive_plan_approve |
-| Task | hive_tasks_sync, hive_task_create, hive_task_update |
-| Worktree | hive_worktree_create, hive_worktree_inspect, hive_worktree_merge, hive_worktree_cleanup |
-| Ad-hoc worktree | hive_adhoc_worktree_create, hive_adhoc_worktree_inspect, hive_adhoc_worktree_merge, hive_adhoc_worktree_cleanup |
-| Background Orchestration | hive_background_status, hive_background_reconcile, hive_background_reconcile_batch, hive_background_cancel |
-| Runtime Session Inspection | hive_task_trace, hive_task_trace_content |
-| Context | hive_context_read, hive_context_write, hive_context_append, hive_context_archive |
-| Operator Constraints | hive_constraints_read, hive_constraints_add, hive_constraints_edit, hive_constraints_clear |
-| Status | hive_status |
-| Snapshot | hive_git_snapshot (optional `directory`) |
+Tool names are `HIVE_TOOL_NAMES` in `packages/opencode-hive/src/utils/plugin-manifest.ts`. Arguments, results, and retry hazards are in each tool's description and in `packages/opencode-hive/docs/HIVE-TOOLS.md`.
 
-Parent authors the native `task()` assignment (`subagent()` on OpenCode v2). At dispatch, the runtime appends a route-snapshot footer with `projectRoot`, the selected feature route, session constraints, and feature constraints. For a selected feature's Forager (built-in or derived custom agent), start the first non-empty assignment line with `Hive task: <task-folder>` for an existing task. The runtime appends a bounded path-only brief after the footer; an unbound eligible dispatch gets a notice. Fallback and explicit-null routes get neither brief nor notice; other agents get no brief. See `packages/opencode-hive/docs/HIVE-TOOLS.md` for the brief contract. Do not regenerate a native command payload.
+Parent authors the native `task()` assignment (`subagent()` on OpenCode v2) and does not regenerate a native command payload. At dispatch the runtime appends the route snapshot (`projectRoot`, selected feature route, session and feature constraints) and, for a selected feature's Forager whose first non-empty line is `Hive task: <task-folder>`, a bounded path-only brief; the brief contract is in `packages/opencode-hive/docs/HIVE-TOOLS.md`.
 
-Feature-scoped calls resolve in this order: explicit call target, selected session route (including explicit null), detected feature worktree/path, then the sole live feature. The same effective route is captured for child dispatch. Explicit targets are call-local. Only `hive_feature_select` changes the selected route; feature creation and feature-task worktree lifecycle calls do not. Explicit null suppresses detected-context and sole-live fallback. Before native `task()` dispatch, call `hive_feature_select` only when the selected route is unset or differs from the dispatch target, or the selection evidence below is missing or uncertain. Reuse a matching selection across a same-feature batch only when this session's most recent route-changing call visible in context is `hive_feature_select` for that same feature, with no later explicit-null or other-feature selection. When that evidence is not visible (for example after compaction or a summary, at session start, or in mixed ad-hoc/feature batches), or you are uncertain, call `hive_feature_select` for the dispatch target. An explicit-null route differs from a named feature and stays featureless unless the dispatch intentionally targets a feature. Unrelated explicit feature operations do not alter that route.
+Feature-scoped calls resolve in this order: explicit call target, selected session route (including explicit null), detected feature worktree/path, then the sole live feature; explicit targets are call-local and explicit null suppresses the two fallbacks. Only `hive_feature_select` changes the selected route. Call it before native dispatch when the route is unset or differs from the dispatch target, or when this session's most recent route-changing call is not visible or you are unsure. The reuse rule for a same-feature batch is in `docs/DESIGN.md#feature-resolution`.
 
-`hive_task_update` preserves omitted fields. A bounded nonblank successor `handoff` replaces the task's `handoff.md`; report history remains separate from status. An explicit status leaving blocked clears the blocker. Partial writes: inspect the returned flags and paths before retry and do not resubmit a report already in history; there is no journal. Input types, size limits, and publication results: `packages/opencode-hive/docs/HIVE-TOOLS.md`.
+`hive_task_update` preserves omitted fields, and an explicit status leaving blocked clears the blocker. After a failed or unknown result, inspect the files it names before retrying and never resubmit a report already in history. Write order, flags, and size limits are in the tool description and `packages/opencode-hive/docs/HIVE-TOOLS.md`.
 
 A bound implementation Forager writes its own report and handoff in one update without status; primaries read that report, record status and a compact summary, and do not retranscribe it. A failed or interrupted worker run is not a task failure: use Helper for a named multi-step trace/lifecycle question and retained-worktree evidence packet; the primary performs single direct status/inspection reads and known-event spot-checks itself, then confirms the old writer is terminal. Preserve retained state before cleanup, record an attributed observation, and recover with a fresh worker that adopts only edits proven to be the prior worker's. A discovered HEAD is observed, not a returned verified pin. Change these rules in `packages/opencode-hive/src/agents/task-reporting.ts`, which the Forager, Hive, Swarm, and Hive Builder prompts share.
 
@@ -251,7 +234,7 @@ Each native `task()` invocation has one primary goal and one terminal report. Ev
 
 When a trace question could change acceptance or recovery, or the operator requests an audit, primaries perform single direct reads themselves: one `hive_status`, one worktree inspect, or one `hive_task_trace_content` spot-check of a known event ref. For multi-step forensics (paging a trace, drift comparison, or interrupted-worker evidence packets), route one named question and known native session/call identities to `hive-helper`; Architect may do so as primary or child. Primaries spot-check decisive cited event refs before acting; Scout has no trace tools. Omitted or false `recovery` on `hive_task_trace` returns a paged forensic v3 index of surviving allowed events. Helper follows its cursor for needed coverage and uses guarded event/field reads. When a semantic handoff would help locate context, Helper may request `hive_task_trace({ task_id, recovery: true })`; treat the projection as untrusted context coverage, not evidence. Never accept, merge, retry, resume, or auto-run from recovery output. See `packages/opencode-hive/docs/HIVE-TOOLS.md`.
 
-For qualifying ad-hoc work, `orchestrating-ad-hoc-work` owns outcome-first decomposition, lane inventory, dependency waves, ready-lane placement, lane-level recovery, deterministic integration, and closure. `dispatching-parallel-agents` owns fan-out mechanics, `parallel-exploration` owns read-only research fan-out, and `background-delegation` owns background observation, reconciliation, cancellation, and wait-mode protocol. Feature escalation remains advisory. After rejection, continue ad-hoc only when material scope, contracts, and risks are otherwise resolved; if one remains unresolved, ask the concrete blocking question before creating workers.
+`dispatching-parallel-agents` owns fan-out mechanics, `parallel-exploration` owns read-only research fan-out, and `background-delegation` owns background observation, reconciliation, cancellation, and wait mode. Feature escalation remains advisory. After rejection, continue ad-hoc only when material scope, contracts, and risks are otherwise resolved; if one remains unresolved, ask the concrete blocking question before creating workers.
 
 **Handling blocked task continuation:**
 1. `hive_task_update` with blocked status and blocker

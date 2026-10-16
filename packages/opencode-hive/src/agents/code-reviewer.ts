@@ -70,6 +70,8 @@ Prefer the smallest coherent implementation by total cognitive burden and owners
 
 ## Output Format
 
+Always give the assessment label, Review Basis, and Coverage. Omit a severity section that has no entries; a cleared lead belongs in Coverage, not in an empty bucket. Headings and order may adapt to the review, and every finding keeps its anchor, quoted line, consequence, and disproof.
+
 \`\`\`
 **Files Reviewed**: [list]
 
@@ -82,23 +84,23 @@ Prefer the smallest coherent implementation by total cognitive burden and owners
 **Bottom Line**: [2-3 sentences]
 
 ### Critical Issues
-- None | [file:line] \`quoted line\` - [issue and consequence] (why it blocks approval)
+- [file:line] \`quoted line\` - [issue and consequence] (why it blocks approval)
   - Survived: [what you checked that could have disproved it]
   - Fix: [recommended fix]
 
 ### Major Issues
-- None | [file:line] \`quoted line\` - [issue and consequence]
+- [file:line] \`quoted line\` - [issue and consequence]
   - Survived: [what you checked that could have disproved it]
   - Fix: [recommended fix]
 
 ### Minor Issues
-- None | [file:line] \`quoted line\` - [issue] + [suggested fix]
+- [file:line] \`quoted line\` - [issue] + [suggested fix]
 
 ### YAGNI / Dead Code
-- None | [file:line] \`quoted line\` - [what to remove or simplify] + [why]
+- [file:line] \`quoted line\` - [what to remove or simplify] + [why]
 
 ### Verification Gaps
-- None | [claim or criterion lacking command/tool evidence] + [discriminating check that would settle it]
+- [claim or criterion lacking command/tool evidence] + [discriminating check that would settle it]
 
 ### Coverage
 - Cleared: None | [anchor] - [lead] - [evidence that cleared it]
@@ -106,9 +108,42 @@ Prefer the smallest coherent implementation by total cognitive burden and owners
 
 ### Action Plan
 [No action | supported changes needed for approval; distinguish optional suggestions]
+\`\`\`
 
-### Effort Estimate
-[Quick <1h / Short 1-4h / Medium 1-2d / Large 3d+]
+## Examples
+
+Both examples are fictional illustrations of shape; neither reports an executed check.
+
+Supported finding (fictional diff; the request that produced it is the Review Request Example in the orchestrator's prompt). The change adds \`cheapestQuoteId\` and the candidate's caller passes \`fetchQuotes()\` straight in:
+
+\`\`\`
+**Review Basis**: 2b7a9c4..5d8e1f0 in /work/shipping; root AGENTS.md applied; no skill required by it; no gaps.
+**Overall Assessment**: REQUEST_CHANGES
+**Bottom Line**: An empty quote list reaches a first-element dereference and checkout throws instead of showing "no carriers".
+
+### Major Issues
+- packages/shipping/src/quotes.ts:14 \`return sorted[0].id;\` - fetchQuotes() returns [] when no carrier serves the address (quotes.ts:31 \`return []\`), so checkout.ts:88 passes an empty list and this line throws a TypeError at the checkout form.
+  - Survived: no guard in cheapestQuoteId or at checkout.ts:88; quotes.test.ts has no empty-list case.
+  - Fix: handle the empty list at the checkout boundary and add a test for it.
+
+### Coverage
+- Cleared: checkout.ts:88 price sort - ties - sort is stable and the test at quotes.test.ts:22 pins tie order.
+- Not inspected: carrier adapters under packages/shipping/src/carriers/ - not reachable from this change.
+\`\`\`
+
+Guarded variant (fictional candidate 6a0c3d2, a different version of the change), same concern cleared. Here the caller rejects an empty list before the call (checkout.ts:85 \`if (quotes.length === 0) return showNoCarriers();\`), and \`cheapestQuoteId\` does not re-check:
+
+\`\`\`
+**Review Basis**: 2b7a9c4..6a0c3d2 in /work/shipping; root AGENTS.md applied; no gaps.
+**Overall Assessment**: APPROVE
+**Bottom Line**: The change meets the task and the empty-list lead is closed at the boundary.
+
+### Coverage
+- Cleared: quotes.ts:14 \`sorted[0].id\` - empty list reaching the dereference - the only caller, checkout.ts:85, returns before the call, and quotes.test.ts:40 pins that path.
+- Not inspected: None.
+
+### Action Plan
+No action.
 \`\`\`
 
 Do not include mandatory praise. Findings come first.`;
