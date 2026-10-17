@@ -257,10 +257,10 @@ describe('resolvePackagedSkillsDir', () => {
 });
 
 describe('prepareNativeHiveSkills - materialization behavior', () => {
-  it('supports the writing-family cutover without overriding native copies and copies the complete packaged families', async () => {
+  it('supports the writing and visual family cutover without overriding native copies and copies the complete packaged families', async () => {
     const worktree = createTempDir();
     const home = path.join(worktree, 'home');
-    const names = ['writing-policy', 'writing-for-humans', 'stop-slop', 'humanizer'];
+    const names = ['unslop', 'stop-design-slop', 'writing-for-humans', 'stop-slop', 'humanizer'];
     const localFiles = names.map((name) => createNativeSkill(home, `.agents/skills/${name}/SKILL.md`, name));
     const options = {
       directory: worktree,
@@ -277,6 +277,10 @@ describe('prepareNativeHiveSkills - materialization behavior', () => {
     }
     const after = await prepareNativeHiveSkills(options);
     expect(after.materializedPath).toBeDefined();
+    // The retired router is neither discovered nor materialized.
+    expect(after.skillsByName.has('writing-policy')).toBe(false);
+    expect(after.nativeSkillsByName.has('writing-policy')).toBe(false);
+    expect(fs.existsSync(path.join(after.materializedPath!, 'writing-policy'))).toBe(false);
     for (const name of [...names, 'code-design-principles', 'how', 'why']) {
       expect(after.nativeSkillsByName.has(name)).toBe(false);
       expect(after.skillsByName.has(name)).toBe(true);

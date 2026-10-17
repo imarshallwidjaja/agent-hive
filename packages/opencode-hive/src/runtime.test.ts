@@ -242,7 +242,7 @@ describe('coordinated runtime hard cut', () => {
     const parent = context('parent');
     const routeStartMarker = '<!-- hive-route-snapshot:start -->';
     const routeEndMarker = '<!-- hive-route-snapshot:end -->';
-    const sessionSkillRequirement = 'For both design and writing work, load writing-policy, ivan-writing, and stop-slop.';
+    const sessionSkillRequirement = 'For both design and writing work, load unslop, ivan-writing, and stop-slop.';
     const featureSkillRequirement = 'For design work, also load stop-design-slop.';
     const authoredRequirement = 'Assignment requirement: load writing-for-humans for this handoff.';
     await loaded.tool!.hive_feature_create.execute({ name: 'feature-a' }, parent);

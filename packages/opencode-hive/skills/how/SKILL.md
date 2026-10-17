@@ -22,4 +22,4 @@ Don't guess from names. Read the code. Preserve contradictions until the decisiv
 - Historical motivation belongs to `why` when explicitly requested or assigned. Do not infer author intent from mechanics or automatically launch a history sweep.
 - Return an explanation without editing code or persisting research as standing instructions.
 
-Use `writing-policy` for presentation. For a teaching request, infer the needed concepts from the conversation rather than quizzing the user. Give the smallest complete account that answers the request, then add depth when asked. A request for a thorough one-shot explanation still deserves the complete answer. No pacing theater, mandatory diagrams, or stock invitations.
+Use `unslop` for presentation. For a teaching request, infer the needed concepts from the conversation rather than quizzing the user. Give the smallest complete account that answers the request, then add depth when asked. A request for a thorough one-shot explanation still deserves the complete answer. No pacing theater, mandatory diagrams, or stock invitations.

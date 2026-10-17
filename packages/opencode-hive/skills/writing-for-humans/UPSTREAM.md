@@ -7,3 +7,5 @@ oc-arkive owns subsequent maintenance. The seven principles, cadence, finish pas
 A later oc-arkive policy change, not present in the imported source, renamed the rejected-alternatives section to "Boundaries and alternatives". It adds affirmative-first boundary description, a reader-expectation test for exclusions, negative-by-nature facts that keep their form, and a matching finish-pass question. `references/examples.md` gained a Boundaries example.
 
 The 2026-10-10 integration of [phuryn/work-humanizer](https://github.com/phuryn/work-humanizer) (commit `819ac9925fffc20f12931cdf7a447db69163cbb2`, Pawel Huryn, MIT; notice in `LICENSE.workhumanizer`) extended the em dash policy with substitutes chosen by context, the rule against rerouting a removed dash into a semicolon or a colon reveal, and the rewrite clause for AI-composed prose. This wording is adapted from that source. The policy remains a limit rather than the source's unconditional removal.
+
+The ownership paragraph names `unslop` as the router after `writing-policy` was renamed to it. No other wording changed with the rename.

@@ -171,9 +171,10 @@ describe('Engineering judgment prompt reach', () => {
 
 describe('Process judgment prompt reach', () => {
   it('routes writing and explanations without resurrecting mandatory interview or review-consent rituals', () => {
-    expect(HIVE_SYSTEM_PROMPT).toContain('load `writing-policy`');
-    expect(HIVE_SYSTEM_PROMPT).toContain('rather than activating every overlay');
-    expect(HIVE_SYSTEM_PROMPT).toContain('If this supplemental skill is unavailable');
+    expect(HIVE_SYSTEM_PROMPT).not.toContain('writing-policy');
+    expect(HIVE_SYSTEM_PROMPT).not.toContain('## Writing and explanation');
+    expect(renderAutoLoadSkillsAppendix(OPENCODE_V1_PROFILE, ['unslop'])).toContain('When a listed skill is unavailable or disabled');
+    expect(renderAutoLoadSkillsAppendix(OPENCODE_V1_PROFILE, ['unslop'])).toContain('do not search suppressed bundle caches or install a substitute');
     expect(QUEEN_BEE_PROMPT).not.toContain('Ask user before consulting plan-reviewer');
     expect(QUEEN_BEE_PROMPT).not.toContain('Load one skill at a time');
     expect(SWARM_BEE_PROMPT).not.toContain('confidence ≈ 50%');

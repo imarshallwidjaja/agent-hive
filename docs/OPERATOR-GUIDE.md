@@ -22,7 +22,7 @@ Engineering Judgment is included once in Hive, Architect, Swarm, Hive Builder, F
 
 At material state, type, boundary, retry, shared-writer, or internal-migration choices, that block points to `code-design-principles`. Use `how` for current-code walkthroughs and `why` for historical rationale. A question about a present failure remains debugging, and a future ownership decision remains approach advice. Historical findings are evidence, not operator directives or automatic context writes.
 
-Substantial human-facing prose and prose rewrites use the packaged `writing-policy` router and its conditional depth skills when available. The policy preserves role output contracts and source wording. See [Skill ownership](../packages/opencode-hive/docs/SKILL-OWNERSHIP.md) for the responsibility map.
+Every Hive role is asked to load the packaged `unslop` skill, the shared philosophy and router for prose, messaging, and visual work. It selects conditional depth skills (`writing-for-humans`, `stop-slop`, `humanizer`, `stop-design-slop`, and the owners of agent instructions and PR text) by case, preserves role output contracts and source wording, and never widens a role. `writing-policy` no longer ships and has no alias; your own `~/.agents/skills/writing-policy/` is outside the package and not migrated. A personal `stop-design-slop` skill takes precedence over the bundled one until you remove it, and `disableSkills: ["unslop"]` removes the bundled `unslop`. See [Skill ownership](../packages/opencode-hive/docs/SKILL-OWNERSHIP.md) for the responsibility map.
 
 ## Switching OpenCode hosts and rollback
 

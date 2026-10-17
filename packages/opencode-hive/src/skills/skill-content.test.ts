@@ -69,7 +69,7 @@ function expectInSessionDesignDocumentationPolicy(content: string) {
 describe('skill content', () => {
   it('packages the design, explanation, and writing families with self-contained references and provenance', () => {
     const root = resolvePackagedSkillsDir();
-    const names = ['code-design-principles', 'how', 'why', 'writing-policy', 'writing-for-humans', 'stop-slop', 'humanizer'];
+    const names = ['code-design-principles', 'how', 'why', 'unslop', 'stop-design-slop', 'writing-for-humans', 'stop-slop', 'humanizer'];
     for (const name of names) {
       const skill = BUILTIN_SKILLS.find((entry) => entry.name === name);
       expect(skill, name).toBeDefined();
@@ -93,9 +93,9 @@ describe('skill content', () => {
 
   it('gives writing routing and its overlays distinct ownership without compulsory cleanup', () => {
     const get = (name: string) => BUILTIN_SKILLS.find((entry) => entry.name === name)!.template;
-    expect(get('writing-policy')).toContain('Load depth skills only when the case matches');
-    expect(get('writing-policy')).toContain('Parent-loaded skills do not imply child loading');
-    expect(get('writing-policy')).toContain('does not authorize delegation');
+    expect(get('unslop')).toContain('Load only the rows the case matches');
+    expect(get('unslop')).toContain('Parent-loaded skills do not imply child loading');
+    expect(get('unslop')).toContain('does not authorize delegation');
     expect(get('writing-for-humans')).toContain('A rewrite adds nothing');
     expect(get('writing-for-humans')).toContain('This is not an absolute ban');
     expect(get('writing-for-humans')).toContain('Stating what a thing covers preserves its scope');
@@ -104,7 +104,7 @@ describe('skill content', () => {
     expect(get('stop-slop')).toContain('never add, merge, or remove list items for cadence');
     expect(get('stop-slop')).toContain('boundaries test in `writing-for-humans`');
     expect(get('stop-slop')).not.toContain('denials are live constraints');
-    expect(get('writing-policy')).toContain("operator's stated reader outcome");
+    expect(get('unslop')).toContain("operator's stated reader outcome");
     expect(get('humanizer')).toContain('Do not invent personality');
     expect(get('humanizer')).toContain('sample outranks these defaults');
     expect(get('humanizer')).toContain('returns the numbered questions');
@@ -115,8 +115,104 @@ describe('skill content', () => {
     expect(get('stop-slop')).toContain('at most one crafted, quotable line per piece');
     expect(get('stop-slop')).toContain('Uniformly short and choppy');
     expect(get('writing-for-humans')).toContain('Never reroute a removed dash into a semicolon');
-    expect(get('writing-policy')).toContain("composing from a writer's notes");
+    expect(get('unslop')).toContain("composing from a writer's notes");
     for (const name of ['stop-slop', 'humanizer']) expect(get(name)).toContain('Load with `writing-for-humans`');
+  });
+
+  it('gives unslop a positive baseline and a route that names its skills without widening a role', () => {
+    const get = (name: string) => BUILTIN_SKILLS.find((entry) => entry.name === name)!.template;
+    const unslop = get('unslop');
+    for (const phrase of [
+      '**Concrete nouns.**', '**One reading.**', '**Enough words.**', "**The source's judgment.**",
+      'keeps its force, exceptions included', 'A short reply stays short and needs nothing further loaded',
+      'Routing is a load obligation', 'none applies to every turn',
+      "It changes no role's authority, finding bar, verdict, or required output format",
+      'A read-only reviewer names the defect and the direction of the repair',
+      'Availability alone selects no voice',
+    ]) expect(unslop, phrase).toContain(phrase);
+    for (const name of ['writing-for-humans', 'stop-slop', 'humanizer', 'writing-for-agents', 'pr-writing', 'stop-design-slop']) {
+      expect(unslop, name).toContain(`\`${name}\``);
+      expect(BUILTIN_SKILLS.some((entry) => entry.name === name), name).toBe(true);
+    }
+  });
+
+  it('keeps humanizer focused on a draft audit apart from the full rewrite and limits the shorter option', () => {
+    const humanizer = readSkillTemplate('humanizer');
+    const description = BUILTIN_SKILLS.find((entry) => entry.name === 'humanizer')!.description;
+    expect(description).toContain('your own draft shows a cluster of these tells before you deliver it');
+    expect(humanizer).toContain('**Draft audit.**');
+    expect(humanizer).toContain('There is no interview, no fresh rewrite, no shorter option, and no change notes unless asked');
+    expect(humanizer).toContain('A full rewrite (the rewrite, interview, and notes modes below) also loads `stop-slop`');
+    expect(humanizer).toContain('A draft audit loads it only when staging or cadence tells appear');
+    expect(humanizer).toContain('Ordinary technical answers, reports, docs, plans, and status updates get no shorter option unless the writer asks for one');
+    expect(readSkillTemplate('stop-slop')).toContain('A full `humanizer` rewrite loads this skill');
+  });
+
+  it('ports one visual foundation with scoped references, an accessibility check, and no scoring gate', () => {
+    const directory = path.join(resolvePackagedSkillsDir(), 'stop-design-slop');
+    const skill = readSkillTemplate('stop-design-slop');
+    for (const phrase of [
+      '**Operate:**', '**Read:**', '**Persuade:**', '**The brief wins.**', '**Density follows the task.**',
+      'Distinctiveness never trades them away', 'show nothing rather than a plausible number, chart, customer logo, or activity feed',
+      'Without code execution, report the contrast as unchecked', 'This skill does not change what a role may do',
+      'not pass or fail gates',
+    ]) expect(skill, phrase).toContain(phrase);
+    for (const reference of ['composition', 'diagnostics', 'refinement', 'source-index']) {
+      expect(existsSync(path.join(directory, 'references', `${reference}.md`)), reference).toBe(true);
+      expect(skill, reference).toContain(`(references/${reference}.md)`);
+    }
+    const refinement = readSkillReference('stop-design-slop', 'refinement.md');
+    expect(refinement).toContain('**Refinement preserves.**');
+    expect(refinement).toContain('**Redesign replaces.**');
+    expect(refinement).toContain('Ask before replacing factual copy or adding a claim');
+    expect(refinement).toContain('Diagnose and recommend');
+    const diagnostics = readSkillReference('stop-design-slop', 'diagnostics.md');
+    expect(diagnostics).toContain('none is a gate, and no total score is kept');
+    expect(diagnostics).toContain('Distinctiveness never outweighs a usability or accessibility defect');
+    for (const text of [skill, diagnostics, refinement, readSkillReference('stop-design-slop', 'composition.md')]) {
+      expect(text).not.toMatch(/18\/24|release gate|score each|answer all of these/i);
+    }
+    expect(BUILTIN_SKILLS.some((entry) => /visual-humanizer/.test(entry.name))).toBe(false);
+    for (const unshipped of ['assets', 'examples', 'scripts/audit_ui.py', 'references/research-basis.md']) {
+      expect(existsSync(path.join(directory, unshipped)), unshipped).toBe(false);
+    }
+    const provenance = readFileSync(path.join(directory, 'UPSTREAM.md'), 'utf8');
+    expect(provenance).toContain('no license is claimed for the whole local copy');
+    expect(provenance).not.toContain('no Apache notice is bundled');
+    expect(provenance).toContain('adapted from the operator-maintained `impeccable` skill');
+    expect(provenance).toContain('No script, command table, setup procedure, document system, absolute ban, or aesthetic default was taken from it');
+    expect(readFileSync(path.join(directory, 'LICENSE.antislop'), 'utf8')).toContain('Copyright (c) 2026 Miqdad Badjuber');
+    // The ported mode text includes an upstream sentence verbatim, so the Apache 2.0 license and copyright travel with it.
+    expect(skill).toContain('Brand lives in precise details.');
+    const apache = readFileSync(path.join(directory, 'LICENSE.impeccable'), 'utf8');
+    expect(apache).toContain('Apache License\n                           Version 2.0, January 2004');
+    expect(apache).toContain('Copyright 2025 Paul Bakaus');
+    for (const text of [skill, refinement]) expect(text).toContain('`impeccable` (Apache 2.0)');
+    expect(readSkillReference('stop-design-slop', 'source-index.md')).not.toContain('without copying its text');
+  });
+
+  it('computes contrast with the packaged stop-design-slop script', () => {
+    const script = path.join(resolvePackagedSkillsDir(), 'stop-design-slop', 'scripts', 'contrast_check.py');
+    const run = (...args: string[]) => spawnSync('python3', [script, ...args], { encoding: 'utf8' });
+    const selftest = run('--selftest');
+    expect(selftest.error).toBeUndefined();
+    expect(selftest.status, selftest.stderr).toBe(0);
+    const failing = run('#FFFFFF', '#777777');
+    expect(failing.stdout).toContain('ratio: 4.48:1');
+    expect(failing.stdout).toContain('normal text (4.5:1): FAIL');
+    expect(failing.status).toBe(1);
+    expect(run('000', 'fff').status).toBe(0);
+    expect(run('zzz', 'fff').status).toBe(2);
+  });
+
+  it('ships no writing-policy skill and no active packaged pointer to it', () => {
+    const root = resolvePackagedSkillsDir();
+    expect(existsSync(path.join(root, 'writing-policy'))).toBe(false);
+    expect(BUILTIN_SKILLS.some((entry) => entry.name === 'writing-policy')).toBe(false);
+    for (const relative of readdirSync(root, { recursive: true, encoding: 'utf8' })) {
+      if (!relative.endsWith('.md') || /(^|\/)(UPSTREAM|LICENSE[^/]*)\.md$/.test(relative)) continue;
+      expect(readFileSync(path.join(root, relative), 'utf8'), relative).not.toContain('writing-policy');
+    }
   });
 
   it('sweeps prose mechanically with the packaged humanizer check script', () => {

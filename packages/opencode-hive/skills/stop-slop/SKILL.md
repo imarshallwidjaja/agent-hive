@@ -17,7 +17,7 @@ Remove filler, staging, formulaic structures, and mechanical cadence from prose 
 
 ## Ownership
 
-Load with `writing-for-humans`. That skill owns the finish pass, non-invention, punctuation policy, durable names, and boundaries and alternatives. This skill owns staging, cadence, and structure rewrites. `humanizer` owns the rewrite workflow for existing prose plus vocabulary, register, attribution, and formatting tells; load it when the rewrite needs that workflow or those defects also occur.
+Load with `writing-for-humans`. That skill owns the finish pass, non-invention, punctuation policy, durable names, and boundaries and alternatives. This skill owns staging, cadence, and structure rewrites. `humanizer` owns the rewrite workflow for existing prose plus vocabulary, register, attribution, and formatting tells; load it when the rewrite needs that workflow or those defects also occur. A full `humanizer` rewrite loads this skill for its crafted-line budget and sentence-length band.
 
 ## Checks
 

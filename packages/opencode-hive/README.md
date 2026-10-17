@@ -575,18 +575,19 @@ Generated/managed shape (for inspection) at `<project>/.hive/repositories.json`:
 | `grilling` | Orient on supplied context, explain what is found, and question it until material decisions and evidence are aligned |
 | `hive-config` | Hive runtime layout, state-tool ownership, read-only session forensics, and Agent Hive configuration reference |
 | `how` | Explain current source-grounded behavior and subsystem flow |
-| `humanizer` | Rewrite existing prose without changing its facts or commitments, interview the writer or work from their notes, and repair vocabulary, register, attribution, and formatting |
+| `humanizer` | Rewrite existing prose without changing its facts or commitments, interview the writer or work from their notes, audit your own draft, and repair vocabulary, register, attribution, and formatting |
 | `orchestrating-ad-hoc-work` | Coordinate qualifying ad-hoc work for Hive Builder or unified Hive |
 | `parallel-exploration` | Researcher fan-out for read-only research |
 | `pr-writing` | Draft PR titles, descriptions, and general or inline review comments |
+| `stop-design-slop` | Visual foundation for interfaces: composition from the product's task, diagnostics for generic patterns, and refinement that preserves an existing identity |
 | `stop-slop` | Repair staging, formulaic cadence, and structure in existing prose |
 | `systematic-debugging` | Root-cause investigation before fixes |
 | `test-driven-development` | Strict red-green-refactor when TDD is the selected testing strategy |
+| `unslop` | Shared philosophy and router for writing, messaging, and visual work; every Hive role is asked to load it, and it selects depth skills and carries the delegation contract |
 | `verification` | Applicable command/tool evidence before completion or verification claims |
 | `why` | Investigate explicitly requested historical rationale with calibrated source evidence |
 | `writing-for-agents` | Reference for authoring documents agents consume: skills, subagent prompts, instructions, and pointer architecture |
 | `writing-for-humans` | Draft substantial reader-centered prose and apply the non-invention finish pass |
-| `writing-policy` | Select writing depth skills and propagate the writing contract to permitted delegates |
 | `writing-plans` | Turn requirements into an implementation plan |
 
 ### Per-Agent Skills
@@ -603,7 +604,9 @@ Skills are loaded through OpenCode's native `skill` tool, not through a Hive plu
 
 **User file skills** should be configured through OpenCode's native `.opencode`, `.claude`, `.agents`, `skills.paths`, or `skills.urls` discovery. They can be loaded manually with the native `skill` tool or advertised to an agent by adding the skill's frontmatter `name` to `autoLoadSkills`. Native/user skills take precedence over Hive bundled skills with the same name.
 
-The writing family is maintained in oc-arkive: `writing-policy` routes, `writing-for-humans` owns drafting and the finish pass, `stop-slop` owns staging/cadence/structure repair, and `humanizer` owns the rewrite workflow for existing prose (rewrite, interview, and notes modes, with a fact audit and an optional `check.py` sweep) plus vocabulary/register/attribution/formatting repair. The base prompt points to the policy; depth skills load only on their triggers. These pointers do not change `autoLoadSkills` defaults or override explicitly disabled skills. `pr-writing` retains its artifact and publication contract, and `writing-for-agents` retains instruction-authoring ownership.
+The writing and visual family is maintained in oc-arkive. `unslop` is the shared philosophy and router, and every Hive role is asked to load it (see [Default auto-load skills](#per-agent-skills) below). It selects the depth skills by case: `writing-for-humans` owns drafting and the finish pass, `stop-slop` owns staging/cadence/structure repair, `humanizer` owns the rewrite workflow for existing prose (rewrite, interview, and notes modes, a focused audit of an agent's own draft, a fact audit, and an optional `check.py` sweep) plus vocabulary/register/attribution/formatting repair, and `stop-design-slop` carries the visual foundation. Depth skills load only on their triggers. `pr-writing` retains its artifact and publication contract, and `writing-for-agents` retains instruction-authoring ownership.
+
+`writing-policy` no longer ships and has no alias: `unslop` replaced it. A personal copy at `~/.agents/skills/writing-policy/` is outside the package, is not migrated or removed, and nothing in oc-arkive loads it now; references to `writing-policy` in your own instructions, constraints, or agent configuration find only that personal copy, if you keep one. A personal `stop-design-slop` skill (for example `~/.agents/skills/stop-design-slop/`) is a same-name native skill, so it takes precedence over the bundled `stop-design-slop` until you remove it. Moving to the bundled foundation is a separate step that the operator takes by hand; oc-arkive migrates nothing automatically.
 
 `code-design-principles` deepens the existing Engineering Judgment block at material design decisions without another workflow or finding bar. `how` and `why` serve explicit explanation and historical-rationale requests; ordinary debugging, future design selection, and routine implementation orientation retain their existing owners.
 
@@ -652,6 +655,8 @@ See [Skill ownership](docs/SKILL-OWNERSHIP.md) for the responsibility map and so
 | `simplicity-reviewer` | (none) |
 | `approach-advisor` | (none) |
 | `vulnerability-reviewer` | (none) |
+
+Every role in this table, `dash-reviewer`, `vulnerability-review-primary`, and every custom agent are also asked to load `unslop` first. It is added when guidance is composed rather than listed in `autoLoadSkills`, so it does not appear in the table, listing it adds nothing, and a custom agent does not repeat it. `disableSkills: ["unslop"]` removes the bundled skill from materialization and guidance without a warning per role; a native or user skill named `unslop` takes precedence, as for any name. The guidance asks the agent to load the skill before covered work and does not preload or enforce it; the skill's own routing then decides which depth skills a case needs.
 
 `background-delegation` is not a default `autoLoadSkills` entry for any agent. For ad-hoc orchestration, delegation-first guidance is in the base prompt; the v1 env flag (`OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`), or native background support on v2, only appends background wait-mode and board guidance without adding it to the default autoload set.
 
@@ -774,7 +779,7 @@ Inheritance rules when a custom agent field is omitted:
 |-------|----------------------|
 | `model` | Inherits the resolved base agent's Hive model (including `agents` settings and the base's project override). With none, the custom agent uses the native OpenCode model |
 | `variant` | Inherits the resolved base agent's Hive variant; a variant needs a Hive model from the custom agent or its base |
-| `autoLoadSkills` | Merges with base agent auto-load defaults/overrides and de-duplicates. `disableSkills` only suppresses Hive bundled guidance/materialization, not native/user skills with the same name. |
+| `autoLoadSkills` | Merges with base agent auto-load defaults/overrides and de-duplicates (including the universal `unslop`). `disableSkills` only suppresses Hive bundled guidance/materialization, not native/user skills with the same name. |
 
 ID guardrails:
 

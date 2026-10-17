@@ -23,6 +23,13 @@ import { ROUTING_BASES, agentPermission, createRolePolicy, type BuiltInRole } fr
 
 const BACKGROUND_DELEGATION_SKILL_ID = 'background-delegation';
 
+/**
+ * The one skill every Hive role is asked to load, ahead of its configured names. It is added where guidance is
+ * composed, not to the shipped agent defaults, so private review primaries and every custom agent share it and
+ * `agents.<name>.autoLoadSkills` keeps meaning "extra names".
+ */
+export const UNIVERSAL_AUTO_LOAD_SKILL = 'unslop';
+
 /** One registered Hive agent as both hosts describe it before translating to their own configuration shape. */
 export type HiveAgentEntry = Omit<RuntimeSubagentConfig, 'mode'> & {
   mode: 'primary' | 'subagent' | 'all';
@@ -62,12 +69,19 @@ export type SkillLookups = {
 
 type Warn = (message: string) => void;
 
-function buildAutoLoadSkillsPromptAppendix(host: HostProfile, agentName: string, configured: readonly string[], skills: SkillLookups, warn: Warn): string {
+/**
+ * `implicit` names are requirements Hive adds itself, so they resolve by exact skill name only. A name the operator
+ * configured may also be an exact catalog id, because the operator chose that entry.
+ */
+function buildAutoLoadSkillsPromptAppendix(host: HostProfile, agentName: string, configured: readonly string[], skills: SkillLookups, warn: Warn, implicit: readonly string[] = []): string {
   const skipped = new Map(skills.skipped.map((entry) => [entry.name, entry]));
-  const names = configured.flatMap((skillId) => {
+  const names = [...new Set([...implicit, ...configured])].flatMap((skillId) => {
     const ambiguous = skills.ambiguousNames?.get(skillId);
-    const skill = skills.nativeSkillsByName.get(skillId) ?? skills.nativeSkillsById?.get(skillId) ?? skills.skillsByName.get(skillId);
+    const byId = configured.includes(skillId) ? skills.nativeSkillsById?.get(skillId) : undefined;
+    const skill = skills.nativeSkillsByName.get(skillId) ?? byId ?? skills.skillsByName.get(skillId);
     if (!ambiguous && skill) return [skill];
+    // An operator who disables the universal skill has chosen; repeating that for every role would only be noise.
+    if (!ambiguous && skillId === UNIVERSAL_AUTO_LOAD_SKILL && skipped.get(skillId)?.reason === 'disabled') return [];
     const reason = ambiguous ? `multiple user skills share this name (ids: ${ambiguous.join(', ')}); specify an exact catalog id`
       : skipped.get(skillId)?.reason === 'disabled'
       ? 'it is disabled in Hive config'
@@ -119,22 +133,22 @@ ${cards.join('\n')}`;
 /** Agents whose instructions are added at request time instead of replacing the host's default prompt. */
 const REQUEST_PROMPT_AGENTS = new Set<BuiltInRole>(['hive-master', 'swarm-orchestrator', 'hive-builder', 'forager-worker']);
 
-/** Which skill-dependent guidance each built-in role's instructions carry. */
-const SKILL_GUIDANCE: Record<BuiltInRole, { autoLoad: boolean; background: boolean }> = {
-  'hive-master': { autoLoad: true, background: true },
-  'architect-planner': { autoLoad: true, background: true },
-  'swarm-orchestrator': { autoLoad: true, background: true },
-  'hive-builder': { autoLoad: true, background: true },
-  'scout-researcher': { autoLoad: true, background: false },
-  'forager-worker': { autoLoad: true, background: false },
-  'hive-helper': { autoLoad: true, background: false },
-  'plan-reviewer': { autoLoad: true, background: false },
-  'code-reviewer': { autoLoad: true, background: false },
-  'simplicity-reviewer': { autoLoad: true, background: false },
-  'approach-advisor': { autoLoad: true, background: false },
-  'vulnerability-reviewer': { autoLoad: true, background: false },
-  'dash-reviewer': { autoLoad: false, background: false },
-  'vulnerability-review-primary': { autoLoad: false, background: false },
+/** Whether each built-in role's instructions carry background-delegation guidance; every role carries auto-load guidance. */
+const SKILL_GUIDANCE: Record<BuiltInRole, { background: boolean }> = {
+  'hive-master': { background: true },
+  'architect-planner': { background: true },
+  'swarm-orchestrator': { background: true },
+  'hive-builder': { background: true },
+  'scout-researcher': { background: false },
+  'forager-worker': { background: false },
+  'hive-helper': { background: false },
+  'plan-reviewer': { background: false },
+  'code-reviewer': { background: false },
+  'simplicity-reviewer': { background: false },
+  'approach-advisor': { background: false },
+  'vulnerability-reviewer': { background: false },
+  'dash-reviewer': { background: false },
+  'vulnerability-review-primary': { background: false },
 };
 
 /**
@@ -154,7 +168,7 @@ export function buildRoleCatalog(host: HostProfile, configService: ConfigService
     const use = SKILL_GUIDANCE[base];
     const configured = [...new Set([...(configService.getAgentConfig(base).autoLoadSkills ?? []), ...(custom[agent]?.autoLoadSkills ?? [])])];
     return renderSkillNameLookup(host, lookups.nativeSkillsByName, lookups.ambiguousNames)
-      + (use.autoLoad ? buildAutoLoadSkillsPromptAppendix(host, agent, configured, lookups, warn) : '')
+      + buildAutoLoadSkillsPromptAppendix(host, agent, configured, lookups, warn, [UNIVERSAL_AUTO_LOAD_SKILL])
       + (use.background ? buildBackgroundDelegationPromptAppendix(host, agent, lookups, warn) : '');
   };
   const agentMode = configService.get().agentMode ?? 'dedicated';
@@ -198,10 +212,10 @@ export function buildRoleCatalog(host: HostProfile, configService: ConfigService
     'dash-reviewer': { ...mk('dash-reviewer', 'primary', 'Dash Reviewer - Read-only implementation review orchestrator.'), hidden: true },
     'vulnerability-review-primary': { ...mk('vulnerability-review-primary', 'primary', 'Private vulnerability review orchestrator.'), hidden: true },
   };
-  // A custom agent's own auto-load names follow its base prompt, which already carries the base role's names.
+  // A custom agent's own auto-load names follow its base prompt, which already carries the base role's names and the universal skill.
   const customAutoLoad = skills ? Object.fromEntries(Object.entries(custom).map(([name, config]) => {
     const inherited = configService.getAgentConfig(config.baseAgent).autoLoadSkills ?? [];
-    return [name, buildAutoLoadSkillsPromptAppendix(host, name, (config.autoLoadSkills ?? []).filter((skill) => !inherited.includes(skill)), skills, console.warn)];
+    return [name, buildAutoLoadSkillsPromptAppendix(host, name, (config.autoLoadSkills ?? []).filter((skill) => skill !== UNIVERSAL_AUTO_LOAD_SKILL && !inherited.includes(skill)), skills, console.warn)];
   })) : {};
   const customAgents = buildCustomSubagents({
     customAgents: custom,

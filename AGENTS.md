@@ -199,6 +199,8 @@ Feature context is revisioned in `context/index.json`. Read with `hive_context_r
 
 Skills are loaded through OpenCode's native `skill` tool (via `skills.paths`, `skills.urls`, or `.opencode`/`.claude` discovery), not through a Hive plugin tool. Hive bundles are materialized into the global OpenCode config directory under `agent-hive/generated/opencode-skills/` and registered ahead of user paths.
 
+Every role, including the private review primaries and custom agents, is asked to load the bundled `unslop` skill. `UNIVERSAL_AUTO_LOAD_SKILL` in `packages/opencode-hive/src/runtime/role-catalog.ts` adds it where guidance is composed on both hosts, so keep it out of `DEFAULT_HIVE_CONFIG` and the config schema. `unslop` replaced `writing-policy`, which no longer ships and has no alias: route prose through the `unslop` skill, not a system-prompt trigger, and name `writing-policy` only where a past release is described.
+
 ### Workflow
 
 1. `hive_feature_create(name)` - Create a feature without changing the selected session route

@@ -16,4 +16,4 @@ Run code only when permitted, safe, useful, and within the host's tool limits. A
 
 Agreement across reviewers may prioritize investigation; it does not establish correctness. Keep a concrete lone-reviewer defect. Do not impose a finding-count cap, code-size threshold, or obligation to invent a simplification.
 
-Give counter-evidence for rejected material concerns so the operator can challenge the decision. Keep exhaustive investigation notes out of public review comments unless they answer an existing discussion. Use the host's optional-improvement and material-finding distinctions; the public prose rules remain with `pr-writing` and `writing-policy`.
+Give counter-evidence for rejected material concerns so the operator can challenge the decision. Keep exhaustive investigation notes out of public review comments unless they answer an existing discussion. Use the host's optional-improvement and material-finding distinctions; the public prose rules remain with `pr-writing` and `unslop`.

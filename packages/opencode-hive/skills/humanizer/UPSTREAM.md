@@ -28,3 +28,7 @@ Deliberate policy changes:
 - A user-supplied writing sample or a selected personal voice overlay outranks the register defaults.
 - Warmth is said plainly only where the genre is personal and the draft already carries it; the rewrite does not add warmth the draft lacks.
 - "What you must not change" adds that a proposal stays a proposal. The source's own example notes flagged "We will" turning proposals into commitments.
+
+## Draft audit and shorter option (2026-10-17)
+
+An oc-arkive change, not present in either source, adds a focused draft-audit mode for an agent's own draft before delivery, makes the full rewrite's dependency on `stop-slop` explicit (final checks 3 and 4 use its budget and band), and limits the shorter option to a writer's own long-form piece. Ordinary technical answers, reports, docs, plans, and status updates get none unless asked. The upstream shorter-option check is otherwise unchanged.

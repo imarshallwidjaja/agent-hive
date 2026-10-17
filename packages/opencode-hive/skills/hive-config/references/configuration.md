@@ -84,9 +84,9 @@ Names: `hive-master`, `architect-planner`, `swarm-orchestrator`, `hive-builder`,
 | `description` | Only on `scout-researcher`, `forager-worker`, `plan-reviewer`, `code-reviewer`, `simplicity-reviewer`, `approach-advisor`, `vulnerability-reviewer`: overrides the routing description primaries see. Blank inherits the default |
 | `skills` | Legacy; accepted, no effect |
 
-Defaults (shipped): `hive-master`, `architect-planner`, `swarm-orchestrator` auto-load `parallel-exploration`; `forager-worker` loads `verification`; `hive-builder` loads `verification` and `parallel-exploration`; `hive-helper` loads `hive-config`; others load none.
+Defaults (shipped): `hive-master`, `architect-planner`, `swarm-orchestrator` auto-load `parallel-exploration`; `forager-worker` loads `verification`; `hive-builder` loads `verification` and `parallel-exploration`; `hive-helper` loads `hive-config`; others load none. Every role, including `dash-reviewer`, `vulnerability-review-primary`, and every custom agent, is also asked to load the bundled `unslop` skill ahead of these names. That default is added when guidance is composed, so it is not in `agents.<name>.autoLoadSkills` and listing it there adds nothing. Add `unslop` to `disableSkills` to remove it everywhere; a native or user skill named `unslop` still takes precedence.
 
-`hive-helper` is special: its operator `autoLoadSkills` is ignored and it always gets exactly its defaults. To stop it loading `hive-config`, add `hive-config` to `disableSkills` (which disables the bundled skill for every agent).
+`hive-helper` is special: its operator `autoLoadSkills` is ignored and it always gets exactly its defaults, plus the universal `unslop`. To stop it loading `hive-config`, add `hive-config` to `disableSkills` (which disables the bundled skill for every agent).
 
 No role has a shipped model. A stored `model` is kept as written, including one equal to a model older releases generated; to switch a role to native inheritance, delete its `model` and `variant` together.
 

@@ -491,12 +491,12 @@ describe('config hook autoLoadSkills guidance', () => {
         'forager-ui': {
           baseAgent: 'forager-worker',
           description: 'Use for UI-heavy implementation tasks.',
-          autoLoadSkills: ['brainstorming', 'parallel-exploration', 'native-file-skill'],
+          autoLoadSkills: ['unslop', 'brainstorming', 'parallel-exploration', 'native-file-skill'],
         },
         'reviewer-security': {
           baseAgent: 'code-reviewer',
           description: 'Use for security-focused review passes.',
-          autoLoadSkills: [],
+          autoLoadSkills: ['unslop'],
         },
       },
     });
@@ -523,6 +523,10 @@ describe('config hook autoLoadSkills guidance', () => {
     expect(countOccurrences(foragerUiPrompt, skillToolCall('parallel-exploration'))).toBe(1);
     expect(countOccurrences(foragerUiPrompt, skillToolCall('test-driven-development'))).toBe(0);
     expect(countOccurrences(foragerUiPrompt, skillToolCall('native-file-skill'))).toBe(1);
+    // The universal skill comes from the base role once, whether or not a custom agent lists it again.
+    expect(countOccurrences(foragerUiPrompt, skillToolCall('unslop'))).toBe(1);
+    expect(countOccurrences(scoutDocsPrompt, skillToolCall('unslop'))).toBe(1);
+    expect(countOccurrences(getAgentPrompt(opencodeConfig, 'reviewer-security'), skillToolCall('unslop'))).toBe(1);
     expect(foragerUiPrompt).not.toContain(brainstormingSkill.template);
     expect(foragerUiPrompt).not.toContain(parallelExplorationSkill.template);
     expect(foragerUiPrompt).not.toContain(tddSkill.template);
@@ -614,7 +618,7 @@ describe('config hook autoLoadSkills guidance', () => {
   it('respects disableSkills for prompt guidance and generated skill directories', async () => {
     writeHiveConfig(testRoot, {
       agentMode: 'unified',
-      disableSkills: ['parallel-exploration', 'hive-config'],
+      disableSkills: ['parallel-exploration', 'hive-config', 'unslop'],
     });
 
     const { result: opencodeConfig, warnings } = await captureWarnings(async () => applyConfigHook(testRoot));
@@ -631,6 +635,61 @@ describe('config hook autoLoadSkills guidance', () => {
     expect(warnings).toContainEqual(
       expect.stringContaining('Auto-load skill "parallel-exploration" was not added to guidance'),
     );
+    // Disabling the universal skill is the operator's choice: it leaves every role's guidance and says nothing about it.
+    expect(fs.existsSync(path.join(generatedPath, 'unslop'))).toBe(false);
+    expect(hiveMasterGuidance).not.toContain(skillToolCall('unslop'));
+    expect(getAutoLoadSkillsGuidance(getAgentPrompt(opencodeConfig, 'scout-researcher'))).toBe('');
+    expect(warnings.some((message) => message.includes('"unslop"'))).toBe(false);
+  });
+
+  it('asks every Hive role to load unslop first, ahead of its configured names', async () => {
+    writeHiveConfig(testRoot, { agentMode: 'unified' });
+
+    const opencodeConfig = await applyConfigHook(testRoot);
+    const registered = opencodeConfig.agent as Record<string, { prompt?: string }>;
+    const roles = [
+      'hive-master', 'architect-planner', 'swarm-orchestrator', 'hive-builder', 'scout-researcher', 'forager-worker',
+      'hive-helper', 'plan-reviewer', 'code-reviewer', 'simplicity-reviewer', 'approach-advisor', 'vulnerability-reviewer',
+      'dash-reviewer', 'vulnerability-review-primary',
+    ];
+    const followers: Record<string, string> = {
+      'hive-master': 'parallel-exploration', 'architect-planner': 'parallel-exploration', 'swarm-orchestrator': 'parallel-exploration',
+      'hive-builder': 'verification', 'forager-worker': 'verification', 'hive-helper': 'hive-config',
+    };
+    for (const role of roles) {
+      // Roles whose instructions are added at request time carry no prompt in the registered agent.
+      const prompt = registered[role]?.prompt ?? await renderRuntimeSystemPrompt(testRoot, role, { trackMessage: false });
+      const guidance = getAutoLoadSkillsGuidance(prompt);
+      expect(countOccurrences(guidance, skillToolCall('unslop')), role).toBe(1);
+      if (followers[role]) expect(guidance.indexOf(skillToolCall('unslop')), role).toBeLessThan(guidance.indexOf(skillToolCall(followers[role]!)));
+      expect(prompt, role).not.toContain(requireBuiltinSkill('unslop').template);
+      expect(prompt, role).not.toContain('## Writing and explanation');
+    }
+    expect(roles.length).toBe(14);
+    const generatedPath = getCurrentHiveManagedPath(opencodeConfig)!;
+    for (const file of ['SKILL.md', 'UPSTREAM.md']) expect(fs.existsSync(path.join(generatedPath, 'unslop', file))).toBe(true);
+    expect(fs.existsSync(path.join(generatedPath, 'writing-policy'))).toBe(false);
+  });
+
+  it('lets a native unslop skill take over the universal default without copying the bundle', async () => {
+    createFileSkill(
+      path.join(testRoot, '.opencode', 'skills'),
+      'unslop',
+      'A project skill that replaces the bundled unslop',
+      '# Project Unslop\n\nThis must stay out of the prompt.',
+    );
+    writeHiveConfig(testRoot, { agentMode: 'unified' });
+
+    const { result: opencodeConfig, warnings } = await captureWarnings(async () => applyConfigHook(testRoot));
+    const foragerPrompt = await renderRuntimeSystemPrompt(testRoot, 'forager-worker', { trackMessage: false });
+    const dashPrompt = getAgentPrompt(opencodeConfig, 'dash-reviewer');
+    const generatedPath = getCurrentHiveManagedPath(opencodeConfig);
+
+    expect(countOccurrences(getAutoLoadSkillsGuidance(foragerPrompt), skillToolCall('unslop'))).toBe(1);
+    expect(countOccurrences(getAutoLoadSkillsGuidance(dashPrompt), skillToolCall('unslop'))).toBe(1);
+    expect(foragerPrompt).not.toContain('# Project Unslop');
+    expect(fs.existsSync(path.join(generatedPath!, 'unslop'))).toBe(false);
+    expect(warnings.some((message) => message.includes('"unslop"'))).toBe(false);
   });
 
   it('autoloads native project skills without copying them into Hive generated paths', async () => {

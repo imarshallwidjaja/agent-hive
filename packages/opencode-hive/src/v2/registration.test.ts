@@ -603,7 +603,8 @@ describe('v2 native precedence and canonical instructions', () => {
       for (const kind of ['compaction', 'generate'] as const) {
         const draft = await host.requestDraft({ kind, sessionID: 'child', agent: 'scout-researcher', system: ['USER SCOUT PROMPT'], tools: ['read'] });
         // A child session without `execute` would get the clarification rule and the Code Mode notice on an ordinary turn.
-        expect(draft.system.map((part: { text: string }) => part.text)).toEqual(['USER SCOUT PROMPT', registered]);
+        // Skill guidance reaches these requests too, so the universal skill is the only addition for a role with no configured names.
+        expect(draft.system.map((part: { text: string }) => part.text)).toEqual(['USER SCOUT PROMPT', registered, expect.stringContaining('skill({ id: "unslop" })')]);
         const unmanaged = await host.requestDraft({ kind, sessionID: 'primary', agent: 'build', system: ['BUILD'] });
         expect(unmanaged.system).toEqual([{ type: 'text', text: 'BUILD' }]);
       }
@@ -662,6 +663,67 @@ describe('v2 skills, commands and models', () => {
     const reviewer = await host.request({ sessionID: 'child', agent: 'dash-reviewer', system: ['x'], tools: ['read'] });
     expect(reviewer.join('\n')).toContain('"systematic-debugging": `skill({ id: "team-debugging" })`');
     expect(host.skills().get('team-debugging').content).toBe('USER DEBUGGING');
+  });
+
+  it('asks every role and custom agent for unslop at request time, through the id of the skill with that name', async () => {
+    const roles = [
+      'hive-master', 'architect-planner', 'swarm-orchestrator', 'hive-builder', 'scout-researcher', 'forager-worker',
+      'hive-helper', 'plan-reviewer', 'code-reviewer', 'simplicity-reviewer', 'approach-advisor', 'vulnerability-reviewer',
+      'dash-reviewer', 'vulnerability-review-primary',
+    ];
+    const host = await activate({}, { customAgents: { 'audit-reviewer': { baseAgent: 'code-reviewer', description: 'd', autoLoadSkills: ['unslop'] } } });
+    const autoLoad = async (agent: string) => {
+      const parts = await host.request({ sessionID: 'child', agent, system: ['x'], tools: ['read'] });
+      return (parts.find((text) => text.includes('## Configured Auto-Load Skills')) ?? '').split('## Configured Auto-Load Skills')[1] ?? '';
+    };
+    for (const agent of [...roles, 'audit-reviewer']) {
+      const guidance = await autoLoad(agent);
+      expect(guidance.split('skill({ id: "unslop" })').length - 1, agent).toBe(1);
+    }
+    // A user catalog entry named unslop under another id wins by name, for primaries, private review primaries, and custom agents alike.
+    host.addUserSkill({ id: 'team-unslop', name: 'unslop', description: 'user', path: '/user/unslop/SKILL.md', content: 'USER UNSLOP' });
+    for (const agent of ['hive-master', 'dash-reviewer', 'vulnerability-review-primary', 'audit-reviewer']) {
+      const guidance = await autoLoad(agent);
+      expect(guidance, agent).toContain('skill({ id: "team-unslop" })');
+      expect(guidance, agent).not.toContain('skill({ id: "unslop" })');
+    }
+    expect(host.skills().get('team-unslop').content).toBe('USER UNSLOP');
+  });
+
+  it('never takes the catalog id unslop for the implicit universal skill, while an operator-configured id stays exact', async () => {
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      for (const bundledDisabled of [false, true]) {
+        const label = bundledDisabled ? 'bundled unslop disabled' : 'bundled unslop enabled';
+        warn.mockClear();
+        const host = await activate({}, {
+          ...(bundledDisabled ? { disableSkills: ['unslop'] } : {}),
+          customAgents: {
+            'plain-reviewer': { baseAgent: 'code-reviewer', description: 'd' },
+            'audit-reviewer': { baseAgent: 'code-reviewer', description: 'd', autoLoadSkills: ['unslop'] },
+          },
+        });
+        const autoLoad = async (agent: string) => {
+          const parts = await host.request({ sessionID: 'child', agent, system: ['x'], tools: ['read'] });
+          return (parts.find((text) => text.includes('## Configured Auto-Load Skills')) ?? '').split('## Configured Auto-Load Skills')[1] ?? '';
+        };
+        // No skill is named unslop here: the id unslop belongs to a skill with another name.
+        host.addUserSkill({ id: 'unslop', name: 'another-skill', description: 'user', path: '/user/another/SKILL.md', content: 'ANOTHER' });
+        for (const agent of ['hive-master', 'scout-researcher', 'dash-reviewer', 'vulnerability-review-primary', 'plain-reviewer']) {
+          const guidance = await autoLoad(agent);
+          expect(guidance, `${label} ${agent}`).not.toContain('skill({ id: "unslop" })');
+          expect(guidance, `${label} ${agent}`).not.toContain('another-skill');
+        }
+        // The operator named the id explicitly, so that exact catalog entry still loads, once.
+        const explicit = await autoLoad('audit-reviewer');
+        expect(explicit.split('skill({ id: "unslop" })').length - 1, label).toBe(1);
+        // A disabled universal skill is the operator's choice and stays quiet; a missing one is reported.
+        const reported = warn.mock.calls.some(([message]) => String(message).includes('Auto-load skill "unslop"'));
+        expect(reported, label).toBe(!bundledDisabled);
+      }
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('resolves auto-load skills against the effective skill catalog, including user-configured sources', async () => {
