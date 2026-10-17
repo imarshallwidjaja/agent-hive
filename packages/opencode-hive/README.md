@@ -122,8 +122,8 @@ Use the feature flow when work needs plan review, a task DAG, and a durable audi
 
 | Command | Purpose |
 |---------|---------|
-| `/interview` | Clarify an idea toward a reliable implementation-brief handoff. |
-| `/grill <context>` | Reach explicit alignment on any context through material questions and researched facts. |
+| `/interview` | Clarify an idea toward shared understanding with a flexible endpoint and no fixed next step. |
+| `/grill <context>` | Reach plan-ready alignment through researched facts and material questions, ready for `/hive-plan`. |
 | `/implementation-brief` | Produce a copy-paste-ready brief for a later Hive plan. |
 | `/hive-plan` | Create or update the Hive feature plan from a spec or brief. |
 | `/approve-sync-plan` | Approve the active plan and sync executable tasks. |
@@ -161,7 +161,7 @@ Routing depends on `agentMode`:
 
 Except for `/dash-review` and `/vuln-review`, dedicated-mode slash commands do not switch agents by themselves. If the active agent is not the route target, delegate or reroute to the target agent and stop if that is not possible.
 
-Use `/interview <idea>` to clarify an idea toward a reliable implementation-brief handoff. It keeps questions implementation-oriented and prepares context for the separate `/implementation-brief` command rather than producing that full brief. Use `/grill <context>` when the endpoint is explicit shared understanding of any topic. Both ask one material question at a time within one continuing invocation: when the `question` tool is available, each answer returns to the same run, which keeps researching, checking, and asking until you confirm alignment or stop it. Without that tool, each plain chat question waits for your reply and the next turn resumes the same loop. The commands do not automatically create a plan, implement, or start follow-on work; confirmed alignment ends the interaction, and later action requires a separate operator request. A named destination authorizes writing only the confirmed alignment brief there. Discoverable facts are researched without forced fan-out. Unavailable or failed research is disclosed as unresolved or an explicit assumption; it is never guessed.
+Use `/grill <context>` when you want a confirmed, plan-ready brief (decisions with rationale, constraints, acceptance criteria) to hand to `/hive-plan`. Use `/interview <idea>` to clarify an idea with a flexible endpoint, including ad-hoc work, and no fixed next step or implementation-brief funnel. Both follow the `grilling` skill: the agent gets its bearings from existing context, explains what it found in plain terms and says where the evidence is uncertain, skips decisions you already made, and asks one material question at a time. Every option carries a short pro and con and a recommendation, and a confident recommendation still leaves a choice that is yours to make. Both run within one continuing invocation: when the `question` tool is available, each answer returns to the same run, which keeps researching, checking, and asking until you confirm alignment or stop it. Without that tool, each plain chat question waits for your reply and the next turn resumes the same loop. The commands do not automatically create a plan, implement, or start follow-on work; a bare confirmation is understanding only, and later action requires a separate operator request, unless you asked upfront for the next stage (for example, "then create a plan after alignment"), which then runs once within the agent's normal planning and approval limits. A named destination authorizes writing only the confirmed alignment brief there. Discoverable facts are researched without forced fan-out. Unavailable or failed research is disclosed as unresolved or an explicit assumption; it is never guessed.
 
 Use `/dash-review` for one read-only Git, process/concept, or local-artifact review. It does not edit source, create Hive tasks, or start a fix. See [Reviews in the Operator Guide](../../docs/OPERATOR-GUIDE.md#reviews).
 
@@ -572,7 +572,7 @@ Generated/managed shape (for inspection) at `<project>/.hive/repositories.json`:
 | `context-engineering` | Select, retrieve, and update managed context with revision and hash checks |
 | `dispatching-parallel-agents` | Coordinate independent subagent work |
 | `executing-plans` | Execute an approved plan with review checkpoints |
-| `grilling` | Question supplied context until material decisions and evidence are aligned |
+| `grilling` | Orient on supplied context, explain what is found, and question it until material decisions and evidence are aligned |
 | `hive-config` | Hive runtime layout, state-tool ownership, read-only session forensics, and Agent Hive configuration reference |
 | `how` | Explain current source-grounded behavior and subsystem flow |
 | `humanizer` | Rewrite existing prose without changing its facts or commitments, interview the writer or work from their notes, and repair vocabulary, register, attribution, and formatting |

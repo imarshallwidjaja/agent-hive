@@ -157,11 +157,11 @@ function renderUsage(context: HiveCommandContext, error: string): string {
 export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
   interview(args, context) {
     return renderHybridCommand('interview', context, {
-      details: [`Topic: ${topicOrCurrent(args, 'clarify the operator idea for an implementation-brief handoff')}`],
+      details: [`Topic: ${topicOrCurrent(args, 'clarify the operator idea')}`],
       doItems: [
         'Load the `grilling` skill and use its shared interaction engine.',
-        'Choose the highest-ambiguity, highest-risk, or highest-value missing decision first.',
-        'After each answer, show compact progress with settled operator decisions and operator preferences listed separately, unresolved material items, and fact-status counts.',
+        'Run the whole interaction as the skill\'s continuous loop in this invocation.',
+        'End with the skill\'s explicit three-way alignment confirmation.',
       ],
       doNotItems: [],
       backgroundItems: backgroundItems(context, [
@@ -169,7 +169,7 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
         'Continue asking independent operator decisions while research runs; wait only when all remaining material decisions depend on pending evidence.',
       ]),
       outputItems: [
-        '## Interview Summary, ## Recommended Next Step, and ## Context For /implementation-brief when appropriate.',
+        '## Interview Summary and ## Recommended Next Step, followed by three-way alignment confirmation. The next step is whatever the clarified idea calls for, such as an answer, ad-hoc work, `/hive-plan`, or none.',
       ],
     });
   },
@@ -188,7 +188,8 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
         'Continue asking independent operator decisions while research runs; wait only when all remaining material decisions depend on pending evidence.',
       ]),
       outputItems: [
-        'A conversation-scoped alignment brief covering interpretation, operator decisions, operator preferences, established facts with provenance and status, assumptions, constraints, scope, disagreements, and open questions, followed by three-way alignment confirmation.',
+        'The skill\'s alignment brief with acceptance criteria added, followed by three-way alignment confirmation.',
+        'After confirmation, name `/hive-plan` as the handoff unless the operator already asked for the next stage.',
       ],
     });
   },

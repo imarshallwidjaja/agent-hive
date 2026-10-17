@@ -10,6 +10,7 @@ oc-arkive ships the skill sources in `packages/opencode-hive/skills/`. OpenCode 
 | Material construction choices | `code-design-principles` | Conditional depth, no separate plan or review verdict |
 | Current-code explanation | `how` | Source-grounded mental model; Scouts retrieve and the primary explains |
 | Historical rationale | `why` | Explicitly requested/assigned history, calibrated claims and source coverage |
+| Shared-understanding dialogue | `grilling` | Orient, explain with calibrated confidence, one material question with option pros, cons and a recommendation, falsify, correct, three-way confirmation. `/grill` and `/interview` set the endpoint; a bare confirmation authorizes no follow-on work |
 | Diagnosis | `systematic-debugging` | Causal evidence before a fix, with techniques chosen by the open question. The role keeps its attempt limits and diagnosis-only scope |
 | Selected red-green mechanics | `test-driven-development` | Loading selects TDD; its test-quality reference can be read independently |
 | Completion evidence | `verification` | Candidate/input applicability and observed evidence |
@@ -76,7 +77,7 @@ Five skills changed what they ask of an agent, and the others in this group were
 - `writing-for-agents` replaces its goal of the same process on every run with a distinction between contracts (required outcomes), protocols (an order that protects state, authority or evidence) and techniques (chosen to answer an open question). The pointer, hierarchy, completion-criterion and pruning guidance is unchanged.
 - `verification` and `agents-md-mastery` each lost only repeated statements. `verification` states the skipped, unrun, failed or blocked rule and the reuse of unaffected results once. Observed failures stay FAIL, worker prose alone still cannot yield PASS, and the standalone verdict labels stay. `agents-md-mastery` lost its generic anti-pattern table and closing summary, which restated Progressive Placement, Write What Exists, the maintenance workflow and Red Flags. Item-level approval, the prune test, placement, grounding and the hard-won-gotcha rule stay.
 
-The remaining coherence skills (`brainstorming`, `grilling`, `code-design-principles`, `complexity-audit`, `complexity-review`, `how`, `why`, `writing-policy`, `writing-for-humans`, `humanizer`, `stop-slop`, `pr-writing`, `test-driven-development`) kept their content. None selects TDD globally, and none gained a style policy.
+The remaining coherence skills (`brainstorming`, `code-design-principles`, `complexity-audit`, `complexity-review`, `how`, `why`, `writing-policy`, `writing-for-humans`, `humanizer`, `stop-slop`, `pr-writing`, `test-driven-development`) kept their content. None selects TDD globally, and none gained a style policy.
 
 Static tests show which wording is present and that the reference ships. Whether a model reviews or diagnoses better with this wording is a qualitative question, answered by looking at real interactions, not by these tests.
 

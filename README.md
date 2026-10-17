@@ -63,8 +63,8 @@ The [Operator Guide](docs/OPERATOR-GUIDE.md) covers each step in depth: source c
 
 | Workflow | When | How you start |
 |----------|------|----------------|
-| `/grill` | Explicit alignment on any context, without assuming implementation or a next command | `/grill <context>` |
-| `/interview` | Clarify an idea toward a reliable implementation-brief handoff | `/interview <idea>` |
+| `/grill` | Plan-ready alignment (decisions, rationale, constraints, acceptance criteria) to hand to `/hive-plan` | `/grill <context>` |
+| `/interview` | Flexible clarification of an idea, including ad-hoc work, with no fixed next step | `/interview <idea>` |
 | Feature | Plan review, task dependencies, isolated task worktrees, or a durable audit trail | Ask in plain language, or `/hive-plan` |
 | Ad-hoc (`hive-builder`) | Bounded non-feature work that should not create feature or task records | Talk to `hive-builder` (dedicated mode) or `hive-master` (unified) |
 | `/dash-review` | Read-only review of a folder, inline text, or the current checkout | `/dash-review [intent]` |

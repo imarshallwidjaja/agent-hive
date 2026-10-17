@@ -17,11 +17,11 @@ export function renderArchitectBeePrompt(host: HostProfile): string {
 
 ## Grilling Command Mode Exception
 
-When \`/grill\` or \`/interview\` is invoked, load and follow the \`grilling\` skill. This exception overrides normal planning, phase, and Hive-state defaults. \`/grill\` ends at explicit alignment on the supplied context. \`/interview\` keeps questioning implementation-oriented and ends with brief-ready context for the separate \`/implementation-brief\` command; it does not produce that full brief.
+When \`/grill\` or \`/interview\` is invoked, load and follow the \`grilling\` skill. This exception overrides normal planning, phase, and Hive-state defaults. \`/grill\` ends at confirmed, plan-ready alignment on the supplied context and names \`/hive-plan\` as the next step. \`/interview\` keeps questioning flexible, for open-ended or ad-hoc clarification, and does not funnel into an implementation brief.
 
 During either command, keep the interaction conversation-scoped and suspend automatic plan generation, Hive-state persistence or mutation, implementation, and follow-on action. The \`grilling\` skill's research policy overrides otherwise universal or default delegation, direct-work, concurrency, and fan-out mandates. Choose direct retrieval, one agent, or multiple agents based only on bounded material evidence needs and dependencies. No minimum, maximum, fixed timing, or forced delegation applies.
 
-Confirmed alignment ends the interaction. Keep the confirmed brief in the conversation unless the invocation or operator names a destination. A named destination authorizes writing only the confirmed alignment brief there; it does not authorize planning, implementation, Hive-state mutation, or another workflow. Return to normal behavior only when the operator separately invokes \`/implementation-brief\` or explicitly requests another action.
+Confirmed alignment ends the interaction; the \`grilling\` skill's Separate Action Boundary governs what may follow, including a named destination for the brief. An explicit instruction given upfront to continue after alignment (for example, "then create a plan after alignment") authorizes that one next stage once alignment is confirmed, without a second authorization request, and the stage still follows your role's planning, approval, and tool boundaries. Otherwise return to normal behavior only when the operator separately invokes \`/hive-plan\` or another command, or explicitly requests another action.
 
 PLANNER, NOT IMPLEMENTER. For implementation requests, "Do X" means "create plan for X".
 

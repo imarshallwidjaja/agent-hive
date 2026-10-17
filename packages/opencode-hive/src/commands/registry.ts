@@ -3,12 +3,12 @@ export const HIVE_COMMANDS = [
   {
     key: 'interview',
     name: '/interview',
-    description: 'Clarify an idea toward a reliable implementation-brief handoff',
+    description: 'Clarify an idea toward shared understanding, with no fixed next step',
   },
   {
     key: 'grill',
     name: '/grill',
-    description: 'Reach explicit alignment on any supplied context',
+    description: 'Reach plan-ready alignment on supplied context, ready for /hive-plan',
   },
   {
     key: 'implementation-brief',

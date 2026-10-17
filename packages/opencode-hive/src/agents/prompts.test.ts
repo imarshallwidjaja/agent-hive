@@ -1022,13 +1022,22 @@ describe('/grill and /interview primary-agent mode exception', () => {
     for (const [name, prompt] of routedPrimaryPrompts) {
       expect(prompt, name).toContain('## Grilling Command Mode Exception');
       expect(prompt, name).toContain('When `/grill` or `/interview` is invoked');
-      expect(prompt, name).toContain('`/grill` ends at explicit alignment');
-      expect(prompt, name).toContain('`/interview` keeps questioning implementation-oriented');
-      expect(prompt, name).toContain('context for the separate `/implementation-brief`');
+      expect(prompt, name).toContain('`/grill` ends at confirmed, plan-ready alignment on the supplied context and names `/hive-plan` as the next step');
+      expect(prompt, name).toContain('`/interview` keeps questioning flexible, for open-ended or ad-hoc clarification, and does not funnel into an implementation brief');
+      expect(prompt, name).not.toContain('brief-ready context');
       expect(prompt, name).toContain('suspend automatic plan generation, Hive-state persistence or mutation, implementation, and follow-on action');
-      expect(prompt, name).toContain('Confirmed alignment ends the interaction');
-      expect(prompt, name).toContain('separately invokes `/implementation-brief` or explicitly requests another action');
-      expect(prompt, name).toContain('A named destination authorizes writing only the confirmed alignment brief there');
+      expect(prompt, name).toContain("Confirmed alignment ends the interaction; the `grilling` skill's Separate Action Boundary governs what may follow, including a named destination for the brief");
+      // The boundary text lives once, in the skill; the prompt points to it instead of restating it.
+      expect(prompt, name).not.toContain('A named destination authorizes writing only the confirmed alignment brief there');
+      expect(prompt, name).not.toContain('a bare confirmation is understanding only');
+      expect(prompt, name).toContain('separately invokes `/hive-plan` or another command, or explicitly requests another action');
+    }
+  });
+
+  it('lets an explicit upfront instruction authorize one next stage inside the role boundaries', () => {
+    for (const [name, prompt] of routedPrimaryPrompts) {
+      expect(prompt, name).toContain('An explicit instruction given upfront to continue after alignment (for example, "then create a plan after alignment") authorizes that one next stage once alignment is confirmed, without a second authorization request');
+      expect(prompt, name).toContain("the stage still follows your role's planning, approval, and tool boundaries");
     }
   });
 
@@ -2805,15 +2814,21 @@ describe('README.md documentation', () => {
       for (const content of [readmeContent, operatorGuideContent]) {
         expect(content).toContain('do not automatically create a plan, implement, or start follow-on work');
         expect(content).toContain('a separate operator request');
+        expect(content).toContain('"then create a plan after alignment"');
         expect(content).toContain('A named destination authorizes writing only the confirmed alignment brief there');
+        expect(content).toContain('short pro and con and a recommendation');
+        expect(content).toContain('ad-hoc work');
+        expect(content).toContain('`/hive-plan`');
+        expect(content).not.toContain('implementation-brief handoff');
         expect(content).toContain('Unavailable or failed research is disclosed as unresolved or an explicit assumption');
         expect(content).toContain('never guessed');
         expect(content).toContain('each answer returns to the same run, which keeps researching, checking, and asking until you confirm alignment or stop it');
         expect(content).toContain('each plain chat question waits for your reply and the next turn resumes the same loop');
       }
 
-      expect(rootReadmeContent).toContain('without assuming implementation or a next command');
-      expect(rootReadmeContent).toContain('implementation-brief handoff');
+      expect(rootReadmeContent).toContain('Plan-ready alignment');
+      expect(rootReadmeContent).toContain('Flexible clarification of an idea, including ad-hoc work');
+      expect(rootReadmeContent).not.toContain('implementation-brief handoff');
     });
   });
 

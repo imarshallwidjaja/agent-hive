@@ -255,6 +255,67 @@ describe('skill content', () => {
     for (const [scenario, phrases] of Object.entries(scenarios)) {
       for (const phrase of phrases) expect(skill!.template, `${scenario}: ${phrase}`).toContain(phrase);
     }
+    // Shared-understanding dialogue: orient before asking, explain plainly with calibrated confidence, and treat
+    // options, corrections, and the final confirmation as parts of the same method.
+    const dialogue: Record<string, string[]> = {
+      'orient before the first question': [
+        'orient and research, explain, ask one material question, investigate and falsify the answer, incorporate corrections',
+        'Repeat the questions and checks until no unresolved item could materially change shared understanding, then end the whole dialogue with an explicit three-way confirmation',
+        'Get your bearings before the first question',
+        'Read what the conversation, the supplied context, and the repository or project context already say',
+      ],
+      'settled decisions are not asked again': [
+        'A decision the operator already made there is settled',
+        'do not ask it again unless new evidence contradicts it',
+      ],
+      'explain what, how and why plainly without quizzing': [
+        'what the thing is, how it works, and why it is that way where the evidence shows why',
+        'Give the smallest complete account first',
+        'Skip what they plainly already know',
+        'no quizzes, no asking them to repeat it back, no lecture',
+      ],
+      'factual and historical uncertainty survives': [
+        'Say what a source establishes, what it only suggests, and what you could not find',
+        'Never promote an inferred reason to a stated fact',
+      ],
+      'every option has pros, cons, and a recommendation': [
+        'Give every option you present a short pro, a short con, and your recommendation with its reason',
+        'when an option has none worth naming, say so instead of inventing one',
+      ],
+      'a confident recommendation does not settle a choice': [
+        'A recommendation does not settle a decision',
+        'a material choice the operator has not made stays on the frontier',
+        'never fold it into the brief as an assumption',
+      ],
+      'operator corrections are incorporated and checked': [
+        'When the operator corrects your explanation, a fact, or a recommendation, accept it',
+        'say what changed in your account',
+      ],
+      'confirmation options carry costs and a recommendation': [
+        'Give each outcome its cost and benefit, and recommend Aligned only when no material item is open',
+        'any error left in the brief carries forward',
+        'It costs another round and keeps the brief accurate',
+        'right when a material item is wrong or missing',
+      ],
+      'bare confirmation is understanding only': [
+        'A bare confirmation is understanding only',
+        'requires a separate operator request',
+        'Grilling itself creates no Hive feature, plan, or other Hive state',
+      ],
+      'upfront instruction authorizes one next stage': [
+        '"then create a plan after alignment"',
+        'authorizes the one next stage it names, only once alignment is confirmed, and you do not ask for authorization a second time',
+        "the active role's existing planning, approval, and tool boundaries",
+        'never implies approval, task sync, or execution',
+      ],
+    };
+    for (const [scenario, phrases] of Object.entries(dialogue)) {
+      for (const phrase of phrases) expect(skill!.template, `${scenario}: ${phrase}`).toContain(phrase);
+    }
+    // The skill stays endpoint-neutral: commands choose the endpoint, so neither one is named as the method's end.
+    expect(skill!.template).not.toContain('/implementation-brief');
+    expect(skill!.template).not.toContain('/interview');
+    expect(skill!.template).not.toContain('/grill');
     expect(skill!.template).toContain('operator decisions, operator preferences, assumptions');
     expect(skill!.template).not.toContain('operator decisions and preferences');
     expect(skill!.template).toContain('discoverable facts');
@@ -273,7 +334,7 @@ describe('skill content', () => {
     expect(skill!.template).toContain('settled operator items');
     expect(skill!.template).toContain('unresolved material items');
     expect(skill!.template).toContain('counts for facts marked');
-    expect(skill!.template).toContain('- operator decisions\n- operator preferences');
+    expect(skill!.template).toContain('- operator decisions, each with its reason when the operator or the evidence gave one\n- operator preferences');
     expect(skill!.template).toContain('Confirmed alignment ends the interaction');
     expect(skill!.template).toContain('requires a separate operator request');
     expect(skill!.template).toContain('A named destination authorizes writing only the confirmed alignment brief there');

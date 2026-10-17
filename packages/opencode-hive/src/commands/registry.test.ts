@@ -11,12 +11,12 @@ const EXPECTED_COMMANDS = [
   {
     key: 'interview',
     name: '/interview',
-    description: 'Clarify an idea toward a reliable implementation-brief handoff',
+    description: 'Clarify an idea toward shared understanding, with no fixed next step',
   },
   {
     key: 'grill',
     name: '/grill',
-    description: 'Reach explicit alignment on any supplied context',
+    description: 'Reach plan-ready alignment on supplied context, ready for /hive-plan',
   },
   {
     key: 'implementation-brief',
@@ -175,16 +175,34 @@ describe('HIVE_COMMANDS', () => {
       const grill = commands.grill.run('a migration proposal');
       const interview = commands.interview.run('an idea');
       expect(grill).toContain('Context: a migration proposal');
-      expect(grill).toContain("Run the whole interaction as the skill's continuous loop in this invocation.");
-      expect(grill).toContain("End with the skill's explicit three-way alignment confirmation.");
       for (const output of [grill, interview]) {
         expect(output).toContain('Load the `grilling` skill and use its shared interaction engine.');
-        // The pointer defers to the skill instead of restating its transport and falsification policy.
-        expect(output).not.toContain('Falsify before settling');
-        expect(output).not.toContain('per turn');
+        expect(output).toContain("Run the whole interaction as the skill's continuous loop in this invocation.");
+        expect(output).toContain("End with the skill's explicit three-way alignment confirmation.");
+        // The wrappers defer to the skill instead of restating its method, transport and falsification policy.
+        for (const methodPhrase of ['Falsify before settling', 'per turn', 'Get your bearings', 'a short pro, a short con', 'does not settle a decision', 'highest-ambiguity', 'compact progress']) {
+          expect(output, methodPhrase).not.toContain(methodPhrase);
+        }
       }
-      // /interview keeps its own output contract.
-      expect(interview).toContain('## Interview Summary, ## Recommended Next Step, and ## Context For /implementation-brief');
+      // /grill aims at a plan: constraints and acceptance criteria, then a /hive-plan handoff, with no run of the plan itself.
+      expect(grill).toContain('Reach plan-ready shared understanding of the supplied context');
+      expect(grill).toContain('settling the constraints, non-goals, and acceptance criteria a plan needs and skipping questions planning would not use');
+      expect(grill).toContain("The skill's alignment brief with acceptance criteria added, followed by three-way alignment confirmation");
+      expect(grill).toContain('name `/hive-plan` as the handoff unless the operator already asked for the next stage');
+      expect(grill).toContain('During grilling, do not implement, create a Hive feature or other Hive state, persist grilling state');
+      expect(grill).toContain("Follow-on work after alignment follows the skill's separate-action boundary");
+      expect(grill).not.toContain('grilling does not run it');
+      expect(grill).not.toContain('Aim the alignment at a plan');
+      expect(grill).not.toContain('disagreements, and open questions');
+      expect(grill).not.toContain('implementation-brief');
+      // /interview stays flexible: no mandatory brief funnel, any fitting next step, and its own output contract.
+      expect(interview).toContain('## Interview Summary and ## Recommended Next Step, followed by three-way alignment confirmation');
+      expect(interview).toContain('such as an answer, ad-hoc work, `/hive-plan`, or none');
+      expect(interview).toContain('let the idea decide the endpoint: an answer, a decision, ad-hoc work, or a plan');
+      expect(interview).toContain('a pro and con for each when more than one next step is reasonable');
+      expect(interview).toContain("Follow-on work after alignment follows the skill's separate-action boundary");
+      expect(interview).not.toContain('/implementation-brief');
+      expect(interview).not.toContain('Context For');
     }
   });
 
