@@ -166,6 +166,28 @@ describe('HIVE_COMMANDS', () => {
     }
   });
 
+  it('routes /grill into the shared continuous grilling loop and /interview into the same engine on every host', () => {
+    for (const host of [OPENCODE_V1_PROFILE, createHostProfile('opencode-v2'), createHostProfile('opencode-v2', { readTransport: 'direct' })]) {
+      const commands = buildHiveCommandMap(hiveCommandRenderers, () => ({
+        agentMode: 'unified', host, backgroundGuidance: { available: false }, council: {} as never, agents: {},
+        dashReviewLanes: [], vulnerabilityReviewLanes: [],
+      }));
+      const grill = commands.grill.run('a migration proposal');
+      const interview = commands.interview.run('an idea');
+      expect(grill).toContain('Context: a migration proposal');
+      expect(grill).toContain("Run the whole interaction as the skill's continuous loop in this invocation.");
+      expect(grill).toContain("End with the skill's explicit three-way alignment confirmation.");
+      for (const output of [grill, interview]) {
+        expect(output).toContain('Load the `grilling` skill and use its shared interaction engine.');
+        // The pointer defers to the skill instead of restating its transport and falsification policy.
+        expect(output).not.toContain('Falsify before settling');
+        expect(output).not.toContain('per turn');
+      }
+      // /interview keeps its own output contract.
+      expect(interview).toContain('## Interview Summary, ## Recommended Next Step, and ## Context For /implementation-brief');
+    }
+  });
+
   it('suggests DAG-backed milestone prompts after approval and synced readback', () => {
     const commands = buildHiveCommandMap(hiveCommandRenderers, () => ({
       agentMode: 'dedicated',

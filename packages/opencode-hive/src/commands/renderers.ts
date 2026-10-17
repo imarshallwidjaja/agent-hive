@@ -179,6 +179,7 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
       details: [`Context: ${topicOrCurrent(args, 'the context supplied in this conversation')}`],
       doItems: [
         'Load the `grilling` skill and use its shared interaction engine.',
+        'Run the whole interaction as the skill\'s continuous loop in this invocation.',
         'End with the skill\'s explicit three-way alignment confirmation.',
       ],
       doNotItems: [],

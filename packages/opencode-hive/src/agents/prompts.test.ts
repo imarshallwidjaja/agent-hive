@@ -2808,6 +2808,8 @@ describe('README.md documentation', () => {
         expect(content).toContain('A named destination authorizes writing only the confirmed alignment brief there');
         expect(content).toContain('Unavailable or failed research is disclosed as unresolved or an explicit assumption');
         expect(content).toContain('never guessed');
+        expect(content).toContain('each answer returns to the same run, which keeps researching, checking, and asking until you confirm alignment or stop it');
+        expect(content).toContain('each plain chat question waits for your reply and the next turn resumes the same loop');
       }
 
       expect(rootReadmeContent).toContain('without assuming implementation or a next command');

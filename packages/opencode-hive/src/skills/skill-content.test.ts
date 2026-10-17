@@ -202,7 +202,59 @@ describe('skill content', () => {
     expect(skill).toBeDefined();
     expect(skill!.description).toMatch(/^Use when /);
     expect(skill!.template).toContain('dependency-aware frontier');
-    expect(skill!.template).toContain('exactly one material operator question per turn');
+    expect(skill!.template).toContain('exactly one material operator question at a time');
+    expect(skill!.template).not.toContain('per turn');
+    // One invocation keeps going between questions: the exposed question tool returns answers to the same run.
+    for (const requirement of [
+      'One invocation is one continuing loop',
+      'When the `question` tool is exposed, ask every operator question through it',
+      'carry on with the next research step, check, or question in the same turn',
+      // Unavailable tool: one unavoidable yield, then the same loop resumes; nothing is pretended.
+      'When the `question` tool is not exposed, ask one plain chat question',
+      'resume the same loop where it stopped',
+      'Never claim a tool call, answer, or check result that did not happen',
+      // Progress and status are steps inside the loop, not a reason to end the turn.
+      'A progress update, a status summary, or an offer to continue is a step inside the loop',
+      // After-answer falsification, ordering, and the preference/fact distinction.
+      'Falsify before settling',
+      'including those inside operator answers',
+      'with a proportional check that could disprove it',
+      'Stay read-only unless the invocation already authorizes more',
+      'Resolve a discoverable fact before asking a question that depends on it',
+      'Accepting an operator preference settles the preference, not the facts it assumes',
+      // Pause/stop, confirmation transport, and corrections returning through validation.
+      'If the operator pauses or stops, stop asking',
+      'leave alignment unconfirmed',
+      'asked through the same question transport as the loop',
+      'check any factual claims they introduce',
+      'restate the corrected brief and ask for confirmation again',
+      'return to the loop with the single most material unresolved question',
+    ]) expect(skill!.template, requirement).toContain(requirement);
+    // The turn-ending rules are not a closed list: a legitimate native completion wait must stay available.
+    expect(skill!.template).not.toContain('End the turn only');
+    // Static text-consistency scenarios for the paths a live run can take; they are not model-behavior evidence.
+    const scenarios: Record<string, string[]> = {
+      'background research pending after the last independent question': [
+        'running independent checks while useful evidence runs',
+        'Wait only when no independent material work remains and every remaining material decision depends on pending evidence',
+        'a required native completion may suspend the invocation',
+        'instead of polling or launching a duplicate lane',
+      ],
+      'native completion notification arrives': ['resume the same loop when it arrives'],
+      'exposed question call is rejected or returns no answer': [
+        'Only an operator answer settles a question',
+        '(rejected, cancelled, dismissed, or errored), keep that item unresolved and alignment unconfirmed',
+        'disclose it and yield with the open question in chat',
+        'do not supply an answer, retry a call already known to fail, or work around the denied interaction',
+      ],
+      'operator cancels, pauses, or stops': [
+        'Treat an explicit operator cancellation, pause, or stop as a stop',
+        'If the operator pauses or stops, stop asking, state settled and unresolved material items, and leave alignment unconfirmed',
+      ],
+    };
+    for (const [scenario, phrases] of Object.entries(scenarios)) {
+      for (const phrase of phrases) expect(skill!.template, `${scenario}: ${phrase}`).toContain(phrase);
+    }
     expect(skill!.template).toContain('operator decisions, operator preferences, assumptions');
     expect(skill!.template).not.toContain('operator decisions and preferences');
     expect(skill!.template).toContain('discoverable facts');
