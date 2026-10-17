@@ -4,9 +4,11 @@ import { describe, expect, test } from 'bun:test';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { createServer } from 'node:net';
+import { release, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { ConfigService } from 'hive-core';
 import {
   CredentialError, assertLifetime, fingerprintAuthFile, hostAuthPath, readAccessOnly, sameFingerprint, secretScanner,
 } from './credentials.mjs';
@@ -40,12 +42,12 @@ import { exerciseCoreFailures } from './runtime.mjs';
 import {
   ACTIONS, CLOCK_MARGIN_MS, DRIVER_FAILURES, DRIVER_REFUSALS, EXIT, INTERRUPT_FLOOR_MS, LIVE_MAX_SECONDS, NO_NEW_WORK_MS, PROJECT_ROOT, QUALIFICATION_CHECKS, acquireRunLock, actionReserveMs,
   admitsAction, admitsNewWork, approvalMessage, catalogProblems, containerCutoffs, descriptorsOf, failureWord, inspectCommand, interpretReply, main as exerciseMain, operationLifetimeMs,
-  parseDriverReply, parseExerciseCli, prepareCommand, projectPath, qualificationFailures, runState, selectionSummary, sharedClockBracket, snapshotInputs, startCommand, stopCommand, turnCommand,
+  QUALIFICATION_SUBRUNS, bindCleanup, parseDriverReply, parseExerciseCli, prepareCommand, projectPath, qualificationFailures, registerSubrun, runState, selectionSummary, sharedClockBracket, snapshotInputs, startCommand, stopCommand, turnCommand,
   validateAuthorization, validateInspection, validateOperation, validateRequest,
 } from './exercise.mjs';
 import {
   approvalObserved, approvalPrecondition, artifactRecord, budget as driverBudget, latestPluginPlanRead, lineDiff, listPrefix, nativeCredentialMatches, normalizeMessage, observeWith,
-  observedApprovals, pendingInteractions, quiescence, readHistory, resolveOperation, sessionTree, submit as driverSubmit,
+  observedApprovals, pendingInteractions, quiescence, readHistory, releasedPending, resolveOperation, sessionTree, submit as driverSubmit,
 } from './exercise-driver.ts';
 import { PLAN_READ_LIMITS, planReadDifferences, readPlan } from './plan-reader.ts';
 
@@ -361,7 +363,7 @@ describe('access-only credential selection', () => {
 
 // In-memory Docker CLI. Records every argv and stdin; `exec ... run` hangs until the container is killed when asked.
 class FakeDocker {
-  calls: { args: string[]; input?: string }[] = [];
+  calls: { args: string[]; input?: string; timeoutMs?: number }[] = [];
   killed = new Set<string>();
   removed = new Set<string>();
   created = new Map<string, { network: string; ceiling: number; nonce: string; kind: string }>();
@@ -378,7 +380,7 @@ class FakeDocker {
   }
 
   async run(args: string[], options: { input?: string; timeoutMs?: number } = {}) {
-    this.calls.push({ args, input: options.input });
+    this.calls.push({ args, input: options.input, timeoutMs: options.timeoutMs });
     const id = () => (++this.seq).toString(16).padStart(64, '0');
     const [command, sub] = args;
     if (command === 'info') {
@@ -2781,6 +2783,17 @@ const EXERCISE_REQUEST = {
   primaryTransitions: [{ from: 'architect-planner', to: 'swarm-orchestrator' }], repository: 'repo', prompt: 'prompt.md', artifacts: ['README.md', '.hive/features/'],
 };
 
+/** A request directory `prepare` can snapshot: the request, its prompt and a small repository. */
+function inputTree() {
+  const base = scratch();
+  mkdirSync(join(base, 'repo', 'src'), { recursive: true });
+  writeFileSync(join(base, 'repo', 'README.md'), '# r\n');
+  writeFileSync(join(base, 'repo', 'src', 'a.txt'), 'a\n');
+  writeFileSync(join(base, 'prompt.md'), 'Plan it.\n');
+  writeFileSync(join(base, 'request.json'), JSON.stringify(EXERCISE_REQUEST));
+  return base;
+}
+
 describe('supervised exercise inputs and authority', () => {
   const code = (fn: () => unknown) => { try { fn(); return 'accepted'; } catch (e) { return (e as HarnessError).code; } };
 
@@ -2827,16 +2840,6 @@ describe('supervised exercise inputs and authority', () => {
     expect(projectPath('.hive/features/')).toBe('.hive/features/');
   });
 
-  function inputTree() {
-    const base = scratch();
-    mkdirSync(join(base, 'repo', 'src'), { recursive: true });
-    writeFileSync(join(base, 'repo', 'README.md'), '# r\n');
-    writeFileSync(join(base, 'repo', 'src', 'a.txt'), 'a\n');
-    writeFileSync(join(base, 'prompt.md'), 'Plan it.\n');
-    writeFileSync(join(base, 'request.json'), JSON.stringify(EXERCISE_REQUEST));
-    return base;
-  }
-
   test('snapshots hash bytes and the ordered inventory, and refuse links, hardlinks, excluded trees, escapes and oversize input', () => {
     const base = inputTree();
     const snapshot = snapshotInputs(join(base, 'request.json'));
@@ -2854,6 +2857,45 @@ describe('supervised exercise inputs and authority', () => {
     expect(refused((b) => writeFileSync(join(b, 'repo', 'bin.dat'), Buffer.from([0xff, 0xfe, 0x00])))).toBe('input_not_utf8');
     expect(refused((b) => writeFileSync(join(b, 'request.json'), JSON.stringify({ ...EXERCISE_REQUEST, prompt: '../prompt.md' })))).toBe('input_path_escapes');
     expect(refused((b) => { for (let i = 0; i < 256; i++) writeFileSync(join(b, 'repo', `f${i}.txt`), 'x'); })).toBe('input_file_count_exceeded');
+  });
+
+  test('a snapshot admits no project-local file that hive-core applies over the authorized model selection', () => {
+    const home = scratch();
+    mkdirSync(join(home, '.config', 'opencode'), { recursive: true });
+    const authorized = { 'forager-worker': { model: 'openai/authorized', variant: 'high' } };
+    writeFileSync(join(home, '.config', 'opencode', 'agent_hive.json'), JSON.stringify(exerciseHiveConfig({ agentMode: 'dedicated', agentModels: authorized })));
+    const override = JSON.stringify({ agents: { 'forager-worker': { model: 'openai/different', variant: 'low' } } });
+    // What the actual ConfigService resolves for the role when a project carries `layout`, with the exercise's own global configuration.
+    const effective = (layout: string | null) => {
+      const project = scratch();
+      if (layout) {
+        mkdirSync(join(project, ...layout.split('/').slice(0, -1)), { recursive: true });
+        writeFileSync(join(project, ...layout.split('/')), override);
+      }
+      const realHome = process.env.HOME;
+      process.env.HOME = home;
+      try { return new ConfigService(project).get().agents?.['forager-worker']; } finally { process.env.HOME = realHome; }
+    };
+    expect(effective(null)).toMatchObject({ model: 'openai/authorized', variant: 'high' });
+    const layouts = ['.hive/agent-hive.override.json', '.hive/agent-hive.json', '.opencode/agent_hive.json'];
+    const honored = layouts.filter((layout) => effective(layout)?.model !== 'openai/authorized');
+    // If hive-core starts reading another project-local file, this premise fails and the import boundary must follow.
+    expect(honored).toEqual(['.hive/agent-hive.override.json']);
+    expect(effective('.hive/agent-hive.override.json')).toMatchObject({ model: 'openai/different', variant: 'low' });
+    for (const layout of honored) {
+      const base = inputTree();
+      mkdirSync(join(base, 'repo', ...layout.split('/').slice(0, -1)), { recursive: true });
+      writeFileSync(join(base, 'repo', ...layout.split('/')), override);
+      expect(code(() => snapshotInputs(join(base, 'request.json')))).toBe('input_path_refused');
+      expect(code(() => projectPath(layout))).toBe('path_invalid');
+      expect(code(() => validateRequest({ ...EXERCISE_REQUEST, artifacts: [layout] }))).toBe('request_invalid');
+    }
+    // The explicit request selection stays the only way to choose role models; other project files under .hive import as before.
+    expect(validateRequest({ ...EXERCISE_REQUEST, agentModels: { 'forager-worker': { model: 'openai/authorized', variant: 'high' } } }).agentModels).toEqual({ 'forager-worker': { model: 'openai/authorized', variant: 'high' } });
+    const base = inputTree();
+    mkdirSync(join(base, 'repo', '.hive', 'features'), { recursive: true });
+    writeFileSync(join(base, 'repo', '.hive', 'features', 'note.md'), 'x\n');
+    expect(snapshotInputs(join(base, 'request.json')).files.map((f: any) => f.path)).toContain('.hive/features/note.md');
   });
 
   test('authorization binds the prepared record, host, model and the exact budget', () => {
@@ -3077,7 +3119,7 @@ describe('supervised exercise native adapters', () => {
     const pending = await pendingInteractions('v1', tree, routeGet(v1));
     // An interaction owned by a session outside the tree is listed and flagged, because it may belong to a child created after the enumeration.
     expect(pending!.map((p) => [p.kind, p.id, p.sessionId, p.toolCallId, p.outsideTree === true])).toEqual([['question', 'que_1', 'ses_a', 'call_q', false], ['question', 'que_x', 'ses_other', null, true], ['permission', 'per_1', 'ses_b', 'call_r', false], ['permission', 'per_2', 'ses_b', null, false]]);
-    expect(pending![0].questions).toEqual([{ question: 'Which?', header: 'H', multiple: false, options: ['alpha', 'beta'] }]);
+    expect(pending![0].questions).toEqual([{ question: 'Which?', header: 'H', multiple: false, options: ['alpha', 'beta'], optionDescriptions: [undefined, undefined] }]);
     expect(await pendingInteractions('v1', tree, routeGet({ ...v1, '/permission': api({ not: 'a list' }) }))).toBeNull();
   });
 
@@ -3396,7 +3438,7 @@ class ExerciseDocker extends FakeDocker {
       const input = JSON.parse(options.input);
       this.driverCalls.push({ command, input });
       if (this.behavior.timeout?.includes(command)) return { code: -1, stdout: '', stderr: '', timedOut: true };
-      const reply = this.behavior.driver?.[command]?.(input) ?? { ok: true };
+      const reply = (await this.behavior.driver?.[command]?.(input)) ?? { ok: true };
       return this.ok(typeof reply === 'string' ? reply : JSON.stringify(reply));
     }
     return super.run(args, options);
@@ -3434,6 +3476,8 @@ function exerciseRun({ host = 'v1', expires = Date.now() + 4 * 3_600_000, ledger
 }
 
 const QUIET = { ok: true, quiescent: true, reasons: [], pending: [], approvals: [], tree: { sessions: [], complete: true, failure: null }, busy: [] };
+/** Pending interactions in the form the driver releases: sizes equal to the texts and `complete` true. */
+const released = (...raw: any[]) => releasedPending(raw, () => false);
 
 describe('supervised exercise run commands', () => {
   const submits = (docker: ExerciseDocker) => docker.driverCalls.filter((c) => c.command === 'submit');
@@ -3549,7 +3593,7 @@ describe('supervised exercise run commands', () => {
   });
 
   test('a reply records the exact pending request, owner and tool call before sending; a request not pending is refused unsent', async () => {
-    const pending = [{ kind: 'question', id: 'que_1', sessionId: 'ses_child', toolCallId: 'call_q', questions: [{ question: 'Which?', header: null, multiple: false, options: ['alpha'] }] }];
+    const pending = released({ kind: 'question', id: 'que_1', sessionId: 'ses_child', toolCallId: 'call_q', questions: [{ question: 'Which?', header: null, multiple: false, options: ['alpha'], optionDescriptions: ['first'] }] });
     const docker = new ExerciseDocker({ driver: { observe: () => ({ ...QUIET, quiescent: false, pending }), submit: () => ({ ok: true, submitted: true, acknowledged: true }) } });
     const run = exerciseRun();
     expect((await turnCommand({ run: run.runDir, operation: run.op('reply', { requestId: 'que_9', answers: [['alpha']] }) }, run.env, {}, { docker })).status).toMatchObject({ state: 'refused', reason: 'request_not_pending' });
@@ -3602,6 +3646,336 @@ describe('supervised exercise run commands', () => {
     expect(unknown.status.status).toBe('cleanup_unknown');
     expect(readFileSync(join(pending.runDir, 'resources.jsonl'), 'utf8')).not.toContain('create_absent');
   });
+});
+
+const HAS_FLOCK = (() => { const r = spawnSync('flock', ['--version'], { encoding: 'utf8' }); return r.status === 0 && /util-linux/.test(r.stdout); })();
+
+describe('a prepared run settles the qualification runs it owns', () => {
+  /** A qualification run registered by production code inside `run`; `create` also gives its ledger one container on `docker`. */
+  async function qualificationRun(run: ReturnType<typeof exerciseRun>, docker: FakeDocker, { name = 'qualification', create = true } = {}) {
+    const runId = `run-1-${name}`;
+    const sub = registerSubrun(run.journal, run.runDir, name, { runId, engineId: ENGINE });
+    const journal = new Journal(join(sub, 'records'));
+    journal.write('input', { snapshotSha256: 'x', lockInode: String(statSync(join(sub, 'lock')).ino) });
+    journal.write('prepared', { schema: 'ic-exercise-prepared/v1', status: 'prepared', runId, host: 'v1', request: validateRequest(EXERCISE_REQUEST), docker: { endpoint: 'unix:///fake.sock', engineId: ENGINE }, runtime: { imageId: 'sha256:image' }, qualificationRun: true });
+    const resources = new Resources(docker as any, join(sub, 'resources.jsonl'), runId, ENGINE, { strictCreates: true });
+    const containerId = create ? await resources.create('container', (labels: string[]) => ['create', ...labels, '--network', 'none', 'img', '120']) : null;
+    return { sub, runId, containerId, journal };
+  }
+  const rmCalls = (docker: FakeDocker) => docker.calls.filter((c) => c.args[0] === 'rm').length;
+
+  test.skipIf(!HAS_FLOCK)('a failed child removal stays retained until the container is actually removed, with no credential and inside the stop budget', async () => {
+    const docker = new ExerciseDocker({ sticky: true });
+    const run = exerciseRun({ ledger: '' });
+    require('node:fs').unlinkSync(run.auth);
+    const child = await qualificationRun(run, docker);
+    // The qualification run's own stop, as its finish step runs it, cannot confirm the removal.
+    expect((await stopCommand({ run: child.sub }, {}, { docker })).status).toMatchObject({ status: 'cleanup_present', retained: [{ id: child.containerId, state: 'present' }] });
+    const before = docker.calls.length;
+    // Before the owned ledgers were settled, this stop reported cleanup_confirmed with the container still present.
+    const present = await stopCommand({ run: run.runDir }, {}, { docker });
+    expect(present).toMatchObject({ exit: EXIT.failed, status: { status: 'cleanup_present', retained: [{ id: child.containerId, subrun: 'qualification', state: 'present' }] } });
+    docker.behavior.sticky = false;
+    const settled = await stopCommand({ run: run.runDir }, {}, { docker });
+    expect(settled).toMatchObject({ exit: EXIT.ok, status: { status: 'cleanup_confirmed', retained: [] } });
+    expect(docker.removed.has(child.containerId!)).toBe(true);
+    expect(outstandingFromLedger(readFileSync(join(child.sub, 'resources.jsonl'), 'utf8'))).toEqual({ ids: new Map(), nonces: new Map() });
+    // Settled ledgers need no further Docker work, and stop never touches a credential or the container's guard or driver.
+    const removals = rmCalls(docker);
+    expect((await stopCommand({ run: run.runDir }, {}, { docker })).status.status).toBe('cleanup_confirmed');
+    expect(rmCalls(docker)).toBe(removals);
+    const stopCalls = docker.calls.slice(before);
+    expect(stopCalls.some((c) => c.args[0] === 'exec')).toBe(false);
+    expect(Math.max(...stopCalls.map((c) => c.timeoutMs ?? 0))).toBeLessThanOrEqual(120_000);
+    expect(readFileSync(join(run.runDir, 'records', 'stop.0001.json'), 'utf8')).toContain('"subrun": "qualification"');
+  });
+
+  test.skipIf(!HAS_FLOCK)('missing, unreadable, replaced or unregistered ownership is never read as absent, and nothing unproven is removed', async () => {
+    const fs = require('node:fs');
+    const cases: [string, (c: { run: any; child: any }) => void][] = [
+      ['malformed ledger', ({ child }) => writeFileSync(join(child.sub, 'resources.jsonl'), 'not json\n')],
+      ['missing ledger', ({ child }) => fs.unlinkSync(join(child.sub, 'resources.jsonl'))],
+      ['ledger replaced by another file', ({ child }) => { const copy = join(child.sub, 'copy'); writeFileSync(copy, readFileSync(join(child.sub, 'resources.jsonl'))); renameSync(copy, join(child.sub, 'resources.jsonl')); }],
+      ['ledger replaced by a link', ({ child }) => { const other = join(scratch(), 'other.jsonl'); writeFileSync(other, ''); fs.unlinkSync(join(child.sub, 'resources.jsonl')); symlinkSync(other, join(child.sub, 'resources.jsonl')); }],
+      // The new file exists before the old one goes, so the two cannot share an inode number.
+      ['lock replaced', ({ child }) => { const copy = join(child.sub, 'copy'); writeFileSync(copy, ''); renameSync(copy, join(child.sub, 'lock')); }],
+      ['missing directory', ({ child }) => rmSync(child.sub, { recursive: true })],
+      ['directory replaced by a link', ({ child }) => { rmSync(child.sub, { recursive: true }); symlinkSync(scratch(), child.sub); }],
+      ['unreadable registration', ({ run }) => writeFileSync(join(run.runDir, 'records', 'subrun.qualification.json'), '{bad')],
+      ['registration for another engine', ({ run }) => { const path = join(run.runDir, 'records', 'subrun.qualification.json'); writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, 'utf8')), engineId: 'another-engine' })); }],
+      ['registration of another name', ({ run }) => { const path = join(run.runDir, 'records', 'subrun.qualification.json'); writeFileSync(path, JSON.stringify({ ...JSON.parse(readFileSync(path, 'utf8')), name: 'qualification-interrupt' })); }],
+      ['no registration', ({ run }) => fs.unlinkSync(join(run.runDir, 'records', 'subrun.qualification.json'))],
+    ];
+    for (const [label, mutate] of cases) {
+      const docker = new ExerciseDocker();
+      const run = exerciseRun({ ledger: '' });
+      const child = await qualificationRun(run, docker);
+      mutate({ run, child });
+      const before = docker.calls.length;
+      const stopped = await stopCommand({ run: run.runDir }, {}, { docker });
+      expect([label, stopped]).toEqual([label, { exit: EXIT.failed, status: { command: 'stop', status: 'cleanup_unknown', retained: [{ subrun: 'qualification', state: 'unknown' }], retainedImages: ['sha256:image'] } }]);
+      expect([label, docker.removed.size]).toEqual([label, 0]);
+      expect([label, docker.calls.slice(before).some((c) => c.args[0] === 'rm')]).toEqual([label, false]);
+    }
+    // A create whose response was lost keeps its nonce in the owned ledger, however often stop is retried.
+    const docker = new ExerciseDocker();
+    const run = exerciseRun({ ledger: '' });
+    const child = await qualificationRun(run, docker, { create: false });
+    fs.appendFileSync(join(child.sub, 'resources.jsonl'), JSON.stringify({ event: 'create_requested', kind: 'container', nonce: 'lost-nonce' }) + '\n');
+    for (let i = 0; i < 2; i++) {
+      expect(await stopCommand({ run: run.runDir }, {}, { docker })).toMatchObject({ exit: EXIT.failed, status: { status: 'cleanup_unknown', retained: [{ nonce: 'lost-nonce', subrun: 'qualification', state: 'unknown' }] } });
+    }
+    expect(outstandingFromLedger(readFileSync(join(child.sub, 'resources.jsonl'), 'utf8')).nonces.get('lost-nonce')).toBe('container');
+    expect(readFileSync(join(child.sub, 'resources.jsonl'), 'utf8')).not.toContain('create_absent');
+    // Neither registered run present and no directory: nothing was ever started, so there is nothing to settle.
+    expect((await stopCommand({ run: exerciseRun({ ledger: '' }).runDir }, {}, { docker: new ExerciseDocker() })).status.status).toBe('cleanup_confirmed');
+    // A qualification run owns no run of its own, so its stop never looks inside it for another.
+    const sticky = new ExerciseDocker();
+    const parent = exerciseRun({ ledger: '' });
+    const inner = await qualificationRun(parent, sticky);
+    mkdirSync(join(inner.sub, 'qualification'));
+    expect((await stopCommand({ run: inner.sub }, {}, { docker: sticky })).status).toMatchObject({ status: 'cleanup_confirmed', retained: [] });
+    expect(sticky.removed.has(inner.containerId!)).toBe(true);
+  });
+
+  test.skipIf(!HAS_FLOCK)('a qualification run another process still holds is unknown, and is settled once that process has ended', async () => {
+    const docker = new ExerciseDocker();
+    const run = exerciseRun({ ledger: '' });
+    const child = await qualificationRun(run, docker);
+    const held = await acquireRunLock(join(child.sub, 'lock'), { waitSeconds: 1 });
+    expect(held.busy).toBe(false);
+    const busy = await stopCommand({ run: run.runDir }, {}, { docker, subrunLockWaitSeconds: 1 });
+    expect(busy).toMatchObject({ exit: EXIT.failed, status: { status: 'cleanup_unknown', retained: [{ subrun: 'qualification', state: 'unknown' }] } });
+    expect(docker.removed.size).toBe(0);
+    (held as any).release();
+    expect(await stopCommand({ run: run.runDir }, {}, { docker })).toMatchObject({ exit: EXIT.ok, status: { status: 'cleanup_confirmed', retained: [] } });
+    expect(docker.removed.has(child.containerId!)).toBe(true);
+  });
+
+  test('ownership is recorded with the ledger and lock identities before any resource, for the fixed qualification runs only', () => {
+    expect(QUALIFICATION_SUBRUNS).toEqual(['qualification', 'qualification-interrupt']);
+    const run = exerciseRun({ ledger: '' });
+    const sub = registerSubrun(run.journal, run.runDir, 'qualification-interrupt', { runId: 'run-1-qi', engineId: ENGINE });
+    expect(readFileSync(join(sub, 'resources.jsonl'), 'utf8')).toBe('');
+    expect(run.journal.read('subrun.qualification-interrupt')!.value).toEqual({
+      schema: 'ic-exercise-subrun/v1', name: 'qualification-interrupt', runId: 'run-1-qi', engineId: ENGINE,
+      ledgerIno: String(statSync(join(sub, 'resources.jsonl')).ino), lockIno: String(statSync(join(sub, 'lock')).ino),
+    });
+    const code = (fn: () => unknown) => { try { fn(); return 'accepted'; } catch (e) { return (e as any).code; } };
+    expect(code(() => registerSubrun(run.journal, run.runDir, '../escape', { runId: 'x', engineId: ENGINE }))).toBe('subrun_unknown');
+    expect(code(() => registerSubrun(run.journal, run.runDir, 'qualification-interrupt', { runId: 'x', engineId: ENGINE }))).toBe('EEXIST');
+    // Prepare registers each qualification run before the run can create anything.
+    const source = readFileSync(join(import.meta.dir, 'exercise.mjs'), 'utf8');
+    const subRun = source.slice(source.indexOf('async function subRun('), source.indexOf('export function descriptorsOf'));
+    expect(subRun.indexOf('registerSubrun(base.journal')).toBeGreaterThan(-1);
+    expect(subRun.indexOf('registerSubrun(base.journal')).toBeLessThan(subRun.indexOf('acquireRunLock('));
+  });
+});
+
+describe('an interrupted prepare is settled by stop from the cleanup binding it persisted first', () => {
+  const lockProbe = (lockPath: string) => spawnSync('flock', ['--nonblock', '--conflict-exit-code', '75', lockPath, 'true']).status;
+  const guarded = new Proxy({}, { get: (_, key) => { throw new Error(`stop consulted env ${String(key)}`); } });
+  const create = (resources: Resources) => resources.create('container', (labels: string[]) => ['create', ...labels, '--network', 'none', 'img', '120']);
+
+  /**
+   * What a prepare that ended before its final record leaves, written by the production writers in prepare's order: the
+   * cleanup binding, a retained image, a container in the run's own ledger, and a registered qualification run with a
+   * container of its own. There is no prepared record.
+   */
+  async function interruptedPrepare(docker: FakeDocker) {
+    const runDir = scratch();
+    mkdirSync(join(runDir, 'docker-config'));
+    writeFileSync(join(runDir, 'lock'), '');
+    writeFileSync(join(runDir, 'resources.jsonl'), '');
+    const journal = Journal.create(join(runDir, 'records'));
+    bindCleanup(journal, runDir, { runId: 'run-1', endpoint: 'unix:///fake.sock', engineId: ENGINE });
+    const resources = new Resources(docker as any, join(runDir, 'resources.jsonl'), 'run-1', ENGINE, { strictCreates: true });
+    resources.record({ event: 'image_retained', kind: 'image', id: 'sha256:image' });
+    const parentId = await create(resources);
+    const sub = registerSubrun(journal, runDir, 'qualification', { runId: 'run-1-q', engineId: ENGINE });
+    const childId = await create(new Resources(docker as any, join(sub, 'resources.jsonl'), 'run-1-q', ENGINE, { strictCreates: true }));
+    return { runDir, journal, sub, parentId, childId };
+  }
+  const refused = async (promise: Promise<unknown>) => { try { await promise; return 'accepted'; } catch (e) { return (e as HarnessError).code; } };
+
+  test.skipIf(!HAS_FLOCK)('stop removes the run\'s own and its registered qualification run\'s resources by exact ID with no credential, no container exec and inside the stop budget', async () => {
+    const docker = new ExerciseDocker();
+    const prefix = await interruptedPrepare(docker);
+    expect(prefix.journal.names()).toEqual(['cleanup-binding', 'subrun.qualification']);
+    expect(prefix.journal.read('cleanup-binding')!.value).toEqual({
+      schema: 'ic-exercise-cleanup-binding/v1', runId: 'run-1', endpoint: 'unix:///fake.sock', engineId: ENGINE,
+      ledgerIno: String(statSync(join(prefix.runDir, 'resources.jsonl')).ino), lockInode: String(statSync(join(prefix.runDir, 'lock')).ino),
+    });
+    const before = docker.calls.length;
+    const stopped = await stopCommand({ run: prefix.runDir }, guarded, { docker });
+    expect(stopped).toEqual({ exit: EXIT.ok, status: { command: 'stop', status: 'cleanup_confirmed', retained: [], retainedImages: ['sha256:image'] } });
+    expect([docker.removed.has(prefix.parentId), docker.removed.has(prefix.childId)]).toEqual([true, true]);
+    const calls = docker.calls.slice(before);
+    expect(calls.some((c) => c.args[0] === 'exec')).toBe(false);
+    expect(Math.max(...calls.map((c) => c.timeoutMs ?? 0))).toBeLessThanOrEqual(120_000);
+    expect(prefix.journal.read('stop.0001')!.value).toMatchObject({ state: 'cleanup_confirmed' });
+    expect(prefix.journal.read('prepared')).toBeNull();
+    // Settled ledgers need no further Docker work.
+    const removals = docker.calls.filter((c) => c.args[0] === 'rm').length;
+    expect((await stopCommand({ run: prefix.runDir }, guarded, { docker })).status.status).toBe('cleanup_confirmed');
+    expect(docker.calls.filter((c) => c.args[0] === 'rm').length).toBe(removals);
+  });
+
+  test.skipIf(!HAS_FLOCK)('a create whose response was lost in the run or in a qualification run stays unknown however often stop is retried, while what was found is removed', async () => {
+    const docker = new ExerciseDocker();
+    const prefix = await interruptedPrepare(docker);
+    require('node:fs').appendFileSync(join(prefix.runDir, 'resources.jsonl'), JSON.stringify({ event: 'create_requested', kind: 'container', nonce: 'parent-nonce' }) + '\n');
+    require('node:fs').appendFileSync(join(prefix.sub, 'resources.jsonl'), JSON.stringify({ event: 'create_requested', kind: 'network', nonce: 'child-nonce' }) + '\n');
+    for (let i = 0; i < 2; i++) {
+      const stopped = await stopCommand({ run: prefix.runDir }, guarded, { docker });
+      expect(stopped).toMatchObject({ exit: EXIT.failed, status: { status: 'cleanup_unknown', retained: [{ nonce: 'parent-nonce', state: 'unknown' }, { nonce: 'child-nonce', subrun: 'qualification', state: 'unknown' }] } });
+    }
+    expect([docker.removed.has(prefix.parentId), docker.removed.has(prefix.childId)]).toEqual([true, true]);
+    for (const ledger of [join(prefix.runDir, 'resources.jsonl'), join(prefix.sub, 'resources.jsonl')]) expect(readFileSync(ledger, 'utf8')).not.toContain('create_absent');
+  });
+
+  test.skipIf(!HAS_FLOCK)('missing, malformed, inconsistent or replaced ownership removes nothing: no engine, endpoint or ID is ever guessed', async () => {
+    const fs = require('node:fs');
+    const bindingPath = (p: any) => join(p.runDir, 'records', 'cleanup-binding.json');
+    const rewrite = (p: any, change: (b: any) => void) => { const b = JSON.parse(readFileSync(bindingPath(p), 'utf8')); change(b); writeFileSync(bindingPath(p), JSON.stringify(b)); };
+    const cases: [string, string, (p: any) => void][] = [
+      ['no binding and no prepared record', 'run_not_prepared', (p) => fs.unlinkSync(bindingPath(p))],
+      ['unreadable binding', 'cleanup_binding_invalid', (p) => writeFileSync(bindingPath(p), '{bad')],
+      ['binding of another schema', 'cleanup_binding_invalid', (p) => rewrite(p, (b) => { b.schema = 'other/v1'; })],
+      ['binding without a run', 'cleanup_binding_invalid', (p) => rewrite(p, (b) => { b.runId = ''; })],
+      ['binding for a remote endpoint', 'cleanup_binding_invalid', (p) => rewrite(p, (b) => { b.endpoint = 'tcp://10.0.0.1:2375'; })],
+      ['binding without an engine', 'cleanup_binding_invalid', (p) => rewrite(p, (b) => { delete b.engineId; })],
+      ['binding with a non-numeric ledger identity', 'cleanup_binding_invalid', (p) => rewrite(p, (b) => { b.ledgerIno = 'x'; })],
+      ['prepared record for another engine', 'cleanup_binding_mismatch', (p) => p.journal.write('prepared', { schema: 'ic-exercise-prepared/v1', status: 'failed', runId: 'run-1', docker: { endpoint: 'unix:///fake.sock', engineId: 'another-engine' } })],
+      ['prepared record for another run', 'cleanup_binding_mismatch', (p) => p.journal.write('prepared', { schema: 'ic-exercise-prepared/v1', status: 'failed', runId: 'run-2', docker: { endpoint: 'unix:///fake.sock', engineId: ENGINE } })],
+      ['ledger replaced by another file', 'cleanup_ledger_replaced', (p) => { const copy = join(p.runDir, 'copy'); writeFileSync(copy, readFileSync(join(p.runDir, 'resources.jsonl'))); renameSync(copy, join(p.runDir, 'resources.jsonl')); }],
+      ['ledger replaced by a link', 'cleanup_ledger_replaced', (p) => { const other = join(scratch(), 'other.jsonl'); writeFileSync(other, ''); fs.unlinkSync(join(p.runDir, 'resources.jsonl')); symlinkSync(other, join(p.runDir, 'resources.jsonl')); }],
+      ['ledger missing', 'cleanup_ledger_replaced', (p) => fs.unlinkSync(join(p.runDir, 'resources.jsonl'))],
+      ['lock replaced', 'lock_file_replaced', (p) => { const copy = join(p.runDir, 'copy'); writeFileSync(copy, ''); renameSync(copy, join(p.runDir, 'lock')); }],
+    ];
+    for (const [label, expected, mutate] of cases) {
+      const docker = new ExerciseDocker();
+      const prefix = await interruptedPrepare(docker);
+      const before = docker.calls.length;
+      mutate(prefix);
+      expect([label, await refused(stopCommand({ run: prefix.runDir }, guarded, { docker }))]).toEqual([label, expected]);
+      expect([label, docker.removed.size, docker.calls.slice(before).some((c) => c.args[0] === 'rm' || c.args[0] === 'kill')]).toEqual([label, 0, false]);
+    }
+    // Absence is confirmed only by the engine the binding names: a daemon that answers as another engine confirms nothing.
+    const other = new ExerciseDocker({ otherEngine: true });
+    const prefix = await interruptedPrepare(new ExerciseDocker());
+    const stopped = await stopCommand({ run: prefix.runDir }, guarded, { docker: other });
+    expect(stopped).toMatchObject({ exit: EXIT.failed, status: { status: 'cleanup_unknown', retained: [{ id: prefix.parentId, state: 'unknown' }, { id: prefix.childId, subrun: 'qualification', state: 'unknown' }] } });
+  });
+
+  test.skipIf(!HAS_FLOCK)('the recorded ownership authorizes cleanup only: start, turn and inspect refuse the run before reading a credential or reaching Docker', async () => {
+    const docker = new ExerciseDocker();
+    const prefix = await interruptedPrepare(docker);
+    const before = docker.calls.length;
+    const file = join(prefix.runDir, 'input.json');
+    writeFileSync(file, '{}');
+    expect(await refused(startCommand({ run: prefix.runDir, authorization: file, budgetSeconds: 120 }, guarded, {}, { docker }))).toBe('run_not_prepared');
+    expect(await refused(turnCommand({ run: prefix.runDir, operation: file }, guarded, {}, { docker }))).toBe('run_not_prepared');
+    expect(await refused(inspectCommand({ run: prefix.runDir }, guarded, { docker }))).toBe('run_not_prepared');
+    expect(docker.calls.length).toBe(before);
+    expect(prefix.journal.names()).toEqual(['cleanup-binding', 'subrun.qualification']);
+  });
+
+  test.skipIf(!HAS_FLOCK)('a prepare that holds the run lock keeps stop busy and removes nothing; once its process has ended stop settles what it left', async () => {
+    const docker = new ExerciseDocker();
+    const prefix = await interruptedPrepare(docker);
+    const lockPath = join(prefix.runDir, 'lock');
+    const holder = await acquireRunLock(lockPath, { waitSeconds: 1 });
+    expect(holder.busy).toBe(false);
+    let out = '';
+    expect(await exerciseMain(['stop', '--run', prefix.runDir], { env: {}, stdout: { write: (s: string) => { out += s; return true; } }, lockWaitSeconds: 1 })).toBe(EXIT.busy);
+    expect(JSON.parse(out)).toMatchObject({ status: 'busy', reason: 'lock_busy' });
+    expect(docker.removed.size).toBe(0);
+    (holder as any).release();
+    const successor = await acquireRunLock(lockPath, { waitSeconds: 1 });
+    expect(successor.busy).toBe(false);
+    expect(await stopCommand({ run: prefix.runDir }, guarded, { docker, lock: successor as any })).toMatchObject({ exit: EXIT.ok, status: { status: 'cleanup_confirmed' } });
+    (successor as any).release();
+    expect([docker.removed.has(prefix.parentId), docker.removed.has(prefix.childId)]).toEqual([true, true]);
+  });
+
+  /** A Docker client that answers as a trusted local engine, and records whether the run lock was held at each call. */
+  class BoundaryDocker extends ExerciseDocker {
+    held: (number | null)[] = [];
+    constructor(public endpoint: string, public lockPath: string) { super(); }
+    async run(args: string[], options: any = {}) {
+      this.held.push(lockProbe(this.lockPath));
+      if (args[0] === 'version') return this.ok(JSON.stringify({ Client: { Version: '27.0.0' } }));
+      if (args[0] === 'info' && args[2] === '{{json .}}') {
+        return this.ok(JSON.stringify({ ID: ENGINE, OSType: 'linux', KernelVersion: release(), MemoryLimit: true, SwapLimit: true, CgroupVersion: '2', Name: 'local', OperatingSystem: 'Linux', ServerVersion: '27.0.0' }));
+      }
+      return super.run(args, options);
+    }
+  }
+
+  test.skipIf(!HAS_FLOCK)('prepare holds its run lock for as long as it is active, binds cleanup as soon as the engine is verified, and leaves a run stop can settle', async () => {
+    const root = scratch();
+    const socket = join(root, 'docker.sock');
+    const server = createServer();
+    await new Promise<void>((resolveListen) => server.listen(socket, resolveListen));
+    try {
+      const runId = 'prepare-lock';
+      const lockPath = join(root, runId, 'lock');
+      const docker = new BoundaryDocker(`unix://${socket}`, lockPath);
+      const prepared = await prepareCommand({ 'output-root': root, 'run-id': runId, host: 'v1', input: join(inputTree(), 'request.json'), 'candidate-ref': 'a'.repeat(40), endpoint: `unix://${socket}` }, {}, { docker });
+      // The candidate does not exist, so prepare ends before it builds anything; every Docker call it made ran under its lock.
+      expect(prepared.status).toMatchObject({ status: 'failed', failures: ['git_failed'] });
+      expect(docker.held.length).toBeGreaterThan(0);
+      expect(docker.held.every((h) => h === 75)).toBe(true);
+      expect(lockProbe(lockPath)).toBe(0);
+      const journal = new Journal(join(root, runId, 'records'));
+      expect(journal.read('cleanup-binding')!.value).toEqual({
+        schema: 'ic-exercise-cleanup-binding/v1', runId, endpoint: `unix://${socket}`, engineId: ENGINE,
+        ledgerIno: String(statSync(join(root, runId, 'resources.jsonl')).ino), lockInode: String(statSync(lockPath).ino),
+      });
+      expect(await stopCommand({ run: join(root, runId) }, guarded, { docker })).toMatchObject({ exit: EXIT.ok, status: { status: 'cleanup_confirmed' } });
+    } finally {
+      server.close();
+    }
+    // Order in the source: the lock before any input is read, the engine verified before the binding, the binding before the first resource.
+    const source = readFileSync(join(import.meta.dir, 'exercise.mjs'), 'utf8');
+    const body = source.slice(source.indexOf('export async function prepareCommand('), source.indexOf('/** The catalog reply checked'));
+    const order = ['acquireRunLock(', 'snapshotInputs(', 'verifyDockerBoundary(', 'bindCleanup(', 'resources.engineId =', 'await build(docker'].map((needle) => body.indexOf(needle));
+    expect(order.every((at) => at > -1)).toBe(true);
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+  }, 30_000);
+
+  test.skipIf(!HAS_FLOCK)('a prepare process holds the lock while it works and releases it only when it ends; a stop meanwhile is busy, and before the first resource there is nothing to settle', async () => {
+    const root = scratch();
+    const input = join(inputTree(), 'request.json');
+    const scripts = scratch();
+    const actor = join(scripts, 'prepare-actor.mjs');
+    writeFileSync(actor, [
+      `import { prepareCommand } from ${JSON.stringify(join(import.meta.dir, 'exercise.mjs'))};`,
+      "const hung = { endpoint: 'unix:///nowhere.sock', run: () => new Promise(() => {}), json: () => { process.stdout.write('engaged\\n'); return new Promise(() => {}); } };",
+      'setInterval(() => {}, 1000);',
+      "await prepareCommand({ 'output-root': process.argv[2], 'run-id': 'killed-prepare', host: 'v1', input: process.argv[3], 'candidate-ref': 'a'.repeat(40), endpoint: 'unix:///nowhere.sock' }, {}, { docker: hung });",
+    ].join('\n'));
+    for (const runtime of ['node', process.execPath]) {
+      const out = join(root, runtime === 'node' ? 'node' : 'bun');
+      mkdirSync(out);
+      const proc = spawn(runtime, [actor, out, input], { stdio: ['ignore', 'pipe', 'ignore'] });
+      await new Promise<void>((resolveReady) => { let seen = ''; proc.stdout!.on('data', (d) => { seen += d; if (seen.includes('engaged')) resolveReady(); }); });
+      const runDir = join(out, 'killed-prepare');
+      expect([runtime, lockProbe(join(runDir, 'lock'))]).toEqual([runtime, 75]);
+      let said = '';
+      expect(await exerciseMain(['stop', '--run', runDir], { env: {}, stdout: { write: (s: string) => { said += s; return true; } }, lockWaitSeconds: 1 })).toBe(EXIT.busy);
+      expect(JSON.parse(said)).toMatchObject({ status: 'busy', reason: 'lock_busy' });
+      const exited = new Promise((r) => proc.on('exit', r));
+      proc.kill('SIGKILL');
+      await exited;
+      expect(lockProbe(join(runDir, 'lock'))).toBe(0);
+      // It ended before verifying an engine, so it created nothing and recorded no ownership.
+      const docker = new ExerciseDocker();
+      expect(await refused(stopCommand({ run: runDir }, guarded, { docker }))).toBe('run_not_prepared');
+      expect(docker.calls).toEqual([]);
+    }
+  }, 60_000);
 });
 
 describe('supervised exercise serialization', () => {
@@ -3719,7 +4093,30 @@ describe('supervised exercise serialization', () => {
 describe('supervised exercise publication, admission and deadlines', () => {
   const submits = (docker: ExerciseDocker) => docker.driverCalls.filter((c) => c.command === 'submit');
   const escapeAll = (text: string) => text.split('').map((ch) => '\\u' + ch.charCodeAt(0).toString(16).padStart(4, '0')).join('');
-  const questionWire = (question: string, extra = '') => `{"ok":true,"quiescent":true,"reasons":[],"pending":[{"kind":"question","id":"que_1","sessionId":"ses_primary","toolCallId":null,"questions":[{"question":"${question}","header":null,"multiple":false,"options":["a"]}]}],"approvals":[],"tree":{"sessions":[],"complete":true,"failure":null},"busy":[]${extra}}`;
+  const questionWire = (question: string, extra = '') => `{"ok":true,"quiescent":true,"reasons":[],"pending":[{"kind":"question","id":"que_1","sessionId":"ses_primary","toolCallId":null,"complete":true,"questionCount":1,"questions":[{"question":"${question}","questionChars":${JSON.parse(`"${question}"`).length},"header":null,"headerChars":null,"multiple":false,"options":["a"],"optionCount":1,"optionChars":[1],"optionDescriptions":["d"],"optionDescriptionChars":[1]}]}],"approvals":[],"tree":{"sessions":[],"complete":true,"failure":null},"busy":[]${extra}}`;
+
+  /**
+   * One reply or permission operation through the whole production path against native lists: the driver releases the
+   * pending interactions, the host parses that release, and the driver submits against a native API that records every
+   * request it is sent. `natives` maps a v1 list route to its body; `raw` is what the driver listed from them.
+   */
+  const attemptOn = (natives: Record<string, any>, raw: any[], host: 'v1' | 'v2' = 'v1') => async (action: string, fields: any) => {
+    const sends: { path: string; body: any }[] = [];
+    const table: Record<string, any> = {
+      '/session/ses_primary': { id: 'ses_primary' }, '/session/ses_primary/children': [], '/session/ses_primary/message?limit=100': [], '/session/status': {}, ...natives,
+    };
+    const native = async (path: string, options: any = {}) => {
+      if ((options.method ?? 'GET') !== 'GET') { sends.push({ path, body: options.body }); return { outcome: 'response' as const, status: 204, body: null, bytes: 0 }; }
+      return path in table ? { outcome: 'response' as const, status: 200, body: table[path], bytes: 1 } : { outcome: 'response' as const, status: 404, body: null, bytes: 0 };
+    };
+    const docker: ExerciseDocker = new ExerciseDocker({ driver: {
+      observe: () => ({ ...QUIET, quiescent: false, pending: releasedPending(raw, () => false) }),
+      submit: (input: any) => driverSubmit({ ...input, trusted: false, expected: null }, { api: native as any, clock: () => docker.clockMs }),
+    } });
+    const run = exerciseRun({ host });
+    const result = await turnCommand({ run: run.runDir, operation: run.op(action, fields) }, run.env, {}, { docker });
+    return { result, sends, run };
+  };
 
   test('a token that arrives as escape sequences is found after decoding, in kept and dropped fields alike, and is never published', async () => {
     const wire = questionWire(escapeAll(FAKE_ACCESS));
@@ -3775,8 +4172,154 @@ describe('supervised exercise publication, admission and deadlines', () => {
     for (const word of literals) expect([word, DRIVER_FAILURES.has(word) || DRIVER_REFUSALS.has(word)]).toEqual([word, true]);
   });
 
+  test('a pending interaction states what was clipped or left out from the driver through the host, and a decision on an incomplete one is refused unsent', async () => {
+    const resources = Array.from({ length: 17 }, (_, i) => (i === 2 ? 'r'.repeat(523) : `/work/proj/f${i}.txt`));
+    const options = Array.from({ length: 33 }, (_, i) => ({ label: i === 5 ? 'o'.repeat(301) : `opt${i}` }));
+    const small = '/work/proj/a.txt';
+    const natives = {
+      '/question': [
+        { id: 'que_1', sessionID: 'ses_primary', tool: { callID: 'call_q' }, questions: [{ question: 'q'.repeat(2001), header: 'h', options }] },
+        { id: 'que_2', sessionID: 'ses_primary', tool: { callID: 'call_s' }, questions: [{ question: 'Which?', header: 'H', options: [{ label: 'alpha' }, { label: 'beta' }] }] },
+        { id: 'que_3', sessionID: 'ses_primary', tool: { callID: 'call_m' }, questions: Array.from({ length: 17 }, (_, i) => ({ question: `Q${i}?`, header: null, options: [{ label: 'a' }] })) },
+      ],
+      '/permission': [
+        { id: 'per_1', sessionID: 'ses_primary', tool: { callID: 'call_p' }, permission: 'edit', patterns: resources },
+        { id: 'per_2', sessionID: 'ses_primary', tool: { callID: 'call_t' }, permission: 'edit', patterns: [small] },
+      ],
+    };
+    const tree = { sessions: [{ id: 'ses_primary', parentId: null, agent: null }], complete: true, failure: null };
+    const raw = (await pendingInteractions('v1', tree, routeGet({ '/question': api(natives['/question']), '/permission': api(natives['/permission']) })))!;
+    const [bigQuestion, smallQuestion, manyQuestions, bigPermission, smallPermission] = releasedPending(raw, () => false);
+
+    // The driver states the original count and size of everything it clipped, and marks the item incomplete.
+    expect(bigPermission).toMatchObject({ complete: false, permission: { resourceCount: 17 } });
+    expect(bigPermission.permission.resources).toHaveLength(16);
+    expect(bigPermission.permission.resources[2]).toHaveLength(500);
+    expect(bigPermission.permission.resourceChars[2]).toBe(523);
+    expect(bigQuestion).toMatchObject({ complete: false, questionCount: 1 });
+    expect(bigQuestion.questions[0]).toMatchObject({ questionChars: 2001, headerChars: 1, optionCount: 33 });
+    expect(bigQuestion.questions[0].question).toHaveLength(2000);
+    expect(bigQuestion.questions[0].options).toHaveLength(32);
+    expect(bigQuestion.questions[0].optionChars[5]).toBe(301);
+    expect(bigQuestion.questions[0].options[5]).toHaveLength(300);
+    expect(manyQuestions).toMatchObject({ complete: false, questionCount: 17 });
+    expect(manyQuestions.questions).toHaveLength(16);
+    expect(smallQuestion).toMatchObject({ complete: true, questionCount: 1, questions: [{ questionChars: 6, headerChars: 1, optionCount: 2, optionChars: [5, 4] }] });
+    expect(smallPermission).toMatchObject({ complete: true, permission: { resourceCount: 1, resourceChars: [small.length] } });
+    // A value that cannot be shown as text is never read as an empty one.
+    expect(releasedPending([{ kind: 'permission', id: 'per_9', sessionId: 'ses_a', toolCallId: null, permission: { action: 'edit', resources: [{ not: 'text' }] } }], () => false)![0].complete).toBe(false);
+
+    // The host keeps all of it, and rejects a reply whose claim of completeness the sizes contradict.
+    const reply = { ok: true, quiescent: false, reasons: [], pending: releasedPending(raw, () => false), approvals: [], tree: { sessions: [], complete: true, failure: null }, busy: [] };
+    const wire = () => JSON.parse(JSON.stringify(reply));
+    const parsed = parseDriverReply('observe', wire());
+    expect(parsed.pending).toEqual(reply.pending);
+    const tampered = (mutate: (r: any) => void) => { const r = wire(); mutate(r); return parseDriverReply('observe', r); };
+    expect(tampered((r) => { r.pending[3].complete = true; })).toBeNull();
+    expect(tampered((r) => { r.pending[0].complete = true; })).toBeNull();
+    expect(tampered((r) => { r.pending[2].complete = true; })).toBeNull();
+    expect(tampered((r) => { delete r.pending[1].complete; })).toBeNull();
+    expect(tampered((r) => { delete r.pending[1].questionCount; })).toBeNull();
+    expect(tampered((r) => { r.pending[3].permission.resourceChars[2] = 10; })).toBeNull();
+    expect(tampered((r) => { r.pending[3].permission.resourceChars.pop(); })).toBeNull();
+    expect(tampered((r) => { r.pending[0].questions[0].optionChars.pop(); })).toBeNull();
+    expect(tampered((r) => { r.pending[1].questions[0].optionCount = 1; })).toBeNull();
+    expect(tampered((r) => { r.pending[1].complete = true; })).not.toBeNull();
+
+    // Replies and approvals are decided on the released form: an incomplete one is refused before anything is sent.
+    const attempt = attemptOn(natives, raw);
+    const refused = await attempt('permission', { requestId: 'per_1', decision: 'once' });
+    expect(refused.result.status).toMatchObject({ state: 'refused', reason: 'request_incomplete' });
+    expect(refused.result.status.pending.find((p: any) => p.id === 'per_1')).toMatchObject({ complete: false, permission: { resourceCount: 17 } });
+    expect(refused.sends).toEqual([]);
+    expect(runState(refused.run.journal).unresolved).toEqual([]);
+    const rejected = await attempt('permission', { requestId: 'per_1', decision: 'reject' });
+    expect(rejected.result.status).toMatchObject({ state: 'acknowledged' });
+    expect(rejected.sends).toEqual([{ path: '/permission/per_1/reply', body: { reply: 'reject' } }]);
+    const approved = await attempt('permission', { requestId: 'per_2', decision: 'once' });
+    expect(approved.result.status).toMatchObject({ state: 'acknowledged' });
+    expect(approved.sends).toEqual([{ path: '/permission/per_2/reply', body: { reply: 'once' } }]);
+    for (const [requestId, answers] of [['que_1', [['opt0']]], ['que_3', Array.from({ length: 16 }, () => ['a'])]] as const) {
+      const blocked = await attempt('reply', { requestId, answers });
+      expect(blocked.result.status).toMatchObject({ state: 'refused', reason: 'request_incomplete' });
+      expect(blocked.sends).toEqual([]);
+    }
+    const answered = await attempt('reply', { requestId: 'que_2', answers: [['alpha']] });
+    expect(answered.result.status).toMatchObject({ state: 'acknowledged' });
+    expect(answered.sends).toEqual([{ path: '/question/que_2/reply', body: { answers: [['alpha']] } }]);
+  });
+
+  test('a choice keeps the description its host gave it from the native list through release, host parse and reply, on both hosts; one that is clipped or not text makes the question incomplete', async () => {
+    const apply = { label: 'Apply', description: 'Apply the migration and keep every backup' };
+    const wipe = { label: 'Delete all backups', description: 'Apply the migration, then permanently remove every backup' };
+    const tree = { sessions: [{ id: 'ses_primary', parentId: null, agent: null }], complete: true, failure: null };
+    const natives = (host: 'v1' | 'v2', options: any[]): Record<string, any> => host === 'v1'
+      ? { '/question': [{ id: 'que_1', sessionID: 'ses_primary', tool: { callID: 'call_q' }, questions: [{ question: 'Which?', header: 'H', options }] }], '/permission': [] }
+      : {
+        '/api/session/ses_primary': { data: { id: 'ses_primary' } }, '/api/session?parentID=ses_primary&limit=100&order=asc': { data: [] }, '/api/session/ses_primary/message?limit=100&order=asc': { data: [] },
+        '/api/session/active': { data: {} }, '/api/session/ses_primary/permission': { data: [] },
+        '/api/session/ses_primary/form': { data: [{ id: 'frm_1', sessionID: 'ses_primary', metadata: { tool: { id: 'call_q' } }, fields: [{ key: 'q0', type: 'string', title: 'H', description: 'Which?', options: options.map((o) => ({ value: o.label, label: o.label, description: o.description })) }] }] },
+      };
+    const listed = async (host: 'v1' | 'v2', options: any[]) => (await pendingInteractions(host, tree, routeGet(Object.fromEntries(Object.entries(natives(host, options)).map(([path, body]) => [path, api(body)])))))!;
+    const observe = (pending: any) => ({ ok: true, quiescent: false, reasons: [], pending, approvals: [], tree: { sessions: [], complete: true, failure: null }, busy: [] });
+
+    for (const host of ['v1', 'v2'] as const) {
+      // Apply / Delete all backups: the descriptions are what tells the two choices apart, so they are released with the labels.
+      const raw = await listed(host, [apply, wipe]);
+      const released = releasedPending(raw, () => false);
+      expect([host, released[0].complete]).toEqual([host, true]);
+      expect(released[0].questions[0]).toMatchObject({
+        options: ['Apply', 'Delete all backups'], optionCount: 2, optionChars: [5, 18],
+        optionDescriptions: [apply.description, wipe.description], optionDescriptionChars: [apply.description.length, wipe.description.length],
+      });
+      // The host keeps them, and rejects a release that drops them or states sizes the texts contradict.
+      const wire = () => JSON.parse(JSON.stringify(observe(released)));
+      expect(parseDriverReply('observe', wire())!.pending).toEqual(released);
+      const tampered = (mutate: (q: any) => void) => { const r = wire(); mutate(r.pending[0].questions[0]); return parseDriverReply('observe', r); };
+      expect(tampered((q) => { delete q.optionDescriptions; })).toBeNull();
+      expect(tampered((q) => { delete q.optionDescriptionChars; })).toBeNull();
+      expect(tampered((q) => { q.optionDescriptions.pop(); })).toBeNull();
+      expect(tampered((q) => { q.optionDescriptionChars.pop(); })).toBeNull();
+      expect(tampered((q) => { q.optionDescriptionChars[1] = 3; })).toBeNull();
+      expect(tampered((q) => { q.optionDescriptions[1] = 'x'.repeat(501); q.optionDescriptionChars[1] = 501; })).toBeNull();
+      expect(tampered((q) => { q.optionDescriptionChars[1] = 900; })).toBeNull();
+      // The labels stay the native answer values: the reply is sent on the released form, and carries the label alone.
+      const answered = await attemptOn(natives(host, [apply, wipe]), raw, host)('reply', { requestId: host === 'v1' ? 'que_1' : 'frm_1', answers: [['Apply']] });
+      expect([host, answered.result.status]).toMatchObject([host, { state: 'acknowledged' }]);
+      expect(answered.sends).toEqual([host === 'v1'
+        ? { path: '/question/que_1/reply', body: { answers: [['Apply']] } }
+        : { path: '/api/session/ses_primary/form/frm_1/reply', body: { answer: { q0: 'Apply' } } }]);
+    }
+
+    // A description beyond its bound is clipped with its original size stated and the question is incomplete: the host
+    // does not accept a claim of completeness the sizes contradict, and a reply on it is refused before anything is sent.
+    const long = 'Apply the migration, then permanently remove every backup. '.repeat(10);
+    for (const host of ['v1', 'v2'] as const) {
+      const options = [apply, { label: wipe.label, description: long }];
+      const raw = await listed(host, options);
+      const [question] = releasedPending(raw, () => false);
+      expect([host, question.complete]).toEqual([host, false]);
+      expect(question.questions[0].optionDescriptions[1]).toHaveLength(500);
+      expect(question.questions[0].optionDescriptionChars).toEqual([apply.description.length, long.length]);
+      expect([host, parseDriverReply('observe', JSON.parse(JSON.stringify(observe([{ ...question, complete: true }]))))]).toEqual([host, null]);
+      expect(parseDriverReply('observe', JSON.parse(JSON.stringify(observe([question]))))!.pending).toEqual([question]);
+      const refused = await attemptOn(natives(host, options), raw, host)('reply', { requestId: host === 'v1' ? 'que_1' : 'frm_1', answers: [['Apply']] });
+      expect([host, refused.result.status]).toMatchObject([host, { state: 'refused', reason: 'request_incomplete' }]);
+      expect(refused.sends).toEqual([]);
+    }
+
+    // A description that is not text is never read as an absent one; an absent one is released as empty.
+    for (const bad of [{ not: 'text' }, 7, ['a']]) {
+      expect(releasedPending(await listed('v1', [{ label: 'Apply', description: bad }]), () => false)[0].complete).toBe(false);
+    }
+    expect(releasedPending(await listed('v1', [{ label: 'Apply' }]), () => false)[0]).toMatchObject({ complete: true, questions: [{ options: ['Apply'], optionDescriptions: [''], optionDescriptionChars: [0] }] });
+    // Descriptions pass the evidence scanner like every other released text.
+    const scanned = await listed('v1', [apply, wipe]);
+    expect(() => releasedPending(scanned, (t) => t.includes('permanently'))).toThrow();
+  });
+
   test('a refusal that lists native questions is published only through the final continuity check', async () => {
-    const pending = [{ kind: 'question', id: 'que_1', sessionId: 'ses_child', toolCallId: 'call_q', questions: [{ question: 'Which?', header: null, multiple: false, options: ['alpha'] }] }];
+    const pending = released({ kind: 'question', id: 'que_1', sessionId: 'ses_child', toolCallId: 'call_q', questions: [{ question: 'Which?', header: null, multiple: false, options: ['alpha'], optionDescriptions: ['first'] }] });
     const driver = { observe: () => ({ ...QUIET, pending }) };
     const docker = new ExerciseDocker({ driver });
     docker.compares = [true, false];
@@ -3791,7 +4334,7 @@ describe('supervised exercise publication, admission and deadlines', () => {
   });
 
   test('inspect publishes nothing when the credential changed between the observation and the release', async () => {
-    const docker = new ExerciseDocker({ driver: { observe: () => ({ ...QUIET, pending: [{ kind: 'question', id: 'que_1', sessionId: 'ses_primary', toolCallId: null, questions: [{ question: 'Which?', header: null, multiple: false, options: ['a'] }] }] }) } });
+    const docker = new ExerciseDocker({ driver: { observe: () => ({ ...QUIET, pending: released({ kind: 'question', id: 'que_1', sessionId: 'ses_primary', toolCallId: null, questions: [{ question: 'Which?', header: null, multiple: false, options: ['a'], optionDescriptions: ['only'] }] }) }) } });
     docker.compares = [true, false];
     const run = exerciseRun();
     const result = await inspectCommand({ run: run.runDir, request: run.inspection({ conversation: {} }) }, run.env, { docker });
@@ -4051,7 +4594,7 @@ describe('supervised exercise publication, admission and deadlines', () => {
     const fragment = FAKE_ACCESS.slice(3, 35);
     expect(fragment).toHaveLength(32);
     const escaped = FAKE_ACCESS.split('').map((ch) => '\\u' + ch.charCodeAt(0).toString(16).padStart(4, '0')).join('');
-    const pending = [{ kind: 'question', id: 'que_1', sessionId: 'ses_primary', toolCallId: 'call_q', questions: [{ question: 'Which?', header: null, multiple: false, options: ['alpha'] }] }];
+    const pending = released({ kind: 'question', id: 'que_1', sessionId: 'ses_primary', toolCallId: 'call_q', questions: [{ question: 'Which?', header: null, multiple: false, options: ['alpha'], optionDescriptions: ['first'] }] });
     const cases: [string, any, string?][] = [
       ['reply', { requestId: 'que_1', answers: [[FAKE_ACCESS]] }],
       ['reply', { requestId: 'que_1', answers: [['alpha']] }, fragment],
@@ -4196,7 +4739,7 @@ describe('supervised exercise publication, admission and deadlines', () => {
 
   test('a lost reply, permission decision or interrupt stays unknown when only pending, idle or absent evidence exists', async () => {
     for (const [action, fields, kind] of [['reply', { requestId: 'que_1', answers: [['alpha']] }, 'question'], ['permission', { requestId: 'per_1', decision: 'once' }, 'permission'], ['interrupt', {}, 'interrupt']] as any[]) {
-      const pending = kind === 'interrupt' ? [] : [{ kind, id: fields.requestId, sessionId: 'ses_child', toolCallId: 'call_x', ...(kind === 'question' ? { questions: [{ question: 'Q?', header: null, multiple: false, options: ['alpha'] }] } : { permission: { action: 'read', resources: [] } }) }];
+      const pending = kind === 'interrupt' ? [] : released({ kind, id: fields.requestId, sessionId: 'ses_child', toolCallId: 'call_x', ...(kind === 'question' ? { questions: [{ question: 'Q?', header: null, multiple: false, options: ['alpha'], optionDescriptions: ['first'] }] } : { permission: { action: 'read', resources: [] } }) });
       const docker = new ExerciseDocker({ driver: { observe: () => ({ ...QUIET, pending, quiescent: false }), submit: () => ({ ok: true, submitted: true, acknowledged: null }) } });
       const run = exerciseRun();
       const lost = await turnCommand({ run: run.runDir, operation: run.op(action, fields, 'lost') }, run.env, {}, { docker });

@@ -292,7 +292,7 @@ export async function pendingInteractions(host: string, tree: Tree, get: (reques
     if (!questions || !permissions) return null;
     for (const q of questions) {
       if (!ids.has(q.sessionID)) { out.push({ kind: 'question', id: q.id, sessionId: q.sessionID, toolCallId: null, outsideTree: true }); continue; }
-      out.push({ kind: 'question', id: q.id, sessionId: q.sessionID, toolCallId: callId(q.tool?.callID), questions: (q.questions ?? []).map((x: Json) => ({ question: x.question, header: x.header ?? null, multiple: x.multiple === true, options: (x.options ?? []).map((o: Json) => o.label) })) });
+      out.push({ kind: 'question', id: q.id, sessionId: q.sessionID, toolCallId: callId(q.tool?.callID), questions: (q.questions ?? []).map((x: Json) => ({ question: x.question, header: x.header ?? null, multiple: x.multiple === true, options: (x.options ?? []).map((o: Json) => o.label), optionDescriptions: (x.options ?? []).map((o: Json) => o.description) })) });
     }
     for (const p of permissions) {
       if (!ids.has(p.sessionID)) { out.push({ kind: 'permission', id: p.id, sessionId: p.sessionID, toolCallId: null, outsideTree: true }); continue; }
@@ -305,7 +305,7 @@ export async function pendingInteractions(host: string, tree: Tree, get: (reques
     const permissions = await read(routes.permissions(id));
     if (!forms || !permissions) return null;
     for (const f of forms) {
-      out.push({ kind: 'question', id: f.id, sessionId: f.sessionID, toolCallId: callId(f.metadata?.tool?.id), questions: (f.fields ?? []).map((x: Json) => ({ key: x.key, question: x.description ?? x.title ?? null, header: x.title ?? null, multiple: x.type === 'multiselect', type: x.type, options: (x.options ?? []).map((o: Json) => o.value) })) });
+      out.push({ kind: 'question', id: f.id, sessionId: f.sessionID, toolCallId: callId(f.metadata?.tool?.id), questions: (f.fields ?? []).map((x: Json) => ({ key: x.key, question: x.description ?? x.title ?? null, header: x.title ?? null, multiple: x.type === 'multiselect', type: x.type, options: (x.options ?? []).map((o: Json) => o.value), optionDescriptions: (x.options ?? []).map((o: Json) => o.description) })) });
     }
     for (const p of permissions) out.push({ kind: 'permission', id: p.id, sessionId: p.sessionID, toolCallId: callId(p.source?.id), permission: { action: p.action ?? null, resources: p.resources ?? [] } });
   }
@@ -714,14 +714,60 @@ function observeTree(input: Json, remaining: () => number, pageLimit = LIMITS.me
   return observeWith(input.host, input.sessionId, (r: Json) => call(r, remaining, undefined, api), pageLimit, pageCount);
 }
 
-/** Pending interactions as released: exact IDs and bounded question text and choices. */
-function releasedPending(pending: Pending[] | null, scan: (t: string) => boolean): Json {
+// What a pending interaction releases. A reply or permission decision rests on what the supervisor was shown, so each
+// released item states the original size of every clipped text and the original count of every capped list, and
+// `complete` is true only when nothing was clipped, left out or unrepresentable.
+const SHOWN = { questions: 16, question: 2000, header: 200, options: 32, option: 300, optionDescription: 500, action: 100, resources: 16, resource: 500 } as const;
+
+/** What a choice's description reads as when the listing carries none for it; it cannot be shown, so it is never read as empty. */
+const NO_DESCRIPTION = Symbol('no description');
+
+type Shown = { text: string; chars: number; whole: boolean };
+
+/** A native text as released: scanned whole, then clipped. An absent text is empty; any other non-text value cannot be shown. */
+function shown(value: unknown, cap: number, scan: (t: string) => boolean): Shown {
+  if (value === null || value === undefined) return { text: '', chars: 0, whole: true };
+  if (typeof value !== 'string') return { text: '', chars: 0, whole: false };
+  const b = bounded(value, cap, scan);
+  return { text: b.text, chars: b.chars, whole: !b.clipped };
+}
+
+/** Pending interactions as released: exact IDs, bounded question text and choices or permission scope, with their completeness. */
+export function releasedPending(pending: Pending[] | null, scan: (t: string) => boolean): Json {
   if (pending === null) return null;
-  return pending.map((p) => ({
-    kind: p.kind, id: p.id, sessionId: p.sessionId, toolCallId: p.toolCallId, ...(p.outsideTree ? { outsideTree: true } : {}),
-    ...(p.questions ? { questions: p.questions.slice(0, 16).map((q: Json) => ({ ...q, question: bounded(q.question, 2000, scan).text, header: q.header === null ? null : bounded(q.header, 200, scan).text, options: (q.options ?? []).slice(0, 32).map((o: unknown) => bounded(o, 300, scan).text) })) } : {}),
-    ...(p.permission ? { permission: { action: bounded(p.permission.action, 100, scan).text, resources: (p.permission.resources ?? []).slice(0, 16).map((r: unknown) => bounded(r, 500, scan).text) } } : {}),
-  }));
+  return pending.map((p) => {
+    const out: Json = { kind: p.kind, id: p.id, sessionId: p.sessionId, toolCallId: p.toolCallId, ...(p.outsideTree ? { outsideTree: true } : {}) };
+    let complete = true;
+    if (p.questions) {
+      complete = p.questions.length <= SHOWN.questions;
+      out.questionCount = p.questions.length;
+      out.questions = p.questions.slice(0, SHOWN.questions).map((q: Json) => {
+        const question = shown(q.question, SHOWN.question, scan);
+        const header = q.header === null || q.header === undefined ? null : shown(q.header, SHOWN.header, scan);
+        const choices: unknown[] = Array.isArray(q.options) ? q.options : [];
+        const options = choices.slice(0, SHOWN.options).map((o) => shown(o, SHOWN.option, scan));
+        // A choice's description is part of what the supervisor decides on; the label stays the native answer value.
+        const notes: unknown[] = Array.isArray(q.optionDescriptions) ? q.optionDescriptions : [];
+        const descriptions = options.map((_, i) => shown(i < notes.length ? notes[i] : NO_DESCRIPTION, SHOWN.optionDescription, scan));
+        complete = complete && question.whole && (header?.whole ?? true) && (q.options == null || Array.isArray(q.options)) && choices.length <= SHOWN.options && options.every((o) => o.whole)
+          && notes.length === choices.length && descriptions.every((d) => d.whole);
+        return {
+          ...q, question: question.text, questionChars: question.chars, header: header === null ? null : header.text, headerChars: header === null ? null : header.chars,
+          options: options.map((o) => o.text), optionCount: choices.length, optionChars: options.map((o) => o.chars),
+          optionDescriptions: descriptions.map((d) => d.text), optionDescriptionChars: descriptions.map((d) => d.chars),
+        };
+      });
+    }
+    if (p.permission) {
+      const action = shown(p.permission.action, SHOWN.action, scan);
+      const scope: unknown[] = Array.isArray(p.permission.resources) ? p.permission.resources : [];
+      const resources = scope.slice(0, SHOWN.resources).map((r) => shown(r, SHOWN.resource, scan));
+      complete = complete && action.whole && (p.permission.resources == null || Array.isArray(p.permission.resources)) && scope.length <= SHOWN.resources && resources.every((r) => r.whole);
+      out.permission = { action: action.text, actionChars: action.chars, resources: resources.map((r) => r.text), resourceCount: scope.length, resourceChars: resources.map((r) => r.chars) };
+    }
+    out.complete = complete;
+    return out;
+  });
 }
 
 /** The labels of a question answer in any native form: an array of arrays or strings, or a keyed object (`q0`, `q1`). */
@@ -828,6 +874,9 @@ export async function submit(input: Json, deps: DriverDeps = LIVE): Promise<Json
   } else if (op.kind === 'question-reply' || op.kind === 'permission-reply') {
     const target = observed.pending?.find((p) => p.id === op.requestId && !p.outsideTree);
     if (!target || target.kind !== (op.kind === 'question-reply' ? 'question' : 'permission')) return refuse('request_not_pending');
+    // The supervisor decides on the released form. A request whose released form clips or leaves something out is not
+    // answered or approved on that basis; rejecting a permission is the one safe reply to a scope not fully shown.
+    if (!(op.kind === 'permission-reply' && op.decision === 'reject') && !releasedPending([target], () => false)[0].complete) return refuse('request_incomplete');
     if (op.kind === 'question-reply') {
       const qs = target.questions ?? [];
       if (!Array.isArray(op.answers) || op.answers.length !== qs.length || op.answers.some((a: Json) => !Array.isArray(a) || a.length === 0 || a.some((x: Json) => typeof x !== 'string'))) return refuse('answers_invalid');

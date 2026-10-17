@@ -57,6 +57,11 @@ const QUALIFICATION_MOCK_MODEL = 'mock/ic-exercise-mock';
 
 export const EXIT = Object.freeze({ ok: 0, failed: 1, invalid: 2, busy: 3 });
 export const ACTIONS = ['prompt', 'reply', 'permission', 'interrupt', 'approve-plan', 'switch-primary'];
+/** The qualification runs a prepared run owns, each in its own directory with its own ledger and lock. */
+export const QUALIFICATION_SUBRUNS = Object.freeze(['qualification', 'qualification-interrupt']);
+const SUBRUN_LOCK_WAIT_SECONDS = 5;
+/** The journal record in which prepare binds a run to the engine and ledger that `stop` must settle. */
+const CLEANUP_BINDING = 'cleanup-binding';
 
 // Input bounds.
 export const INPUT_LIMITS = Object.freeze({ files: 256, fileBytes: 256 * 1024, totalBytes: 8 * 1024 * 1024, textBytes: 64 * 1024, requestBytes: 64 * 1024, listItems: 32, itemChars: 1024 });
@@ -83,7 +88,8 @@ Successful collection is not a qualitative verdict.`,
   prepare: `prepare --candidate-ref <commit> --host v1|v2 --input <request.json> --run-id <id> --output-root <abs dir>
 
 Credential-free. Snapshots request.json and its files, builds the committed candidate and the clean committed tooling,
-and qualifies the selected exact host with a loopback mock model and a synthetic credential. Bounded by 7200 s.
+and qualifies the selected exact host with a loopback mock model and a synthetic credential. Bounded by 7200 s. Holds
+the run's lock until it ends, so stop is busy meanwhile.
 
 request.json (schema "ic-exercise-request/v1"; paths relative to the request file's directory):
   question         string: the qualitative question
@@ -94,7 +100,8 @@ request.json (schema "ic-exercise-request/v1"; paths relative to the request fil
   initialPrimary   Hive primary role, for example "architect-planner"
   primaryTransitions [{ "from": <role>, "to": <role> }]
   agentModels      { <non-primary role>: { "model": "openai/<model>", "variant": <string|null> } }   (optional)
-  repository       directory of regular UTF-8 files to copy into the disposable project
+  repository       directory of regular UTF-8 files to copy into the disposable project (not .hive/agent-hive.override.json,
+                   which would replace the models chosen here)
   prompt           file holding the initial prompt
   brief            file holding an optional brief appended to the initial prompt (optional)
   skills           { <name>: <file> } project-owned skill text (optional)
@@ -118,13 +125,16 @@ One supervisor action. operation.json (schema "ic-exercise-operation/v1"):
   sessionId   the primary session ID from start
   action      one of: ${ACTIONS.join(', ')}
   prompt:          { "text": string }
-  reply:           { "requestId": <pending question ID>, "answers": [[label, ...], ...] }  one array per question
+  reply:           { "requestId": <pending question ID>, "answers": [[label, ...], ...] }  one array per question; a label
+                   is an entry of the question's released "options", and its description is in "optionDescriptions"
   permission:      { "requestId": <pending permission ID>, "decision": "once" | "reject" }
   interrupt:       {}
   approve-plan:    { "project": "${PROJECT_ROOT}", "feature": string, "revision": string, "contentHash": string,
                      "permittedWork": string }  from inspect's plan read of the current revision; the primary must have
                      called hive_plan_read directly (not through Code Mode execute) with that feature named
   switch-primary:  { "to": <role allowed by request.primaryTransitions> }
+A reply, or a "once" decision, on a pending interaction that inspect does not report as complete is refused unsent
+(request_incomplete); "reject" is still accepted.
 New work is refused in the final 60 s; an interrupt is admitted until 5 s before the deadline. Both cutoffs are checked
 again inside the container immediately before the request is sent. An operation whose text, answers or ID contains the
 run's token, a fragment of it or a token-shaped string is refused before anything is recorded or sent. An unknown
@@ -134,7 +144,9 @@ of a v2 switch. A lost permission decision or interrupt cannot be resolved (the 
 run.`,
   inspect: `inspect --run <run dir> [--request <inspection.json>]
 
-Bounded, scanned observation. Without --request: lifecycle, guard, pending interactions and quiescence.
+Bounded, scanned observation. Without --request: lifecycle, guard, pending interactions and quiescence. A pending
+interaction is released within fixed bounds and states whether it is complete; clipped or omitted text, choices, choice
+descriptions and resources carry their original sizes, and a reply or "once" decision on an incomplete one is refused.
 inspection.json (schema "ic-exercise-inspection/v1"):
   runId
   resolve        operation ID whose outcome is unknown (optional)
@@ -150,9 +162,12 @@ Never runs project commands or tests.`,
   stop: `stop --run <run dir>
 
 Credential-independent cleanup: removes every owned container and network by exact ID on the bound engine and
-confirms absence. Exports nothing. Reports cleanup_confirmed, cleanup_present or cleanup_unknown. A create whose
-response was lost stays unknown until the resource carrying its nonce is found and removed; an empty listing does not
-settle it. Retry stop only.`,
+confirms absence, including those of the qualification runs prepare registered inside the prepared run. Also settles
+an interrupted prepare from the cleanup binding it recorded before creating anything (busy while that process still
+runs); that binding is cleanup ownership only and never makes a run startable. Exports nothing. Reports
+cleanup_confirmed, cleanup_present or cleanup_unknown. A create whose response was lost stays unknown until the
+resource carrying its nonce is found and removed; an empty listing does not settle it, and a qualification run whose
+ownership cannot be shown is unknown too. Retry stop only.`,
 };
 
 export function parseExerciseCli(argv) {
@@ -203,6 +218,12 @@ export function parseExerciseCli(argv) {
 const ROLE_SET = new Set(HIVE_ROLES);
 const RELATIVE_FILE = /^(?!\/)[A-Za-z0-9._@+\- /]{1,512}$/;
 const EXCLUDED_NAMES = new Set(['.git', 'node_modules', 'auth.json', '.env', '.npmrc', 'opencode.json', 'opencode.jsonc', '.opencode']);
+/**
+ * The one project-local Agent Hive configuration file hive-core's ConfigService reads. It is applied over the global
+ * agent model and variant choices, so an imported copy would replace the models the request names and the
+ * authorization covers. `request.agentModels` is the only way to choose them.
+ */
+const PROJECT_AGENT_OVERRIDE = '.hive/agent-hive.override.json';
 
 function strictObject(value, allowed, code) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new HarnessError(code);
@@ -236,6 +257,7 @@ export function projectPath(path, code = 'path_invalid') {
   const isPrefix = path.endsWith('/');
   if (isPrefix) parts.pop();
   if (parts.some((p) => p === '' || p === '.' || p === '..' || EXCLUDED_NAMES.has(p))) throw new HarnessError(code);
+  if (parts.join('/') === PROJECT_AGENT_OVERRIDE) throw new HarnessError(code);
   if (nativeStorePath(path)) throw new HarnessError(code);
   return path;
 }
@@ -448,7 +470,7 @@ const HISTORY_FAILURES = ['history_oversize', 'history_unreadable', 'history_mal
 const PLAN_FAILURES = ['feature_name_invalid', 'core_unavailable', 'feature_path_escapes', 'plan_not_regular', 'plan_oversize', 'plan_missing', 'plan_input_rejected', 'plan_input_oversize', 'plan_read_failed'];
 const REFUSALS = [
   'not_quiescent', 'plan_changed', 'plugin_read_not_current', 'plan_read_parity_failed', 'approval_not_observed', 'approval_revision_unknown', 'plan_not_approved',
-  'session_agent_unexpected', 'request_not_pending', 'answers_invalid', 'decision_invalid', 'deadline_exceeded', ...PLAN_FAILURES,
+  'session_agent_unexpected', 'request_not_pending', 'request_incomplete', 'answers_invalid', 'decision_invalid', 'deadline_exceeded', ...PLAN_FAILURES,
 ];
 /** Every failure word the driver can print. A drift test compares this set with the driver's own literals. */
 export const DRIVER_FAILURES = new Set([
@@ -500,12 +522,51 @@ const obj = (shape) => (v) => {
 const textRecord = (max) => obj({ text: str(max), chars: int, clipped: bool });
 const nativeName = nullable(match(NAME, 200));
 const featureName = match(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/, 128);
-const pendingItem = obj({
+// A pending interaction carries every text's original size and every list's original count next to the bounded text, so
+// a clipped or omitted part is visible to the supervisor. `complete` is the driver's claim that nothing was clipped,
+// left out or unrepresentable; the host accepts that claim only when the sizes agree with the texts.
+const pendingFields = obj({
   kind: oneOf(['question', 'permission']), id: match(/^[A-Za-z0-9_.:-]{1,200}$/, 200), sessionId: match(SESSION, 80), toolCallId: nullable(match(/^[A-Za-z0-9_.:-]{1,200}$/, 200)),
-  outsideTree: opt(exactly(true)),
-  questions: opt(arr(obj({ key: opt(str(64)), type: opt(str(32)), question: str(2000), header: nullable(str(200)), multiple: bool, options: arr(str(300), 32) }), 16)),
-  permission: opt(obj({ action: str(100), resources: arr(str(500), 16) })),
+  outsideTree: opt(exactly(true)), complete: bool, questionCount: opt(int),
+  questions: opt(arr(obj({
+    key: opt(str(64)), type: opt(str(32)), question: str(2000), questionChars: int, header: nullable(str(200)), headerChars: nullable(int), multiple: bool,
+    options: arr(str(300), 32), optionCount: int, optionChars: arr(int, 32), optionDescriptions: arr(str(500), 32), optionDescriptionChars: arr(int, 32),
+  }), 16)),
+  permission: opt(obj({ action: str(100), actionChars: int, resources: arr(str(500), 16), resourceCount: int, resourceChars: arr(int, 16) })),
 });
+
+/** The pending item when its stated sizes are honest and agree with any claim of completeness, otherwise INVALID. */
+function pendingItem(value) {
+  const item = pendingFields(value);
+  if (item === INVALID) return INVALID;
+  let whole = true;
+  // A stated size may exceed the text it accompanies (clipped) but never fall short of it.
+  const sized = (text, chars) => {
+    whole = whole && chars === text.length;
+    return chars >= text.length;
+  };
+  if ((item.questions === undefined) !== (item.questionCount === undefined)) return INVALID;
+  if (item.questions) {
+    if (item.questionCount < item.questions.length) return INVALID;
+    whole = item.questionCount === item.questions.length;
+    for (const q of item.questions) {
+      if (!sized(q.question, q.questionChars)) return INVALID;
+      if ((q.header === null) !== (q.headerChars === null) || (q.header !== null && !sized(q.header, q.headerChars))) return INVALID;
+      if (q.optionCount < q.options.length || q.optionChars.length !== q.options.length) return INVALID;
+      if (q.optionDescriptions.length !== q.options.length || q.optionDescriptionChars.length !== q.options.length) return INVALID;
+      whole = whole && q.optionCount === q.options.length;
+      if (!q.options.every((option, i) => sized(option, q.optionChars[i]))) return INVALID;
+      if (!q.optionDescriptions.every((description, i) => sized(description, q.optionDescriptionChars[i]))) return INVALID;
+    }
+  }
+  if (item.permission) {
+    const p = item.permission;
+    if (!sized(p.action, p.actionChars) || p.resourceCount < p.resources.length || p.resourceChars.length !== p.resources.length) return INVALID;
+    whole = whole && p.resourceCount === p.resources.length;
+    if (!p.resources.every((resource, i) => sized(resource, p.resourceChars[i]))) return INVALID;
+  }
+  return item.complete && !whole ? INVALID : item;
+}
 const toolRecord = obj({
   id: nullable(match(/^[A-Za-z0-9_.:-]{1,200}$/, 200)), name: match(SAFE_WORD, 80), status: nullable(match(SAFE_WORD, 80)),
   agent: opt(nativeName), childSessionId: opt(nullable(match(SESSION, 80))), prompt: opt(textRecord(4000)), command: opt(textRecord(1000)), exit: opt(nullable(anyInt)),
@@ -870,7 +931,7 @@ const CONTROLLER_STATUS = obj({
   command: oneOf(['prepare', 'inspect', 'stop']), status: WORD, reason: opt(WORD), lifecycle: opt(LIFECYCLE_FACTS),
   preparedSha256: opt(match(/^[0-9a-f]{64}$/, 64)), failures: opt(arr(WORD, 64)),
   qualification: opt(nullable(obj({ passed: int, total: int, failures: arr(WORD, 200) }))),
-  retained: opt(arr(obj({ id: opt(ID_WORD), nonce: opt(ID_WORD), state: oneOf(['present', 'unknown']) }), 64)), retainedImages: opt(arr(ID_WORD, 64)),
+  retained: opt(arr(obj({ id: opt(ID_WORD), nonce: opt(ID_WORD), subrun: opt(oneOf(QUALIFICATION_SUBRUNS)), state: oneOf(['present', 'unknown']) }), 64)), retainedImages: opt(arr(ID_WORD, 64)),
 });
 
 /** The closed controller form of `status` for `command`, or fixed words when it does not fit. */
@@ -934,7 +995,27 @@ function snapshotOf(runDir) {
   return JSON.parse(readFileSync(join(runDir, 'inputs', 'snapshot.json'), 'utf8'));
 }
 
-export async function prepareCommand(options, env) {
+/**
+ * Records, before the first resource effect, what a later `stop` needs to settle whatever this run created: the exact
+ * engine and endpoint, the run's ID, and the identities of its ledger and lock. It is written once and only this
+ * function writes it; it carries no credential, no input and no authority to start anything.
+ */
+export function bindCleanup(journal, runDir, { runId, endpoint, engineId }) {
+  const owned = (file) => {
+    const stat = lstatSync(join(runDir, file));
+    if (!stat.isFile() || stat.nlink !== 1) throw new HarnessError('cleanup_binding_unowned');
+    return String(stat.ino);
+  };
+  return journal.write(CLEANUP_BINDING, { schema: 'ic-exercise-cleanup-binding/v1', runId, endpoint, engineId, ledgerIno: owned('resources.jsonl'), lockInode: owned('lock') });
+}
+
+/**
+ * Prepares a run. The run's lock is held from before anything can be created until the final record is written or this
+ * process ends, so a `stop` can neither race the preparation nor find it half-owned: once the process is gone, `stop`
+ * settles whatever the binding and the registered qualification runs show was created. `deps.docker` replaces the
+ * Docker CLI client in synthetic tests only.
+ */
+export async function prepareCommand(options, env, deps = {}) {
   const budget = deadline(COMMAND_MS.prepare);
   const runDir = createRunDir(options['output-root'], options['run-id']);
   mkdirSync(join(runDir, 'docker-config'));
@@ -942,54 +1023,65 @@ export async function prepareCommand(options, env) {
   writeOnce(join(runDir, 'resources.jsonl'), '');
   writeOnce(join(runDir, 'lock'), '');
   const journal = Journal.create(join(runDir, 'records'));
-  const docker = new Docker({ endpoint: options.endpoint, configDir: join(runDir, 'docker-config') });
+  const docker = deps.docker ?? new Docker({ endpoint: options.endpoint, configDir: join(runDir, 'docker-config') });
   const resources = new Resources(docker, join(runDir, 'resources.jsonl'), options['run-id'], null, { remainingMs: budget.left, strictCreates: true });
   const record = { schema: 'ic-exercise-prepared/v1', runId: options['run-id'], host: options.host, status: 'failed', failures: [] };
+  let lock = null;
   try {
-    const snapshot = snapshotInputs(options.input);
-    mkdirSync(join(runDir, 'inputs'));
-    writeOnce(join(runDir, 'inputs', 'snapshot.json'), JSON.stringify(snapshot));
-    journal.write('input', {
-      snapshotSha256: sha256File(join(runDir, 'inputs', 'snapshot.json')), requestSha256: snapshot.requestSha256, inventorySha256: snapshot.inventorySha256,
-      files: snapshot.files.map((f) => ({ path: f.path, sha256: f.sha256 })), lockInode: String(lstatSync(join(runDir, 'lock')).ino),
-    });
-    record.request = snapshot.request;
-    record.input = { snapshotSha256: sha256File(join(runDir, 'inputs', 'snapshot.json')), requestSha256: snapshot.requestSha256, inventorySha256: snapshot.inventorySha256 };
-    if (!flockAvailable()) throw new HarnessError('lock_prerequisite_missing');
-    const boundary = await verifyDockerBoundary(docker, env);
-    record.docker = { endpoint: options.endpoint, engineId: boundary.engineId, observed: boundary.observed };
-    if (!boundary.ok) throw new HarnessError('docker_boundary_refused', boundary.failures);
-    resources.engineId = boundary.engineId;
-    const repoRoot = gitOut(['rev-parse', '--show-toplevel'], HARNESS_DIR).trim();
-    const identities = resolveIdentities({ repoRoot, subjectRef: options['candidate-ref'] });
-    if (identities.subjectCommit !== options['candidate-ref']) throw new HarnessError('candidate_ref_not_full_commit');
-    record.candidate = { commit: identities.subjectCommit };
-    record.harness = { commit: identities.harnessCommit, tree: identities.harnessTree };
-    const built = await build(docker, resources, { repoRoot, outDir: runDir, identities, exercise: true });
-    resources.record({ event: 'image_retained', kind: 'image', id: built.runtime.imageId });
-    record.artifact = { file: built.artifact.file, sha256: built.artifact.sha256, report: built.artifact.report, core: built.artifact.core };
-    record.runtime = { imageId: built.runtime.imageId, identity: runtimeIdentity(built.runtime), pluginTarballSha256: built.runtime.pluginTarballSha256, exerciseCore: built.runtime.exerciseCore };
-    const runtimeProblems = [...runtimeFailures(built.runtime), ...exerciseCoreFailures(built.artifact, built.runtime, identities.subjectCommit)];
-    if (built.runtime.pluginTarballSha256 !== built.artifact.sha256) runtimeProblems.push('installed_artifact_mismatch');
-    if (runtimeProblems.length) throw new HarnessError('runtime_checks_failed', runtimeProblems);
-    record.isolation = ISOLATION;
-    record.qualification = await qualify({ runDir, docker, resources, env, host: options.host, imageId: built.runtime.imageId, runId: options['run-id'], engineId: boundary.engineId, endpoint: options.endpoint }, budget);
-    if (record.qualification.failures.length) throw new HarnessError('qualification_failed', record.qualification.failures);
-    record.status = 'prepared';
-  } catch (error) {
-    record.failures.push({ code: error instanceof HarnessError || error instanceof CredentialError ? error.code : 'unexpected_exception', detail: error instanceof HarnessError ? error.detail ?? null : null });
+    try {
+      if (flockAvailable()) {
+        lock = await acquireRunLock(join(runDir, 'lock'), { waitSeconds: LOCK_WAIT_SECONDS });
+        if (lock.busy) throw new HarnessError('lock_acquire_failed');
+      }
+      const snapshot = snapshotInputs(options.input);
+      mkdirSync(join(runDir, 'inputs'));
+      writeOnce(join(runDir, 'inputs', 'snapshot.json'), JSON.stringify(snapshot));
+      journal.write('input', {
+        snapshotSha256: sha256File(join(runDir, 'inputs', 'snapshot.json')), requestSha256: snapshot.requestSha256, inventorySha256: snapshot.inventorySha256,
+        files: snapshot.files.map((f) => ({ path: f.path, sha256: f.sha256 })), lockInode: String(lstatSync(join(runDir, 'lock')).ino),
+      });
+      record.request = snapshot.request;
+      record.input = { snapshotSha256: sha256File(join(runDir, 'inputs', 'snapshot.json')), requestSha256: snapshot.requestSha256, inventorySha256: snapshot.inventorySha256 };
+      if (!lock) throw new HarnessError('lock_prerequisite_missing');
+      const boundary = await verifyDockerBoundary(docker, env);
+      record.docker = { endpoint: options.endpoint, engineId: boundary.engineId, observed: boundary.observed };
+      if (!boundary.ok) throw new HarnessError('docker_boundary_refused', boundary.failures);
+      // Nothing has been created yet. From here every resource lands in the ledger this binding names.
+      bindCleanup(journal, runDir, { runId: options['run-id'], endpoint: options.endpoint, engineId: boundary.engineId });
+      resources.engineId = boundary.engineId;
+      const repoRoot = gitOut(['rev-parse', '--show-toplevel'], HARNESS_DIR).trim();
+      const identities = resolveIdentities({ repoRoot, subjectRef: options['candidate-ref'] });
+      if (identities.subjectCommit !== options['candidate-ref']) throw new HarnessError('candidate_ref_not_full_commit');
+      record.candidate = { commit: identities.subjectCommit };
+      record.harness = { commit: identities.harnessCommit, tree: identities.harnessTree };
+      const built = await build(docker, resources, { repoRoot, outDir: runDir, identities, exercise: true });
+      resources.record({ event: 'image_retained', kind: 'image', id: built.runtime.imageId });
+      record.artifact = { file: built.artifact.file, sha256: built.artifact.sha256, report: built.artifact.report, core: built.artifact.core };
+      record.runtime = { imageId: built.runtime.imageId, identity: runtimeIdentity(built.runtime), pluginTarballSha256: built.runtime.pluginTarballSha256, exerciseCore: built.runtime.exerciseCore };
+      const runtimeProblems = [...runtimeFailures(built.runtime), ...exerciseCoreFailures(built.artifact, built.runtime, identities.subjectCommit)];
+      if (built.runtime.pluginTarballSha256 !== built.artifact.sha256) runtimeProblems.push('installed_artifact_mismatch');
+      if (runtimeProblems.length) throw new HarnessError('runtime_checks_failed', runtimeProblems);
+      record.isolation = ISOLATION;
+      record.qualification = await qualify({ runDir, journal, docker, resources, env, host: options.host, imageId: built.runtime.imageId, runId: options['run-id'], engineId: boundary.engineId, endpoint: options.endpoint }, budget);
+      if (record.qualification.failures.length) throw new HarnessError('qualification_failed', record.qualification.failures);
+      record.status = 'prepared';
+    } catch (error) {
+      record.failures.push({ code: error instanceof HarnessError || error instanceof CredentialError ? error.code : 'unexpected_exception', detail: error instanceof HarnessError ? error.detail ?? null : null });
+    }
+    record.cleanup = await resources.removeAll();
+    record.resources = { ...resources.counts, settled: resources.settled };
+    if (!resources.settled) {
+      record.status = 'failed';
+      record.failures.push({ code: 'cleanup_unsettled' });
+    }
+    const written = journal.write('prepared', record);
+    return {
+      exit: record.status === 'prepared' ? EXIT.ok : EXIT.failed,
+      status: controllerStatus('prepare', { status: record.status, preparedSha256: written.sha256, failures: record.failures.map((f) => f.code), qualification: record.qualification?.summary ?? null, retainedImages: resources.counts.retainedImages }),
+    };
+  } finally {
+    lock?.release();
   }
-  record.cleanup = await resources.removeAll();
-  record.resources = { ...resources.counts, settled: resources.settled };
-  if (!resources.settled) {
-    record.status = 'failed';
-    record.failures.push({ code: 'cleanup_unsettled' });
-  }
-  const written = journal.write('prepared', record);
-  return {
-    exit: record.status === 'prepared' ? EXIT.ok : EXIT.failed,
-    status: controllerStatus('prepare', { status: record.status, preparedSha256: written.sha256, failures: record.failures.map((f) => f.code), qualification: record.qualification?.summary ?? null, retainedImages: resources.counts.retainedImages }),
-  };
 }
 
 /** The catalog reply checked against every explicit choice and needed agent; each problem is a fixed word. */
@@ -1436,15 +1528,130 @@ async function cleanupResources(ctx) {
   return { state, retained: [...present, ...unknown], retainedImages: [ctx.imageId].filter(Boolean) };
 }
 
+/**
+ * Creates the directory, ledger and lock of one qualification run inside a prepared run and records the parent's
+ * ownership of it. The record is written before the qualification run can create any resource, so a later `stop` of
+ * the prepared run always knows which ledgers to settle. It names the ledger and lock by inode, so a replaced file is
+ * never mistaken for the owned one. Returns the qualification run's directory.
+ */
+export function registerSubrun(journal, runDir, name, { runId, engineId }) {
+  if (!QUALIFICATION_SUBRUNS.includes(name)) throw new HarnessError('subrun_unknown');
+  const sub = join(runDir, name);
+  mkdirSync(sub);
+  for (const d of ['docker-config', 'records', 'inputs']) mkdirSync(join(sub, d));
+  writeOnce(join(sub, 'docker-config', 'config.json'), '{}\n');
+  writeOnce(join(sub, 'resources.jsonl'), '');
+  writeOnce(join(sub, 'lock'), '');
+  journal.write(`subrun.${name}`, {
+    schema: 'ic-exercise-subrun/v1', name, runId, engineId, ledgerIno: String(lstatSync(join(sub, 'resources.jsonl')).ino), lockIno: String(lstatSync(join(sub, 'lock')).ino),
+  });
+  return sub;
+}
+
+/**
+ * Settles the resources of one qualification run the prepared run owns, by the ledger identity recorded at
+ * registration. Anything that does not show an owned, settled ledger is unknown, never absent: an unregistered or
+ * missing directory, a registration that does not fit, a replaced, linked or unreadable ledger or lock, a lock another
+ * process holds, or a spent budget. Only the fixed names in QUALIFICATION_SUBRUNS are looked at, and a qualification
+ * run owns nothing of its own, so there is no path to follow and no recursion.
+ */
+async function cleanupSubrun(name, { runDir, journal, owner, docker, budget, lockWaitSeconds }) {
+  const unknown = { state: 'cleanup_unknown', retained: [{ subrun: name, state: 'unknown' }] };
+  const dir = join(runDir, name);
+  try {
+    const record = journal.read(`subrun.${name}`);
+    let exists = true;
+    try { lstatSync(dir); } catch (error) { if (error?.code !== 'ENOENT') return unknown; exists = false; }
+    if (record === null) return exists ? unknown : { state: 'cleanup_confirmed', retained: [] };
+    const r = record.value;
+    const registered = r && typeof r === 'object' && r.schema === 'ic-exercise-subrun/v1' && r.name === name && typeof r.runId === 'string' && r.runId !== ''
+      && r.engineId === owner.engineId && /^\d+$/.test(r.ledgerIno) && /^\d+$/.test(r.lockIno);
+    if (!exists || !registered || !lstatSync(dir).isDirectory()) return unknown;
+    const owned = (file, ino) => { const stat = lstatSync(join(dir, file)); return stat.isFile() && stat.nlink === 1 && String(stat.ino) === ino; };
+    if (!owned('resources.jsonl', r.ledgerIno) || !owned('lock', r.lockIno)) return unknown;
+    const waitSeconds = Math.min(lockWaitSeconds, Math.floor(budget.left() / 1000));
+    if (waitSeconds < 1) return unknown;
+    const lock = await acquireRunLock(join(dir, 'lock'), { waitSeconds });
+    if (lock.busy) return unknown;
+    try {
+      if (lock.ino !== r.lockIno) return unknown;
+      const { resources } = runDocker(dir, owner.endpoint, owner.engineId, r.runId, budget, docker);
+      const cleanup = await cleanupResources({ resources, imageId: null });
+      return { state: cleanup.state, retained: cleanup.retained.map((item) => ({ ...item, subrun: name })) };
+    } finally {
+      lock.release();
+    }
+  } catch {
+    return unknown;
+  }
+}
+
+/**
+ * Who owns what `stop` may remove: the engine, endpoint, run and ledger/lock identities, from prepare's cleanup binding
+ * when it wrote one, which exists as soon as prepare could create a resource even if it never finished. A run with no
+ * binding (a qualification run, or one prepared before bindings) is owned through its prepared record. Neither is
+ * authority to start anything: `start` reads only a prepared record. Malformed, inconsistent or missing ownership is
+ * refused; no engine or resource ID is ever guessed.
+ */
+export function cleanupOwner(journal, prepared) {
+  let binding;
+  try { binding = journal.read(CLEANUP_BINDING)?.value; } catch { throw new HarnessError('cleanup_binding_invalid'); }
+  if (binding === undefined) {
+    if (!prepared?.docker?.engineId) throw new HarnessError('run_not_prepared');
+    return {
+      endpoint: prepared.docker.endpoint, engineId: prepared.docker.engineId, runId: prepared.runId, ledgerIno: null,
+      lockInode: journal.read('input')?.value?.lockInode, qualificationRun: prepared.qualificationRun === true,
+    };
+  }
+  const sound = binding && typeof binding === 'object' && binding.schema === 'ic-exercise-cleanup-binding/v1' && typeof binding.runId === 'string' && binding.runId !== ''
+    && typeof binding.endpoint === 'string' && /^unix:\/\/\/[^\s]+$/.test(binding.endpoint) && typeof binding.engineId === 'string' && binding.engineId !== ''
+    && typeof binding.ledgerIno === 'string' && /^\d+$/.test(binding.ledgerIno) && typeof binding.lockInode === 'string' && /^\d+$/.test(binding.lockInode);
+  if (!sound) throw new HarnessError('cleanup_binding_invalid');
+  if (prepared && (prepared.docker?.engineId !== binding.engineId || prepared.docker?.endpoint !== binding.endpoint || prepared.runId !== binding.runId)) throw new HarnessError('cleanup_binding_mismatch');
+  return { endpoint: binding.endpoint, engineId: binding.engineId, runId: binding.runId, ledgerIno: binding.ledgerIno, lockInode: binding.lockInode, qualificationRun: false };
+}
+
+/** The ledger is the file the binding named, with one name; a replaced, linked or missing ledger is not this run's. */
+function requireBoundLedger(runDir, owner) {
+  if (owner.ledgerIno === null) return;
+  let stat;
+  try { stat = lstatSync(join(runDir, 'resources.jsonl')); } catch { throw new HarnessError('cleanup_ledger_replaced'); }
+  if (!stat.isFile() || stat.nlink !== 1 || String(stat.ino) !== owner.ledgerIno) throw new HarnessError('cleanup_ledger_replaced');
+}
+
+/** The image a build retained, from the ledger, for a run that never wrote a prepared record. */
+function retainedImageOf(runDir) {
+  let image = null;
+  for (const line of readFileSync(join(runDir, 'resources.jsonl'), 'utf8').split('\n').filter(Boolean)) {
+    let entry;
+    try { entry = JSON.parse(line); } catch { return null; }
+    if (entry?.event === 'image_retained' && typeof entry.id === 'string') image = entry.id;
+  }
+  return image;
+}
+
 export async function stopCommand(options, env, deps = {}) {
   const budget = commandBudget(COMMAND_MS.stop, deps);
   const journal = new Journal(join(options.run, 'records'));
   const prepared = journal.read('prepared')?.value;
-  if (!prepared?.docker?.engineId) throw new HarnessError('run_not_prepared');
-  requireRecordedLock(options.run, journal.read('input')?.value, deps.lock);
-  const { docker, resources } = runDocker(options.run, prepared.docker.endpoint, prepared.docker.engineId, prepared.runId, budget, deps.docker);
-  const ctx = { docker, resources, imageId: prepared.runtime?.imageId ?? null };
-  const cleanup = await cleanupResources(ctx);
+  const owner = cleanupOwner(journal, prepared);
+  requireRecordedLock(options.run, { lockInode: owner.lockInode }, deps.lock);
+  requireBoundLedger(options.run, owner);
+  const { docker, resources } = runDocker(options.run, owner.endpoint, owner.engineId, owner.runId, budget, deps.docker);
+  const own = await cleanupResources({ docker, resources, imageId: prepared?.runtime?.imageId ?? retainedImageOf(options.run) });
+  // A qualification run owns no run of its own. The prepared run settles each qualification run it registered, so
+  // cleanup_confirmed means every ledger it owns is settled, not only its own.
+  const subs = [];
+  if (!owner.qualificationRun) {
+    for (const name of QUALIFICATION_SUBRUNS) {
+      subs.push(await cleanupSubrun(name, { runDir: options.run, journal, owner, docker, budget, lockWaitSeconds: deps.subrunLockWaitSeconds ?? SUBRUN_LOCK_WAIT_SECONDS }));
+    }
+  }
+  const parts = [own, ...subs];
+  const cleanup = {
+    state: parts.some((p) => p.state === 'cleanup_present') ? 'cleanup_present' : parts.some((p) => p.state === 'cleanup_unknown') ? 'cleanup_unknown' : 'cleanup_confirmed',
+    retained: parts.flatMap((p) => p.retained), retainedImages: own.retainedImages,
+  };
   const state = runState(journal);
   journal.write(state.next('stop'), { at: new Date().toISOString(), reason: 'requested', ...cleanup });
   return { exit: cleanup.state === 'cleanup_confirmed' ? EXIT.ok : EXIT.failed, status: controllerStatus('stop', { status: cleanup.state, retained: cleanup.retained, retainedImages: cleanup.retainedImages }) };
@@ -1599,12 +1806,9 @@ async function qualifyLifetime(base, budget, c) {
  * writers. Qualification-only driver calls (scripted prompt text, review comment seeding) go through `helper`.
  */
 async function subRun(base, budget, notes, name, runSuffix) {
-  const sub = join(base.runDir, name);
-  mkdirSync(sub);
-  for (const d of ['docker-config', 'records', 'inputs']) mkdirSync(join(sub, d));
-  writeOnce(join(sub, 'docker-config', 'config.json'), '{}\n');
-  writeOnce(join(sub, 'resources.jsonl'), '');
-  writeOnce(join(sub, 'lock'), '');
+  const runId = `${base.runId}-${runSuffix}`;
+  // The prepared run records its ownership of this qualification run before anything in it can create a resource.
+  const sub = registerSubrun(base.journal, base.runDir, name, { runId, engineId: base.engineId });
   const xdg = join(sub, 'synthetic-auth');
   mkdirSync(join(xdg, 'opencode'), { recursive: true, mode: 0o700 });
   const authPath = join(xdg, 'opencode', 'auth.json');
@@ -1618,7 +1822,6 @@ async function subRun(base, budget, notes, name, runSuffix) {
   request.agentModels = { 'scout-researcher': { model: QUALIFICATION_MOCK_MODEL, variant: null } };
   writeOnce(join(sub, 'inputs', 'snapshot.json'), JSON.stringify({ ...snapshot, request, files: [], skills: {} }));
   const journal = new Journal(join(sub, 'records'));
-  const runId = `${base.runId}-${runSuffix}`;
   journal.write('input', { snapshotSha256: sha256File(join(sub, 'inputs', 'snapshot.json')), lockInode: String(lstatSync(join(sub, 'lock')).ino) });
   const prepared = journal.write('prepared', {
     schema: 'ic-exercise-prepared/v1', status: 'prepared', runId, host: base.host, request, docker: { endpoint: base.endpoint, engineId: base.engineId }, runtime: { imageId: base.imageId }, qualificationRun: true,
@@ -1727,7 +1930,9 @@ async function qualifyProtocol(base, budget, notes, c) {
     }
     const question = await until((s) => (s.pending ?? []).some((p) => p.kind === 'question'));
     const asked = question.pending.find((p) => p.kind === 'question');
-    c['protocol.questionPending'] = asked.questions?.[0]?.options?.includes('alpha') === true;
+    // The installed host's own description of the choice reaches the supervisor with its label, in a complete release.
+    const choiceAt = asked.questions?.[0]?.options?.indexOf('alpha') ?? -1;
+    c['protocol.questionPending'] = choiceAt >= 0 && asked.questions[0].optionDescriptions?.[choiceAt] === 'First marker' && asked.complete === true;
     c['protocol.promptRefusedWhileQuestionPending'] = (await turn('prompt', { text: 'not now' })).status.reason === 'not_quiescent';
     c['protocol.questionReplied'] = (await turn('reply', { requestId: asked.id, answers: [['alpha']] })).exit === EXIT.ok;
     for (const decision of ['once', 'reject']) {
