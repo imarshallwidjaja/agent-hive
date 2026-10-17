@@ -17,6 +17,7 @@ PROBLEM  -> CONTEXT  -> EXECUTION -> REPORT
 ├── repositories.json     <- Optional project repository manifest
 ├── sessions.json         <- Global session metadata, session constraints, and selected routes (OpenCode v1)
 ├── runtime/opencode-v2/  <- OpenCode v2 native stores: sessions.json and background-jobs.json
+├── worklogs/sessions/{owner}/ <- Session Worklogs, one file per primary session (sha256 of the session ID)
 ├── features/             <- Feature-scoped work
 │   └── 01_feature-name/
 │       ├── feature.json  <- Feature metadata and state
@@ -25,6 +26,7 @@ PROBLEM  -> CONTEXT  -> EXECUTION -> REPORT
 │       ├── comments/plan.json <- Plan review threads (when present)
 │       ├── comments/overview.json <- Overview review threads (when present)
 │       ├── constraints.json <- Feature standing constraints (when present)
+│       ├── worklog.json  <- Shared feature Worklog (when written)
 │       ├── runtime/opencode-v2/sessions.json <- OpenCode v2 feature-local session projection (when written)
 │       └── tasks/        <- Individual task folders
 │           └── {task}/
@@ -52,13 +54,13 @@ packages/
 
 A project runs under one host at a time. [Switching OpenCode hosts and rollback](OPERATOR-GUIDE.md#switching-opencode-hosts-and-rollback) covers the handover.
 
-- `hive-core` owns feature, plan, task, context, repository-manifest, session, constraint, background-board, and worktree services. `TaskService` parses tasks and persists status and reports; `WorktreeService` and `AdhocWorktreeService` inspect and integrate Git workspaces without assigning workers or updating task state.
+- `hive-core` owns feature, plan, task, context, repository-manifest, session, constraint, background-board, Worklog, and worktree services. `TaskService` parses tasks and persists status and reports; `WorktreeService` and `AdhocWorktreeService` inspect and integrate Git workspaces without assigning workers or updating task state.
 - `opencode-hive` ships one package with two native entries. `src/runtime.ts` registers the v1 `hive_*` tools, builds agent and command configuration, captures route and constraint snapshots for native `task()` calls, and connects background observation. It delegates to three host-neutral modules under `src/runtime/`: `hive-services.ts` binds the domain services and feature, session and constraint routing to one canonical project root; `hive-tools.ts` defines the 32 ordinary operations with their Zod argument schemas and structured results; `role-policy.ts` holds each role's Hive tool grants, delegation allowlists and primary-only operations. The v2 entry under `src/v2/` registers the same operations through one validating registrar that also runs the role and child-session guard, and `src/runtime/host-profile.ts` supplies each host's native call names to prompts and skills. Bundled skills are discovered and materialized from packaged `SKILL.md` files.
 - `vscode-hive` displays feature and task state, plans, comments, and scoped context; its plan comment controller writes review threads while its filesystem watcher triggers UI refresh.
 
 ### Execution ownership
 
-Tool availability plus instructions govern action. Each tool validates its own operation. Task status and reports are the execution record. There is no attempt ledger. Old attempt and lease files are unread.
+Tool availability plus instructions govern action. Each tool validates its own operation. Task status and reports are the execution record. There is no attempt ledger. Old attempt and lease files are unread. The [Worklog](WORKLOG.md) is human-readable progress narrative written by primaries; it is not an execution record and no tool reads task state from it.
 
 Parent applies the repository-backed placement policy. Tracked feature writes use matching task worktrees; non-Git or report-only work follows the direct-work exceptions. Git helpers do not change task status, auto-commit source, or assign workers. A legacy single-root worker returns `sourceCommit`; a composite worker returns the complete `sourceCommits` map keyed by persisted repository ID. The primary passes that topology-aware pin unchanged to merge. A singleton composite also accepts a matching scalar convenience; multiple repositories still require the complete map. The target index and tracked working tree must be clean. Disjoint untracked or ignored destination files may remain when the pinned source contains the pinned target history; rebase also requires a linear replay range. Unsafe topology with local data returns `TARGET_RECONCILIATION_REQUIRED` with `reconcile_target` and requires same-worktree reconciliation with fresh pins. Ignored Hive state, dependencies, and build output count as local data even when Git reports a clean worktree. Incoming path collisions always block. Hive preflight and rechecks protect local data without relying on Git merge flags. Locks are operation-local. Dirty, untracked, ignored, and unmerged data is protected; there is no force or rm fallback. Same-call squash cleanup may use observed identity; later ambiguous branches stay unless discard is explicit. Composite partial outcomes are not rolled back.
 
@@ -264,6 +266,7 @@ Hive uses file-based state with clear ownership boundaries:
 | Project session index (`.hive/sessions.json` on v1, `.hive/runtime/opencode-v2/sessions.json` on v2) | `SessionService` for that host's owner | Runtime route and constraint reads; VS Code constraints inspector (read-only) |
 | `context/index.json` and managed Markdown | `ContextService` via `hive_context_*` | Agent roles according to tool permissions |
 | `repositories.json` | `RepositoryManifestService` | Worktree services (read) |
+| Feature `worklog.json` and `.hive/worklogs/sessions/**` | `WorklogService` record, under the log's lock | All readers through `WorklogService` read and list (read-only) |
 
 ### VS Code watcher
 
@@ -300,7 +303,7 @@ Retry safety depends on each tool's contract, not on a read/write split. Before 
 - Guarded writes reject stale preconditions instead of applying twice: plan patch and approval take `expectedRevision`, context mutations take a revision and content hash, constraint edits and clears take a register revision, and merges take the inspected destination identity and source pin. After a rejection, read current state and decide again; never refresh a precondition just to make a retry pass.
 - Some operations report outcomes that make a repeat recognizable. An unchanged approval retry returns `alreadyApproved: true`, an identical constraint add changes nothing, and a merge with no net tracked changes succeeds with `NO_TRACKED_CHANGES`. [Hive Tools](../packages/opencode-hive/docs/HIVE-TOOLS.md) gives each tool's exact outcomes.
 - `hive_tasks_sync` and `hive_task_create` validate the resulting unfinished-task graph and write nothing when it is invalid. After validation passes, sync is not transactional.
-- `hive_task_update` writes in order to report history, `report.md`, `handoff.md`, and `status.json`. Inspect each location before retrying, and never resubmit a report that already reached history; there is no journal.
+- `hive_task_update` writes in order to report history, `report.md`, `handoff.md`, and `status.json`. Inspect each location before retrying, and never resubmit a report that already reached history; task updates have no write-ahead journal to replay. The Worklog is unrelated: it records human narrative, not task-update writes.
 - Worktree create, merge, and cleanup act on Git and the filesystem. A composite merge can retain earlier repository integrations when a later one fails, and partial outcomes are not rolled back. Inspect per-repository results and the registered worktree before deciding the next action.
 
 ## Manual task model

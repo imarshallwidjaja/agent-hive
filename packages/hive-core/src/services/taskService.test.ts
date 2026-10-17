@@ -88,6 +88,34 @@ describe("TaskService", () => {
     expect(fs.readFileSync(path.join(taskPath("01-missing"), "handoff.md"), "utf8")).toBe("Retained handoff.\n");
   });
 
+  it("reports stored fields that consumers rely on as integrity problems and keeps legacy records readable", () => {
+    const featureName = "status-fields";
+    setupFeature(featureName);
+    const malformed: Record<string, Record<string, unknown>> = {
+      "01-string-deps": { dependsOn: "02-ok" },
+      "02-numeric-dep": { dependsOn: [1] },
+      "03-null-deps": { dependsOn: null },
+      "04-plan-title": { planTitle: 7 },
+      "05-origin": { origin: { nested: true } },
+      "06-blocker-text": { status: "blocked", blocker: "needs input" },
+      "07-blocker-reason": { status: "blocked", blocker: { reason: 5 } },
+    };
+    for (const [folder, fields] of Object.entries(malformed)) setupTask(featureName, folder, fields as Partial<TaskStatus>);
+    const legacy = path.join(TEST_DIR, ".hive", "features", featureName, "tasks", "08-legacy");
+    fs.mkdirSync(legacy, { recursive: true });
+    fs.writeFileSync(path.join(legacy, "status.json"), JSON.stringify({ status: "pending", origin: "plan" }));
+    setupTask(featureName, "09-valid", { status: "blocked", dependsOn: ["08-legacy"], blocker: { reason: "Needs a decision" } });
+
+    const entries = service.listStatusEntries(featureName);
+    for (const entry of entries.slice(0, 7)) {
+      expect(entry).toMatchObject({ status: null, integrity: { reason: "status_unreadable", error: expect.stringContaining("corrupt status file") } });
+      expect(entry).not.toHaveProperty("dependsOn");
+    }
+    expect(entries[7]).toMatchObject({ folder: "08-legacy", status: "pending", dependsOn: [] });
+    expect(entries[8]).toMatchObject({ folder: "09-valid", status: "blocked", dependsOn: ["08-legacy"], blocker: { reason: "Needs a decision" } });
+    expect(() => service.update(featureName, "01-string-deps", { summary: "Must not publish" })).toThrow(/corrupt status file/i);
+  });
+
   it("delegates the subtask lifecycle while preserving both public slug contracts", () => {
     const featureName = "subtask-lifecycle";
     setupFeature(featureName);

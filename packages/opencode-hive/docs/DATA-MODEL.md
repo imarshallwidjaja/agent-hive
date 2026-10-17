@@ -9,6 +9,7 @@
 ├── sessions.json              # Project session index: bindings, routes, session constraints (OpenCode v1 owner)
 ├── background-jobs.json       # Background board (observational bookkeeping, OpenCode v1 owner)
 ├── runtime/opencode-v2/       # OpenCode v2 owner: its own sessions.json and background-jobs.json
+├── worklogs/sessions/{owner}/ # Session Worklogs: {sha256(sessionId)}.json per primary session
 ├── context/                    # Project-wide managed knowledge
 │   ├── index.json              # Schema-v1 operational index
 │   └── {name}.md               # Raw Markdown with discovery frontmatter
@@ -20,6 +21,7 @@
         ├── APPROVED             # Plan approval marker
         ├── comments/plan.json   # Plan review threads
         ├── constraints.json     # Optional feature-scoped operator directives
+        ├── worklog.json         # Optional shared feature Worklog
         ├── sessions.json        # Optional feature-local navigation projection (OpenCode v1 owner)
         ├── runtime/opencode-v2/sessions.json # Optional projection for the OpenCode v2 owner
         ├── context/             # Persistent knowledge files
@@ -59,7 +61,7 @@ Single-repo projects use the git root directly. Multi-repo topology is stored in
 
 ## Execution records
 
-Task status and reports are the execution record. `hive_task_update({ report })` writes `reports/{N}.md`, mirrors it to `report.md`, then publishes `status.json`. The report body is not stored in `status.json`; inspect the three locations if publication fails before retrying. `N` is write order; the Markdown attribution line, not the number, names the author. `report.md` is the latest successful write, not a maintained synthesis. There is no attempt ledger. Old `execution-attempts.json` and lease files are left unread. Useful plans, tasks, context, reports, and workspace files remain readable.
+Task status and reports are the execution record. `hive_task_update({ report })` writes `reports/{N}.md`, mirrors it to `report.md`, then publishes `status.json`. The report body is not stored in `status.json`; inspect the three locations if publication fails before retrying. `N` is write order; the Markdown attribution line, not the number, names the author. `report.md` is the latest successful write, not a maintained synthesis. There is no attempt ledger. Old `execution-attempts.json` and lease files are left unread. The Worklog, described below, is narrative for people and is never read as task state. Useful plans, tasks, context, reports, and workspace files remain readable.
 
 `hive_task_update({ handoff })` replaces `tasks/{task}/handoff.md` with a nonblank successor note of at most 2048 UTF-8 bytes, independent of status or report updates. A later remediation run can replace it; omitted handoff leaves it unchanged. The result includes `handoffPath` when written; a failed handoff publication identifies the `handoff` stage, path, and `handoffWritten` flag.
 
@@ -70,6 +72,12 @@ The board file has `schemaVersion: 1`, `jobs: BackgroundJobRecord[]`, and option
 Reconcile tools return compact acknowledgements, not stored job bodies: successful items include `archived`, `state`, and boolean `requiresHiveStatusRefresh`; failures include `reason`, `error`, and an actionable `hint`. Refresh is true for successfully archived feature/task-scoped jobs. Batch output is `{ success, results, requiresHiveStatusRefresh }`, with refresh true when any successful item requires it, even if another item failed. A non-terminal hint asks for native completion; stale/uncertain hints supply an exact ignore call using the canonical alias. These signals do not establish native termination or merge readiness. See [Background Orchestration](HIVE-TOOLS.md#background-orchestration-4-tools).
 
 Ad-hoc worktrees are temporary workspace metadata only: no run history, evidence ledgers, or reports.
+
+## Worklog
+
+A Worklog is an append-only log of milestone checkpoints with one current briefing, written by primary agents for human readers. Each feature has at most one shared log at `worklog.json` in its resolved directory. Each native-owner primary session has at most one log at `.hive/worklogs/sessions/{owner}/{sha256(sessionId)}.json`, which keeps the raw session ID inside the document. Logs are schema version 1, use one revision that increases with every entry, and are never deleted, compacted, or reset by Hive; a corrupt or newer-schema file fails loudly. A single log is capped at 16 MiB.
+
+Task facts shown beside a Worklog are projected at read time from `status.json` files and are not stored in the log. The full contract, including retries, pagination, limits, and security rules, is in [Arkive Worklog](../../../docs/WORKLOG.md).
 
 ## Prompt Files
 
@@ -263,7 +271,7 @@ Each entry with readable task status includes:
 
 An explicit status leaving blocked clears the blocker. Read `status.json` for other task metadata, and `report.md` and `reports/{N}.md` for report bodies.
 
-Missing or unreadable/corrupt status produces `{ folder, name, status: null, integrity: { reason: 'status_missing' | 'status_unreadable', error? }, specStale, specStaleReason, hasHandoff }`. `error` is present for unreadable/corrupt status. These integrity entries preserve visibility and derive freshness/handoff state when possible; they do not invent origin or dependencies, appear in readiness lists, or satisfy dependencies. Repair the task records before execution. Retained spec/handoff files remain untouched.
+A `status.json` is corrupt when `status` is not a known status, `origin` is present but not `plan` or `manual`, `planTitle` is present but not a string, `dependsOn` is present but not an array of strings, or `blocker` is present but not an object with a string `reason`; absent optional fields stay valid. Missing or unreadable/corrupt status produces `{ folder, name, status: null, integrity: { reason: 'status_missing' | 'status_unreadable', error? }, specStale, specStaleReason, hasHandoff }`. `error` is present for unreadable/corrupt status. These integrity entries preserve visibility and derive freshness/handoff state when possible; they do not invent origin or dependencies, appear in readiness lists, or satisfy dependencies. Repair the task records before execution. Retained spec/handoff files remain untouched.
 
 ### Runnable and Blocked
 

@@ -167,10 +167,72 @@ const TASK_STATUSES: ReadonlySet<string> = new Set([
   'pending', 'in_progress', 'done', 'cancelled', 'blocked', 'failed', 'partial',
 ]);
 
+/** The first stored field that readers consume and that has the wrong shape; absent fields are valid. */
+function storedStatusFieldProblem(status: TaskStatus): string | null {
+  if (status.origin !== undefined && status.origin !== 'plan' && status.origin !== 'manual') {
+    return 'origin must be "plan" or "manual"';
+  }
+  if (status.planTitle !== undefined && typeof status.planTitle !== 'string') return 'planTitle must be a string';
+  if (status.dependsOn !== undefined
+    && (!Array.isArray(status.dependsOn) || status.dependsOn.some((dependency) => typeof dependency !== 'string'))) {
+    return 'dependsOn must be an array of task folder names';
+  }
+  if (status.blocker !== undefined
+    && (typeof status.blocker !== 'object' || status.blocker === null || typeof status.blocker.reason !== 'string')) {
+    return 'blocker must be an object with a string reason';
+  }
+  return null;
+}
+
 export function validateStoredTaskStatus(status: TaskStatus | null, taskFolder: string): void {
   if (!status || typeof status !== 'object' || !TASK_STATUSES.has(status.status)) {
     throw new Error(`Task '${taskFolder}' has a corrupt status file`);
   }
+  const problem = storedStatusFieldProblem(status);
+  if (problem) throw new Error(`Task '${taskFolder}' has a corrupt status file: ${problem}.`);
+}
+
+function listTaskFolders(tasksPath: string): string[] {
+  if (!fileExists(tasksPath)) return [];
+
+  return fs.readdirSync(tasksPath, { withFileTypes: true })
+    .filter(d => d.isDirectory())
+    .map(d => d.name)
+    .sort();
+}
+
+/**
+ * Inspects every retained task folder under `tasksPath` without treating missing or corrupt status as
+ * pending. `guard` runs before the tasks directory and each status file is touched; a throw from it makes
+ * the whole listing fail for the directory and marks the one task unreadable for a status file.
+ */
+export function readTaskStatusEntries(tasksPath: string, guard: (target: string) => void = () => {}): TaskStatusEntry[] {
+  guard(tasksPath);
+  return listTaskFolders(tasksPath).map((folder): TaskStatusEntry => {
+    const identity = { folder, name: folder.replace(/^\d+-/, '') };
+    const statusPath = path.join(tasksPath, folder, 'status.json');
+    try {
+      guard(statusPath);
+      const status = readJson<TaskStatus>(statusPath);
+      if (!status) {
+        if (!fileExists(statusPath)) return { ...identity, status: null, integrity: { reason: 'status_missing' } };
+        throw new Error(`Task '${folder}' has a corrupt status file`);
+      }
+      validateStoredTaskStatus(status, folder);
+      return {
+        ...identity,
+        status: status.status,
+        origin: status.origin,
+        planTitle: status.planTitle,
+        summary: status.summary,
+        repoIds: status.repoIds,
+        dependsOn: status.dependsOn ?? [],
+        ...(status.blocker ? { blocker: status.blocker } : {}),
+      };
+    } catch (error) {
+      return { ...identity, status: null, integrity: { reason: 'status_unreadable', error: error instanceof Error ? error.message : String(error) } };
+    }
+  });
 }
 
 export class TaskService {
@@ -928,40 +990,11 @@ export class TaskService {
 
   /** Inspect every retained folder without treating missing or corrupt status as pending. */
   listStatusEntries(featureName: string): TaskStatusEntry[] {
-    return this.listFolders(featureName).map((folder): TaskStatusEntry => {
-      const identity = { folder, name: folder.replace(/^\d+-/, '') };
-      const statusPath = getTaskStatusPath(this.projectRoot, featureName, folder);
-      try {
-        const status = readJson<TaskStatus>(statusPath);
-        if (!status) {
-          if (!fileExists(statusPath)) return { ...identity, status: null, integrity: { reason: 'status_missing' } };
-          throw new Error(`Task '${folder}' has a corrupt status file`);
-        }
-        validateStoredTaskStatus(status, folder);
-        return {
-          ...identity,
-          status: status.status,
-          origin: status.origin,
-          planTitle: status.planTitle,
-          summary: status.summary,
-          repoIds: status.repoIds,
-          dependsOn: status.dependsOn ?? [],
-          ...(status.blocker ? { blocker: status.blocker } : {}),
-        };
-      } catch (error) {
-        return { ...identity, status: null, integrity: { reason: 'status_unreadable', error: error instanceof Error ? error.message : String(error) } };
-      }
-    });
+    return readTaskStatusEntries(getTasksPath(this.projectRoot, featureName));
   }
 
   private listFolders(featureName: string): string[] {
-    const tasksPath = getTasksPath(this.projectRoot, featureName);
-    if (!fileExists(tasksPath)) return [];
-
-    return fs.readdirSync(tasksPath, { withFileTypes: true })
-      .filter(d => d.isDirectory())
-      .map(d => d.name)
-      .sort();
+    return listTaskFolders(getTasksPath(this.projectRoot, featureName));
   }
 
   private deleteTask(featureName: string, taskFolder: string): void {

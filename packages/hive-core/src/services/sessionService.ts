@@ -314,6 +314,26 @@ export class SessionService {
     return data.sessions.find(s => s.sessionId === sessionId);
   }
 
+  /**
+   * Strictly read-only lookup. Unlike `getGlobal`, an unparseable or malformed index throws and stays
+   * untouched: no backup, reset, lock, or directory creation.
+   */
+  peekGlobal(sessionId: string): SessionInfo | undefined {
+    const globalPath = this.getGlobalSessionsPath();
+    if (!fileExists(globalPath)) return undefined;
+    let data: SessionsJson | null;
+    try {
+      data = readJson<SessionsJson>(globalPath);
+    } catch (error) {
+      throw new Error(`Session index ${globalPath} is unreadable; it was left unchanged for explicit recovery.`, { cause: error });
+    }
+    // `readJson` also returns null for a file holding the literal `null`, which is a malformed index.
+    if (typeof data !== 'object' || data === null || !Array.isArray(data.sessions)) {
+      throw new Error(`Session index ${globalPath} has no sessions array; it was left unchanged for explicit recovery.`);
+    }
+    return data.sessions.find((session) => session?.sessionId === sessionId);
+  }
+
   private standingConstraintRegister(session?: SessionInfo): ConstraintRegister {
     const entries = session?.standingConstraintEntries !== undefined
       ? session.standingConstraintEntries

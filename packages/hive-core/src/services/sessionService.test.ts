@@ -718,6 +718,26 @@ describe('SessionService', () => {
       expect(backups()).toEqual([]);
       expect(warn).not.toHaveBeenCalled();
     });
+
+    it('peekGlobal reads without writing and leaves a corrupt or malformed index untouched', () => {
+      expect(service.peekGlobal('absent')).toBeUndefined();
+      expect(fs.existsSync(path.join(PROJECT_ROOT, '.hive'))).toBe(false);
+
+      service.trackGlobal('known', { agent: 'hive-master' });
+      expect(service.peekGlobal('known')).toMatchObject({ sessionId: 'known', agent: 'hive-master' });
+
+      // A literal JSON null is a malformed index, not an absent one.
+      for (const bytes of [Buffer.from('{"sessions": [{"sessionId": "cut'), Buffer.from('{"sessions": {}}'), Buffer.from('null')]) {
+        writeIndex(bytes);
+        const before = fs.statSync(globalPath()).mtimeMs;
+        expect(() => service.peekGlobal('known')).toThrow('left unchanged for explicit recovery');
+        expect(fs.readFileSync(globalPath())).toEqual(bytes);
+        expect(fs.statSync(globalPath()).mtimeMs).toBe(before);
+      }
+      expect(backups()).toEqual([]);
+      expect(fs.existsSync(`${globalPath()}.lock`)).toBe(false);
+      expect(warn).not.toHaveBeenCalled();
+    });
   });
 
   describe('native observation owners', () => {
