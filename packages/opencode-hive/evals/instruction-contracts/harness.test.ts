@@ -16,12 +16,15 @@ import {
 } from './hosts.mjs';
 import { payloadFacts, pickSettings } from './observer/index.js';
 import {
-  HarnessError, Journal, Resources, STATUS_EXIT, artifactFailures, assessContainerIsolation, assessDockerBoundary, candidateBindingMismatches, caseSummary,
-  checkCriterion, classifyCase, classifyCorePattern, containerCreateArgs, createRunDir, effectiveSettings, failedChecks, finalExit, loadRunRecords,
-  hostPreflight, modelEvidenceFailures, outstandingFromLedger, paidCase, parseCli, prepareResume, recordReadFailures, rehearsalPathFailures, rehearseInjection,
-  modelSelectionFailures, rehearseLifetime, rehearsePaidPath, rehearseSelection, resumePlan, runEndFailure, runtimeFailures, selectScenarios, selectSharedModel, verifyArtifact,
+  STATUS_EXIT, candidateBindingMismatches, caseSummary, checkCriterion, classifyCase, effectiveSettings, failedChecks, finalExit, loadRunRecords,
+  hostPreflight, modelEvidenceFailures, paidCase, parseCli, prepareResume, recordReadFailures, rehearsalPathFailures, rehearseInjection,
+  modelSelectionFailures, rehearseLifetime, rehearsePaidPath, rehearseSelection, resumePlan, runEndFailure, selectScenarios, selectSharedModel,
   verifyResumeOrigins, wiringFailures,
 } from './run.mjs';
+import {
+  HARNESS_REL, HarnessError, Journal, Resources, artifactFailures, assessContainerIsolation, assessDockerBoundary, build, classifyCorePattern, containerCreateArgs,
+  createRunDir, outstandingFromLedger, resolveIdentities, runtimeFailures, verifyArtifact,
+} from './runtime.mjs';
 import {
   ARTIFACT_CAP, ATTEMPT_LOG_HEADER, FINAL_TEXT_CAP, STOP_INSTRUCTION_CAP, allowlistArgs, attemptCount, clipText, clipToolArgs, codeModeBlocks, codeModeFieldDocs, commandDelivery,
   classifyEditAttempt, containerSecrets, deliveredBodySentence, evidenceLimits, exportDecision, hiveResultFailed, interruptSession, messagePages, mockDecision, preflightReply, readHistories, render, runPrompt, safeName, refusalKind, scenarioOverrides,
@@ -1034,6 +1037,101 @@ describe('artifacts, runtime identity and model selection', () => {
     writeFileSync(file, 'tarball-bytes');
     expect(() => verifyArtifact({ file, sha256: '0'.repeat(64) })).toThrow(HarnessError);
     expect(() => verifyArtifact({ file: join(scratch(), 'missing.tgz'), sha256: 'x' })).toThrow(HarnessError);
+  });
+
+  // The committed harness directory is the single archive and build root: identities refuse uncommitted harness changes,
+  // and the build context holds exactly the committed harness, the subject archive and the packed candidate.
+  describe('the committed harness is the one archive and build root', () => {
+    const RUNTIME_REPORT = { hosts: { v1: { version: '1.18.30' }, v2: { version: '2.0.26' } }, pluginTarballSha256: 'installed' };
+    const BUILD_REPORT = { hiveCoreResolvedInArchive: true, coreBuiltFirst: true, packEntries: ['dist/index.js'] };
+
+    function harnessRepo() {
+      const repo = scratch();
+      const git = (...args: string[]) => {
+        const result = spawnSync('git', ['-c', 'user.name=ic-test', '-c', 'user.email=ic-test@example.invalid', '-c', 'commit.gpgsign=false', ...args], { cwd: repo, encoding: 'utf8' });
+        if (result.status !== 0) throw new Error(`git ${args[0]} failed`);
+        return result.stdout.trim();
+      };
+      git('init', '-q');
+      for (const name of ['Dockerfile', '.dockerignore', 'scenarios.json', 'runtime/v1/package.json', 'runtime/v1/package-lock.json', 'runtime/v2/package.json', 'runtime/v2/package-lock.json']) {
+        const target = join(repo, HARNESS_REL, name);
+        mkdirSync(join(target, '..'), { recursive: true });
+        writeFileSync(target, readFileSync(join(import.meta.dir, name)));
+      }
+      writeFileSync(join(repo, 'subject.txt'), 'candidate source\n');
+      git('add', '-A');
+      git('commit', '-q', '-m', 'harness and subject');
+      return { repo, git, root: join(repo, HARNESS_REL) };
+    }
+
+    class BuildDocker extends FakeDocker {
+      async run(args: string[], options: { input?: string; timeoutMs?: number } = {}) {
+        if (args[0] === 'build') {
+          this.calls.push({ args });
+          const target = args[args.indexOf('--target') + 1];
+          if (target === 'artifact') {
+            const dest = args[args.indexOf('--output') + 1].replace('type=local,dest=', '');
+            mkdirSync(dest, { recursive: true });
+            writeFileSync(join(dest, 'oc-arkive.tgz'), 'packed candidate');
+            writeFileSync(join(dest, 'build-report.json'), JSON.stringify(BUILD_REPORT));
+          } else if (target === 'runtime') {
+            writeFileSync(args[args.indexOf('--iidfile') + 1], 'sha256:runtime-image\n');
+          } else {
+            return { code: 1, stdout: '', stderr: 'unknown target', timedOut: false };
+          }
+          return this.ok();
+        }
+        if (args[0] === 'start' && args[1] === '-a') return this.ok(JSON.stringify(RUNTIME_REPORT));
+        return super.run(args, options);
+      }
+    }
+
+    test('identities pin the committed harness commit and tree and refuse uncommitted harness changes', () => {
+      const { repo, git, root } = harnessRepo();
+      const commit = git('rev-parse', 'HEAD');
+      expect(resolveIdentities({ repoRoot: repo, subjectRef: 'HEAD' })).toEqual({ subjectCommit: commit, harnessCommit: commit, harnessTree: git('rev-parse', `HEAD:${HARNESS_REL}`) });
+      writeFileSync(join(repo, 'outside-harness.txt'), 'x');
+      expect(resolveIdentities({ repoRoot: repo, subjectRef: 'HEAD' }).harnessCommit).toBe(commit);
+      writeFileSync(join(root, 'untracked.mjs'), 'x');
+      expect(() => resolveIdentities({ repoRoot: repo, subjectRef: 'HEAD' })).toThrow('harness_uncommitted');
+    });
+
+    test('a fresh build archives the harness and subject, then builds the artifact target and the runtime target on the packed hash', async () => {
+      const { repo } = harnessRepo();
+      const identities = resolveIdentities({ repoRoot: repo, subjectRef: 'HEAD' });
+      const docker = new BuildDocker();
+      const outDir = scratch();
+      const built = await build(docker as any, new Resources(docker as any, join(scratch(), 'r.jsonl'), 'run', ENGINE), { repoRoot: repo, outDir, identities, artifactFrom: undefined });
+      const packedSha = createHash('sha256').update('packed candidate').digest('hex');
+      const context = join(outDir, 'build-context');
+      const files = (tar: string) => spawnSync('tar', ['-tf', join(context, tar)], { encoding: 'utf8' }).stdout.split('\n');
+      expect(files('harness.tar')).toEqual(expect.arrayContaining(['Dockerfile', 'scenarios.json', 'runtime/v1/package.json']));
+      expect(files('subject.tar')).toContain('subject.txt');
+      expect(readFileSync(join(context, 'plugin.tgz'), 'utf8')).toBe('packed candidate');
+      const builds = docker.calls.filter((c) => c.args[0] === 'build').map((c) => c.args);
+      expect(builds).toEqual([
+        ['build', '--target', 'artifact', '--output', `type=local,dest=${join(outDir, 'artifact')}`, context],
+        ['build', '--target', 'runtime', '--build-arg', `PLUGIN_SHA256=${packedSha}`, '--iidfile', join(outDir, 'runtime.iid'), context],
+      ]);
+      expect(built.artifact).toEqual({ file: join(outDir, 'artifact', 'oc-arkive.tgz'), sha256: packedSha, report: BUILD_REPORT, reused: false });
+      expect(built.runtime).toEqual({ imageId: 'sha256:runtime-image', ...RUNTIME_REPORT });
+    });
+
+    test('a reused candidate artifact skips the artifact target and must still match its recorded hash', async () => {
+      const { repo } = harnessRepo();
+      const identities = resolveIdentities({ repoRoot: repo, subjectRef: 'HEAD' });
+      const file = join(scratch(), 'plugin.tgz');
+      writeFileSync(file, 'earlier candidate');
+      const sha256 = createHash('sha256').update('earlier candidate').digest('hex');
+      const docker = new BuildDocker();
+      const outDir = scratch();
+      const built = await build(docker as any, new Resources(docker as any, join(scratch(), 'r.jsonl'), 'run', ENGINE), { repoRoot: repo, outDir, identities, artifactFrom: { file, sha256 } });
+      expect(built.artifact).toEqual({ file, sha256, reused: true });
+      expect(docker.calls.filter((c) => c.args[0] === 'build').map((c) => c.args[2])).toEqual(['runtime']);
+      expect(existsSync(join(outDir, 'build-context', 'subject.tar'))).toBe(false);
+      await expect(build(docker as any, new Resources(docker as any, join(scratch(), 'r2.jsonl'), 'run', ENGINE), { repoRoot: repo, outDir: scratch(), identities, artifactFrom: { file, sha256: '0'.repeat(64) } }))
+        .rejects.toMatchObject({ code: 'artifact_hash_mismatch' });
+    });
   });
 
   test('collection has no baseline: observed settings are recorded per agent and never compared across runs or hosts', () => {
