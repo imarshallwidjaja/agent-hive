@@ -2,7 +2,7 @@ import { Effect } from 'effect';
 import type { Scope } from 'effect';
 import { Tool } from '@opencode/schema/tool';
 import type { Plugin } from '@opencode/plugin/effect';
-import { json, type HiveOperation } from '../runtime/hive-tools.js';
+import { serializeHiveJson, type HiveOperation } from '../runtime/hive-tools.js';
 import { CODEMODE_READ_TOOLS, type ReadTransport } from '../runtime/host-profile.js';
 import { z } from '../runtime/schema.js';
 
@@ -77,13 +77,13 @@ export function toToolInfo(name: string, operation: HiveOperation, readTransport
   const execute = (args: unknown, context: Tool.Context) => guard(name, { sessionID: context.sessionID, agent: context.agent }).pipe(
     Effect.andThen(Effect.tryPromise({
       // The signal aborts when the host interrupts the call, so operations with long stages can stop with it.
-      try: async (signal) => operation.execute(args, { sessionID: context.sessionID, signal }),
+      try: async (signal) => operation.execute(args, { sessionID: context.sessionID, agent: context.agent, signal }),
       catch: (error) => new Tool.Error({ message: error instanceof Error ? error.message : String(error) }),
     })),
     Effect.map((result) => {
       if (operation.output === 'text') return { content: String(result) };
       // The v1 presentation is the JSON text; the structured output is that same JSON, so both hosts agree.
-      const text = json(result) ?? 'null';
+      const text = serializeHiveJson(operation, result) ?? 'null';
       return { output: JSON.parse(text) as z.core.util.JSONType, content: text };
     }),
   );

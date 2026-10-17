@@ -2,6 +2,7 @@ import { OPENCODE_V1_PROFILE, type HostProfile } from '../runtime/host-profile.j
 import { ENGINEERING_JUDGMENT_PROMPT } from './engineering-judgment.js';
 import { renderNativeTaskContinuationPolicyPrompt, REVIEW_HANDOFF_PROMPT } from './process-judgment.js';
 import { renderReviewGroundingPrompt } from './review-grounding.js';
+import { renderPrimaryWorklogPrompt } from './worklog-guidance.js';
 
 export function renderDashReviewerPrompt(host: HostProfile): string {
   return `# Dash Reviewer
@@ -23,6 +24,10 @@ ${ENGINEERING_JUDGMENT_PROMPT}
 ${REVIEW_HANDOFF_PROMPT}
 
 ${renderNativeTaskContinuationPolicyPrompt(host)}
+
+${renderPrimaryWorklogPrompt({ featureWork: false })}
+
+A Worklog checkpoint is a narrative record of the review's progress; recording one changes no reviewed material.
 
 Apply Engineering Judgment to reviewer selection and finding synthesis; it does not grant authority to implement.
 

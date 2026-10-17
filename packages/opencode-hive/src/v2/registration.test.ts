@@ -214,8 +214,8 @@ function denied(exit: Exit.Exit<unknown, unknown>): string | undefined {
 }
 
 describe('v2 tool registration', () => {
-  it('registers all 38 Hive tools once, with an explicit Code Mode flag from the selected transport', async () => {
-    expect(HIVE_TOOL_NAMES).toHaveLength(38);
+  it('registers all 41 Hive tools once, with an explicit Code Mode flag from the selected transport', async () => {
+    expect(HIVE_TOOL_NAMES).toHaveLength(41);
     for (const transport of ['codemode', 'direct'] as const) {
       const host = await activate({ readTransport: transport });
       const tools = host.tools();
@@ -399,6 +399,22 @@ describe('v2 execution guards', () => {
     ['hive-helper', 'child', 'hive_context_edit', {}, false],
     ['general', 'child', 'hive_context_edit', {}, false],
     ['security-scout', 'child', 'hive_context_edit', {}, false],
+    // Worklog: every Hive role reads; only primary sessions of recording roles write.
+    ['forager-worker', 'child', 'hive_worklog_read', {}, true],
+    ['scout-researcher', 'child', 'hive_worklog_list', {}, true],
+    ['hive-helper', 'child', 'hive_worklog_read', {}, true],
+    ['code-reviewer', 'child', 'hive_worklog_read', {}, true],
+    ['general', 'child', 'hive_worklog_read', {}, false],
+    ['explore', 'child', 'hive_worklog_list', {}, false],
+    ['hive-builder', 'primary', 'hive_worklog_record', {}, true],
+    ['architect-planner', 'primary', 'hive_worklog_record', {}, true],
+    ['dash-reviewer', 'primary', 'hive_worklog_record', {}, true],
+    ['architect-planner', 'child', 'hive_worklog_record', {}, false],
+    ['forager-worker', 'child', 'hive_worklog_record', {}, false],
+    ['code-reviewer', 'child', 'hive_worklog_record', {}, false],
+    ['hive-helper', 'child', 'hive_worklog_record', {}, false],
+    ['general', 'child', 'hive_worklog_record', {}, false],
+    ['build', 'child', 'hive_worklog_record', {}, false],
   ];
 
   it.each(cases)('%s in a %s session calling %s', async (agent, sessionID, tool, input, allowed) => {
@@ -438,6 +454,55 @@ describe('v2 execution guards', () => {
         expect(denied(await host.before({ tool: 'subagent', sessionID: 'primary', agent: caller, input: { agent: target } }))).toContain('primary-only orchestrator');
       }
     }
+  });
+
+  it('stamps the v2 owner and calling agent on Worklog records and writes nothing for a child or unreadable session', async () => {
+    const host = await activate();
+    const output = (exit: Exit.Exit<any, unknown>) => (exit as Exit.Success<any>).value.output;
+    const primary = { sessionID: 'primary', agent: 'hive-builder' };
+    const read = output(await host.execute('hive_worklog_read', {}, primary));
+    expect(read).toMatchObject({ view: 'brief', exists: false, revision: 0, ref: { kind: 'session', owner: 'opencode-v2', sessionId: 'primary' }, key: 'session:opencode-v2:primary' });
+    const args = { ref: read.ref, operationId: 'start', checkpoint: { summary: 'Started' }, author: { owner: 'opencode-v1', sessionId: 'x', agent: 'forged' } };
+    const recorded = output(await host.execute('hive_worklog_record', args, primary));
+    expect(recorded.entry.author).toEqual({ owner: 'opencode-v2', sessionId: 'primary', agent: 'hive-builder' });
+    const logPath = path.join(host.root, '.hive', 'worklogs', 'sessions', 'opencode-v2');
+    const files = () => fs.readdirSync(logPath).map((name) => fs.readFileSync(path.join(logPath, name), 'utf8'));
+    const before = files();
+    const childRef = { kind: 'session', owner: 'opencode-v2', sessionId: 'child' };
+    expect(denied(await host.execute('hive_worklog_record', { ...args, ref: childRef }, { sessionID: 'child', agent: 'hive-builder' }))).toContain('primary-only');
+    expect(denied(await host.execute('hive_worklog_record', { ...args, ref: { ...childRef, sessionId: 'gone' } }, { sessionID: 'gone', agent: 'hive-builder' }))).toContain('could not read session gone');
+    expect(files()).toEqual(before);
+    expect(fs.readdirSync(logPath)).toHaveLength(1);
+  });
+
+  it('presents Worklog results as compact JSON, with the same structured output, so maxBytes bounds the content text', async () => {
+    const host = await activate();
+    const primary = { sessionID: 'primary', agent: 'hive-builder' };
+    const run = async (name: string, args: Record<string, unknown>) => (await host.execute(name, args, primary) as Exit.Success<{ output: any; content: string }>).value;
+    const bytes = (text: string) => Buffer.byteLength(text, 'utf8');
+
+    const empty = await run('hive_worklog_list', {});
+    const exact = bytes(JSON.stringify(empty.output));
+    expect(empty.content).toBe(JSON.stringify(empty.output));
+    const fitted = await run('hive_worklog_list', { maxBytes: exact });
+    expect(bytes(fitted.content)).toBe(exact);
+    expect(fitted.output).toEqual(empty.output);
+    expect((await run('hive_worklog_list', { maxBytes: exact - 1 })).output).toMatchObject({ success: false, reason: 'response_too_large', details: { requiredBytes: exact } });
+
+    const { ref } = await run('hive_worklog_read', {}).then((result) => result.output);
+    for (let index = 1; index <= 6; index++) {
+      const recorded = await run('hive_worklog_record', { ref, operationId: `op-${index}`, checkpoint: { summary: `Checkpoint ${index}`, detail: `${index}`.repeat(300) } });
+      expect(recorded.content).toBe(JSON.stringify(recorded.output));
+    }
+    const whole = bytes((await run('hive_worklog_read', { ref, view: 'history', limit: 50, maxBytes: 64 * 1024 })).content);
+    for (const budget of [whole, whole - 1, Math.floor(whole / 2)]) {
+      const page = await run('hive_worklog_read', { ref, view: 'history', limit: 50, maxBytes: budget });
+      expect(bytes(page.content), String(budget)).toBeLessThanOrEqual(budget);
+      expect(page.content).toBe(JSON.stringify(page.output));
+    }
+    // Other tools keep the indented presentation.
+    const status = await run('hive_repositories_status', {});
+    expect(status.content).toBe(JSON.stringify(status.output, null, 2));
   });
 
   it('denies a primary-only call when the session cannot be read, rather than guessing it is a primary', async () => {

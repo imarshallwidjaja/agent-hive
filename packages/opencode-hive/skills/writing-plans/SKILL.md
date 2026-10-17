@@ -110,7 +110,7 @@ The orchestrator reconciles every task-named deferral with this section before c
 ## Review Surfaces
 
 - `plan.md` remains execution truth and contains Discovery, Non-Goals, Design Summary, Tasks, and Final Verification.
-- `context/overview.md` is the primary human-facing review surface and history.
+- `context/overview.md` is the primary human-facing review surface for the feature's purpose and design; progress and revision history belong in the feature Worklog.
 - The Design Summary remains readable before `## Tasks`.
 - Mermaid is optional and limited to useful dependency or sequence overviews.
 - Context files hold durable notes that help later workers, not duplicated plan text. Select them from the catalog; the first match is not proof of sufficient evidence.

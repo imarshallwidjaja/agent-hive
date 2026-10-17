@@ -11,18 +11,21 @@ import {
   RepositoryManifestService,
   SessionService,
   TaskService,
+  WorklogService,
   WorktreeService,
   assertValidFeatureName,
   type ContextScope,
   type NativeObservationOwner,
   type StandingConstraintEntry,
+  type WorklogRef,
 } from 'hive-core';
 
 /**
- * What a host supplies with each operation: the calling session, which resolves routes and constraints, and, when the
+ * What a host supplies with each operation: the calling session, which resolves routes and constraints; the calling
+ * agent as the host runtime reports it, never as a tool argument, for operations that stamp authorship; and, when the
  * host can cancel the call, a signal that aborts when it does. Operations that run long stages observe it.
  */
-export type HiveInvocation = { sessionID?: string; signal?: AbortSignal };
+export type HiveInvocation = { sessionID?: string; agent?: string; signal?: AbortSignal };
 
 export type ConstraintRegister = { entries: StandingConstraintEntry[]; revision: number; constraints: string };
 
@@ -59,6 +62,7 @@ export function createHiveServices(options: { projectRoot: string; detectedFeatu
   const configService = new ConfigService(projectRoot);
   const repositoryManifestService = new RepositoryManifestService(projectRoot);
   const backgroundJobService = new BackgroundJobService(projectRoot, nativeObservationOwner);
+  const worklogService = new WorklogService(projectRoot);
   // Loading the config is what records a fallback warning, so read it once here for status and startup reporting.
   configService.get();
   const configFallbackWarning = configService.getLastFallbackWarning()?.message;
@@ -135,6 +139,23 @@ export function createHiveServices(options: { projectRoot: string; detectedFeatu
     }
     return { scope: 'feature', feature: requireFeature(input.feature, invocation) };
   };
+  /**
+   * The Worklog a call targets: an explicit ref (validated by core), else the feature selected for the calling
+   * session, else that session's own log under this host's owner. Unlike `resolveFeature`, it never falls back to a
+   * detected or sole live feature, because a narrative written into the wrong shared log cannot be deleted. The
+   * session index is read without the reset-on-corruption path, and a selected feature that does not resolve fails
+   * in core rather than falling back to the session log.
+   */
+  const resolveWorklogRef = (explicit: WorklogRef | undefined, invocation: HiveInvocation): WorklogRef => {
+    if (explicit !== undefined) return explicit;
+    const sessionID = invocation.sessionID;
+    if (!sessionID) throw new Error('Session identity is required to resolve the default Worklog; pass ref explicitly.');
+    const stored = sessionService.peekGlobal(sessionID);
+    const selected = stored?.featureName;
+    if (typeof selected === 'string') return { kind: 'feature', featureName: selected };
+    if (selected !== undefined && selected !== null) throw new Error(`Session ${sessionID} has an invalid selected feature route; select a feature or null with hive_feature_select, or pass ref explicitly.`);
+    return { kind: 'session', owner: nativeObservationOwner, sessionId: sessionID };
+  };
   const readConstraints = (target: ConstraintTarget): ConstraintRegister => target.scope === 'session'
     ? sessionService.readStandingConstraints(target.sessionID)
     : featureConstraintService.read(target.feature);
@@ -158,6 +179,7 @@ export function createHiveServices(options: { projectRoot: string; detectedFeatu
     configService,
     repositoryManifestService,
     backgroundJobService,
+    worklogService,
     worktreeService,
     configFallbackWarning,
     hasManifest,
@@ -168,6 +190,7 @@ export function createHiveServices(options: { projectRoot: string; detectedFeatu
     contextScope,
     captureRoute,
     constraintTarget,
+    resolveWorklogRef,
     readConstraints,
     assertTaskRepoIds,
   };

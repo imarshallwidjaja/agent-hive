@@ -11,6 +11,7 @@ Everything below is relative to the project root, the directory that holds `.hiv
 ├── sessions.json              session bindings, selected feature route, session constraints (OpenCode v1)
 ├── background-jobs.json       background board: observational bookkeeping only (OpenCode v1)
 ├── runtime/opencode-v2/       OpenCode v2 owner: sessions.json, background-jobs.json
+├── worklogs/sessions/<owner>/<sha256(sessionId)>.json  per-session Worklog for ad-hoc work
 ├── context/                   project-scope managed context
 │   ├── index.json             revisioned control index
 │   └── <name>.md
@@ -22,6 +23,7 @@ Everything below is relative to the project root, the directory that holds `.hiv
 │       ├── APPROVED           approval marker file
 │       ├── comments/plan.json plan review threads (`comments.json` is a legacy fallback)
 │       ├── constraints.json   feature-scoped operator constraints
+│       ├── worklog.json       shared feature Worklog: append-only checkpoints and current briefing
 │       ├── sessions.json      feature-local navigation projection, not canonical
 │       ├── runtime/opencode-v2/sessions.json  the same projection for the OpenCode v2 owner
 │       ├── context/           feature-scope managed context (index.json + <name>.md)
@@ -59,7 +61,7 @@ Lock files sit beside the file they guard as `<file>.lock` and hold the holder's
 
 - Feature context: the feature directory's `context/`. Project context: `.hive/context/`.
 - `index.json` carries `schemaVersion: 1`, a monotonic `revision`, and per-name `kind` (`durable` or `evidence`).
-- `overview`, `draft`, and `execution-decisions` are reserved names, outside the durable catalog.
+- `overview`, `draft`, and `execution-decisions` are reserved names, outside the durable catalog. Progress and revision history live in the Worklog, not `overview`.
 - `.managed-mutation-pending.json` in a context directory means an interrupted publication. Context tools then return `context_reconciliation_required`; recovery is a separately authorized operator procedure (`context-engineering` holds it), and an agent that meets the error stops and reports it.
 - Read and mutate through `hive_context_*`; the `context-engineering` skill owns how.
 

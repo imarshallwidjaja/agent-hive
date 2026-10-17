@@ -69,6 +69,7 @@ The [Operator Guide](docs/OPERATOR-GUIDE.md) covers each step in depth: source c
 | Ad-hoc (`hive-builder`) | Bounded non-feature work that should not create feature or task records | Talk to `hive-builder` (dedicated mode) or `hive-master` (unified) |
 | `/dash-review` | Read-only review of a folder, inline text, or the current checkout | `/dash-review [intent]` |
 | `/vuln-review` | Authorized read-only security review of a requested source | `/vuln-review [intent]` |
+| `/worklog` | Catch up on where a feature or session stands from its shared Worklog, read-only | `/worklog [request]` |
 | `complexity-review` skill | Explicit one-shot complexity review of a diff or bounded named scope; without one, the current staged, unstaged, and relevant nonignored untracked changes | Ask for `complexity-review` by name with the scope in ordinary prose; on the v2 TUI, `@complexity-review <scope>` |
 | `complexity-audit` skill | Explicit one-shot complexity audit of named roots or codebases | Ask for `complexity-audit` by name with the roots; on the v2 TUI, `@complexity-audit <scope>` |
 

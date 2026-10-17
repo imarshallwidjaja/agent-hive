@@ -5,6 +5,8 @@ import * as path from 'node:path';
 import plugin from '../index.js';
 import { HIVE_TOOL_NAMES } from '../utils/plugin-manifest.js';
 import { createPluginWithHome } from '../e2e/plugin-test-home.js';
+import { WorklogError } from 'hive-core';
+import { createHiveServices } from './hive-services.js';
 import { createHiveOperations } from './hive-tools.js';
 import { z } from './schema.js';
 
@@ -25,25 +27,30 @@ async function createRuntime() {
   fs.writeFileSync(path.join(root, '.gitignore'), '.hive/\n');
   git('add', '.');
   git('commit', '-m', 'base');
+  // A session missing here is a root session; an Error entry stands for a session lookup that returns an error.
+  const sessions = new Map<string, { id: string; parentID?: string } | Error>();
   const client = {
     session: {
-      get: async ({ path: input }: { path: { id: string } }) => ({ data: { id: input.id } }),
+      get: async ({ path: input }: { path: { id: string } }) => {
+        const known = sessions.get(input.id);
+        return known instanceof Error ? { error: { name: known.message } } : { data: known ?? { id: input.id } };
+      },
       messages: async () => ({ data: [] }),
       status: async () => ({ data: {} }),
       abort: async () => ({ data: true }),
     },
   };
   const hooks = await createPluginWithHome(home, () => plugin.server({ directory: root, worktree: root, project: { id: 'test', worktree: root }, client } as any));
-  const call = async (name: string, args: Record<string, unknown>, sessionID?: string): Promise<any> => {
-    const context = { sessionID: sessionID ?? 'session', messageID: 'message', agent: 'hive-master', abort: new AbortController().signal };
+  const call = async (name: string, args: Record<string, unknown>, sessionID?: string, agent = 'hive-master'): Promise<any> => {
+    const context = { sessionID: sessionID ?? 'session', messageID: 'message', agent, abort: new AbortController().signal };
     return (hooks.tool as any)[name].execute(args, context);
   };
-  const callJson = async (name: string, args: Record<string, unknown>, sessionID?: string) => JSON.parse(await call(name, args, sessionID));
-  const failure = async (name: string, args: Record<string, unknown>, sessionID?: string): Promise<string> => {
-    try { await call(name, args, sessionID); } catch (error) { return (error as Error).message; }
+  const callJson = async (name: string, args: Record<string, unknown>, sessionID?: string, agent?: string) => JSON.parse(await call(name, args, sessionID, agent));
+  const failure = async (name: string, args: Record<string, unknown>, sessionID?: string, agent?: string): Promise<string> => {
+    try { await call(name, args, sessionID, agent); } catch (error) { return (error as Error).message; }
     throw new Error(`${name} did not fail`);
   };
-  return { root, hooks, call, callJson, failure };
+  return { root, hooks, sessions, call, callJson, failure };
 }
 
 afterEach(() => {
@@ -51,6 +58,7 @@ afterEach(() => {
 });
 
 function typeOf(schema: any): string {
+  if (schema.const !== undefined) return JSON.stringify(schema.const);
   if (schema.enum) return schema.enum.join('|');
   if (schema.anyOf) return schema.anyOf.map(typeOf).join('|');
   if (schema.type === 'array') return `${typeOf(schema.items)}[]`;
@@ -65,6 +73,7 @@ function fields(schema: any): string {
 
 // One valid value per required field, so a schema can be parsed with only the arguments it demands.
 function sample(schema: any): unknown {
+  if (schema.const !== undefined) return schema.const;
   if (schema.enum) return schema.enum[0];
   if (schema.anyOf) return sample(schema.anyOf[0]);
   if (schema.type === 'array') return [];
@@ -103,6 +112,9 @@ const ORDINARY_OPERATION_SIGNATURES = [
   'hive_constraints_add(constraints:string, scope?:session|feature, feature?:string)',
   'hive_constraints_edit(id:string, expectedRevision:number, constraints?:string, remove?:boolean, scope?:session|feature, feature?:string)',
   'hive_constraints_clear(expectedRevision:number, scope?:session|feature, feature?:string)',
+  'hive_worklog_list(kind?:feature|session, limit?:number, cursor?:string, maxBytes?:number)',
+  'hive_worklog_read(ref?:{kind:"feature", featureName:string}|{kind:"session", owner:opencode-v1|opencode-v2, sessionId:string}, view?:brief|history|facts, limit?:number, cursor?:string, maxBytes?:number)',
+  'hive_worklog_record(ref:{kind:"feature", featureName:string}|{kind:"session", owner:opencode-v1|opencode-v2, sessionId:string}, operationId:string, title?:string, checkpoint:{summary:string, detail?:string, references?:{kind:"path", path:string, label?:string}|{kind:"url", url:string, label?:string}[], corrects?:number[]}, briefing?:string, expectedRevision?:number)',
   'hive_status(feature?:string)',
   'hive_git_snapshot(directory?:string, repositoryIds?:string[], baseRef?:string, targetRef?:string, range?:string, paths?:string[], maxFiles?:number, maxPatchBytes?:number)',
 ];
@@ -113,7 +125,7 @@ const NATIVE_TRACE_AND_BACKGROUND_TOOLS = [
 ];
 
 describe('ordinary Hive operation arguments', () => {
-  it('registers the 32 ordinary operations after the trace and background tools, with their argument shapes', async () => {
+  it('registers the 35 ordinary operations after the trace and background tools, with their argument shapes', async () => {
     const { hooks } = await createRuntime();
     const registered = Object.entries(hooks.tool as Record<string, { args: any }>);
     const ordinary = registered.filter(([name]) => !NATIVE_TRACE_AND_BACKGROUND_TOOLS.includes(name));
@@ -160,6 +172,9 @@ const DESCRIBED_FIELDS: Record<string, string[]> = {
   hive_context_append: ['content', 'section', 'task', 'expectedRevision', 'expectedContentHash', 'scope'],
   hive_context_edit: ['name', 'oldText', 'newText', 'expectedRevision', 'expectedContentHash', 'scope', 'feature'],
   hive_context_archive: ['reason', 'expectedRevision', 'expectedContentHashes', 'scope'],
+  hive_worklog_list: ['kind', 'limit', 'cursor', 'maxBytes'],
+  hive_worklog_read: ['ref', 'view', 'limit', 'cursor', 'maxBytes'],
+  hive_worklog_record: ['ref', 'operationId', 'title', 'checkpoint', 'briefing', 'expectedRevision'],
   ...Object.fromEntries(['hive_worktree_merge', 'hive_adhoc_worktree_merge'].map((name) => [name, [
     'strategy', 'message', 'preserveConflicts', 'cleanup', 'sourceCommit', 'sourceCommits', 'expectedTarget', 'expectedTargets',
   ]])),
@@ -356,5 +371,163 @@ describe('ordinary Hive operation results', () => {
     const failed = await callJson('hive_task_update', { feature: 'partial', task: '01-first', report: 'The report.', handoff: 'Next.' });
     expect(failed).toMatchObject({ success: false, reason: 'task_update_persistence_failed', failedStage: 'handoff', reportHistoryWritten: true, handoffWritten: false });
     expect(fs.readFileSync(failed.reportPath, 'utf8')).toBe('The report.');
+  });
+});
+
+// Every file under .hive with its bytes, so a read can be shown to have written nothing.
+function hiveTree(root: string): Record<string, string> {
+  const tree: Record<string, string> = {};
+  const walk = (dir: string) => {
+    if (!fs.existsSync(dir)) return;
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) { tree[`${path.relative(root, full)}/`] = ''; walk(full); }
+      else tree[path.relative(root, full)] = fs.readFileSync(full, 'utf8');
+    }
+  };
+  walk(path.join(root, '.hive'));
+  return tree;
+}
+
+describe('Worklog operations', () => {
+  it('targets the explicit, selected, or own-session log and never a detected or sole live feature', async () => {
+    const { root, callJson, failure } = await createRuntime();
+    await callJson('hive_feature_create', { name: 'checkout' });
+    const own = (sessionId: string) => ({ kind: 'session', owner: 'opencode-v1', sessionId });
+    // Unset route with a sole live feature: the caller's own log, not the feature.
+    expect(await callJson('hive_worklog_read', {}, 's-unset')).toMatchObject({ view: 'brief', exists: false, revision: 0, ref: own('s-unset'), key: 'session:opencode-v1:s-unset' });
+    await callJson('hive_feature_select', { feature: 'checkout' }, 's-selected');
+    expect(await callJson('hive_worklog_read', {}, 's-selected')).toMatchObject({ exists: false, ref: { kind: 'feature', featureName: 'checkout' }, key: 'feature:checkout' });
+    await callJson('hive_feature_select', { feature: null }, 's-null');
+    expect((await callJson('hive_worklog_read', {}, 's-null')).ref).toEqual(own('s-null'));
+    expect((await callJson('hive_worklog_read', { ref: { kind: 'feature', featureName: 'checkout' } }, 's-null')).ref).toEqual({ kind: 'feature', featureName: 'checkout' });
+    // A detected feature worktree does not route the Worklog either.
+    const detected = createHiveServices({ projectRoot: root, detectedFeature: 'checkout', nativeObservationOwner: 'opencode-v1' });
+    expect(detected.resolveFeature(undefined, { sessionID: 's-detected' })).toBe('checkout');
+    expect(detected.resolveWorklogRef(undefined, { sessionID: 's-detected' })).toEqual(own('s-detected'));
+    // A selected feature that does not resolve fails in core; it does not fall back to the session log or create a directory.
+    // A selection whose feature was later renamed away.
+    await callJson('hive_feature_create', { name: 'ghost' });
+    await callJson('hive_feature_select', { feature: 'ghost' }, 's-ghost');
+    const featuresDir = path.join(root, '.hive', 'features');
+    const metadata = path.join(featuresDir, fs.readdirSync(featuresDir).find((name) => name.endsWith('ghost'))!, 'feature.json');
+    fs.writeFileSync(metadata, JSON.stringify({ ...JSON.parse(fs.readFileSync(metadata, 'utf8')), name: 'renamed' }));
+    const features = fs.readdirSync(featuresDir);
+    expect(await callJson('hive_worklog_read', {}, 's-ghost')).toMatchObject({ success: false, reason: 'feature_not_found', ref: { kind: 'feature', featureName: 'ghost' } });
+    expect(fs.readdirSync(path.join(root, '.hive', 'features'))).toEqual(features);
+    expect(await failure('hive_worklog_read', {}, '')).toContain('Session identity is required');
+  });
+
+  it('reads and lists without writing and leaves a corrupt session index untouched', async () => {
+    const { root, callJson, failure } = await createRuntime();
+    await callJson('hive_feature_create', { name: 'checkout' });
+    await callJson('hive_worklog_record', { ref: { kind: 'feature', featureName: 'checkout' }, operationId: 'one', checkpoint: { summary: 'Planned' } }, 's1');
+    const before = hiveTree(root);
+    for (const view of ['brief', 'history', 'facts']) {
+      await callJson('hive_worklog_read', { ref: { kind: 'feature', featureName: 'checkout' }, view }, 's1');
+      await callJson('hive_worklog_read', { view }, 's-other');
+    }
+    const listed = await callJson('hive_worklog_list', { kind: 'feature' });
+    expect(listed.worklogs).toEqual([expect.objectContaining({ key: 'feature:checkout', title: 'Planned', revision: 1, ref: { kind: 'feature', featureName: 'checkout' } })]);
+    expect(hiveTree(root)).toEqual(before);
+    const index = path.join(root, '.hive', 'sessions.json');
+    fs.writeFileSync(index, '{not json');
+    expect(await failure('hive_worklog_read', {}, 's1')).toContain('left unchanged for explicit recovery');
+    expect(fs.readFileSync(index, 'utf8')).toBe('{not json');
+    // An explicit ref needs no session route.
+    expect((await callJson('hive_worklog_read', { ref: { kind: 'feature', featureName: 'checkout' } }, 's1')).revision).toBe(1);
+    expect(fs.readFileSync(index, 'utf8')).toBe('{not json');
+  });
+
+  it('stamps the host author, keeps session logs to their own session, and surfaces core revision guards and replays', async () => {
+    const { callJson } = await createRuntime();
+    await callJson('hive_feature_create', { name: 'checkout' });
+    const own = await callJson('hive_worklog_read', {}, 's1');
+    const forged = { owner: 'opencode-v2', sessionId: 'someone', agent: 'forged' };
+    const first = await callJson('hive_worklog_record', { ref: own.ref, operationId: 'a', checkpoint: { summary: 'Started' }, author: forged }, 's1', 'hive-builder');
+    expect(first).toMatchObject({ key: 'session:opencode-v1:s1', committedRevision: 1, replayed: false, entry: { author: { owner: 'opencode-v1', sessionId: 's1', agent: 'hive-builder' } } });
+    for (const ref of [{ ...own.ref, sessionId: 's2' }, { ...own.ref, owner: 'opencode-v2' }]) {
+      expect(await callJson('hive_worklog_record', { ref, operationId: 'b', checkpoint: { summary: 'Elsewhere' } }, 's1')).toMatchObject({ success: false, reason: 'author_mismatch', ref });
+    }
+
+    const feature = { kind: 'feature', featureName: 'checkout' };
+    const briefed = { ref: feature, operationId: 'f1', checkpoint: { summary: 'Plan approved' }, briefing: 'Plan approved; schema task next.', expectedRevision: 0 };
+    expect(await callJson('hive_worklog_record', briefed, 's1')).toMatchObject({ committedRevision: 1, briefingUpdated: true });
+    // Another primary shares the feature log.
+    expect((await callJson('hive_worklog_record', { ref: feature, operationId: 'f2', checkpoint: { summary: 'Schema merged' } }, 's2', 'swarm-orchestrator')).committedRevision).toBe(2);
+    const stale = await callJson('hive_worklog_record', { ref: feature, operationId: 'f3', checkpoint: { summary: 'API started' }, briefing: 'API next.', expectedRevision: 1 }, 's1');
+    expect(stale).toMatchObject({ success: false, reason: 'stale_revision', details: { currentRevision: 2 } });
+    const reread = await callJson('hive_worklog_read', { ref: feature }, 's1');
+    expect(reread).toMatchObject({ revision: 2, checkpointsSinceBriefing: 1, briefing: { text: 'Plan approved; schema task next.', entryId: 1 } });
+    expect(await callJson('hive_worklog_record', { ref: feature, operationId: 'f4', checkpoint: { summary: 'API started' }, briefing: 'Schema merged; API running.', expectedRevision: reread.revision }, 's1')).toMatchObject({ committedRevision: 3 });
+    // A lost response is resolved by resending the identical request, even after later entries.
+    expect(await callJson('hive_worklog_record', briefed, 's1')).toMatchObject({ replayed: true, committedRevision: 1, currentRevision: 3 });
+    expect(await callJson('hive_worklog_record', { ...briefed, checkpoint: { summary: 'Different' } }, 's1')).toMatchObject({ success: false, reason: 'operation_conflict', details: { entryId: 1 } });
+  });
+
+  it('presents Worklog results as compact JSON so maxBytes bounds the text the host receives', async () => {
+    const { call, callJson } = await createRuntime();
+    await callJson('hive_feature_create', { name: 'checkout' });
+    const feature = { kind: 'feature', featureName: 'checkout' };
+    const bytes = (text: string) => Buffer.byteLength(text, 'utf8');
+
+    // Core fits an empty list at its compact size; the emitted text must not grow past that budget.
+    const exact = bytes(JSON.stringify(await callJson('hive_worklog_list', {})));
+    const fitted = await call('hive_worklog_list', { maxBytes: exact });
+    expect(bytes(fitted)).toBe(exact);
+    expect(bytes(JSON.stringify(JSON.parse(fitted), null, 2))).toBeGreaterThan(exact);
+    // Below the envelope the honest outcome is a structured error that names the size it needs.
+    expect(await callJson('hive_worklog_list', { maxBytes: exact - 1 })).toMatchObject({ success: false, reason: 'response_too_large', details: { requiredBytes: exact } });
+
+    for (let index = 1; index <= 6; index++) {
+      const recorded = await call('hive_worklog_record', { ref: feature, operationId: `op-${index}`, checkpoint: { summary: `Checkpoint ${index}`, detail: `${index}`.repeat(300) } }, 's1');
+      // A record result is not bounded by a read budget, but it uses the same serialization.
+      expect(recorded).toBe(JSON.stringify(JSON.parse(recorded)));
+    }
+    const read = (view: string, maxBytes: number, cursor?: string) => call('hive_worklog_read', { ref: feature, view, limit: 50, maxBytes, cursor }, 's1');
+    for (const view of ['brief', 'history', 'facts', 'list']) {
+      const open = (maxBytes: number) => view === 'list' ? call('hive_worklog_list', { maxBytes }) : read(view, maxBytes);
+      const whole = bytes(JSON.stringify(JSON.parse(await open(64 * 1024))));
+      for (const budget of [whole, whole - 1, Math.floor(whole / 2)]) {
+        const text = await open(budget);
+        const parsed = JSON.parse(text);
+        if (parsed.success === false) expect(parsed.reason, `${view} ${budget}`).toBe('response_too_large');
+        else expect(bytes(text), `${view} ${budget}`).toBeLessThanOrEqual(budget);
+      }
+    }
+    // A page cut short by the budget still carries its cursor and stays within it.
+    const whole = bytes(JSON.stringify(JSON.parse(await read('history', 64 * 1024))));
+    const first = JSON.parse(await read('history', whole - 1));
+    expect(first.nextCursor).toEqual(expect.any(String));
+    expect(first.entries.length).toBeGreaterThan(0);
+    expect(bytes(await read('history', whole - 1))).toBeLessThanOrEqual(whole - 1);
+  });
+
+  it('passes a WorklogError reason and details through unchanged, including an uncertain publication', () => {
+    const uncertain = new WorklogError('io_error', 'Worklog write failed.', { stage: 'write', code: 'EIO', publication: 'uncertain' });
+    const operations = createHiveOperations({ nativeObservationOwner: 'opencode-v1', worklogService: { record: () => { throw uncertain; } } } as any);
+    const ref = { kind: 'feature', featureName: 'checkout' };
+    expect(operations.hive_worklog_record!.execute({ ref, operationId: 'a', checkpoint: { summary: 'x' } }, { sessionID: 's1', agent: 'hive-master' }))
+      .toEqual({ success: false, reason: 'io_error', error: 'Worklog write failed.', details: { stage: 'write', code: 'EIO', publication: 'uncertain' }, ref });
+    expect(() => operations.hive_worklog_record!.execute({ ref, operationId: 'a', checkpoint: { summary: 'x' } }, { sessionID: 's1' })).toThrow('calling session and agent');
+  });
+
+  it('checks the role grant and the live parent before recording, failing closed when the session cannot be read', async () => {
+    const { root, sessions, callJson, failure } = await createRuntime();
+    const ref = (sessionId: string) => ({ kind: 'session', owner: 'opencode-v1', sessionId });
+    const record = (sessionId: string) => ({ ref: ref(sessionId), operationId: 'a', checkpoint: { summary: 'Recorded' } });
+    sessions.set('child', { id: 'child', parentID: 'primary' });
+    sessions.set('broken', new Error('gone'));
+    // Delegated orchestrators and Architect run in child sessions; the executor denies them whatever the permissions allow.
+    for (const agent of ['hive-master', 'architect-planner']) expect(await failure('hive_worklog_record', record('child'), 'child', agent)).toContain('primary-only operation');
+    expect(await failure('hive_worklog_record', record('broken'), 'broken')).toContain('could not read session broken');
+    expect(await failure('hive_worklog_record', record('root'), 'root', 'forager-worker')).toContain('not granted to the forager-worker role');
+    expect(await failure('hive_worklog_record', record('root'), 'root', 'general')).toContain('native general subagent has no Hive tool access');
+    expect(fs.existsSync(path.join(root, '.hive', 'worklogs'))).toBe(false);
+    // Children still read.
+    expect((await callJson('hive_worklog_read', {}, 'child', 'forager-worker')).ref).toEqual(ref('child'));
+    for (const agent of ['architect-planner', 'dash-reviewer']) {
+      expect((await callJson('hive_worklog_record', record(agent), agent, agent)).entry.author).toEqual({ owner: 'opencode-v1', sessionId: agent, agent });
+    }
   });
 });

@@ -45,7 +45,7 @@ PROBLEM  -> CONTEXT  -> EXECUTION -> REPORT
 packages/
 ├── hive-core/            <- Shared logic (services, types, utils)
 ├── opencode-hive/        <- OpenCode plugin (planning, execution, tracking)
-└── vscode-hive/          <- VS Code extension (viewer-first plan/overview review, status, limited archive)
+└── vscode-hive/          <- VS Code extension (viewer-first plan/overview review, status, Worklogs, limited archive)
 ```
 
 ### Component responsibilities
@@ -55,8 +55,8 @@ packages/
 A project runs under one host at a time. [Switching OpenCode hosts and rollback](OPERATOR-GUIDE.md#switching-opencode-hosts-and-rollback) covers the handover.
 
 - `hive-core` owns feature, plan, task, context, repository-manifest, session, constraint, background-board, Worklog, and worktree services. `TaskService` parses tasks and persists status and reports; `WorktreeService` and `AdhocWorktreeService` inspect and integrate Git workspaces without assigning workers or updating task state.
-- `opencode-hive` ships one package with two native entries. `src/runtime.ts` registers the v1 `hive_*` tools, builds agent and command configuration, captures route and constraint snapshots for native `task()` calls, and connects background observation. It delegates to three host-neutral modules under `src/runtime/`: `hive-services.ts` binds the domain services and feature, session and constraint routing to one canonical project root; `hive-tools.ts` defines the 32 ordinary operations with their Zod argument schemas and structured results; `role-policy.ts` holds each role's Hive tool grants, delegation allowlists and primary-only operations. The v2 entry under `src/v2/` registers the same operations through one validating registrar that also runs the role and child-session guard, and `src/runtime/host-profile.ts` supplies each host's native call names to prompts and skills. Bundled skills are discovered and materialized from packaged `SKILL.md` files.
-- `vscode-hive` displays feature and task state, plans, comments, and scoped context; its plan comment controller writes review threads while its filesystem watcher triggers UI refresh.
+- `opencode-hive` ships one package with two native entries. `src/runtime.ts` registers the v1 `hive_*` tools, builds agent and command configuration, captures route and constraint snapshots for native `task()` calls, and connects background observation. It delegates to three host-neutral modules under `src/runtime/`: `hive-services.ts` binds the domain services and feature, session and constraint routing to one canonical project root; `hive-tools.ts` defines the 35 ordinary operations (the 41 registered tools less the four background-board operations in `src/background/operations.ts` and the two trace tools in `src/task-trace.ts`) with their Zod argument schemas and structured results, including the three Worklog tools; `role-policy.ts` holds each role's Hive tool grants, delegation allowlists and primary-only operations. The v2 entry under `src/v2/` registers the same operations through one validating registrar that also runs the role and child-session guard, and `src/runtime/host-profile.ts` supplies each host's native call names to prompts and skills. Bundled skills are discovered and materialized from packaged `SKILL.md` files.
+- `vscode-hive` displays feature and task state, plans, comments, scoped context, and Worklogs (read-only, offline, through `WorklogService`); its plan comment controller writes review threads while its filesystem watcher triggers UI refresh.
 
 ### Execution ownership
 
@@ -266,7 +266,7 @@ Hive uses file-based state with clear ownership boundaries:
 | Project session index (`.hive/sessions.json` on v1, `.hive/runtime/opencode-v2/sessions.json` on v2) | `SessionService` for that host's owner | Runtime route and constraint reads; VS Code constraints inspector (read-only) |
 | `context/index.json` and managed Markdown | `ContextService` via `hive_context_*` | Agent roles according to tool permissions |
 | `repositories.json` | `RepositoryManifestService` | Worktree services (read) |
-| Feature `worklog.json` and `.hive/worklogs/sessions/**` | `WorklogService` record, under the log's lock | All readers through `WorklogService` read and list (read-only) |
+| Feature `worklog.json` and `.hive/worklogs/sessions/**` | `WorklogService` record, under the log's lock, called by `hive_worklog_record` from primary sessions | `hive_worklog_list` and `hive_worklog_read` for every Hive role; VS Code Worklogs viewer (read-only) |
 
 ### VS Code watcher
 

@@ -10,6 +10,8 @@ import {
   getTaskHandoffPath,
   getTaskPath,
   listFeatureDirectories,
+  WorklogService,
+  getWorklogKey,
 } from 'hive-core'
 import type {
   ContextManagementCatalog,
@@ -19,6 +21,7 @@ import type {
   TaskStatus,
 } from 'hive-core'
 import { contextDescription, contextTooltip } from './contextInspection.js'
+import { describeAge, describeFailure, formatTimestamp } from './worklogPresentation.js'
 
 const CONTEXT_INDEX_LOCK_NAME = 'index.json.lock'
 const CONTEXT_PENDING_MARKER_NAME = '.managed-mutation-pending.json'
@@ -32,7 +35,7 @@ type ContextSnapshot =
   | { state: 'tooLarge'; message: string }
   | { state: 'failed'; message: string }
 
-type SidebarItem = ContextUnavailableItem | StatusGroupItem | FeatureItem | PlanItem | ContextFolderItem | ContextFileItem | ContextEmptyItem | ContextLoadMoreItem | ContextRecoveryItem | ContextRawFileItem | ContextTooLargeItem | TasksGroupItem | TaskItem | TaskFileItem | ReportHistoryItem
+type SidebarItem = ContextUnavailableItem | StatusGroupItem | FeatureItem | PlanItem | FeatureWorklogItem | ContextFolderItem | ContextFileItem | ContextEmptyItem | ContextLoadMoreItem | ContextRecoveryItem | ContextRawFileItem | ContextTooLargeItem | TasksGroupItem | TaskItem | TaskFileItem | ReportHistoryItem
 
 const STATUS_ICONS: Record<string, string> = {
   pending: 'circle-outline',
@@ -109,6 +112,42 @@ class PlanItem extends vscode.TreeItem {
       command: 'vscode.open',
       title: 'Open Plan',
       arguments: [vscode.Uri.file(planPath)]
+    }
+  }
+}
+
+/** Opens the feature's shared worklog by its full key; the row reads stored state only and never selects a session. */
+class FeatureWorklogItem extends vscode.TreeItem {
+  readonly worklogKey: string
+  readonly copyCommand: { arguments: string[] }
+
+  constructor(workspaceRoot: string, featureName: string) {
+    super('Worklog', vscode.TreeItemCollapsibleState.None)
+    this.worklogKey = getWorklogKey({ kind: 'feature', featureName })
+    this.copyCommand = { arguments: [this.worklogKey] }
+    this.contextValue = 'feature-worklog'
+    this.iconPath = new vscode.ThemeIcon('book')
+    this.command = { command: 'hive.worklog.open', title: 'Open Worklog', arguments: [this.worklogKey] }
+    try {
+      const read = new WorklogService(workspaceRoot).read({ kind: 'feature', featureName }, { view: 'brief', limit: 1 })
+      if (!read.exists || !read.updatedAt) {
+        this.description = 'No checkpoints yet'
+        this.tooltip = `Key: ${this.worklogKey}\nNo checkpoints have been recorded for this feature.`
+        return
+      }
+      const stale = read.changedSinceBriefing === true ? ' · facts changed since briefing' : ''
+      this.description = `${read.entryCount} checkpoint${read.entryCount === 1 ? '' : 's'} · ${describeAge(read.updatedAt)}${stale}`
+      this.tooltip = [
+        read.title ?? this.worklogKey,
+        `Key: ${this.worklogKey}`,
+        `Last recorded: ${formatTimestamp(read.updatedAt)} · revision ${read.revision}`,
+        read.briefing ? `Briefing from checkpoint #${read.briefing.entryId}` : 'No briefing yet',
+      ].join('\n')
+    } catch (error) {
+      const failure = describeFailure(error)
+      this.description = `Unavailable: ${failure.reason}`
+      this.iconPath = new vscode.ThemeIcon('error')
+      this.tooltip = [`Key: ${this.worklogKey}`, failure.message, failure.recovery].join('\n')
     }
   }
 }
@@ -542,6 +581,8 @@ export class HiveSidebarProvider implements vscode.TreeDataProvider<SidebarItem>
       const commentCount = this.getReviewCommentCount(featureName, 'plan')
       items.push(new PlanItem(featureName, planPath, feature.status, commentCount))
     }
+
+    items.push(new FeatureWorklogItem(this.workspaceRoot, featureName))
 
     items.push(this.buildContextFolder({ type: 'feature', featureName }, 'Context'))
 

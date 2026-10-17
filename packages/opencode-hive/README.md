@@ -45,7 +45,7 @@ The config hook intentionally mutates these OpenCode fields:
 
 ### OpenCode v2
 
-The same package loads through its `server` entry on v1 and its synchronous `effect` entry on v2. On v2 it registers all **38 Hive tools** and **11 commands**, dedicated and unified modes, custom agents, packaged skills, native dispatch and background observation, and the forensic and recovery tools. Qualification ran against stock v1.18.30 and v2.0.26 with scripted model providers, which establishes wiring rather than real-model judgment. On both hosts it loaded a package already installed with plain npm; host-side registry resolution at first use was not part of it.
+The same package loads through its `server` entry on v1 and its synchronous `effect` entry on v2. On v2 it registers all **41 Hive tools** and **12 commands**, dedicated and unified modes, custom agents, packaged skills, native dispatch and background observation, and the forensic and recovery tools. Qualification ran against stock v1.18.30 and v2.0.26 with scripted model providers, which establishes wiring rather than real-model judgment. On both hosts it loaded a package already installed with plain npm; host-side registry resolution at first use was not part of it.
 
 Install the released package with npm into a dedicated directory that the v2 host can read:
 
@@ -132,6 +132,7 @@ Use the feature flow when work needs plan review, a task DAG, and a durable audi
 | `/council` | Run a read-only council and synthesize a recommendation. |
 | `/dash-review [intent]` | Review a folder, inline text, or the current checkout without changing source. |
 | `/vuln-review [scope]` | Review requested source for evidenced vulnerabilities with configured specialists. |
+| `/worklog [request]` | Explain where the current work stands from its Worklog, read-only. |
 | `/compact-summary` | Produce a compact recovery summary for the current session. |
 
 ### Complexity skills
@@ -156,6 +157,7 @@ Routing depends on `agentMode`:
 | `/dash-review` | Bound by `config.command` to a private review primary. | Bound by `config.command` to a private review primary. |
 | `/vuln-review` | Bound by `config.command` to a private vulnerability-review primary. | Bound by `config.command` to a private vulnerability-review primary. |
 | `/compact-summary` | Use `hive-master`. | Route or delegate to `scout-researcher`. |
+| `/worklog` | Runs under the active agent. | Runs under the active agent. |
 
 Except for `/dash-review` and `/vuln-review`, dedicated-mode slash commands do not switch agents by themselves. If the active agent is not the route target, delegate or reroute to the target agent and stop if that is not possible.
 
@@ -207,13 +209,13 @@ When an operator explicitly requires a skill, include the exact name in the assi
 
 The role authority below is the same on both hosts; the enforcement mechanism differs.
 
-On v1, Hive registers ordered OpenCode `agent.permission` rules: `'hive_*': 'deny'` first, then each role's exact allows. Agent rules override global `{"*":"allow"}`. Custom variants inherit their base role. `experimental.primary_tools` adds child-session denials for integration/cleanup, ad-hoc creation, feature routing/completion, approval/sync/task creation, constraint mutation, context archive, parent-owned background tools, and `question`.
+On v1, Hive registers ordered OpenCode `agent.permission` rules: `'hive_*': 'deny'` first, then each role's exact allows. Agent rules override global `{"*":"allow"}`. Custom variants inherit their base role. `experimental.primary_tools` adds child-session denials for integration/cleanup, ad-hoc creation, feature routing/completion, approval/sync/task creation, constraint mutation, context archive, parent-owned background tools, Worklog recording, and `question`. Worklog recording also checks the role and live parent in its executor.
 
 On v2, your native permission rules decide which tools are visible, and Hive does not rewrite them. Every Hive executor and the native `execute.before` hook check the agent's base role and the session's actual parent before any effect, as described under [OpenCode v2](#opencode-v2). A visible tool can therefore still be refused.
 
 On both hosts, Architect keeps feature creation, repository registration, and bounded planning-helper delegation as a child and hands primary-only requests back to its parent.
 
-All Hive roles can read context, constraints, plans, status, repository scope, and Git snapshots. Scout adds repository discovery. Forager adds context write/append, feature/ad-hoc inspection, recovery traces, assigned feature-worktree creation, and its own report/handoff update. Helper's Hive tools are limited to state/worktree/trace inspection. Reviewers and advisors add authorized context write/append. Hive, Swarm, and Builder have the full Hive set; Architect has planning and primary-control tools; review primaries have metadata/context, inspection/trace, constraints, routing/background, and authorized ad-hoc review placement/cleanup. The [complete access matrix](docs/HIVE-TOOLS.md#agent-tool-access) names every grant and native boundary.
+All Hive roles can read context, constraints, plans, status, repository scope, Git snapshots, and Worklogs. Scout adds repository discovery. Forager adds context write/append, feature/ad-hoc inspection, recovery traces, assigned feature-worktree creation, and its own report/handoff update. Helper's Hive tools are limited to state/worktree/trace inspection. Reviewers and advisors add authorized context write/append. Hive, Swarm, and Builder have the full Hive set; Architect has planning and primary-control tools; review primaries have metadata/context, inspection/trace, constraints, routing/background, and authorized ad-hoc review placement/cleanup. Hive grants Worklog recording to primary sessions of the full primaries, Architect, and the review primaries. An unmanaged agent that is neither a Hive role nor a custom variant of one keeps its native permission for Hive tools, so it can record from a primary session; its child sessions are refused, as are native `general`/`explore`. The [complete access matrix](docs/HIVE-TOOLS.md#agent-tool-access) names every grant and native boundary.
 
 Native `general`/`explore` have no Hive tools, recursion, or questions. Helper/reviewer role-specific Hive-tool denials and native edit denial are enforced, while shell and research integrations remain available under operator permissions. Their inspection-only scope for shell and external effects is instruction-bound, an operator-accepted risk; these capabilities must not substitute for denied Hive operations. Use Helper first for session-trace retrieval; it returns evidence and mutation requests to the primary. Changes take effect after the OpenCode host reloads; on v1, use fresh child sessions so OpenCode applies the creation-time primary-tool denials.
 
@@ -322,6 +324,10 @@ Primary orchestrators can inspect any explicitly identified native OpenCode sess
 ### Operator Constraints
 
 `hive_constraints_read`, `hive_constraints_add`, `hive_constraints_edit`, and `hive_constraints_clear` manage durable operator directives. Scope defaults to the current session; pass `scope: "feature"` for a feature directive. Read the current register before editing or clearing; `hive_constraints_edit` takes the constraint `id` and register `expectedRevision`, while `hive_constraints_clear` takes `expectedRevision` ([runtime tools](src/runtime/hive-tools.ts)). Only primary agents can mutate constraints. The selected feature route, session constraints, and feature constraints travel with native child dispatch.
+
+### Worklog
+
+`hive_worklog_list`, `hive_worklog_read`, and `hive_worklog_record` keep a short account of where work stands: a current briefing you can read in about thirty seconds and append-only checkpoints. A feature has one log that every primary shares, and ad-hoc work uses the session's own log. Primaries read it when they start or resume work and record a checkpoint at meaningful milestones such as a direction change, a blocker, a merge or verified result, a handoff, and the conclusion. Workers and reviewers read it. Without an explicit `ref`, reads use the selected feature or the session's own log, never a detected or sole live feature. Use `/worklog [request]` to have the active agent read a log back and explain it; that command does not record. To stop primaries from recording, add a standing constraint. See [Hive Tools](docs/HIVE-TOOLS.md#worklog-3-tools) and the [service contract](../../docs/WORKLOG.md).
 
 ### Git Snapshot
 

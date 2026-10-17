@@ -369,6 +369,22 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
     });
   },
 
+  worklog(args, context) {
+    return renderHybridCommand('worklog', context, {
+      details: [`Request: ${topicOrCurrent(args, 'where the current work stands')}`],
+      doItems: [
+        'Choose the log from the request. A named feature reads `hive_worklog_read({ ref: { kind: "feature", featureName } })`; a pasted key reads its ref (`feature:<name>`, or `session:<owner>:<sessionId>` where only the first colon after the owner separates the fields); otherwise omit ref, which reads the feature selected for this session or this session\'s own log.',
+        'Call `hive_worklog_list` when the request asks which logs exist or names a log you cannot resolve to one ref; page it with nextCursor as needed.',
+        'Start with the brief view. Expand with the history view for earlier checkpoints, the facts view for recorded task rows, and nextCursor or a larger maxBytes for more, only as far as the request needs.',
+        'When the request asks for current status or reconciliation, compare the saved briefing with the checkpoints and facts that came after it, and give the difference as your unsaved synthesis.',
+      ],
+      doNotItems: ['Do not call `hive_worklog_record` or change any other state from this command.'],
+      outputItems: [
+        'The log title, key and ref; the saved briefing with its author and time; what changed since it; and any unsaved synthesis labelled as yours. When the log is missing or a read fails, say so with the reason.',
+      ],
+    });
+  },
+
   'compact-summary'(args, context) {
     return renderHybridCommand('compact-summary', context, {
       details: args.trim() ? [`Focus: ${args.trim()}`] : undefined,

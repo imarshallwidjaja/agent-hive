@@ -45,6 +45,10 @@
       "description": "Assess a requested scope for evidenced vulnerabilities without changing files"
     },
     {
+      "name": "/worklog",
+      "description": "Read back where the current work stands from its Worklog"
+    },
+    {
       "name": "/compact-summary",
       "description": "Produce a recovery summary for the current OpenCode session"
     }
@@ -86,6 +90,9 @@
     "hive_constraints_add",
     "hive_constraints_edit",
     "hive_constraints_clear",
+    "hive_worklog_list",
+    "hive_worklog_read",
+    "hive_worklog_record",
     "hive_status",
     "hive_git_snapshot"
   ]

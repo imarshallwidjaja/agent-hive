@@ -57,6 +57,9 @@ export const HIVE_TOOL_NAMES = [
   'hive_constraints_add',
   'hive_constraints_edit',
   'hive_constraints_clear',
+  'hive_worklog_list',
+  'hive_worklog_read',
+  'hive_worklog_record',
   'hive_status',
   'hive_git_snapshot',
 ] as const;

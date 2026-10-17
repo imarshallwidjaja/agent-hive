@@ -150,7 +150,7 @@ A case is `evidence_invalid` when any responding session persisted a message on 
 
 `wiring` builds the candidate, then on each host, with stock permissions (no global allow rule) and the mock provider, it records:
 
-- whether each of the 14 Hive roles and 11 commands is listed;
+- whether each of the 14 Hive roles and 12 commands is listed;
 - per role, the provider-facing system prompt size and hash, tool count and tool-schema size, observed from the request the host actually sent;
 - the Hive tool contract for the full-access role against the installed package's `plugin.json`: every manifest tool must be exposed (directly, or on v2 through Code Mode), none unexpected, each with a description; parameter names of the direct tools must match across hosts, and parameters without descriptions are listed for review;
 - the field contract: the relationship-bearing fields later instruction changes rely on (`TOOL_FIELD_CONTRACT` in `hosts.mjs`: worktree create, inspect, merge and cleanup for feature and ad-hoc work including pins and destination targets, `hive_plan_approve`, `hive_tasks_sync`, `hive_task_update` publication fields and the context read, write, append, edit and archive fields) must each appear with a non-empty description on the surface the host showed the model, the direct tool schema or, for a read shown only there, the Code Mode declaration's doc comment. A missing tool, a missing field or a blank description fails (`field_contract_*`); undescribed fields outside the contract stay informational;

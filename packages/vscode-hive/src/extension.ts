@@ -7,6 +7,10 @@ import { BackgroundJobsProvider, HiveSidebarProvider, PlanCommentController, Tra
 import { archiveContext, isContextScope } from './providers/contextInspection.js'
 import { archiveBackgroundJobItem } from './providers/backgroundJobsProvider.js'
 import { SessionConstraintsProvider } from './providers/sessionConstraintsProvider.js'
+import { WorklogDocuments } from './providers/worklogDocuments.js'
+import type { WorklogDocumentView } from './providers/worklogDocuments.js'
+import { WorklogViewerPreferences, WorklogsProvider, pickWorklog } from './providers/worklogsProvider.js'
+import { describeFailure } from './providers/worklogPresentation.js'
 
 import { reviewTargetForDocument, findReviewCommentsPath } from './reviewRouting.js'
 
@@ -26,6 +30,9 @@ class HiveExtension {
   private backgroundJobsProvider: BackgroundJobsProvider | null = null
   private trackedRepositoriesProvider: TrackedRepositoriesProvider | null = null
   private sessionConstraintsProvider: SessionConstraintsProvider | null = null
+  private worklogsProvider: WorklogsProvider | null = null
+  private worklogDocuments: WorklogDocuments | null = null
+  private worklogPreferences: WorklogViewerPreferences | null = null
   private launcher: Launcher | null = null
   private commentController: PlanCommentController | null = null
   private hiveWatcher: HiveWatcher | null = null
@@ -61,6 +68,19 @@ class HiveExtension {
       vscode.workspace.registerTextDocumentContentProvider(SessionConstraintsProvider.scheme, this.sessionConstraintsProvider),
       vscode.workspace.onDidCloseTextDocument(document => this.sessionConstraintsProvider?.close(document.uri)),
     )
+    this.worklogPreferences = new WorklogViewerPreferences(this.context.workspaceState, workspaceRoot)
+    this.worklogsProvider = new WorklogsProvider(workspaceRoot, this.worklogPreferences)
+    this.worklogDocuments = new WorklogDocuments(workspaceRoot)
+    const worklogsView = vscode.window.createTreeView('hive.worklogs', { treeDataProvider: this.worklogsProvider })
+    // Only the first workspace folder's project is read; the view names it so a multi-root window is not misread.
+    worklogsView.description = path.basename(workspaceRoot)
+    this.context.subscriptions.push(
+      worklogsView,
+      this.worklogDocuments,
+      vscode.workspace.registerTextDocumentContentProvider(WorklogDocuments.scheme, this.worklogDocuments),
+      vscode.languages.registerDocumentLinkProvider({ scheme: WorklogDocuments.scheme }, this.worklogDocuments),
+      vscode.workspace.onDidCloseTextDocument(document => this.worklogDocuments?.close(document.uri)),
+    )
     this.launcher = new Launcher(workspaceRoot)
     this.commentController = new PlanCommentController(workspaceRoot)
 
@@ -75,6 +95,8 @@ class HiveExtension {
       this.backgroundJobsProvider?.refresh()
       this.trackedRepositoriesProvider?.refresh()
       this.sessionConstraintsProvider?.refresh()
+      this.worklogsProvider?.refresh()
+      this.worklogDocuments?.refresh()
     })
     this.context.subscriptions.push({ dispose: () => this.hiveWatcher?.dispose() })
 
@@ -122,6 +144,58 @@ class HiveExtension {
         this.backgroundJobsProvider?.refresh()
         this.trackedRepositoriesProvider?.refresh()
         this.sessionConstraintsProvider?.refresh()
+        this.worklogsProvider?.refresh()
+        this.worklogDocuments?.refresh()
+      }),
+
+      vscode.commands.registerCommand('hive.worklog.open', async (target?: unknown) => {
+        if (!this.workspaceRoot || !this.worklogDocuments) {
+          vscode.window.showInformationMessage('Hive: Open a workspace containing .hive to read worklogs.')
+          return
+        }
+        // Open never reuses the active document: without an explicit key or row it always asks.
+        const key = (target === undefined ? null : this.worklogKeyFrom(target)) ?? await pickWorklog(this.workspaceRoot)
+        if (key) await this.showWorklog('brief', key)
+      }),
+
+      vscode.commands.registerCommand('hive.worklog.showHistory', (target?: unknown) => this.showWorklogTarget('history', target)),
+      vscode.commands.registerCommand('hive.worklog.showFacts', (target?: unknown) => this.showWorklogTarget('facts', target)),
+
+      vscode.commands.registerCommand('hive.worklog.pin', async (target?: unknown) => {
+        const key = this.worklogKeyFrom(target)
+        if (!key || !this.worklogPreferences) {
+          vscode.window.showInformationMessage('Hive: Choose a worklog to pin.')
+          return
+        }
+        try {
+          if (!await this.worklogPreferences.pin(key)) vscode.window.showInformationMessage(`Hive: ${key} is already pinned.`)
+        } catch (error) {
+          vscode.window.showErrorMessage(`Hive: Could not pin ${key}. ${describeFailure(error).message}`)
+        }
+        this.worklogsProvider?.refresh()
+      }),
+
+      vscode.commands.registerCommand('hive.worklog.unpin', async (target?: unknown) => {
+        const key = this.worklogKeyFrom(target)
+        if (!key || !this.worklogPreferences) {
+          vscode.window.showInformationMessage('Hive: Choose a pinned worklog to unpin.')
+          return
+        }
+        await this.worklogPreferences.unpin(key)
+        this.worklogsProvider?.refresh()
+      }),
+
+      vscode.commands.registerCommand('hive.worklog.loadMore', async (target?: unknown) => {
+        if ((target as { loadMore?: unknown } | undefined)?.loadMore === 'recent') {
+          this.worklogsProvider?.loadMoreRecent()
+          return
+        }
+        const uri = isWorklogUri(target) ? target : vscode.window.activeTextEditor?.document.uri
+        if (!uri || uri.scheme !== WorklogDocuments.scheme || !this.worklogDocuments) {
+          vscode.window.showInformationMessage('Hive: Open a worklog history or facts document to load more.')
+          return
+        }
+        await this.worklogDocuments.loadMore(uri)
       }),
 
       vscode.commands.registerCommand('hive.context.archive', async (item) => {
@@ -295,6 +369,44 @@ class HiveExtension {
       })
     )
   }
+
+  /**
+   * A worklog key from a command argument: a key string, a tree row, or a worklog document URI (editor title
+   * actions pass the resource). Without an argument, the active worklog document supplies it.
+   */
+  private worklogKeyFrom(target: unknown): string | null {
+    if (typeof target === 'string' && target) return target
+    const fromItem = (target as { worklogKey?: unknown } | undefined)?.worklogKey
+    if (typeof fromItem === 'string' && fromItem) return fromItem
+    const uri = target === undefined ? vscode.window.activeTextEditor?.document.uri : target
+    return isWorklogUri(uri) && this.worklogDocuments ? this.worklogDocuments.keyFor(uri) : null
+  }
+
+  private async showWorklogTarget(view: WorklogDocumentView, target: unknown): Promise<void> {
+    const key = this.worklogKeyFrom(target)
+    if (!key) {
+      vscode.window.showInformationMessage('Hive: Choose a worklog first, from the Worklogs view or Open Worklog.')
+      return
+    }
+    await this.showWorklog(view, key)
+  }
+
+  /** Opening is the only way the selection changes; reading writes nothing under .hive. */
+  private async showWorklog(view: WorklogDocumentView, key: string): Promise<void> {
+    if (!this.worklogDocuments || !this.worklogPreferences) return
+    try {
+      await this.worklogPreferences.select(key)
+    } catch (error) {
+      vscode.window.showErrorMessage(`Hive: ${key} is not a worklog key. ${describeFailure(error).message}`)
+      return
+    }
+    this.worklogsProvider?.refresh()
+    await this.worklogDocuments.show(view, key)
+  }
+}
+
+function isWorklogUri(value: unknown): value is vscode.Uri {
+  return (value as vscode.Uri | undefined)?.scheme === WorklogDocuments.scheme
 }
 
 export function activate(context: vscode.ExtensionContext): void {

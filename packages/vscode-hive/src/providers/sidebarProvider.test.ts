@@ -253,10 +253,10 @@ describe('HiveSidebarProvider', () => {
 
     const children = await provider.getChildren(featureItem);
 
-    expect(children.map(child => child.label)).toEqual(['Plan', 'Context', 'Tasks']);
+    expect(children.map(child => child.label)).toEqual(['Plan', 'Worklog', 'Context', 'Tasks']);
     expect(children.find((child) => (child as any).contextValue === 'overview-file')).toBeUndefined();
-    expect((children[1] as any).description).toBe('2 documents · 1/8 durable · 8 B · chars unavailable');
-    expect(((children[1] as any).iconPath as any).id).toBe('folder');
+    expect((children[2] as any).description).toBe('2 documents · 1/8 durable · 8 B · chars unavailable');
+    expect(((children[2] as any).iconPath as any).id).toBe('folder');
 
     const contextItem = children.find(child => child.label === 'Context');
     const contextChildren = await provider.getChildren(contextItem);
@@ -858,9 +858,9 @@ describe('HiveSidebarProvider', () => {
     const write = spyOn(fs, 'writeFileSync');
     try {
       const children = await provider.getChildren(feature);
-      expect(children.map(item => item.label)).toEqual(['Plan', 'Context', 'Tasks']);
+      expect(children.map(item => item.label)).toEqual(['Plan', 'Worklog', 'Context', 'Tasks']);
       expect(children[0].command).toBeDefined();
-      expect(await provider.getChildren(children[2])).toEqual([]);
+      expect(await provider.getChildren(children[3])).toEqual([]);
       const failedFolder = children.find(item => item.label === 'Context')!;
       const inner = await provider.getChildren(failedFolder);
       if (failure === 'EACCES') {
@@ -1032,6 +1032,37 @@ describe('HiveSidebarProvider', () => {
 
     const pendingGroup = statusGroups.find(g => g.groupName === 'Pending');
     expect(pendingGroup?.features.map(f => f.name)).not.toContain('archived-feature');
+  });
+
+  it('shows a Worklog node for archived and unlogged features that opens the feature log by key without writes', async () => {
+    const featureService = new FeatureService(testRoot);
+    featureService.create('shipped-feature');
+    featureService.create('quiet-feature');
+    new hiveCore.WorklogService(testRoot).record(
+      { kind: 'feature', featureName: 'shipped-feature' },
+      { operationId: 'shipped', title: 'Shipped feature', checkpoint: { summary: 'Merged' } },
+      { owner: 'opencode-v2', sessionId: 'ses_done', agent: 'hive-master' },
+    );
+    featureService.archive('shipped-feature', 'done');
+    const worklogPath = path.join(testRoot, '.hive', 'features', '01_shipped-feature', 'worklog.json');
+    const before = fs.readFileSync(worklogPath, 'utf8');
+
+    const provider = new HiveSidebarProvider(testRoot);
+    const groups = await provider.getChildren();
+    const archived = groups.find(item => 'groupName' in item && item.groupName === 'Archived') as any;
+    const shippedChildren = await provider.getChildren(archived.features[0]);
+    const worklog = shippedChildren.find(item => item.label === 'Worklog') as any;
+    expect(worklog.contextValue).toBe('feature-worklog');
+    expect(worklog.worklogKey).toBe('feature:shipped-feature');
+    expect(worklog.description).toBe('1 checkpoint · just now');
+    expect(worklog.command).toEqual({ command: 'hive.worklog.open', title: 'Open Worklog', arguments: ['feature:shipped-feature'] });
+    expect(String(worklog.tooltip)).toContain('Shipped feature');
+
+    const quiet = await firstFeature(provider, 'quiet-feature');
+    const quietWorklog = (await provider.getChildren(quiet)).find(item => item.label === 'Worklog') as any;
+    expect(quietWorklog.description).toBe('No checkpoints yet');
+    expect(fs.existsSync(path.join(testRoot, '.hive', 'features', '02_quiet-feature', 'worklog.json'))).toBe(false);
+    expect(fs.readFileSync(worklogPath, 'utf8')).toBe(before);
   });
 
   it('archived features get context value for archive command', async () => {

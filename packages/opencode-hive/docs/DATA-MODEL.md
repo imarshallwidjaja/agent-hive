@@ -27,7 +27,7 @@
         ├── context/             # Persistent knowledge files
         │   ├── index.json       # Schema-v1 operational index
         │   ├── .managed-mutation-pending.json # Present only during publication/recovery
-        │   ├── overview.md      # Reserved human-facing summary/history file
+        │   ├── overview.md      # Reserved human-facing purpose and design summary
         │   ├── decisions.md     # Optional example context file
         │   ├── architecture.md  # Optional example context file
         │   └── constraints.md   # Optional example context file
@@ -85,7 +85,7 @@ The primary authors the native Forager prompt. At native subagent dispatch (`tas
 
 ## Reserved Overview Convention
 
-- `context/overview.md` is a human-facing summary. Plan review threads are stored in `comments/plan.json`; `comments.json` is a legacy fallback.
+- `context/overview.md` is a human-facing summary of the feature's purpose and design; progress and revision history live in `worklog.json` through the Worklog tools. Plan review threads are stored in `comments/plan.json`; `comments.json` is a legacy fallback.
 - Create it with `hive_context_write`. For later replacement, call a named `hive_context_read` and pass its revision and `contentHash` as `expectedRevision` and `expectedContentHash`. From a repository-root session, provide `feature` whenever more than one live feature exists; a bound session or sole live feature can resolve it when omitted.
 - `plan.md` remains the graph source of truth for plan-backed task generation, dependency parsing, and execution, and may still include a readable design summary before `## Tasks`.
 - `context/overview.md` is readable by name but absent from the durable catalog.

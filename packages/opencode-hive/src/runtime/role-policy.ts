@@ -28,7 +28,9 @@ export const ROUTING_BASES = [
   'scout-researcher', 'forager-worker', 'plan-reviewer', 'code-reviewer', 'simplicity-reviewer', 'approach-advisor', 'vulnerability-reviewer',
 ] as const satisfies readonly CustomAgentBase[];
 
-const READ_TOOLS = ['hive_context_read', 'hive_constraints_read', 'hive_plan_read', 'hive_status', 'hive_repositories_status', 'hive_git_snapshot'];
+const READ_TOOLS = ['hive_context_read', 'hive_constraints_read', 'hive_plan_read', 'hive_status', 'hive_repositories_status', 'hive_git_snapshot',
+  'hive_worklog_list', 'hive_worklog_read'];
+const WORKLOG_RECORD = 'hive_worklog_record';
 const CONTEXT_WRITES = ['hive_context_write', 'hive_context_append', 'hive_context_edit'];
 const CONSTRAINT_MUTATIONS = ['hive_constraints_add', 'hive_constraints_edit', 'hive_constraints_clear'];
 const REVIEW_TOOLS = [...READ_TOOLS, ...CONTEXT_WRITES];
@@ -36,7 +38,7 @@ const TASK_TRACE_TOOLS = ['hive_task_trace', 'hive_task_trace_content'];
 const INSPECTION_TOOLS = ['hive_worktree_inspect', 'hive_adhoc_worktree_inspect'];
 const BACKGROUND_TOOLS = ['hive_background_status', 'hive_background_reconcile', 'hive_background_reconcile_batch', 'hive_background_cancel'];
 const REVIEW_PRIMARY_TOOLS = [...REVIEW_TOOLS, ...TASK_TRACE_TOOLS, ...INSPECTION_TOOLS, ...CONSTRAINT_MUTATIONS, ...BACKGROUND_TOOLS,
-  'hive_feature_select', 'hive_adhoc_worktree_create', 'hive_adhoc_worktree_cleanup'];
+  'hive_feature_select', 'hive_adhoc_worktree_create', 'hive_adhoc_worktree_cleanup', WORKLOG_RECORD];
 
 /** Operations only a primary session may run; child sessions deny them. */
 export const PRIMARY_ONLY_TOOLS = [
@@ -44,8 +46,16 @@ export const PRIMARY_ONLY_TOOLS = [
   'hive_plan_approve', 'hive_tasks_sync', 'hive_task_create',
   'hive_worktree_merge', 'hive_worktree_cleanup',
   'hive_adhoc_worktree_create', 'hive_adhoc_worktree_merge', 'hive_adhoc_worktree_cleanup',
-  ...CONSTRAINT_MUTATIONS, 'hive_context_archive', ...BACKGROUND_TOOLS,
+  ...CONSTRAINT_MUTATIONS, 'hive_context_archive', ...BACKGROUND_TOOLS, WORKLOG_RECORD,
 ];
+
+/**
+ * Primary-only operations whose OpenCode v1 executor also checks the role grant and the session's live parent before
+ * running, so neither a broad operator allow rule nor a missing `primary_tools` entry can let a child call them.
+ * They stamp the caller as the author of shared records. The check fails closed when the session cannot be read.
+ * OpenCode v2 runs the same check for every Hive tool in its registrar guard.
+ */
+export const LIVE_PARENT_CHECKED_TOOLS: readonly string[] = [WORKLOG_RECORD];
 
 export function mergePrimaryOnlyTools(existing: readonly string[] | undefined): string[] {
   return [...new Set([...(existing ?? []), ...PRIMARY_ONLY_TOOLS])];
@@ -72,7 +82,7 @@ export function createRolePolicy(customAgents: Record<string, ResolvedCustomAgen
     'architect-planner': {
       hiveTools: [...REVIEW_TOOLS, ...CONSTRAINT_MUTATIONS, ...INSPECTION_TOOLS, ...BACKGROUND_TOOLS, ...TASK_TRACE_TOOLS,
         'hive_feature_create', 'hive_feature_select', 'hive_plan_write', 'hive_plan_patch', 'hive_plan_approve', 'hive_tasks_sync',
-        'hive_repositories_discover', 'hive_repositories_update', 'hive_context_archive'],
+        'hive_repositories_discover', 'hive_repositories_update', 'hive_context_archive', WORKLOG_RECORD],
       permission: { question: 'allow', task: architectTaskPermission, edit: 'deny', skill: 'allow' },
     },
     'swarm-orchestrator': primary,

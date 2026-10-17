@@ -86,6 +86,17 @@ export async function isDirectChildSession(
   return (await resolveTargetSession(client, directory, childID, parentID))?.relationship === 'direct_child';
 }
 
+// Fresh runtime read of whether a session has no parent: true for a root session, false for a child, undefined
+// when the session cannot be read or its record is malformed, so callers can fail closed.
+export async function isRootSession(
+  client: Pick<TaskTraceClient, 'session'>,
+  directory: string,
+  sessionID: string,
+): Promise<boolean | undefined> {
+  const session = await resolveTargetSession(client, directory, sessionID, sessionID);
+  return session ? session.parentID === undefined : undefined;
+}
+
 function isSessionStatusValue(value: unknown): boolean {
   const entry = record(value);
   if (!entry || typeof entry.type !== 'string') return false;

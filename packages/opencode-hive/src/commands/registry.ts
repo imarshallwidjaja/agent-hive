@@ -53,6 +53,11 @@ export const HIVE_COMMANDS = [
     agent: 'vulnerability-review-primary',
   },
   {
+    key: 'worklog',
+    name: '/worklog',
+    description: 'Read back where the current work stands from its Worklog',
+  },
+  {
     key: 'compact-summary',
     name: '/compact-summary',
     description: 'Produce a recovery summary for the current OpenCode session',

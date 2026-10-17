@@ -387,6 +387,8 @@ describe('skill content', () => {
     expect(skill).toBeDefined();
     expect(skill!.template).toContain('context/overview.md');
     expect(skill!.template).toContain('human-facing review surface');
+    expect(skill!.template).toContain('progress and revision history belong in the feature Worklog');
+    expect(skill!.template).not.toContain('primary human-facing review surface and history');
     expect(skill!.template).toContain('plan.md` remains execution truth');
     expect(skill!.template).toContain('Design Summary');
     expect(skill!.template).not.toContain('Treat `plan.md` as the human-facing review surface and execution truth');

@@ -29,6 +29,12 @@ describe('shipped extension artifact parity', () => {
     expect(bundle).toContain('hive.repositories');
   });
 
+  it('includes the worklog viewer in dist', () => {
+    expect(bundle).toContain('hive.worklogs');
+    expect(bundle).toContain('hive-worklog');
+    expect(bundle).toContain('hive.worklogs.viewer');
+  });
+
   it('does not contain obsolete project-config overlay identifiers', () => {
     for (const identifier of [
       'projectConfigPath',

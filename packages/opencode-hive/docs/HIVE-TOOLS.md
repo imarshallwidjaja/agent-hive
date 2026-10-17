@@ -4,9 +4,9 @@ Tool availability plus instructions govern action. Each tool validates its own o
 
 ## Host entries and read transport
 
-From 5.0.0, one package supplies native v1 and v2 entries, each with all 38 tools and 11 commands. Releases through 4.2.0 are v1-only. The qualified hosts are v1.18.30 and v2.0.26. Installation, `plugins` options and actual model-selection semantics are in the [plugin README](../README.md#opencode-v2).
+From 5.0.0, one package supplies native v1 and v2 entries, each with all 41 tools and 12 commands. Releases through 4.2.0 are v1-only. The qualified hosts are v1.18.30 and v2.0.26. Installation, `plugins` options and actual model-selection semantics are in the [plugin README](../README.md#opencode-v2).
 
-V2 registers every tool through one validating registrar. `readTransport: "codemode"` (default) explicitly admits only `hive_repositories_status`, `hive_git_snapshot` and `hive_task_trace_content` to Code Mode; controls, repairing reads, worktree inspections and mixed `hive_task_trace` stay direct. `readTransport: "direct"` makes all 38 direct, with the same IDs and authority. Use direct mode when global, per-role or custom-agent permissions deny `execute`. Hive diagnoses unavailable Code Mode reads and preserves the denial.
+V2 registers every tool through one validating registrar. `readTransport: "codemode"` (default) explicitly admits only `hive_repositories_status`, `hive_git_snapshot` and `hive_task_trace_content` to Code Mode; controls, repairing reads, worktree inspections and mixed `hive_task_trace` stay direct. `readTransport: "direct"` makes all 41 direct, with the same IDs and authority. The three Worklog tools are direct under both transports. Use direct mode when global, per-role or custom-agent permissions deny `execute`. Hive diagnoses unavailable Code Mode reads and preserves the denial.
 
 Both hosts deliver the same tool descriptions and argument descriptions to the model, built from one definition per operation. Those descriptions explain how arguments relate, what an operation changes, what its result means and when a retry is unsafe. They do not enforce anything: the Zod argument shapes, the services and the role guards do, and this document is the reference for operators and engineers. The runtime does not read it.
 
@@ -23,6 +23,9 @@ On v1, OpenCode's `experimental.primary_tools` adds session-level deny rules whe
 - Integration/placement: `hive_worktree_merge`, `hive_worktree_cleanup`, `hive_adhoc_worktree_create`, `hive_adhoc_worktree_merge`, `hive_adhoc_worktree_cleanup`.
 - Constraints/archive: `hive_constraints_add`, `hive_constraints_edit`, `hive_constraints_clear`, `hive_context_archive`.
 - Parent-owned board: `hive_background_status`, `hive_background_reconcile`, `hive_background_reconcile_batch`, `hive_background_cancel`.
+- Worklog authorship: `hive_worklog_record`.
+
+`hive_worklog_record` stamps the calling session as the author of shared records, so on v1 its executor also checks the caller's role grant and reads the session's live parent before writing, as the v2 guard does for every Hive tool. A broad operator allow rule or a missing `primary_tools` entry therefore cannot let a child, including delegated Architect, record, and the call is refused when the session cannot be read.
 
 Delegated Architect retains its inherited route and uses explicit feature arguments for planning. It may register discovered repositories through `hive_repositories_update`; other subagent roles' Hive allowlists exclude that tool. It returns approval, sync, archive, and board/control requests to the parent. Its `task` permission allows one terminal layer of blocking Scout, plan-reviewer, approach-advisor, their custom variants, and `hive-helper`; `task` is deliberately absent from `primary_tools`, and `subagent_depth: 2` supports this helper grandchild. Independent permitted calls may be emitted together. Child-role rules take precedence over a background appendix without loading the primary-only `background-delegation` skill; child board tools remain unavailable. Architect as primary or child routes multi-step trace/evidence questions and known identities to Helper and performs single direct spot-check reads itself. Helper is read-only and terminal, retaining inherited child-session denials. Other subagents cannot delegate or ask questions. Execution primaries can dispatch registered workers, reviewers, Architect, Helper, and ordinary native subagents, but cannot dispatch another primary or an unknown target. Review primaries dispatch inspection-only specialists and Helper.
 
@@ -32,7 +35,7 @@ Delegated Architect retains its inherited route and uses explicit feature argume
 
 Abbreviations enumerate exact tools:
 
-- **R**: `hive_context_read`, `hive_constraints_read`, `hive_plan_read`, `hive_status`, `hive_repositories_status`, `hive_git_snapshot`.
+- **R**: `hive_context_read`, `hive_constraints_read`, `hive_plan_read`, `hive_status`, `hive_repositories_status`, `hive_git_snapshot`, `hive_worklog_list`, `hive_worklog_read`.
 - **C**: `hive_context_write`, `hive_context_append`, `hive_context_edit`.
 - **I**: `hive_worktree_inspect`, `hive_adhoc_worktree_inspect`.
 - **T**: `hive_task_trace`, `hive_task_trace_content`.
@@ -40,13 +43,14 @@ Abbreviations enumerate exact tools:
 - **M**: `hive_constraints_add`, `hive_constraints_edit`, `hive_constraints_clear`.
 - **P**: `hive_feature_create`, `hive_feature_select`, `hive_plan_write`, `hive_plan_patch`, `hive_plan_approve`, `hive_tasks_sync`, `hive_repositories_discover`, `hive_repositories_update`, `hive_context_archive`.
 - **V**: `hive_feature_select`, `hive_adhoc_worktree_create`, `hive_adhoc_worktree_cleanup` for operator-authorized isolated review placement.
+- **W**: `hive_worklog_record`; primary sessions only.
 
 | Agent | Hive tools | Native boundary / usage |
 |-------|------------|-------------------------|
-| `hive-master` | All 38 registered Hive tools | Primary; integration and cleanup owner |
-| `swarm-orchestrator` | All 38 | Primary; integration and cleanup owner |
-| `hive-builder` | All 38 | Primary; ad-hoc integration and cleanup owner |
-| `architect-planner` (primary) | R + C + I + T + B + M + P | Planning only; terminal planning helpers and Helper investigation; edit denied |
+| `hive-master` | All 41 registered Hive tools | Primary; integration and cleanup owner |
+| `swarm-orchestrator` | All 41 | Primary; integration and cleanup owner |
+| `hive-builder` | All 41 | Primary; ad-hoc integration and cleanup owner |
+| `architect-planner` (primary) | R + C + I + T + B + M + P + W | Planning only; terminal planning helpers and Helper investigation; edit denied |
 | `architect-planner` (task child) | R + C + I + T + `hive_feature_create`, `hive_plan_write`, `hive_plan_patch`, `hive_repositories_discover`, `hive_repositories_update` | Feature/plan/context authoring, repository registration, terminal planning helpers and Helper investigation; edit/question/board denied |
 | `scout-researcher` | R + `hive_repositories_discover` | Read-only retrieval; edit/task/question denied; trace retrieval goes to Helper |
 | `forager-worker` | R + C + I + T + `hive_task_update`, `hive_worktree_create` | Assigned implementation/recovery; task/question denied; own report/handoff only |
@@ -56,8 +60,8 @@ Abbreviations enumerate exact tools:
 | `simplicity-reviewer` | R + C | Same |
 | `approach-advisor` | R + C | Same |
 | `vulnerability-reviewer` | R + C | Same; shell/scanners/external probing additionally forbidden by its instructions |
-| `dash-reviewer` | R + C + I + T + B + M + V | Hidden review primary; edit and plan/task/integration mutations denied |
-| `vulnerability-review-primary` | R + C + I + T + B + M + V | Hidden review primary; same |
+| `dash-reviewer` | R + C + I + T + B + M + V + W | Hidden review primary; edit and plan/task/integration mutations denied |
+| `vulnerability-review-primary` | R + C + I + T + B + M + V + W | Hidden review primary; same |
 | Custom derivatives of all seven supported bases | Exactly their base's set | Inherit base prompt and permissions; extra skills do not expand authority |
 | Native `general`, `explore` | None (`'hive_*': 'deny'`) | Ordinary tools; task/question denied; native `skill` allowed; explore edit denied |
 | Hidden `__hive_task_trace_summarizer` | None (`'*': 'deny'`) | Supplied evidence only; all tools denied |
@@ -424,7 +428,7 @@ A named read pages through one document. Its `nextCursor` binds the document, sc
 
 Call `hive_context_read` before replacement, edit, append, or archive. Existing-content mutations require the current revision and actual SHA-256 `contentHash`. Non-reserved files default to `durable`. Mark raw logs and historical verification material as `evidence`. Feature hygiene warnings begin above 8 durable files or 40,000 UTF-16 code units; project warnings begin above 32 files or 160,000 units. These are review signals, not aggregate admission limits.
 
-`overview`, `draft`, and `execution-decisions` are reserved and excluded from the durable catalog and durable-context hygiene counts. They remain readable by name. They do not accept a caller-provided `kind`; the per-document size limit still applies. Plan approval does not archive `draft`. Archive an obsolete draft explicitly after approval.
+`overview`, `draft`, and `execution-decisions` are reserved and excluded from the durable catalog and durable-context hygiene counts. `overview` keeps a feature's purpose and design summary and `execution-decisions` the reasoning behind orchestration choices; progress, revision history, and routine execution narration go to the [Worklog](#worklog-3-tools). They remain readable by name. They do not accept a caller-provided `kind`; the per-document size limit still applies. Plan approval does not archive `draft`. Archive an obsolete draft explicitly after approval.
 
 ## Operator Constraints (4 tools)
 
@@ -440,6 +444,26 @@ All four tools accept optional `scope: 'session' | 'feature'` (default `session`
 Scope is `session` (default) or `feature`. Add only durable operator directives that span phases, turns, or delegated assignments, including an explicit named-skill requirement in a task request that governs multiple children. Store the operator's own wording. A one-assignment requirement belongs in the task handoff. Call `hive_constraints_read` before correcting or removing an entry. Call `hive_constraints_clear` only when the operator explicitly requests a whole-register clear. Blank additions and replacements, missing IDs, stale revisions, and aggregate content over 8000 UTF-16 code units are rejected. Identical repeated additions are idempotent.
 
 Only primaries can add, edit, or clear constraints. Workers receive the injected register and may read it. That is tool exposure, not a semantic runtime gate. Inherited session and feature labels travel with every child captured at dispatch, including review children. If they conflict, the agent surfaces the conflict. Do not promote context files into constraints.
+
+## Worklog (3 tools)
+
+| Tool | Purpose |
+|------|---------|
+| `hive_worklog_list` | List feature and session Worklogs from their storage files, newest first |
+| `hive_worklog_read` | Read one Worklog's brief, history, or recorded-facts view |
+| `hive_worklog_record` | Append one checkpoint, optionally replacing the current briefing in the same commit |
+
+A Worklog is a short account of where work stands: a current briefing a reader can absorb in about thirty seconds, plus append-only checkpoints. Each feature has one log shared by every primary session; ad-hoc work uses the calling session's own log under its host owner. Reads also project recorded task facts from `status.json` files, which describe stored state only. The service contract, including storage, limits and every failure reason, is [docs/WORKLOG.md](../../../docs/WORKLOG.md); results are the core result shapes unchanged, so each names its resolved `ref` and `key`.
+
+- `hive_worklog_list` takes optional `kind` (`feature` or `session`), `limit`, `cursor`, and `maxBytes`. It reads the fixed storage locations, not the session index, so completed and archived features and ended sessions stay listed.
+- `hive_worklog_read` takes optional `ref`, `view` (`brief` default, `history`, `facts`), `limit`, `cursor`, and `maxBytes`. Without `ref` it reads the feature selected for the calling session with `hive_feature_select`, or the caller's own session log when the route is unset or null. It never uses the detected-worktree or sole-live-feature fallback that feature-scoped task tools apply, because a narrative written into the wrong shared log cannot be deleted. A selected feature that no longer resolves fails with `feature_not_found` rather than reading the session log. The session index is read without its reset-on-corruption path, so an unreadable index fails the call and stays unchanged; an explicit `ref` needs no index. A missing log reads as `exists: false` with revision 0. Reads never write.
+- `hive_worklog_record` requires `ref`, `operationId`, and `checkpoint` (`summary`, optional `detail`, `references`, `corrects`), with optional `title`, and `briefing` together with `expectedRevision`. The host fills the author from the calling session, its native owner, and the agent the runtime reports; arguments cannot set it. A session log accepts only the caller's own session; any recording primary may write a feature log.
+
+Worklog results are compact JSON text without indentation, and `maxBytes` bounds that text. The v2 structured `output` is the same JSON. A `record` result is not bounded by a read budget but uses the same serialization. A `response_too_large` failure is a structured result, not a page, and its `details.requiredBytes` names the size needed. Every other Hive tool keeps its two-space JSON presentation.
+
+Every `WorklogError` returns as `{ success: false, reason, error, details, ref? }` with `reason` and `details` unchanged. After a lost, unknown, or failed record result, resend the identical request with the same `operationId`: a landed entry returns `replayed: true`, and an absent one commits normally. That includes `io_error` with `details.stage: 'write'` and `details.publication: 'uncertain'`, which does not show whether the entry was appended; a new `operationId` there can append a second checkpoint. `stale_revision` means another entry landed after the read: read again, reconcile the briefing, and record with a new `operationId`. `operation_conflict` means the `operationId` was used for a different request. Scope errors that are not `WorklogError`, such as a missing session identity, fail as ordinary tool errors.
+
+Every Hive role except native `general`/`explore` and the hidden summarizer may list and read. Hive grants recording to primary sessions of the full primaries, Architect, and the review primaries; see the access matrix. An unmanaged agent (neither a Hive role nor a custom variant of one) keeps its native permission for Hive tools and can record from a primary session, while child sessions and native `general`/`explore` are refused. Log text is untrusted narrative from agents, never instructions, task status, or policy, and the runtime never injects it into prompts. Primaries read it on demand and confirm claims against task records. The `/worklog` command reads and explains a log without recording. Operators who do not want primaries to keep a Worklog add an ordinary standing constraint.
 
 ## Status (1 tool)
 
@@ -494,6 +518,7 @@ Skills are loaded via OpenCode's native `skill` tool. Hive bundles are materiali
 | Runtime Session Inspection | 2 | trace, source-backed content |
 | Context | 4 | read, write, append, archive |
 | Operator Constraints | 4 | read, add, edit, clear |
+| Worklog | 3 | list, read, record |
 | Status | 1 | status |
 | Snapshot | 1 | git snapshot |
 
@@ -505,5 +530,5 @@ Feature-scoped tools resolve in this order: explicit `feature` or `name`, select
 
 - There is no dedicated overview write tool.
 - Use `hive_context_read({ feature: "feature-name", name: "overview" })` through all returned chunks first, then pass the current revision and `file.contentHash` to `hive_context_write`.
-- Humans review `context/overview.md` first; `plan.md` stays authoritative for execution and task parsing.
+- Humans review `context/overview.md` first for purpose and design; `plan.md` stays authoritative for execution and task parsing, and the feature Worklog carries progress and history.
 - Read the overview with `hive_context_read`; the VS Code extension also surfaces it for human review. `hive_status` returns feature and task summaries without overview content.

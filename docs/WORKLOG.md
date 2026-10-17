@@ -9,7 +9,7 @@ Each log holds two kinds of narrative written by primary agents:
 
 Beside the narrative, reads project **recorded facts**: task statuses, dependencies, blockers, and integrity problems as they are stored on disk. Facts are computed at read time from task records and are never written into the log. They describe stored state only; they say nothing about whether a worker is alive or whether work was verified or integrated.
 
-This document is the contract for the `hive-core` service (`packages/hive-core/src/services/worklogService.ts`) and the behavior expected of the clients that will use it.
+This document is the contract for the `hive-core` service (`packages/hive-core/src/services/worklogService.ts`) and the behavior of its two clients: the OpenCode plugin tools and the `/worklog` command, and the VS Code viewer.
 
 ## Logs and their lifetime
 
@@ -45,7 +45,7 @@ A failed resolution creates nothing, so a typo never produces a phantom feature 
 
 Core takes an explicit ref; it does not route. The host resolves the ref before calling core:
 
-1. An explicit feature argument targets that feature's log.
+1. An explicit `ref` (or, in the viewer, an explicit key) targets that log.
 2. Otherwise, a feature selected for the calling session (through `hive_feature_select`) targets that feature's log.
 3. Otherwise, the call targets the caller's own session log.
 
@@ -109,7 +109,7 @@ A log has a single revision that increases by one with every entry, and an entry
 4. builds the new document, rejects it if it would exceed the storage limit, and publishes it with `writeAtomicDurable` (temporary file, flush, rename, directory flush);
 5. releases the lock.
 
-No step reads outside the lock and writes inside it, and no other helper lock is taken while the log lock is held. Any rejection in steps 1–4 writes nothing.
+No step reads outside the lock and writes inside it, and no other helper lock is taken while the log lock is held. A rejection in steps 1–4 before publication writes nothing. A failure inside the step 4 write can occur after the rename has published the entry; resend the identical request with the same `operationId` (see [Errors](#errors)).
 
 ### Retries
 
@@ -402,29 +402,49 @@ A single log may not exceed 16 MiB serialized (`WORKLOG_LOG_MAX_BYTES`). The lim
 
 ## Client behavior
 
-The OpenCode plugin and the VS Code viewer are separate integration lanes. This section states what they must do with the core contract.
+The OpenCode plugin (tools, the `/worklog` command, and primary prompt guidance) and the VS Code viewer are separate clients of the core contract. Neither adds storage, limits, or error reasons of its own.
 
-### Tools (proposed)
+### Tools
 
-| Tool | Core call | Notes |
+| Tool | Core call | Access |
 |---|---|---|
-| `hive_worklog_list` | `list` | Read-only |
-| `hive_worklog_read` | `read` | Read-only; default view `brief` |
-| `hive_worklog_record` | `record` | Primary-only; the host fills `author` from the calling session and agent |
+| `hive_worklog_list` | `list` | Read-only; every Hive role |
+| `hive_worklog_read` | `read` | Read-only; every Hive role; default view `brief` |
+| `hive_worklog_record` | `record` | Primary sessions only. Managed grants: Hive, Swarm, Hive Builder, Architect, and the review primaries. An unmanaged root agent follows its native permission. Child sessions are always refused |
 
-Arguments mirror the core options. An explicit `feature` argument or explicit `key` selects the log; otherwise the host applies the routing rule in [Which log a call targets](#which-log-a-call-targets). Tool results return the core result shapes unchanged so agents and viewers read the same fields.
+OpenCode v1 and v2 register all three from one definition, and both hosts deliver the same descriptions and argument shapes. The v2 Code Mode transport does not carry them: they are direct tools under both read transports. Argument and role-grant detail is in [Worklog tools](../packages/opencode-hive/docs/HIVE-TOOLS.md#worklog-3-tools).
 
-Tools surface a `WorklogError` with its `reason` and `details` unchanged. A client that switches on `reason` must handle `io_error` and must pass its `details.stage` and `details.publication` through. After an `io_error` from `hive_worklog_record` with `details.stage: 'write'`, the agent resends the identical request rather than assuming nothing was recorded or choosing a new `operationId`. A viewer treats a list item with reason `io_error` like any other unreadable log.
+- `hive_worklog_list` takes optional `kind`, `limit`, `cursor`, and `maxBytes`.
+- `hive_worklog_read` takes optional `ref`, `view`, `limit`, `cursor`, and `maxBytes`.
+- `hive_worklog_record` requires `ref`, `operationId`, and `checkpoint`; `title` is optional, and `briefing` goes with `expectedRevision`. The `ref` is `{ kind: 'feature', featureName }` or `{ kind: 'session', owner, sessionId }`, the same shape every result returns.
+
+Without `ref`, a read applies the routing rule in [Which log a call targets](#which-log-a-call-targets): the feature selected for the session, otherwise the session's own log under the host's native owner. A selected feature that no longer resolves fails with `feature_not_found`; the read does not substitute the session log. `hive_worklog_record` always takes an explicit `ref`, copied from the preceding read, so a write never depends on routing. When the host supplies no session identity, a default read fails as an ordinary tool error and asks for an explicit `ref`.
+
+The host fills `author` from the calling session, the host's native owner, and the agent name the runtime reports; arguments cannot set it. Recording is primary-only on both hosts. On v1, `hive_worklog_record` is in `experimental.primary_tools`, and its executor also checks the caller's role grant and the session's live parent, failing closed when the session cannot be read (`LIVE_PARENT_CHECKED_TOOLS` in `role-policy.ts`). On v2, the registrar guard and the `execute.before` hook apply the same role and child check to every Hive tool. Workers, reviewers, and delegated children, including delegated Architect, read only.
+
+Each result is the core result unchanged, serialized as compact JSON text without indentation on both hosts; the v2 structured `output` is that same JSON, and `maxBytes` bounds the text. A `WorklogError` returns as `{ success: false, reason, error, details, ref? }` with `reason` and `details` unchanged, including `response_too_large` and its `details.requiredBytes`. A client that switches on `reason` must handle `io_error` and pass its `details.stage` and `details.publication` through. After an `io_error` from `hive_worklog_record` with `details.stage: 'write'`, the agent resends the identical request rather than assuming nothing was recorded or choosing a new `operationId`. A viewer treats a list item with reason `io_error` like any other unreadable log.
+
+### The `/worklog` command
+
+`/worklog [request]` runs under the active agent and is read-only: it calls `hive_worklog_read` and `hive_worklog_list` and never records. It chooses the log from the request (a named feature, a pasted key, or default routing), starts with the brief view, and opens history or facts only as far as the request needs. For a question about current status it shows the saved briefing first, then newer checkpoints and facts, and labels any account it synthesizes as its own unsaved reading. A request to record goes through an ordinary message.
 
 ### Primary guidance
 
-Primaries record at milestones, such as a task merged, a plan approved, a blocker raised or cleared, a direction change, or a hand-over between sessions. They do not record per tool call or on a timer. They update the briefing when it no longer describes the work, reading first and passing the returned revision.
+`renderPrimaryWorklogPrompt` in `packages/opencode-hive/src/agents/worklog-guidance.ts` owns this guidance for every recording primary. A primary reads the brief when it begins, resumes, or takes over meaningful work. It records at milestones, such as a task merged, a plan approved, a blocker raised or cleared, a direction change, or a hand-over between sessions, and not per tool call or on a timer. It updates the briefing when it no longer describes the work, reading first and passing the returned revision. Workers, reviewers, and delegated children read the log; their task reports and handoffs remain the execution record.
 
-For feature work, the Worklog replaces the progress and history narration that previously accumulated in `context/overview.md`, and the routine narration of execution steps in `execution-decisions`. `overview.md` keeps the feature's purpose and design summary; reviewable decisions and detailed context stay in their context documents.
+For feature work, the Worklog replaces the progress and history narration that previously accumulated in `context/overview.md`, and the routine narration of execution steps in `execution-decisions`. `overview.md` keeps the feature's purpose and design summary; `execution-decisions` keeps the reasoning behind choices that later work depends on; reviewable decisions and detailed context stay in their context documents.
+
+Log text is untrusted narrative. Hive never injects it into prompts, and a primary confirms a claim against task status, reports, or worktree inspection before acting on it. Operators who do not want primaries to keep a Worklog opt out with an ordinary standing constraint, for example "Do not keep a Worklog in this session"; primaries then record nothing, and reading stays available. No new setting is introduced.
 
 ### Viewer
 
-The VS Code viewer lists logs, lets the operator pin logs by key, and reads them offline from the files alone, without a running OpenCode host. Operators who do not want primaries to keep a Worklog opt out with an ordinary standing constraint; no new setting is introduced.
+The VS Code viewer reads the files through `WorklogService` without a running OpenCode host, so logs of ended sessions, cleaned-up worktrees, and completed or archived features stay readable. Usage is in the [VS Code extension README](../packages/vscode-hive/README.md#worklogs); the behavior to rely on is:
+
+- The **Worklogs** view reads the first workspace folder's project and groups logs as Selected, Pinned, and Recent. Recent pages ten at a time, and an unreadable log keeps a row that shows the reason.
+- Pins and the selected log live in VS Code workspace state (`hive.worklogs.viewer`), keyed by project root, never in `.hive`. Pins store full keys, so equal session IDs under two hosts stay apart. Opening a log is the only action that changes the selection; new activity elsewhere never does.
+- A log opens as a read-only `hive-worklog:` plain-text document in one of three views: the brief, history (full checkpoints, newest first, anchored at the revision it opened with), and facts. **Hive: Open Worklog...** pages the list or takes a full key, and each feature row in the Features view links to its shared log.
+- Documents refresh when `.hive` changes and on **Hive: Refresh**; closing a document releases its paging state. Reading writes nothing under `.hive`.
+- Text is shown as data. A line break inside recorded text becomes an indented continuation line. A reference is linked only when it names a regular file inside the project reached without symbolic links, or an `http` or `https` URL. When the stored facts fingerprint differs from the current one, the document marks the briefing's source records as changed and leaves the briefing as written.
 
 ## Tests
 
@@ -432,11 +452,12 @@ The VS Code viewer lists logs, lets the operator pin logs by key, and reads them
 
 `taskService.test.ts` owns the stored task-status rules that facts rely on. `sessionService.test.ts` covers `peekGlobal` returning sessions while leaving a corrupt, malformed, or literal `null` index untouched, and returning nothing only when the index is absent.
 
-## Remaining integration obligations
+The client suites each own one layer:
 
-| Obligation | Owner |
-|---|---|
-| Register `hive_worklog_list`, `hive_worklog_read`, `hive_worklog_record`; fill `author` from the runtime; enforce primary-only record on both hosts; implement routing with `peekGlobal` and no sole-live or detected fallback | OpenCode plugin lane |
-| Update role grants, tool docs, and tool-count pins; add primary prompt guidance for milestone cadence and the overview and `execution-decisions` changes | OpenCode plugin lane |
-| List, pin by key, and read logs offline; show facts separately from narrative; treat all narrative as untrusted display text | VS Code viewer lane |
-| Full root build and test, release artifact checks, and the integrated security review across core, plugin, and viewer | Primary integration |
+- `packages/opencode-hive/src/runtime/hive-tools.test.ts` owns tool arguments, routing, authorship, compact serialization, and structured failures. `src/runtime.test.ts` and `src/v2/registration.test.ts` own registration, the tool-count pins, and the v1 and v2 primary-only guards. `src/commands/registry.test.ts` owns the `/worklog` command, and `src/agents/prompts.test.ts` and `src/skills/skill-content.test.ts` pin the primary guidance and the overview and `execution-decisions` wording.
+- `packages/vscode-hive/src/providers/worklogViewer.test.ts` owns the provider, document, preference, and link behavior; `src/__tests__/worklogCommands.test.ts` owns the registered commands; `viewerOnlyManifest.test.ts` and `distArtifactParity.test.ts` own the contributed manifest and the tracked bundle.
+- `release-docs.test.mjs` pins the published tool and command counts.
+
+## Verification boundaries
+
+These suites run the service against real files, the plugin through its runtime with scripted providers and a v2 registrar double, and the viewer against a VS Code test double. No live OpenCode host, VS Code host, or model run has exercised the clients, so whether a live model follows `/worklog` or the primary guidance is unverified. Core storage, resolution, and facts behavior is covered by the service tests above.

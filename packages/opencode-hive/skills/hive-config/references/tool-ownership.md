@@ -29,7 +29,7 @@ Each piece of Hive state has one owning tool. If that tool is not exposed to you
 
 | Set | Tools | Roles |
 |---|---|---|
-| R | `hive_status`, `hive_plan_read`, `hive_context_read`, `hive_constraints_read`, `hive_repositories_status`, `hive_git_snapshot` | Every Hive role except the hidden trace summarizer |
+| R | `hive_status`, `hive_plan_read`, `hive_context_read`, `hive_constraints_read`, `hive_repositories_status`, `hive_git_snapshot`, `hive_worklog_list`, `hive_worklog_read` | Every Hive role except the hidden trace summarizer |
 | I | `hive_worktree_inspect`, `hive_adhoc_worktree_inspect` | Primaries, Architect, Forager, Hive Helper, review primaries |
 | T | `hive_task_trace`, `hive_task_trace_content` | Same as I |
 | Discover | `hive_repositories_discover` | Primaries, Architect, Scout |
@@ -64,6 +64,7 @@ Roles: **P** = full primaries (`hive-master`, `swarm-orchestrator`, `hive-builde
 | `hive_context_write`, `hive_context_append`, `hive_context_edit` | `context/<name>.md`, `context/index.json` (feature or project); edit changes one exact passage of an existing file | P, A, Ac, RP, F, Rev | |
 | `hive_context_archive` | Moves context into `archive/context/` | P, A | yes |
 | `hive_constraints_add`, `hive_constraints_edit`, `hive_constraints_clear` | Session constraints in `sessions.json`; feature `constraints.json` | P, A, RP | yes |
+| `hive_worklog_record` | Appends one checkpoint (and optionally the briefing) to a feature's `worklog.json` or the session's `.hive/worklogs/sessions/<owner>/<sha256>.json` | P, A, RP | yes |
 <!-- hive-host opencode-v1 -->
 | `hive_background_reconcile`, `hive_background_reconcile_batch`, `hive_background_cancel` | Host owner's `background-jobs.json` (`.hive/background-jobs.json` for OpenCode v1) | P, A, RP; experiment-gated | yes |
 <!-- /hive-host -->
@@ -113,6 +114,7 @@ Full primaries are never valid `subagent()` targets, and `hive-helper` is not a 
 - `hive_task_update` is tool-level access. A Forager publishes its own report and handoff for its assigned task; the primary records status, summary, and blocker.
 - A Forager may create only the feature-task worktree its assignment names. Ad-hoc placement and new lanes belong to the primary.
 - Trace tools let Forager support assigned recovery and Hive Helper investigate. They never authorize resuming, retrying, or continuing a session.
+- `hive_worklog_record` stamps the calling session and agent as the author; a session log accepts only its own session, while any primary may record into a feature log. Its executor also checks the live parent on both hosts and refuses when the session cannot be read.
 <!-- hive-host opencode-v1 -->
 - Background tools exist only when `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL` is set; otherwise they return `background_tools_disabled`.
 <!-- /hive-host -->

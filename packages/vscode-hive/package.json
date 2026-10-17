@@ -34,6 +34,7 @@
     "onView:hive.features",
     "onView:hive.backgroundJobs",
     "onView:hive.repositories",
+    "onView:hive.worklogs",
     "onCommand:hive.refresh",
     "onCommand:hive.openFile",
     "onCommand:hive.copyToClipboard",
@@ -47,7 +48,13 @@
     "onCommand:hive.context.archive",
     "onCommand:hive.context.loadMore",
     "onCommand:hive.context.scanChars",
-    "onCommand:hive.constraints.inspect"
+    "onCommand:hive.constraints.inspect",
+    "onCommand:hive.worklog.open",
+    "onCommand:hive.worklog.showHistory",
+    "onCommand:hive.worklog.showFacts",
+    "onCommand:hive.worklog.pin",
+    "onCommand:hive.worklog.unpin",
+    "onCommand:hive.worklog.loadMore"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -73,6 +80,10 @@
         {
           "id": "hive.repositories",
           "name": "Tracked Repositories"
+        },
+        {
+          "id": "hive.worklogs",
+          "name": "Worklogs"
         }
       ]
     },
@@ -90,6 +101,11 @@
       {
         "view": "hive.repositories",
         "contents": "No Hive workspace found.\n\nOpen a Hive workspace to view tracked repositories.\n\n[Refresh](command:hive.refresh)",
+        "when": "!hive.hasHiveRoot"
+      },
+      {
+        "view": "hive.worklogs",
+        "contents": "No Hive workspace found.\n\nOpen a Hive workspace to read its worklogs.\n\n[Refresh](command:hive.refresh)",
         "when": "!hive.hasHiveRoot"
       }
     ],
@@ -153,6 +169,36 @@
       {
         "command": "hive.job.archive",
         "title": "Archive Background Job"
+      },
+      {
+        "command": "hive.worklog.open",
+        "title": "Hive: Open Worklog...",
+        "icon": "$(search)"
+      },
+      {
+        "command": "hive.worklog.showHistory",
+        "title": "Show Worklog History",
+        "icon": "$(history)"
+      },
+      {
+        "command": "hive.worklog.showFacts",
+        "title": "Show Worklog Facts",
+        "icon": "$(checklist)"
+      },
+      {
+        "command": "hive.worklog.pin",
+        "title": "Pin Worklog",
+        "icon": "$(pin)"
+      },
+      {
+        "command": "hive.worklog.unpin",
+        "title": "Unpin Worklog",
+        "icon": "$(pinned)"
+      },
+      {
+        "command": "hive.worklog.loadMore",
+        "title": "Load More Worklog Entries",
+        "icon": "$(fold-down)"
       }
     ],
     "menus": {
@@ -171,6 +217,16 @@
           "command": "hive.refresh",
           "when": "view == hive.repositories",
           "group": "navigation"
+        },
+        {
+          "command": "hive.worklog.open",
+          "when": "view == hive.worklogs",
+          "group": "navigation@1"
+        },
+        {
+          "command": "hive.refresh",
+          "when": "view == hive.worklogs",
+          "group": "navigation@2"
         }
       ],
       "view/item/context": [
@@ -203,6 +259,36 @@
           "command": "hive.job.archive",
           "when": "viewItem == background-job-archiveable",
           "group": "inline"
+        },
+        {
+          "command": "hive.worklog.pin",
+          "when": "view == hive.worklogs && viewItem =~ /^worklog-(log|problem)$/",
+          "group": "inline"
+        },
+        {
+          "command": "hive.worklog.unpin",
+          "when": "view == hive.worklogs && viewItem =~ /^worklog-(log|problem)-pinned$/",
+          "group": "inline"
+        },
+        {
+          "command": "hive.worklog.pin",
+          "when": "view == hive.features && viewItem == feature-worklog",
+          "group": "worklog@3"
+        },
+        {
+          "command": "hive.worklog.showHistory",
+          "when": "viewItem =~ /^worklog-log/ || viewItem == feature-worklog",
+          "group": "worklog@1"
+        },
+        {
+          "command": "hive.worklog.showFacts",
+          "when": "viewItem =~ /^worklog-log/ || viewItem == feature-worklog",
+          "group": "worklog@2"
+        },
+        {
+          "command": "hive.copyToClipboard",
+          "when": "viewItem =~ /^worklog-(log|problem)/ || viewItem == feature-worklog",
+          "group": "worklog@4"
         }
       ],
       "commandPalette": [
@@ -225,6 +311,26 @@
         {
           "command": "hive.job.archive",
           "when": "false"
+        },
+        {
+          "command": "hive.worklog.showHistory",
+          "when": "resourceScheme == hive-worklog"
+        },
+        {
+          "command": "hive.worklog.showFacts",
+          "when": "resourceScheme == hive-worklog"
+        },
+        {
+          "command": "hive.worklog.pin",
+          "when": "resourceScheme == hive-worklog"
+        },
+        {
+          "command": "hive.worklog.unpin",
+          "when": "resourceScheme == hive-worklog"
+        },
+        {
+          "command": "hive.worklog.loadMore",
+          "when": "resourceScheme == hive-worklog"
         }
       ],
       "editor/title": [
@@ -232,6 +338,21 @@
           "command": "hive.plan.doneReview",
           "when": "resourceFilename =~ /^(plan|overview)\\.md$/",
           "group": "navigation"
+        },
+        {
+          "command": "hive.worklog.showHistory",
+          "when": "resourceScheme == hive-worklog",
+          "group": "navigation@1"
+        },
+        {
+          "command": "hive.worklog.showFacts",
+          "when": "resourceScheme == hive-worklog",
+          "group": "navigation@2"
+        },
+        {
+          "command": "hive.worklog.loadMore",
+          "when": "resourceScheme == hive-worklog",
+          "group": "navigation@3"
         }
       ],
       "comments/commentThread/context": [

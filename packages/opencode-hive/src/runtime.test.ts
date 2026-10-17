@@ -1069,7 +1069,7 @@ describe('coordinated runtime hard cut', () => {
     };
     await loaded.config!(config);
 
-    const reads = ['hive_context_read', 'hive_constraints_read', 'hive_plan_read', 'hive_status', 'hive_repositories_status', 'hive_git_snapshot'];
+    const reads = ['hive_context_read', 'hive_constraints_read', 'hive_plan_read', 'hive_status', 'hive_repositories_status', 'hive_git_snapshot', 'hive_worklog_list', 'hive_worklog_read'];
     const contextWrites = ['hive_context_write', 'hive_context_append', 'hive_context_edit'];
     const traces = ['hive_task_trace', 'hive_task_trace_content'];
     const inspections = ['hive_worktree_inspect', 'hive_adhoc_worktree_inspect'];
@@ -1078,17 +1078,17 @@ describe('coordinated runtime hard cut', () => {
     const primaryOnly = [
       'hive_feature_complete', 'hive_feature_select', 'hive_plan_approve', 'hive_tasks_sync', 'hive_task_create',
       'hive_worktree_merge', 'hive_worktree_cleanup', 'hive_adhoc_worktree_create', 'hive_adhoc_worktree_merge', 'hive_adhoc_worktree_cleanup',
-      ...constraints, 'hive_context_archive', ...background,
+      ...constraints, 'hive_context_archive', ...background, 'hive_worklog_record',
     ];
     const reviewPrimaries = [...reads, ...contextWrites, ...traces, ...inspections, ...constraints, ...background,
-      'hive_feature_select', 'hive_adhoc_worktree_create', 'hive_adhoc_worktree_cleanup'];
+      'hive_feature_select', 'hive_adhoc_worktree_create', 'hive_adhoc_worktree_cleanup', 'hive_worklog_record'];
     const matrix: Record<string, readonly string[]> = {
       'hive-master': HIVE_TOOL_NAMES,
       'swarm-orchestrator': HIVE_TOOL_NAMES,
       'hive-builder': HIVE_TOOL_NAMES,
       'architect-planner': [...reads, ...contextWrites, ...traces, ...inspections, ...constraints, ...background,
         'hive_feature_create', 'hive_feature_select', 'hive_plan_write', 'hive_plan_patch', 'hive_plan_approve', 'hive_tasks_sync',
-        'hive_repositories_discover', 'hive_repositories_update', 'hive_context_archive'],
+        'hive_repositories_discover', 'hive_repositories_update', 'hive_context_archive', 'hive_worklog_record'],
       'scout-researcher': [...reads, 'hive_repositories_discover'],
       'forager-worker': [...reads, ...contextWrites, ...inspections, ...traces, 'hive_task_update', 'hive_worktree_create'],
       'hive-helper': [...reads, ...inspections, ...traces],
@@ -1103,7 +1103,7 @@ describe('coordinated runtime hard cut', () => {
     };
     for (const base of CUSTOM_AGENT_BASES) matrix[`audit-${base}`] = matrix[base]!;
 
-    expect(HIVE_TOOL_NAMES).toHaveLength(38);
+    expect(HIVE_TOOL_NAMES).toHaveLength(41);
     // The operator's entries stay first and `question` is not repeated; the policy's entries follow in policy order.
     expect(config.experimental.primary_tools).toEqual(['operator_tool', 'question', ...primaryOnly]);
     const bare: any = {};
@@ -1239,7 +1239,7 @@ describe('coordinated runtime hard cut', () => {
       expect(architectSession).toContainEqual({ permission: name, pattern: '*', action: 'deny' });
     }
 
-    const reads = ['hive_context_read', 'hive_constraints_read', 'hive_plan_read', 'hive_status', 'hive_repositories_status', 'hive_git_snapshot'];
+    const reads = ['hive_context_read', 'hive_constraints_read', 'hive_plan_read', 'hive_status', 'hive_repositories_status', 'hive_git_snapshot', 'hive_worklog_list', 'hive_worklog_read'];
     const helperTargets = [...planningHelpers.flatMap((base) => [base, `nested-${base}`]), 'hive-helper'];
     for (const target of helperTargets) {
       const base = target.replace(/^nested-/, '');

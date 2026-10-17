@@ -20,7 +20,8 @@ import { childRouteRecord, composeDispatchPrompt } from './task-brief.js';
 import { createHiveServices, type RouteSnapshot } from './runtime/hive-services.js';
 import { createHiveOperations, presentHiveResult } from './runtime/hive-tools.js';
 import { buildRoleCatalog, createCommandContext as createSharedCommandContext } from './runtime/role-catalog.js';
-import { mergePrimaryOnlyTools, nativeSubagentBoundary } from './runtime/role-policy.js';
+import { LIVE_PARENT_CHECKED_TOOLS, authorizeHiveCall, createRolePolicy, mergePrimaryOnlyTools, nativeSubagentBoundary, resolveCallerAuthority } from './runtime/role-policy.js';
+import { isRootSession } from './trace/v1-source.js';
 
 function taskChildBinding(event: unknown): { parent: string; call: string; child: string; agent?: string } | undefined {
   if (!event || typeof event !== 'object') return undefined;
@@ -89,11 +90,27 @@ const plugin: Plugin = async (ctx) => {
     sessionService.trackGlobal(binding.child, childRouteRecord(snapshot, binding.parent, binding.agent));
   };
 
+  // Permissions decide v1 access for most tools; the few that stamp shared authorship also check the caller's role
+  // and live parent here, failing closed when the session cannot be read. The session is read in its own directory.
+  const guardLiveParent = async (name: string, context: { sessionID?: string; agent?: string; directory?: string } | undefined): Promise<void> => {
+    if (!LIVE_PARENT_CHECKED_TOOLS.includes(name)) return;
+    const sessionID = context?.sessionID;
+    const root = sessionID ? await isRootSession(taskTraceClient, context?.directory ?? projectRoot, sessionID) : undefined;
+    if (root === undefined) throw new Error(`Hive could not read session ${sessionID ?? '(none)'} to check its parent; ${name} is denied.`);
+    const customAgents = configService.getCustomAgentConfigs();
+    const policy = createRolePolicy(customAgents);
+    const decision = authorizeHiveCall(policy, { tool: name, caller: resolveCallerAuthority(context?.agent ?? '', policy, customAgents), isChild: !root });
+    if ('reason' in decision) throw new Error(decision.reason);
+  };
+
   // V1 registration: each shared operation becomes a plugin tool whose result is the operation's JSON presentation.
   const hiveTools = Object.fromEntries(Object.entries(createHiveOperations(services)).map(([name, operation]) => [name, tool({
     description: operation.description,
     args: operation.args,
-    execute: async (input, context) => presentHiveResult(operation, await operation.execute(input, { sessionID: context?.sessionID })),
+    execute: async (input, context) => {
+      await guardLiveParent(name, context);
+      return presentHiveResult(operation, await operation.execute(input, { sessionID: context?.sessionID, agent: context?.agent }));
+    },
   })]));
   const tools: Record<string, any> = {
     ...taskTraceTools,

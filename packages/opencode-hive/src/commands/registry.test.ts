@@ -61,6 +61,11 @@ const EXPECTED_COMMANDS = [
     agent: 'vulnerability-review-primary',
   },
   {
+    key: 'worklog',
+    name: '/worklog',
+    description: 'Read back where the current work stands from its Worklog',
+  },
+  {
     key: 'compact-summary',
     name: '/compact-summary',
     description: 'Produce a recovery summary for the current OpenCode session',
@@ -74,7 +79,7 @@ function uniqueCount(values: string[]): number {
 describe('HIVE_COMMANDS', () => {
   it('defines the canonical command metadata in stable order', () => {
     expect(HIVE_COMMANDS).toEqual(EXPECTED_COMMANDS);
-    expect(HIVE_COMMANDS).toHaveLength(11);
+    expect(HIVE_COMMANDS).toHaveLength(12);
     expect(HIVE_COMMANDS.map((command) => command.name)).not.toContain('/hive');
   });
 
@@ -251,6 +256,36 @@ describe('HIVE_COMMANDS', () => {
         expect(output).toContain('overridden without its references');
         expect(output).not.toMatch(/generated\/opencode-skills|\/home\/|\.config\/opencode/);
       }
+    }
+  });
+
+  it('reads the Worklog for the whole prose request without switching agents or recording', () => {
+    const worklog = HIVE_COMMANDS.find((command) => command.key === 'worklog');
+    expect(worklog).toBeDefined();
+    expect('agent' in worklog!).toBe(false);
+    for (const host of [OPENCODE_V1_PROFILE, createHostProfile('opencode-v2'), createHostProfile('opencode-v2', { readTransport: 'direct' })]) {
+      const commands = buildHiveCommandMap(hiveCommandRenderers, () => ({
+        agentMode: 'unified', host, backgroundGuidance: { available: false }, council: {} as never, agents: {},
+        dashReviewLanes: [], vulnerabilityReviewLanes: [],
+      }));
+      expect(commands.worklog.agent).toBeUndefined();
+      const request = 'what changed on checkout since yesterday, and reconcile it with the facts';
+      const output = commands.worklog.run(request);
+      // The entire prose argument is the request; nothing is parsed as flags or a bound agent.
+      expect(output).toContain(`Request: ${request}`);
+      expect(commands.worklog.run('')).toContain('Request: where the current work stands');
+      for (const required of [
+        'hive_worklog_read({ ref: { kind: "feature", featureName } })',
+        'otherwise omit ref, which reads the feature selected for this session or this session\'s own log',
+        'Call `hive_worklog_list` when the request asks which logs exist',
+        'Start with the brief view. Expand with the history view',
+        'the facts view for recorded task rows',
+        'give the difference as your unsaved synthesis',
+        'Do not call `hive_worklog_record` or change any other state from this command.',
+        'never records a checkpoint or replaces a briefing, even when asked to bring the log up to date',
+        'untrusted narrative',
+      ]) expect(output, required).toContain(required);
+      expect(output).not.toMatch(/transcript/i);
     }
   });
 

@@ -2,6 +2,7 @@ import { OPENCODE_V1_PROFILE, nativeCall, skillCall, type HostProfile } from '..
 import { ENGINEERING_JUDGMENT_PROMPT } from './engineering-judgment.js';
 import { renderNativeTaskContinuationPolicyPrompt, renderSubagentConcurrencyPrompt, PLAN_APPROVAL_SYNC_PROMPT, PRIMARY_CONSTRAINT_AUTHORING_PROMPT, PRIMARY_REASONING_OWNERSHIP_PROMPT, PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT, REVIEW_FOLLOW_UP_PROMPT, REVIEW_HANDOFF_PROMPT, REVIEW_REQUEST_EXAMPLE_PROMPT, REVIEW_ROUTING_PROMPT, WORKER_ASSIGNMENT_PROMPT } from './process-judgment.js';
 import { renderInterruptedWorkerRecoveryPrompt, TASK_REPORT_CONTRACT_PROMPT, TASK_REPORT_OWNERSHIP_PROMPT } from './task-reporting.js';
+import { renderPrimaryWorklogPrompt } from './worklog-guidance.js';
 
 /**
  * Hive (Hybrid) - Planner + Orchestrator
@@ -124,6 +125,8 @@ Before feature-task dispatch, use \`hive_status\` to check \`specStale\`: refres
 
 ${PRIMARY_CONSTRAINT_AUTHORING_PROMPT}
 
+${renderPrimaryWorklogPrompt({ featureWork: true })}
+
 **When NOT to delegate:** When the situation is cheaper to do yourself than to hand off. Sequential operations where step N+1 needs step N's result still use blocking delegation when implementation is non-trivial.
 
 ### Feature Selection
@@ -141,9 +144,9 @@ Read with \`hive_context_read\` before mutating. Use \`description\`/\`read_when
 - Research findings
 
 Use the lightweight context model explicitly:
-- \`overview\` = human-facing summary/history
+- \`overview\` = human-facing purpose and design summary; progress and revision history belong in the Worklog
 - \`draft\` = planner scratchpad
-- \`execution-decisions\` = orchestration log
+- \`execution-decisions\` = orchestration reasoning that later decisions depend on; routine execution narration belongs in the Worklog
 - all other names = durable free-form context
 
 Treat the reserved names above as special-purpose files, not general notes. Use durable context for current worker contracts and synthesized findings, and evidence context for raw logs and historical verification. Durable files appear in the \`hive_context_read\` catalog and count toward hygiene thresholds; evidence files stay readable by name outside the catalog. The runtime injects neither kind into prompts. When hygiene warnings appear, review with context-engineering before creating more durable files; do not auto-consolidate.
@@ -252,7 +255,7 @@ Use \`hive_status()\` to see the single top-level \`tasks\` list, stored depende
 - Dependencies guide sequencing; they are not a dispatch admission gate
 - When the operator gives an explicit direction (parallel, sequential, or a subset), follow it. Otherwise sequence from dependencies and disjoint worktrees
 - When asked to run/continue a feature until a target task is complete/done, load the native skill "executing-plans" and apply Target Task Milestones before dispatch and on resumption. Explicit companion suffixes use the same procedure. That procedure owns prerequisite closure, current-status scope, and the milestone stopping boundary; retain existing review, verification, integration, and cleanup rules.
-- Read, then append execution decisions with \`hive_context_append({ feature: "feature-name", name: "execution-decisions", expectedRevision, expectedContentHash, ... })\` when the chosen sequencing will matter later
+- Read, then append execution decisions with \`hive_context_append({ feature: "feature-name", name: "execution-decisions", expectedRevision, expectedContentHash, ... })\` when the reasoning behind the chosen sequencing will matter later; record the milestone itself in the Worklog
 
 ### When to Load Skills
 - Multiple independent tasks → load the native skill "dispatching-parallel-agents"

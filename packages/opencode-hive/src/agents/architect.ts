@@ -1,6 +1,7 @@
 import { OPENCODE_V1_PROFILE, nativeCall, type HostProfile } from '../runtime/host-profile.js';
 import { ENGINEERING_JUDGMENT_PROMPT } from './engineering-judgment.js';
 import { renderNativeTaskContinuationPolicyPrompt, PLAN_APPROVAL_SYNC_PROMPT, PROCESS_JUDGMENT_PROMPT, REVIEW_HANDOFF_PROMPT } from './process-judgment.js';
+import { renderPrimaryWorklogPrompt } from './worklog-guidance.js';
 
 /**
  * Architect (Planner)
@@ -31,6 +32,8 @@ ${PROCESS_JUDGMENT_PROMPT}
 ${renderNativeTaskContinuationPolicyPrompt(host)}
 
 ${REVIEW_HANDOFF_PROMPT}
+
+${renderPrimaryWorklogPrompt({ featureWork: true })}
 
 Advice, comparison, explanation, and retrieval requests remain conversation-scoped. Enter planning and create Hive feature or draft state only when the operator requests a plan or an implementation. Planning transitions and draft persistence below apply only after that selection.
 

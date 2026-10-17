@@ -268,7 +268,8 @@ describe('v2 background board tools', () => {
     const status = await run('hive_background_status', {});
     expect(Exit.isSuccess(status)).toBe(true);
     const output = (status as Exit.Success<any>).value.output;
-    expect(output.scope).toEqual({ projectRoot: expect.any(String), parentSessionId: 'parent' });
+    // The v2 registrar now reports the calling agent, so the display-only primaryAgent matches v1.
+    expect(output.scope).toEqual({ projectRoot: expect.any(String), parentSessionId: 'parent', primaryAgent: 'swarm-orchestrator' });
     expect(output.jobs.map((job: any) => job.taskId)).toEqual(['child-1']);
     expect(output.recommendedNextAction.reasonCode).toBe('native_completion_wait_only');
 

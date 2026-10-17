@@ -36,6 +36,12 @@ describe('viewer-only VS Code manifest', () => {
       'hive.openFile',
       'hive.plan.doneReview',
       'hive.refresh',
+      'hive.worklog.loadMore',
+      'hive.worklog.open',
+      'hive.worklog.pin',
+      'hive.worklog.showFacts',
+      'hive.worklog.showHistory',
+      'hive.worklog.unpin',
     ].sort());
     expect(commands).not.toContain('hive.background.cancel');
     expect(commands).not.toContain('hive.background.reconcile');
@@ -65,7 +71,27 @@ describe('viewer-only VS Code manifest', () => {
       'hive.backgroundJobs',
       'hive.features',
       'hive.repositories',
+      'hive.worklogs',
     ].sort());
+  });
+
+  it('reads worklogs through a native tree and a read-only text provider scoped to worklog documents', () => {
+    const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+    expect(pkg.activationEvents).toContain('onView:hive.worklogs');
+    expect(pkg.contributes.menus['view/title']).toContainEqual({ command: 'hive.worklog.open', when: 'view == hive.worklogs', group: 'navigation@1' });
+    expect(pkg.contributes.menus['editor/title']).toContainEqual({ command: 'hive.worklog.loadMore', when: 'resourceScheme == hive-worklog', group: 'navigation@3' });
+    for (const command of ['hive.worklog.loadMore', 'hive.worklog.pin', 'hive.worklog.showFacts', 'hive.worklog.showHistory', 'hive.worklog.unpin']) {
+      expect(pkg.contributes.menus.commandPalette).toContainEqual({ command, when: 'resourceScheme == hive-worklog' });
+    }
+    const source = fs.readFileSync(new URL('../extension.ts', import.meta.url), 'utf8');
+    expect(source).toContain("createTreeView('hive.worklogs'");
+    expect(source).toContain('registerTextDocumentContentProvider(WorklogDocuments.scheme, this.worklogDocuments)');
+    expect(source).toContain('registerDocumentLinkProvider({ scheme: WorklogDocuments.scheme }, this.worklogDocuments)');
+    expect(source).toContain('onDidCloseTextDocument(document => this.worklogDocuments?.close(document.uri))');
+    expect(source).toContain('this.worklogsProvider?.refresh()\n      this.worklogDocuments?.refresh()');
+    expect(source).toContain('new WorklogViewerPreferences(this.context.workspaceState, workspaceRoot)');
+    expect(source).not.toContain('createWebviewPanel');
+    expect(source).not.toContain('registerWebviewViewProvider');
   });
 
   it('documents background and repository views as viewer-first surfaces with limited archive actions', () => {
