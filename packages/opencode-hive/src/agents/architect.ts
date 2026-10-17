@@ -1,6 +1,6 @@
 import { OPENCODE_V1_PROFILE, nativeCall, type HostProfile } from '../runtime/host-profile.js';
 import { ENGINEERING_JUDGMENT_PROMPT } from './engineering-judgment.js';
-import { renderNativeTaskContinuationPolicyPrompt, PLAN_APPROVAL_SYNC_PROMPT, PROCESS_JUDGMENT_PROMPT, REVIEW_HANDOFF_PROMPT } from './process-judgment.js';
+import { renderNativeTaskContinuationPolicyPrompt, PLAN_APPROVAL_SYNC_PROMPT, PLAN_ASSESSMENT_PROMPT, PROCESS_JUDGMENT_PROMPT, REVIEW_HANDOFF_PROMPT } from './process-judgment.js';
 import { renderPrimaryWorklogPrompt } from './worklog-guidance.js';
 
 /**
@@ -147,6 +147,10 @@ hive_plan_write({ feature: "feature-name", content: "..." })
 
 Use \`hive_plan_write\` for the initial plan or a major rewrite. Use \`hive_plan_patch\` with \`expectedRevision\` from \`hive_plan_read\` for bounded review amendments. If task sequencing, dependencies, or scope changed after tasks exist, record the required refresh in the planning handoff. The primary owns approval follow-through under Approval and Task Sync with \`refreshPending: true\`; it performs \`hive_tasks_sync({ refreshPending: true })\` separately only while approval remains successful and sync still needs to run or retry. Patching never syncs tasks automatically.
 
+Settle consequential design decisions in the plan before it is assessed. When Feature Plan Assessment applies, the planning handoff names the assessed \`contentHash\`, each lens's outcome, your dispositions of material findings, any lens you could not dispatch, and the refresh to run.
+
+${PLAN_ASSESSMENT_PROMPT}
+
 ${PLAN_APPROVAL_SYNC_PROMPT}
 
 Inside \`## Tasks\`, every \`###\` heading must be \`### N. Title\`. Amend an existing task with \`replace_task\` and put the amendment in a \`####\` subsection; put shared notes outside \`## Tasks\`. A patch adding an unnumbered \`###\` there is rejected. If the plan already has one, repair the whole Tasks section with one \`replace_section\` on \`["Tasks"]\`; \`replace_task\` stops at the orphan heading. Approval is blocked by unowned headings or an unreadable task layout (such as two Tasks sections). Use \`unownedTaskHeadings\` from full \`hive_plan_read\` or \`hive_plan_write\` to locate them.
@@ -155,6 +159,7 @@ Plan MUST include:
 - ## Discovery (Original Request, Interview Summary, Research)
 - ## Non-Goals (Explicit exclusions)
 - ## Design Summary (human-facing summary before \`## Tasks\`; optional Mermaid for dependency or sequence overview only)
+  - Each consequential decision states the decision, its reason, the accepted tradeoff, and the observation that would justify reconsidering it. Mark binding decisions (scope, contracts, ownership, dependencies, gates) apart from illustrative implementation sketches, which a worker may adapt. Routine changes need no such entries and no new template.
 - ## Tasks (### N. Title with Depends on/Files/What/Must NOT/References/Verify)
   - Numbered tasks under \`## Tasks\` must represent worktree-backed implementation/docs/test changes
   - numbered tasks are worker-branch units, not micro-steps. Choose coherent outcome and ownership boundaries before assigning dependencies; follow the writing-plans skill's Worker-Branch Task Granularity guidance.
@@ -162,6 +167,7 @@ Plan MUST include:
 - ## Final Verification (non-branching verification gate for pure final checks)
   - Files must list Create/Modify/Test with exact paths and line ranges where applicable
   - References must use file:line format
+  - A task whose work depends on a Design Summary decision cites it in References; the full rationale stays in the Design Summary
   - Verify must include exact command + expected output
 
 When a task changes a shared contract (schema, ID or version scheme, protocol, packaged identity, or public API), name every consumer and assign each required consumer update to a task; do not leave downstream edits as an unnamed worker promise.
@@ -204,7 +210,7 @@ Refresh \`context/overview.md\` as the primary human-facing review surface, whil
 
 - Delegate to Scout when the requested output is bounded source evidence and delegation usefully closes a real evidence gap.
 - For single investigations, choose the scout researcher whose description best fits the research slice. Use built-in \`scout-researcher\` when no configured scout-derived custom description is a closer domain/workflow match. Then run \`${tool}({ ${agentField}: "<chosen-researcher>", prompt: "..." })\`.
-- For strategic approach questions before the plan is locked, choose the approach advisor whose description best fits the strategic question within authorized planning scope. Preserve explicit operator decision gates. Use built-in \`approach-advisor\` when no configured approach-advisor-derived custom description matches the domain or risk lens. Then run \`${tool}({ ${agentField}: "<chosen-advisor>", prompt: "Advise on approach..." })\`.
+- For strategic approach questions before the plan is locked, choose the approach advisor whose description best fits the strategic question within authorized planning scope. Preserve explicit operator decision gates. Use built-in \`approach-advisor\` when no configured approach-advisor-derived custom description matches the domain or risk lens. Then run \`${tool}({ ${agentField}: "<chosen-advisor>", prompt: "Advise on approach..." })\`. Feature Plan Assessment makes the architecture lens required for a feature plan before approval; follow it there.
 - Do not use \`simplicity-reviewer\` while planning. It is a post-implementation cleanup pass for Hive or Swarm after code exists.
 `;
 }

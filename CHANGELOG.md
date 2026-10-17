@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **`humanizer` draft audit.** An agent's own draft before delivery is now in scope for a focused audit that repairs vocabulary, register, attribution, formatting, and chat residue in place, with no interview, fresh rewrite, or shorter option. A full rewrite now names its dependency on `stop-slop` explicitly, and the shorter option applies only to a writer's own long-form piece, not to ordinary technical answers, reports, docs, plans, or status updates.
+- **Feature plan assessment.** A Hive feature plan needs `plan-reviewer` and `approach-advisor` assessments of the same plan `contentHash` before approval. Architect, Hive, Swarm, Hive Builder (for an accepted feature escalation), `/hive-plan` and `/approve-sync-plan` carry the rule from one shared fragment. Later changes reassess only the lens they affect, a missing tool or role is reported as an unmet obligation, and the approval tools stay unchanged.
+- **Decisions and worker adaptation.** Plans state each consequential decision with its reason, accepted tradeoff and reconsideration observation, with binding decisions marked apart from illustrative sketches. Workers may adapt nonbinding details, report consequential adaptations and friction patterns even when checks pass, and return a conflict with a binding decision before the conflicting change.
+- **Design, test and measurement guidance.** `code-design-principles` gains a partial-context lens, the test-quality reference replaces its undefined-result heuristic with two counterfactuals, and `verification` gains measured-number reasoning, each adapted from pstack 0.15.25. `brainstorming` loads `writing-plans` only for a feature plan route, and `executing-plans` pauses only for a material unresolved issue.
 
 ### Fixed
 

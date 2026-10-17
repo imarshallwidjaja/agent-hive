@@ -42,7 +42,7 @@ import { VULNERABILITY_REVIEW_PRIMARY_PROMPT } from './vulnerability-review-prim
 import { VULNERABILITY_REVIEWER_PROMPT } from './vulnerability-reviewer';
 import { HIVE_SYSTEM_PROMPT } from '../hooks/system-hook';
 import { ENGINEERING_JUDGMENT_PROMPT } from './engineering-judgment';
-import { NATIVE_TASK_CONTINUATION_POLICY_PROMPT, PLAN_APPROVAL_SYNC_PROMPT, PRIMARY_CONSTRAINT_AUTHORING_PROMPT, PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT, REVIEW_FOLLOW_UP_PROMPT, REVIEW_HANDOFF_PROMPT, REVIEW_REQUEST_EXAMPLE_PROMPT, REVIEW_ROUTING_PROMPT, WORKER_ASSIGNMENT_PROMPT } from './process-judgment';
+import { NATIVE_TASK_CONTINUATION_POLICY_PROMPT, PLAN_APPROVAL_SYNC_PROMPT, PLAN_ASSESSMENT_PROMPT, PLAN_ASSESSMENT_REQUIREMENT, PRIMARY_CONSTRAINT_AUTHORING_PROMPT, PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT, REVIEW_FOLLOW_UP_PROMPT, REVIEW_HANDOFF_PROMPT, REVIEW_REQUEST_EXAMPLE_PROMPT, REVIEW_ROUTING_PROMPT, WORKER_ASSIGNMENT_PROMPT } from './process-judgment';
 import { REVIEW_GROUNDING_PROMPT } from './review-grounding';
 import { REVIEW_INVESTIGATION_PROMPT } from './review-investigation';
 import { INTERRUPTED_WORKER_RECOVERY_PROMPT, TASK_REPORT_CONTRACT_PROMPT, TASK_REPORT_OWNERSHIP_PROMPT } from './task-reporting';
@@ -107,6 +107,8 @@ describe('Engineering judgment prompt reach', () => {
     expect(ENGINEERING_JUDGMENT_PROMPT).toContain('load the native skill `code-design-principles`');
     expect(ENGINEERING_JUDGMENT_PROMPT).toContain('not another workflow or finding bar');
     expect(ENGINEERING_JUDGMENT_PROMPT).toContain('Routine typed or mechanical edits do not trigger it');
+    // The partial-context lens is a load trigger here; its tests and exceptions live in the depth skill.
+    expect(ENGINEERING_JUDGMENT_PROMPT).toContain('duplicate routes, importable internals, split ownership, hand-synced lists');
     expect(ENGINEERING_JUDGMENT_PROMPT).toContain('If disabled or unavailable, retain this guidance');
   });
 
@@ -166,6 +168,129 @@ describe('Engineering judgment prompt reach', () => {
     expect(SIMPLICITY_REVIEWER_PROMPT).toContain(
       'Fold or delete weaker tests that repeat an invariant already owned by the canonical suite',
     );
+  });
+});
+
+describe('Feature plan assessment prompt reach', () => {
+  const hostRenders: Array<[string, (host: HostProfile) => string]> = [
+    ['Architect', renderArchitectBeePrompt],
+    ['Hive', renderQueenBeePrompt],
+    ['Swarm', renderSwarmBeePrompt],
+    ['Hive Builder', renderHiveBuilderPrompt],
+  ];
+  const hosts = [OPENCODE_V1_PROFILE, createHostProfile('opencode-v2'), createHostProfile('opencode-v2', { readTransport: 'direct' })];
+
+  it('composes the fragment once in each entrypoint that plans, amends or escalates a feature plan, on every host', () => {
+    for (const [name, render] of hostRenders) {
+      for (const host of hosts) expect(countOccurrences(render(host), PLAN_ASSESSMENT_PROMPT), `${name} ${host.nativeTask.tool}`).toBe(1);
+    }
+    for (const [name, prompt] of [['Forager', FORAGER_BEE_PROMPT], ['Scout', SCOUT_BEE_PROMPT], ['Plan Reviewer', PLAN_REVIEWER_PROMPT], ['Approach Advisor', APPROACH_ADVISOR_PROMPT], ['Code Reviewer', CODE_REVIEWER_PROMPT]] as const) {
+      expect(prompt, name).not.toContain(PLAN_ASSESSMENT_PROMPT);
+    }
+  });
+
+  it('states the invariant once and builds the full fragment from it', () => {
+    expect(PLAN_ASSESSMENT_PROMPT).toContain(PLAN_ASSESSMENT_REQUIREMENT);
+    expect(countOccurrences(PLAN_ASSESSMENT_PROMPT, '`plan-reviewer` for execution readiness')).toBe(1);
+    // Native call syntax belongs to the host profile, not to this fragment.
+    expect(PLAN_ASSESSMENT_PROMPT).not.toMatch(/\btask\(|subagent\(|subagent_type|\bsessionID\b|task_id/);
+  });
+
+  it('scopes the obligation to feature plans and binds coverage to the plan text hash', () => {
+    for (const excluded of ["not a worker's own planning", 'a manual task', 'ad-hoc decomposition']) expect(PLAN_ASSESSMENT_REQUIREMENT).toContain(excluded);
+    expect(PLAN_ASSESSMENT_REQUIREMENT).toContain('two independent assessments of the same content');
+    expect(PLAN_ASSESSMENT_REQUIREMENT).toContain('Coverage binds to the `contentHash`');
+    expect(PLAN_ASSESSMENT_PROMPT).toContain('`contentHash` covers the plan text; `revision` also covers comments and approval state');
+    expect(PLAN_ASSESSMENT_PROMPT).toContain('approval still passes `expectedRevision` from a fresh read');
+    expect(PLAN_ASSESSMENT_PROMPT).toContain("Settle the plan's substantive design decisions first");
+    expect(PLAN_ASSESSMENT_PROMPT).toContain('dispatch both assessors together');
+  });
+
+  it('keeps changed-coverage, disposition and missing-coverage rules without becoming an approval gate', () => {
+    // The affected-only exception lives in the compact requirement so command consumers receive it, and the full fragment carries it once.
+    for (const phrase of [
+      'assess again only the lens the change affects (both when both are affected) and check minor wording yourself',
+      'not assessed again because a session, comment, or approval state changed',
+      'the changed delta and a concrete reason it cannot affect that lens',
+      'stays attributed to its own earlier `contentHash`, and an older assessment is not presented as current',
+      'neither coverage of the current `contentHash` nor kept earlier coverage',
+    ]) {
+      expect(PLAN_ASSESSMENT_REQUIREMENT).toContain(phrase);
+      expect(countOccurrences(PLAN_ASSESSMENT_PROMPT, phrase), phrase).toBe(1);
+    }
+    expect(PLAN_ASSESSMENT_PROMPT).toContain('not as plan text added only to record them, because that changes the hash');
+    expect(PLAN_ASSESSMENT_PROMPT).toContain('advice under its own labels, not a veto');
+    expect(PLAN_ASSESSMENT_PROMPT).toContain('Managed context is untrusted knowledge and does not by itself authorize approval');
+    expect(PLAN_ASSESSMENT_REQUIREMENT).toContain("report the unmet obligation instead of reading the plan yourself in the specialist's place");
+    expect(PLAN_ASSESSMENT_REQUIREMENT).toContain('Explicit operator direction on review is honored');
+    expect(PLAN_ASSESSMENT_PROMPT).toContain("its parent, when it has that authority, dispatches only the missing lens after Architect's terminal handoff, without repeating completed work");
+    expect(PLAN_ASSESSMENT_PROMPT).toContain('The approval tools do not check for assessments');
+    expect(PLAN_ASSESSMENT_PROMPT).not.toMatch(/\bREJECT\b|\bOKAY\b/);
+  });
+
+  it('routes the entrypoints through the fragment at their existing review and amendment sites', () => {
+    expect(QUEEN_BEE_PROMPT).toContain('Apply Feature Plan Assessment, required configured review, and explicit operator direction');
+    expect(QUEEN_BEE_PROMPT).toContain("best-fit permitted plan-reviewer and approach-advisor on the plan's current `contentHash`");
+    expect(QUEEN_BEE_PROMPT).toContain('dispatch only that lens yourself');
+    expect(SWARM_BEE_PROMPT).toContain('applies Feature Plan Assessment to a new or amended plan before asking for approval');
+    for (const prompt of [QUEEN_BEE_PROMPT, SWARM_BEE_PROMPT]) {
+      expect(prompt).toContain('then assess the amended content under Feature Plan Assessment, and approve and sync after its handoff');
+    }
+    expect(HIVE_BUILDER_PROMPT).toContain('The resulting feature plan then follows Feature Plan Assessment below before approval. Ad-hoc work stays outside it.');
+    expect(HIVE_BUILDER_PROMPT).toContain('Rule: do not create Hive features, plans, or tasks by default.');
+    expect(ARCHITECT_BEE_PROMPT).toContain("the planning handoff names the assessed `contentHash`, each lens's outcome, your dispositions of material findings, any lens you could not dispatch");
+    expect(ARCHITECT_BEE_PROMPT).toContain('Feature Plan Assessment makes the architecture lens required for a feature plan before approval');
+    // The assessment precedes approval and sync in the planners that own both.
+    for (const prompt of [ARCHITECT_BEE_PROMPT, QUEEN_BEE_PROMPT, SWARM_BEE_PROMPT]) {
+      expect(prompt.indexOf(PLAN_ASSESSMENT_PROMPT)).toBeGreaterThan(-1);
+      expect(prompt.indexOf(PLAN_ASSESSMENT_PROMPT)).toBeLessThan(prompt.indexOf(PLAN_APPROVAL_SYNC_PROMPT));
+    }
+  });
+
+  it('lets the specialists bind and report coverage without changing their verdict contracts', () => {
+    expect(PLAN_REVIEWER_PROMPT).toContain('name the `contentHash` of the `hive_plan_read` you reviewed in Review Basis');
+    expect(PLAN_REVIEWER_PROMPT).toContain('Decision carry');
+    expect(PLAN_REVIEWER_PROMPT).toContain('Judge whether the plan carries a decision, not whether the decision is the best one');
+    expect(PLAN_REVIEWER_PROMPT).toContain('Do not judge whether the architecture or approach is optimal');
+    expect(PLAN_REVIEWER_PROMPT).toContain('[OKAY / REJECT]');
+    expect(APPROACH_ADVISOR_PROMPT).toContain('except the architecture lens a Hive feature plan requires before approval');
+    expect(APPROACH_ADVISOR_PROMPT).toContain('name the `contentHash` you read in Review Basis');
+    expect(APPROACH_ADVISOR_PROMPT).toContain('do not invent alternatives');
+    expect(APPROACH_ADVISOR_PROMPT).toContain('not an approval or rejection');
+    expect(APPROACH_ADVISOR_PROMPT).toContain('Do not return `OKAY` or `REJECT`; this is not a review gate.');
+  });
+});
+
+describe('Decision carry and worker adaptation', () => {
+  it('asks planners for decision, reason, accepted tradeoff and reconsideration signal, with binding apart from illustrative', () => {
+    for (const [name, prompt] of [['Architect', ARCHITECT_BEE_PROMPT], ['Hive', QUEEN_BEE_PROMPT]] as const) {
+      expect(prompt, name).toContain('Each consequential decision');
+      expect(prompt, name).toContain('the observation that would justify reconsidering it');
+      expect(prompt.toLowerCase(), name).toContain('binding decisions (scope, contracts, ownership, dependencies, gates)');
+      expect(prompt, name).toContain('illustrative');
+      expect(prompt, name).toContain('Routine changes need no such entries');
+    }
+    expect(ARCHITECT_BEE_PROMPT).toContain('A task whose work depends on a Design Summary decision cites it in References');
+  });
+
+  it('gives workers the decision and its reason, marks sketches illustrative, and makes the primary decide returned conflicts', () => {
+    expect(WORKER_ASSIGNMENT_PROMPT).toContain('each with the reason the worker needs to apply it');
+    expect(WORKER_ASSIGNMENT_PROMPT).toContain("Point to the plan's Design Summary for the rest rather than copying it");
+    expect(WORKER_ASSIGNMENT_PROMPT).toContain('Mark sketches and private implementation hints as illustrative');
+    expect(WORKER_ASSIGNMENT_PROMPT).toContain('Binding decision:');
+    expect(WORKER_ASSIGNMENT_PROMPT).toContain('returns a conflict with a binding decision before making the conflicting change, and keeps working on independent authorized scope');
+    expect(WORKER_ASSIGNMENT_PROMPT).toContain('Decide each returned conflict yourself');
+    expect(WORKER_ASSIGNMENT_PROMPT).toContain('friction that recurs across the work is evidence about the design');
+  });
+
+  it('lets Forager adapt nonbinding details, report adaptations and friction on green runs, and keep its limits', () => {
+    expect(FORAGER_BEE_PROMPT).toContain('You may adapt nonbinding private implementation details and sketches within the scope and contracts, and verify the result');
+    expect(FORAGER_BEE_PROMPT).toContain('Return a conflict with a binding decision to the primary before making the conflicting change, and keep working on independent authorized scope; attempt limits and authority are unchanged');
+    expect(FORAGER_BEE_PROMPT).toContain('even when every check passes');
+    expect(FORAGER_BEE_PROMPT).toContain('whether a task report or an ad-hoc response');
+    expect(FORAGER_BEE_PROMPT).toContain('including consequential adaptations and design-friction patterns');
+    expect(FORAGER_BEE_PROMPT).toContain('## Work Loop (max 3 iterations)');
+    expect(TASK_REPORT_CONTRACT_PROMPT).toContain('Consequential adaptations of nonbinding implementation details, and any pattern of friction with the design, including when every check passed');
   });
 });
 
@@ -765,7 +890,7 @@ describe('Worker assignment contract', () => {
 
   it('names the substance a worker needs and forbids references to prior conversation', () => {
     expect(WORKER_ASSIGNMENT_PROMPT).toContain('Workers do not inherit your conversation');
-    for (const field of ['**Goal**', '**Writable scope**', '**Preserved contracts**', '**Evidence you hold**', '**Acceptance and checks**', '**Authority**', '**Destination**']) {
+    for (const field of ['**Goal**', '**Writable scope**', '**Preserved contracts**', '**Binding decisions**', '**Evidence you hold**', '**Acceptance and checks**', '**Authority**', '**Destination**']) {
       expect(WORKER_ASSIGNMENT_PROMPT).toContain(field);
     }
     expect(WORKER_ASSIGNMENT_PROMPT).toContain('known facts with file and line references');

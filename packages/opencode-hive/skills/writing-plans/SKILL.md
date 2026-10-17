@@ -19,6 +19,7 @@ During planning, implementation files remain read-only; Hive planning state may 
 - Identify ownership boundaries and the design knowledge each affected module should own or hide.
 - When a task changes a shared contract (schema, ID or version scheme, protocol, packaged identity, or public API), name every consumer and assign each required consumer update to a task.
 - Record constraints, non-goals, must-not-do guardrails, and assumptions that affect correctness or scope.
+- For each consequential design decision, state the decision, its reason, the accepted tradeoff, and the observation that would justify reconsidering it. Mark binding decisions (scope, contracts, ownership, dependencies, gates) apart from illustrative sketches, which a worker may adapt within scope and contracts. The Design Summary holds the full rationale; a task's References point to the decision it depends on, and the worker assignment carries the decision and the reason a worker needs to apply it. A routine change needs no such entry and no new template.
 - Cross-feature overlap does not block plan approval. Record concrete cross-feature prerequisites so the orchestrator can block the affected execution tasks or lanes. Treat overlap as an approval blocker only when it leaves the plan itself materially unresolved. Unresolved plan comments still block approval. Do not invent automatic cross-feature dependencies.
 - State the context-selected testing strategy for each behavior: TDD when examples discover a contract, algorithm, or regression; characterization tests before poorly understood legacy changes; tests alongside or after implementation when design needs exploration or behavior is clear; existing contract coverage for a pure internal refactor; or proportionate no-new-test verification with concrete rationale. Ask only when repository evidence and requirements leave a material choice unresolved. Keep tests with their implementation task by default. When tests are selected, name the owning layer and canonical suite in the same implementation task; must not plan a later test-cleanup pass.
 - Select checks from changed behavior, risk, binding repository/operator requirements, canonical owners, and affected consumers using Verification Planning below. When no gate catalogue exists, inspect repository scripts, CI, and test ownership; if impact or reach remains uncertain, select a broader coherent existing check and state any missing check.
@@ -73,7 +74,7 @@ Every plan uses this shape:
 ## Non-Goals
 
 ## Design Summary
-[Readable behavior, contracts, ownership, constraints, and testing strategy]
+[Readable behavior, contracts, ownership, constraints, and testing strategy; each consequential decision with its reason, accepted tradeoff, and what would justify reconsidering it, binding decisions marked apart from illustrative sketches]
 
 ## Tasks
 ### 1. [Outcome-oriented title]
@@ -91,6 +92,7 @@ Every plan uses this shape:
 - [Guardrail]
 **References**:
 - `path:lines` - [Why it matters]
+- Design Summary: [the decision this task depends on, when one applies]
 **Verify**:
 - Run: `[agent-executable command]` -> [expected result]
 - Observe: [acceptance signal]
@@ -117,4 +119,4 @@ The orchestrator reconciles every task-named deferral with this section before c
 
 ## Handoff
 
-After saving the plan, ask whether to consult `plan-reviewer`. Then offer execution through the current orchestrator or a separate session using `executing-plans`. The orchestrator owns task synchronization and execution; the plan does not prescribe a universal commit cadence or test ritual beyond the selected strategy.
+Settle design decisions in the plan first, because assessment covers the saved content. A Hive feature plan then needs `plan-reviewer` (readiness) and `approach-advisor` (architecture) assessments of the same `contentHash` before approval; the primary prompt's Feature Plan Assessment owns when and how, and a lens you cannot dispatch stays an unmet obligation to report, not one to fill with your own read. Then offer execution through the current orchestrator or a separate session using `executing-plans`. The orchestrator owns task synchronization and execution; the plan does not prescribe a universal commit cadence or test ritual beyond the selected strategy.

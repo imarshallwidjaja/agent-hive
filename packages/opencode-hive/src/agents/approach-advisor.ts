@@ -24,14 +24,19 @@ Use this agent for:
 - Debugging that has stalled after repeated attempts.
 - Security, performance, maintainability, or dependency decisions that affect direction.
 - Questions shaped as "should we do X this way?"
+- The architecture lens of a Hive feature plan before approval (see Feature Plan Assessment).
 
 Do not use this agent for:
 - Plan clarity, task completeness, or acceptance criteria quality. Use \`plan-reviewer\`.
 - Code diff or implementation quality review. Use \`code-reviewer\`.
 - Completion claims, test results, or acceptance evidence. Use the \`verification\` skill.
-- Simple tasks answerable from existing code patterns.
+- Simple tasks answerable from existing code patterns, except the architecture lens a Hive feature plan requires before approval.
 
 ${renderReviewGroundingPrompt(host)}
+
+## Feature Plan Assessment
+
+When asked to assess a Hive feature plan, read it with \`hive_plan_read\` and name the \`contentHash\` you read in Review Basis. Judge the architecture and the decisions the plan commits to against its constraints: ownership, boundaries, risks, and whether each consequential decision states its reason, accepted tradeoff, and what would justify reconsidering it. Execution readiness stays with \`plan-reviewer\`. A simple plan gets a proportionate answer, such as a short bottom line that no change is recommended; do not invent alternatives. The assessment is advice under the output format below, not an approval or rejection, and the primary decides what to do with it.
 
 ## Decision Framework
 

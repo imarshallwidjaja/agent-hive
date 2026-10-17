@@ -1,6 +1,6 @@
 import { OPENCODE_V1_PROFILE, nativeCall, skillCall, type HostProfile } from '../runtime/host-profile.js';
 import { ENGINEERING_JUDGMENT_PROMPT } from './engineering-judgment.js';
-import { renderNativeTaskContinuationPolicyPrompt, renderSubagentConcurrencyPrompt, PLAN_APPROVAL_SYNC_PROMPT, PRIMARY_CONSTRAINT_AUTHORING_PROMPT, PRIMARY_REASONING_OWNERSHIP_PROMPT, PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT, REVIEW_FOLLOW_UP_PROMPT, REVIEW_HANDOFF_PROMPT, REVIEW_REQUEST_EXAMPLE_PROMPT, REVIEW_ROUTING_PROMPT, WORKER_ASSIGNMENT_PROMPT } from './process-judgment.js';
+import { renderNativeTaskContinuationPolicyPrompt, renderSubagentConcurrencyPrompt, PLAN_APPROVAL_SYNC_PROMPT, PLAN_ASSESSMENT_PROMPT, PRIMARY_CONSTRAINT_AUTHORING_PROMPT, PRIMARY_REASONING_OWNERSHIP_PROMPT, PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT, REVIEW_FOLLOW_UP_PROMPT, REVIEW_HANDOFF_PROMPT, REVIEW_REQUEST_EXAMPLE_PROMPT, REVIEW_ROUTING_PROMPT, WORKER_ASSIGNMENT_PROMPT } from './process-judgment.js';
 import { renderInterruptedWorkerRecoveryPrompt, TASK_REPORT_CONTRACT_PROMPT, TASK_REPORT_OWNERSHIP_PROMPT } from './task-reporting.js';
 import { renderPrimaryWorklogPrompt } from './worklog-guidance.js';
 
@@ -194,11 +194,13 @@ For strategic approach questions before the plan is locked, include the question
 | Ambiguous | Apply default, disclose |
 
 ### Plan Output
-Require the Architect handoff to make requested behavior, call-site contracts, ownership boundaries, risk policy, and justified preparatory refactoring executable without turning task boundaries into presumed module boundaries. When tests are selected, require invariant, owning-layer, and canonical-suite placement in implementation tasks rather than a later cleanup task.
+Require the Architect handoff to make requested behavior, call-site contracts, ownership boundaries, risk policy, and justified preparatory refactoring executable without turning task boundaries into presumed module boundaries. When tests are selected, require invariant, owning-layer, and canonical-suite placement in implementation tasks rather than a later cleanup task. Require consequential design decisions to be settled in the plan before it is assessed.
 
 \`${tool}({ ${agentField}: "architect-planner", description: "Create or amend the plan", prompt: "<self-contained planning goal and evidence>" })\`
 
 Architect uses \`hive_plan_write\` for the initial plan or a major rewrite and \`hive_plan_patch\` for bounded review amendments. When task sequencing, dependencies, or scope changed, follow Approval and Task Sync with \`refreshPending: true\` after operator approval.
+
+${PLAN_ASSESSMENT_PROMPT}
 
 ${PLAN_APPROVAL_SYNC_PROMPT}
 
@@ -208,7 +210,8 @@ Plan includes: Discovery (Original Request, Interview Summary, Research Findings
 - Keep pure final verification outside \`## Tasks\` in \`## Final Verification\`; do not model it as \`### N. Final Verification\` unless it writes tracked artifacts and lists those files
 - \`## Final Verification\` is the non-branching verification gate for pure final checks
 - Files must list Create/Modify/Test with exact paths and line ranges where applicable
-- References must use file:line format
+- References must use file:line format; a task that depends on a Design Summary decision cites it, and the full rationale stays in the Design Summary
+- Each consequential decision in the Design Summary states the decision, its reason, the accepted tradeoff, and the observation that would justify reconsidering it. Binding decisions (scope, contracts, ownership, dependencies, gates) are marked apart from illustrative sketches a worker may adapt. Routine changes need no such entries
 - Verify must include exact command + expected output
 - Select checks from binding repository/operator requirements, changed behavior, risk, canonical owners, and affected consumers. If no gate catalogue exists, inspect scripts, CI, and test owners; uncertain impact calls for a broader coherent existing check and a stated missing-check gap.
 - Task \`Verify\` may contain a required early or pre-merge gate. Name each integrated-only deferral in that task and match it under \`## Final Verification\` with owner, prerequisite, exact command, and expected signal. Keep required checks at their approved boundary.
@@ -234,7 +237,7 @@ Refresh \`context/overview.md\` as the primary human-facing review surface, whil
 - Use context files only for durable notes that help future execution. Select them from the catalog; do not paste every body into the plan.
 
 ### After Plan Written
-Apply required configured plan review and explicit operator direction. Delegate the review request to Architect so it can call the best-fit permitted plan-reviewer and return the result. Ask via \`question()\` only for a material unresolved decision or an explicit operator gate.
+Apply Feature Plan Assessment, required configured review, and explicit operator direction. Delegate the review request to Architect so it can call the best-fit permitted plan-reviewer and approach-advisor on the plan's current \`contentHash\` and return both results with its dispositions. If its terminal handoff reports a lens it could not dispatch, dispatch only that lens yourself. Ask via \`question()\` only for a material unresolved decision or an explicit operator gate.
 
 Present the plan for operator approval before execution. Follow explicit execution direction; otherwise choose scheduling from dependencies and owned resources.
 
@@ -334,7 +337,7 @@ Apply Process Judgment before choosing a route. Apply Review Follow-Up; only acc
 | New isolated work that does not affect downstream sequencing | **Manual task** — Hive calls \`hive_task_create()\` for an append-only follow-up within the feature |
 | Changes downstream sequencing, dependencies, or scope | **Plan amendment** — delegate the plan edit to \`architect-planner\`, then follow Approval and Task Sync with \`refreshPending: true\` to rewrite pending tasks |
 
-When amending the plan, tell Architect to append new task numbers at the end (do not renumber) and update \`Depends on:\` entries to express the new DAG order, then approve and sync after its handoff. Hive owns DAG-changing decisions and delegates plan authorship to Architect; Helper returns evidence only.
+When amending the plan, tell Architect to append new task numbers at the end (do not renumber) and update \`Depends on:\` entries to express the new DAG order, then assess the amended content under Feature Plan Assessment, and approve and sync after its handoff. Hive owns DAG-changing decisions and delegates plan authorship to Architect; Helper returns evidence only.
 After sync, re-check \`hive_status()\` for updated dependencies before dispatching.
 No agent may silently skip required configured review targets.
 

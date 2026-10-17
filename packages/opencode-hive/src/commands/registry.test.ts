@@ -6,6 +6,7 @@ import { buildPluginManifest } from '../utils/plugin-manifest.js';
 import { hiveCommandRenderers } from './renderers.js';
 import { buildHiveCommandMap } from './runtime.js';
 import { OPENCODE_V1_PROFILE, createHostProfile } from '../runtime/host-profile.js';
+import { PLAN_ASSESSMENT_REQUIREMENT } from '../agents/process-judgment.js';
 
 const EXPECTED_COMMANDS = [
   {
@@ -263,6 +264,42 @@ describe('HIVE_COMMANDS', () => {
     expect(output).toContain('excludes unrelated and descendant tasks');
     expect(output).toContain('terminal verification handoff in Session Strategy with the concrete feature name: Run final verification for feature "<feature>" and complete it only after the required checks pass');
     expect(output).toContain('a separate continuation after no unfinished feature tasks remain, routed to executing-plans Step 6 and the existing full-feature verification/completion procedure, carrying deferred checks and applicable cleanup');
+  });
+
+  it('carries the plan assessment requirement once in /hive-plan and /approve-sync-plan on every host, standing alone for a non-Hive primary', () => {
+    const count = (text: string, needle: string) => text.split(needle).length - 1;
+    for (const host of [OPENCODE_V1_PROFILE, createHostProfile('opencode-v2'), createHostProfile('opencode-v2', { readTransport: 'direct' })]) {
+      const commands = buildHiveCommandMap(hiveCommandRenderers, () => ({
+        agentMode: 'dedicated', host, backgroundGuidance: { available: false }, council: {} as never, agents: {},
+        dashReviewLanes: [], vulnerabilityReviewLanes: [],
+      }));
+      const plan = commands['hive-plan'].run('');
+      const approve = commands['approve-sync-plan'].run('');
+      for (const output of [plan, approve]) {
+        expect(count(output, PLAN_ASSESSMENT_REQUIREMENT)).toBe(1);
+        // The command cannot rely on a heading defined in a Hive prompt it does not receive.
+        expect(output).not.toContain('Feature Plan Assessment');
+        expect(output).not.toMatch(/\btask\(|subagent\(|subagent_type/);
+        // A readiness-only or wording-only amendment of an assessed plan must not reopen the lens it cannot affect.
+        for (const phrase of [
+          'assess again only the lens the change affects (both when both are affected) and check minor wording yourself',
+          'the changed delta and a concrete reason it cannot affect that lens',
+          'stays attributed to its own earlier `contentHash`, and an older assessment is not presented as current',
+          'neither coverage of the current `contentHash` nor kept earlier coverage',
+        ]) expect(output, phrase).toContain(phrase);
+      }
+      // The plan command settles decisions before assessment; the approve command checks the read hash and does not treat invocation as a waiver.
+      expect(plan).toContain('settle them in the plan before it is assessed');
+      expect(plan).toContain('mark binding decisions apart from illustrative sketches a worker may adapt');
+      expect(approve).toContain('approve only when review issues are resolved and the plan assessments hold');
+      expect(approve).toContain('Note the contentHash from that hive_plan_read and check which plan assessments name it');
+      expect(approve).toContain('Invoking this command requests approval and does not waive the plan assessments described below');
+      expect(approve).toContain('Approve without them only when the operator explicitly directs approval without review');
+      // A native primary that cannot dispatch a lens stops with the unmet obligation, as it does for approval, sync, or readback failures.
+      expect(approve).toContain('or if a required assessment is missing and cannot be dispatched');
+      expect(approve).toContain("report the unmet obligation instead of reading the plan yourself in the specialist's place");
+      expect(approve.indexOf('contentHash from that hive_plan_read')).toBeLessThan(approve.indexOf(PLAN_ASSESSMENT_REQUIREMENT));
+    }
   });
 
   it('keeps approval authority and the honest stop in the milestone commands when the reference is unavailable', () => {

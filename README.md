@@ -52,7 +52,7 @@ Update the plugin entry or the installed package first, then restart the long-li
 ## First feature loop
 
 1. Ask for a feature in plain language, or run `/hive-plan`. The planner discusses scope and writes a plan.
-2. Review the plan in chat or in VS Code, add comments, and ask for changes until it is clear.
+2. Review the plan in chat or in VS Code, add comments, and ask for changes until it is clear. Before approval the agents also get a readiness assessment (`plan-reviewer`) and an architecture assessment (`approach-advisor`) of the same plan text.
 3. Approve it with `/approve-sync-plan`, which also creates the executable task records.
 4. Start execution with `/start-execution`. The primary places each task's tracked Git work in a matching worktree, delegates it, reviews the result, and merges the worker's committed changes.
 5. The primary runs the plan's final verification on the merged result and completes the feature only after the required checks and reviews pass. A task-branch result does not establish integrated acceptance.

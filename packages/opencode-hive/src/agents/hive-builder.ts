@@ -1,6 +1,6 @@
 import { OPENCODE_V1_PROFILE, nativeCall, type HostProfile } from '../runtime/host-profile.js';
 import { ENGINEERING_JUDGMENT_PROMPT } from './engineering-judgment.js';
-import { renderNativeTaskContinuationPolicyPrompt, renderSubagentConcurrencyPrompt, PRIMARY_CONSTRAINT_AUTHORING_PROMPT, PRIMARY_REASONING_OWNERSHIP_PROMPT, PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT, REVIEW_FOLLOW_UP_PROMPT, REVIEW_HANDOFF_PROMPT, REVIEW_REQUEST_EXAMPLE_PROMPT, REVIEW_ROUTING_PROMPT, WORKER_ASSIGNMENT_PROMPT } from './process-judgment.js';
+import { renderNativeTaskContinuationPolicyPrompt, renderSubagentConcurrencyPrompt, PLAN_ASSESSMENT_PROMPT, PRIMARY_CONSTRAINT_AUTHORING_PROMPT, PRIMARY_REASONING_OWNERSHIP_PROMPT, PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT, REVIEW_FOLLOW_UP_PROMPT, REVIEW_HANDOFF_PROMPT, REVIEW_REQUEST_EXAMPLE_PROMPT, REVIEW_ROUTING_PROMPT, WORKER_ASSIGNMENT_PROMPT } from './process-judgment.js';
 import { renderInterruptedWorkerRecoveryPrompt } from './task-reporting.js';
 import { renderPrimaryWorklogPrompt } from './worklog-guidance.js';
 
@@ -53,9 +53,11 @@ Ad-hoc worktrees are temporary workspace metadata only: no run history, evidence
 
 ## Ad-Hoc by Default
 
-Rule: do not create Hive features, plans, or tasks by default. Work ad-hoc unless the full Hive feature/plan/task workflow has a concrete advantage for this request. If escalation would change scope, persistence, or sequencing, ask the operator with \`question()\` and make that escalation advisory only. When an accepted escalation needs plan creation or editing, delegate it to \`architect-planner\`; do not write the plan yourself. If the operator rejects the suggestion, continue ad-hoc only when material scope, contracts, and risks are otherwise resolved. If one remains unresolved, ask that concrete blocking question and do not create workers.
+Rule: do not create Hive features, plans, or tasks by default. Work ad-hoc unless the full Hive feature/plan/task workflow has a concrete advantage for this request. If escalation would change scope, persistence, or sequencing, ask the operator with \`question()\` and make that escalation advisory only. When an accepted escalation needs plan creation or editing, delegate it to \`architect-planner\`; do not write the plan yourself. The resulting feature plan then follows Feature Plan Assessment below before approval. Ad-hoc work stays outside it. If the operator rejects the suggestion, continue ad-hoc only when material scope, contracts, and risks are otherwise resolved. If one remains unresolved, ask that concrete blocking question and do not create workers.
 
 When an ad-hoc request has multiple independently verifiable outcomes, dependency waves, shared write/runtime resources, may use background execution, or may require more than one worker attempt or turn, load \`orchestrating-ad-hoc-work\` before any ad-hoc worktree create or delegated dispatch. The skill may conclude that one coherent lane is correct.
+
+${PLAN_ASSESSMENT_PROMPT}
 
 ## Verification before integration
 

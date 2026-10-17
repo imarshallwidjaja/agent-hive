@@ -86,6 +86,15 @@ Scale up when the change touches persistence, auth, public APIs, deployment, con
 
 A claim that a delivery schedule is faster needs evidence for the whole schedule the claim covers (initial validation, correction, integration) on the same workload and measurement surface as the baseline. Label each statement as a measured speedup, an observed elimination (a named costly execution that no longer runs), or a projected benefit from the schedule. A faster focused check supports a claim about that check only. Unknown timing is reported as unknown and is not a failure unless a measured goal requires it. Required coverage, candidate applicability, and aggregate authority are decided as above and by the plan's Verification Planning; a speedup claim never overrides them.
 
+### Measured numbers and eval results
+
+When a measured number or eval result is the evidence for a claim (a speedup, regression, throughput, latency, or eval score), establish what it measured. Do only as much as the claim needs.
+
+- Compare equivalent completed work: both sides did the same task on the same workload and measurement surface. Rule out what else the number could be measuring: errors, skipped or cached work, code that never ran, an untuned side left on default settings, noise, and a changed piece too small to account for the difference.
+- A causal claim ("faster because of X") needs an observed mechanism, such as a profile or system counters taken during the run and mapped to source; a reading of the code is a hypothesis. A descriptive delta can be reported with its mechanism labelled unknown.
+- State the run count and spread when noise could change the conclusion. For an eval result, check that every trial did the task and whether the gap holds across trials and scenarios.
+- A claim that rests on no measured number needs none of this, and routine verification gains no profiling or benchmark stage.
+
 ## Adversarial Probes
 
 For non-trivial behavior changes, run at least one probe that tries to break the implementation:

@@ -11,7 +11,7 @@ The engineer who maintains the code next is a user too. Start from what callers 
 
 ## Read the branch you need
 
-- Choosing state or module ownership: [Model the domain](references/domain-modeling.md).
+- Choosing state or module ownership, or checking that a locally plausible edit cannot break a distant invariant: [Model the domain](references/domain-modeling.md).
 - Parsing, validation, typed invariants, or API boundaries: [Boundaries and types](references/boundaries-and-types.md).
 - Concurrent writers, retries, partial runs, or internal replacement: [Lifecycle and migration](references/lifecycle-and-migration.md).
 

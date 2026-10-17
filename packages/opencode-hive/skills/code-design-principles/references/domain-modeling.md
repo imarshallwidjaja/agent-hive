@@ -31,6 +31,17 @@ Track two axes: layers the reader must trace and hidden or mutable state they mu
 
 Ask "where does X come from?" and "what can change X?" Preserve a one-caller boundary that owns real knowledge or policy. Caller count, file length, and call depth alone are not simplification criteria.
 
+## Edits made with partial context
+
+An editor, human or agent, usually sees only the files it opened and copies the nearest example. Structure that lets a locally plausible edit break an invariant held elsewhere is a design lead:
+
+- **Duplicate routes.** When the design supports two ways to do one task, both keep gaining callers. Keep one and move callers to it.
+- **Importable internals.** The shortest path that compiles becomes the interface. Where the language and project allow it, make internals unreachable from outside the module so an outside import fails the build.
+- **Split ownership.** More than one writer, or more than one copy, of one piece of state lets their rules diverge. Give the state one owner; other modules read it or ask the owner to change it.
+- **Hand-synced lists.** An editor who sees one list updates only that one. Derive the others from a canonical list, or add a check that fails when the lists disagree.
+
+These are leads, not findings. Preserve intentional API variants, public and persisted compatibility, one-caller boundaries that own real knowledge, and the repeated trust or mutation checks described in Boundaries and types: a second path that guards a separate trust boundary is not a duplicate route. Act on an instance inside the changed scope; report the ones outside it.
+
 ## Material alternatives
 
 For a novel boundary choice with multiple viable shapes, compare concrete caller examples and invariants. A second flavor of the first shape does not count. Use a sketch or authorized prototype to settle observable facts; ask the operator for a genuine product or preference decision.

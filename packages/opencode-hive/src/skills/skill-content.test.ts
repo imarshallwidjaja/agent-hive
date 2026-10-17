@@ -271,6 +271,70 @@ describe('skill content', () => {
     expect(lifecycle).toContain('does not authorize deleting a lock');
   });
 
+  it('carries partial-context design leads, test counterfactuals and measured-number reasoning as conditional guidance', () => {
+    const root = resolvePackagedSkillsDir();
+    const modeling = readFileSync(path.join(root, 'code-design-principles/references/domain-modeling.md'), 'utf8');
+    const design = BUILTIN_SKILLS.find((entry) => entry.name === 'code-design-principles')!.template;
+    expect(design).toContain('checking that a locally plausible edit cannot break a distant invariant');
+    for (const lead of ['Duplicate routes', 'Importable internals', 'Split ownership', 'Hand-synced lists']) expect(modeling).toContain(`**${lead}.**`);
+    for (const preserved of ['These are leads, not findings', 'intentional API variants', 'public and persisted compatibility', 'one-caller boundaries that own real knowledge', 'repeated trust or mutation checks', 'not a duplicate route']) {
+      expect(modeling).toContain(preserved);
+    }
+
+    const quality = readSkillReference('test-driven-development', 'test-quality.md');
+    expect(quality).toContain('Judge a changed behavior test against two imagined edits');
+    expect(quality).toContain('**Break the behavior.**');
+    expect(quality).toContain('**Change the internals.**');
+    expect(quality).toContain('Keep a test that catches the first edit and survives the second');
+    expect(quality).toContain('The payload a mocked external service receives is behavior');
+    expect(quality).toContain('a call to a private helper is not');
+    expect(quality).toContain('Prompt, configuration, and packaging pins can be legitimate');
+    expect(quality).not.toContain('returned `undefined`');
+    expect(quality).toContain('reading it does not select TDD');
+    expect(BUILTIN_SKILLS.find((entry) => entry.name === 'test-driven-development')!.template).toContain('Loading this skill means that selection has been made');
+
+    const verification = BUILTIN_SKILLS.find((entry) => entry.name === 'verification')!.template;
+    const measured = verification.slice(verification.indexOf('### Measured numbers and eval results'), verification.indexOf('## Adversarial Probes'));
+    for (const requirement of ['equivalent completed work', 'an untuned side left on default settings', 'needs an observed mechanism', 'A descriptive delta can be reported with its mechanism labelled unknown', 'run count and spread when noise could change the conclusion', 'routine verification gains no profiling or benchmark stage']) {
+      expect(measured).toContain(requirement);
+    }
+
+    // Each adapted passage keeps its license beside a record of both pstack revisions.
+    for (const skill of ['code-design-principles', 'test-driven-development', 'verification']) {
+      const upstream = readFileSync(path.join(root, skill, 'UPSTREAM.md'), 'utf8');
+      expect(upstream, skill).toContain('09d06eb4b97a1020ab31e84030e38baf1099c7dc');
+      expect(upstream, skill).toContain('fae2c6ed95821bd85f614a73e4842e13229fa5e5');
+      expect(upstream, skill).toContain('0.15.25');
+      expect(upstream, skill).toContain('0.15.5');
+      expect(existsSync(path.join(root, skill, skill === 'code-design-principles' ? 'LICENSE' : 'LICENSE.pstack')), skill).toBe(true);
+    }
+  });
+
+  it('carries plan decisions, points to the plan assessment, and keeps planning and execution cues conditional', () => {
+    const plans = BUILTIN_SKILLS.find((entry) => entry.name === 'writing-plans')!.template;
+    expect(plans).toContain('state the decision, its reason, the accepted tradeoff, and the observation that would justify reconsidering it');
+    expect(plans).toContain('Mark binding decisions (scope, contracts, ownership, dependencies, gates) apart from illustrative sketches');
+    expect(plans).toContain('A routine change needs no such entry and no new template');
+    expect(plans).toContain('The Design Summary holds the full rationale; a task\'s References point to the decision it depends on');
+    expect(plans).toContain('- Design Summary: [the decision this task depends on, when one applies]');
+    expect(plans).toContain('`plan-reviewer` (readiness) and `approach-advisor` (architecture) assessments of the same `contentHash` before approval');
+    expect(plans).toContain("Feature Plan Assessment owns when and how");
+    expect(plans).not.toContain('ask whether to consult');
+
+    const brainstorming = BUILTIN_SKILLS.find((entry) => entry.name === 'brainstorming')!.template;
+    expect(brainstorming).toContain('Ad-hoc or direct work continues through its own placement and verification and needs no plan');
+    expect(brainstorming).toContain('When the route is a Hive feature plan, use `skill({ name: "writing-plans" })`');
+    expect(brainstorming).toContain('When the route is a Hive feature plan, use `skill({ id })` for the catalog entry named "writing-plans"');
+    expect(brainstorming).not.toContain('- Use `skill({ name: "writing-plans" })` to create detailed implementation plan');
+
+    const executing = BUILTIN_SKILLS.find((entry) => entry.name === 'executing-plans')!.template;
+    expect(executing).toContain('Review critically for a material unresolved issue');
+    expect(executing).toContain('A concern the plan, an assessment, or the operator already dispositioned stays closed without new evidence');
+    expect(executing).toContain('continue independent authorized work');
+    expect(executing).not.toContain('identify any questions or concerns about the plan');
+    expect(executing).toContain("the plan's binding decisions. Adapt nonbinding implementation details when evidence warrants it and report consequential adaptations");
+  });
+
   it('discovers pr-writing for author and reviewer drafts without publication authority', () => {
     const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'pr-writing');
 

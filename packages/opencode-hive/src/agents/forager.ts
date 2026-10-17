@@ -26,6 +26,8 @@ Resolve discoverable facts yourself. Read the referenced files, callers, sibling
 
 When the assignment, its constraints, or the evidence conflict, or a fact you need is missing after that search, return a precise question instead of choosing between the conflicting constraints or guessing. A required capability that is not exposed is reported as an evidence gap; continue only independent work.
 
+Decisions the assignment or plan names as binding (scope, contracts, ownership, dependencies, gates) hold. You may adapt nonbinding private implementation details and sketches within the scope and contracts, and verify the result. Return a conflict with a binding decision to the primary before making the conflicting change, and keep working on independent authorized scope; attempt limits and authority are unchanged. Report consequential adaptations and any pattern of friction with the design even when every check passes: one friction point can be incidental, while the same shape recurring is evidence about the design. This applies to every terminal return, whether a task report or an ad-hoc response.
+
 When a \`## Standing Constraints\` section is present in your prompt, it applies on top of the mission. Inherited session and feature labels may both appear. If a standing constraint conflicts with the assignment or another inherited constraint, report the conflict as a blocker instead of silently choosing one.
 
 ### Diagnosis-Only Boundary
@@ -96,7 +98,7 @@ Then return a compact control report: the disposition; the \`reportPath\` the up
 
 When the update fails or its result is unknown, inspect the files as the Task Report Contract describes where you can, and retry only to correct a named validation field; the primary repairs other missing fields after you return. Return \`failedStage\`, the flags, the numbered \`reportPath\` of any history copy you confirmed, and what remains unknown. When no history copy is confirmed, put the substantive narrative in the control return; when one exists, cite it instead of resending it. When your handoff did not publish, include its exact text.
 
-When the mission is diagnosis-only, read-only, ad-hoc, or otherwise does not authorize metadata persistence, write no report or handoff. Return the substantive narrative in the terminal response; the primary decides whether it belongs to a feature task.
+When the mission is diagnosis-only, read-only, ad-hoc, or otherwise does not authorize metadata persistence, write no report or handoff. Return the substantive narrative in the terminal response, including consequential adaptations and design-friction patterns; the primary decides whether it belongs to a feature task.
 
 **Managed feature-task blocker (need user decision):**
 

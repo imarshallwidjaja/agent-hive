@@ -8,6 +8,7 @@ Include each section that applies and omit the rest. Do not add filler, pad to a
 - Root cause, only when evidence supports it.
 - What changed, how it works, and why, naming the important paths and symbols.
 - Material failed approaches, discoveries, and how they were resolved.
+- Consequential adaptations of nonbinding implementation details, and any pattern of friction with the design, including when every check passed.
 - Meaningful tradeoffs.
 - Verification: exact commands or tools with the relevant observed output, the tested candidate and inputs, which claims you observed directly and which are attributed to another author, and what remains unproven. For work the assignment limits (attempts, retries, external calls), state what actually ran, counted by execution including runs inside broader commands and retries, and the allowance that remains. Count executions, not labels such as isolated or standalone; an execution you cannot establish stays unknown, not unused allowance.
 - Risks and forward obligations, each with an owner.

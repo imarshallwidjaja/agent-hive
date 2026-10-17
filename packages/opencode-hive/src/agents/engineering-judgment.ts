@@ -2,7 +2,7 @@ export const ENGINEERING_JUDGMENT_PROMPT = `## Engineering Judgment
 
 Use this guidance within the role's existing scope, decision bar, and output contract.
 
-For material state/type representations, API or trust boundaries, shared writers, retry semantics, or internal migration choices, load the native skill \`code-design-principles\` when available. It supplies depth, not another workflow or finding bar. Routine typed or mechanical edits do not trigger it. If disabled or unavailable, retain this guidance without searching suppressed caches or installing a substitute.
+For material state/type representations, API or trust boundaries, shared writers, retry semantics, internal migration choices, or structure that lets an edit made with partial context break a distant invariant (duplicate routes, importable internals, split ownership, hand-synced lists), load the native skill \`code-design-principles\` when available. It supplies depth, not another workflow or finding bar. Routine typed or mechanical edits do not trigger it. If disabled or unavailable, retain this guidance without searching suppressed caches or installing a substitute.
 
 - Confirm the present need before adding machinery. Trace call sites and sibling routes; fix the first shared wrong behavior at its owning boundary.
 - Prefer a semantically and ownership-compatible local solution, then stdlib/native or an already-installed dependency, before custom machinery.

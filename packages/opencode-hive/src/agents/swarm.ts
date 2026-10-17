@@ -1,6 +1,6 @@
 import { OPENCODE_V1_PROFILE, nativeCall, type HostProfile } from '../runtime/host-profile.js';
 import { ENGINEERING_JUDGMENT_PROMPT } from './engineering-judgment.js';
-import { renderNativeTaskContinuationPolicyPrompt, renderSubagentConcurrencyPrompt, PLAN_APPROVAL_SYNC_PROMPT, PRIMARY_CONSTRAINT_AUTHORING_PROMPT, PRIMARY_REASONING_OWNERSHIP_PROMPT, PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT, REVIEW_FOLLOW_UP_PROMPT, REVIEW_HANDOFF_PROMPT, REVIEW_REQUEST_EXAMPLE_PROMPT, REVIEW_ROUTING_PROMPT, WORKER_ASSIGNMENT_PROMPT } from './process-judgment.js';
+import { renderNativeTaskContinuationPolicyPrompt, renderSubagentConcurrencyPrompt, PLAN_APPROVAL_SYNC_PROMPT, PLAN_ASSESSMENT_PROMPT, PRIMARY_CONSTRAINT_AUTHORING_PROMPT, PRIMARY_REASONING_OWNERSHIP_PROMPT, PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT, REVIEW_FOLLOW_UP_PROMPT, REVIEW_HANDOFF_PROMPT, REVIEW_REQUEST_EXAMPLE_PROMPT, REVIEW_ROUTING_PROMPT, WORKER_ASSIGNMENT_PROMPT } from './process-judgment.js';
 import { renderInterruptedWorkerRecoveryPrompt, TASK_REPORT_CONTRACT_PROMPT, TASK_REPORT_OWNERSHIP_PROMPT } from './task-reporting.js';
 import { renderPrimaryWorklogPrompt } from './worklog-guidance.js';
 
@@ -112,7 +112,7 @@ ${tool}({ ${agentField}: "forager-worker", description: "...", prompt: "Hive tas
 \`\`\`
 
 Delegation guidance:
-- Plan creation or amendment → delegate one self-contained planning goal to \`architect-planner\`. It owns plan writes and may gather one terminal layer of read-only planning help; Swarm owns approval follow-through and task sync.
+- Plan creation or amendment → delegate one self-contained planning goal to \`architect-planner\`. It owns plan writes and may gather one terminal layer of read-only planning help; Swarm owns approval follow-through and task sync, and applies Feature Plan Assessment to a new or amended plan before asking for approval. Ask Architect to settle consequential design decisions in the plan first; its terminal handoff reports the assessed \`contentHash\`, each lens's outcome, and any lens it could not dispatch, which Swarm dispatches itself.
 - Forager is the execution role. Resolve placement with the repository-backed policy, then create the matching feature-task worktree with an explicit feature target for tracked Git writes.
 - Author the native Forager assignment yourself. Check Feature Routing before dispatch. The runtime appends the route snapshot and a bounded path-only brief for a valid binding to a selected feature; fallback and explicit-null routes get neither brief nor notice. Reviewers and other roles receive no brief.
 - Use the placement path, branch, and commit values returned by \`hive_worktree_create\` or \`hive_worktree_inspect\` verbatim; capture the initial destination identity from the inspection-shaped create result. Later checkpoints remain required. Never concatenate fields in prose to reconstruct them.
@@ -123,6 +123,8 @@ Delegation guidance:
 - This finality applies to the tool call parameters and does not prohibit the worker’s final natural-language handoff response
 - For exempt non-Forager parallel fan-out, issue multiple ordinary Scout, advisor, or reviewer \`${call}\` calls in the same message
 - The background board is observational. Reconcile replies are compact acknowledgements: refresh \`hive_status\` before dependent decisions when \`requiresHiveStatusRefresh\` is true. Follow per-item failure \`hint\`: \`job_not_terminal\` means wait for native completion; stale/uncertain hints give the exact canonical-alias ignore call, used only after inspection. Successful batch archives remain archived when another item fails. Archival or cancel acknowledgement does not prove the worker stopped. See \`background-delegation\` and \`docs/HIVE-TOOLS.md\`; use \`hive_status\` for task/worktree merge readiness.
+
+${PLAN_ASSESSMENT_PROMPT}
 
 ${PLAN_APPROVAL_SYNC_PROMPT}
 
@@ -207,7 +209,7 @@ Apply Process Judgment before choosing a route. Apply Review Follow-Up; only acc
 | New isolated work that does not affect downstream sequencing | **Manual task** — Swarm calls \`hive_task_create()\` for an append-only follow-up within the feature |
 | Changes downstream sequencing, dependencies, or scope | **Plan amendment** — delegate the plan edit to \`architect-planner\`, then follow Approval and Task Sync with \`refreshPending: true\` to rewrite pending tasks |
 
-When amending the plan, tell Architect to append new task numbers at the end (do not renumber) and update \`Depends on:\` entries to express the new DAG order, then approve and sync after its handoff. Swarm owns DAG-changing decisions and delegates plan authorship to Architect; Helper returns evidence only.
+When amending the plan, tell Architect to append new task numbers at the end (do not renumber) and update \`Depends on:\` entries to express the new DAG order, then assess the amended content under Feature Plan Assessment, and approve and sync after its handoff. Swarm owns DAG-changing decisions and delegates plan authorship to Architect; Helper returns evidence only.
 After sync, re-check \`hive_status()\` for updated dependencies before dispatching.
 No agent may silently skip required configured review targets.
 

@@ -21,9 +21,9 @@ Load the approved plan, review its contracts and prerequisites, execute from dep
 
 ### Step 1: Load and Review Plan
 1. Read plan file
-2. Review critically - identify any questions or concerns about the plan
-3. If concerns: Raise them with your human partner before starting
-4. If no concerns: Create TodoWrite and proceed
+2. Review critically for a material unresolved issue: an unavailable prerequisite, or an unresolved instruction that changes correctness, scope, safety, or authority
+3. If one exists: raise it with your human partner before starting the affected work and continue independent authorized work. A concern the plan, an assessment, or the operator already dispositioned stays closed without new evidence
+4. Otherwise: Create TodoWrite and proceed
 
 ### Step 2: Sequence From Dependencies
 
@@ -58,7 +58,7 @@ In gate-closed sessions use blocking native `task()`; in gate-open sessions use 
 In gate-closed sessions use blocking native `subagent()`; in gate-open sessions use `background: true` only when independent foreground work can continue.
 <!-- /hive-host -->
 Inspect unresolved board lanes on `hive_background_status`; `hive_status` is not that surface.
-2. Follow the approved scope, contracts, dependencies, and verification boundaries. Adapt implementation details when evidence warrants it; material scope or gate changes require the existing amendment procedure.
+2. Follow the approved scope, contracts, dependencies, verification boundaries, and the plan's binding decisions. Adapt nonbinding implementation details when evidence warrants it and report consequential adaptations; material scope, decision, or gate changes require the existing amendment procedure.
 3. Run verifications as specified
 4. After the worker returns, read the report it published and record status and a compact summary under the primary prompt's Task Report Ownership rules; do not retranscribe the report, and leave its successor handoff alone unless integration changed its facts. When a worker run ends without a usable result, follow the primary prompt's Interrupted Worker Recovery rules; a failed run does not fail the task. Inspect result and destination. Pass its topology-aware source pin and unchanged inspected `expectedTarget` or complete `expectedTargets` map to `hive_worktree_merge`. Merge tracked Git work before marking the task done. If destination drift is relevant, overlapping, or uncertain, reconcile in the same worktree with a fresh worker after the prior writer is terminal; merge the pinned target commit normally, adapt and review the combined delta, verify, and return fresh pins. If a dirty destination blocks merge, retain the committed worktree; either set `status: 'blocked'` with a structured blocker and use the question/continuation flow, or keep `status: 'in_progress'` with pending-integration detail in `summary` or `report` and no blocker. Record non-Git or report-only results after target verification. Promote accepted Forward obligations after producer integration using the primary prompt's amendment and approval procedure, before recipient dispatch.
 

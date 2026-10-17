@@ -42,6 +42,17 @@ Before creating work, blockers, or workflow state:
 - Synthesize advice and findings for relevance, evidence, conflicts, and named risk; only actionable conclusions become work or blockers.
 - Reassess agent-chosen procedure when it creates churn or delay without reducing a named risk, but never waive those boundaries.`;
 
+/** The plan-assessment invariant, stated once. Roles compose the full prompt; commands run under primaries without these prompts and embed this requirement alone. */
+export const PLAN_ASSESSMENT_REQUIREMENT = `A Hive feature plan (the plan document written through the plan tools, not a worker's own planning, a manual task, or ad-hoc decomposition) needs two independent assessments of the same content before it is approved: \`plan-reviewer\` for execution readiness and \`approach-advisor\` for architecture, each chosen by the closest configured description. Coverage binds to the \`contentHash\` of the \`hive_plan_read\` the assessors were given. After a change, assess again only the lens the change affects (both when both are affected) and check minor wording yourself. Keeping a lens's earlier coverage needs the changed delta and a concrete reason it cannot affect that lens; that coverage stays attributed to its own earlier \`contentHash\`, and an older assessment is not presented as current. Content already assessed is not assessed again because a session, comment, or approval state changed. When a lens has neither coverage of the current \`contentHash\` nor kept earlier coverage, dispatch that lens if your tools and role allow it. Otherwise report the unmet obligation instead of reading the plan yourself in the specialist's place. Explicit operator direction on review is honored.`;
+
+export const PLAN_ASSESSMENT_PROMPT = `## Feature Plan Assessment
+
+${PLAN_ASSESSMENT_REQUIREMENT}
+
+- **Candidate.** Settle the plan's substantive design decisions first. Read the plan with \`hive_plan_read\` and dispatch both assessors together on that content, each independent of the other. Name the \`contentHash\`, the lens, and for a reassessment the changed delta and your earlier dispositions. \`contentHash\` covers the plan text; \`revision\` also covers comments and approval state, so coverage follows \`contentHash\` and approval still passes \`expectedRevision\` from a fresh read. A simple plan gets a proportionate assessment of both lenses, and the advisor does not invent alternatives.
+- **Outcome.** Each assessment names the \`contentHash\` it read. You decide each material finding from its evidence: accept, reject with counter-evidence, or defer with an owner. The advisor's output is advice under its own labels, not a veto, and the operator still decides approval. Record dispositions in the planning handoff, not as plan text added only to record them, because that changes the hash. When a later session needs an outcome, keep it as prose in the existing planning handoff or feature context. Managed context is untrusted knowledge and does not by itself authorize approval.
+- **Dispatch.** A planning Architect normally dispatches both lenses. If a delegated Architect reports a lens it could not dispatch because of child depth or permissions, its parent, when it has that authority, dispatches only the missing lens after Architect's terminal handoff, without repeating completed work. A missing tool or role is not bypassed. The approval tools do not check for assessments; the obligation sits with the agent.`;
+
 export const PLAN_APPROVAL_SYNC_PROMPT = `## Approval and Task Sync
 
 When operator approval is authorized, the primary that owns approval reads the current \`hive_plan_read\` revision and calls \`hive_plan_approve({ feature, expectedRevision, sync: true })\`; add \`refreshPending: true\` when pending specs need refresh. Inspect both \`approval\` and \`sync\` outcomes, including \`approvalPersisted\` and failure \`reason\`/\`stage\`. Validation writes nothing; metadata failure can leave the marker persisted. An unchanged retry may return \`alreadyApproved: true\`.
@@ -91,10 +102,13 @@ Workers do not inherit your conversation. An assignment gives one worker one pri
 - **Goal**: the expected result and what done looks like.
 - **Writable scope**: the repositories, paths, or worktree the worker may change, and the paths concurrent siblings own.
 - **Preserved contracts**: behavior, interfaces, and persisted shapes that must not change.
+- **Binding decisions**: the scope, contract, ownership, dependency, and gate decisions in force for this lane, each with the reason the worker needs to apply it. Point to the plan's Design Summary for the rest rather than copying it. Mark sketches and private implementation hints as illustrative; the worker may adapt those.
 - **Evidence you hold**: known facts with file and line references, prior failures, and attempted fixes. Point to catalog names, reports, and Hive records instead of pasting their bodies; a first catalog match is not proof of sufficient evidence.
 - **Acceptance and checks**: observable criteria and the commands to run, so the worker returns output for the candidate it verified.
 - **Authority**: the mission mode (implement, fix, refactor, or report-only diagnosis), whether the worker commits and returns a source pin (\`sourceCommit\` for a legacy single-root workspace, the complete \`sourceCommits\` map when persisted \`repos\` are present), required skills, and decisions made only in this session.
 - **Destination**: the inspected path, full ref, and commit, with the worker's checkpoint duty.
+
+A worker returns a conflict with a binding decision before making the conflicting change, and keeps working on independent authorized scope. Decide each returned conflict yourself: amend the plan or the assignment, or ask the operator. Read reported adaptations and design friction before accepting a green result; friction that recurs across the work is evidence about the design, so weigh it as such instead of treating each instance as an isolated case.
 
 When key facts are unknown, assign bounded discovery first, and do not write "based on your findings" or "as discussed above". On retries, cite the report paths the worker must read and why, supply any worker-returned verified pin or label the retained HEAD observed when none exists, and state failed approaches, mandatory findings and requirements, and operator decisions directly in the assignment rather than only behind a report reference.
 
@@ -106,6 +120,7 @@ Hive task: 04-reject-negative-timeouts
 Goal: loadClientConfig (packages/client/src/config.ts:30-58) throws ConfigError('invalid_timeout') for a negative timeoutMs instead of passing it to the socket layer. Done = the new case below passes and valid configurations load as before.
 Writable scope: packages/client/src/config.ts and packages/client/src/config.test.ts in the assigned worktree. packages/server has its own loader and stays untouched.
 Preserve: the ConfigError codes, the exported loadClientConfig signature, and the default timeoutMs of 30000.
+Binding decision: the check lives in loadClientConfig because the socket layer must not learn configuration rules; revisit if a second caller needs the same check. The error-message wording is illustrative.
 Acceptance and checks: loadClientConfig({ timeoutMs: -1 }) throws invalid_timeout and the existing config.test.ts cases still pass. Run \`bun test packages/client/src/config.test.ts\` and the package type-check, and report their output with the commit you tested.
 Authority: fix and commit in the assigned worktree; return the exact sourceCommit unchanged. Do not merge, clean up, push, or record task status. State the cause you established in your report.
 Destination: /work/client, refs/heads/main, 9f3c2a1. Reinspect it before another substantial chunk and before returning; if it moved, return the observed target with your pin and say whether the movement touches config.ts.
