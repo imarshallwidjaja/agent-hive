@@ -4011,23 +4011,36 @@ describe('supervised exercise serialization', () => {
     const lockPath = join(run.runDir, 'lock');
     const lockFile = statSync(lockPath);
     const owner = await acquireRunLock(lockPath, { waitSeconds: 2 });
-    expect(owner).toMatchObject({ busy: false, ino: String(lockFile.ino) });
-    // The flock helper has exited; the lock is held through this process's one descriptor of the file.
-    expect(childrenNamed(process.pid, 'flock')).toEqual([]);
-    expect(lockProbe(lockPath)).toBe(75);
-    expect(descriptorsOf(process.pid, lockFile)).toBe(1);
-    // A child started now, as every Docker client is, holds no descriptor of the lock file.
-    const child = spawn('sleep', ['30'], { stdio: 'ignore' });
-    expect(descriptorsOf(child.pid!, lockFile)).toBe(0);
-    // A second acquisition is busy, its helper is reaped and its descriptor closed before it returns.
-    expect(await acquireRunLock(lockPath, { waitSeconds: 1 })).toEqual({ busy: true });
-    expect(childrenNamed(process.pid, 'flock')).toEqual([]);
-    expect(descriptorsOf(process.pid, lockFile)).toBe(1);
-    owner.release();
-    owner.release();
-    expect(descriptorsOf(process.pid, lockFile)).toBe(0);
-    expect(lockProbe(lockPath)).toBe(0);
-    child.kill('SIGKILL');
+    let child: ReturnType<typeof spawn> | undefined;
+    try {
+      expect(owner).toMatchObject({ busy: false, ino: String(lockFile.ino) });
+      // The flock helper has exited; the lock is held through this process's one descriptor of the file.
+      expect(childrenNamed(process.pid, 'flock')).toEqual([]);
+      expect(lockProbe(lockPath)).toBe(75);
+      expect(descriptorsOf(process.pid, lockFile)).toBe(1);
+      // A child started now, as every Docker client is, holds no descriptor of the lock file. Spawn reports the pid
+      // before the child has finished starting, so look only after the child itself says it is running.
+      const started = spawn('sh', ['-c', 'echo ready; exec sleep 30'], { stdio: ['ignore', 'pipe', 'ignore'] });
+      child = started;
+      await new Promise<void>((resolveReady, reject) => {
+        let out = '';
+        started.stdout!.on('data', (d) => { out += d; if (out.includes('ready\n')) resolveReady(); });
+        started.once('error', reject);
+        started.once('exit', (code, signal) => reject(new Error(`child exited before it was ready: ${code ?? signal}`)));
+      });
+      expect(descriptorsOf(started.pid!, lockFile)).toBe(0);
+      // A second acquisition is busy, its helper is reaped and its descriptor closed before it returns.
+      expect(await acquireRunLock(lockPath, { waitSeconds: 1 })).toEqual({ busy: true });
+      expect(childrenNamed(process.pid, 'flock')).toEqual([]);
+      expect(descriptorsOf(process.pid, lockFile)).toBe(1);
+      owner.release();
+      owner.release();
+      expect(descriptorsOf(process.pid, lockFile)).toBe(0);
+      expect(lockProbe(lockPath)).toBe(0);
+    } finally {
+      owner.release();
+      child?.kill('SIGKILL');
+    }
   }, 30_000);
 
   test.skipIf(!hasFlock)('the lock lasts exactly as long as the acting process, under Node and Bun: busy while it lives, free once it is killed though its child lives on', async () => {
