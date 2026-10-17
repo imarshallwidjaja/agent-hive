@@ -1,7 +1,8 @@
 # syntax=docker/dockerfile:1
-# Built only by run.mjs from a run-owned context: harness.tar (the committed harness revision), runtime/ (frozen
-# stock-host lockfiles), subject.tar (git archive of the subject commit; artifact target only) and plugin.tgz
-# (the packed candidate; runtime target only). No credentials, host homes or sockets ever enter a build.
+# Built only by runtime.mjs (for run.mjs and exercise.mjs) from a run-owned context: harness.tar (the committed harness
+# revision), runtime/ (frozen stock-host lockfiles), subject.tar (git archive of the subject commit; artifact targets
+# only), plugin.tgz (the packed candidate; runtime targets only) and hive-core-reader.js (the same build's hive-core
+# bundle; exercise-runtime only). No credentials, host homes or sockets ever enter a build.
 
 ARG NODE_IMAGE=node:24-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20
 ARG BUN_VERSION=1.4.2
@@ -26,6 +27,12 @@ RUN NODE_IMAGE="${NODE_IMAGE}" node /ic/harness/fixture.ts build-report > /out/b
 FROM scratch AS artifact
 COPY --from=builder /out/oc-arkive.tgz /out/build-report.json /
 
+# ---- Supervised exercises only: the same builder run's packed plugin and build report, plus the hive-core bundle that
+# build produced, for the read-only plan comparison. The legacy artifact and runtime targets do not use it.
+FROM scratch AS exercise-artifact
+COPY --from=builder /out/oc-arkive.tgz /out/build-report.json /
+COPY --from=builder /src/packages/hive-core/dist/index.js /hive-core-reader.js
+
 # ---- Runtime: frozen stock hosts, then the normally npm-installed packed plugin, then the harness.
 FROM ${NODE_IMAGE} AS runtime
 ARG NODE_IMAGE
@@ -44,5 +51,17 @@ RUN mkdir -p /opt/ic/plugin && cd /opt/ic/plugin && printf '{"name":"ic-plugin",
  && npm install --save-exact --no-audit --no-fund /opt/ic/pkg/oc-arkive.tgz @opencode-ai/plugin@1.18.30 effect@4.0.0-rc.112
 ADD harness.tar /opt/ic/harness/
 RUN NODE_IMAGE="${NODE_IMAGE}" node /opt/ic/harness/fixture.ts runtime-report > /opt/ic/runtime-report.json
+USER 1000:1000
+WORKDIR /work
+
+# ---- Supervised exercises only: the legacy runtime plus the hash-checked hive-core bundle, read-only, and a report that
+# a plain Node import exposes the public read and path functions without host dependencies.
+FROM runtime AS exercise-runtime
+ARG CORE_SHA256
+USER root
+COPY hive-core-reader.js /opt/ic/exercise-core/index.js
+RUN test -n "${CORE_SHA256}" && echo "${CORE_SHA256}  /opt/ic/exercise-core/index.js" | sha256sum -c - \
+ && chmod 0444 /opt/ic/exercise-core/index.js && chmod 0555 /opt/ic/exercise-core \
+ && cd / && node /opt/ic/harness/exercise-driver.ts core-report > /opt/ic/exercise-report.json
 USER 1000:1000
 WORKDIR /work

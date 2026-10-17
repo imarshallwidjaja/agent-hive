@@ -1,11 +1,12 @@
 // Synthetic boundary, isolation, evidence and lifecycle tests. No Docker engine, network or real credential is used:
 // the Docker CLI is replaced by an in-memory fake and every credential below is a made-up string.
 import { describe, expect, test } from 'bun:test';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import {
   CredentialError, assertLifetime, fingerprintAuthFile, hostAuthPath, readAccessOnly, sameFingerprint, secretScanner,
 } from './credentials.mjs';
@@ -30,6 +31,23 @@ import {
   classifyEditAttempt, containerSecrets, deliveredBodySentence, evidenceLimits, exportDecision, hiveResultFailed, interruptSession, messagePages, mockDecision, preflightReply, readHistories, render, runPrompt, safeName, refusalKind, scenarioOverrides,
   scriptDirective, skillReferencePointers, toolFieldContract, toolOutcome,
 } from './fixture.ts';
+import {
+  credentialFromSnapshot, evidenceScanner, fingerprintWire, scanValue, snapshotAuthFile,
+} from './credentials.mjs';
+import { GuardState, parseWireFingerprint, sharedClockMs } from './guard.mjs';
+import { MESSAGE_ID, exerciseHiveConfig, exerciseHostConfig, exerciseMessageId, exerciseRoutes, nativeStorePath } from './hosts.mjs';
+import { exerciseCoreFailures } from './runtime.mjs';
+import {
+  ACTIONS, CLOCK_MARGIN_MS, DRIVER_FAILURES, DRIVER_REFUSALS, EXIT, INTERRUPT_FLOOR_MS, LIVE_MAX_SECONDS, NO_NEW_WORK_MS, PROJECT_ROOT, QUALIFICATION_CHECKS, acquireRunLock, actionReserveMs,
+  admitsAction, admitsNewWork, approvalMessage, catalogProblems, containerCutoffs, descriptorsOf, failureWord, inspectCommand, interpretReply, main as exerciseMain, operationLifetimeMs,
+  parseDriverReply, parseExerciseCli, prepareCommand, projectPath, qualificationFailures, runState, selectionSummary, sharedClockBracket, snapshotInputs, startCommand, stopCommand, turnCommand,
+  validateAuthorization, validateInspection, validateOperation, validateRequest,
+} from './exercise.mjs';
+import {
+  approvalObserved, approvalPrecondition, artifactRecord, budget as driverBudget, latestPluginPlanRead, lineDiff, listPrefix, nativeCredentialMatches, normalizeMessage, observeWith,
+  observedApprovals, pendingInteractions, quiescence, readHistory, resolveOperation, sessionTree, submit as driverSubmit,
+} from './exercise-driver.ts';
+import { PLAN_READ_LIMITS, planReadDifferences, readPlan } from './plan-reader.ts';
 
 const SCENARIOS = JSON.parse(readFileSync(join(import.meta.dir, 'scenarios.json'), 'utf8'));
 const group = (id: string) => SCENARIOS.groups.find((g: any) => g.id === id);
@@ -1131,6 +1149,51 @@ describe('artifacts, runtime identity and model selection', () => {
       expect(existsSync(join(outDir, 'build-context', 'subject.tar'))).toBe(false);
       await expect(build(docker as any, new Resources(docker as any, join(scratch(), 'r2.jsonl'), 'run', ENGINE), { repoRoot: repo, outDir: scratch(), identities, artifactFrom: { file, sha256: '0'.repeat(64) } }))
         .rejects.toMatchObject({ code: 'artifact_hash_mismatch' });
+    });
+
+    test('an exercise build uses the exercise-only targets and hands the same build core bundle to the runtime by hash', async () => {
+      const { repo } = harnessRepo();
+      const identities = resolveIdentities({ repoRoot: repo, subjectRef: 'HEAD' });
+      const coreSha = createHash('sha256').update('core bundle').digest('hex');
+      class ExerciseBuildDocker extends BuildDocker {
+        async run(args: string[], options: { input?: string; timeoutMs?: number } = {}) {
+          if (args[0] === 'build' && args[2] === 'exercise-artifact') {
+            this.calls.push({ args });
+            const dest = args[args.indexOf('--output') + 1].replace('type=local,dest=', '');
+            mkdirSync(dest, { recursive: true });
+            writeFileSync(join(dest, 'oc-arkive.tgz'), 'packed candidate');
+            writeFileSync(join(dest, 'build-report.json'), JSON.stringify(BUILD_REPORT));
+            writeFileSync(join(dest, 'hive-core-reader.js'), 'core bundle');
+            return this.ok();
+          }
+          if (args[0] === 'build' && args[2] === 'exercise-runtime') {
+            this.calls.push({ args });
+            writeFileSync(args[args.indexOf('--iidfile') + 1], 'sha256:exercise-image\n');
+            return this.ok();
+          }
+          if (args[0] === 'create' && args.includes('/opt/ic/exercise-report.json')) this.reportNext = true;
+          if (args[0] === 'start' && args[1] === '-a' && this.reportNext) {
+            this.reportNext = false;
+            return this.ok(JSON.stringify({ coreSha256: coreSha, exports: { getFeaturePath: 'function', getPlanPath: 'function', PlanService: 'function' } }));
+          }
+          return super.run(args, options);
+        }
+        reportNext = false;
+      }
+      const docker = new ExerciseBuildDocker();
+      const outDir = scratch();
+      const built = await build(docker as any, new Resources(docker as any, join(scratch(), 'r.jsonl'), 'run', ENGINE), { repoRoot: repo, outDir, identities, exercise: true });
+      const packedSha = createHash('sha256').update('packed candidate').digest('hex');
+      const context = join(outDir, 'build-context');
+      expect(docker.calls.filter((c) => c.args[0] === 'build').map((c) => c.args)).toEqual([
+        ['build', '--target', 'exercise-artifact', '--output', `type=local,dest=${join(outDir, 'artifact')}`, context],
+        ['build', '--target', 'exercise-runtime', '--build-arg', `PLUGIN_SHA256=${packedSha}`, '--build-arg', `CORE_SHA256=${coreSha}`, '--iidfile', join(outDir, 'runtime.iid'), context],
+      ]);
+      expect(readFileSync(join(context, 'hive-core-reader.js'), 'utf8')).toBe('core bundle');
+      expect(built.artifact.core).toEqual({ file: join(outDir, 'artifact', 'hive-core-reader.js'), sha256: coreSha, subjectCommit: identities.subjectCommit });
+      expect(exerciseCoreFailures(built.artifact, built.runtime, identities.subjectCommit)).toEqual([]);
+      await expect(build(docker as any, new Resources(docker as any, join(scratch(), 'r2.jsonl'), 'run', ENGINE), { repoRoot: repo, outDir: scratch(), identities, artifactFrom: { file: 'x', sha256: 'y' }, exercise: true }))
+        .rejects.toMatchObject({ code: 'exercise_requires_fresh_artifact' });
     });
   });
 
@@ -2451,6 +2514,1792 @@ describe('in-container export scan', () => {
       expect(await exportDecision(clean, host, 'substantive-handoff', credentialFree)).toEqual({ ok: true, record: clean });
       const shaped = liveRecord({ finalText: 'sk-' + 'a'.repeat(24) });
       expect(await exportDecision(shaped, host, 'substantive-handoff', credentialFree)).toMatchObject({ ok: false, failure: 'export_contaminated' });
+    }
+  });
+});
+
+// -----------------------------------------------------------------------------------------------------------------
+// Supervised exercises (exercise.mjs, exercise-driver.ts, plan-reader.ts). Same synthetic rules: no Docker engine,
+// network or real credential; the guard, auth file and native API are replaced by in-memory fakes.
+
+const api = (body: any, status = 200): any => ({ outcome: 'response', status, body, bytes: 0 });
+const routeGet = (table: Record<string, any>) => async (request: any) => table[request.path] ?? api(null, 404);
+
+describe('supervised exercise credential continuity', () => {
+  const now = 1_800_000_000_000;
+  const entry = { type: 'oauth', access: FAKE_ACCESS, refresh: FAKE_REFRESH, expires: now + 3 * 3_600_000, accountId: FAKE_ACCOUNT };
+
+  test('one bounded descriptor read gives the fingerprint and the credential from the same bytes', () => {
+    const path = authFile(entry);
+    const snapshot = snapshotAuthFile(path);
+    const legacy = fingerprintAuthFile(path);
+    expect(snapshot.fingerprint).toMatchObject({ exists: true, size: legacy.size, mtimeNs: legacy.mtimeNs, ino: legacy.ino, digest: legacy.digest });
+    expect(credentialFromSnapshot(snapshot, { now, requiredMs: 0 })).toEqual(readAccessOnly(path, { now, requiredMs: 0 }));
+    expect(snapshotAuthFile(join(scratch(), 'absent.json'))).toEqual({ fingerprint: { exists: false }, bytes: null });
+    expect(() => credentialFromSnapshot({ fingerprint: { exists: false }, bytes: null }, { now, requiredMs: 0 })).toThrow('auth_missing');
+    expect(() => snapshotAuthFile(path, { maxBytes: 8 })).toThrow('auth_oversize');
+  });
+
+  test('a file that changes during the read, or whose path is replaced, is refused rather than fingerprinted', () => {
+    const path = authFile(entry);
+    const real = { openSync: require('node:fs').openSync, fstatSync: require('node:fs').fstatSync, readSync: require('node:fs').readSync, closeSync: require('node:fs').closeSync, statSync: require('node:fs').statSync };
+    let fstats = 0;
+    const changing = { ...real, fstatSync: (fd: number, o: any) => { const s = real.fstatSync(fd, o); return ++fstats === 2 ? { ...s, isFile: () => true, mtimeNs: s.mtimeNs + 1n } : s; } };
+    expect(() => snapshotAuthFile(path, { fs: changing })).toThrow('auth_changed_during_read');
+    const replaced = { ...real, statSync: (p: string, o: any) => ({ ...real.statSync(p, o), ino: 1n }) };
+    expect(() => snapshotAuthFile(path, { fs: replaced })).toThrow('auth_changed_during_read');
+  });
+
+  test('wire fingerprints keep BigInt fields exact and the guard refuses lossy or partial values', () => {
+    const big = { exists: true, size: 10n, mtimeNs: 1_792_201_844_045_123_456n, ino: 2n ** 60n + 7n, digest: 'b'.repeat(64) };
+    const wire = fingerprintWire(big);
+    expect(wire).toEqual({ exists: true, size: '10', mtimeNs: '1792201844045123456', ino: '1152921504606846983', digest: 'b'.repeat(64) });
+    expect(parseWireFingerprint(wire)).toEqual(wire);
+    expect(parseWireFingerprint({ ...wire, mtimeNs: 1792201844045123456 })).toBeNull();
+    expect(parseWireFingerprint({ ...wire, extra: '1' })).toBeNull();
+    expect(parseWireFingerprint({ exists: true, size: '1' })).toBeNull();
+    expect(parseWireFingerprint({ exists: false })).toEqual({ exists: false });
+  });
+
+  test('after rotation the original fingerprint no longer matches, so the replacement token is never adopted', () => {
+    const path = authFile(entry);
+    const guard = new GuardState(1000, { mono: () => 0, wall: () => now });
+    expect(guard.bind({ runId: 'r', host: 'v1', fingerprint: fingerprintWire(snapshotAuthFile(path).fingerprint) }).ok).toBe(true);
+    expect(guard.compare({ fingerprint: fingerprintWire(snapshotAuthFile(path).fingerprint) })).toMatchObject({ ok: true, matches: true });
+    writeFileSync(path, JSON.stringify({ openai: { ...entry, access: 'replacement-access-token-9876543210fedcba' } }));
+    expect(guard.compare({ fingerprint: fingerprintWire(snapshotAuthFile(path).fingerprint) })).toMatchObject({ ok: true, matches: false });
+  });
+
+  test('the evidence scanner finds the exact token, the account, token shapes and any 32-character fragment', () => {
+    const scan = evidenceScanner({ access: FAKE_ACCESS, expires: now, accountId: FAKE_ACCOUNT });
+    expect(scan(`x ${FAKE_ACCESS} y`)).toBe(true);
+    expect(scan(`x ${FAKE_ACCOUNT}`)).toBe(true);
+    expect(scan(`clipped ${FAKE_ACCESS.slice(0, 32)}`)).toBe(true);
+    expect(scan(`chunk ${FAKE_ACCESS.slice(7, 39)}`)).toBe(true);
+    expect(scan(`short ${FAKE_ACCESS.slice(0, 31)}`)).toBe(false);
+    expect(scan('sk-' + 'a'.repeat(24))).toBe(true);
+    expect(scan({ text: 'ordinary exercise text' })).toBe(false);
+    const short = evidenceScanner({ access: 'short-token-123', expires: now });
+    expect(short('value short-token-123 here')).toBe(true);
+    expect(evidenceScanner(null)('sk-' + 'b'.repeat(24))).toBe(true);
+  });
+
+  test('a full 1800 s live run needs 2400 s of credential lifetime on v1 and 2700 s on v2', () => {
+    expect(operationLifetimeMs('v1', 1_800_000)).toBe(2_400_000);
+    expect(operationLifetimeMs('v2', 1_800_000)).toBe(2_700_000);
+  });
+});
+
+describe('supervised exercise guard', () => {
+  const clocks = () => {
+    const c = { mono: 1_000, wall: 1_700_000_000_000 };
+    return { c, guard: (ceiling = 100) => new GuardState(ceiling, { mono: () => c.mono, wall: () => c.wall }) };
+  };
+  const fp = { exists: true, size: '10', mtimeNs: '1700000000000000001', ino: '42', digest: 'a'.repeat(64) };
+
+  test('arming only shortens the ceiling and a second arm is refused', () => {
+    const { guard } = clocks();
+    const g = guard(100);
+    expect(g.arm(200)).toMatchObject({ ok: true, armed: true, remainingMs: 100_000 });
+    expect(g.arm(10)).toMatchObject({ ok: false, failure: 'already_armed', remainingMs: 100_000 });
+    expect(guard().arm(0)).toEqual({ ok: false, failure: 'request_invalid' });
+    expect(guard().arm(1.5)).toEqual({ ok: false, failure: 'request_invalid' });
+  });
+
+  test('deadlines follow the monotonic clock: a wall-clock change neither extends nor shortens them, pauses count', () => {
+    const { c, guard } = clocks();
+    const g = guard(100);
+    g.arm(60);
+    c.wall += 3_600_000;
+    expect(g.remainingMs()).toBe(60_000);
+    c.wall -= 7_200_000;
+    expect(g.remainingMs()).toBe(60_000);
+    c.mono += 45_000;
+    expect(g.remainingMs()).toBe(15_000);
+    c.mono += 30_000;
+    expect(g.remainingMs()).toBe(0);
+  });
+
+  test('bind happens once, before arming; compare returns only a Boolean; status never carries the fingerprint', () => {
+    const { guard } = clocks();
+    const g = guard();
+    expect(g.compare({ fingerprint: fp })).toEqual({ ok: false, failure: 'not_bound' });
+    expect(g.bind({ runId: 'run-1', host: 'v2', fingerprint: fp })).toMatchObject({ ok: true, bound: true, boundRunId: 'run-1', boundHost: 'v2' });
+    expect(g.bind({ runId: 'run-2', host: 'v2', fingerprint: fp })).toMatchObject({ ok: false, failure: 'already_bound' });
+    expect(g.compare({ fingerprint: fp })).toEqual({ ok: true, matches: true, remainingMs: 100_000, clockMs: 1_000, deadlineClockMs: 101_000 });
+    expect(g.compare({ fingerprint: { ...fp, ino: '43' } })).toMatchObject({ ok: true, matches: false });
+    expect(JSON.stringify(g.reply({ op: 'status' }))).not.toContain(fp.digest);
+    expect(g.bind({ runId: 'bad id', host: 'v2', fingerprint: fp })).toMatchObject({ ok: false });
+    const armedFirst = guard();
+    armedFirst.arm(10);
+    expect(armedFirst.bind({ runId: 'run-1', host: 'v1', fingerprint: fp })).toMatchObject({ ok: false, failure: 'bind_after_arm' });
+  });
+
+  test('the fixed-run guard replies keep their fields', () => {
+    const { guard } = clocks();
+    const g = guard(100);
+    expect(g.reply({ op: 'status' })).toMatchObject({ ok: true, armed: false, startedAt: expect.any(Number), ceilingAt: expect.any(Number), deadlineAt: expect.any(Number), armedAt: null, remainingMs: 100_000 });
+    expect(g.reply({ op: 'arm', seconds: 30 })).toMatchObject({ ok: true, armed: true, armedAt: expect.any(Number) });
+    expect(g.reply({ op: 'other' })).toEqual({ ok: false, failure: 'request_invalid' });
+  });
+
+  test('status, arm and compare report the guard clock and its deadline on that clock, never the wall clock', () => {
+    const { c, guard } = clocks();
+    const g = guard(100);
+    expect(g.reply({ op: 'status' })).toMatchObject({ clockMs: 1_000, deadlineClockMs: 101_000, remainingMs: 100_000 });
+    expect(g.bind({ runId: 'r', host: 'v1', fingerprint: fp })).toMatchObject({ ok: true, clockMs: 1_000, deadlineClockMs: 101_000 });
+    c.mono += 5_000;
+    c.wall -= 3_600_000;
+    expect(g.reply({ op: 'arm', seconds: 30 })).toMatchObject({ clockMs: 6_000, deadlineClockMs: 36_000, remainingMs: 30_000 });
+    c.mono += 1_000;
+    expect(g.compare({ fingerprint: fp })).toEqual({ ok: true, matches: true, remainingMs: 29_000, clockMs: 7_000, deadlineClockMs: 36_000 });
+  });
+});
+
+describe('supervised exercise resources and builds', () => {
+  test('a create whose client did not complete stays unknown on an empty listing; it is never cleared as absent', async () => {
+    // The client times out before the daemon has created anything; the daemon may still finish later.
+    class NotYetCreated extends FakeDocker {
+      async run(args: string[], options: any = {}) {
+        if (args[0] === 'network' && args[1] === 'create') { this.calls.push({ args }); return { code: 1, stdout: '', stderr: '', timedOut: true }; }
+        return super.run(args, options);
+      }
+    }
+    const docker = new NotYetCreated();
+    const ledger = join(scratch(), 'r.jsonl');
+    const resources = new Resources(docker as any, ledger, 'run', ENGINE, { strictCreates: true });
+    const lost = resources.create('network', (labels: string[]) => ['network', 'create', ...labels, 'n']);
+    await expect(lost).rejects.toMatchObject({ code: 'create_unknown' });
+    expect(resources.pendingCreates.size).toBe(1);
+    expect(readFileSync(ledger, 'utf8')).toContain('"create_unknown"');
+    expect(readFileSync(ledger, 'utf8')).not.toContain('"create_absent"');
+    expect(outstandingFromLedger(readFileSync(ledger, 'utf8')).nonces.size).toBe(1);
+    expect((await resources.removeAll()).some((r: any) => r.state === 'unknown')).toBe(true);
+    expect(resources.settled).toBe(false);
+  });
+
+  test('a late-created resource found by its nonce is adopted and removed by exact ID', async () => {
+    const docker = new FakeDocker({ loseCreate: true });
+    const resources = new Resources(docker as any, join(scratch(), 'r.jsonl'), 'run', ENGINE, { strictCreates: true });
+    await expect(resources.create('network', (labels: string[]) => ['network', 'create', ...labels, 'n'])).rejects.toMatchObject({ code: 'create_failed' });
+    expect(resources.live.size).toBe(1);
+    expect((await resources.removeAll()).every((r: any) => r.state === 'absent')).toBe(true);
+  });
+
+  test('an unsuccessful create stays unknown on an empty listing whatever the client printed; only its found resource settles it', async () => {
+    // The client exits with a daemon-style refusal, a transport error, a signal or a timeout; in each case the daemon
+    // may still create the network afterwards.
+    const failures = [
+      { code: 1, stdout: '', stderr: 'Error response from daemon: invalid reference format', timedOut: false },
+      { code: 1, stdout: '', stderr: 'error during connect: EOF', timedOut: false },
+      { code: -1, stdout: '', stderr: '', timedOut: false },
+      { code: 1, stdout: 'not-an-id', stderr: '', timedOut: true },
+    ];
+    class LateCreation extends FakeDocker {
+      held: string[][] = [];
+      constructor(public failure: any) { super(); }
+      async run(args: string[], options: any = {}) {
+        if (args[0] === 'network' && args[1] === 'create') { this.calls.push({ args }); this.held.push(args); return this.failure; }
+        return super.run(args, options);
+      }
+      async daemonFinishes() { for (const args of this.held.splice(0)) await FakeDocker.prototype.run.call(this, args, {}); }
+    }
+    for (const failure of failures) {
+      const docker = new LateCreation(failure);
+      const ledger = join(scratch(), 'r.jsonl');
+      const resources = new Resources(docker as any, ledger, 'run', ENGINE, { strictCreates: true });
+      await expect(resources.create('network', (labels: string[]) => ['network', 'create', ...labels, 'n'])).rejects.toMatchObject({ code: 'create_unknown' });
+      expect(resources.pendingCreates.size).toBe(1);
+      expect(readFileSync(ledger, 'utf8')).toContain('"create_unknown"');
+      expect(readFileSync(ledger, 'utf8')).not.toContain('"create_absent"');
+      // The listing stays empty: cleanup stays unknown, however often it is retried.
+      for (let i = 0; i < 2; i++) {
+        expect((await resources.removeAll()).some((r: any) => r.state === 'unknown')).toBe(true);
+        expect(resources.settled).toBe(false);
+      }
+      expect(outstandingFromLedger(readFileSync(ledger, 'utf8')).nonces.size).toBe(1);
+      // The late creation is found by its nonce and removed by exact ID.
+      await docker.daemonFinishes();
+      expect((await resources.removeAll()).every((r: any) => r.state === 'absent')).toBe(true);
+      expect(resources.settled).toBe(true);
+      expect(outstandingFromLedger(readFileSync(ledger, 'utf8'))).toEqual({ ids: new Map(), nonces: new Map() });
+    }
+    // The fixed-run (non-strict) behavior is unchanged: an empty listing after a failed client still settles absent.
+    for (const failure of failures.slice(0, 2)) {
+      const legacy = new Resources(new LateCreation(failure) as any, join(scratch(), 'l.jsonl'), 'run', ENGINE);
+      await expect(legacy.create('network', (labels: string[]) => ['network', 'create', ...labels, 'n'])).rejects.toMatchObject({ code: 'create_failed' });
+      expect(legacy.settled).toBe(true);
+    }
+  });
+
+  test('a supervised run whose lost create never appears stops as cleanup_unknown and keeps the nonce', async () => {
+    const run = exerciseRun({ ledger: JSON.stringify({ event: 'create_requested', kind: 'network', nonce: 'never-found' }) + '\n' });
+    for (let i = 0; i < 2; i++) {
+      const stopped = await stopCommand({ run: run.runDir }, {}, { docker: new ExerciseDocker() });
+      expect(stopped).toMatchObject({ exit: EXIT.failed, status: { status: 'cleanup_unknown', retained: [{ nonce: 'never-found', state: 'unknown' }] } });
+    }
+    expect(outstandingFromLedger(readFileSync(join(run.runDir, 'resources.jsonl'), 'utf8')).nonces.get('never-found')).toBe('network');
+  });
+
+  test('command budgets bound every Docker call', async () => {
+    const timeouts: number[] = [];
+    class Timing extends FakeDocker { async run(args: string[], options: any = {}) { timeouts.push(options.timeoutMs); return super.run(args, options); } }
+    const bounded = new Resources(new Timing() as any, join(scratch(), 'r.jsonl'), 'run', ENGINE, { remainingMs: () => 5_000 });
+    await bounded.create('container', (labels: string[]) => ['create', ...labels, '--network', 'none', 'img', '120']);
+    expect(Math.max(...timeouts)).toBeLessThanOrEqual(5_000);
+    const exhausted = new Resources(new FakeDocker() as any, join(scratch(), 'r.jsonl'), 'run', ENGINE, { remainingMs: () => 0 });
+    await expect(exhausted.create('network', (labels: string[]) => ['network', 'create', ...labels, 'n'])).rejects.toMatchObject({ code: 'command_deadline_exceeded' });
+  });
+
+  test('the exercise core bundle must come from the same subject, match its hash and expose the public read functions', () => {
+    const core = { file: '/x/hive-core-reader.js', sha256: 'c'.repeat(64), subjectCommit: 'a'.repeat(40) };
+    const good = { exerciseCore: { coreSha256: core.sha256, exports: { getFeaturePath: 'function', getPlanPath: 'function', PlanService: 'function' } } };
+    expect(exerciseCoreFailures({ core }, good, 'a'.repeat(40))).toEqual([]);
+    expect(exerciseCoreFailures({}, good, 'a'.repeat(40))).toContain('core_bundle_missing');
+    expect(exerciseCoreFailures({ core }, good, 'b'.repeat(40))).toContain('core_bundle_subject_differs');
+    expect(exerciseCoreFailures({ core }, { exerciseCore: { ...good.exerciseCore, coreSha256: 'd'.repeat(64) } }, 'a'.repeat(40))).toContain('core_bundle_hash_mismatch');
+    expect(exerciseCoreFailures({ core }, { exerciseCore: { ...good.exerciseCore, exports: { getFeaturePath: 'function', getPlanPath: 'function' } } }, 'a'.repeat(40))).toContain('core_export_missing:PlanService');
+    expect(exerciseCoreFailures({ core }, {}, 'a'.repeat(40))).toContain('core_report_missing');
+    // The fixed-run checks never ask for the sidecar.
+    expect(artifactFailures({ hiveCoreResolvedInArchive: true, coreBuiltFirst: true, packEntries: ['dist/index.js'] })).toEqual([]);
+  });
+
+  test('the Dockerfile adds exercise-only targets beside unchanged fixed-run targets, and the context admits only the bundle', () => {
+    const dockerfile = readFileSync(join(import.meta.dir, 'Dockerfile'), 'utf8');
+    expect(dockerfile).toContain('FROM scratch AS artifact\nCOPY --from=builder /out/oc-arkive.tgz /out/build-report.json /\n');
+    expect(dockerfile).toContain('FROM scratch AS exercise-artifact');
+    expect(dockerfile).toContain('COPY --from=builder /src/packages/hive-core/dist/index.js /hive-core-reader.js');
+    expect(dockerfile).toContain('FROM runtime AS exercise-runtime');
+    expect(dockerfile).toMatch(/sha256sum -c -[\s\S]*exercise-driver\.ts core-report/);
+    expect(readFileSync(join(import.meta.dir, '.dockerignore'), 'utf8').split('\n')).toContain('!hive-core-reader.js');
+  });
+});
+
+const EXERCISE_REQUEST = {
+  schema: 'ic-exercise-request/v1', question: 'Does the primary ask before planning?', observables: ['native question'], stopConditions: ['plan approved'],
+  model: { ref: 'openai/gpt-test', variant: null }, agentMode: 'dedicated', initialPrimary: 'architect-planner',
+  primaryTransitions: [{ from: 'architect-planner', to: 'swarm-orchestrator' }], repository: 'repo', prompt: 'prompt.md', artifacts: ['README.md', '.hive/features/'],
+};
+
+describe('supervised exercise inputs and authority', () => {
+  const code = (fn: () => unknown) => { try { fn(); return 'accepted'; } catch (e) { return (e as HarnessError).code; } };
+
+  test('the CLI accepts only finite commands with a full candidate commit and a 61..1800 s budget', () => {
+    const prepare = ['prepare', '--candidate-ref', 'a'.repeat(40), '--host', 'v1', '--input', '/r/request.json', '--run-id', 'r1', '--output-root', '/out'];
+    expect(parseExerciseCli(prepare).command).toBe('prepare');
+    expect(code(() => parseExerciseCli([...prepare.slice(0, 2), 'HEAD', ...prepare.slice(3)]))).toBe('candidate_ref_not_full_commit');
+    expect(code(() => parseExerciseCli([...prepare, '--extra', 'x']))).toBe('arguments_invalid');
+    const start = (budget: string) => code(() => parseExerciseCli(['start', '--run', '/out/r1', '--authorization', '/a.json', '--budget-seconds', budget]));
+    expect(start('61')).toBe('accepted');
+    expect(start(String(LIVE_MAX_SECONDS))).toBe('accepted');
+    expect(start('60')).toBe('budget_invalid');
+    expect(start('1801')).toBe('budget_invalid');
+    expect(code(() => parseExerciseCli(['resume', '--run', '/x']))).toBe('command_unknown');
+    expect(code(() => parseExerciseCli(['turn', '--run', '/x']))).toBe('argument_missing');
+    expect(parseExerciseCli(['--help', 'turn'])).toEqual({ command: 'help', topic: 'turn' });
+    expect(code(() => parseExerciseCli(['--help', 'resume']))).toBe('help_topic_unknown');
+  });
+
+  test('help needs no Docker, credential or run directory and documents every operation action', async () => {
+    let out = '';
+    const stdout = { write: (s: string) => { out += s; return true; } };
+    expect(await exerciseMain(['--help'], { env: {}, stdout })).toBe(EXIT.ok);
+    expect(out).toContain('EXERCISES.md');
+    out = '';
+    expect(await exerciseMain(['--help', 'turn'], { env: {}, stdout })).toBe(EXIT.ok);
+    for (const action of ACTIONS) expect(out).toContain(action);
+    expect(out).toContain('"once" | "reject"');
+    expect(out).not.toContain('always');
+  });
+
+  test('requests accept only model, variant, agent-mode, transition and skill choices; provider, plugin and env passthrough is refused', () => {
+    expect(validateRequest(EXERCISE_REQUEST).model).toEqual({ ref: 'openai/gpt-test', variant: null });
+    for (const extra of [{ plugins: ['x'] }, { mcp: {} }, { env: { OPENAI_API_KEY: 'x' } }, { providerUrl: 'http://x' }, { permission: { '*': 'allow' } }]) {
+      expect(code(() => validateRequest({ ...EXERCISE_REQUEST, ...extra }))).toBe('request_invalid');
+    }
+    expect(code(() => validateRequest({ ...EXERCISE_REQUEST, model: { ref: 'anthropic/claude', variant: null } }))).toBe('request_invalid');
+    expect(code(() => validateRequest({ ...EXERCISE_REQUEST, agentModels: { 'architect-planner': { model: 'openai/x', variant: null } } }))).toBe('request_invalid');
+    expect(validateRequest({ ...EXERCISE_REQUEST, agentModels: { 'code-reviewer': { model: 'openai/x', variant: 'high' } } }).agentModels).toEqual({ 'code-reviewer': { model: 'openai/x', variant: 'high' } });
+    expect(code(() => validateRequest({ ...EXERCISE_REQUEST, dependencies: [{ command: 'npm-install', directory: '.' }] }))).toBe('request_invalid');
+    for (const path of ['../x', '.git/config', 'node_modules/a', '/etc/passwd', 'a//b', '.hive/runtime/opencode-v2/sessions.json', '.hive/sessions.json']) {
+      expect(code(() => validateRequest({ ...EXERCISE_REQUEST, artifacts: [path] }))).toBe('request_invalid');
+    }
+    expect(projectPath('.hive/features/')).toBe('.hive/features/');
+  });
+
+  function inputTree() {
+    const base = scratch();
+    mkdirSync(join(base, 'repo', 'src'), { recursive: true });
+    writeFileSync(join(base, 'repo', 'README.md'), '# r\n');
+    writeFileSync(join(base, 'repo', 'src', 'a.txt'), 'a\n');
+    writeFileSync(join(base, 'prompt.md'), 'Plan it.\n');
+    writeFileSync(join(base, 'request.json'), JSON.stringify(EXERCISE_REQUEST));
+    return base;
+  }
+
+  test('snapshots hash bytes and the ordered inventory, and refuse links, hardlinks, excluded trees, escapes and oversize input', () => {
+    const base = inputTree();
+    const snapshot = snapshotInputs(join(base, 'request.json'));
+    expect(snapshot.files.map((f: any) => f.path)).toEqual(['README.md', 'src/a.txt']);
+    expect(snapshot.inventorySha256).toBe(snapshotInputs(join(base, 'request.json')).inventorySha256);
+    writeFileSync(join(base, 'repo', 'src', 'a.txt'), 'changed\n');
+    expect(snapshotInputs(join(base, 'request.json')).inventorySha256).not.toBe(snapshot.inventorySha256);
+    const refused = (mutate: (base: string) => void) => { const b = inputTree(); mutate(b); return code(() => snapshotInputs(join(b, 'request.json'))); };
+    expect(refused((b) => spawnSync('ln', ['-s', '/etc/hostname', join(b, 'repo', 'link')]))).toBe('input_link_refused');
+    expect(refused((b) => spawnSync('ln', [join(b, 'repo', 'README.md'), join(b, 'repo', 'hard')]))).toBe('input_not_regular_file');
+    expect(refused((b) => { mkdirSync(join(b, 'repo', '.git')); writeFileSync(join(b, 'repo', '.git', 'HEAD'), 'x'); })).toBe('input_path_refused');
+    expect(refused((b) => { mkdirSync(join(b, 'repo', 'node_modules')); })).toBe('input_path_refused');
+    expect(refused((b) => writeFileSync(join(b, 'repo', 'auth.json'), '{}'))).toBe('input_path_refused');
+    expect(refused((b) => writeFileSync(join(b, 'repo', 'big.txt'), 'x'.repeat(256 * 1024 + 1)))).toBe('input_oversize');
+    expect(refused((b) => writeFileSync(join(b, 'repo', 'bin.dat'), Buffer.from([0xff, 0xfe, 0x00])))).toBe('input_not_utf8');
+    expect(refused((b) => writeFileSync(join(b, 'request.json'), JSON.stringify({ ...EXERCISE_REQUEST, prompt: '../prompt.md' })))).toBe('input_path_escapes');
+    expect(refused((b) => { for (let i = 0; i < 256; i++) writeFileSync(join(b, 'repo', `f${i}.txt`), 'x'); })).toBe('input_file_count_exceeded');
+  });
+
+  test('authorization binds the prepared record, host, model and the exact budget', () => {
+    const prepared = { host: 'v1', request: validateRequest(EXERCISE_REQUEST) };
+    const auth = { schema: 'ic-exercise-authorization/v1', runId: 'r1', preparedSha256: 'p'.repeat(64), host: 'v1', model: { ref: 'openai/gpt-test', variant: null }, budgetSeconds: 900, allowedActions: ['prompt', 'reply'], stopConditions: ['done'], authorizedBy: 'supervisor' };
+    const check = (value: any, budgetSeconds = 900) => code(() => validateAuthorization(value, { runId: 'r1', preparedSha256: 'p'.repeat(64), prepared, budgetSeconds }));
+    expect(check(auth)).toBe('accepted');
+    expect(check({ ...auth, runId: 'r2' })).toBe('authorization_mismatch');
+    expect(check({ ...auth, preparedSha256: 'q'.repeat(64) })).toBe('authorization_mismatch');
+    expect(check({ ...auth, host: 'v2' })).toBe('authorization_mismatch');
+    expect(check({ ...auth, model: { ref: 'openai/other', variant: null } })).toBe('authorization_mismatch');
+    expect(check(auth, 1800)).toBe('authorization_mismatch');
+    expect(check({ ...auth, allowedActions: ['prompt', 'always'] })).toBe('authorization_invalid');
+    expect(check({ ...auth, extendable: true })).toBe('authorization_invalid');
+  });
+
+  test('operations are bound to the run, the primary session and the authorized actions; permission offers once and reject only', () => {
+    const base = { schema: 'ic-exercise-operation/v1', id: 'op-1', runId: 'r1', sessionId: 'ses_a' };
+    const check = (value: any, allowedActions = ACTIONS) => code(() => validateOperation(value, { runId: 'r1', sessionId: 'ses_a', allowedActions }));
+    expect(check({ ...base, action: 'prompt', text: 'go' })).toBe('accepted');
+    expect(check({ ...base, action: 'prompt', text: 'go' }, ['reply'])).toBe('operation_not_authorized');
+    expect(check({ ...base, sessionId: 'ses_b', action: 'prompt', text: 'go' })).toBe('operation_mismatch');
+    expect(check({ ...base, action: 'permission', requestId: 'per_1', decision: 'always' })).toBe('operation_invalid');
+    expect(check({ ...base, action: 'permission', requestId: 'per_1', decision: 'once' })).toBe('accepted');
+    expect(check({ ...base, action: 'reply', requestId: 'que_1', answers: [] })).toBe('operation_invalid');
+    expect(check({ ...base, action: 'prompt', text: 'go', path: '/api/session' })).toBe('operation_invalid');
+    const approve = { ...base, action: 'approve-plan', project: PROJECT_ROOT, feature: 'f', revision: 'r1', contentHash: 'h1', permittedWork: 'edit README' };
+    expect(check(approve)).toBe('accepted');
+    expect(check({ ...approve, project: '/elsewhere' })).toBe('operation_mismatch');
+    expect(check({ ...base, action: 'switch-primary', to: 'nobody' })).toBe('operation_invalid');
+  });
+
+  test('inspection requests stay inside the artifact allowlist and the fixed maxima', () => {
+    const check = (value: any) => code(() => validateInspection({ schema: 'ic-exercise-inspection/v1', runId: 'r1', ...value }, { runId: 'r1', artifacts: ['README.md', '.hive/features/'] }));
+    expect(check({ artifacts: ['README.md', '.hive/features/01_f/plan.md'], list: ['.hive/features/'], diff: true, conversation: { messagesPerPage: 50, pages: 2 } })).toBe('accepted');
+    expect(check({ artifacts: ['src/secret.ts'] })).toBe('inspection_path_not_allowed');
+    expect(check({ list: ['.hive/features'] })).toBe('inspection_path_invalid');
+    expect(check({ conversation: { messagesPerPage: 101 } })).toBe('inspection_cap_exceeded');
+    expect(check({ conversation: { pages: 11 } })).toBe('inspection_cap_exceeded');
+    expect(check({ artifacts: Array.from({ length: 33 }, () => 'README.md') })).toBe('inspection_cap_exceeded');
+    expect(check({ shell: 'npm test' })).toBe('inspection_invalid');
+  });
+
+  test('approval is a native user message naming one revision; the controller itself approves nothing', () => {
+    const text = approvalMessage({ project: PROJECT_ROOT, feature: 'feat', revision: 'rev-7', contentHash: 'hash-7', permittedWork: 'edit README only' });
+    expect(text).toContain("expectedRevision 'rev-7'");
+    expect(text).toContain('only that revision');
+    expect(text).toContain('do not approve');
+    expect(text).toContain('edit README only');
+    expect(readFileSync(join(import.meta.dir, 'exercise.mjs'), 'utf8')).not.toMatch(/PlanService|\.approve\(|APPROVED/);
+  });
+
+  test('observed selections compare model and variant per turn agent; a missing observation is unknown, never a match', () => {
+    const turn = (agent: string | null, modelID: string, variant: string | null = null) => ({ role: 'assistant', agent, model: { providerID: 'openai', modelID, variant } });
+    const selected = { ref: 'openai/gpt-test', variant: 'medium' };
+    const agentModels = { 'code-reviewer': { model: 'openai/gpt-review', variant: 'high' } };
+    const summary = (turns: any[], sel: any = selected, models: any = agentModels) => selectionSummary({ sessions: [{ id: 'ses_a', agent: null, turns }] }, { selected: sel, agentModels: models })[0];
+    expect(summary([{ role: 'user' }, turn('architect-planner', 'gpt-test', 'medium')])).toMatchObject({ status: 'match', mismatch: false });
+    expect(summary([turn('architect-planner', 'gpt-test', 'low')])).toMatchObject({ status: 'mismatch', mismatch: true });
+    expect(summary([turn('architect-planner', 'gpt-other', 'medium')]).status).toBe('mismatch');
+    expect(summary([turn('code-reviewer', 'gpt-review', 'high')]).status).toBe('match');
+    expect(summary([turn('code-reviewer', 'gpt-review', 'medium')]).status).toBe('mismatch');
+    expect(summary([turn('code-reviewer', 'gpt-review', null)]).status).toBe('unknown');
+    expect(summary([turn(null, 'gpt-test', 'medium')]).status).toBe('unknown');
+    expect(summary([{ role: 'user' }])).toMatchObject({ status: 'unknown', mismatch: false, observed: [] });
+    expect(summary([])).toMatchObject({ status: 'unknown', observed: [] });
+    expect(summary([turn('architect-planner', 'gpt-test', 'medium'), turn('architect-planner', 'gpt-test', 'low')]).status).toBe('mismatch');
+    // v2 reports `default` for a turn that ran no variant: that is no variant when none was requested, and not the requested one when one was.
+    expect(summary([turn('scout-researcher', 'gpt-test', 'default')], { ref: 'openai/gpt-test', variant: null }, {}).status).toBe('match');
+    expect(summary([turn('architect-planner', 'gpt-test', 'default')]).status).toBe('mismatch');
+    expect(summary([turn('code-reviewer', 'gpt-review', 'default')]).status).toBe('mismatch');
+    expect(summary([turn('scout-researcher', 'gpt-test', 'high')], { ref: 'openai/gpt-test', variant: null }, {}).status).toBe('mismatch');
+    expect(summary([turn('scout-researcher', 'gpt-test')], { ref: 'openai/gpt-test', variant: null }, {}).status).toBe('match');
+  });
+
+  test('every explicit model and variant choice is validated against the catalogs, not only the session primary', () => {
+    const choices = [{ ref: 'openai/gpt-test', variant: 'medium' }, { ref: 'openai/gpt-review', variant: 'high' }];
+    const labels = [{ model: 'model', variant: 'variant' }, { model: 'agent_model:code-reviewer', variant: 'agent_variant:code-reviewer' }];
+    const params = { choices, labels, agents: ['architect-planner', 'code-reviewer'] };
+    const row = (ref: string, over: any = {}) => ({ ref, listed: true, toolCall: true, variantListed: true, ...over });
+    const reply = (choiceRows: any[], agents: any = { 'architect-planner': true, 'code-reviewer': true }) => ({ ok: true as const, agentsReadable: true, agents, choices: choiceRows });
+    expect(catalogProblems(reply([row('openai/gpt-test'), row('openai/gpt-review')]), params)).toEqual([]);
+    expect(catalogProblems(reply([row('openai/gpt-test'), row('openai/gpt-review', { listed: false })]), params)).toEqual(['agent_model:code-reviewer']);
+    expect(catalogProblems(reply([row('openai/gpt-test'), row('openai/gpt-review', { variantListed: false })]), params)).toEqual(['agent_variant:code-reviewer']);
+    expect(catalogProblems(reply([row('openai/gpt-test', { toolCall: false }), row('openai/gpt-review')]), params)).toEqual(['model']);
+    expect(catalogProblems(reply([row('openai/gpt-test', { variantListed: null }), row('openai/gpt-review')]), params)).toEqual(['variant']);
+    expect(catalogProblems(reply([row('openai/gpt-test')]), params)).toEqual(['catalog_mismatch']);
+    expect(catalogProblems(reply([row('openai/gpt-test'), row('openai/other')]), params)).toEqual(['catalog_mismatch']);
+    expect(catalogProblems(reply([row('openai/gpt-test'), row('openai/gpt-review')], { 'architect-planner': true, 'code-reviewer': false }), params)).toEqual(['agent:code-reviewer']);
+    expect(parseDriverReply('catalog', { ok: true, agentsReadable: true, agents: { 'architect-planner': true }, choices: [row('openai/gpt-test')] })).not.toBeNull();
+    expect(parseDriverReply('catalog', { ok: true, agentsReadable: true, agents: { 'no-such-role': true }, choices: [] })).toBeNull();
+  });
+
+  test('no new work in the final 60 s of the live deadline', () => {
+    expect(admitsNewWork(NO_NEW_WORK_MS)).toBe(false);
+    expect(admitsNewWork(NO_NEW_WORK_MS + 1)).toBe(true);
+    expect(admitsNewWork(Number.NaN)).toBe(false);
+  });
+
+  test('qualification passes only when every named check was observed true', () => {
+    const all = Object.fromEntries(QUALIFICATION_CHECKS.map((name) => [name, true]));
+    expect(qualificationFailures(all)).toEqual([]);
+    expect(qualificationFailures({ ...all, 'protocol.revisionBoundApproval': false })).toEqual(['protocol.revisionBoundApproval']);
+    const { ['protocol.cleanupWithoutAuth']: _, ...missing } = all;
+    expect(qualificationFailures(missing)).toEqual(['protocol.cleanupWithoutAuth']);
+  });
+});
+
+describe('supervised exercise native adapters', () => {
+  test('exercise configuration has no blanket permission and pins nothing beyond explicit choices', () => {
+    for (const host of ['v1', 'v2']) {
+      const cfg = exerciseHostConfig(host, { modelRef: 'openai/gpt-test', variant: null, provider: 'openai', mockPort: 1, serverPort: 2, observer: '/o' });
+      expect(JSON.stringify(cfg)).not.toContain('"allow"');
+      expect(cfg).not.toHaveProperty('permission');
+      expect(cfg).not.toHaveProperty('permissions');
+      const qual = exerciseHostConfig(host, { modelRef: 'mock/m', variant: null, provider: 'mock', mockPort: 1, serverPort: 2, observer: '/o', askExternalReads: true });
+      expect(JSON.stringify(qual)).toContain('external_directory');
+      expect(JSON.stringify(qual)).not.toContain('"allow"');
+    }
+    expect(exerciseHiveConfig({ agentMode: 'dedicated', agentModels: {} })).toEqual({ agentMode: 'dedicated', agents: {}, customAgents: {} });
+    expect(exerciseHiveConfig({ agentMode: 'dedicated', agentModels: { 'code-reviewer': { model: 'openai/x', variant: 'high' } } }).agents).toEqual({ 'code-reviewer': { model: 'openai/x', variant: 'high' } });
+  });
+
+  test('prompts carry a supervisor-chosen message ID in the format both hosts accept', () => {
+    const id = exerciseMessageId(1_792_201_844_045, 3);
+    expect(id).toMatch(MESSAGE_ID);
+    // The low 48 bits of (milliseconds * 0x1000 + counter), as both hosts' own generators encode them.
+    expect(id.slice(4, 16)).toBe(((BigInt(1_792_201_844_045) * 0x1000n + 3n) & 0xffffffffffffn).toString(16).padStart(12, '0'));
+    const v1 = exerciseRoutes('v1', '/work/proj').prompt({ sessionId: 'ses_a', messageId: id, agent: 'architect-planner', model: { ref: 'openai/gpt-test', variant: 'high' }, text: 'hi' });
+    expect(v1).toEqual({ method: 'POST', path: '/session/ses_a/prompt_async', body: { messageID: id, agent: 'architect-planner', model: { providerID: 'openai', modelID: 'gpt-test' }, variant: 'high', parts: [{ type: 'text', text: 'hi' }] } });
+    const v2 = exerciseRoutes('v2', '/work/proj');
+    expect(v2.prompt({ sessionId: 'ses_a', messageId: id, text: 'hi' })).toEqual({ method: 'POST', path: '/api/session/ses_a/prompt', body: { id, text: 'hi' } });
+    expect(v2.permissionReply('ses_c', 'per_1', 'once').body).toEqual({ decision: 'once' });
+    expect(exerciseRoutes('v1', '/work/proj').permissionReply('ses_c', 'per_1', 'reject').body).toEqual({ reply: 'reject' });
+    expect(v2.formReply('ses_a', 'frm_1', { q0: 'alpha' })).toEqual({ method: 'POST', path: '/api/session/ses_a/form/frm_1/reply', body: { answer: { q0: 'alpha' } } });
+  });
+
+  test('the session tree comes only from native parent links; a failed, malformed or unproven page is incomplete, never empty', async () => {
+    const v1 = { '/session/ses_root': api({ id: 'ses_root' }), '/session/ses_root/children': api([{ id: 'ses_kid', parentID: 'ses_root' }]), '/session/ses_kid/children': api([]) };
+    expect(await sessionTree('v1', 'ses_root', routeGet(v1))).toEqual({ sessions: [{ id: 'ses_root', parentId: null, agent: null }, { id: 'ses_kid', parentId: 'ses_root', agent: null }], complete: true, failure: null });
+    expect((await sessionTree('v1', 'ses_root', routeGet({ ...v1, '/session/ses_root/children': api([{ id: 'ses_kid', parentID: 'ses_other' }]) }))).failure).toBe('parent_link_unproven');
+    expect((await sessionTree('v1', 'ses_root', routeGet({ ...v1, '/session/ses_kid/children': api(null, 500) }))).failure).toBe('children_unreadable');
+    expect((await sessionTree('v1', 'ses_root', routeGet({ ...v1, '/session/ses_root/children': api([{ id: 'not a session' }]) }))).failure).toBe('children_malformed');
+    expect((await sessionTree('v1', 'ses_missing', routeGet(v1))).complete).toBe(false);
+    const v2 = {
+      '/api/session/ses_root': api({ data: { id: 'ses_root', agent: 'architect-planner' } }),
+      '/api/session?parentID=ses_root&limit=100&order=asc': api({ data: [{ id: 'ses_a', parentID: 'ses_root', agent: 'scout-researcher' }], cursor: { next: 'c2' } }),
+      '/api/session?parentID=ses_root&limit=100&cursor=c2': api({ data: [{ id: 'ses_b', parentID: 'ses_root' }], cursor: { next: null } }),
+      '/api/session?parentID=ses_a&limit=100&order=asc': api({ data: [], cursor: {} }),
+      '/api/session?parentID=ses_b&limit=100&order=asc': api({ data: [], cursor: { next: null } }),
+    };
+    const tree = await sessionTree('v2', 'ses_root', routeGet(v2));
+    expect(tree.complete).toBe(true);
+    expect(tree.sessions.map((s) => s.id)).toEqual(['ses_root', 'ses_a', 'ses_b']);
+    expect((await sessionTree('v2', 'ses_root', routeGet({ ...v2, '/api/session?parentID=ses_b&limit=100&order=asc': api({ data: [], cursor: { next: 7 } }) }))).failure).toBe('children_cursor_malformed');
+  });
+
+  const msgV1 = (id: string, role: string, tools: any[] = [], text = '') => ({ info: { id, role, agent: 'architect-planner' }, parts: [...(text ? [{ type: 'text', text }] : []), ...tools.map((t) => ({ type: 'tool', callID: t.id, tool: t.name, state: { status: t.status ?? 'completed', input: t.input ?? {}, output: t.output ?? '' } }))] });
+
+  test('histories are read within page caps; an oversize or malformed page ends the read incomplete', async () => {
+    const pages = {
+      '/session/s/message?limit=2': api([msgV1('m3', 'user'), msgV1('m4', 'assistant')]),
+      '/session/s/message?limit=2&before=m3': api([msgV1('m1', 'user'), msgV1('m2', 'assistant')]),
+      '/session/s/message?limit=2&before=m1': api([]),
+    };
+    const read = await readHistory('v1', 's', routeGet(pages), { limit: 2, pages: 10 });
+    expect(read.complete).toBe(true);
+    expect(read.messages.map((m) => m.id)).toEqual(['m1', 'm2', 'm3', 'm4']);
+    expect((await readHistory('v1', 's', routeGet(pages), { limit: 2, pages: 1 }))).toMatchObject({ complete: false, failure: null });
+    expect((await readHistory('v1', 's', routeGet({ '/session/s/message?limit=2': { outcome: 'oversize', status: 200, body: null, bytes: 9 } }), { limit: 2, pages: 2 })).failure).toBe('history_oversize');
+    expect((await readHistory('v1', 's', routeGet({ '/session/s/message?limit=2': api([{ info: {} }]) }), { limit: 2, pages: 2 })).failure).toBe('history_malformed');
+  });
+
+  test('quiescence needs a complete tree, a stable second enumeration, complete histories, idle sessions, idle tools and no pending interaction', () => {
+    const tree = { sessions: [{ id: 'a', parentId: null, agent: null }, { id: 'b', parentId: 'a', agent: null }], complete: true, failure: null };
+    const idle = new Map([['a', { messages: [], complete: true, failure: null }], ['b', { messages: [], complete: true, failure: null }]]);
+    expect(quiescence(tree, idle as any, new Set(), [], tree)).toEqual({ quiescent: true, reasons: [] });
+    expect(quiescence(tree, idle as any, new Set(), []).reasons).toEqual(['tree_changed']);
+    expect(quiescence(tree, idle as any, new Set(['b']), [], tree).reasons).toEqual(['session_busy:b']);
+    expect(quiescence(tree, idle as any, null, null, tree).reasons).toEqual(['status_unknown', 'interactions_unknown']);
+    expect(quiescence({ ...tree, complete: false, failure: 'session_cap' }, idle as any, new Set(), [], null).reasons).toContain('tree_incomplete:session_cap');
+    const running = new Map(idle);
+    running.set('b', { messages: [normalizeMessage('v1', msgV1('m', 'assistant', [{ id: 'c', name: 'bash', status: 'running' }]))!], complete: true, failure: null });
+    expect(quiescence(tree, running as any, new Set(), [], tree).reasons).toEqual(['tool_running:b']);
+    expect(quiescence(tree, idle as any, new Set(), [{ kind: 'permission', id: 'per_1', sessionId: 'b', toolCallId: 'c' }], tree).reasons).toEqual(['pending_permission:per_1']);
+    // A session created after the enumeration is visible in status, in the interaction lists, or in a second enumeration.
+    expect(quiescence(tree, idle as any, new Set(['ses_new']), [], tree).reasons).toEqual(['session_busy_outside_tree:ses_new']);
+    expect(quiescence(tree, idle as any, new Set(), [{ kind: 'question', id: 'que_9', sessionId: 'ses_new', toolCallId: null, outsideTree: true }], tree).reasons).toEqual(['pending_outside_tree:que_9']);
+    expect(quiescence(tree, idle as any, new Set(), [], { ...tree, sessions: [...tree.sessions, { id: 'ses_new', parentId: 'a', agent: null }] }).reasons).toEqual(['tree_changed']);
+  });
+
+  test('a child created while the observation is in progress makes it non-quiescent; without one the same reads are quiet', async () => {
+    const run = async (childAppears: boolean, statusBody: any = {}) => {
+      let enumerations = 0;
+      const table: Record<string, () => any> = {
+        '/session/ses_root': () => api({ id: 'ses_root' }),
+        '/session/ses_root/children': () => { enumerations++; return api(childAppears && enumerations > 1 ? [{ id: 'ses_new', parentID: 'ses_root' }] : []); },
+        '/session/ses_new/children': () => api([]),
+        '/session/ses_root/message?limit=100': () => api([]),
+        '/session/ses_new/message?limit=100': () => api([]),
+        '/session/status': () => api(statusBody),
+        '/question': () => api([]),
+        '/permission': () => api([]),
+      };
+      return observeWith('v1', 'ses_root', async (request: any) => table[request.path]?.() ?? api(null, 404));
+    };
+    expect(await run(false)).toMatchObject({ quiescent: true, reasons: [] });
+    const created = await run(true);
+    expect(created.quiescent).toBe(false);
+    expect(created.reasons).toContain('tree_changed');
+    const busyChild = await run(true, { ses_new: { type: 'busy' } });
+    expect(busyChild.reasons).toEqual(expect.arrayContaining(['tree_changed', 'session_busy_outside_tree:ses_new']));
+  });
+
+  test('pending interactions are listed with exact IDs and owners, never reduced to the first, and outside-tree entries are flagged', async () => {
+    const tree = { sessions: [{ id: 'ses_a', parentId: null, agent: null }, { id: 'ses_b', parentId: 'ses_a', agent: null }], complete: true, failure: null };
+    const v1 = {
+      '/question': api([{ id: 'que_1', sessionID: 'ses_a', questions: [{ question: 'Which?', header: 'H', options: [{ label: 'alpha' }, { label: 'beta' }] }], tool: { callID: 'call_q' } }, { id: 'que_x', sessionID: 'ses_other', questions: [] }]),
+      '/permission': api([{ id: 'per_1', sessionID: 'ses_b', permission: 'external_directory', patterns: ['/etc/*'], tool: { callID: 'call_r' } }, { id: 'per_2', sessionID: 'ses_b', permission: 'read', patterns: [] }]),
+    };
+    const pending = await pendingInteractions('v1', tree, routeGet(v1));
+    // An interaction owned by a session outside the tree is listed and flagged, because it may belong to a child created after the enumeration.
+    expect(pending!.map((p) => [p.kind, p.id, p.sessionId, p.toolCallId, p.outsideTree === true])).toEqual([['question', 'que_1', 'ses_a', 'call_q', false], ['question', 'que_x', 'ses_other', null, true], ['permission', 'per_1', 'ses_b', 'call_r', false], ['permission', 'per_2', 'ses_b', null, false]]);
+    expect(pending![0].questions).toEqual([{ question: 'Which?', header: 'H', multiple: false, options: ['alpha', 'beta'] }]);
+    expect(await pendingInteractions('v1', tree, routeGet({ ...v1, '/permission': api({ not: 'a list' }) }))).toBeNull();
+  });
+
+  test('nativeCredentialMatches compares the native store with the expectation, never with a writable marker', async () => {
+    const expected = { access: FAKE_ACCESS, accountId: FAKE_ACCOUNT, expires: 123 };
+    const v1 = (entry: any) => ({ file: () => JSON.stringify({ openai: entry }), credentials: async () => api(null, 500) });
+    const stored = { access: FAKE_ACCESS, refresh: REFRESH_SENTINEL, expires: 123, accountId: FAKE_ACCOUNT };
+    expect(await nativeCredentialMatches('v1', expected, v1(stored))).toBe(true);
+    expect(await nativeCredentialMatches('v1', expected, v1({ ...stored, refresh: 'real-refresh' }))).toBe(false);
+    expect(await nativeCredentialMatches('v1', expected, v1({ ...stored, access: 'other' }))).toBe(false);
+    expect(await nativeCredentialMatches('v1', expected, v1({ ...stored, expires: 124 }))).toBe(false);
+    expect(await nativeCredentialMatches('v1', expected, { file: () => null, credentials: async () => api(null) })).toBe(false);
+    expect(await nativeCredentialMatches('v1', null, v1(stored))).toBe(false);
+    const v2 = (list: any, status = 200) => ({ file: () => null, credentials: async () => api({ data: list }, status) });
+    const entry = { integrationID: 'openai', value: { access: FAKE_ACCESS, refresh: REFRESH_SENTINEL, expires: 123, metadata: { accountID: FAKE_ACCOUNT } } };
+    expect(await nativeCredentialMatches('v2', expected, v2([entry]))).toBe(true);
+    expect(await nativeCredentialMatches('v2', expected, v2([entry, entry]))).toBe(false);
+    expect(await nativeCredentialMatches('v2', expected, v2([entry], 500))).toBe(false);
+  });
+
+  test('only direct native plan read and approval parts count; Code Mode execute never does, whatever its code or output', () => {
+    const plan = (revision: string) => JSON.stringify({ revision, contentHash: 'h', status: 'planning', content: 'c', comments: [] });
+    const approvalOutput = (revision: string) => JSON.stringify({ approval: { success: true, revision }, sync: { success: true } });
+    const tree = { sessions: [{ id: 'ses_a', parentId: null, agent: null }], complete: true, failure: null };
+    const history = { complete: true, failure: null, messages: [
+      normalizeMessage('v1', msgV1('m1', 'assistant', [{ id: 'c1', name: 'hive_plan_read', input: { feature: 'f' }, output: plan('r1') }]))!,
+      normalizeMessage('v1', msgV1('m2', 'assistant', [{ id: 'c2', name: 'hive_plan_read', input: { feature: 'other' }, output: plan('rx') }]))!,
+      normalizeMessage('v1', msgV1('m3', 'assistant', [{ id: 'c3', name: 'hive_plan_approve', input: { feature: 'f', expectedRevision: 'r1', sync: true }, output: approvalOutput('r1a') }]))!,
+      // Later Code Mode parts: a call written in code, one only in a comment, and dead code; each returns a well-formed
+      // plan read or approval the model could have typed.
+      normalizeMessage('v1', msgV1('m4', 'assistant', [{ id: 'c4', name: 'execute', input: { code: "return await tools.hive_plan_read({ feature: 'f' })" }, output: JSON.stringify({ result: plan('r2') }) }]))!,
+      normalizeMessage('v1', msgV1('m5', 'assistant', [{ id: 'c5', name: 'execute', input: { code: "// tools.hive_plan_approve({ feature: 'f', expectedRevision: 'r2', sync: true })\nreturn null" }, output: approvalOutput('r2a') }]))!,
+      normalizeMessage('v1', msgV1('m6', 'assistant', [{ id: 'c6', name: 'execute', input: { code: "if (false) tools.hive_plan_read({ feature: 'f' }); return 1" }, output: plan('r3') }]))!,
+    ] };
+    const histories = new Map([['ses_a', history]]);
+    expect(latestPluginPlanRead(tree, histories as any, 'f')).toMatchObject({ sessionId: 'ses_a', messageId: 'm1', callId: 'c1', result: { revision: 'r1' } });
+    expect(observedApprovals(tree, histories as any)).toEqual([expect.objectContaining({ callId: 'c3', expectedRevision: 'r1', approvalSuccess: true, approvalRevision: 'r1a', syncSuccess: true })]);
+    // Without the direct parts nothing is found, and a direct output in the Code Mode wrapper shape is not unwrapped.
+    const onlyCode = new Map([['ses_a', { ...history, messages: history.messages.slice(3) }]]);
+    expect(latestPluginPlanRead(tree, onlyCode as any, 'f')).toBeNull();
+    expect(observedApprovals(tree, onlyCode as any)).toEqual([]);
+    const wrapped = new Map([['ses_a', { ...history, messages: [normalizeMessage('v1', msgV1('m7', 'assistant', [{ id: 'c7', name: 'hive_plan_read', input: { feature: 'f' }, output: JSON.stringify({ result: plan('r9') }) }]))!] }]]);
+    expect(latestPluginPlanRead(tree, wrapped as any, 'f')).toBeNull();
+  });
+
+  test('a fabricated Code Mode approval never satisfies the approval, read or switch checks, even when the core plan really is approved', async () => {
+    const tree = { sessions: [{ id: 'ses_a', parentId: null, agent: null }], complete: true, failure: null };
+    const forged = { id: 'c9', name: 'execute', status: 'completed', input: { code: "/* tools.hive_plan_approve({ feature: 'f', expectedRevision: 'r1', sync: true }) */ return 'ok'" }, output: JSON.stringify({ result: JSON.stringify({ approval: { success: true, revision: 'r1-approved' }, sync: { success: true } }) }) };
+    const forgedRead = { id: 'c8', name: 'execute', status: 'completed', input: { code: "return await tools.hive_plan_read({ feature: 'f' })" }, output: JSON.stringify({ result: JSON.stringify({ revision: 'r1-approved', contentHash: 'h-r1', status: 'approved', content: 'c', comments: [] }) }) };
+    const histories = new Map<string, any>([['ses_a', { complete: true, failure: null, messages: [msgV1('msg_decision', 'user'), msgV1('m2', 'assistant', [forgedRead, forged])].map((m) => normalizeMessage('v1', m)!) }]]);
+    const bound = { messageId: 'msg_decision', feature: 'f', revision: 'r1', contentHash: 'h-r1' };
+    // The core reads the plan as approved, with the decided content and the revision the forged output names.
+    const core = async () => ({ ok: true, result: { revision: 'r1-approved', contentHash: 'h-r1', status: 'approved' } });
+    expect(approvalObserved(tree, histories, bound)).toBeNull();
+    expect(await approvalPrecondition(tree, histories, bound, core)).toEqual({ failure: 'approval_not_observed' });
+    expect(latestPluginPlanRead(tree, histories, 'f')).toBeNull();
+    expect(observedApprovals(tree, histories)).toEqual([]);
+  });
+
+  test('only the actual primary session\'s latest full read of the named feature counts, whatever a reviewer child read later', () => {
+    const plan = (revision: string, extra: any = {}) => JSON.stringify({ revision, contentHash: `h-${revision}`, status: 'planning', content: 'c', comments: [], ...extra });
+    const read = (id: string, output: string, input: any = { feature: 'f' }) => ({ id, name: 'hive_plan_read', input, output });
+    const tree = { sessions: [{ id: 'ses_a', parentId: null, agent: null }, { id: 'ses_b', parentId: 'ses_a', agent: null }], complete: true, failure: null };
+    const history = (messages: any[]) => ({ complete: true, failure: null, messages: messages.map((m) => normalizeMessage('v1', m)!) });
+    // The primary reads r1, a reviewer child reads r1, a later amendment changes the plan and the primary rereads r2.
+    // The child sorts after the primary in the tree, so its older read must not replace the primary's newer one.
+    const histories = new Map([
+      ['ses_a', history([msgV1('m1', 'assistant', [read('c1', plan('r1'))]), msgV1('m5', 'assistant', [read('c5', plan('r2'))])])],
+      ['ses_b', history([msgV1('m2', 'assistant', [read('c2', plan('r1'))])])],
+    ]);
+    expect(latestPluginPlanRead(tree, histories as any, 'f')).toMatchObject({ sessionId: 'ses_a', messageId: 'm5', callId: 'c5', result: { revision: 'r2' } });
+    expect(latestPluginPlanRead(tree, new Map([['ses_a', history([])], ['ses_b', histories.get('ses_b')!]]) as any, 'f')).toBeNull();
+    const primaryOnly = (...tools: any[]) => latestPluginPlanRead(tree, new Map([['ses_a', history([msgV1('m', 'assistant', tools)])]]) as any, 'f');
+    expect(primaryOnly(read('c', plan('r1'), { feature: 'f', mode: 'outline' }))).toBeNull();
+    expect(primaryOnly(read('c', plan('r1'), {}))).toBeNull();
+    expect(primaryOnly(read('c', plan('r1'), { feature: 'g' }))).toBeNull();
+    expect(primaryOnly(read('c', JSON.stringify({ revision: 'r1', contentHash: 'h', status: 'planning' })))).toBeNull();
+    expect(primaryOnly({ ...read('c', plan('r1')), status: 'running' })).toBeNull();
+    expect(primaryOnly(read('c', plan('r1'), { feature: 'f', mode: 'full' }))).toMatchObject({ callId: 'c' });
+  });
+
+  test('an approval binds the primary session, the feature, the supervisor decision message and the revision', () => {
+    const approve = (id: string, input: any, output: any = { approval: { success: true, revision: 'r1-approved' }, sync: { success: true } }, status = 'completed') => ({ id, name: 'hive_plan_approve', status, input, output: JSON.stringify(output) });
+    const tree = { sessions: [{ id: 'ses_a', parentId: null, agent: null }, { id: 'ses_b', parentId: 'ses_a', agent: null }], complete: true, failure: null };
+    const build = (primary: any[], child: any[] = []) => new Map<string, any>([
+      ['ses_a', { complete: true, failure: null, messages: primary.map((m) => normalizeMessage('v1', m)!) }],
+      ['ses_b', { complete: true, failure: null, messages: child.map((m) => normalizeMessage('v1', m)!) }],
+    ]);
+    const good = { feature: 'f', expectedRevision: 'r1', sync: true };
+    const binding = { messageId: 'msg_decision', feature: 'f', revision: 'r1' };
+    const decision = msgV1('msg_decision', 'user');
+    expect(approvalObserved(tree, build([decision, msgV1('m2', 'assistant', [approve('c1', good)])]), binding)).toMatchObject({ callId: 'c1', approvalRevision: 'r1-approved' });
+    // Identical plans in two features share a revision: another feature's approval is not this feature's.
+    expect(approvalObserved(tree, build([decision, msgV1('m2', 'assistant', [approve('c1', { ...good, feature: 'g' })])]), binding)).toBeNull();
+    expect(approvalObserved(tree, build([decision, msgV1('m2', 'assistant', [approve('c1', { ...good, feature: 'g' })])]), { ...binding, feature: 'g' })).toMatchObject({ callId: 'c1' });
+    // An approval from before the decision message, from a child session, or without that message does not count.
+    expect(approvalObserved(tree, build([msgV1('m0', 'assistant', [approve('c0', good)]), decision]), binding)).toBeNull();
+    expect(approvalObserved(tree, build([decision], [msgV1('m3', 'assistant', [approve('c3', good)])]), binding)).toBeNull();
+    expect(approvalObserved(tree, build([msgV1('m2', 'assistant', [approve('c1', good)])]), binding)).toBeNull();
+    for (const [input, output, status] of [
+      [{ ...good, expectedRevision: 'r0' }], [{ feature: 'f', expectedRevision: 'r1' }], [good, { approval: { success: true, revision: 'x' }, sync: { success: false } }],
+      [good, { approval: { success: false }, sync: { success: true } }], [good, undefined, 'error'],
+    ] as any[]) {
+      expect(approvalObserved(tree, build([decision, msgV1('m2', 'assistant', [approve('c1', input, output, status)])]), binding)).toBeNull();
+    }
+    const viaCode = { id: 'c9', name: 'execute', input: { code: "return await tools.hive_plan_approve({ feature: 'f', expectedRevision: 'r1', sync: true })" }, output: JSON.stringify({ result: JSON.stringify({ approval: { success: true, revision: 'r1-approved' }, sync: { success: true } }) }) };
+    expect(approvalObserved(tree, build([decision, msgV1('m2', 'assistant', [viaCode])]), binding)).toBeNull();
+  });
+
+  test('a switch needs the plan to still be the approved one: approve, rewrite, then switch is refused', async () => {
+    const tree = { sessions: [{ id: 'ses_a', parentId: null, agent: null }], complete: true, failure: null };
+    const approval = { id: 'c1', name: 'hive_plan_approve', status: 'completed', input: { feature: 'f', expectedRevision: 'r1', sync: true }, output: JSON.stringify({ approval: { success: true, revision: 'r1-approved' }, sync: { success: true } }) };
+    const histories = new Map<string, any>([['ses_a', { complete: true, failure: null, messages: [msgV1('msg_decision', 'user'), msgV1('m2', 'assistant', [approval])].map((m) => normalizeMessage('v1', m)!) }]]);
+    const bound = { messageId: 'msg_decision', feature: 'f', revision: 'r1', contentHash: 'h-r1' };
+    const core = (over: any = {}) => async () => ({ ok: true, result: { revision: 'r1-approved', contentHash: 'h-r1', status: 'approved', ...over } });
+    expect(await approvalPrecondition(tree, histories, bound, core())).toBeNull();
+    // The primary rewrites the plan after approving: the write revokes approval and changes the content.
+    expect(await approvalPrecondition(tree, histories, bound, core({ status: 'planning', contentHash: 'h-new', revision: 'r2' }))).toEqual({ failure: 'plan_not_approved' });
+    // Approved again with different content, or a new comment after approval: not the plan the supervisor decided on.
+    expect(await approvalPrecondition(tree, histories, bound, core({ contentHash: 'h-new' }))).toEqual({ failure: 'plan_changed', extra: { currentRevision: 'r1-approved' } });
+    expect(await approvalPrecondition(tree, histories, bound, core({ revision: 'r1-approved-with-comment' }))).toEqual({ failure: 'plan_changed', extra: { currentRevision: 'r1-approved-with-comment' } });
+    expect(await approvalPrecondition(tree, histories, { ...bound, feature: 'g' }, core())).toEqual({ failure: 'approval_not_observed' });
+    expect(await approvalPrecondition(tree, histories, bound, async () => ({ ok: false, failure: 'plan_missing' }))).toEqual({ failure: 'plan_missing' });
+    const unknownRevision = new Map<string, any>([['ses_a', { complete: true, failure: null, messages: [msgV1('msg_decision', 'user'), msgV1('m2', 'assistant', [{ ...approval, output: JSON.stringify({ approval: { success: true }, sync: { success: true } }) }])].map((m) => normalizeMessage('v1', m)!) }]]);
+    expect(await approvalPrecondition(tree, unknownRevision, bound, core())).toEqual({ failure: 'approval_revision_unknown' });
+  });
+
+  test('a lost acknowledgement resolves only from native evidence that names the exact operation', async () => {
+    const question = (status: string, answers?: any) => ({ info: { id: 'm', role: 'assistant', agent: 'a' }, parts: [{ type: 'tool', callID: 'call_q', tool: 'question', state: { status, input: {}, output: '', metadata: answers === undefined ? {} : { answers } } }] });
+    const histories = (status: string, answers?: any) => new Map([['ses_b', { messages: [normalizeMessage('v1', question(status, answers))!], complete: true, failure: null }]]);
+    const prompt = { kind: 'prompt', sessionId: 'ses_a', messageId: 'msg_000000000001AAAAAAAAAAAAAA' };
+    const message = (info: any) => routeGet({ '/session/ses_a/message/msg_000000000001AAAAAAAAAAAAAA': api({ info, parts: [] }) });
+    expect(await resolveOperation('v1', prompt, {}, message({ id: prompt.messageId, role: 'user' }))).toEqual({ resolved: true, effect: 'accepted' });
+    expect(await resolveOperation('v1', prompt, {}, routeGet({}))).toEqual({ resolved: false });
+    expect(await resolveOperation('v1', prompt, {}, message({ id: 'msg_other', role: 'user' }))).toEqual({ resolved: false });
+    expect(await resolveOperation('v1', prompt, {}, message({ id: prompt.messageId, role: 'assistant' }))).toEqual({ resolved: false });
+    // v1 question reply: the exact tool call, in the session that asked, completed with exactly the answers that were sent.
+    const reply = { kind: 'question-reply', requestId: 'que_1', ownerSessionId: 'ses_b', toolCallId: 'call_q', answers: [['alpha']] };
+    expect(await resolveOperation('v1', reply, { histories: histories('completed', [['alpha']]) }, routeGet({}))).toEqual({ resolved: true, effect: 'accepted' });
+    // A completed matching call in another session answers another question: with the owner's own call still pending,
+    // with a second call of that ID in the owner, a call that is not a question, or an owner history read incompletely,
+    // nothing is resolved.
+    const call = (session: string, status: string, answers: any, tool = 'question') => [session, { messages: [normalizeMessage('v1', { info: { id: `m_${session}`, role: 'assistant', agent: 'a' }, parts: [{ type: 'tool', callID: 'call_q', tool, state: { status, input: {}, output: '', metadata: { answers } } }] })!], complete: true, failure: null }] as const;
+    expect(await resolveOperation('v1', reply, { histories: new Map([call('ses_other', 'completed', [['alpha']]), call('ses_b', 'running', undefined)]) }, routeGet({}))).toEqual({ resolved: false });
+    expect(await resolveOperation('v1', reply, { histories: new Map([call('ses_other', 'completed', [['alpha']])]) }, routeGet({}))).toEqual({ resolved: false });
+    expect(await resolveOperation('v1', { ...reply, ownerSessionId: undefined }, { histories: new Map([call('ses_b', 'completed', [['alpha']])]) }, routeGet({}))).toEqual({ resolved: false });
+    const twice = new Map([['ses_b', { messages: [...call('ses_b', 'completed', [['alpha']])[1].messages, ...call('ses_b', 'running', undefined)[1].messages], complete: true, failure: null }]]);
+    expect(await resolveOperation('v1', reply, { histories: twice }, routeGet({}))).toEqual({ resolved: false });
+    expect(await resolveOperation('v1', reply, { histories: new Map([call('ses_b', 'completed', [['alpha']], 'bash')]) }, routeGet({}))).toEqual({ resolved: false });
+    expect(await resolveOperation('v1', reply, { histories: new Map([['ses_b', { ...call('ses_b', 'completed', [['alpha']])[1], complete: false }]]) }, routeGet({}))).toEqual({ resolved: false });
+    expect(await resolveOperation('v1', reply, { histories: histories('completed', [['beta']]) }, routeGet({}))).toEqual({ resolved: false });
+    expect(await resolveOperation('v1', reply, { histories: histories('running', [['alpha']]) }, routeGet({}))).toEqual({ resolved: false });
+    expect(await resolveOperation('v1', reply, { histories: histories('completed') }, routeGet({}))).toEqual({ resolved: false });
+    // A request still pending, one that vanished, or an unreadable list is no proof about this reply: it may yet be applied late.
+    expect(await resolveOperation('v1', reply, { pending: [{ id: 'que_1' }], histories: histories('pending') }, routeGet({}))).toEqual({ resolved: false });
+    expect(await resolveOperation('v1', reply, { pending: [], histories: histories('running') }, routeGet({}))).toEqual({ resolved: false });
+    expect(await resolveOperation('v1', reply, { pending: null, histories: histories('running') }, routeGet({}))).toEqual({ resolved: false });
+    // v2 form reply: the exact form is answered with exactly those answers.
+    const form = { kind: 'question-reply', requestId: 'frm_1', ownerSessionId: 'ses_a', answers: [['alpha'], ['x', 'y']] };
+    const formState = (state: any) => routeGet({ '/api/session/ses_a/form/frm_1': api({ data: { state } }) });
+    expect(await resolveOperation('v2', form, {}, formState({ status: 'answered', answer: { q0: 'alpha', q1: ['x', 'y'] } }))).toEqual({ resolved: true, effect: 'accepted' });
+    expect(await resolveOperation('v2', form, {}, formState({ status: 'answered', answer: { q0: 'beta', q1: ['x', 'y'] } }))).toEqual({ resolved: false });
+    expect(await resolveOperation('v2', form, {}, formState({ status: 'answered', answer: { q0: 'alpha' } }))).toEqual({ resolved: false });
+    expect(await resolveOperation('v2', form, {}, formState({ status: 'cancelled' }))).toEqual({ resolved: false });
+    expect(await resolveOperation('v2', form, {}, formState({ status: 'pending' }))).toEqual({ resolved: false });
+    // A permission reply or an interrupt leaves no record that names it, on either host, whatever the session looks like afterwards.
+    const permission = { kind: 'permission-reply', requestId: 'per_1', toolCallId: 'call_r', decision: 'once' };
+    expect(await resolveOperation('v1', permission, { pending: [{ id: 'per_1' }], histories: histories('pending') }, routeGet({}))).toEqual({ resolved: false });
+    expect(await resolveOperation('v1', permission, { pending: [], histories: histories('running') }, routeGet({}))).toEqual({ resolved: false });
+    expect(await resolveOperation('v2', permission, { pending: [] }, routeGet({}))).toEqual({ resolved: false });
+    for (const host of ['v1', 'v2']) {
+      expect(await resolveOperation(host, { kind: 'interrupt', sessionId: 'ses_a' }, { busy: new Set() }, routeGet({}))).toEqual({ resolved: false });
+      expect(await resolveOperation(host, { kind: 'interrupt', sessionId: 'ses_a' }, { busy: null }, routeGet({}))).toEqual({ resolved: false });
+    }
+    // v2 switch: the session already runs the target and the previous primary was a different one.
+    const sw = { kind: 'switch', sessionId: 'ses_a', agent: 'swarm-orchestrator', from: 'architect-planner' };
+    const session = (agent: string) => routeGet({ '/api/session/ses_a': api({ data: { id: 'ses_a', agent } }) });
+    expect(await resolveOperation('v2', sw, {}, session('swarm-orchestrator'))).toEqual({ resolved: true, effect: 'accepted' });
+    expect(await resolveOperation('v2', sw, {}, session('architect-planner'))).toEqual({ resolved: false });
+    expect(await resolveOperation('v2', { ...sw, from: undefined }, {}, session('swarm-orchestrator'))).toEqual({ resolved: false });
+    expect(await resolveOperation('v2', { ...sw, from: 'swarm-orchestrator' }, {}, session('swarm-orchestrator'))).toEqual({ resolved: false });
+    expect(await resolveOperation('v1', sw, {}, session('swarm-orchestrator'))).toEqual({ resolved: false });
+  });
+
+  test('the driver never consults an agent-writable credential marker and emits fixed failure codes only', () => {
+    const source = readFileSync(join(import.meta.dir, 'exercise-driver.ts'), 'utf8');
+    expect(source).not.toContain('access.sha256');
+    expect(source).not.toMatch(/runPrompt|error\.message|error\.stack|error\)\?\.name/);
+    const run = (command: string, input: string) => JSON.parse(spawnSync(process.execPath, [join(import.meta.dir, 'exercise-driver.ts'), command], { input, encoding: 'utf8' }).stdout.trim());
+    expect(run('unknown', '{}')).toEqual({ ok: false, failure: 'unknown_command' });
+    expect(run('observe', 'not json')).toEqual({ ok: false, failure: 'input_malformed' });
+    expect(run('observe', '{"host":"v9"}')).toEqual({ ok: false, failure: 'input_malformed' });
+  });
+
+  test('diffs come from snapshot content, not Git diff drivers', () => {
+    expect(lineDiff('a.txt', 'one\ntwo\n', 'one\nTWO\n')).toBe('--- a/a.txt\n+++ b/a.txt\n@@ -2,1 +2,1 @@\n-two\n+TWO\n');
+    expect(lineDiff('a.txt', 'same', 'same')).toBe('');
+    expect(lineDiff('new.txt', null, 'x')).toContain('+x');
+    expect(readFileSync(join(import.meta.dir, 'exercise-driver.ts'), 'utf8')).not.toMatch(/'diff'|textconv|ext-diff/);
+  });
+});
+
+describe('supervised exercise candidate-core plan reader', () => {
+  function project() {
+    const root = scratch();
+    const feature = join(root, '.hive', 'features', '01_feat');
+    mkdirSync(feature, { recursive: true });
+    writeFileSync(join(feature, 'plan.md'), '# Plan\n');
+    const core = (featurePath = feature) => async () => ({
+      getFeaturePath: () => featurePath,
+      getPlanPath: () => join(featurePath, 'plan.md'),
+      PlanService: class { read() { return { revision: 'r1', contentHash: 'h1', status: 'planning', content: '# Plan\n', comments: [] }; } },
+    });
+    return { root, feature, core };
+  }
+
+  test('reads one feature through the public core API after containment and size checks', async () => {
+    const { root, core } = project();
+    expect(await readPlan(root, 'feat', core() as any)).toEqual({ ok: true, featurePath: '.hive/features/01_feat', planPath: '.hive/features/01_feat/plan.md', result: { revision: 'r1', contentHash: 'h1', status: 'planning', content: '# Plan\n', comments: [] } });
+  });
+
+  test('refuses invalid names, missing or unusable cores, escaping or linked feature paths and oversize plans', async () => {
+    const { root, feature, core } = project();
+    expect(await readPlan(root, '../feat', core() as any)).toEqual({ ok: false, failure: 'feature_name_invalid' });
+    expect(await readPlan(root, 'feat', (async () => { throw new Error('missing'); }) as any)).toEqual({ ok: false, failure: 'core_unavailable' });
+    expect(await readPlan(root, 'feat', (async () => ({ getFeaturePath: () => feature })) as any)).toEqual({ ok: false, failure: 'core_unavailable' });
+    const outside = scratch();
+    writeFileSync(join(outside, 'plan.md'), 'x');
+    expect(await readPlan(root, 'feat', core(outside) as any)).toEqual({ ok: false, failure: 'feature_path_escapes' });
+    spawnSync('ln', ['-s', outside, join(root, '.hive', 'features', '02_link')]);
+    expect(await readPlan(root, 'feat', core(join(root, '.hive', 'features', '02_link')) as any)).toEqual({ ok: false, failure: 'feature_path_escapes' });
+    writeFileSync(join(feature, 'plan.md'), 'x'.repeat(256 * 1024 + 1));
+    expect(await readPlan(root, 'feat', core() as any)).toEqual({ ok: false, failure: 'plan_oversize' });
+  });
+
+  test('every input of the public read is bounded and regular before the core opens it: metadata, comments, approval marker and ancestors', async () => {
+    const check = async (mutate: (p: ReturnType<typeof project>) => void) => { const p = project(); mutate(p); return readPlan(p.root, 'feat', p.core() as any); };
+    const big = (n: number) => 'x'.repeat(n + 1);
+    const rejected = { ok: false, failure: 'plan_input_rejected' };
+    const oversize = { ok: false, failure: 'plan_input_oversize' };
+    const otherFeature = (root: string) => { const dir = join(root, '.hive', 'features', '02_other'); mkdirSync(dir); return dir; };
+    // feature.json of the feature, and of any other the core may list while resolving the name
+    expect(await check(({ feature }) => writeFileSync(join(feature, 'feature.json'), big(PLAN_READ_LIMITS.metadataBytes)))).toEqual(oversize);
+    expect(await check(({ root }) => writeFileSync(join(otherFeature(root), 'feature.json'), big(PLAN_READ_LIMITS.metadataBytes)))).toEqual(oversize);
+    expect(await check(({ root }) => symlinkSync('/etc/hostname', join(otherFeature(root), 'feature.json')))).toEqual(rejected);
+    expect(await check(({ root, feature }) => { writeFileSync(join(feature, 'feature.json'), '{}'); linkSync(join(feature, 'feature.json'), join(otherFeature(root), 'feature.json')); })).toEqual(rejected);
+    // canonical and legacy review comments
+    expect(await check(({ feature }) => { mkdirSync(join(feature, 'comments')); writeFileSync(join(feature, 'comments', 'plan.json'), big(PLAN_READ_LIMITS.commentsBytes)); })).toEqual(oversize);
+    expect(await check(({ feature }) => writeFileSync(join(feature, 'comments.json'), big(PLAN_READ_LIMITS.commentsBytes)))).toEqual(oversize);
+    expect(await check(({ feature }) => { mkdirSync(join(feature, 'comments')); symlinkSync('/etc/hostname', join(feature, 'comments', 'plan.json')); })).toEqual(rejected);
+    expect(await check(({ feature }) => symlinkSync('/etc/hostname', join(feature, 'comments.json')))).toEqual(rejected);
+    expect(await check(({ feature }) => { writeFileSync(join(feature, 'comments.json'), '{}'); linkSync(join(feature, 'comments.json'), join(feature, 'copy.json')); })).toEqual(rejected);
+    expect(await check(({ feature }) => symlinkSync('/etc', join(feature, 'comments')))).toEqual(rejected);
+    expect(await check(({ feature }) => writeFileSync(join(feature, 'comments'), 'not a directory'))).toEqual(rejected);
+    expect(await check(({ feature }) => spawnSync('mkfifo', [join(feature, 'comments.json')]))).toEqual(rejected);
+    expect(await check(({ feature }) => symlinkSync('/etc/hostname', join(feature, 'APPROVED')))).toEqual(rejected);
+    expect(await check(({ feature }) => writeFileSync(join(feature, 'APPROVED'), big(PLAN_READ_LIMITS.markerBytes)))).toEqual(oversize);
+    expect(await check(({ feature }) => { writeFileSync(join(feature, 'plan.md'), '# Plan\n'); linkSync(join(feature, 'plan.md'), join(feature, 'copy.md')); })).toEqual({ ok: false, failure: 'plan_not_regular' });
+    // The bounds are inclusive and ordinary inputs pass untouched.
+    expect(await check(({ feature }) => { mkdirSync(join(feature, 'comments')); writeFileSync(join(feature, 'comments', 'plan.json'), 'x'.repeat(PLAN_READ_LIMITS.commentsBytes)); writeFileSync(join(feature, 'feature.json'), '{"name":"feat"}'); writeFileSync(join(feature, 'APPROVED'), '2026-01-01'); })).toMatchObject({ ok: true });
+    // An ancestor that is a link, even to a tree that contains the feature, leaves the project.
+    const escaped = await (async () => {
+      const p = project();
+      const outside = scratch();
+      mkdirSync(join(outside, 'features', '01_feat'), { recursive: true });
+      writeFileSync(join(outside, 'features', '01_feat', 'plan.md'), '# Plan\n');
+      spawnSync('rm', ['-rf', join(p.root, '.hive', 'features')]);
+      symlinkSync(join(outside, 'features'), join(p.root, '.hive', 'features'));
+      return readPlan(p.root, 'feat', p.core(join(p.root, '.hive', 'features', '01_feat')) as any);
+    })();
+    expect(escaped).toEqual({ ok: false, failure: 'feature_path_escapes' });
+    const hiveLinked = await (async () => {
+      const p = project();
+      const outside = scratch();
+      spawnSync('mv', [join(p.root, '.hive'), join(outside, '.hive')]);
+      symlinkSync(join(outside, '.hive'), join(p.root, '.hive'));
+      return readPlan(p.root, 'feat', p.core(join(p.root, '.hive', 'features', '01_feat')) as any);
+    })();
+    expect(hiveLinked).toEqual({ ok: false, failure: 'feature_path_escapes' });
+    // A feature directory count beyond the bound is refused rather than listed without limit.
+    expect(await check(({ root }) => { for (let i = 0; i < PLAN_READ_LIMITS.featureDirectories + 1; i++) mkdirSync(join(root, '.hive', 'features', `x${i}`)); })).toEqual(oversize);
+  });
+
+  test('parity compares revision, content hash, status, content and comments', () => {
+    const a = { revision: 'r', contentHash: 'h', status: 'planning', content: 'c', comments: [] };
+    expect(planReadDifferences(a, { ...a })).toEqual([]);
+    expect(planReadDifferences(a, { ...a, comments: [{ id: 'x' }] })).toEqual(['comments']);
+    expect(planReadDifferences(a, { ...a, revision: 's', status: 'approved' })).toEqual(['revision', 'status']);
+  });
+});
+
+// The run commands against an in-memory guard and driver. Each fake run is a started, credentialed run directory. The
+// guard reports its clock (`clockMs`, a fixed reading unless a test moves it) and its deadline on that clock.
+class ExerciseDocker extends FakeDocker {
+  driverCalls: { command: string; input: any }[] = [];
+  compares: boolean[] = [];
+  remainingSeq: number[] = [];
+  clockMs = 5_000_000;
+
+  async run(args: string[], options: any = {}) {
+    if (args[0] === 'exec' && args.includes('/opt/ic/harness/guard.mjs')) {
+      this.calls.push({ args, input: options.input });
+      const op = args[args.indexOf('/opt/ic/harness/guard.mjs') + 1];
+      const clock = (remainingMs: number) => ({ clockMs: this.clockMs, deadlineClockMs: this.clockMs + remainingMs });
+      if (op === 'compare') {
+        const matches = this.compares.length ? this.compares.shift()! : this.behavior.matches ?? true;
+        const remainingMs = this.remainingSeq.length ? this.remainingSeq.shift()! : this.behavior.remainingMs ?? 900_000;
+        return this.ok(JSON.stringify({ ok: true, matches, remainingMs, ...clock(remainingMs) }));
+      }
+      const remainingMs = this.behavior.remainingMs ?? 900_000;
+      return this.ok(JSON.stringify({ ok: true, armed: true, remainingMs, ...clock(remainingMs) }));
+    }
+    if (args[0] === 'exec' && args.includes('/opt/ic/harness/exercise-driver.ts')) {
+      this.calls.push({ args, input: options.input });
+      const command = args.at(-1)!;
+      const input = JSON.parse(options.input);
+      this.driverCalls.push({ command, input });
+      if (this.behavior.timeout?.includes(command)) return { code: -1, stdout: '', stderr: '', timedOut: true };
+      const reply = this.behavior.driver?.[command]?.(input) ?? { ok: true };
+      return this.ok(typeof reply === 'string' ? reply : JSON.stringify(reply));
+    }
+    return super.run(args, options);
+  }
+}
+
+function exerciseRun({ host = 'v1', expires = Date.now() + 4 * 3_600_000, ledger = null as string | null, name = null as string | null } = {}) {
+  const runDir = name ? join(scratch(), name) : scratch();
+  if (name) mkdirSync(runDir);
+  mkdirSync(join(runDir, 'inputs'));
+  mkdirSync(join(runDir, 'docker-config'));
+  writeFileSync(join(runDir, 'lock'), '');
+  const containerId = 'c'.repeat(64);
+  writeFileSync(join(runDir, 'resources.jsonl'), ledger ?? [
+    { event: 'create_requested', kind: 'container', nonce: 'n1' }, { event: 'created', kind: 'container', nonce: 'n1', id: containerId },
+  ].map((e) => JSON.stringify(e)).join('\n') + '\n');
+  const request = validateRequest(EXERCISE_REQUEST);
+  writeFileSync(join(runDir, 'inputs', 'snapshot.json'), JSON.stringify({ schema: 'ic-exercise-snapshot/v1', request, files: [{ path: 'README.md', sha256: 'x', content: 'hello\n' }], prompt: 'p', brief: null, skills: {} }));
+  const journal = Journal.create(join(runDir, 'records'));
+  journal.write('input', { snapshotSha256: createHash('sha256').update(readFileSync(join(runDir, 'inputs', 'snapshot.json'))).digest('hex'), lockInode: String(statSync(join(runDir, 'lock')).ino) });
+  journal.write('prepared', { schema: 'ic-exercise-prepared/v1', status: 'prepared', runId: 'run-1', host, request, docker: { endpoint: 'unix:///fake.sock', engineId: ENGINE }, runtime: { imageId: 'sha256:image' } });
+  journal.write('authorization', { allowedActions: ACTIONS });
+  journal.write('start.container', { id: containerId });
+  journal.write('start.armed', { deadlineAt: Date.now() + 900_000 });
+  journal.write('start.inject', {});
+  journal.write('start.session', { sessionId: 'ses_primary', agent: 'architect-planner', model: { ref: 'openai/gpt-test', variant: null }, containerId });
+  const auth = authFile({ type: 'oauth', access: FAKE_ACCESS, refresh: FAKE_REFRESH, expires, accountId: FAKE_ACCOUNT });
+  let n = 0;
+  const file = (value: any) => { const path = join(runDir, `input-${++n}.json`); writeFileSync(path, JSON.stringify(value)); return path; };
+  return {
+    runDir, journal, auth, env: { IC_EXERCISE_AUTH_PATH: auth },
+    op: (action: string, fields: any = {}, id = `op-${n + 1}`) => file({ schema: 'ic-exercise-operation/v1', id, runId: 'run-1', sessionId: 'ses_primary', action, ...fields }),
+    inspection: (fields: any = {}) => file({ schema: 'ic-exercise-inspection/v1', runId: 'run-1', ...fields }),
+  };
+}
+
+const QUIET = { ok: true, quiescent: true, reasons: [], pending: [], approvals: [], tree: { sessions: [], complete: true, failure: null }, busy: [] };
+
+describe('supervised exercise run commands', () => {
+  const submits = (docker: ExerciseDocker) => docker.driverCalls.filter((c) => c.command === 'submit');
+
+  test('a lost acknowledgement is unknown, blocks every further submission without replay, and resolves only by exact message ID', async () => {
+    const docker = new ExerciseDocker({ driver: { submit: () => ({ ok: true, submitted: true, acknowledged: null }) } });
+    const run = exerciseRun();
+    const lost = await turnCommand({ run: run.runDir, operation: run.op('prompt', { text: 'plan it' }, 'p1') }, run.env, {}, { docker });
+    expect(lost.exit).toBe(EXIT.busy);
+    expect(lost.status).toMatchObject({ state: 'unknown', reason: 'acknowledgement_lost' });
+    const sent = submits(docker)[0].input.op;
+    expect(sent.messageId).toMatch(MESSAGE_ID);
+    expect(run.journal.read('op.0001.intent')!.value).toMatchObject({ id: 'p1', kind: 'prompt', messageId: sent.messageId, sessionId: 'ses_primary' });
+    const again = await turnCommand({ run: run.runDir, operation: run.op('prompt', { text: 'plan it' }, 'p2') }, run.env, {}, { docker });
+    expect(again).toMatchObject({ exit: EXIT.busy, status: { status: 'blocked', reason: 'operation_unresolved', unresolved: ['p1'] } });
+    expect(submits(docker).length).toBe(1);
+    docker.behavior.driver.observe = (input: any) => ({ ...QUIET, resolution: input.resolve?.messageId === sent.messageId ? { resolved: true, effect: 'accepted' } : { resolved: false } });
+    const resolved = await inspectCommand({ run: run.runDir, request: run.inspection({ resolve: 'p1' }) }, run.env, { docker });
+    expect(resolved.status.resolution).toEqual({ resolved: true, effect: 'accepted' });
+    expect(run.journal.read('op.0001.resolution')!.value).toMatchObject({ resolved: true, effect: 'accepted' });
+    expect(runState(run.journal).unresolved).toEqual([]);
+    docker.behavior.driver.submit = () => ({ ok: true, submitted: true, acknowledged: true, status: 204 });
+    expect((await turnCommand({ run: run.runDir, operation: run.op('prompt', { text: 'next' }, 'p3') }, run.env, {}, { docker })).exit).toBe(EXIT.ok);
+    expect(submits(docker).length).toBe(2);
+  });
+
+  test('an unresolvable unknown stays unknown and cannot be resolved by a later inspect without exact evidence', async () => {
+    const docker = new ExerciseDocker({ driver: { submit: () => 'not json', observe: () => ({ ...QUIET, resolution: { resolved: false } }) } });
+    const run = exerciseRun();
+    expect((await turnCommand({ run: run.runDir, operation: run.op('interrupt', {}, 'i1') }, run.env, {}, { docker })).status.state).toBe('unknown');
+    await inspectCommand({ run: run.runDir, request: run.inspection({ resolve: 'i1' }) }, run.env, { docker });
+    expect(runState(run.journal).unresolved).toEqual(['i1']);
+  });
+
+  test('a changed host auth file latches the run before any driver call; inspect then exports controller facts only', async () => {
+    const docker = new ExerciseDocker({ matches: false, driver: { submit: () => ({ ok: true, submitted: true, acknowledged: true }) } });
+    const run = exerciseRun();
+    const refused = await turnCommand({ run: run.runDir, operation: run.op('prompt', { text: 'x' }) }, run.env, {}, { docker });
+    expect(refused).toMatchObject({ exit: EXIT.failed, status: { status: 'refused', reason: 'run_latched', latch: 'host_auth_changed' } });
+    expect(docker.driverCalls).toEqual([]);
+    const inspected = await inspectCommand({ run: run.runDir, request: run.inspection({ conversation: {} }) }, run.env, { docker });
+    expect(inspected.status).toMatchObject({ status: 'content_unavailable', lifecycle: { latched: 'host_auth_changed' } });
+    expect(inspected.status).not.toHaveProperty('pending');
+    expect(docker.driverCalls).toEqual([]);
+  });
+
+  test('a missing or unreadable host auth file and an insufficient expiry latch the run the same way', async () => {
+    for (const [mutate, latch] of [[(r: any) => require('node:fs').unlinkSync(r.auth), 'auth_missing'], [(r: any) => writeFileSync(r.auth, '{bad'), 'auth_malformed']] as const) {
+      const docker = new ExerciseDocker();
+      const run = exerciseRun();
+      mutate(run);
+      // The bound fingerprint is not compared with a file that cannot be read: the snapshot itself refuses it.
+      docker.behavior.matches = true;
+      const result = await turnCommand({ run: run.runDir, operation: run.op('prompt', { text: 'x' }) }, run.env, {}, { docker });
+      expect(result.status).toMatchObject({ status: 'refused', reason: 'run_latched' });
+      expect([latch, 'host_auth_changed']).toContain(result.status.latch);
+    }
+    const docker = new ExerciseDocker({ remainingMs: 900_000 });
+    const run = exerciseRun({ expires: Date.now() + 10 * 60_000 });
+    const short = await turnCommand({ run: run.runDir, operation: run.op('prompt', { text: 'x' }) }, run.env, {}, { docker });
+    expect(short.status).toMatchObject({ reason: 'run_latched', latch: 'lifetime_insufficient' });
+    expect(docker.driverCalls).toEqual([]);
+  });
+
+  test('a failed postcheck leaves the accepted request possibly executed: unknown, latched, never replayed', async () => {
+    const docker = new ExerciseDocker({ driver: { submit: () => ({ ok: true, submitted: true, acknowledged: true }) } });
+    docker.compares = [true, true, false];
+    const run = exerciseRun();
+    const result = await turnCommand({ run: run.runDir, operation: run.op('prompt', { text: 'x' }, 'p1') }, run.env, {}, { docker });
+    expect(result.status).toMatchObject({ state: 'unknown', reason: 'host_auth_changed', latched: true });
+    expect(run.journal.read('latch')!.value.code).toBe('host_auth_changed');
+    expect(runState(run.journal).unresolved).toEqual(['p1']);
+  });
+
+  test('a driver reply carrying a token fragment is discarded, latches the run and is never published', async () => {
+    const fragment = FAKE_ACCESS.slice(2, 34);
+    const docker = new ExerciseDocker({ driver: { submit: () => ({ ok: true, submitted: true, acknowledged: true, note: fragment }) } });
+    const run = exerciseRun();
+    const result = await turnCommand({ run: run.runDir, operation: run.op('prompt', { text: 'x' }) }, run.env, {}, { docker });
+    expect(result.status).toMatchObject({ state: 'unknown', reason: 'content_unavailable', latched: true });
+    expect(JSON.stringify(result)).not.toContain(fragment);
+    expect(run.journal.read('latch')!.value.code).toBe('evidence_contaminated');
+    for (const name of run.journal.names()) expect(JSON.stringify(run.journal.read(name))).not.toContain(fragment);
+  });
+
+  test('a driver that lost its scanner or saw a changed native credential latches the run the same way', async () => {
+    for (const failure of ['scanner_unavailable', 'native_auth_changed']) {
+      const docker = new ExerciseDocker({ driver: { submit: () => ({ ok: false, failure }), observe: () => ({ ok: false, failure }) } });
+      const run = exerciseRun();
+      expect((await turnCommand({ run: run.runDir, operation: run.op('prompt', { text: 'x' }) }, run.env, {}, { docker })).status).toMatchObject({ state: 'unknown', latched: true });
+      expect(run.journal.read('latch')!.value.code).toBe(failure);
+      const other = exerciseRun();
+      const inspected = await inspectCommand({ run: other.runDir }, other.env, { docker });
+      expect(inspected.status).toMatchObject({ status: 'content_unavailable' });
+      expect(other.journal.read('latch')!.value.code).toBe(failure);
+      expect(existsSync(join(other.runDir, 'evidence'))).toBe(false);
+    }
+  });
+
+  test('a command on a missing run reports a fixed code', async () => {
+    let out = '';
+    const stdout = { write: (s: string) => { out = s; return true; } };
+    expect(await exerciseMain(['stop', '--run', join(scratch(), 'absent')], { env: {}, stdout })).toBe(EXIT.invalid);
+    expect(JSON.parse(out)).toMatchObject({ status: 'refused', reason: 'run_not_prepared' });
+  });
+
+  test('no new work is admitted in the final 60 s', async () => {
+    const docker = new ExerciseDocker({ remainingMs: 59_000 });
+    const run = exerciseRun();
+    const result = await turnCommand({ run: run.runDir, operation: run.op('prompt', { text: 'x' }) }, run.env, {}, { docker });
+    expect(result.status).toMatchObject({ state: 'refused', reason: 'no_new_work_window' });
+    expect(submits(docker)).toEqual([]);
+  });
+
+  test('a reply records the exact pending request, owner and tool call before sending; a request not pending is refused unsent', async () => {
+    const pending = [{ kind: 'question', id: 'que_1', sessionId: 'ses_child', toolCallId: 'call_q', questions: [{ question: 'Which?', header: null, multiple: false, options: ['alpha'] }] }];
+    const docker = new ExerciseDocker({ driver: { observe: () => ({ ...QUIET, quiescent: false, pending }), submit: () => ({ ok: true, submitted: true, acknowledged: true }) } });
+    const run = exerciseRun();
+    expect((await turnCommand({ run: run.runDir, operation: run.op('reply', { requestId: 'que_9', answers: [['alpha']] }) }, run.env, {}, { docker })).status).toMatchObject({ state: 'refused', reason: 'request_not_pending' });
+    expect(submits(docker)).toEqual([]);
+    const ok = await turnCommand({ run: run.runDir, operation: run.op('reply', { requestId: 'que_1', answers: [['alpha']] }) }, run.env, {}, { docker });
+    expect(ok.exit).toBe(EXIT.ok);
+    expect(run.journal.read('op.0001.intent')!.value).toMatchObject({ kind: 'question-reply', requestId: 'que_1', ownerSessionId: 'ses_child', toolCallId: 'call_q', answers: [['alpha']] });
+    expect(submits(docker)[0].input.op).toEqual({ kind: 'question-reply', requestId: 'que_1', answers: [['alpha']] });
+  });
+
+  test('a primary switch needs an allowed transition and an acknowledged revision-bound approval decision', async () => {
+    const docker = new ExerciseDocker({ driver: { submit: () => ({ ok: true, submitted: true, acknowledged: true }) } });
+    const run = exerciseRun();
+    expect((await turnCommand({ run: run.runDir, operation: run.op('switch-primary', { to: 'swarm-orchestrator' }) }, run.env, {}, { docker })).status.reason).toBe('approval_not_observed');
+    expect((await turnCommand({ run: run.runDir, operation: run.op('switch-primary', { to: 'hive-master' }) }, run.env, {}, { docker })).status.reason).toBe('transition_not_allowed');
+    expect(submits(docker)).toEqual([]);
+    await turnCommand({ run: run.runDir, operation: run.op('approve-plan', { project: PROJECT_ROOT, feature: 'f', revision: 'r1', contentHash: 'h1', permittedWork: 'edit README' }) }, run.env, {}, { docker });
+    const approval = submits(docker)[0].input.op;
+    expect(approval).toMatchObject({ kind: 'prompt', agent: 'architect-planner', plan: { feature: 'f', revision: 'r1', contentHash: 'h1' } });
+    expect(approval.text).toContain("expectedRevision 'r1'");
+    await turnCommand({ run: run.runDir, operation: run.op('switch-primary', { to: 'swarm-orchestrator' }) }, run.env, {}, { docker });
+    // The switch names the supervisor's decision exactly: its operation, the user message that carried it, the feature, revision and content.
+    expect(submits(docker)[1].input.op).toEqual({
+      kind: 'switch', sessionId: 'ses_primary', agent: 'swarm-orchestrator', from: 'architect-planner',
+      requireApproval: { feature: 'f', revision: 'r1', contentHash: 'h1', operationId: 'op-3', messageId: approval.messageId },
+    });
+    expect(runState(run.journal).primary).toBe('swarm-orchestrator');
+    await turnCommand({ run: run.runDir, operation: run.op('prompt', { text: 'execute' }) }, run.env, {}, { docker });
+    expect(submits(docker)[2].input.op.agent).toBe('swarm-orchestrator');
+  });
+
+  test('on v1 a checked switch is the controller record: acknowledged locally, then carried by every later prompt', async () => {
+    const docker = new ExerciseDocker({ driver: { submit: (input: any) => (input.op.kind === 'switch' ? { ok: true, submitted: false, local: true } : { ok: true, submitted: true, acknowledged: true }) } });
+    const run = exerciseRun();
+    await turnCommand({ run: run.runDir, operation: run.op('approve-plan', { project: PROJECT_ROOT, feature: 'f', revision: 'r1', contentHash: 'h1', permittedWork: 'edit README' }) }, run.env, {}, { docker });
+    const switched = await turnCommand({ run: run.runDir, operation: run.op('switch-primary', { to: 'swarm-orchestrator' }) }, run.env, {}, { docker });
+    expect(switched).toMatchObject({ exit: EXIT.ok, status: { state: 'acknowledged', local: true } });
+    expect(runState(run.journal).primary).toBe('swarm-orchestrator');
+  });
+
+  test('stop needs no credential or driver and confirms exact absence; an unsettled create is cleanup_unknown', async () => {
+    const docker = new ExerciseDocker();
+    const run = exerciseRun();
+    require('node:fs').unlinkSync(run.auth);
+    const stopped = await stopCommand({ run: run.runDir }, {}, { docker });
+    expect(stopped).toMatchObject({ exit: EXIT.ok, status: { status: 'cleanup_confirmed', retained: [] } });
+    expect(docker.calls.some((c) => c.args[0] === 'exec')).toBe(false);
+    const pending = exerciseRun({ ledger: JSON.stringify({ event: 'create_requested', kind: 'container', nonce: 'lost-nonce' }) + '\n' });
+    const unknown = await stopCommand({ run: pending.runDir }, {}, { docker: new ExerciseDocker() });
+    expect(unknown.status.status).toBe('cleanup_unknown');
+    expect(readFileSync(join(pending.runDir, 'resources.jsonl'), 'utf8')).not.toContain('create_absent');
+  });
+});
+
+describe('supervised exercise serialization', () => {
+  const FLOCK = spawnSync('flock', ['--version'], { encoding: 'utf8' });
+  const hasFlock = FLOCK.status === 0 && /util-linux/.test(FLOCK.stdout);
+
+  test.skipIf(!hasFlock)('a held lock makes start, turn, inspect and stop report busy; the holder is never displaced', async () => {
+    const run = exerciseRun();
+    const holder = spawn('flock', ['--exclusive', join(run.runDir, 'lock'), 'sleep', '30'], { stdio: 'ignore' });
+    await new Promise((r) => setTimeout(r, 300));
+    for (const argv of [['inspect', '--run', run.runDir], ['stop', '--run', run.runDir], ['turn', '--run', run.runDir, '--operation', '/nowhere.json'],
+      ['start', '--run', run.runDir, '--authorization', '/nowhere.json', '--budget-seconds', '120']]) {
+      let out = '';
+      const code = await exerciseMain(argv, { env: { ...process.env, ...run.env }, stdout: { write: (s: string) => { out += s; return true; } }, lockWaitSeconds: 1 });
+      expect(code).toBe(EXIT.busy);
+      expect(JSON.parse(out)).toMatchObject({ status: 'busy', reason: 'lock_busy' });
+    }
+    holder.kill('SIGKILL');
+  }, 30_000);
+
+  const lockProbe = (lockPath: string) => spawnSync('flock', ['--nonblock', '--conflict-exit-code', '75', lockPath, 'true']).status;
+  // Children of `pid` whose command is `name`, read from /proc.
+  const childrenNamed = (pid: number, name: string) => readdirSync('/proc').filter((d) => /^\d+$/.test(d)).filter((d) => {
+    try {
+      const stat = readFileSync(`/proc/${d}/stat`, 'utf8');
+      const after = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+      return Number(after[1]) === pid && stat.slice(stat.indexOf('(') + 1, stat.lastIndexOf(')')) === name;
+    } catch { return false; }
+  });
+
+  test.skipIf(!hasFlock)('the acting process holds the lock through its own descriptor: the helper is gone, no child holds it, a busy attempt leaves nothing open', async () => {
+    const run = exerciseRun();
+    const lockPath = join(run.runDir, 'lock');
+    const lockFile = statSync(lockPath);
+    const owner = await acquireRunLock(lockPath, { waitSeconds: 2 });
+    expect(owner).toMatchObject({ busy: false, ino: String(lockFile.ino) });
+    // The flock helper has exited; the lock is held through this process's one descriptor of the file.
+    expect(childrenNamed(process.pid, 'flock')).toEqual([]);
+    expect(lockProbe(lockPath)).toBe(75);
+    expect(descriptorsOf(process.pid, lockFile)).toBe(1);
+    // A child started now, as every Docker client is, holds no descriptor of the lock file.
+    const child = spawn('sleep', ['30'], { stdio: 'ignore' });
+    expect(descriptorsOf(child.pid!, lockFile)).toBe(0);
+    // A second acquisition is busy, its helper is reaped and its descriptor closed before it returns.
+    expect(await acquireRunLock(lockPath, { waitSeconds: 1 })).toEqual({ busy: true });
+    expect(childrenNamed(process.pid, 'flock')).toEqual([]);
+    expect(descriptorsOf(process.pid, lockFile)).toBe(1);
+    owner.release();
+    owner.release();
+    expect(descriptorsOf(process.pid, lockFile)).toBe(0);
+    expect(lockProbe(lockPath)).toBe(0);
+    child.kill('SIGKILL');
+  }, 30_000);
+
+  test.skipIf(!hasFlock)('the lock lasts exactly as long as the acting process, under Node and Bun: busy while it lives, free once it is killed though its child lives on', async () => {
+    const scripts = scratch();
+    const actor = join(scripts, 'actor.mjs');
+    writeFileSync(actor, [
+      "import { spawn } from 'node:child_process';",
+      `import { acquireRunLock } from ${JSON.stringify(join(import.meta.dir, 'exercise.mjs'))};`,
+      'const lock = await acquireRunLock(process.argv[2], { waitSeconds: 2 });',
+      "const child = spawn('sleep', ['30'], { stdio: 'ignore' });",
+      "process.stdout.write(JSON.stringify({ busy: lock.busy, child: child.pid }) + '\\n');",
+      'setInterval(() => {}, 1000);',
+    ].join('\n'));
+    for (const runtime of ['node', process.execPath]) {
+      const run = exerciseRun();
+      const lockPath = join(run.runDir, 'lock');
+      const lockFile = statSync(lockPath);
+      const proc = spawn(runtime, [actor, lockPath], { stdio: ['ignore', 'pipe', 'ignore'] });
+      const line = await new Promise<string>((resolveLine) => { let out = ''; proc.stdout!.on('data', (d) => { out += d; if (out.includes('\n')) resolveLine(out.split('\n')[0]); }); });
+      const { busy, child } = JSON.parse(line);
+      expect([runtime, busy]).toEqual([runtime, false]);
+      expect(lockProbe(lockPath)).toBe(75);
+      expect(descriptorsOf(proc.pid!, lockFile)).toBe(1);
+      expect(descriptorsOf(child, lockFile)).toBe(0);
+      // While the actor lives, a successor command is refused as busy.
+      let out = '';
+      expect(await exerciseMain(['inspect', '--run', run.runDir], { env: { ...process.env, ...run.env }, stdout: { write: (s: string) => { out += s; return true; } }, lockWaitSeconds: 1 })).toBe(EXIT.busy);
+      expect(JSON.parse(out)).toMatchObject({ status: 'busy', reason: 'lock_busy' });
+      const exited = new Promise((r) => proc.on('exit', r));
+      proc.kill('SIGKILL');
+      await exited;
+      expect(() => process.kill(child, 0)).not.toThrow();
+      expect(lockProbe(lockPath)).toBe(0);
+      process.kill(child, 'SIGKILL');
+    }
+  }, 60_000);
+
+  test.skipIf(!hasFlock)('a linked, hardlinked or replaced lock file is refused, and a lock on another inode never admits a command', async () => {
+    const run = exerciseRun();
+    const lockPath = join(run.runDir, 'lock');
+    const code = async (p: Promise<unknown>) => { try { await p; return 'accepted'; } catch (e) { return (e as HarnessError).code; } };
+    linkSync(lockPath, join(run.runDir, 'lock-copy'));
+    expect(await code(acquireRunLock(lockPath, { waitSeconds: 1 }))).toBe('lock_file_replaced');
+    rmSync(join(run.runDir, 'lock-copy'));
+    const linked = join(run.runDir, 'linked-lock');
+    symlinkSync(lockPath, linked);
+    expect(await code(acquireRunLock(linked, { waitSeconds: 1 }))).toBe('lock_open_failed');
+    expect(descriptorsOf(process.pid, statSync(lockPath))).toBe(0);
+    // The path now names a new file: a lock taken on it is on a different inode from the one prepare recorded.
+    renameSync(lockPath, join(run.runDir, 'lock-old'));
+    writeFileSync(lockPath, '');
+    const other = await acquireRunLock(lockPath, { waitSeconds: 1 });
+    expect(other.busy).toBe(false);
+    const docker = new ExerciseDocker();
+    expect(await code(turnCommand({ run: run.runDir, operation: run.op('prompt', { text: 'x' }) }, run.env, {}, { docker, lock: other }))).toBe('lock_file_replaced');
+    expect(await code(stopCommand({ run: run.runDir }, {}, { docker, lock: other }))).toBe('lock_file_replaced');
+    expect(docker.calls).toEqual([]);
+    (other as any).release();
+  }, 30_000);
+});
+
+
+describe('supervised exercise publication, admission and deadlines', () => {
+  const submits = (docker: ExerciseDocker) => docker.driverCalls.filter((c) => c.command === 'submit');
+  const escapeAll = (text: string) => text.split('').map((ch) => '\\u' + ch.charCodeAt(0).toString(16).padStart(4, '0')).join('');
+  const questionWire = (question: string, extra = '') => `{"ok":true,"quiescent":true,"reasons":[],"pending":[{"kind":"question","id":"que_1","sessionId":"ses_primary","toolCallId":null,"questions":[{"question":"${question}","header":null,"multiple":false,"options":["a"]}]}],"approvals":[],"tree":{"sessions":[],"complete":true,"failure":null},"busy":[]${extra}}`;
+
+  test('a token that arrives as escape sequences is found after decoding, in kept and dropped fields alike, and is never published', async () => {
+    const wire = questionWire(escapeAll(FAKE_ACCESS));
+    expect(wire).not.toContain(FAKE_ACCESS);
+    const scan = evidenceScanner({ access: FAKE_ACCESS, expires: 1 });
+    expect(scan(wire)).toBe(false);
+    expect(interpretReply(scan, 'observe', { stdout: wire + '\n', timedOut: false })).toMatchObject({ value: null, contaminated: true });
+    const dropped = questionWire('fine', `,"note":"${escapeAll(FAKE_ACCESS)}"`);
+    expect(interpretReply(scan, 'observe', { stdout: dropped + '\n', timedOut: false })).toMatchObject({ value: null, contaminated: true });
+    expect(interpretReply(scan, 'observe', { stdout: questionWire('fine') + '\n', timedOut: false }).contaminated).toBe(false);
+    expect(scanValue(scan, { nested: [{ 'k\u0073ynthetic-access-token-0123456789abcdef': 1 }] })).toBe(true);
+    const docker = new ExerciseDocker({ driver: { observe: () => wire } });
+    const run = exerciseRun();
+    const result = await inspectCommand({ run: run.runDir, request: run.inspection({ conversation: {} }) }, run.env, { docker });
+    expect(result.status).toMatchObject({ status: 'content_unavailable' });
+    expect(JSON.stringify(result)).not.toContain(FAKE_ACCESS);
+    expect(run.journal.read('latch')!.value.code).toBe('evidence_contaminated');
+    expect(existsSync(join(run.runDir, 'evidence'))).toBe(false);
+  });
+
+  test('driver replies are rebuilt from allowlisted fields; unknown words, oversize text and wrong types reject the reply', () => {
+    const quiet = { ok: true, quiescent: true, reasons: [], pending: [], approvals: [], tree: { sessions: [], complete: true, failure: null }, busy: [] };
+    expect(parseDriverReply('observe', { ...quiet, extra: 'dropped' })).toEqual(quiet);
+    expect(parseDriverReply('observe', { ...quiet, reasons: ['made_up_reason'] })).toBeNull();
+    expect(parseDriverReply('observe', { ...quiet, reasons: ['session_busy:ses_abc', 'tree_changed'] })).not.toBeNull();
+    expect(parseDriverReply('observe', { ...quiet, tree: { ...quiet.tree, failure: 'sk-abcdefghijklmnopqrstuvwxyz' } })).toBeNull();
+    expect(parseDriverReply('observe', { ...quiet, pending: [{ kind: 'question', id: 'que_1', sessionId: 'not-a-session', toolCallId: null }] })).toBeNull();
+    expect(parseDriverReply('observe', { ...quiet, pending: [{ kind: 'question', id: 'que_1', sessionId: 'ses_a', toolCallId: null, questions: [{ question: 'x'.repeat(2001), header: null, multiple: false, options: [] }] }] })).toBeNull();
+    expect(parseDriverReply('observe', { ...quiet, list: [{ prefix: '.hive/features/', entries: [{ path: 'a', bytes: 1 }], complete: true, absent: false, rejected: false, omitted: { links: 0, special: 0, excluded: 1, names: 0 } }] })).not.toBeNull();
+    expect(parseDriverReply('observe', { ...quiet, list: [{ prefix: 'x', entries: [{ path: 'a', bytes: '1' }], complete: true, absent: false, rejected: false, omitted: { links: 0, special: 0, excluded: 0, names: 0 } }] })).toBeNull();
+    expect(parseDriverReply('submit', { ok: false, failure: 'native_auth_changed' })).toEqual({ ok: false, failure: 'native_auth_changed' });
+    expect(parseDriverReply('submit', { ok: false, failure: 'ic_made_up_error' })).toBeNull();
+    expect(parseDriverReply('submit', { ok: false, failure: 'sk-0123456789abcdefghijklmnop' })).toBeNull();
+    expect(parseDriverReply('submit', { ok: true, submitted: true, acknowledged: 'yes' })).toBeNull();
+    expect(parseDriverReply('submit', { ok: true, submitted: false, refused: 'who_knows' })).toBeNull();
+    expect(parseDriverReply('submit', { ok: true, submitted: false, refused: 'plan_not_approved', reasons: [] })).not.toBeNull();
+    expect(parseDriverReply('nonsense', { ok: true })).toBeNull();
+    expect(failureWord('ic_made_up_error')).toBe('other');
+    expect(failureWord('sk-0123456789abcdefghijklmnop')).toBe('other');
+    expect(failureWord('not_quiescent')).toBe('not_quiescent');
+    expect(failureWord('operation_contaminated')).toBe('operation_contaminated');
+    expect(parseDriverReply('clock', { ok: true, clockMs: 12.5, processMs: 3 })).toEqual({ ok: true, clockMs: 12.5, processMs: 3 });
+    expect(parseDriverReply('clock', { ok: true, clockMs: '12', processMs: 3 })).toBeNull();
+  });
+
+  test('the host vocabulary names every failure and refusal word the driver and plan reader can print', () => {
+    const literals = new Set<string>();
+    for (const file of ['exercise-driver.ts', 'plan-reader.ts']) {
+      const text = readFileSync(join(import.meta.dir, file), 'utf8');
+      for (const m of text.matchAll(/(?:fail\('|failure: '|refuse\(')([a-z_]+)'/g)) literals.add(m[1]);
+    }
+    expect(literals.size).toBeGreaterThan(20);
+    for (const word of literals) expect([word, DRIVER_FAILURES.has(word) || DRIVER_REFUSALS.has(word)]).toEqual([word, true]);
+  });
+
+  test('a refusal that lists native questions is published only through the final continuity check', async () => {
+    const pending = [{ kind: 'question', id: 'que_1', sessionId: 'ses_child', toolCallId: 'call_q', questions: [{ question: 'Which?', header: null, multiple: false, options: ['alpha'] }] }];
+    const driver = { observe: () => ({ ...QUIET, pending }) };
+    const docker = new ExerciseDocker({ driver });
+    docker.compares = [true, false];
+    const run = exerciseRun();
+    const result = await turnCommand({ run: run.runDir, operation: run.op('reply', { requestId: 'que_9', answers: [['alpha']] }) }, run.env, {}, { docker });
+    expect(result.status).toMatchObject({ status: 'content_unavailable', reason: 'host_auth_changed', latched: true });
+    expect(JSON.stringify(result.status)).not.toContain('Which?');
+    expect(run.journal.read('latch')!.value.code).toBe('host_auth_changed');
+    const intact = exerciseRun();
+    const listed = await turnCommand({ run: intact.runDir, operation: intact.op('reply', { requestId: 'que_9', answers: [['alpha']] }) }, intact.env, {}, { docker: new ExerciseDocker({ driver }) });
+    expect(listed.status).toMatchObject({ state: 'refused', reason: 'request_not_pending', pending: [{ id: 'que_1' }] });
+  });
+
+  test('inspect publishes nothing when the credential changed between the observation and the release', async () => {
+    const docker = new ExerciseDocker({ driver: { observe: () => ({ ...QUIET, pending: [{ kind: 'question', id: 'que_1', sessionId: 'ses_primary', toolCallId: null, questions: [{ question: 'Which?', header: null, multiple: false, options: ['a'] }] }] }) } });
+    docker.compares = [true, false];
+    const run = exerciseRun();
+    const result = await inspectCommand({ run: run.runDir, request: run.inspection({ conversation: {} }) }, run.env, { docker });
+    expect(result.status).toMatchObject({ status: 'content_unavailable', reason: 'host_auth_changed' });
+    expect(result.status).not.toHaveProperty('pending');
+    expect(existsSync(join(run.runDir, 'evidence'))).toBe(false);
+    expect(run.journal.read('latch')!.value.code).toBe('host_auth_changed');
+  });
+
+  test('inspect forwards a list request and publishes the scanned inventory with its completeness', async () => {
+    const listing = (prefix: string) => ({ prefix, entries: [{ path: '.hive/features/01_f/plan.md', bytes: 12 }], complete: false, absent: false, rejected: false, omitted: { links: 1, special: 0, excluded: 2, names: 0 } });
+    const docker = new ExerciseDocker({ driver: { observe: (input: any) => ({ ...QUIET, list: input.request.list.map(listing) }) } });
+    const run = exerciseRun();
+    const result = await inspectCommand({ run: run.runDir, request: run.inspection({ list: ['.hive/features/'] }) }, run.env, { docker });
+    expect(docker.driverCalls.find((c) => c.command === 'observe')!.input.request.list).toEqual(['.hive/features/']);
+    expect(result.exit).toBe(EXIT.ok);
+    const evidence = JSON.parse(readFileSync(result.status.evidence, 'utf8'));
+    expect(evidence.list).toEqual([listing('.hive/features/')]);
+  });
+
+  test('admission is decided with fresh guard time immediately before the effect; an interrupt alone is admitted in the final window', async () => {
+    expect(admitsAction('prompt', NO_NEW_WORK_MS)).toBe(false);
+    expect(admitsAction('prompt', NO_NEW_WORK_MS + 1)).toBe(true);
+    expect(admitsAction('interrupt', NO_NEW_WORK_MS - 1)).toBe(true);
+    expect(admitsAction('interrupt', INTERRUPT_FLOOR_MS)).toBe(false);
+    expect(admitsAction('interrupt', INTERRUPT_FLOOR_MS + 1)).toBe(true);
+    expect(admitsAction('interrupt', Number.NaN)).toBe(false);
+    // The cutoff passes while the command works: the first check sees 70 s, the check just before the effect sees 59 s.
+    const docker = new ExerciseDocker({ driver: { submit: () => ({ ok: true, submitted: true, acknowledged: true }) } });
+    docker.remainingSeq = [70_000, 59_000];
+    const run = exerciseRun();
+    const late = await turnCommand({ run: run.runDir, operation: run.op('prompt', { text: 'x' }, 'p1') }, run.env, {}, { docker });
+    expect(late.status).toMatchObject({ state: 'refused', reason: 'no_new_work_window' });
+    expect(submits(docker)).toEqual([]);
+    expect(run.journal.read('op.0001.outcome')!.value).toMatchObject({ state: 'refused', reason: 'no_new_work_window' });
+    expect(runState(run.journal).unresolved).toEqual([]);
+    // In the final window an interrupt is sent; everything else is refused.
+    const finalWindow = new ExerciseDocker({ remainingMs: 30_000, driver: { submit: () => ({ ok: true, submitted: true, acknowledged: true, status: 200 }) } });
+    const r2 = exerciseRun();
+    const interrupted = await turnCommand({ run: r2.runDir, operation: r2.op('interrupt', {}, 'i1') }, r2.env, {}, { docker: finalWindow });
+    expect(interrupted).toMatchObject({ exit: EXIT.ok, status: { state: 'acknowledged' } });
+    expect(submits(finalWindow).length).toBe(1);
+    const r3 = exerciseRun();
+    expect((await turnCommand({ run: r3.runDir, operation: r3.op('prompt', { text: 'x' }, 'p1') }, r3.env, {}, { docker: finalWindow })).status.reason).toBe('no_new_work_window');
+    // Too close to the hard stop even for an interrupt.
+    const nearEnd = new ExerciseDocker({ remainingMs: 4_000, driver: { submit: () => ({ ok: true, submitted: true, acknowledged: true }) } });
+    const r4 = exerciseRun();
+    expect((await turnCommand({ run: r4.runDir, operation: r4.op('interrupt', {}, 'i1') }, r4.env, {}, { docker: nearEnd })).status.reason).toBe('no_new_work_window');
+    expect(submits(nearEnd)).toEqual([]);
+  });
+
+  test('cutoffs are translated onto the guard clock conservatively: latency only makes them earlier, and the two clocks never share an origin', () => {
+    // The container clock runs at an unknown offset from the host's; the guard reads its clock somewhere between the
+    // host's readings before (h1) and after (h2) its reply.
+    for (const offset of [7_777_777, -123_456]) {
+      for (const latency of [0, 50, 2_000]) {
+        for (const share of [0, 0.5, 1]) {
+          const h1 = 10_000;
+          const h2 = h1 + latency;
+          const guardClockMs = h1 + latency * share + offset;
+          const end = h1 + 60_000;
+          const { commandEndClock, actionEndClock } = containerCutoffs({ guardClockMs, hostMs: h2, deadlineClockMs: guardClockMs + 900_000 }, end, NO_NEW_WORK_MS);
+          const trueEnd = end + offset;
+          expect(commandEndClock).toBeLessThanOrEqual(trueEnd - CLOCK_MARGIN_MS);
+          expect(commandEndClock).toBeGreaterThanOrEqual(trueEnd - CLOCK_MARGIN_MS - latency);
+          expect(actionEndClock).toBe(guardClockMs + 900_000 - NO_NEW_WORK_MS);
+        }
+      }
+    }
+    expect(containerCutoffs({ guardClockMs: 10, hostMs: 0, deadlineClockMs: 100 }, 50)).toEqual({ commandEndClock: 60 - CLOCK_MARGIN_MS });
+    expect(actionReserveMs('interrupt')).toBe(INTERRUPT_FLOOR_MS);
+    for (const action of ['prompt', 'reply', 'permission', 'approve-plan', 'switch-primary']) expect(actionReserveMs(action)).toBe(NO_NEW_WORK_MS);
+    expect(sharedClockBracket(1, 2, 3)).toBe(true);
+    expect(sharedClockBracket(1, 1, 1)).toBe(true);
+    expect(sharedClockBracket(2, 1, 3)).toBe(false);
+    expect(sharedClockBracket(1, 4, 3)).toBe(false);
+    expect(sharedClockBracket(1, Number.NaN, 3)).toBe(false);
+    expect(sharedClockBracket(undefined, 2, 3)).toBe(false);
+  });
+
+  test('the host hands the driver absolute guard-clock cutoffs from its own monotonic budget; a wall-clock change gives no time, and a spent budget sends nothing', async () => {
+    const realNow = Date.now;
+    const inputs: any[] = [];
+    try {
+      for (const shift of [-3_600_000, 3_600_000]) {
+        Date.now = () => realNow() + shift;
+        for (const action of ['prompt', 'interrupt']) {
+          const docker = new ExerciseDocker({ driver: { submit: () => ({ ok: true, submitted: true, acknowledged: true }) } });
+          const run = exerciseRun();
+          const result = await turnCommand({ run: run.runDir, operation: run.op(action, action === 'prompt' ? { text: 'x' } : {}, 'a1') }, run.env, {}, { docker });
+          expect(result.exit).toBe(EXIT.ok);
+          const input = submits(docker)[0].input;
+          inputs.push(input);
+          expect(input).not.toHaveProperty('deadlineAt');
+          expect(input).not.toHaveProperty('deadlineMs');
+          // The turn's working budget is 60 s less the release reserve, so its end on the guard clock is well inside 60 s.
+          expect(input.commandEndClock).toBeGreaterThan(docker.clockMs);
+          expect(input.commandEndClock).toBeLessThanOrEqual(docker.clockMs + 60_000 - CLOCK_MARGIN_MS);
+          expect(input.actionEndClock).toBe(docker.clockMs + 900_000 - actionReserveMs(action));
+        }
+        // A command whose host budget began 61 s ago, by the host's monotonic clock, does nothing at all.
+        const docker = new ExerciseDocker({ driver: { submit: () => ({ ok: true, submitted: true, acknowledged: true }) } });
+        const run = exerciseRun();
+        const spent = await turnCommand({ run: run.runDir, operation: run.op('prompt', { text: 'x' }, 'late') }, run.env, {}, { docker, startedAt: performance.now() - 61_000 });
+        expect(spent).toEqual({ exit: EXIT.failed, status: { command: 'turn', status: 'refused', reason: 'command_deadline_exceeded' } });
+        expect(docker.calls).toEqual([]);
+        expect(run.journal.read('latch')).toBeNull();
+      }
+    } finally {
+      Date.now = realNow;
+    }
+    expect(inputs).toHaveLength(4);
+  });
+
+  test('the driver checks both cutoffs after its observation, at the request: an observation that outlives the effect cutoff sends nothing, whatever the wall clock says', async () => {
+    const run = async (action: 'prompt' | 'interrupt', cutoffs: any, { step = 10, wall = 0 } = {}) => {
+      const clock = { now: 1_000 };
+      const sends: string[] = [];
+      const table: Record<string, any> = { '/session/ses_a': { id: 'ses_a' }, '/session/ses_a/children': [], '/session/ses_a/message?limit=100': [], '/session/status': {}, '/question': [], '/permission': [] };
+      const api = async (path: string, options: any) => {
+        if ((options.method ?? 'GET') !== 'GET') { sends.push(path); return { outcome: 'response' as const, status: 204, body: null, bytes: 0 }; }
+        clock.now += step;
+        return path in table ? { outcome: 'response' as const, status: 200, body: table[path], bytes: 1 } : { outcome: 'response' as const, status: 404, body: null, bytes: 0 };
+      };
+      const op = action === 'prompt'
+        ? { kind: 'prompt', sessionId: 'ses_a', messageId: 'msg_000000000001AAAAAAAAAAAAAA', agent: 'architect-planner', model: { ref: 'openai/gpt-test', variant: null }, text: 'hi', plan: null }
+        : { kind: 'interrupt', sessionId: 'ses_a' };
+      const realNow = Date.now;
+      Date.now = () => realNow() + wall;
+      try {
+        const reply = await driverSubmit({ host: 'v1', trusted: false, expected: null, sessionId: 'ses_a', op, ...cutoffs }, { api: api as any, clock: () => clock.now });
+        return { reply, sends, observedUntil: clock.now };
+      } finally {
+        Date.now = realNow;
+      }
+    };
+    const wallAhead = Date.now() + 60_000;
+    for (const wall of [0, -3_600_000, 3_600_000]) {
+      for (const action of ['prompt', 'interrupt'] as const) {
+        // The observation reads seven pages at 10 ms each: the effect cutoff at 1050 passes during it.
+        const crossed = await run(action, { commandEndClock: 100_000, actionEndClock: 1_050 }, { wall });
+        expect(crossed.observedUntil).toBeGreaterThan(1_050);
+        expect(crossed.reply).toMatchObject({ ok: true, submitted: false, refused: 'deadline_exceeded', reasons: [] });
+        expect(crossed.sends).toEqual([]);
+        // The command cutoff passing during the observation stops it the same way.
+        const commandCrossed = await run(action, { commandEndClock: 1_050, actionEndClock: 100_000 }, { wall });
+        expect(commandCrossed.reply).toMatchObject({ submitted: false, refused: 'deadline_exceeded' });
+        expect(commandCrossed.sends).toEqual([]);
+        // With both cutoffs ahead at the request, the request is sent exactly once.
+        const inTime = await run(action, { commandEndClock: 100_000, actionEndClock: 5_000 }, { wall });
+        expect(inTime.reply).toMatchObject({ ok: true, submitted: true, acknowledged: true });
+        expect(inTime.sends).toEqual([action === 'prompt' ? '/session/ses_a/prompt_async' : '/session/ses_a/abort']);
+      }
+      // A missing effect cutoff, or one sent in the old wall-clock fields, has already passed.
+      for (const cutoffs of [{ commandEndClock: 100_000 }, { commandEndClock: 100_000, deadlineAt: wallAhead, deadlineMs: 60_000 }]) {
+        const missing = await run('prompt', cutoffs, { wall });
+        expect(missing.reply).toMatchObject({ submitted: false, refused: 'deadline_exceeded' });
+        expect(missing.sends).toEqual([]);
+      }
+    }
+    expect(driverBudget({ deadlineMs: 60_000, deadlineAt: wallAhead }, () => 0)()).toBe(0);
+    expect(driverBudget({ commandEndClock: 1_500 }, () => 1_000)()).toBe(500);
+  });
+
+  test('a late exec gains no fresh budget: a Node driver that starts after its command cutoff observes and sends nothing', async () => {
+    const driverPath = join(import.meta.dir, 'exercise-driver.ts');
+    const nodeClock = () => Number(spawnSync('node', ['-e', 'process.stdout.write(String(Number(process.hrtime.bigint() / 1000n) / 1000))'], { encoding: 'utf8' }).stdout);
+    const run = (command: string, input: any) => JSON.parse(spawnSync('node', [driverPath, command], { input: JSON.stringify(input), encoding: 'utf8' }).stdout.trim());
+    // The cutoff is 300 ms ahead when computed; the driver starts 600 ms later.
+    const end = nodeClock() + 300;
+    await new Promise((r) => setTimeout(r, 600));
+    const late = { host: 'v1', trusted: false, commandEndClock: end, actionEndClock: end, sessionId: 'ses_a', op: { kind: 'interrupt', sessionId: 'ses_a' } };
+    expect(run('submit', late)).toEqual({ ok: false, failure: 'deadline_exceeded', submitted: false });
+    expect(run('observe', late)).toEqual({ ok: false, failure: 'deadline_exceeded', submitted: false });
+    // No cutoff, or only the old relative and wall-clock fields, is no budget at all.
+    expect(run('catalog', { host: 'v1', trusted: false })).toEqual({ ok: false, failure: 'deadline_exceeded', submitted: false });
+    expect(run('catalog', { host: 'v1', trusted: false, deadlineMs: 50_000, deadlineAt: Date.now() + 50_000 })).toEqual({ ok: false, failure: 'deadline_exceeded', submitted: false });
+  });
+
+  test('a fractional remaining budget reaches the real strictApi under Node as whole milliseconds: floored, and refused unsent below one millisecond', () => {
+    const urlOf = (file: string) => JSON.stringify(pathToFileURL(join(import.meta.dir, file)).href);
+    // Node rejects a fractional timeout with ERR_OUT_OF_RANGE; Bun does not, so this runs the real modules under Node.
+    const script = `
+      const { strictApi, wholeMs } = await import(${urlOf('container-runtime.ts')});
+      const { budget } = await import(${urlOf('exercise-driver.ts')});
+      process.env.OPENCODE_SERVER_PASSWORD = 'x';
+      let sent = 0;
+      // The abort timer does not hold Node open, so a stub that waits on it needs something that does.
+      const keepAlive = setInterval(() => {}, 100);
+      const answer = async () => { sent++; return new Response('{}', { status: 200 }); };
+      const hang = (url, { signal }) => { sent++; return new Promise((_, reject) => signal.addEventListener('abort', () => reject(signal.reason))); };
+      const run = async (remainingMs, fetchImpl) => {
+        const before = sent;
+        const started = performance.now();
+        try {
+          const result = await strictApi('/x', { timeoutMs: remainingMs, fetchImpl });
+          return { outcome: result.outcome, sent: sent - before, ms: performance.now() - started };
+        } catch (error) { return { thrown: error.code ?? String(error), sent: sent - before }; }
+      };
+      const out = { answered: [], refused: [] };
+      for (const end of [10_000.25, 8_999.925, 10_000]) out.answered.push(await run(budget({ commandEndClock: end }, () => 0)(), answer));
+      out.hung = await run(budget({ commandEndClock: 40.75 }, () => 0)(), hang);
+      for (const end of [0.999, 0.5, 0, -3]) out.refused.push(await run(budget({ commandEndClock: end }, () => 0)(), answer));
+      out.refused.push(await run(Number.NaN, answer));
+      out.whole = [10.9, 1, 0.9, Number.NaN, 600000.5].map(wholeMs);
+      clearInterval(keepAlive);
+      process.stdout.write(JSON.stringify(out));
+    `;
+    const ran = spawnSync('node', ['--input-type=module', '-e', script], { encoding: 'utf8', timeout: 60_000 });
+    expect(ran.stderr).toBe('');
+    const out = JSON.parse(ran.stdout);
+    expect(out.answered.map((r: any) => [r.outcome, r.sent])).toEqual([['response', 1], ['response', 1], ['response', 1]]);
+    // A 40.75 ms budget becomes a 40 ms timer that fires: the request was sent and then timed out, not left hanging.
+    expect(out.hung).toMatchObject({ outcome: 'timeout', sent: 1 });
+    expect(out.hung.ms).toBeLessThan(2_000);
+    // Exhausted and submillisecond budgets send nothing.
+    expect(out.refused.map((r: any) => [r.outcome, r.sent])).toEqual(Array(5).fill(['timeout', 0]));
+    expect(out.whole).toEqual([10, 1, 0, 0, 600000]);
+    // Every other timer in the in-container sources takes whole milliseconds too (spawnSync reads 0 as no timeout at all).
+    for (const file of ['container-runtime.ts', 'exercise-driver.ts', 'fixture.ts']) {
+      const source = readFileSync(join(import.meta.dir, file), 'utf8');
+      for (const m of source.matchAll(/AbortSignal\.timeout\(([^)]*)\)|\btimeout: ([^,}]*)[,}]/g)) {
+        const argument = (m[1] ?? m[2]).trim();
+        expect([file, argument, /^[\d_]+$/.test(argument) || argument.startsWith('wholeMs(') || argument === 'wholeTimeout']).toEqual([file, argument, true]);
+      }
+    }
+  });
+
+  test('Node processes read one shared clock: a driver reading falls between two guard-clock readings, and a per-process clock does not', () => {
+    const guardModule = join(import.meta.dir, 'guard.mjs');
+    const guardClock = () => Number(spawnSync('node', ['-e', `import(${JSON.stringify(guardModule)}).then((m) => process.stdout.write(String(m.sharedClockMs())))`], { encoding: 'utf8' }).stdout);
+    const before = guardClock();
+    const reply = JSON.parse(spawnSync('node', [join(import.meta.dir, 'exercise-driver.ts'), 'clock'], { input: JSON.stringify({ host: 'v1', trusted: false, commandEndClock: before + 60_000 }), encoding: 'utf8' }).stdout.trim());
+    const after = guardClock();
+    expect(parseDriverReply('clock', reply)).toEqual(reply);
+    expect(sharedClockBracket(before, reply.clockMs, after)).toBe(true);
+    expect(sharedClockBracket(before, reply.processMs, after)).toBe(false);
+    expect(typeof sharedClockMs()).toBe('number');
+  });
+
+  test('the host records a refusal for a driver that sent nothing, and a lost reply stays unknown', async () => {
+    const docker = new ExerciseDocker({ driver: { submit: () => ({ ok: false, failure: 'deadline_exceeded', submitted: false }) } });
+    const r1 = exerciseRun();
+    const refused = await turnCommand({ run: r1.runDir, operation: r1.op('prompt', { text: 'x' }, 'p1') }, r1.env, {}, { docker });
+    expect(refused.status).toMatchObject({ state: 'refused', reason: 'deadline_exceeded' });
+    expect(runState(r1.journal).unresolved).toEqual([]);
+    const refusedAtRequest = new ExerciseDocker({ driver: { submit: () => ({ ok: true, submitted: false, refused: 'deadline_exceeded', reasons: [] }) } });
+    const r2 = exerciseRun();
+    expect((await turnCommand({ run: r2.runDir, operation: r2.op('prompt', { text: 'x' }, 'p1') }, r2.env, {}, { docker: refusedAtRequest })).status).toMatchObject({ state: 'refused', reason: 'deadline_exceeded' });
+    expect(runState(r2.journal).unresolved).toEqual([]);
+    const lost = new ExerciseDocker({ driver: { submit: () => ({ ok: true, submitted: true, acknowledged: null }) } });
+    const r3 = exerciseRun();
+    expect((await turnCommand({ run: r3.runDir, operation: r3.op('prompt', { text: 'x' }, 'p1') }, r3.env, {}, { docker: lost })).status.state).toBe('unknown');
+  });
+
+  test('an operation carrying the original token, a fragment of it or a token shape latches the run before anything is recorded, sent or echoed; clean input cannot resume it', async () => {
+    const fragment = FAKE_ACCESS.slice(3, 35);
+    expect(fragment).toHaveLength(32);
+    const escaped = FAKE_ACCESS.split('').map((ch) => '\\u' + ch.charCodeAt(0).toString(16).padStart(4, '0')).join('');
+    const pending = [{ kind: 'question', id: 'que_1', sessionId: 'ses_primary', toolCallId: 'call_q', questions: [{ question: 'Which?', header: null, multiple: false, options: ['alpha'] }] }];
+    const cases: [string, any, string?][] = [
+      ['reply', { requestId: 'que_1', answers: [[FAKE_ACCESS]] }],
+      ['reply', { requestId: 'que_1', answers: [['alpha']] }, fragment],
+      ['prompt', { text: `see ${fragment}` }],
+      ['approve-plan', { project: PROJECT_ROOT, feature: 'f', revision: fragment, contentHash: 'h1', permittedWork: 'edit' }],
+      ['prompt', { text: 'sk-' + 'q'.repeat(24) }],
+    ];
+    for (const [action, fields, id] of cases) {
+      const docker = new ExerciseDocker({ driver: { observe: () => ({ ...QUIET, quiescent: false, pending }), submit: () => ({ ok: true, submitted: true, acknowledged: true }) } });
+      const run = exerciseRun();
+      const result = await turnCommand({ run: run.runDir, operation: run.op(action, fields, id ?? 'op-1') }, run.env, {}, { docker });
+      expect(result).toEqual({ exit: EXIT.invalid, status: { command: 'turn', status: 'refused', reason: 'operation_contaminated', latched: true } });
+      expect(docker.driverCalls).toEqual([]);
+      expect(run.journal.names().some((n) => n.startsWith('op.'))).toBe(false);
+      expect(run.journal.read('latch')!.value.code).toBe('operation_contaminated');
+      for (const name of run.journal.names()) expect(JSON.stringify(run.journal.read(name))).not.toContain(fragment);
+      // The latch is permanent: a clean operation is refused without a driver call or a record, and inspect exports nothing.
+      const clean = await turnCommand({ run: run.runDir, operation: run.op('prompt', { text: 'a clean message' }, 'clean-1') }, run.env, {}, { docker });
+      expect(clean.status).toMatchObject({ status: 'refused', reason: 'run_latched', latch: 'operation_contaminated' });
+      expect((await inspectCommand({ run: run.runDir, request: run.inspection({ conversation: {} }) }, run.env, { docker })).status).toMatchObject({ status: 'content_unavailable', lifecycle: { latched: 'operation_contaminated' } });
+      expect(docker.driverCalls).toEqual([]);
+      expect(run.journal.names().some((n) => n.startsWith('op.'))).toBe(false);
+      expect(existsSync(join(run.runDir, 'evidence'))).toBe(false);
+    }
+    // A token carried as escape sequences in the file is found in the decoded value.
+    const docker = new ExerciseDocker({ driver: { submit: () => ({ ok: true, submitted: true, acknowledged: true }) } });
+    const run = exerciseRun();
+    const file = join(run.runDir, 'escaped-op.json');
+    writeFileSync(file, `{"schema":"ic-exercise-operation/v1","id":"e1","runId":"run-1","sessionId":"ses_primary","action":"prompt","text":"${escaped}"}`);
+    expect(readFileSync(file, 'utf8')).not.toContain(FAKE_ACCESS);
+    expect((await turnCommand({ run: run.runDir, operation: file }, run.env, {}, { docker })).status).toEqual({ command: 'turn', status: 'refused', reason: 'operation_contaminated', latched: true });
+    expect(docker.driverCalls).toEqual([]);
+    expect(run.journal.read('latch')!.value.code).toBe('operation_contaminated');
+  });
+
+  test('an inspection request carrying the token latches the run the same way: nothing is observed, and a clean request later exports nothing', async () => {
+    const docker = new ExerciseDocker({ driver: { observe: () => ({ ...QUIET }) } });
+    const run = exerciseRun();
+    const refused = await inspectCommand({ run: run.runDir, request: run.inspection({ resolve: FAKE_ACCESS }) }, run.env, { docker });
+    expect(refused).toEqual({ exit: EXIT.invalid, status: { command: 'inspect', status: 'refused', reason: 'inspection_contaminated', latched: true } });
+    expect(JSON.stringify(refused)).not.toContain(FAKE_ACCESS);
+    expect(run.journal.read('latch')!.value.code).toBe('inspection_contaminated');
+    const clean = await inspectCommand({ run: run.runDir, request: run.inspection({ conversation: {} }) }, run.env, { docker });
+    expect(clean.status).toMatchObject({ status: 'content_unavailable', lifecycle: { latched: 'inspection_contaminated' } });
+    expect(docker.driverCalls).toEqual([]);
+    expect(existsSync(join(run.runDir, 'evidence'))).toBe(false);
+  });
+
+  test('a start authorization that fails its scan latches the run before any intent or resource; a clean authorization cannot start it', async () => {
+    const docker = new ExerciseDocker();
+    const run = exerciseRun();
+    const prepared = runState(run.journal).prepared!;
+    const authorization = (authorizedBy: string) => {
+      const path = join(run.runDir, `authorization-${authorizedBy.length}.json`);
+      writeFileSync(path, JSON.stringify({
+        schema: 'ic-exercise-authorization/v1', runId: 'run-1', preparedSha256: prepared.sha256, host: 'v1', model: prepared.value.request.model, budgetSeconds: 900,
+        allowedActions: ['prompt'], stopConditions: ['done'], authorizedBy,
+      }));
+      return path;
+    };
+    const attempt = async (authorizedBy: string) => { try { await startCommand({ run: run.runDir, authorization: authorization(authorizedBy), budgetSeconds: 900 }, run.env, {}, { docker }); return 'started'; } catch (e) { return [(e as HarnessError).code, (e as HarnessError).detail ?? null]; } };
+    expect(await attempt('sk-' + 'a'.repeat(24))).toEqual(['authorization_contaminated', null]);
+    expect(run.journal.read('latch')!.value.code).toBe('authorization_contaminated');
+    expect(run.journal.read('start.intent')).toBeNull();
+    expect((await attempt('supervisor'))[0]).toBe('run_latched');
+    expect(docker.calls).toEqual([]);
+    expect(run.journal.read('start.intent')).toBeNull();
+  });
+
+  test('a run directory named with a token shape fails the release gate and is never echoed', async () => {
+    const shape = 'sk-' + 'w'.repeat(24);
+    const docker = new ExerciseDocker({ driver: { observe: () => ({ ...QUIET }) } });
+    const run = exerciseRun({ name: `run-${shape}` });
+    const result = await inspectCommand({ run: run.runDir }, run.env, { docker });
+    expect(result).toEqual({ exit: EXIT.failed, status: { command: 'inspect', lifecycle: expect.any(Object), status: 'content_unavailable', reason: 'evidence_contaminated' } });
+    expect(JSON.stringify(result)).not.toContain(shape);
+    expect(existsSync(join(run.runDir, 'evidence'))).toBe(false);
+    expect(JSON.stringify(await inspectCommand({ run: run.runDir }, run.env, { docker }))).not.toContain(shape);
+  });
+
+  test('statuses with no scanner for the original token carry only closed controller facts: an opaque token in the run path is never echoed, first or later', async () => {
+    // FAKE_ACCESS has no token shape: only a scanner built from the exact token can see it, and cleanup never has one.
+    const opaque = FAKE_ACCESS;
+    expect(evidenceScanner(null)(opaque)).toBe(false);
+    const docker = new ExerciseDocker({ driver: { observe: () => ({ ...QUIET }) } });
+    const run = exerciseRun({ name: `run-${opaque}` });
+    // First failure, with the exact scanner: the release gate finds the token in the evidence path and latches.
+    const first = await inspectCommand({ run: run.runDir }, run.env, { docker });
+    expect(first.status).toMatchObject({ status: 'content_unavailable', reason: 'evidence_contaminated' });
+    expect(run.journal.read('latch')!.value.code).toBe('evidence_contaminated');
+    // Later commands are scanner-free. Their output names no path, and the credential file is gone.
+    const noAuth = { IC_EXERCISE_AUTH_PATH: join(run.runDir, 'absent-auth.json') };
+    const later = await inspectCommand({ run: run.runDir, request: run.inspection({ conversation: {} }) }, noAuth, { docker });
+    expect(later).toMatchObject({ exit: EXIT.failed, status: { command: 'inspect', status: 'content_unavailable', lifecycle: { latched: 'evidence_contaminated', stopped: false } } });
+    expect(later.status).not.toHaveProperty('run');
+    const turned = await turnCommand({ run: run.runDir, operation: run.op('prompt', { text: 'x' }) }, noAuth, {}, { docker });
+    expect(turned.status).toMatchObject({ status: 'refused', reason: 'run_latched' });
+    // Stop reads neither the environment nor any credential file, and sends nothing into the container.
+    require('node:fs').unlinkSync(run.auth);
+    const untouched = new Proxy({}, { get: (_, key) => { throw new Error(`stop consulted env ${String(key)}`); } });
+    const stopDocker = new ExerciseDocker();
+    const stopped = await stopCommand({ run: run.runDir }, untouched, { docker: stopDocker });
+    expect(stopped).toEqual({ exit: EXIT.ok, status: { command: 'stop', status: 'cleanup_confirmed', retained: [], retainedImages: ['sha256:image'] } });
+    expect(stopDocker.calls.some((c) => c.args[0] === 'exec')).toBe(false);
+    const afterStop = await inspectCommand({ run: run.runDir }, noAuth, { docker });
+    expect(afterStop.status).toMatchObject({ status: 'content_unavailable', lifecycle: { stopped: true } });
+    // Only the run directory's own records, which the caller already holds, may carry the path.
+    for (const output of [first, later, turned, stopped, afterStop]) expect(JSON.stringify(output)).not.toContain(opaque);
+    for (const name of run.journal.names()) expect(JSON.stringify(run.journal.read(name))).not.toContain(opaque);
+    expect(docker.driverCalls.filter((c) => c.command !== 'observe')).toEqual([]);
+  });
+
+  test('prepare names no path in its status: a failed prepare prints closed controller facts only', async () => {
+    const root = scratch();
+    const runId = `run-${FAKE_ACCESS}`;
+    expect(runId.length).toBeLessThanOrEqual(64);
+    const result = await prepareCommand({ 'output-root': root, 'run-id': runId, host: 'v1', input: join(root, 'absent-request.json'), 'candidate-ref': 'a'.repeat(40) }, {});
+    expect(result.exit).toBe(EXIT.failed);
+    expect(result.status).toEqual({
+      command: 'prepare', status: 'failed', preparedSha256: expect.stringMatching(/^[0-9a-f]{64}$/), failures: [expect.stringMatching(/^[a-z_]+$/)], qualification: null, retainedImages: [],
+    });
+    expect(JSON.stringify(result)).not.toContain(FAKE_ACCESS);
+    expect(JSON.stringify(result)).not.toContain(root);
+  });
+
+  test('a delayed old effect is never replayed: a timed-out submission stays unknown, blocks every effect, and resolves only by exact evidence', async () => {
+    const docker = new ExerciseDocker({ timeout: ['submit'], driver: { observe: () => ({ ...QUIET, resolution: { resolved: false } }) } });
+    const run = exerciseRun();
+    const first = await turnCommand({ run: run.runDir, operation: run.op('prompt', { text: 'x' }, 'p1') }, run.env, {}, { docker });
+    expect(first).toMatchObject({ exit: EXIT.busy, status: { state: 'unknown', reason: 'driver_timeout' } });
+    for (const [action, fields] of [['prompt', { text: 'again' }], ['interrupt', {}], ['reply', { requestId: 'que_1', answers: [['a']] }], ['permission', { requestId: 'per_1', decision: 'once' }], ['switch-primary', { to: 'swarm-orchestrator' }]] as any[]) {
+      expect((await turnCommand({ run: run.runDir, operation: run.op(action, fields) }, run.env, {}, { docker })).status).toMatchObject({ status: 'blocked', reason: 'operation_unresolved' });
+    }
+    expect(submits(docker).length).toBe(1);
+    await inspectCommand({ run: run.runDir, request: run.inspection({ resolve: 'p1' }) }, run.env, { docker });
+    expect(runState(run.journal).unresolved).toEqual(['p1']);
+    // The old process may still land its request later; the exact message ID is what shows it did.
+    docker.behavior.driver.observe = (input: any) => ({ ...QUIET, resolution: input.resolve?.messageId === submits(docker)[0].input.op.messageId ? { resolved: true, effect: 'accepted' } : { resolved: false } });
+    await inspectCommand({ run: run.runDir, request: run.inspection({ resolve: 'p1' }) }, run.env, { docker });
+    expect(runState(run.journal).unresolved).toEqual([]);
+  });
+
+  test('a lost reply, permission decision or interrupt stays unknown when only pending, idle or absent evidence exists', async () => {
+    for (const [action, fields, kind] of [['reply', { requestId: 'que_1', answers: [['alpha']] }, 'question'], ['permission', { requestId: 'per_1', decision: 'once' }, 'permission'], ['interrupt', {}, 'interrupt']] as any[]) {
+      const pending = kind === 'interrupt' ? [] : [{ kind, id: fields.requestId, sessionId: 'ses_child', toolCallId: 'call_x', ...(kind === 'question' ? { questions: [{ question: 'Q?', header: null, multiple: false, options: ['alpha'] }] } : { permission: { action: 'read', resources: [] } }) }];
+      const docker = new ExerciseDocker({ driver: { observe: () => ({ ...QUIET, pending, quiescent: false }), submit: () => ({ ok: true, submitted: true, acknowledged: null }) } });
+      const run = exerciseRun();
+      const lost = await turnCommand({ run: run.runDir, operation: run.op(action, fields, 'lost') }, run.env, {}, { docker });
+      expect(lost.status.state).toBe('unknown');
+      // The request is still pending, then gone, then the session idle: none of these names the operation.
+      for (const observed of [{ ...QUIET, pending, resolution: { resolved: false } }, { ...QUIET, pending: [], resolution: { resolved: false } }]) {
+        docker.behavior.driver.observe = () => observed;
+        await inspectCommand({ run: run.runDir, request: run.inspection({ resolve: 'lost' }) }, run.env, { docker });
+        expect(runState(run.journal).unresolved).toEqual(['lost']);
+      }
+      expect((await turnCommand({ run: run.runDir, operation: run.op('prompt', { text: 'next' }) }, run.env, {}, { docker })).status.reason).toBe('operation_unresolved');
+    }
+  });
+
+  test('native session and background stores of both owners are excluded at every supported layout and resolved path', () => {
+    for (const path of ['.hive/sessions.json', '.hive/background-jobs.json', '.hive/runtime/opencode-v2/sessions.json', '.hive/runtime/opencode-v2/background-jobs.json', '.hive/runtime/',
+      '.hive/features/01_f/sessions.json', '.hive/features/f/sessions.json', '.hive/features/01_f/runtime/opencode-v2/sessions.json', '.hive/features/01_f/runtime/', '.hive/features/f/runtime/x']) {
+      expect([path, nativeStorePath(path)]).toEqual([path, true]);
+      expect(() => projectPath(path)).toThrow();
+    }
+    for (const path of ['.hive/features/', '.hive/features/01_f/plan.md', '.hive/features/01_f/tasks/01_t/status.json', '.hive/context/notes.md', '.hive/features/01_f/context/runtime.md', 'src/runtime/sessions.json', 'README.md']) {
+      expect([path, nativeStorePath(path)]).toEqual([path, false]);
+    }
+    expect(() => validateRequest({ ...EXERCISE_REQUEST, artifacts: ['.hive/features/01_f/sessions.json'] })).toThrow();
+    expect(() => validateRequest({ ...EXERCISE_REQUEST, artifacts: ['.hive/features/01_f/runtime/'] })).toThrow();
+    const inspection = (value: any) => { try { validateInspection({ schema: 'ic-exercise-inspection/v1', runId: 'r1', ...value }, { runId: 'r1', artifacts: ['.hive/features/'] }); return 'accepted'; } catch (e) { return (e as HarnessError).code; } };
+    expect(inspection({ artifacts: ['.hive/features/01_f/plan.md'] })).toBe('accepted');
+    expect(inspection({ artifacts: ['.hive/features/01_f/sessions.json'] })).toBe('inspection_path_invalid');
+    expect(inspection({ list: ['.hive/features/01_f/runtime/'] })).toBe('inspection_path_invalid');
+    // The driver holds the resolved path to the same rule: a link or hardlink into a native store, or into an excluded tree, is refused.
+    const root = scratch();
+    const feature = join(root, '.hive', 'features', '01_f');
+    mkdirSync(join(feature, 'runtime', 'opencode-v2'), { recursive: true });
+    writeFileSync(join(feature, 'sessions.json'), '{"sessions":[]}');
+    writeFileSync(join(feature, 'runtime', 'opencode-v2', 'sessions.json'), '{}');
+    writeFileSync(join(feature, 'plan.md'), '# plan\n');
+    symlinkSync(join(feature, 'sessions.json'), join(feature, 'notes.md'));
+    linkSync(join(feature, 'sessions.json'), join(feature, 'copy.md'));
+    const scan = () => false;
+    expect(artifactRecord('.hive/features/01_f/plan.md', scan, root)).toMatchObject({ path: '.hive/features/01_f/plan.md', text: '# plan\n' });
+    for (const path of ['.hive/features/01_f/sessions.json', '.hive/features/01_f/runtime/opencode-v2/sessions.json', '.hive/features/01_f/notes.md', '.hive/features/01_f/copy.md']) {
+      expect(artifactRecord(path, scan, root)).toEqual({ path, omitted: 'path_rejected' });
+    }
+  });
+
+  test('a requested inventory is bounded, scanned and allowlisted: links, hardlinks, native stores and excluded trees are counted, not listed', () => {
+    const root = scratch();
+    const feature = join(root, '.hive', 'features', '01_f');
+    mkdirSync(join(feature, 'runtime'), { recursive: true });
+    mkdirSync(join(feature, 'tasks', '01_t'), { recursive: true });
+    mkdirSync(join(feature, 'node_modules', 'dep'), { recursive: true });
+    writeFileSync(join(feature, 'plan.md'), '# plan\n');
+    writeFileSync(join(feature, 'tasks', '01_t', 'status.json'), '{}');
+    writeFileSync(join(feature, 'sessions.json'), '{}');
+    writeFileSync(join(feature, 'runtime', 'sessions.json'), '{}');
+    writeFileSync(join(feature, 'node_modules', 'dep', 'x.js'), 'x');
+    writeFileSync(join(feature, 'a.md'), 'a');
+    linkSync(join(feature, 'a.md'), join(feature, 'b.md'));
+    symlinkSync(join(feature, 'plan.md'), join(feature, 'link.md'));
+    writeFileSync(join(feature, 'weird name\u0001.md'), 'w');
+    const listed = listPrefix('.hive/features/', () => false, root);
+    expect(listed.entries.map((e: any) => e.path)).toEqual(['.hive/features/01_f/plan.md', '.hive/features/01_f/tasks/01_t/status.json']);
+    expect(listed).toMatchObject({ complete: true, absent: false, rejected: false, omitted: { links: 1, special: 2, excluded: 3, names: 1 } });
+    expect(listed.entries[0]).toEqual({ path: '.hive/features/01_f/plan.md', bytes: 7 });
+    // Rejected, absent and linked prefixes.
+    expect(listPrefix('.hive/runtime/', () => false, root)).toMatchObject({ rejected: true, entries: [] });
+    expect(listPrefix('.hive/features', () => false, root)).toMatchObject({ rejected: true });
+    expect(listPrefix('.hive/features/01_f/runtime/', () => false, root)).toMatchObject({ rejected: true });
+    expect(listPrefix('src/', () => false, root)).toMatchObject({ absent: true, rejected: false, entries: [] });
+    symlinkSync(feature, join(root, 'linked'));
+    expect(listPrefix('linked/', () => false, root)).toMatchObject({ rejected: true, entries: [] });
+    // A link along the prefix, not only at its end: `alias` names the native store directory, so `alias/opencode-v2/`
+    // is lexically ordinary and resolves into the store. The listing is refused, and so is a link into an allowed tree.
+    mkdirSync(join(root, '.hive', 'runtime', 'opencode-v2'), { recursive: true });
+    writeFileSync(join(root, '.hive', 'runtime', 'opencode-v2', 'sessions.json'), '{"sessions":[]}');
+    symlinkSync(join(root, '.hive', 'runtime'), join(root, 'alias'));
+    expect(listPrefix('alias/opencode-v2/', () => false, root)).toMatchObject({ rejected: true, entries: [] });
+    mkdirSync(join(root, 'docs'));
+    symlinkSync(feature, join(root, 'docs', 'feature'));
+    expect(listPrefix('docs/feature/tasks/', () => false, root)).toMatchObject({ rejected: true, entries: [] });
+    for (const path of ['alias/opencode-v2/sessions.json', 'docs/feature/plan.md']) expect(artifactRecord(path, () => false, root)).toEqual({ path, omitted: 'path_rejected' });
+    expect(artifactRecord('.hive/features/01_f/plan.md', () => false, root)).toMatchObject({ text: '# plan\n' });
+    // A name carrying the token stops the whole export.
+    writeFileSync(join(root, '.hive', 'features', `01_f-${FAKE_ACCESS}.md`), 'x');
+    expect(() => listPrefix('.hive/features/', evidenceScanner({ access: FAKE_ACCESS, expires: 1 }), root)).toThrow();
+    // Caps: the entry cap ends the listing and says it is incomplete.
+    const many = join(root, 'many');
+    mkdirSync(many);
+    for (let i = 0; i < 1001; i++) writeFileSync(join(many, `f${String(i).padStart(4, '0')}.txt`), 'x');
+    const capped = listPrefix('many/', () => false, root);
+    expect(capped.entries.length).toBe(1000);
+    expect(capped.complete).toBe(false);
+    let deep = join(root, 'deep');
+    for (let i = 0; i < 14; i++) deep = join(deep, `d${i}`);
+    mkdirSync(deep, { recursive: true });
+    writeFileSync(join(deep, 'leaf.txt'), 'x');
+    expect(listPrefix('deep/', () => false, root).complete).toBe(false);
+  });
+
+  test('qualification passes only when every named check was observed true, including the lost-reply and lock checks', () => {
+    for (const name of ['protocol.replyAckLost', 'protocol.permissionStaysUnknown', 'protocol.switchAckLostSafe', 'protocol.lateDriverSendsNothing', 'protocol.lockSurvivesNoDescendant', 'interrupt.staysUnknown', 'interrupt.noReplay',
+      'protocol.actionCutoffSendsNothing', 'protocol.directPlanRead', 'protocol.directApproval', 'clock.sharedDomain', 'clock.processClockRefused']) {
+      expect(QUALIFICATION_CHECKS).toContain(name);
     }
   });
 });

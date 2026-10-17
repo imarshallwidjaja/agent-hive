@@ -1,5 +1,7 @@
-// Stock-host knowledge shared by the host-side runner (run.mjs) and the in-container fixture (fixture.ts).
-// Every fact here is tied to the exact qualified host version; changing a version means re-deriving the facts.
+// Stock-host knowledge shared by the host-side runners (run.mjs, exercise.mjs) and the in-container fixture and
+// exercise driver. Every fact here is tied to the exact qualified host version; changing a version means re-deriving the
+// facts.
+import { randomBytes } from 'node:crypto';
 
 export const HOST_IDS = ['v1', 'v2'];
 
@@ -347,6 +349,151 @@ export function nativeToolCall(id, step, tools) {
     default:
       throw new Error(`unknown scripted op: ${step.op}`);
   }
+}
+
+// -----------------------------------------------------------------------------------------------------------------
+// Supervised exercises (exercise.mjs, exercise-driver.ts). Native routes and configuration for the same two exact
+// hosts, driven only through their public server APIs; no CLI attaches to a session.
+//
+// v1 (opencode-ai 1.18.30, packages/opencode/src/server/routes/instance/httpapi/groups/{session,question,permission}.ts):
+//   POST /session/:id/prompt_async {messageID, agent, model, variant, parts}; GET /session/status; GET
+//   /session/:id/children; GET /session/:id/message?limit&before; GET /session/:id/message/:messageID; GET /question,
+//   POST /question/:id/reply {answers}; GET /permission, POST /permission/:id/reply {reply}; POST /session/:id/abort.
+// v2 (@opencode/cli 2.0.26 = anomalyco/opencode@9b4ec5714d48, packages/protocol/src/groups/{session,permission}.ts):
+//   POST /api/session {agent, model, location}; POST /api/session/:id/prompt {id, text}; POST /api/session/:id/agent at idle; GET /api/session?parentID&limit&cursor; GET /api/session/active; GET /api/session/:id/form,
+//   POST .../form/:formID/reply {answer}; GET /api/session/:id/permission, POST .../permission/:id/reply {decision};
+//   POST /api/session/:id/interrupt. The v2 question tool (packages/core/src/tool/plugin/question.ts) asks one form
+//   whose fields are `q<index>`, string or multiselect, with option labels as values.
+// Both hosts accept a caller-chosen message ID (`msg_` + 12 hex time digits + 14 base62 characters), so a submitted
+// prompt can be found again by its exact ID after a lost acknowledgement.
+
+const BASE62 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
+
+/**
+ * A message ID in the format both pinned hosts generate and accept from callers: `msg_`, the 48-bit big-endian value
+ * of (milliseconds * 0x1000 + counter) in 12 hex digits, then 14 base62 characters. A supervisor-chosen ID recorded
+ * before submission is what lets a lost acknowledgement be resolved by exact lookup instead of by text or recency.
+ */
+export function exerciseMessageId(now = Date.now(), counter = 1, random = randomBytes(14)) {
+  const value = BigInt(now) * 0x1000n + BigInt(counter);
+  const time = (value & 0xffffffffffffn).toString(16).padStart(12, '0');
+  return `msg_${time}${Array.from(random, (byte) => BASE62[byte % 62]).join('')}`;
+}
+
+export const MESSAGE_ID = /^msg_[0-9a-f]{12}[0-9A-Za-z]{14}$/;
+
+/**
+ * Whether a project-relative path (or directory prefix ending in "/") names, or lies inside, one of the Agent Hive
+ * native session and background stores of either owner: `.hive/sessions.json`, `.hive/background-jobs.json`,
+ * `.hive/runtime/**`, and per feature `<feature directory>/sessions.json` and `<feature directory>/runtime/**`. The
+ * feature directory is any single segment under `.hive/features/`, so indexed and unprefixed names are both covered.
+ */
+export function nativeStorePath(path) {
+  const parts = String(path).split('/').filter(Boolean);
+  if (parts[0] !== '.hive') return false;
+  if (parts.length === 2 && ['sessions.json', 'background-jobs.json'].includes(parts[1])) return true;
+  if (parts[1] === 'runtime') return true;
+  if (parts[1] === 'features' && parts.length >= 4) return parts[3] === 'sessions.json' || parts[3] === 'runtime';
+  return false;
+}
+
+/** Splits an explicit `provider/model` reference. */
+export function splitModelRef(ref) {
+  const slash = typeof ref === 'string' ? ref.indexOf('/') : -1;
+  if (slash <= 0 || slash === ref.length - 1) throw new Error('model reference invalid');
+  return { providerID: ref.slice(0, slash), modelID: ref.slice(slash + 1) };
+}
+
+/**
+ * Native configuration for one supervised exercise. Explicit model, no permission rules of its own beyond the stock
+ * host defaults, the installed plugin and the read-only observer. `askExternalReads` is the credential-free
+ * qualification's one explicit `ask` rule, so a permission request is deterministic there; live runs never set it.
+ */
+export function exerciseHostConfig(id, { modelRef, variant, provider, mockPort, serverPort, observer, askExternalReads = false }) {
+  const mockModel = provider === 'mock' ? splitModelRef(modelRef).modelID : null;
+  if (id === 'v1') {
+    const cfg = {
+      $schema: 'https://opencode.ai/config.json',
+      plugin: [`${PLUGIN_DIST}/index.js`, `${observer}/index.js`],
+      model: modelRef,
+      small_model: modelRef,
+      autoupdate: false,
+      share: 'disabled',
+      snapshot: false,
+      enabled_providers: [provider],
+    };
+    if (askExternalReads) cfg.permission = { external_directory: 'ask' };
+    if (provider === 'mock') {
+      cfg.provider = { mock: { npm: '@ai-sdk/openai-compatible', name: 'Mock', options: { baseURL: `http://127.0.0.1:${mockPort}/v1`, apiKey: 'mock-not-a-secret' }, models: { [mockModel]: { name: mockModel, tool_call: true, limit: { context: 200000, output: 8192 } } } } };
+    }
+    return cfg;
+  }
+  const cfg = {
+    plugins: [{ package: PLUGIN_DIST, options: { server: { url: `http://127.0.0.1:${serverPort}`, passwordEnv: 'OPENCODE_SERVER_PASSWORD' } } }, { package: observer }],
+    model: variant ? `${modelRef}#${variant}` : modelRef,
+    experimental: { subagent_depth: 2 },
+  };
+  if (askExternalReads) cfg.permissions = [{ action: 'external_directory', resource: '*', effect: 'ask' }];
+  if (provider === 'mock') {
+    cfg.providers = { mock: { name: 'Mock', package: '@ai-sdk/openai-compatible', env: ['MOCK_PROVIDER_KEY'], settings: { baseURL: `http://127.0.0.1:${mockPort}/v1` }, models: { [mockModel]: { name: mockModel, capabilities: { tools: true } } } } };
+  }
+  return cfg;
+}
+
+/**
+ * Agent Hive configuration for an exercise: only the request's explicit per-role model overrides. Every other role
+ * inherits the selected native model; there is no provider fallback and no all-role pin.
+ */
+export function exerciseHiveConfig({ agentMode, agentModels = {} }) {
+  const agents = {};
+  for (const [role, choice] of Object.entries(agentModels)) agents[role] = choice.variant ? { model: choice.model, variant: choice.variant } : { model: choice.model };
+  return { agentMode, agents, customAgents: {} };
+}
+
+/** Native request descriptors for one host. Paths are relative to the in-container server; bodies are plain data. */
+export function exerciseRoutes(id, directory) {
+  if (id === 'v1') {
+    return {
+      createSession: () => ({ method: 'POST', path: `/session?directory=${encodeURIComponent(directory)}`, body: { title: 'exercise' } }),
+      prompt: ({ sessionId, messageId, agent, model, text }) => ({
+        method: 'POST', path: `/session/${sessionId}/prompt_async`,
+        body: { messageID: messageId, agent, model: { providerID: splitModelRef(model.ref).providerID, modelID: splitModelRef(model.ref).modelID }, ...(model.variant ? { variant: model.variant } : {}), parts: [{ type: 'text', text }] },
+      }),
+      message: (sessionId, messageId) => ({ method: 'GET', path: `/session/${sessionId}/message/${messageId}` }),
+      messages: (sessionId, { limit, before }) => ({ method: 'GET', path: `/session/${sessionId}/message?limit=${limit}${before ? `&before=${encodeURIComponent(before)}` : ''}` }),
+      session: (sessionId) => ({ method: 'GET', path: `/session/${sessionId}` }),
+      children: (sessionId) => ({ method: 'GET', path: `/session/${sessionId}/children` }),
+      status: () => ({ method: 'GET', path: '/session/status' }),
+      questions: () => ({ method: 'GET', path: '/question' }),
+      questionReply: (_sessionId, requestId, answers) => ({ method: 'POST', path: `/question/${requestId}/reply`, body: { answers } }),
+      permissions: () => ({ method: 'GET', path: '/permission' }),
+      permissionReply: (_sessionId, requestId, decision) => ({ method: 'POST', path: `/permission/${requestId}/reply`, body: { reply: decision } }),
+      interrupt: (sessionId) => ({ method: 'POST', path: `/session/${sessionId}/abort`, body: {} }),
+      agents: () => ({ method: 'GET', path: '/agent' }),
+      models: () => ({ method: 'GET', path: `/config/providers?directory=${encodeURIComponent(directory)}` }),
+    };
+  }
+  return {
+    createSession: ({ agent, model }) => ({
+      method: 'POST', path: '/api/session',
+      body: { title: 'exercise', agent, model: { providerID: splitModelRef(model.ref).providerID, id: splitModelRef(model.ref).modelID, ...(model.variant ? { variant: model.variant } : {}) }, location: { directory } },
+    }),
+    prompt: ({ sessionId, messageId, text }) => ({ method: 'POST', path: `/api/session/${sessionId}/prompt`, body: { id: messageId, text } }),
+    switchAgent: (sessionId, agent) => ({ method: 'POST', path: `/api/session/${sessionId}/agent`, body: { agent } }),
+    message: (sessionId, messageId) => ({ method: 'GET', path: `/api/session/${sessionId}/message/${messageId}` }),
+    messages: (sessionId, { limit, cursor }) => ({ method: 'GET', path: `/api/session/${sessionId}/message?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : '&order=asc'}` }),
+    session: (sessionId) => ({ method: 'GET', path: `/api/session/${sessionId}` }),
+    children: (sessionId, cursor) => ({ method: 'GET', path: `/api/session?parentID=${sessionId}&limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : '&order=asc'}` }),
+    active: () => ({ method: 'GET', path: '/api/session/active' }),
+    forms: (sessionId) => ({ method: 'GET', path: `/api/session/${sessionId}/form` }),
+    form: (sessionId, formId) => ({ method: 'GET', path: `/api/session/${sessionId}/form/${formId}` }),
+    formReply: (sessionId, formId, answer) => ({ method: 'POST', path: `/api/session/${sessionId}/form/${formId}/reply`, body: { answer } }),
+    permissions: (sessionId) => ({ method: 'GET', path: `/api/session/${sessionId}/permission` }),
+    permissionReply: (sessionId, requestId, decision) => ({ method: 'POST', path: `/api/session/${sessionId}/permission/${requestId}/reply`, body: { decision } }),
+    interrupt: (sessionId) => ({ method: 'POST', path: `/api/session/${sessionId}/interrupt`, body: {} }),
+    agents: () => ({ method: 'GET', path: `/api/agent?directory=${encodeURIComponent(directory)}` }),
+    models: () => ({ method: 'GET', path: `/api/model?directory=${encodeURIComponent(directory)}` }),
+  };
 }
 
 /** Normalizes a native tool name to the host-neutral vocabulary used by scenario checks. */

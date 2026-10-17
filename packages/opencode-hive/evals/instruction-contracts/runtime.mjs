@@ -133,11 +133,19 @@ export async function verifyDockerBoundary(docker, env) {
 const HEX64 = /^[0-9a-f]{64}$/;
 
 export class Resources {
-  constructor(docker, ledgerPath, runId, engineId) {
+  /**
+   * `remainingMs`, when given, bounds every Docker call by a caller's remaining command budget instead of a fresh fixed
+   * timeout. `strictCreates` (supervised exercises) never settles an unsuccessful create on an empty listing, whatever
+   * the client printed or how it exited, because the daemon may still finish it; such a nonce stays `create_unknown`
+   * until the resource carrying it is found and removed. Both default to the fixed-run behavior.
+   */
+  constructor(docker, ledgerPath, runId, engineId, { remainingMs = null, strictCreates = false } = {}) {
     this.docker = docker;
     this.ledgerPath = ledgerPath;
     this.runId = runId;
     this.engineId = engineId;
+    this.remainingMs = remainingMs;
+    this.strictCreates = strictCreates;
     this.live = new Map();
     this.pendingCreates = new Map();
     this.counts = { created: 0, removed: 0, stillPresent: 0, unknown: 0, retainedImages: [] };
@@ -154,14 +162,22 @@ export class Resources {
     return ['--label', `ic.run=${this.runId}`, '--label', `ic.nonce=${nonce}`];
   }
 
+  /** A Docker call's timeout: the fixed default, or less when a caller's command budget has less left. */
+  timeout(ms) {
+    if (!this.remainingMs) return ms;
+    const left = this.remainingMs();
+    if (!(left > 0)) throw new HarnessError('command_deadline_exceeded');
+    return Math.min(ms, left);
+  }
+
   /** Lists exact IDs through the bound engine. Returns null unless the engine is responsive and is the bound one. */
   async list(kind, filter) {
-    const engine = await this.docker.run(['info', '--format', '{{.ID}}'], { timeoutMs: 30_000 });
+    const engine = await this.docker.run(['info', '--format', '{{.ID}}'], { timeoutMs: this.timeout(30_000) });
     if (engine.code !== 0 || engine.timedOut || engine.stdout.trim() !== this.engineId) return null;
     const args = kind === 'network'
       ? ['network', 'ls', '-q', '--no-trunc', '--filter', filter]
       : ['ps', '-a', '-q', '--no-trunc', '--filter', filter];
-    const result = await this.docker.run(args, { timeoutMs: 30_000 });
+    const result = await this.docker.run(args, { timeoutMs: this.timeout(30_000) });
     if (result.code !== 0 || result.timedOut) return null;
     const lines = result.stdout.split('\n').map((s) => s.trim()).filter(Boolean);
     return lines.every((line) => HEX64.test(line)) ? lines : null;
@@ -179,7 +195,7 @@ export class Resources {
     const nonce = randomUUID();
     this.record({ event: 'create_requested', kind, nonce });
     this.pendingCreates.set(nonce, kind);
-    const result = await this.docker.run(argsFor(this.labels(nonce)), { timeoutMs: 120_000 });
+    const result = await this.docker.run(argsFor(this.labels(nonce)), { timeoutMs: this.timeout(120_000) });
     const direct = result.stdout.trim();
     if (result.code === 0 && HEX64.test(direct)) {
       this.pendingCreates.delete(nonce);
@@ -191,10 +207,13 @@ export class Resources {
     throw new HarnessError(this.pendingCreates.has(nonce) ? 'create_unknown' : 'create_failed', { kind });
   }
 
-  /** Settles a create whose response was lost: record every resource carrying its nonce, or confirm there is none. */
+  /**
+   * Settles a create whose response was lost: record every resource carrying its nonce, or confirm there is none. With
+   * `strictCreates` an empty listing confirms nothing: only finding the resource by its nonce settles the create.
+   */
   async settleCreate(nonce, kind) {
     const ids = await this.list(kind, `label=ic.nonce=${nonce}`);
-    if (ids === null) {
+    if (ids === null || (this.strictCreates && ids.length === 0)) {
       this.record({ event: 'create_unknown', kind, nonce });
       return;
     }
@@ -210,8 +229,8 @@ export class Resources {
   async remove(id) {
     const kind = this.live.get(id);
     if (!kind) throw new HarnessError('resource_not_owned');
-    if (kind === 'container') await this.docker.run(['kill', id], { timeoutMs: 30_000 });
-    await this.docker.run(kind === 'network' ? ['network', 'rm', id] : ['rm', '-f', '-v', id], { timeoutMs: 60_000 });
+    if (kind === 'container') await this.docker.run(['kill', id], { timeoutMs: this.timeout(30_000) });
+    await this.docker.run(kind === 'network' ? ['network', 'rm', id] : ['rm', '-f', '-v', id], { timeoutMs: this.timeout(60_000) });
     const state = await this.observe(kind, id);
     if (state === 'absent') {
       this.record({ event: 'removed', kind, id });
@@ -228,7 +247,9 @@ export class Resources {
   }
 
   async removeAll() {
-    for (const [nonce, kind] of [...this.pendingCreates]) await this.settleCreate(nonce, kind);
+    for (const [nonce, kind] of [...this.pendingCreates]) {
+      try { await this.settleCreate(nonce, kind); } catch { /* stays pending, reported unknown below */ }
+    }
     const results = [];
     for (const id of this.removalOrder()) {
       try {
@@ -502,11 +523,11 @@ export function verifyArtifact(artifactFrom) {
   if (actual !== artifactFrom.sha256) throw new HarnessError('artifact_hash_mismatch');
 }
 
-/** Reads the runtime report from a run-owned container of the runtime image; no `docker run --rm` side channel. */
-async function readRuntimeReport(docker, resources, imageId) {
-  const id = await resources.create('container', (labels) => ['create', ...labels, '--network', 'none', '--log-driver', 'none', '--entrypoint', 'cat', imageId, '/opt/ic/runtime-report.json']);
+/** Reads a build report from a run-owned container of the runtime image; no `docker run --rm` side channel. */
+async function readRuntimeReport(docker, resources, imageId, path = '/opt/ic/runtime-report.json') {
+  const id = await resources.create('container', (labels) => ['create', ...labels, '--network', 'none', '--log-driver', 'none', '--entrypoint', 'cat', imageId, path]);
   try {
-    const started = await docker.run(['start', '-a', id], { timeoutMs: 60_000 });
+    const started = await docker.run(['start', '-a', id], { timeoutMs: resources.timeout(60_000) });
     if (started.code !== 0) throw new HarnessError('runtime_report_missing');
     try { return JSON.parse(started.stdout); } catch { throw new HarnessError('runtime_report_missing'); }
   } finally {
@@ -514,7 +535,13 @@ async function readRuntimeReport(docker, resources, imageId) {
   }
 }
 
-export async function build(docker, resources, { repoRoot, outDir, identities, artifactFrom }) {
+/**
+ * Builds the candidate artifact and runtime image. `exercise` builds the exercise-only targets instead: the artifact
+ * stage also exports the hive-core bundle from the same builder run, which the exercise runtime installs read-only after
+ * checking its hash. The fixed-run targets, arguments and manifests are unchanged and never need that bundle.
+ */
+export async function build(docker, resources, { repoRoot, outDir, identities, artifactFrom, exercise = false }) {
+  if (exercise && artifactFrom) throw new HarnessError('exercise_requires_fresh_artifact');
   if (artifactFrom) verifyArtifact(artifactFrom);
   const ctx = join(outDir, 'build-context');
   mkdirSync(ctx);
@@ -535,7 +562,7 @@ export async function build(docker, resources, { repoRoot, outDir, identities, a
   } else {
     archive(['archive', '--format=tar', identities.subjectCommit], 'subject.tar');
     const dest = join(outDir, 'artifact');
-    const built = await docker.run(['build', '--target', 'artifact', '--output', `type=local,dest=${dest}`, ctx], { timeoutMs: 1_800_000 });
+    const built = await docker.run(['build', '--target', exercise ? 'exercise-artifact' : 'artifact', '--output', `type=local,dest=${dest}`, ctx], { timeoutMs: resources.timeout(1_800_000) });
     if (built.code !== 0) {
       writeOnce(join(outDir, 'artifact-build.log'), (built.stdout + built.stderr).slice(-20_000));
       throw new HarnessError('artifact_build_failed');
@@ -546,16 +573,48 @@ export async function build(docker, resources, { repoRoot, outDir, identities, a
     const failures = artifactFailures(report);
     if (failures.length) throw new HarnessError('artifact_checks_failed', failures);
     copyFileSync(file, join(ctx, 'plugin.tgz'));
+    if (exercise) {
+      const coreFile = join(dest, 'hive-core-reader.js');
+      if (!existsSync(coreFile)) throw new HarnessError('core_bundle_missing');
+      artifact.core = { file: coreFile, sha256: sha256File(coreFile), subjectCommit: identities.subjectCommit };
+      copyFileSync(coreFile, join(ctx, 'hive-core-reader.js'));
+    }
   }
   const iid = join(outDir, 'runtime.iid');
-  const built = await docker.run(['build', '--target', 'runtime', '--build-arg', `PLUGIN_SHA256=${artifact.sha256}`, '--iidfile', iid, ctx], { timeoutMs: 1_800_000 });
+  const runtimeArgs = exercise
+    ? ['build', '--target', 'exercise-runtime', '--build-arg', `PLUGIN_SHA256=${artifact.sha256}`, '--build-arg', `CORE_SHA256=${artifact.core.sha256}`, '--iidfile', iid, ctx]
+    : ['build', '--target', 'runtime', '--build-arg', `PLUGIN_SHA256=${artifact.sha256}`, '--iidfile', iid, ctx];
+  const built = await docker.run(runtimeArgs, { timeoutMs: resources.timeout(1_800_000) });
   if (built.code !== 0) {
     writeOnce(join(outDir, 'runtime-build.log'), (built.stdout + built.stderr).slice(-20_000));
     throw new HarnessError('runtime_build_failed');
   }
   const imageId = readFileSync(iid, 'utf8').trim();
-  return { artifact, runtime: { imageId, ...(await readRuntimeReport(docker, resources, imageId)) } };
+  const runtime = { imageId, ...(await readRuntimeReport(docker, resources, imageId)) };
+  if (exercise) runtime.exerciseCore = await readRuntimeReport(docker, resources, imageId, '/opt/ic/exercise-report.json');
+  return { artifact, runtime };
 }
+
+/**
+ * The exercise-only core bundle checks: built from the same subject as the plugin, installed bytes equal to the
+ * artifact hash, and the public read and path functions exposed by a plain runtime import. Missing evidence fails.
+ */
+export function exerciseCoreFailures(artifact, runtime, subjectCommit) {
+  const failures = [];
+  const core = artifact?.core;
+  const report = runtime?.exerciseCore;
+  if (!core || !HEX64.test(core.sha256 ?? '')) failures.push('core_bundle_missing');
+  else if (core.subjectCommit !== subjectCommit) failures.push('core_bundle_subject_differs');
+  if (!report) failures.push('core_report_missing');
+  else {
+    if (report.coreSha256 !== core?.sha256) failures.push('core_bundle_hash_mismatch');
+    for (const name of CORE_READ_EXPORTS) if (report.exports?.[name] !== 'function') failures.push(`core_export_missing:${name}`);
+  }
+  return failures;
+}
+
+/** Public hive-core functions the exercise plan reader uses. */
+export const CORE_READ_EXPORTS = ['getFeaturePath', 'getPlanPath', 'PlanService'];
 
 /** Root-local hive-core resolution, version pins and package exclusions observed in the archived build. */
 export function artifactFailures(report) {

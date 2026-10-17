@@ -125,6 +125,8 @@ Native session and background stores belong to a `NativeObservationOwner` (`pack
 
 ## Development Workflow
 
+When a change needs qualitative evidence from a real OpenCode session, read `packages/opencode-hive/evals/instruction-contracts/EXERCISES.md` before preparing a containerized exercise. Define the question and obtain authorization for the named live run; credential availability alone does not authorize model usage. Keep exercise inputs temporary and use the repository tooling for isolation, bounded evidence and cleanup.
+
 ### Adding a New Tool
 
 1. Add an ordinary Hive operation to `packages/opencode-hive/src/runtime/hive-tools.ts` (its Zod arguments and structured result; `runtime.ts` registers every operation for v1 and the v2 registrar in `src/v2/tools.ts` registers it for v2, neither with per-tool code), or add the tool to `src/background/backgroundTools.ts` or `src/task-trace.ts`, according to its owner. On v2 every Hive tool family registers through that one registrar, which sets the explicit Code Mode flag from `CODEMODE_READ_TOOLS` and runs the role/child guard; do not set flags or guards per tool. Set `compact: true` only when the service measures its byte budget on compact `JSON.stringify(result)` (the Worklog tools); an operation that measures against the indented `json()` output, such as the named `hive_context_read`, stays uncompacted so its text matches its budget.

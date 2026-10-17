@@ -10,14 +10,9 @@ import {
   HIVE_COMMANDS, HIVE_ROLES, REFRESH_SENTINEL, fieldContractFindings, hiveConfig, hostConfig, hostSpec, nativeToolCall, probeModels,
   PROBE_VARIANTS, neutralArgs, neutralTool, runArgs, serveArgs, sessionCreateRequest,
 } from './hosts.mjs';
+import { HOME, MOCK_PORT, PROJ, SERVER_PORT, STATE, WORK, authHeader, detach } from './container-runtime.ts';
 
 const HARNESS = dirname(new URL(import.meta.url).pathname);
-const WORK = '/work';
-const PROJ = '/work/proj';
-const HOME = '/work/home';
-const STATE = '/work/state';
-const SERVER_PORT = 4096;
-const MOCK_PORT = 4097;
 const SCENARIOS = JSON.parse(readFileSync(join(HARNESS, 'scenarios.json'), 'utf8'));
 
 type Json = any;
@@ -265,10 +260,6 @@ function serveMock(host: string): void {
 // ---------------------------------------------------------------------------------------------------------------
 // Host server lifecycle and native API access.
 
-function authHeader(): string {
-  return 'Basic ' + Buffer.from(`opencode:${process.env.OPENCODE_SERVER_PASSWORD}`).toString('base64');
-}
-
 async function api(path: string, init: Json = {}): Promise<Json> {
   const response = await fetch(`http://127.0.0.1:${SERVER_PORT}${path}`, {
     ...init,
@@ -293,18 +284,6 @@ async function waitReady(host: string, timeoutMs: number): Promise<boolean> {
     await new Promise((r) => setTimeout(r, 500));
   }
   return false;
-}
-
-function detach(command: string, args: string[], logName: string, env: Json = {}): number {
-  mkdirSync(join(WORK, 'logs'), { recursive: true });
-  const out = join(WORK, 'logs', logName);
-  const child = spawn(command, args, {
-    cwd: PROJ, detached: true, env: { ...process.env, ...env },
-    stdio: ['ignore', 'ignore', 'ignore'],
-  });
-  child.unref();
-  writeFileSync(out + '.pid', String(child.pid));
-  return child.pid ?? -1;
 }
 
 /**

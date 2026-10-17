@@ -1,8 +1,9 @@
-# run.mjs assembles a run-owned build context; only these inputs may reach the daemon.
+# runtime.mjs assembles a run-owned build context; only these inputs may reach the daemon.
 *
 !Dockerfile
 !harness.tar
 !subject.tar
 !plugin.tgz
+!hive-core-reader.js
 !runtime/
 !runtime/**

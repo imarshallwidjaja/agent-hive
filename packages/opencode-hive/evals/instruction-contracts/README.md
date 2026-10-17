@@ -4,6 +4,8 @@ This directory holds a repository-only harness that runs oc-arkive inside dispos
 
 The harness never uses the operator's own OpenCode installation, configuration or sessions, and it never installs OpenCode on the host.
 
+For a supervised qualitative exercise, where a maintainer drives one live primary session turn by turn, use `exercise.mjs` and follow [EXERCISES.md](EXERCISES.md), which owns that procedure. Everything below describes the fixed scenario suite (`run.mjs`) and keeps its 600-second semantics.
+
 ## Collection and assessment
 
 The harness collects; it does not judge. A `collected` run means every selected case ran to its end on the frozen model, on a sound fixture, with an export that passed both secret scans. It does not mean the instructions behaved well, and exit code 0 does not either. Whether they did is decided by reading the exported records of the cases that ran.
