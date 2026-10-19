@@ -7,6 +7,12 @@ export interface HiveCommandMetadata {
   name: string;
   description: string;
   agent?: string;
+  /**
+   * The text typed after the command reaches its renderer exactly as typed on both hosts. OpenCode v2 hands every
+   * plugin command its raw text; on v1 only these commands bypass the host's template substitution
+   * (see literal-arguments.ts).
+   */
+  literalArguments?: true;
 }
 
 export interface HiveRuntimeCommand {

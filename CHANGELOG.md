@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`/implement` and `starting-ad-hoc-implementation`.** A thin command binds the current session to Hive Builder on both OpenCode hosts, keeps the chat and the session's model, and passes everything typed after it, multiline prose included, to the agent unchanged as further context and steering. On OpenCode v1 that text never enters the host's command template, so `$` sequences arrive as typed and `` !`...` `` spans in it are not run as shell commands. The packaged skill owns the method: the invocation authorizes the agreed scope and the added instructions, the latest agreed scope is rebuilt from the conversation, approach advice is sought only when the approach is open, and the ad-hoc lifecycle takes over at handoff. It does not create a feature, plan, or task by itself; approved feature plans still run through `/start-execution`.
 - **`stop-design-slop` visual foundation.** One bundled skill with composition, diagnostics, and refinement-versus-redesign references and a contrast checker, ported from the operator-maintained local skill. It carries accessibility, real-versus-sample content, working-state, and task-fit density rules and adds no scoring gate. Provenance, the anti-slop MIT notice for the contrast script and honesty checks, and the Apache 2.0 notice for the surface-mode and refinement wording adapted from `impeccable` are in its `UPSTREAM.md` and license files.
 
 ### Changed

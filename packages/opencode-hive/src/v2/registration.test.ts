@@ -873,6 +873,27 @@ describe('v2 skills, commands and models', () => {
     expect(host.switches).toHaveLength(1);
     expect(host.prompts[1].text).toContain('an idea');
     expect(host.prompts[1].text).not.toContain('task(');
+    // /implement binds Hive Builder in the same session and prompts it with the operator's prose exactly as typed.
+    const prose = 'ship the retry fix, but keep "legacy" mode\n\n- skip docs for now\n  (and ask before touching $HOME-ish paths)';
+    await Effect.runPromise(commands.get('implement').execute({ sessionID: 's1', prompt: { text: prose }, delivery: 'steer' }));
+    expect(host.switches.at(-1)).toEqual({ sessionID: 's1', agent: 'hive-builder' });
+    expect(host.prompts[2]).toMatchObject({ sessionID: 's1', delivery: 'steer' });
+    expect(host.prompts[2].text).toContain(`<operator-text>\n${prose}\n</operator-text>`);
+    expect(host.modelSwitches).toEqual([]);
+    // A session already on Hive Builder is not switched again, and a blank invocation still prompts the same session.
+    host.sessions.set('s2', { id: 's2', agent: 'hive-builder' });
+    await Effect.runPromise(commands.get('implement').execute({ sessionID: 's2', prompt: { text: '' }, delivery: 'queue' }));
+    expect(host.switches).toHaveLength(2);
+    expect(host.prompts[3]).toMatchObject({ sessionID: 's2', delivery: 'queue' });
+    expect(host.prompts[3].text).toContain('<operator-text>\n\n</operator-text>');
+  });
+
+  it('keeps /implement bound to Hive Builder in unified mode', async () => {
+    const host = await activate({}, { agentMode: 'unified' });
+    host.sessions.set('s1', { id: 's1', agent: 'hive-master' });
+    await Effect.runPromise(host.commands().get('implement').execute({ sessionID: 's1', prompt: { text: 'it' }, delivery: 'steer' }));
+    expect(host.switches).toEqual([{ sessionID: 's1', agent: 'hive-builder' }]);
+    expect(host.prompts[0].sessionID).toBe('s1');
   });
 
   it('parses configured models into native references and fails loudly on a model validation should have rejected', () => {

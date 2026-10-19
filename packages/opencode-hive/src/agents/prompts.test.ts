@@ -1317,6 +1317,7 @@ describe('Active native-task guidance contradiction checks', () => {
     'packages/opencode-hive/skills/executing-plans/SKILL.md',
     'packages/opencode-hive/skills/writing-plans/SKILL.md',
     'packages/opencode-hive/skills/orchestrating-ad-hoc-work/SKILL.md',
+    'packages/opencode-hive/skills/starting-ad-hoc-implementation/SKILL.md',
     'packages/opencode-hive/skills/parallel-exploration/SKILL.md',
     'packages/opencode-hive/skills/background-delegation/references/board-protocol.md',
     'packages/opencode-hive/skills/context-engineering/references/mutation-and-recovery.md',
@@ -3321,6 +3322,13 @@ describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
     expect(HIVE_BUILDER_PROMPT).toContain('before any ad-hoc worktree create');
     expect(HIVE_BUILDER_PROMPT).toContain('or delegated dispatch');
     expect(HIVE_BUILDER_PROMPT).toContain('one coherent lane is correct');
+  });
+
+  it('points Hive Builder at starting-ad-hoc-implementation for a scoped implement request without a plan-first rule', () => {
+    expect(HIVE_BUILDER_PROMPT).toContain('When the operator asks to implement ad-hoc work that the conversation or supplied context already scopes (`/implement`, or a plain request such as "implement it"), load `starting-ad-hoc-implementation` before the lifecycle starts.');
+    // Architect stays planning-only and unified Hive keeps its plan-first rule; neither gains the pointer.
+    expect(ARCHITECT_BEE_PROMPT).not.toContain('starting-ad-hoc-implementation');
+    expect(QUEEN_BEE_PROMPT).not.toContain('starting-ad-hoc-implementation');
   });
 
   it('contains verification before integration and forbids claiming checks passed without output', () => {

@@ -4,7 +4,7 @@ Tool availability plus instructions govern action. Each tool validates its own o
 
 ## Host entries and read transport
 
-From 5.0.0, one package supplies native v1 and v2 entries, each with all 41 tools and 12 commands. Releases through 4.2.0 are v1-only. The qualified hosts are v1.18.30 and v2.0.26. Installation, `plugins` options and actual model-selection semantics are in the [plugin README](../README.md#opencode-v2).
+From 5.0.0, one package supplies native v1 and v2 entries, each with all 41 tools and 13 commands. Releases through 4.2.0 are v1-only. The qualified hosts are v1.18.30 and v2.0.26. Installation, `plugins` options and actual model-selection semantics are in the [plugin README](../README.md#opencode-v2).
 
 V2 registers every tool through one validating registrar. `readTransport: "codemode"` (default) explicitly admits only `hive_repositories_status`, `hive_git_snapshot` and `hive_task_trace_content` to Code Mode; controls, repairing reads, worktree inspections and mixed `hive_task_trace` stay direct. `readTransport: "direct"` makes all 41 direct, with the same IDs and authority. The three Worklog tools are direct under both transports. Use direct mode when global, per-role or custom-agent permissions deny `execute`. Hive diagnoses unavailable Code Mode reads and preserves the denial.
 

@@ -1207,6 +1207,48 @@ describe('skill content', () => {
     expect(skill!.template).not.toContain('tasks.json');
   });
 
+  it('bundles starting-ad-hoc-implementation as the scope-to-lane step behind /implement', () => {
+    const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'starting-ad-hoc-implementation');
+
+    expect(skill).toBeDefined();
+    expect(skill!.description).toMatch(/^Use when /);
+    // The skill names Hive tools, so its description is scoped to Agent Hive like the other tool-bearing skills.
+    expect(skill!.description).toContain('Agent Hive Builder');
+    expect(skill!.description).toContain('`/implement`');
+    expect(skill!.description).toContain('"implement it"');
+    for (const phrase of [
+      // Trigger, role and the arbitrary trailing prose.
+      'Text after `/implement` is further context and natural-language steering',
+      'A selected feature does not make a request feature work',
+      'Architect plans only',
+      'point to `/implement`, which runs under Hive Builder',
+      // Authority: the explicit request, not loading, history or a bare alignment confirmation.
+      "The operator's explicit request in this turn authorizes implementing the agreed outcome and the current additional instructions",
+      'Loading this skill, earlier history, and a bare confirmation at the end of `/grill` or `/interview` authorize nothing by themselves',
+      'New scope, an external effect such as push, publish, or deploy, and any Hive feature, plan, or task need their own authority',
+      // Scope reconstruction and gap closing.
+      'newer instructions overriding older ones',
+      'Scope is what was agreed, not everything mentioned',
+      'Reuse design decisions and advice the conversation already settled',
+      'A change that follows an established pattern needs neither alternatives nor advice',
+      'ask one at a time',
+      'say what is unready, why it matters, and the recommended next step',
+      'proceed without asking for approval again',
+      // Handoff, ownership boundaries, and repeated invocation.
+      '`orchestrating-ad-hoc-work` when its triggers hold (one coherent lane is a valid result)',
+      'adds no readiness status, design file, plan, or Hive record, and it selects no test strategy',
+      'one worktree has one writer',
+      // A missing capability pauses only the work the current path needs it for; skills named for other paths are not needed.
+      'or a tool or skill the current path needs, is unavailable, state which one and what it blocks, and pause only the work it blocks',
+      'A skill named here for another path, such as `executing-plans` for feature work or `orchestrating-ad-hoc-work` when its triggers do not hold, is not needed',
+    ]) expect(skill!.template, phrase).toContain(phrase);
+    expect(skill!.template).not.toContain('a skill this one points to is unavailable');
+    // Lifecycle policy stays with its owners; host syntax is not needed, so no host sections are present.
+    expect(skill!.template).not.toContain('<!-- hive-host');
+    expect(skill!.template).not.toMatch(/hive_(?:feature|plan|tasks|worktree)_|hive_adhoc_worktree_(?:create|merge|cleanup)/);
+    expect(skill!.template).not.toContain('Review Routing');
+  });
+
   it('defines outcome-first ownership and safe worktree placement', () => {
     const template = BUILTIN_SKILLS.find((entry) => entry.name === 'orchestrating-ad-hoc-work')!.template;
     const outcomeIndex = template.indexOf('Identify coherent, independently verifiable outcomes');

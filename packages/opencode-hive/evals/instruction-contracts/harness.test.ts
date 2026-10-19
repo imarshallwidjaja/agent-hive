@@ -2838,6 +2838,15 @@ describe('supervised exercise inputs and authority', () => {
       expect(code(() => validateRequest({ ...EXERCISE_REQUEST, artifacts: [path] }))).toBe('request_invalid');
     }
     expect(projectPath('.hive/features/')).toBe('.hive/features/');
+    // A transition may name the native command that takes it; then "to" is the agent the command binds, which may be "from".
+    const commands = [{ from: 'architect-planner', to: 'hive-builder', command: 'implement' }, { from: 'hive-builder', to: 'hive-builder', command: 'implement' }];
+    expect(validateRequest({ ...EXERCISE_REQUEST, primaryTransitions: commands }).primaryTransitions).toEqual(commands);
+    for (const transitions of [
+      [{ from: 'hive-builder', to: 'hive-builder' }],
+      [{ from: 'architect-planner', to: 'hive-builder', command: '/implement' }],
+      [{ from: 'architect-planner', to: 'hive-builder', command: 'implement' }, { from: 'architect-planner', to: 'swarm-orchestrator', command: 'implement' }],
+      [{ from: 'architect-planner', to: 'scout-researcher', command: 'implement' }],
+    ]) expect(code(() => validateRequest({ ...EXERCISE_REQUEST, primaryTransitions: transitions }))).toBe('request_invalid');
   });
 
   test('snapshots hash bytes and the ordered inventory, and refuse links, hardlinks, excluded trees, escapes and oversize input', () => {
@@ -2926,6 +2935,14 @@ describe('supervised exercise inputs and authority', () => {
     expect(check(approve)).toBe('accepted');
     expect(check({ ...approve, project: '/elsewhere' })).toBe('operation_mismatch');
     expect(check({ ...base, action: 'switch-primary', to: 'nobody' })).toBe('operation_invalid');
+    // A command carries the native name and the text after it, blank included; nothing else.
+    expect(check({ ...base, action: 'command', name: 'implement', text: "keep $& and !`x` as typed" })).toBe('accepted');
+    expect(check({ ...base, action: 'command', name: 'implement', text: '' })).toBe('accepted');
+    expect(check({ ...base, action: 'command', name: 'implement', text: 'go' }, ['prompt'])).toBe('operation_not_authorized');
+    expect(check({ ...base, action: 'command', name: '/implement', text: 'go' })).toBe('operation_invalid');
+    expect(check({ ...base, action: 'command', name: 'implement' })).toBe('operation_invalid');
+    expect(check({ ...base, action: 'command', name: 'implement', text: 'x'.repeat(64 * 1024 + 1) })).toBe('operation_invalid');
+    expect(check({ ...base, action: 'command', name: 'implement', text: 'go', agent: 'hive-builder' })).toBe('operation_invalid');
   });
 
   test('inspection requests stay inside the artifact allowlist and the fixed maxima', () => {
@@ -3302,6 +3319,89 @@ describe('supervised exercise native adapters', () => {
     expect(await resolveOperation('v2', { ...sw, from: undefined }, {}, session('swarm-orchestrator'))).toEqual({ resolved: false });
     expect(await resolveOperation('v2', { ...sw, from: 'swarm-orchestrator' }, {}, session('swarm-orchestrator'))).toEqual({ resolved: false });
     expect(await resolveOperation('v1', sw, {}, session('swarm-orchestrator'))).toEqual({ resolved: false });
+    // v1 command: its own message ID, also reporting the agent that message names. v2 commands take no ID, so nothing names them.
+    const command = { kind: 'command', sessionId: 'ses_a', messageId: prompt.messageId, from: 'architect-planner', agent: 'hive-builder' };
+    expect(await resolveOperation('v1', command, {}, message({ id: prompt.messageId, role: 'user', agent: 'hive-builder' }))).toEqual({ resolved: true, effect: 'accepted', agent: 'hive-builder' });
+    expect(await resolveOperation('v1', command, {}, message({ id: prompt.messageId, role: 'assistant', agent: 'hive-builder' }))).toEqual({ resolved: false });
+    expect(await resolveOperation('v1', { ...command, messageId: undefined }, {}, message({ id: prompt.messageId, role: 'user' }))).toEqual({ resolved: false });
+    expect(await resolveOperation('v2', { ...command, messageId: undefined }, {}, session('hive-builder'))).toEqual({ resolved: false });
+  });
+
+  test('a native command is sent once with its text as written, on a quiet tree, bound as the request declared, and acknowledged only by evidence naming it', async () => {
+    const text = "  keep $& and $$ and $` and $' as typed\n!`touch /work/proj/x` is text\n";
+    const model = { ref: 'openai/gpt-test', variant: 'high' };
+    const quietV1 = { '/session/ses_a': { id: 'ses_a' }, '/session/ses_a/children': [], '/session/ses_a/message?limit=100': [], '/question': [], '/permission': [] };
+    // A v1 command request answers only when its turn ends; until then the test's own abort is the only way it settles.
+    const v1 = async ({ catalog = [{ name: 'implement', agent: 'hive-builder' }], message = { id: 'msg_000000000001AAAAAAAAAAAAAA', role: 'user', agent: 'hive-builder' } as any, busy = true, answer = null as any, pending = [] as any[], commandEndClock = 100_000, op: change = {} } = {}) => {
+      const clock = { now: 1_000 };
+      const sends: any[] = [];
+      let sent = false;
+      const api = async (path: string, options: any) => {
+        if ((options.method ?? 'GET') !== 'GET') {
+          sent = true;
+          sends.push({ path, body: options.body });
+          if (answer) return answer;
+          return new Promise((resolve) => options.abort.addEventListener('abort', () => { sends.at(-1).aborted = true; resolve({ outcome: 'unreachable', status: null, body: null, bytes: 0 }); }));
+        }
+        clock.now += 10;
+        const table: Record<string, any> = { ...quietV1, '/question': pending, '/command': catalog, '/session/status': sent && busy ? { ses_a: { type: 'busy' } } : {} };
+        if (sent && message) table['/session/ses_a/message/msg_000000000001AAAAAAAAAAAAAA'] = { info: message, parts: [] };
+        return path in table ? { outcome: 'response' as const, status: 200, body: table[path], bytes: 1 } : { outcome: 'response' as const, status: 404, body: null, bytes: 0 };
+      };
+      const op = { kind: 'command', sessionId: 'ses_a', name: 'implement', messageId: 'msg_000000000001AAAAAAAAAAAAAA', from: 'architect-planner', agent: 'hive-builder', model, text, ...change };
+      const reply = await driverSubmit({ host: 'v1', trusted: false, expected: null, sessionId: 'ses_a', op, commandEndClock, actionEndClock: 100_000 }, { api: api as any, clock: () => clock.now });
+      return { reply, sends };
+    };
+    const ok = await v1();
+    expect(ok.reply).toEqual({ ok: true, submitted: true, acknowledged: true, status: null, agent: 'hive-builder' });
+    expect(ok.sends).toEqual([{
+      path: '/session/ses_a/command', aborted: true,
+      body: { messageID: 'msg_000000000001AAAAAAAAAAAAAA', agent: 'architect-planner', model: 'openai/gpt-test', variant: 'high', command: 'implement', arguments: text },
+    }]);
+    // A turn that ends before the session is seen busy answers the request itself.
+    expect((await v1({ answer: { outcome: 'response', status: 200, body: {}, bytes: 1 }, busy: false })).reply).toMatchObject({ acknowledged: true, status: 200, agent: 'hive-builder' });
+    // A refused command leaves no message: rejected. No message and no answer before the cutoff: unknown.
+    expect((await v1({ answer: { outcome: 'response', status: 400, body: null, bytes: 0 }, message: null })).reply).toMatchObject({ acknowledged: false, status: 400 });
+    expect((await v1({ message: null, commandEndClock: 1_120 })).reply).toMatchObject({ submitted: true, acknowledged: null });
+    // Refused unsent: a binding other than the declared one, a command the host does not list, a tree that is not quiet.
+    for (const [setup, refused] of [
+      [{ catalog: [{ name: 'implement', agent: 'dash-reviewer' }] }, 'command_binding_unexpected'],
+      [{ catalog: [{ name: 'implement' }] }, 'command_binding_unexpected'],
+      [{ catalog: [{ name: 'implement', agent: 'hive-builder' }], op: { agent: 'architect-planner' } }, 'command_binding_unexpected'],
+      [{ catalog: [{ name: 'grill' }] }, 'command_not_found'],
+      [{ pending: [{ id: 'que_1', sessionID: 'ses_a', questions: [] }] }, 'not_quiescent'],
+    ] as const) {
+      const result = await v1(setup as any);
+      expect(result.reply, refused).toMatchObject({ ok: true, submitted: false, refused });
+      expect(result.sends).toEqual([]);
+    }
+    // A command that binds no agent runs on the current primary when the request declares it that way.
+    expect((await v1({ catalog: [{ name: 'start-execution' }], op: { name: 'start-execution', agent: 'architect-planner' }, message: { id: 'msg_000000000001AAAAAAAAAAAAAA', role: 'user', agent: 'architect-planner' } })).reply).toMatchObject({ acknowledged: true, agent: 'architect-planner' });
+
+    // v2: the callback answers once it has admitted its prompt; the session then names the agent it bound.
+    const v2 = async ({ before = 'architect-planner', after = 'hive-builder', status = 204, drop = false } = {}) => {
+      const sends: any[] = [];
+      const api = async (path: string, options: any) => {
+        if ((options.method ?? 'GET') !== 'GET') { sends.push({ path, body: options.body }); return { outcome: 'response' as const, status, body: null, bytes: 0 }; }
+        const table: Record<string, any> = {
+          '/api/session/ses_a': { data: { id: 'ses_a', agent: sends.length ? after : before } }, '/api/session?parentID=ses_a&limit=100&order=asc': { data: [], cursor: {} },
+          '/api/session/ses_a/message?limit=100&order=asc': { data: [], cursor: {} }, '/api/session/active': { data: {} }, '/api/session/ses_a/form': { data: [] },
+          '/api/session/ses_a/permission': { data: [] }, [`/api/command?directory=${encodeURIComponent('/work/proj')}`]: { data: [{ name: 'implement', description: 'x' }] },
+        };
+        return path in table ? { outcome: 'response' as const, status: 200, body: table[path], bytes: 1 } : { outcome: 'response' as const, status: 404, body: null, bytes: 0 };
+      };
+      const op = { kind: 'command', sessionId: 'ses_a', name: 'implement', from: 'architect-planner', agent: 'hive-builder', model, text };
+      return { reply: await driverSubmit({ host: 'v2', trusted: false, expected: null, sessionId: 'ses_a', op, commandEndClock: 100_000, actionEndClock: 100_000, dropAcknowledgement: drop }, { api: api as any, clock: () => 1_000 }), sends };
+    };
+    const done = await v2();
+    expect(done.reply).toEqual({ ok: true, submitted: true, acknowledged: true, status: 204, agent: 'hive-builder' });
+    expect(done.sends).toEqual([{ path: '/api/session/ses_a/command', body: { name: 'implement', text } }]);
+    // A refusal still reports where the callback left the session; a session not on the recorded primary is refused unsent.
+    expect((await v2({ status: 500, after: 'hive-builder' })).reply).toMatchObject({ acknowledged: false, status: 500, agent: 'hive-builder' });
+    const moved = await v2({ before: 'swarm-orchestrator' });
+    expect(moved.reply).toMatchObject({ submitted: false, refused: 'session_agent_unexpected' });
+    expect(moved.sends).toEqual([]);
+    expect((await v2({ drop: true })).reply).toEqual({ ok: true, submitted: true, acknowledged: null });
   });
 
   test('the driver never consults an agent-writable credential marker and emits fixed failure codes only', () => {
@@ -3445,7 +3545,7 @@ class ExerciseDocker extends FakeDocker {
   }
 }
 
-function exerciseRun({ host = 'v1', expires = Date.now() + 4 * 3_600_000, ledger = null as string | null, name = null as string | null } = {}) {
+function exerciseRun({ host = 'v1', expires = Date.now() + 4 * 3_600_000, ledger = null as string | null, name = null as string | null, transitions = null as any[] | null } = {}) {
   const runDir = name ? join(scratch(), name) : scratch();
   if (name) mkdirSync(runDir);
   mkdirSync(join(runDir, 'inputs'));
@@ -3455,7 +3555,7 @@ function exerciseRun({ host = 'v1', expires = Date.now() + 4 * 3_600_000, ledger
   writeFileSync(join(runDir, 'resources.jsonl'), ledger ?? [
     { event: 'create_requested', kind: 'container', nonce: 'n1' }, { event: 'created', kind: 'container', nonce: 'n1', id: containerId },
   ].map((e) => JSON.stringify(e)).join('\n') + '\n');
-  const request = validateRequest(EXERCISE_REQUEST);
+  const request = validateRequest(transitions ? { ...EXERCISE_REQUEST, primaryTransitions: transitions } : EXERCISE_REQUEST);
   writeFileSync(join(runDir, 'inputs', 'snapshot.json'), JSON.stringify({ schema: 'ic-exercise-snapshot/v1', request, files: [{ path: 'README.md', sha256: 'x', content: 'hello\n' }], prompt: 'p', brief: null, skills: {} }));
   const journal = Journal.create(join(runDir, 'records'));
   journal.write('input', { snapshotSha256: createHash('sha256').update(readFileSync(join(runDir, 'inputs', 'snapshot.json'))).digest('hex'), lockInode: String(statSync(join(runDir, 'lock')).ino) });
@@ -3634,6 +3734,78 @@ describe('supervised exercise run commands', () => {
     expect(runState(run.journal).primary).toBe('swarm-orchestrator');
   });
 
+  test('a native command needs its declared transition, records its exact identity before sending, and moves the primary only as native evidence shows', async () => {
+    const transitions = [{ from: 'architect-planner', to: 'swarm-orchestrator' }, { from: 'architect-planner', to: 'hive-builder', command: 'implement' }];
+    const commandReply = (agent: string | null) => (input: any) => (input.op.kind === 'command' ? { ok: true, submitted: true, acknowledged: true, status: null, agent } : { ok: true, submitted: true, acknowledged: true });
+    const docker = new ExerciseDocker({ driver: { submit: commandReply('hive-builder') } });
+    const run = exerciseRun({ transitions });
+    // Only a command the request names from the current primary is sent, and switch-primary never takes a command's transition.
+    expect((await turnCommand({ run: run.runDir, operation: run.op('command', { name: 'grill', text: 'x' }, 'c0') }, run.env, {}, { docker })).status).toMatchObject({ state: 'refused', reason: 'command_not_allowed' });
+    expect((await turnCommand({ run: run.runDir, operation: run.op('switch-primary', { to: 'hive-builder' }, 's0') }, run.env, {}, { docker })).status.reason).toBe('transition_not_allowed');
+    expect(submits(docker)).toEqual([]);
+    expect(run.journal.names().filter((n) => n.startsWith('op.'))).toEqual([]);
+    const text = "  keep $& and !`x` as typed\n";
+    const sent = await turnCommand({ run: run.runDir, operation: run.op('command', { name: 'implement', text }, 'c1') }, run.env, {}, { docker });
+    expect(sent).toMatchObject({ exit: EXIT.ok, status: { state: 'acknowledged', agent: 'hive-builder' } });
+    const op = submits(docker)[0].input.op;
+    expect(op).toEqual({ kind: 'command', sessionId: 'ses_primary', name: 'implement', messageId: op.messageId, from: 'architect-planner', agent: 'hive-builder', model: { ref: 'openai/gpt-test', variant: null }, text });
+    expect(op.messageId).toMatch(MESSAGE_ID);
+    expect(run.journal.read('op.0001.intent')!.value).toMatchObject({ id: 'c1', kind: 'command', name: 'implement', messageId: op.messageId, from: 'architect-planner', agent: 'hive-builder' });
+    expect(runState(run.journal).primary).toBe('hive-builder');
+    await turnCommand({ run: run.runDir, operation: run.op('prompt', { text: 'continue' }, 'p1') }, run.env, {}, { docker });
+    expect(submits(docker)[1].input.op.agent).toBe('hive-builder');
+
+    // The host bound another agent: the primary is unknown and no new work is sent until the supervisor stops the run.
+    const other = exerciseRun({ transitions });
+    const otherDocker = new ExerciseDocker({ driver: { submit: commandReply('dash-reviewer'), observe: () => QUIET } });
+    await turnCommand({ run: other.runDir, operation: other.op('command', { name: 'implement', text }, 'c1') }, other.env, {}, { docker: otherDocker });
+    expect(runState(other.journal).primary).toBeNull();
+    expect((await turnCommand({ run: other.runDir, operation: other.op('prompt', { text: 'continue' }, 'p1') }, other.env, {}, { docker: otherDocker })).status).toMatchObject({ state: 'refused', reason: 'primary_unknown' });
+    expect(submits(otherDocker).length).toBe(1);
+    expect((await inspectCommand({ run: other.runDir }, other.env, { docker: otherDocker })).status).toMatchObject({ status: 'observed', lifecycle: { primary: null } });
+
+    // A lost v1 acknowledgement resolves only by the command's message ID, and the agent that message names sets the primary.
+    const lost = exerciseRun({ transitions });
+    const lostDocker = new ExerciseDocker({ driver: { submit: () => ({ ok: true, submitted: true, acknowledged: null }) } });
+    expect((await turnCommand({ run: lost.runDir, operation: lost.op('command', { name: 'implement', text }, 'c1') }, lost.env, {}, { docker: lostDocker })).status).toMatchObject({ state: 'unknown' });
+    const lostId = submits(lostDocker)[0].input.op.messageId;
+    lostDocker.behavior.driver.observe = (input: any) => ({ ...QUIET, resolution: input.resolve?.kind === 'command' && input.resolve.messageId === lostId ? { resolved: true, effect: 'accepted', agent: 'hive-builder' } : { resolved: false } });
+    await inspectCommand({ run: lost.runDir, request: lost.inspection({ resolve: 'c1' }) }, lost.env, { docker: lostDocker });
+    expect(lost.journal.read('op.0001.resolution')!.value).toMatchObject({ resolved: true, effect: 'accepted', agent: 'hive-builder' });
+    expect(runState(lost.journal)).toMatchObject({ primary: 'hive-builder', unresolved: [] });
+
+    // v2 takes no message ID for a command, so none is recorded; a refused command whose callback still moved the session leaves the primary unknown.
+    const v2 = exerciseRun({ host: 'v2', transitions });
+    const v2Docker = new ExerciseDocker({ driver: { submit: () => ({ ok: true, submitted: true, acknowledged: false, status: 500, agent: 'hive-builder' }) } });
+    expect((await turnCommand({ run: v2.runDir, operation: v2.op('command', { name: 'implement', text }, 'c1') }, v2.env, {}, { docker: v2Docker })).status).toMatchObject({ state: 'rejected' });
+    expect(submits(v2Docker)[0].input.op).not.toHaveProperty('messageId');
+    expect(v2.journal.read('op.0001.intent')!.value).not.toHaveProperty('messageId');
+    expect(runState(v2.journal).primary).toBeNull();
+
+    // A v2 refusal keeps the recorded primary only when the post-command session read names it. An unreadable read (null),
+    // no agent field, or another agent leaves the primary unknown, and the next prompt is refused unsent.
+    const refusal = (agent: string | null | undefined) => (input: any) => (input.op.kind === 'command' ? { ok: true, submitted: true, acknowledged: false, status: 500, ...(agent === undefined ? {} : { agent }) } : { ok: true, submitted: true, acknowledged: true });
+    for (const [label, agent] of [['unreadable', null], ['not reported', undefined], ['moved', 'hive-builder']] as const) {
+      const blocked = exerciseRun({ host: 'v2', transitions });
+      const blockedDocker = new ExerciseDocker({ driver: { submit: refusal(agent), observe: () => QUIET } });
+      expect((await turnCommand({ run: blocked.runDir, operation: blocked.op('command', { name: 'implement', text }, 'c1') }, blocked.env, {}, { docker: blockedDocker })).status, label).toMatchObject({ state: 'rejected' });
+      expect(runState(blocked.journal).primary, label).toBeNull();
+      expect((await turnCommand({ run: blocked.runDir, operation: blocked.op('prompt', { text: 'continue' }, 'p1') }, blocked.env, {}, { docker: blockedDocker })).status, label).toMatchObject({ state: 'refused', reason: 'primary_unknown' });
+      expect(submits(blockedDocker).length, label).toBe(1);
+    }
+    const kept = exerciseRun({ host: 'v2', transitions });
+    const keptDocker = new ExerciseDocker({ driver: { submit: refusal('architect-planner'), observe: () => QUIET } });
+    await turnCommand({ run: kept.runDir, operation: kept.op('command', { name: 'implement', text }, 'c1') }, kept.env, {}, { docker: keptDocker });
+    expect(runState(kept.journal).primary).toBe('architect-planner');
+    await turnCommand({ run: kept.runDir, operation: kept.op('prompt', { text: 'continue' }, 'p1') }, kept.env, {}, { docker: keptDocker });
+    expect(submits(keptDocker)[1].input.op).toMatchObject({ kind: 'prompt', agent: 'architect-planner' });
+    // v1 chooses the agent per message, so a refusal that left no message names nothing and changes nothing.
+    const v1Refused = exerciseRun({ transitions });
+    const v1Docker = new ExerciseDocker({ driver: { submit: refusal(undefined), observe: () => QUIET } });
+    await turnCommand({ run: v1Refused.runDir, operation: v1Refused.op('command', { name: 'implement', text }, 'c1') }, v1Refused.env, {}, { docker: v1Docker });
+    expect(runState(v1Refused.journal).primary).toBe('architect-planner');
+  });
+
   test('stop needs no credential or driver and confirms exact absence; an unsettled create is cleanup_unknown', async () => {
     const docker = new ExerciseDocker();
     const run = exerciseRun();
@@ -3753,7 +3925,7 @@ describe('a prepared run settles the qualification runs it owns', () => {
   });
 
   test('ownership is recorded with the ledger and lock identities before any resource, for the fixed qualification runs only', () => {
-    expect(QUALIFICATION_SUBRUNS).toEqual(['qualification', 'qualification-interrupt']);
+    expect(QUALIFICATION_SUBRUNS).toEqual(['qualification', 'qualification-interrupt', 'qualification-command']);
     const run = exerciseRun({ ledger: '' });
     const sub = registerSubrun(run.journal, run.runDir, 'qualification-interrupt', { runId: 'run-1-qi', engineId: ENGINE });
     expect(readFileSync(join(sub, 'resources.jsonl'), 'utf8')).toBe('');

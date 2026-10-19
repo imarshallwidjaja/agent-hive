@@ -57,6 +57,8 @@ Rule: do not create Hive features, plans, or tasks by default. Work ad-hoc unles
 
 When an ad-hoc request has multiple independently verifiable outcomes, dependency waves, shared write/runtime resources, may use background execution, or may require more than one worker attempt or turn, load \`orchestrating-ad-hoc-work\` before any ad-hoc worktree create or delegated dispatch. The skill may conclude that one coherent lane is correct.
 
+When the operator asks to implement ad-hoc work that the conversation or supplied context already scopes (\`/implement\`, or a plain request such as "implement it"), load \`starting-ad-hoc-implementation\` before the lifecycle starts.
+
 ${PLAN_ASSESSMENT_PROMPT}
 
 ## Verification before integration

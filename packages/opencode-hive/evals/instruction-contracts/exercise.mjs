@@ -56,9 +56,9 @@ const QUALIFICATION_BUDGET_SECONDS = 900;
 const QUALIFICATION_MOCK_MODEL = 'mock/ic-exercise-mock';
 
 export const EXIT = Object.freeze({ ok: 0, failed: 1, invalid: 2, busy: 3 });
-export const ACTIONS = ['prompt', 'reply', 'permission', 'interrupt', 'approve-plan', 'switch-primary'];
+export const ACTIONS = ['prompt', 'command', 'reply', 'permission', 'interrupt', 'approve-plan', 'switch-primary'];
 /** The qualification runs a prepared run owns, each in its own directory with its own ledger and lock. */
-export const QUALIFICATION_SUBRUNS = Object.freeze(['qualification', 'qualification-interrupt']);
+export const QUALIFICATION_SUBRUNS = Object.freeze(['qualification', 'qualification-interrupt', 'qualification-command']);
 const SUBRUN_LOCK_WAIT_SECONDS = 5;
 /** The journal record in which prepare binds a run to the engine and ledger that `stop` must settle. */
 const CLEANUP_BINDING = 'cleanup-binding';
@@ -98,7 +98,10 @@ request.json (schema "ic-exercise-request/v1"; paths relative to the request fil
   model            { "ref": "openai/<model>", "variant": <string|null> }
   agentMode        "dedicated" | "unified"
   initialPrimary   Hive primary role, for example "architect-planner"
-  primaryTransitions [{ "from": <role>, "to": <role> }]
+  primaryTransitions [{ "from": <role>, "to": <role>, "command": <native command name> (optional) }]  without
+                   "command", switch-primary takes it after an observed approval; with "command", only the command
+                   operation naming that command takes it, and "to" is the agent the command binds ("from" when the
+                   command binds none)
   agentModels      { <non-primary role>: { "model": "openai/<model>", "variant": <string|null> } }   (optional)
   repository       directory of regular UTF-8 files to copy into the disposable project (not .hive/agent-hive.override.json,
                    which would replace the models chosen here)
@@ -125,6 +128,9 @@ One supervisor action. operation.json (schema "ic-exercise-operation/v1"):
   sessionId   the primary session ID from start
   action      one of: ${ACTIONS.join(', ')}
   prompt:          { "text": string }
+  command:         { "name": <native command>, "text": string }  the native slash command with exactly this text after
+                   it, in the primary session; needs a request.primaryTransitions entry from the current primary that
+                   names the command
   reply:           { "requestId": <pending question ID>, "answers": [[label, ...], ...] }  one array per question; a label
                    is an entry of the question's released "options", and its description is in "optionDescriptions"
   permission:      { "requestId": <pending permission ID>, "decision": "once" | "reject" }
@@ -139,9 +145,9 @@ New work is refused in the final 60 s; an interrupt is admitted until 5 s before
 again inside the container immediately before the request is sent. An operation whose text, answers or ID contains the
 run's token, a fragment of it or a token-shaped string is refused before anything is recorded or sent. An unknown
 outcome is never retried automatically. inspect "resolve" settles it only from native evidence that names the
-operation: the prompt's message ID, the exact answers of a question reply in the session that asked, the target agent
-of a v2 switch. A lost permission decision or interrupt cannot be resolved (the native API records neither): stop the
-run.`,
+operation: the message ID of a prompt or v1 command, the exact answers of a question reply in the session that asked,
+the target agent of a v2 switch. A lost v2 command, permission decision or interrupt cannot be resolved (the native API
+records nothing that names it): stop the run.`,
   inspect: `inspect --run <run dir> [--request <inspection.json>]
 
 Bounded, scanned observation. Without --request: lifecycle, guard, pending interactions and quiescence. A pending
@@ -216,6 +222,8 @@ export function parseExerciseCli(argv) {
 // Inputs and snapshots
 
 const ROLE_SET = new Set(HIVE_ROLES);
+/** A native slash command name, as both hosts list them. */
+const COMMAND_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const RELATIVE_FILE = /^(?!\/)[A-Za-z0-9._@+\- /]{1,512}$/;
 const EXCLUDED_NAMES = new Set(['.git', 'node_modules', 'auth.json', '.env', '.npmrc', 'opencode.json', 'opencode.jsonc', '.opencode']);
 /**
@@ -271,10 +279,16 @@ export function validateRequest(value) {
   if (!['dedicated', 'unified'].includes(value.agentMode)) throw new HarnessError('request_invalid', 'agentMode');
   if (!primaries.has(value.initialPrimary)) throw new HarnessError('request_invalid', 'initialPrimary');
   const transitions = (value.primaryTransitions ?? []).map((t) => {
-    strictObject(t, ['from', 'to'], 'request_invalid');
-    if (!primaries.has(t.from) || !primaries.has(t.to) || t.from === t.to) throw new HarnessError('request_invalid', 'primaryTransitions');
-    return { from: t.from, to: t.to };
+    strictObject(t, ['from', 'to', 'command'], 'request_invalid');
+    const command = t.command;
+    if (command !== undefined && (typeof command !== 'string' || !COMMAND_NAME.test(command))) throw new HarnessError('request_invalid', 'primaryTransitions');
+    // A switch changes the primary. A command transition names the agent the command binds, which may be the same one.
+    if (!primaries.has(t.from) || !primaries.has(t.to) || (t.from === t.to && command === undefined)) throw new HarnessError('request_invalid', 'primaryTransitions');
+    return command === undefined ? { from: t.from, to: t.to } : { from: t.from, to: t.to, command };
   });
+  // A command sent from one primary has one expected binding.
+  const commandKeys = transitions.filter((t) => t.command).map((t) => `${t.from} ${t.command}`);
+  if (new Set(commandKeys).size !== commandKeys.length) throw new HarnessError('request_invalid', 'primaryTransitions');
   const primaryRoles = new Set([value.initialPrimary, ...transitions.map((t) => t.to)]);
   const agentModels = {};
   for (const [role, choice] of Object.entries(strictObject(value.agentModels ?? {}, [...ROLE_SET], 'request_invalid'))) {
@@ -390,7 +404,7 @@ const NATIVE_ID = /^[A-Za-z0-9_]{1,128}$/;
 /** Validates operation.json against the run's identities and authority. Never derives authority from model text. */
 export function validateOperation(value, { runId, sessionId, allowedActions }) {
   const byAction = {
-    prompt: ['text'], reply: ['requestId', 'answers'], permission: ['requestId', 'decision'], interrupt: [],
+    prompt: ['text'], command: ['name', 'text'], reply: ['requestId', 'answers'], permission: ['requestId', 'decision'], interrupt: [],
     'approve-plan': ['project', 'feature', 'revision', 'contentHash', 'permittedWork'], 'switch-primary': ['to'],
   };
   if (!value || typeof value !== 'object' || !(value.action in byAction)) throw new HarnessError('operation_invalid', 'action');
@@ -402,6 +416,11 @@ export function validateOperation(value, { runId, sessionId, allowedActions }) {
   if (!allowedActions.includes(value.action)) throw new HarnessError('operation_not_authorized', value.action);
   switch (value.action) {
     case 'prompt': boundedText(value.text, INPUT_LIMITS.textBytes, 'operation_invalid'); break;
+    case 'command':
+      if (typeof value.name !== 'string' || !COMMAND_NAME.test(value.name)) throw new HarnessError('operation_invalid', 'name');
+      // The text is what the operator types after the command, blank included, and is sent exactly as written.
+      if (typeof value.text !== 'string' || Buffer.byteLength(value.text) > INPUT_LIMITS.textBytes) throw new HarnessError('operation_invalid', 'text');
+      break;
     case 'reply':
       if (typeof value.requestId !== 'string' || !NATIVE_ID.test(value.requestId)) throw new HarnessError('operation_invalid', 'requestId');
       if (!Array.isArray(value.answers) || value.answers.length === 0 || value.answers.length > 16 || value.answers.some((a) => !Array.isArray(a) || a.length === 0 || a.length > 32 || a.some((x) => typeof x !== 'string' || x.length === 0 || x.length > 1000))) throw new HarnessError('operation_invalid', 'answers');
@@ -470,7 +489,8 @@ const HISTORY_FAILURES = ['history_oversize', 'history_unreadable', 'history_mal
 const PLAN_FAILURES = ['feature_name_invalid', 'core_unavailable', 'feature_path_escapes', 'plan_not_regular', 'plan_oversize', 'plan_missing', 'plan_input_rejected', 'plan_input_oversize', 'plan_read_failed'];
 const REFUSALS = [
   'not_quiescent', 'plan_changed', 'plugin_read_not_current', 'plan_read_parity_failed', 'approval_not_observed', 'approval_revision_unknown', 'plan_not_approved',
-  'session_agent_unexpected', 'request_not_pending', 'request_incomplete', 'answers_invalid', 'decision_invalid', 'deadline_exceeded', ...PLAN_FAILURES,
+  'session_agent_unexpected', 'request_not_pending', 'request_incomplete', 'answers_invalid', 'decision_invalid', 'deadline_exceeded',
+  'command_catalog_unreadable', 'command_not_found', 'command_binding_unexpected', ...PLAN_FAILURES,
 ];
 /** Every failure word the driver can print. A drift test compares this set with the driver's own literals. */
 export const DRIVER_FAILURES = new Set([
@@ -631,14 +651,14 @@ const REPLIES = {
   'qualification-prompt': obj({ ok: exactly(true), text: str(64 * 1024) }),
   'seed-comments': obj({ ok: exactly(true), revision: str(200) }),
   submit: obj({
-    ok: exactly(true), submitted: bool, acknowledged: opt(nullable(bool)), status: opt(nullable(anyInt)), local: opt(exactly(true)), refused: opt(oneOf(REFUSALS)), reasons: opt(reasons),
+    ok: exactly(true), submitted: bool, acknowledged: opt(nullable(bool)), status: opt(nullable(anyInt)), agent: opt(nativeName), local: opt(exactly(true)), refused: opt(oneOf(REFUSALS)), reasons: opt(reasons),
     pending: opt(pending), currentRevision: opt(str(200)), ownerSessionId: opt(match(SESSION, 80)), toolCallId: opt(nullable(match(/^[A-Za-z0-9_.:-]{1,200}$/, 200))),
   }),
   observe: obj({
     ok: exactly(true),
     tree: obj({ sessions: arr(obj({ id: match(SESSION, 80), parentId: nullable(match(SESSION, 80)), agent: nativeName }), 32), complete: bool, failure: nullable(oneOf(TREE_FAILURES)) }),
     busy: nullable(arr(match(SESSION, 80), 32)), pending, quiescent: bool, reasons, approvals: arr(approvalCall, 64),
-    resolution: opt(obj({ resolved: bool, effect: opt(oneOf(EFFECTS)) })), conversation: opt(conversation), plan: opt(planReport),
+    resolution: opt(obj({ resolved: bool, effect: opt(oneOf(EFFECTS)), agent: opt(nativeName) })), conversation: opt(conversation), plan: opt(planReport),
     artifacts: opt(arr(artifact, 32)), list: opt(arr(listing, 32)), diff: opt(arr(diffEntry, 64)),
   }),
 };
@@ -674,7 +694,19 @@ export function runState(journal) {
     return { seq, intent, outcome, resolution, state };
   });
   let primary = read('start.session')?.agent ?? null;
-  for (const op of ops) if (op.intent.kind === 'switch' && ['acknowledged', 'resolved'].includes(op.state)) primary = op.intent.agent;
+  const host = read('prepared')?.host;
+  for (const op of ops) {
+    if (op.intent.kind === 'switch' && ['acknowledged', 'resolved'].includes(op.state)) primary = op.intent.agent;
+    // A command's primary is the agent its native evidence showed: the declared one, or unknown when the host bound
+    // another. A rejected v2 command may have moved the session before its prompt failed, so only a post-command
+    // session read naming the recorded agent keeps it; an unreadable (null), missing or different read leaves it
+    // unknown. v1 names the agent on each message, so its refusal that left no message changes nothing.
+    if (op.intent.kind === 'command') {
+      const observed = op.outcome?.agent ?? op.resolution?.agent;
+      if (['acknowledged', 'resolved'].includes(op.state)) primary = observed === op.intent.agent ? op.intent.agent : null;
+      else if (op.state === 'rejected' && !(host === 'v1' ? observed === undefined || observed === op.intent.from : observed === op.intent.from)) primary = null;
+    }
+  }
   const approvals = ops.filter((op) => op.intent.plan && ['acknowledged', 'resolved'].includes(op.state)).map((op) => ({ ...op.intent.plan, operationId: op.intent.id, messageId: op.intent.messageId }));
   return {
     prepared: journal.read('prepared'),
@@ -1196,7 +1228,7 @@ export async function startCommand(options, env, overrides = {}, deps = {}) {
     ctx.state = runState(journal);
     let text = snapshot.brief ? `${snapshot.prompt}\n\n${snapshot.brief}` : snapshot.prompt;
     if (overrides.qualification) {
-      const scripted = await driver(ctx, 'qualification-prompt', { step: 'planning' }, post);
+      const scripted = await driver(ctx, 'qualification-prompt', { step: overrides.qualificationStep ?? 'planning' }, post);
       if (!scripted.value?.ok) throw new HarnessError('qualification_prompt_failed');
       text = scripted.value.text;
     }
@@ -1239,6 +1271,8 @@ async function submitOperation(ctx, op, budget, auth, faults = {}) {
   // An early look with the time the caller last measured. The decisive admission is made again, with fresh guard time,
   // immediately before the effect.
   if (!admitsAction(op.action, auth.guardRemainingMs)) return { state: 'refused', reason: 'no_new_work_window' };
+  // New work goes to a known primary. It is unknown only after a command whose native evidence showed another agent.
+  if (state.primary === null && ['prompt', 'command', 'approve-plan', 'switch-primary'].includes(op.action)) return { state: 'refused', reason: 'primary_unknown' };
   const session = state.session;
   const model = session.model;
   const seq = state.next('op').slice(3);
@@ -1266,8 +1300,15 @@ async function submitOperation(ctx, op, budget, auth, faults = {}) {
     }
     Object.assign(intent, { kind: 'prompt', messageId, agent: state.primary, ...(plan ? { plan } : {}) });
     driverOp = { kind: 'prompt', sessionId: session.sessionId, messageId, agent: state.primary, model, text, plan };
+  } else if (op.action === 'command') {
+    const transition = ctx.prepared.request.primaryTransitions.find((t) => t.command === op.name && t.from === state.primary);
+    if (!transition) return { state: 'refused', reason: 'command_not_allowed' };
+    // v1 accepts a supervisor-chosen message ID on a command, so a lost acknowledgement can be resolved; v2 takes none.
+    const messageId = ctx.host === 'v1' ? exerciseMessageId(Date.now(), Number(seq)) : undefined;
+    Object.assign(intent, { kind: 'command', name: op.name, ...(messageId ? { messageId } : {}), from: state.primary, agent: transition.to });
+    driverOp = { kind: 'command', sessionId: session.sessionId, name: op.name, ...(messageId ? { messageId } : {}), from: state.primary, agent: transition.to, model, text: op.text };
   } else if (op.action === 'switch-primary') {
-    const allowed = ctx.prepared.request.primaryTransitions.some((t) => t.from === state.primary && t.to === op.to);
+    const allowed = ctx.prepared.request.primaryTransitions.some((t) => t.from === state.primary && t.to === op.to && t.command === undefined);
     if (!allowed) return { state: 'refused', reason: 'transition_not_allowed' };
     if (!state.lastApproval) return { state: 'refused', reason: 'approval_not_observed' };
     Object.assign(intent, { kind: 'switch', agent: op.to, from: state.primary, approval: state.lastApproval });
@@ -1317,8 +1358,8 @@ async function submitOperation(ctx, op, budget, auth, faults = {}) {
   else if (v.ok === false) outcome = { state: 'unknown', reason: failureWord(v.failure) };
   else if (v.submitted === false && v.local === true) outcome = { state: 'acknowledged', local: true };
   else if (v.submitted === false) outcome = { state: 'refused', reason: failureWord(v.refused), reasons: v.reasons ?? [], ...(v.currentRevision ? { currentRevision: v.currentRevision } : {}) };
-  else if (v.acknowledged === true) outcome = { state: 'acknowledged', status: v.status ?? null };
-  else if (v.acknowledged === false) outcome = { state: 'rejected', status: v.status ?? null };
+  else if (v.acknowledged === true) outcome = { state: 'acknowledged', status: v.status ?? null, ...(v.agent !== undefined ? { agent: v.agent } : {}) };
+  else if (v.acknowledged === false) outcome = { state: 'rejected', status: v.status ?? null, ...(v.agent !== undefined ? { agent: v.agent } : {}) };
   else outcome = { state: 'unknown', reason: 'acknowledgement_lost' };
   // The record is a published artifact too: nothing native reaches it unscanned.
   if (scanValue(evidenceScanner(checked.credential ?? null), outcome)) {
@@ -1470,7 +1511,10 @@ export async function inspectCommand(options, env, deps = {}) {
   // evidence document and the whole status line, with a scanner built from the original token.
   const gate = await releaseGate(ctx, budget, { evidence, status, base, evidenceFile });
   if (!gate.ok) return reply(EXIT.failed, { ...base, status: 'content_unavailable', reason: gate.code });
-  if (target && observed.value.resolution?.resolved) ctx.journal.write(`op.${target.seq}.resolution`, { resolved: true, effect: observed.value.resolution.effect ?? 'accepted', by: seq });
+  if (target && observed.value.resolution?.resolved) {
+    const { effect = 'accepted', agent } = observed.value.resolution;
+    ctx.journal.write(`op.${target.seq}.resolution`, { resolved: true, effect, ...(agent !== undefined ? { agent } : {}), by: seq });
+  }
   mkdirSync(join(options.run, 'evidence'), { recursive: true });
   writeOnce(evidenceFile, JSON.stringify(evidence, null, 2));
   ctx.journal.write(seq, { evidence: relative(options.run, evidenceFile), sha256: sha256File(evidenceFile), quiescent: observed.value.quiescent, resolved: target ? observed.value.resolution?.resolved === true : null });
@@ -1728,6 +1772,8 @@ export const QUALIFICATION_CHECKS = [
   'protocol.replyAckLost', 'protocol.replyNoReplay', 'protocol.replyResolvedByAnswers', 'protocol.permissionAckLost', 'protocol.permissionStaysUnknown',
   'protocol.lockBusy', 'protocol.lockSurvivesNoDescendant', 'protocol.rotationLatched', 'protocol.latchedInspectWithoutContent', 'protocol.cleanupWithoutAuth',
   'interrupt.started', 'interrupt.ackLost', 'interrupt.noReplay', 'interrupt.staysUnknown', 'interrupt.cleanupWithoutAuth',
+  'command.started', 'command.submitted', 'command.ackLostSafe', 'command.agentBound', 'command.sameSession', 'command.literalText', 'command.noShellEffect',
+  'command.skillLoaded', 'command.questionPending', 'command.questionReplied', 'command.completed', 'command.cleanupWithoutAuth',
 ];
 
 export function qualificationFailures(checks) {
@@ -1752,6 +1798,11 @@ async function qualify(base, budget) {
     await qualifyInterruptLoss(base, budget, notes, checks);
   } catch (error) {
     notes.interrupt = error instanceof HarnessError ? error.code : 'unexpected_exception';
+  }
+  try {
+    await qualifyCommand(base, budget, notes, checks);
+  } catch (error) {
+    notes.command = error instanceof HarnessError ? error.code : 'unexpected_exception';
   }
   const failures = qualificationFailures(checks);
   return { mockModel: QUALIFICATION_MOCK_MODEL, checks, notes, failures, summary: { passed: QUALIFICATION_CHECKS.length - failures.length, total: QUALIFICATION_CHECKS.length, failures } };
@@ -1805,7 +1856,7 @@ async function qualifyLifetime(base, budget, c) {
  * through the production lock path, a synthetic credential file, a miniature project, and operation and inspection file
  * writers. Qualification-only driver calls (scripted prompt text, review comment seeding) go through `helper`.
  */
-async function subRun(base, budget, notes, name, runSuffix) {
+async function subRun(base, budget, notes, name, runSuffix, { initialPrimary = 'architect-planner', primaryTransitions = [{ from: 'architect-planner', to: 'swarm-orchestrator' }], initialStep = 'planning' } = {}) {
   const runId = `${base.runId}-${runSuffix}`;
   // The prepared run records its ownership of this qualification run before anything in it can create a resource.
   const sub = registerSubrun(base.journal, base.runDir, name, { runId, engineId: base.engineId });
@@ -1816,8 +1867,8 @@ async function subRun(base, budget, notes, name, runSuffix) {
   writeFileSync(authPath, JSON.stringify(synthetic()), { mode: 0o600 });
   const snapshot = JSON.parse(readFileSync(join(base.runDir, 'inputs', 'snapshot.json'), 'utf8'));
   const request = {
-    ...snapshot.request, model: { ref: snapshot.request.model.ref, variant: snapshot.request.model.variant }, initialPrimary: 'architect-planner',
-    primaryTransitions: [{ from: 'architect-planner', to: 'swarm-orchestrator' }], dependencies: [], artifacts: ['src/', '.hive/features/'],
+    ...snapshot.request, model: { ref: snapshot.request.model.ref, variant: snapshot.request.model.variant }, initialPrimary,
+    primaryTransitions, dependencies: [], artifacts: ['src/', '.hive/features/'],
   };
   request.agentModels = { 'scout-researcher': { model: QUALIFICATION_MOCK_MODEL, variant: null } };
   writeOnce(join(sub, 'inputs', 'snapshot.json'), JSON.stringify({ ...snapshot, request, files: [], skills: {} }));
@@ -1870,7 +1921,7 @@ async function subRun(base, budget, notes, name, runSuffix) {
     throw new HarnessError('qualification_wait_timeout');
   };
   const start = () => startCommand({ run: sub, authorization: authFile, budgetSeconds: QUALIFICATION_BUDGET_SECONDS }, env, {
-    provider: 'mock', modelRef: QUALIFICATION_MOCK_MODEL, network: 'none', askExternalReads: true, qualification: true,
+    provider: 'mock', modelRef: QUALIFICATION_MOCK_MODEL, network: 'none', askExternalReads: true, qualification: true, qualificationStep: initialStep,
   }, deps);
   const finish = async () => {
     unlinkSync(authPath);
@@ -2083,6 +2134,79 @@ async function qualifyInterruptLoss(base, budget, notes, c) {
   } finally {
     const status = await q.finish();
     c['interrupt.cleanupWithoutAuth'] = status === 'cleanup_confirmed';
+  }
+}
+
+/**
+ * A native command in the middle of a conversation, on the installed host with the scripted mock model: an earlier
+ * turn under Architect, then `/implement` through the command operation, with text carrying dollar sequences, a
+ * shell-looking line and a file reference. The command binds Hive Builder in the same session, its text arrives exactly
+ * as written and the shell-looking line never runs, the packaged skill loads, the turn's question is answered through
+ * the supervisor and the turn finishes. A lost acknowledgement is resolved by the command's exact message ID on v1; v2,
+ * whose command route takes no ID, leaves a second invocation with a lost acknowledgement unknown.
+ */
+async function qualifyCommand(base, budget, notes, c) {
+  const q = await subRun(base, budget, notes, 'qualification-command', 'qc', {
+    primaryTransitions: [
+      { from: 'architect-planner', to: 'hive-builder', command: 'implement' },
+      { from: 'hive-builder', to: 'hive-builder', command: 'implement' },
+    ],
+    initialStep: 'chat',
+  });
+  const { journal, helper, turn, inspect, until } = q;
+  const prompt = async (step) => (await helper('qualification-prompt', { step })).text;
+  try {
+    const started = await q.start();
+    c['command.started'] = started.exit === EXIT.ok;
+    if (!c['command.started']) return;
+    const sessionId = started.status.sessionId;
+    await until((s) => s.quiescent === true);
+    const text = await prompt('implement');
+    // v1 takes the command's message ID, so its acknowledgement is dropped here and resolved by that ID. v2 takes none:
+    // its command is acknowledged, and a second invocation loses its acknowledgement at the end of the run.
+    const sent = await turn('command', { name: 'implement', text }, base.host === 'v1' ? { dropAcknowledgement: true } : {});
+    notes.command = { state: sent.status.state ?? sent.status.status ?? null, reason: sent.status.reason ?? null };
+    const commandOp = runState(journal).ops.find((o) => o.intent.id === sent.status.operation);
+    if (base.host === 'v1') {
+      const noReplay = (await turn('prompt', { text: 'again' })).status.reason === 'operation_unresolved';
+      const resolved = await inspect({ resolve: sent.status.operation });
+      c['command.ackLostSafe'] = sent.exit === EXIT.busy && sent.status.state === 'unknown' && noReplay && resolved.status.resolution?.resolved === true;
+      c['command.submitted'] = resolved.status.resolution?.effect === 'accepted';
+    } else c['command.submitted'] = sent.exit === EXIT.ok && sent.status.state === 'acknowledged';
+    const asked = await until((s) => (s.pending ?? []).some((p) => p.kind === 'question'));
+    const question = asked.pending.find((p) => p.kind === 'question');
+    c['command.questionPending'] = question.sessionId === sessionId && question.complete === true && question.questions?.[0]?.options?.includes('proceed') === true;
+    c['command.questionReplied'] = (await turn('reply', { requestId: question.id, answers: [['proceed']] })).exit === EXIT.ok;
+    const done = await until((s) => s.quiescent === true, 120_000, { conversation: {}, artifacts: ['src/shell-ran.txt'] });
+    const evidence = JSON.parse(readFileSync(done.evidence, 'utf8'));
+    const primary = evidence.conversation.sessions.find((s) => s.id === sessionId);
+    const turns = primary?.turns ?? [];
+    const chatAt = turns.findIndex((t) => t.role === 'user' && t.text.includes('Qualification conversation turn'));
+    const commandAt = turns.findIndex((t) => t.role === 'user' && t.text.includes('<operator-text>'));
+    const commandTurn = turns[commandAt];
+    const replies = turns.slice(commandAt + 1).filter((t) => t.role === 'assistant');
+    c['command.sameSession'] = evidence.conversation.sessions[0]?.id === sessionId && chatAt >= 0 && commandAt > chatAt && replies.length > 0;
+    // The text the operator typed sits whole inside the command's own user message: the one with its message ID on v1.
+    c['command.literalText'] = commandAt >= 0 && commandTurn.clipped === false && commandTurn.text.includes(`<operator-text>\n${text}\n</operator-text>`)
+      && (base.host === 'v2' || commandTurn.id === commandOp?.intent.messageId);
+    c['command.noShellEffect'] = evidence.artifacts?.[0]?.omitted === 'absent';
+    // The command's message (v1) or the session itself (v2) names Hive Builder, and Hive Builder answers every turn after it.
+    c['command.agentBound'] = runState(journal).primary === 'hive-builder' && replies.every((t) => t.agent === 'hive-builder')
+      && (base.host === 'v1' ? commandTurn?.agent === 'hive-builder' : primary?.agent === 'hive-builder');
+    c['command.skillLoaded'] = replies.some((t) => t.tools.some((x) => x.name === 'skill' && x.status === 'completed'));
+    const last = replies.at(-1);
+    c['command.completed'] = last?.text?.includes('QUALIFICATION-IMPLEMENT-COMPLETE') === true && last.agent === 'hive-builder';
+    if (base.host === 'v2') {
+      const again = await turn('command', { name: 'implement', text: await prompt('implementAgain') }, { dropAcknowledgement: true });
+      const noReplay = (await turn('prompt', { text: 'again' })).status.reason === 'operation_unresolved';
+      await new Promise((r) => setTimeout(r, 5000));
+      const observed = await inspect({ resolve: again.status.operation });
+      c['command.ackLostSafe'] = again.exit === EXIT.busy && again.status.state === 'unknown' && noReplay && observed.status.resolution?.resolved === false
+        && runState(journal).unresolved.includes(again.status.operation);
+    }
+  } finally {
+    const status = await q.finish();
+    c['command.cleanupWithoutAuth'] = status === 'cleanup_confirmed';
   }
 }
 

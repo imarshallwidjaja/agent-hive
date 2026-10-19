@@ -5,6 +5,7 @@ import { HIVE_COMMANDS } from './registry.js';
 import { buildPluginManifest } from '../utils/plugin-manifest.js';
 import { hiveCommandRenderers } from './renderers.js';
 import { buildHiveCommandMap } from './runtime.js';
+import { v1LiteralTemplate, V1_UNFILLABLE_ARGUMENT } from './literal-arguments.js';
 import { OPENCODE_V1_PROFILE, createHostProfile } from '../runtime/host-profile.js';
 import { PLAN_ASSESSMENT_REQUIREMENT } from '../agents/process-judgment.js';
 
@@ -38,6 +39,13 @@ const EXPECTED_COMMANDS = [
     key: 'start-execution',
     name: '/start-execution',
     description: 'Start executing an approved Hive plan',
+  },
+  {
+    key: 'implement',
+    name: '/implement',
+    description: 'Implement the work this conversation scoped as ad-hoc work, with any extra steering you add',
+    agent: 'hive-builder',
+    literalArguments: true,
   },
   {
     key: 'council-directive',
@@ -80,7 +88,7 @@ function uniqueCount(values: string[]): number {
 describe('HIVE_COMMANDS', () => {
   it('defines the canonical command metadata in stable order', () => {
     expect(HIVE_COMMANDS).toEqual(EXPECTED_COMMANDS);
-    expect(HIVE_COMMANDS).toHaveLength(12);
+    expect(HIVE_COMMANDS).toHaveLength(13);
     expect(HIVE_COMMANDS.map((command) => command.name)).not.toContain('/hive');
   });
 
@@ -365,6 +373,46 @@ describe('HIVE_COMMANDS', () => {
         'untrusted narrative',
       ]) expect(output, required).toContain(required);
       expect(output).not.toMatch(/transcript/i);
+    }
+  });
+
+  it('binds /implement to Hive Builder and hands the skill the whole operator text on every host', () => {
+    const implement = HIVE_COMMANDS.find((command) => command.key === 'implement');
+    expect(implement).toMatchObject({ agent: 'hive-builder' });
+    // No model, provider, variant or subtask override: the native command keeps the session's model and chat.
+    expect(Object.keys(implement!).sort()).toEqual(['agent', 'description', 'key', 'literalArguments', 'name']);
+    // Only /implement promises its text verbatim through the v1 host; the other commands keep $ARGUMENTS there.
+    expect(HIVE_COMMANDS.filter((command) => 'literalArguments' in command).map((command) => command.key)).toEqual(['implement']);
+    // Multiline prose with quotes, flag-like words, a placeholder-like token and outer whitespace passes through as written.
+    const prose = '  also keep the old "v1 shim" -- don\'t touch /grill output;\n\n  then add docs for $ARGUMENTS-style text\nand retry once.\n';
+    for (const host of [OPENCODE_V1_PROFILE, createHostProfile('opencode-v2'), createHostProfile('opencode-v2', { readTransport: 'direct' })]) {
+      const commands = buildHiveCommandMap(hiveCommandRenderers, () => ({
+        agentMode: 'dedicated', host, backgroundGuidance: { available: false }, council: {} as never, agents: {},
+        dashReviewLanes: [], vulnerabilityReviewLanes: [],
+      }));
+      expect(commands.implement.agent).toBe('hive-builder');
+      const output = commands.implement.run(prose);
+      expect(output).toContain(`<operator-text>\n${prose}\n</operator-text>`);
+      expect(output.split('<operator-text>').length).toBe(2);
+      // The v1 config template takes the unfillable placeholder in the operator-text slot, and the static text carries
+      // nothing else the host would substitute or run.
+      const template = v1LiteralTemplate(commands.implement.run(V1_UNFILLABLE_ARGUMENT) as string);
+      expect(template).toContain(`<operator-text>\n${V1_UNFILLABLE_ARGUMENT}\n</operator-text>`);
+      expect(commands.implement.run('')).toContain('<operator-text>\n\n</operator-text>');
+      for (const required of [
+        'Load the `starting-ad-hoc-implementation` skill and follow it with this conversation and the operator text above',
+        'blank operator text means the conversation alone scopes the work',
+        'further context and natural-language steering and not options to parse',
+        'The invocation is the authority to implement that scope; loading the skill, earlier history, or a bare alignment confirmation is not',
+        'The invocation does not by itself authorize creating a Hive feature, plan, or task, and an approved feature plan runs through /start-execution',
+        'state the exact limitation and stop instead of substituting another capability',
+      ]) expect(output, required).toContain(required);
+      // The command is an adapter; the lifecycle policy stays with the skill and the primary.
+      expect(output).not.toMatch(/hive_adhoc_worktree|orchestrating-ad-hoc-work|Review Routing|\btask\(|subagent\(/);
+    }
+    // The guard refuses a v1 template that would leave the host anything else to substitute or run.
+    for (const bad of ['no placeholder', `${V1_UNFILLABLE_ARGUMENT} and ${V1_UNFILLABLE_ARGUMENT}`, `${V1_UNFILLABLE_ARGUMENT} $1`, `${V1_UNFILLABLE_ARGUMENT} $ARGUMENTS`, `${V1_UNFILLABLE_ARGUMENT} !\`ls\``]) {
+      expect(() => v1LiteralTemplate(bad), bad).toThrow('literal-argument');
     }
   });
 

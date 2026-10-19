@@ -50,11 +50,12 @@ export function wholeMs(ms: number): number {
   return Number.isFinite(ms) && ms >= 1 ? Math.floor(ms) : 0;
 }
 
-export async function strictApi(path: string, { method = 'GET', body, timeoutMs, maxBytes = API_MAX_BYTES, fetchImpl = fetch }: { method?: string; body?: Json; timeoutMs: number; maxBytes?: number; fetchImpl?: typeof fetch }): Promise<ApiResult> {
+/** `abort`, when given, ends the request early as well; the caller then reads the outcome as unknown, never as an answer. */
+export async function strictApi(path: string, { method = 'GET', body, timeoutMs, maxBytes = API_MAX_BYTES, fetchImpl = fetch, abort }: { method?: string; body?: Json; timeoutMs: number; maxBytes?: number; fetchImpl?: typeof fetch; abort?: AbortSignal }): Promise<ApiResult> {
   const wholeTimeout = wholeMs(timeoutMs);
   if (wholeTimeout === 0) return { outcome: 'timeout', status: null, body: null, bytes: 0 };
   let response: Response;
-  const signal = AbortSignal.timeout(wholeTimeout);
+  const signal = abort ? AbortSignal.any([AbortSignal.timeout(wholeTimeout), abort]) : AbortSignal.timeout(wholeTimeout);
   try {
     response = await fetchImpl(`http://127.0.0.1:${SERVER_PORT}${path}`, {
       method, signal, headers: { authorization: authHeader(), 'content-type': 'application/json' },

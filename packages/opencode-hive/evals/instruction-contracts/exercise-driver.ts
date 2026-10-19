@@ -74,12 +74,14 @@ export function budget(input: Json, clock: () => number = sharedClockMs): () => 
 /**
  * Sends one native effect if both cutoffs are still ahead, read on the shared clock at the moment of sending. The
  * request starts in the same synchronous step as the check, with no await between them. Returns null, having sent
- * nothing, when either cutoff has passed.
+ * nothing, when either cutoff has passed. A request that answers only when a whole turn ends (a v1 command) may wait
+ * until the command cutoff and be ended earlier through `abort`; every other request keeps the per-call bound.
  */
-function sendEffect(input: Json, request: { method: string; path: string; body?: Json }, deps: DriverDeps): Promise<ApiResult> | null {
+function sendEffect(input: Json, request: { method: string; path: string; body?: Json }, deps: DriverDeps, { abort }: { abort?: AbortSignal } = {}): Promise<ApiResult> | null {
   const { commandEnd, actionEnd } = cutoffs(input);
   const now = deps.clock();
   if (!(now < commandEnd && now < actionEnd)) return null;
+  if (abort) return deps.api(request.path, { method: request.method, body: request.body, timeoutMs: commandEnd - now, abort });
   return call(request, () => commandEnd - now, undefined, deps.api);
 }
 
@@ -785,7 +787,9 @@ function sameAnswers(sent: string[][], native: unknown): boolean {
 
 /**
  * Resolves an earlier submission whose acknowledgement was lost, only from native evidence that names this exact
- * operation. A prompt is found by the message ID the supervisor chose. A question reply is accepted when its own tool
+ * operation. A prompt, and a v1 command, is found by the message ID the supervisor chose; a command's resolution also
+ * reports the agent that message names. A v2 command takes no message ID, so nothing names it and it stays
+ * unresolved. A question reply is accepted when its own tool
  * call, the only call with that ID in the completely read history of the session that asked, is a `question` call that
  * completed with exactly the answers that were sent (v1), or when its own form is answered with exactly those answers
  * (v2). Nothing else is proof: a request that is still pending may yet receive a late reply, a missing request or an
@@ -797,11 +801,13 @@ function sameAnswers(sent: string[][], native: unknown): boolean {
  */
 export async function resolveOperation(host: string, op: Json, observed: Json, get: (request: Json) => Promise<ApiResult>): Promise<Json> {
   const routes = exerciseRoutes(host, PROJ);
-  if (op.kind === 'prompt') {
+  if (op.kind === 'prompt' || (op.kind === 'command' && host === 'v1')) {
+    if (typeof op.messageId !== 'string') return { resolved: false };
     const res = await get(routes.message(op.sessionId, op.messageId));
     if (!succeeded(res)) return { resolved: false };
     const m = normalizeMessage(host, payload(host, res.body));
-    return m && m.id === op.messageId && m.role === 'user' ? { resolved: true, effect: 'accepted' } : { resolved: false };
+    if (!m || m.id !== op.messageId || m.role !== 'user') return { resolved: false };
+    return op.kind === 'command' ? { resolved: true, effect: 'accepted', agent: m.agent } : { resolved: true, effect: 'accepted' };
   }
   if (op.kind === 'question-reply' && Array.isArray(op.answers)) {
     if (host === 'v1') {
@@ -830,7 +836,7 @@ export async function resolveOperation(host: string, op: Json, observed: Json, g
 
 /**
  * Observes, checks one operation's preconditions against that observation, and submits it once. Preconditions: a
- * prompt or switch needs a quiescent tree; a reply needs its exact pending request in the tree; an approval also needs
+ * prompt, command or switch needs a quiescent tree; a reply needs its exact pending request in the tree; an approval also needs
  * the current candidate-core read to match the supervisor's decision; a switch needs the primary's own successful
  * approval of that decision and a core plan that is still the approved one. A response that is not a clear success is
  * `unknown`, never success and never retried here. The request is sent only if the host's command cutoff and the
@@ -890,6 +896,8 @@ export async function submit(input: Json, deps: DriverDeps = LIVE): Promise<Json
     }
   } else if (op.kind === 'interrupt') {
     request = routes.interrupt(op.sessionId);
+  } else if (op.kind === 'command') {
+    return submitCommand(input, op, observed, deps, remaining, scan, refuse);
   } else return { ok: false, failure: 'operation_kind_invalid' };
   // Past this point the request is the only effect. An observation that outlived either cutoff sends nothing: the
   // refusal is definitive because nothing was sent.
@@ -903,6 +911,83 @@ export async function submit(input: Json, deps: DriverDeps = LIVE): Promise<Json
     ok: true, submitted: true, acknowledged: succeeded(res) ? true : res.outcome === 'response' ? false : null, status: res.status,
     ...(target ? { ownerSessionId: target.sessionId, toolCallId: target.toolCallId } : {}),
   }, remaining);
+}
+
+type CommandAcknowledgement = { acknowledged: boolean | null; status: number | null; agent?: string | null };
+
+/**
+ * One native command in the primary session, sent once with the operator's text exactly as written. It needs a
+ * quiescent tree and the command in the host's catalog. On v1 the catalog's agent binding must be the one the request
+ * declared; v2 lists no binding, so there the session must still run the recorded primary. The reply carries the agent
+ * the host ran the command under, from the exact user message on v1 and from the session on v2, so the controller
+ * tracks the primary the host actually bound instead of the one it expected.
+ */
+async function submitCommand(input: Json, op: Json, observed: Json, deps: DriverDeps, remaining: () => number, scan: (t: string) => boolean, refuse: (failure: string, extra?: Json) => Promise<Json>): Promise<Json> {
+  if (!observed.quiescent) return refuse('not_quiescent');
+  if (scan(op.text)) return { ok: false, failure: 'evidence_contaminated' };
+  const host = input.host;
+  const routes = exerciseRoutes(host, PROJ);
+  const get = (request: Json) => call(request, remaining, undefined, deps.api);
+  const listed = await get(routes.commands());
+  const catalog = succeeded(listed) ? payload(host, listed.body) : undefined;
+  if (!Array.isArray(catalog)) return refuse('command_catalog_unreadable');
+  const entry = catalog.find((c: Json) => c?.name === op.name);
+  if (!entry) return refuse('command_not_found');
+  if (host === 'v1') {
+    const bound = typeof entry.agent === 'string' ? entry.agent : null;
+    if (op.agent === op.from ? bound !== null && bound !== op.from : bound !== op.agent) return refuse('command_binding_unexpected');
+  } else {
+    const res = await get(routes.session(op.sessionId));
+    const info = succeeded(res) ? payload(host, res.body) : undefined;
+    if (info?.agent !== op.from) return refuse('session_agent_unexpected');
+  }
+  const abort = new AbortController();
+  const sent = host === 'v1'
+    ? sendEffect(input, routes.command({ sessionId: op.sessionId, messageId: op.messageId, agent: op.from, model: op.model, name: op.name, text: op.text }), deps, { abort: abort.signal })
+    : sendEffect(input, routes.command({ sessionId: op.sessionId, name: op.name, text: op.text }), deps);
+  if (sent === null) return refuse('deadline_exceeded');
+  const result = host === 'v1' ? await v1CommandAcknowledgement(op, sent, get, remaining) : await v2CommandAcknowledgement(op, await sent, get);
+  // v1 holds the request open for the whole turn; the turn runs in the host's session runner whether or not it is.
+  abort.abort();
+  await sent;
+  // Credential-free qualification only: the command was sent and its acknowledgement is discarded, as a lost one.
+  if (input.dropAcknowledgement === true) return { ok: true, submitted: true, acknowledged: null };
+  return release(input, { ok: true, submitted: true, ...result }, remaining);
+}
+
+/**
+ * v1 answers a command request only when the whole turn has ended, which may be after a question the supervisor has
+ * to answer. Its acknowledgement is therefore native evidence that names the operation: the user message with the
+ * supervisor-chosen ID while the session runs it, or the request's own answer. Without either before the command
+ * cutoff it stays unknown.
+ */
+async function v1CommandAcknowledgement(op: Json, sent: Promise<ApiResult>, get: (request: Json) => Promise<ApiResult>, remaining: () => number): Promise<CommandAcknowledgement> {
+  const routes = exerciseRoutes('v1', PROJ);
+  const answer: { value: ApiResult | null } = { value: null };
+  void sent.then((res) => { answer.value = res; });
+  const message = async (): Promise<Message | null> => {
+    const res = await get(routes.message(op.sessionId, op.messageId));
+    const m = succeeded(res) ? normalizeMessage('v1', res.body) : null;
+    return m && m.id === op.messageId && m.role === 'user' ? m : null;
+  };
+  while (answer.value === null && remaining() > 0) {
+    const m = await message();
+    if (m && (await busySessions('v1', get))?.has(op.sessionId)) return { acknowledged: true, status: null, agent: m.agent };
+    await new Promise((r) => setTimeout(r, wholeMs(Math.min(500, remaining()))));
+  }
+  const res = answer.value as ApiResult | null;
+  if (res === null) return { acknowledged: null, status: null };
+  const m = await message();
+  if (m) return { acknowledged: true, status: res.status, agent: m.agent };
+  return { acknowledged: res.outcome === 'response' && !succeeded(res) ? false : null, status: res.status };
+}
+
+/** v2 answers once the plugin callback has admitted its prompt. A definite answer also reads the agent the session now runs. */
+async function v2CommandAcknowledgement(op: Json, res: ApiResult, get: (request: Json) => Promise<ApiResult>): Promise<CommandAcknowledgement> {
+  if (res.outcome !== 'response') return { acknowledged: null, status: res.status };
+  const session = await get(exerciseRoutes('v2', PROJ).session(op.sessionId));
+  const info = succeeded(session) ? payload('v2', session.body) : undefined;
+  return { acknowledged: succeeded(res), status: res.status, agent: word(info?.agent) };
 }
 
 /** Bounded export of the conversation, child returns, tool outcomes and observed models; tool outputs are reduced. */

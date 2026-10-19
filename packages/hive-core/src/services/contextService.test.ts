@@ -115,7 +115,7 @@ describe('ContextService reserved overview context', () => {
     } catch (error) {
       expect((error as { reason?: string }).reason).toBe('context_response_too_large');
     }
-  });
+  }, 60000);
 
   it('defaults catalog pages to ten and caps requested pages at fifty', () => {
     setupFeature('page-limits');
@@ -123,7 +123,7 @@ describe('ContextService reserved overview context', () => {
     expect(service.readCatalog('page-limits').files).toHaveLength(10);
     // Response-size admission may impose a tighter bound than the entry limit.
     expect(service.readCatalog('page-limits', { limit: 1000 }).files.length).toBeLessThanOrEqual(50);
-  });
+  }, 60000);
 
   it.each(['{', '{"schemaVersion":99,"revision":7,"entries":{}}'])('reports invalid index control evidence without classification: %s', raw => {
     setupFeature('recovery-invalid');

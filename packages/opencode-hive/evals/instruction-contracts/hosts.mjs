@@ -46,7 +46,7 @@ export const HIVE_ROLES = [
 ];
 
 export const HIVE_COMMANDS = [
-  'interview', 'grill', 'implementation-brief', 'hive-plan', 'approve-sync-plan', 'start-execution',
+  'interview', 'grill', 'implementation-brief', 'hive-plan', 'approve-sync-plan', 'start-execution', 'implement',
   'council-directive', 'council', 'dash-review', 'vuln-review', 'worklog', 'compact-summary',
 ];
 
@@ -359,13 +359,20 @@ export function nativeToolCall(id, step, tools) {
 //   POST /session/:id/prompt_async {messageID, agent, model, variant, parts}; GET /session/status; GET
 //   /session/:id/children; GET /session/:id/message?limit&before; GET /session/:id/message/:messageID; GET /question,
 //   POST /question/:id/reply {answers}; GET /permission, POST /permission/:id/reply {reply}; POST /session/:id/abort.
+//   GET /command lists each command with its bound `agent`; POST /session/:id/command {messageID, agent, model,
+//   variant, command, arguments} answers only when the whole turn has ended (handlers/session.ts command ->
+//   session/prompt.ts SessionPrompt.command -> prompt -> loop). The turn itself runs in the instance's session runner
+//   (effect/runner.ts startRun forks into the instance scope), so a client that disconnects once the user message exists
+//   and the session is busy leaves the turn running.
 // v2 (@opencode/cli 2.0.26 = anomalyco/opencode@9b4ec5714d48, packages/protocol/src/groups/{session,permission}.ts):
 //   POST /api/session {agent, model, location}; POST /api/session/:id/prompt {id, text}; POST /api/session/:id/agent at idle; GET /api/session?parentID&limit&cursor; GET /api/session/active; GET /api/session/:id/form,
 //   POST .../form/:formID/reply {answer}; GET /api/session/:id/permission, POST .../permission/:id/reply {decision};
 //   POST /api/session/:id/interrupt. The v2 question tool (packages/core/src/tool/plugin/question.ts) asks one form
-//   whose fields are `q<index>`, string or multiselect, with option labels as values.
-// Both hosts accept a caller-chosen message ID (`msg_` + 12 hex time digits + 14 base62 characters), so a submitted
-// prompt can be found again by its exact ID after a lost acknowledgement.
+//   whose fields are `q<index>`, string or multiselect, with option labels as values. GET /api/command lists names
+//   and descriptions only; POST /api/session/:id/command {name, text} runs the plugin's command callback and answers
+//   once it returns (core/src/session/command.ts), after the callback has admitted its prompt. It takes no message ID.
+// Both hosts accept a caller-chosen message ID (`msg_` + 12 hex time digits + 14 base62 characters) on a prompt, and
+// v1 on a command, so that submission can be found again by its exact ID after a lost acknowledgement.
 
 const BASE62 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
 
@@ -459,6 +466,11 @@ export function exerciseRoutes(id, directory) {
         method: 'POST', path: `/session/${sessionId}/prompt_async`,
         body: { messageID: messageId, agent, model: { providerID: splitModelRef(model.ref).providerID, modelID: splitModelRef(model.ref).modelID }, ...(model.variant ? { variant: model.variant } : {}), parts: [{ type: 'text', text }] },
       }),
+      commands: () => ({ method: 'GET', path: '/command' }),
+      command: ({ sessionId, messageId, agent, model, name, text }) => ({
+        method: 'POST', path: `/session/${sessionId}/command`,
+        body: { messageID: messageId, agent, model: model.ref, ...(model.variant ? { variant: model.variant } : {}), command: name, arguments: text },
+      }),
       message: (sessionId, messageId) => ({ method: 'GET', path: `/session/${sessionId}/message/${messageId}` }),
       messages: (sessionId, { limit, before }) => ({ method: 'GET', path: `/session/${sessionId}/message?limit=${limit}${before ? `&before=${encodeURIComponent(before)}` : ''}` }),
       session: (sessionId) => ({ method: 'GET', path: `/session/${sessionId}` }),
@@ -479,6 +491,8 @@ export function exerciseRoutes(id, directory) {
       body: { title: 'exercise', agent, model: { providerID: splitModelRef(model.ref).providerID, id: splitModelRef(model.ref).modelID, ...(model.variant ? { variant: model.variant } : {}) }, location: { directory } },
     }),
     prompt: ({ sessionId, messageId, text }) => ({ method: 'POST', path: `/api/session/${sessionId}/prompt`, body: { id: messageId, text } }),
+    commands: () => ({ method: 'GET', path: `/api/command?directory=${encodeURIComponent(directory)}` }),
+    command: ({ sessionId, name, text }) => ({ method: 'POST', path: `/api/session/${sessionId}/command`, body: { name, text } }),
     switchAgent: (sessionId, agent) => ({ method: 'POST', path: `/api/session/${sessionId}/agent`, body: { agent } }),
     message: (sessionId, messageId) => ({ method: 'GET', path: `/api/session/${sessionId}/message/${messageId}` }),
     messages: (sessionId, { limit, cursor }) => ({ method: 'GET', path: `/api/session/${sessionId}/message?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : '&order=asc'}` }),

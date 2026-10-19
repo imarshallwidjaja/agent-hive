@@ -45,7 +45,7 @@ The config hook intentionally mutates these OpenCode fields:
 
 ### OpenCode v2
 
-The same package loads through its `server` entry on v1 and its synchronous `effect` entry on v2. On v2 it registers all **41 Hive tools** and **12 commands**, dedicated and unified modes, custom agents, packaged skills, native dispatch and background observation, and the forensic and recovery tools. Qualification ran against stock v1.18.30 and v2.0.26 with scripted model providers, which establishes wiring rather than real-model judgment. On both hosts it loaded a package already installed with plain npm; host-side registry resolution at first use was not part of it.
+The same package loads through its `server` entry on v1 and its synchronous `effect` entry on v2. On v2 it registers all **41 Hive tools** and **13 commands**, dedicated and unified modes, custom agents, packaged skills, native dispatch and background observation, and the forensic and recovery tools. Qualification ran against stock v1.18.30 and v2.0.26 with scripted model providers, which establishes wiring rather than real-model judgment. On both hosts it loaded a package already installed with plain npm; host-side registry resolution at first use was not part of it.
 
 Install the released package with npm into a dedicated directory that the v2 host can read:
 
@@ -118,7 +118,7 @@ Use the feature flow when work needs plan review, a task DAG, and a durable audi
 
 ### Operator Commands
 
-`oc-arkive` registers these slash commands as operator entry prompts. They prepare the active agent with workflow-specific instructions; they do not replace Hive tools or make unavailable tools available to the current agent. Each command carries its own authority and stop rules, so it is safe when invoked with no arguments or under a primary that is not Hive. `/dash-review` and `/vuln-review` are exceptions: their generated OpenCode commands bind to separate private review primaries.
+`oc-arkive` registers these slash commands as operator entry prompts. They prepare the active agent with workflow-specific instructions; they do not replace Hive tools or make unavailable tools available to the current agent. Each command carries its own authority and stop rules, so it is safe when invoked with no arguments or under a primary that is not Hive. `/dash-review`, `/vuln-review`, and `/implement` are exceptions: their generated OpenCode commands bind to an agent, the two reviews to separate private review primaries and `/implement` to `hive-builder`.
 
 | Command | Purpose |
 |---------|---------|
@@ -128,6 +128,7 @@ Use the feature flow when work needs plan review, a task DAG, and a durable audi
 | `/hive-plan` | Create or update the Hive feature plan from a spec or brief. |
 | `/approve-sync-plan` | Approve the active plan and sync executable tasks. |
 | `/start-execution` | Start execution for an approved and synced plan. |
+| `/implement [steering]` | Implement, as ad-hoc work, the scope this conversation agreed, plus any context or steering typed after the command. |
 | `/council-directive` | Turn rough input into a reusable directive for a council run. |
 | `/council` | Run a read-only council and synthesize a recommendation. |
 | `/dash-review [intent]` | Review a folder, inline text, or the current checkout without changing source. |
@@ -154,14 +155,17 @@ Routing depends on `agentMode`:
 |-------------|--------------|----------------|
 | `/interview`, `/grill`, `/implementation-brief`, `/hive-plan`, `/council-directive`, `/council` | Use `hive-master`. | Route or delegate to `architect-planner`. |
 | `/approve-sync-plan`, `/start-execution` | Use `hive-master`. | Route or delegate to `swarm-orchestrator`. |
+| `/implement` | Bound by `config.command` to `hive-builder`, in the current session. | Bound by `config.command` to `hive-builder`, in the current session. |
 | `/dash-review` | Bound by `config.command` to a private review primary. | Bound by `config.command` to a private review primary. |
 | `/vuln-review` | Bound by `config.command` to a private vulnerability-review primary. | Bound by `config.command` to a private vulnerability-review primary. |
 | `/compact-summary` | Use `hive-master`. | Route or delegate to `scout-researcher`. |
 | `/worklog` | Runs under the active agent. | Runs under the active agent. |
 
-Except for `/dash-review` and `/vuln-review`, dedicated-mode slash commands do not switch agents by themselves. If the active agent is not the route target, delegate or reroute to the target agent and stop if that is not possible.
+Except for `/dash-review`, `/vuln-review`, and `/implement`, dedicated-mode slash commands do not switch agents by themselves. If the active agent is not the route target, delegate or reroute to the target agent and stop if that is not possible.
 
 Use `/grill <context>` when you want a confirmed, plan-ready brief (decisions with rationale, constraints, acceptance criteria) to hand to `/hive-plan`. Use `/interview <idea>` to clarify an idea with a flexible endpoint, including ad-hoc work, and no fixed next step or implementation-brief funnel. Both follow the `grilling` skill: the agent gets its bearings from existing context, explains what it found in plain terms and says where the evidence is uncertain, skips decisions you already made, and asks one material question at a time. Every option carries a short pro and con and a recommendation, and a confident recommendation still leaves a choice that is yours to make. Both run within one continuing invocation: when the `question` tool is available, each answer returns to the same run, which keeps researching, checking, and asking until you confirm alignment or stop it. Without that tool, each plain chat question waits for your reply and the next turn resumes the same loop. The commands do not automatically create a plan, implement, or start follow-on work; a bare confirmation is understanding only, and later action requires a separate operator request, unless you asked upfront for the next stage (for example, "then create a plan after alignment"), which then runs once within the agent's normal planning and approval limits. A named destination authorizes writing only the confirmed alignment brief there. Discoverable facts are researched without forced fan-out. Unavailable or failed research is disclosed as unresolved or an explicit assumption; it is never guessed.
+
+Use `/implement [steering]` when a conversation has scoped work and you want it implemented as ad-hoc work. The command switches the current session to `hive-builder`, so the chat stays in place and the session keeps its model unless `hive-builder` has a model configured, and it points the agent at the `starting-ad-hoc-implementation` skill. Everything you type after `/implement` reaches the agent unchanged as further context and steering, so you can add requests in plain language, such as `/implement keep the public API unchanged and skip the docs for now`; with nothing after it, the conversation alone scopes the work. On OpenCode v1 as on v2, `$` sequences and `` !`...` `` spans in that text arrive as typed, and nothing in it runs as a shell command. Invoking the command authorizes implementing the agreed scope and your added instructions through the ad-hoc lifecycle. Loading the skill, earlier discussion, or a confirmation at the end of `/grill` or `/interview` does not. The agent rebuilds the latest agreed scope from the chat, reuses design decisions already settled there, investigates what it needs, and asks only about decisions that are yours, one at a time. When the scope is not ready it says what is unready, why it matters, and what to do next. It does not create a feature, plan, or task by itself, and work under an approved plan still starts with `/start-execution`. Running `/implement` again accounts for work already running or retained instead of starting a second writer on it.
 
 Use `/dash-review` for one read-only Git, process/concept, or local-artifact review. It does not edit source, create Hive tasks, or start a fix. See [Reviews in the Operator Guide](../../docs/OPERATOR-GUIDE.md#reviews).
 
@@ -579,6 +583,7 @@ Generated/managed shape (for inspection) at `<project>/.hive/repositories.json`:
 | `orchestrating-ad-hoc-work` | Coordinate qualifying ad-hoc work for Hive Builder or unified Hive |
 | `parallel-exploration` | Researcher fan-out for read-only research |
 | `pr-writing` | Draft PR titles, descriptions, and general or inline review comments |
+| `starting-ad-hoc-implementation` | Turn a scoped conversation into authorized ad-hoc implementation when the operator asks to implement it |
 | `stop-design-slop` | Visual foundation for interfaces: composition from the product's task, diagnostics for generic patterns, and refinement that preserves an existing identity |
 | `stop-slop` | Repair staging, formulaic cadence, and structure in existing prose |
 | `systematic-debugging` | Root-cause investigation before fixes |
@@ -616,7 +621,7 @@ See [Skill ownership](docs/SKILL-OWNERSHIP.md) for the responsibility map and so
 
 `background-delegation` is bundled and materialized like other Hive skills, but primary prompt references are gated and compact. Delegation-first orchestration lives in the base primary prompts; when the v1 env flag is set, or on v2 with native background support, primary agent prompts add background wait-mode and board protocol guidance and point to the skill for the full protocol. The skill can still be loaded manually with OpenCode's native `skill` tool like any other bundled or user skill.
 
-`orchestrating-ad-hoc-work` is loaded conditionally by Hive Builder or unified `hive-master` when a request has multiple independently verifiable outcomes, dependency waves, shared write/runtime resources, possible background execution, or an expected need for more than one worker attempt or turn. It is not a default `autoLoadSkills` entry and may retain one coherent lane after decomposition. Content tests establish bundling and routing only; they do not establish first-attempt model reliability.
+`orchestrating-ad-hoc-work` is loaded conditionally by Hive Builder or unified `hive-master` when a request has multiple independently verifiable outcomes, dependency waves, shared write/runtime resources, possible background execution, or an expected need for more than one worker attempt or turn. It is not a default `autoLoadSkills` entry and may retain one coherent lane after decomposition. `starting-ad-hoc-implementation` precedes it when the operator asks Hive Builder to implement scoped work: it rebuilds the agreed scope and settles what must be decided first, then hands the scope to this lifecycle. Content tests establish bundling and routing only; they do not establish first-attempt model reliability.
 
 **Example:**
 

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import plugin from '../index.js';
+import { V1_UNFILLABLE_ARGUMENT } from '../commands/literal-arguments.js';
 
 const roots: string[] = [];
 let originalHome: string | undefined;
@@ -87,6 +88,29 @@ describe('agent registration', () => {
     }
     expect(config.command['dash-review'].agent).toBe('dash-reviewer');
     expect(config.command['vuln-review'].agent).toBe('vulnerability-review-primary');
+    // /implement runs Hive Builder in the current session with no model, variant or subtask pinned. Its v1 template
+    // carries no operator text: one placeholder no argument list fills keeps the host's substitution, append and shell
+    // passes away from that text, and command.execute.before puts the command rendered from the raw text in its place.
+    expect(config.command.implement.agent).toBe('hive-builder');
+    expect(Object.keys(config.command.implement).sort()).toEqual(['agent', 'description', 'template']);
+    const template: string = config.command.implement.template;
+    expect(template).toContain(`<operator-text>\n${V1_UNFILLABLE_ARGUMENT}\n</operator-text>`);
+    expect(template).not.toContain('$ARGUMENTS');
+    expect(template.match(/\$\d+/g)).toEqual([V1_UNFILLABLE_ARGUMENT]);
+    // Commands without the literal-argument contract keep the host's own $ARGUMENTS substitution.
+    expect(config.command['dash-review'].template).toContain('$ARGUMENTS');
+    // The pinned host hands the hook the template with the placeholder emptied and trimmed, then any attached files.
+    const prose = "keep $& and $$ and $` and $' literal\n!`touch /tmp/hive-shell-ran` and @general stay text";
+    const attachment = { type: 'file', mime: 'text/plain', filename: 'a.ts', url: 'file:///tmp/a.ts' };
+    const parts: any[] = [{ type: 'text', text: template.replace(V1_UNFILLABLE_ARGUMENT, '').trim() }, attachment];
+    await hooks['command.execute.before']!({ command: 'implement', sessionID: 's1', arguments: prose }, { parts });
+    expect(parts).toEqual([{ type: 'text', text: await hooks.command!.implement.run(prose) }, attachment]);
+    expect(parts[0].text).toContain(`<operator-text>\n${prose}\n</operator-text>`);
+    // A prompt built any other way fails the command instead of sending it without the operator's text; other commands are untouched.
+    await expect(hooks['command.execute.before']!({ command: 'implement', sessionID: 's1', arguments: prose }, { parts: [{ type: 'text', text: 'another template' }] as any })).rejects.toThrow('cannot pass your text on unchanged');
+    const unrelated: any[] = [{ type: 'text', text: 'grill body' }];
+    await hooks['command.execute.before']!({ command: 'grill', sessionID: 's1', arguments: prose }, { parts: unrelated });
+    expect(unrelated).toEqual([{ type: 'text', text: 'grill body' }]);
     expect(await hooks.command!['dash-review'].run('src/runtime.ts')).toContain('Review input: src/runtime.ts');
     const vulnerabilityCommand = await hooks.command!['vuln-review'].run('inline authentication boundary');
     expect(vulnerabilityCommand).toContain('Review input: inline authentication boundary');
@@ -114,5 +138,8 @@ describe('agent registration', () => {
     expect(config.agent['dash-reviewer'].hidden).toBe(true);
     expect(config.agent['vulnerability-review-primary'].hidden).toBe(true);
     expect(config.default_agent).toBe('hive-master');
+    // The ad-hoc seat and its command exist in unified mode too.
+    expect(config.agent['hive-builder'].hidden).toBeUndefined();
+    expect(config.command.implement.agent).toBe('hive-builder');
   });
 });

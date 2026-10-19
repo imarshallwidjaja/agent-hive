@@ -12,8 +12,9 @@ import { SUBAGENT_CLARIFICATION_PROMPT } from './hooks/system-hook.js';
 import { OPENCODE_V1_PROFILE } from './runtime/host-profile.js';
 import { classifySession, createVariantHook } from './hooks/variant-hook.js';
 import { buildHiveCommandMap } from './commands/runtime.js';
-import { HIVE_COMMANDS } from './commands/registry.js';
+import { HIVE_COMMANDS, type HiveCommandKey } from './commands/registry.js';
 import { hiveCommandRenderers } from './commands/renderers.js';
+import { restoreLiteralArguments, v1LiteralTemplate, V1_UNFILLABLE_ARGUMENT } from './commands/literal-arguments.js';
 import type { HiveCommandAgentDescriptor, HiveCommandContext } from './commands/types.js';
 import { createTaskTraceTools, injectTaskTraceHint, isDirectChildSession, TASK_TRACE_SUMMARIZER_AGENT, TASK_TRACE_SUMMARIZER_PROMPT } from './task-trace.js';
 import { childRouteRecord, composeDispatchPrompt } from './task-brief.js';
@@ -128,6 +129,7 @@ const plugin: Plugin = async (ctx) => {
   };
 
   let runtimeCommandAgents: Record<string, HiveCommandAgentDescriptor> = {};
+  const literalCommandTemplates = new Map<string, string>();
   const createCommandContext = (): HiveCommandContext => createSharedCommandContext({
     host,
     configService,
@@ -173,6 +175,13 @@ const plugin: Plugin = async (ctx) => {
       await injectTaskTraceHint(output.messages, (childID, parentID) => (
         isDirectChildSession(taskTraceClient, projectRoot, childID, parentID)
       ));
+    },
+    // Literal-argument commands reach the host without their argument text (see literal-arguments.ts); the rendered
+    // command replaces the template here, after the host's substitution, shell and file-reference passes.
+    'command.execute.before': async (input, output) => {
+      const template = literalCommandTemplates.get(input.command);
+      if (template === undefined) return;
+      restoreLiteralArguments(output.parts, template, await hiveCommandRenderers[input.command as HiveCommandKey](input.arguments, createCommandContext()));
     },
     'tool.execute.before': async (input, output) => {
       if (input.tool === 'task' && input.sessionID && input.callID) {
@@ -221,7 +230,16 @@ const plugin: Plugin = async (ctx) => {
         return [name, { ...existing, permission: boundary.permission }];
       }));
       mutableConfig.agent = { ...(mutableConfig.agent ?? {}), ...nativeAgents, ...agents, [TASK_TRACE_SUMMARIZER_AGENT]: { mode: 'primary', hidden: true, permission: { '*': 'deny' }, prompt: TASK_TRACE_SUMMARIZER_PROMPT } };
-      const commandConfig = Object.fromEntries(await Promise.all(HIVE_COMMANDS.map(async (command) => [command.key, { description: command.description, ...('agent' in command ? { agent: command.agent } : {}), template: await hiveCommandRenderers[command.key]('$ARGUMENTS', createCommandContext()) }])));
+      literalCommandTemplates.clear();
+      const commandConfig = Object.fromEntries(await Promise.all(HIVE_COMMANDS.map(async (command) => {
+        const render = (args: string) => hiveCommandRenderers[command.key](args, createCommandContext());
+        let template: string;
+        if ('literalArguments' in command) {
+          template = v1LiteralTemplate(await render(V1_UNFILLABLE_ARGUMENT));
+          literalCommandTemplates.set(command.key, template);
+        } else template = await render('$ARGUMENTS');
+        return [command.key, { description: command.description, ...('agent' in command ? { agent: command.agent } : {}), template }];
+      })));
       mutableConfig.command = { ...(mutableConfig.command ?? {}), ...commandConfig };
       mutableConfig.default_agent = catalog.defaultAgent;
       const experimental = typeof mutableConfig.experimental === 'object' && mutableConfig.experimental ? mutableConfig.experimental : {};

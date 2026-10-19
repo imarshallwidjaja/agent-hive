@@ -42,6 +42,7 @@ describe('plugin hard-cut surface', () => {
     expect(hooks.command?.['vuln-review']).toBeDefined();
     expect(hooks.command?.['dash-review'].agent).toBe('dash-reviewer');
     expect(hooks.command?.['vuln-review'].agent).toBe('vulnerability-review-primary');
+    expect(hooks.command?.implement.agent).toBe('hive-builder');
   });
 
   it('persists worker-authored reports without changing status and appends the primary closure report', async () => {

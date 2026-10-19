@@ -31,6 +31,13 @@ export const HIVE_COMMANDS = [
     description: 'Start executing an approved Hive plan',
   },
   {
+    key: 'implement',
+    name: '/implement',
+    description: 'Implement the work this conversation scoped as ad-hoc work, with any extra steering you add',
+    agent: 'hive-builder',
+    literalArguments: true,
+  },
+  {
     key: 'council-directive',
     name: '/council-directive',
     description: 'Turn a rough request into a reusable council directive',

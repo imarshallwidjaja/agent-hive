@@ -263,6 +263,20 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
     });
   },
 
+  implement(args, context) {
+    return renderHybridCommand('implement', context, {
+      // The operator text is inserted as written so multiline prose, quotes, and punctuation reach the agent unchanged.
+      details: [`Operator text after /implement (verbatim; blank when none):\n<operator-text>\n${args}\n</operator-text>`],
+      doItems: [
+        'Load the `starting-ad-hoc-implementation` skill and follow it with this conversation and the operator text above; blank operator text means the conversation alone scopes the work.',
+      ],
+      doNotItems: [],
+      outputItems: [
+        'The scope you are implementing in a few lines, then the ad-hoc lifecycle\'s result with its verification evidence, or the one decision or limitation that stops the work.',
+      ],
+    });
+  },
+
   'council-directive'(args, context) {
     return renderHybridCommand('council-directive', context, {
       details: [
