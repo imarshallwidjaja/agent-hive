@@ -42,6 +42,8 @@ export interface PlanApprovalResult {
   feature: string;
   approvalPersisted: true;
   revision: string;
+  /** Hash of the plan content this approval checked; task sync takes it as expectedContentHash. */
+  contentHash: string;
   alreadyApproved?: true;
 }
 
@@ -70,7 +72,8 @@ export class PlanApprovalError extends Error {
   }
 }
 
-function getContentHash(content: string): string {
+/** SHA-256 of the raw plan.md bytes as read, CRLF included; plan revisions and task sync records share it. */
+export function getPlanContentHash(content: string): string {
   return createHash('sha256').update(content).digest('hex');
 }
 
@@ -447,7 +450,7 @@ export class PlanService {
 
     const comments = this.getComments(featureName);
     const isApproved = this.isApproved(featureName);
-    const contentHash = getContentHash(content);
+    const contentHash = getPlanContentHash(content);
     const revision = getRevision(contentHash, comments, isApproved);
     const base = {
       status: isApproved ? 'approved' as const : 'planning' as const,
@@ -485,7 +488,7 @@ export class PlanService {
         throw new Error(`No plan.md found for feature '${featureName}'`);
       }
 
-      const currentContentHash = getContentHash(content);
+      const currentContentHash = getPlanContentHash(content);
       const currentRevision = getRevision(currentContentHash, this.getComments(featureName), this.isApproved(featureName));
       if (expectedRevision !== currentRevision) {
         throw new Error(`Stale plan revision: expected ${expectedRevision}, current ${currentRevision}`);
@@ -586,7 +589,7 @@ export class PlanService {
       if (preWriteContent === null) {
         throw new Error(`No plan.md found for feature '${featureName}'`);
       }
-      const preWriteRevision = getRevision(getContentHash(preWriteContent), this.getComments(featureName), this.isApproved(featureName));
+      const preWriteRevision = getRevision(getPlanContentHash(preWriteContent), this.getComments(featureName), this.isApproved(featureName));
       if (expectedRevision !== preWriteRevision) {
         throw new Error(`Stale plan revision: expected ${expectedRevision}, current ${preWriteRevision}`);
       }
@@ -595,7 +598,7 @@ export class PlanService {
       this.clearCommentsUnlocked(featureName);
       this.revokeApprovalUnlocked(featureName);
 
-      const nextContentHash = getContentHash(nextContent);
+      const nextContentHash = getPlanContentHash(nextContent);
       const nextRevision = getRevision(nextContentHash, [], false);
       return {
         revision: nextRevision,
@@ -662,7 +665,7 @@ export class PlanService {
           feature.approvedAt = timestamp;
           writeJson(featurePath, feature);
         }
-        return { success: true, feature: featureName, approvalPersisted: true, revision, ...(alreadyApproved ? { alreadyApproved: true as const } : {}) };
+        return { success: true, feature: featureName, approvalPersisted: true, revision, contentHash: current.contentHash, ...(alreadyApproved ? { alreadyApproved: true as const } : {}) };
       });
     } catch (error) {
       if (error instanceof PlanApprovalError) throw error;

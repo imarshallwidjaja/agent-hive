@@ -77,8 +77,8 @@ Cross-process supervision, exactly-once execution across independent OpenCode pr
 1. User creates feature via `hive_feature_create`
 2. Agent writes plan via `hive_plan_write`
 3. User reviews `plan.md`; VS Code stores review threads in `comments/plan.json`
-4. After user approval, the owning primary calls `hive_plan_approve({ feature, expectedRevision, sync: true })` with the reviewed revision, adding `refreshPending: true` when needed, and inspects both outcomes
-5. Approval's sync generates task specs; standalone `hive_tasks_sync` can run or retry while approval remains successful
+4. After user approval, the owning primary calls `hive_plan_approve({ feature, expectedRevision, sync: true })` with the reviewed revision, adding `refreshPending: true` when needed and `refreshTasks` for started tasks it confirmed are not running, and inspects both outcomes
+5. Approval's sync applies exactly the approved plan content and generates task specs; standalone `hive_tasks_sync` can run or retry a sync without `refreshTasks` while approval remains successful. Plan, task sync, and status results carry the advisory `planSync` state
 6. Each tracked Git task executes via `hive_worktree_create` and a native Forager subagent call (`task()` on v1, `subagent()` on v2)
 7. The worker commits assigned work and returns its exact source pin; the primary merges it using the inspected target identity and same-call cleanup when retention is not needed
 8. A bound implementation worker publishes its own task report; after a successful merge, or target verification for non-Git or report-only work, the primary records status and a closure report with `hive_task_update`, then cleans up any worktree
@@ -280,11 +280,11 @@ Task `status.json` fields and who writes them:
 |-------|-----------|------|
 | `status` | `TaskService` on plan sync or manual task creation; primary via `hive_task_update` | Initially `pending`, then on recorded disposition |
 | `origin` | `hive_tasks_sync` | On task creation |
-| `planTitle` | `hive_tasks_sync` | On task creation |
+| `planTitle` | `hive_tasks_sync` | On task creation or plan refresh |
 | `summary` | Primary via `hive_task_update` | On recorded disposition |
 | `repoIds` | `hive_tasks_sync` / `hive_task_create` | On plan sync or manual task creation |
 | `blocker` | Primary via `hive_task_update` | When blocked status is recorded |
-| `dependsOn` | `hive_tasks_sync` / `hive_task_create` | On plan sync for created or refreshed pending plan tasks, or on manual task creation; other records keep their stored value |
+| `dependsOn` | `hive_tasks_sync` / `hive_task_create` | On plan sync for created plan tasks, refreshed pending plan tasks, and started plan tasks selected with `refreshTasks`, or on manual task creation; other records keep their stored value |
 | `metadata` | `hive_task_create` | On structured manual task creation |
 
 Reports are separate files: `report.md` holds the latest report and `reports/<number>.md` preserves each update. A report write precedes the status write; if an update fails partway through, inspect the returned persistence stage and on-disk files before retrying.
@@ -302,7 +302,7 @@ Retry safety depends on each tool's contract, not on a read/write split. Before 
 - Read tools such as `hive_plan_read`, `hive_status`, `hive_context_read`, and the worktree inspect tools are the way to observe current state; repeat them before deciding on a retry.
 - Guarded writes reject stale preconditions instead of applying twice: plan patch and approval take `expectedRevision`, context mutations take a revision and content hash, constraint edits and clears take a register revision, and merges take the inspected destination identity and source pin. After a rejection, read current state and decide again; never refresh a precondition just to make a retry pass.
 - Some operations report outcomes that make a repeat recognizable. An unchanged approval retry returns `alreadyApproved: true`, an identical constraint add changes nothing, and a merge with no net tracked changes succeeds with `NO_TRACKED_CHANGES`. [Hive Tools](../packages/opencode-hive/docs/HIVE-TOOLS.md) gives each tool's exact outcomes.
-- `hive_tasks_sync` and `hive_task_create` validate the resulting unfinished-task graph and write nothing when it is invalid. After validation passes, sync is not transactional.
+- `hive_tasks_sync` and `hive_task_create` validate the resulting unfinished-task graph and write nothing when it is invalid. After validation passes, sync is not transactional: a failure reports its stage, the task changes already applied, and the task action it was cut off inside (its files may be partly written). A failure before the reconciled record is attempted leaves `planSync` `incomplete` until a later sync reconciles. When writing the reconciled record reports an error, sync reads the record back: a record without the reconciliation fails as `verification`, and a record that cannot be read fails as `publication_unconfirmed`, whose publication outcome is unknown. Reread `hive_status` before retrying; its `planSync` describes the record now, not what the failed call published.
 - `hive_task_update` writes in order to report history, `report.md`, `handoff.md`, and `status.json`. Inspect each location before retrying, and never resubmit a report that already reached history; task updates have no write-ahead journal to replay. The Worklog is unrelated: it records human narrative, not task-update writes.
 - Worktree create, merge, and cleanup act on Git and the filesystem. A composite merge can retain earlier repository integrations when a later one fails, and partial outcomes are not rolled back. Inspect per-repository results and the registered worktree before deciding the next action.
 

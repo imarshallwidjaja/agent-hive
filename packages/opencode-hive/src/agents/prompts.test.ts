@@ -42,7 +42,7 @@ import { VULNERABILITY_REVIEW_PRIMARY_PROMPT } from './vulnerability-review-prim
 import { VULNERABILITY_REVIEWER_PROMPT } from './vulnerability-reviewer';
 import { HIVE_SYSTEM_PROMPT } from '../hooks/system-hook';
 import { ENGINEERING_JUDGMENT_PROMPT } from './engineering-judgment';
-import { NATIVE_TASK_CONTINUATION_POLICY_PROMPT, PLAN_APPROVAL_SYNC_PROMPT, PLAN_ASSESSMENT_PROMPT, PLAN_ASSESSMENT_REQUIREMENT, PRIMARY_CONSTRAINT_AUTHORING_PROMPT, PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT, REVIEW_FOLLOW_UP_PROMPT, REVIEW_HANDOFF_PROMPT, REVIEW_REQUEST_EXAMPLE_PROMPT, REVIEW_ROUTING_PROMPT, WORKER_ASSIGNMENT_PROMPT } from './process-judgment';
+import { NATIVE_TASK_CONTINUATION_POLICY_PROMPT, PLAN_APPROVAL_SYNC_PROMPT, PLAN_ASSESSMENT_PROMPT, PLAN_ASSESSMENT_REQUIREMENT, PLAN_SYNC_RETRY_REQUIREMENT, PRIMARY_CONSTRAINT_AUTHORING_PROMPT, PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT, REVIEW_FOLLOW_UP_PROMPT, REVIEW_HANDOFF_PROMPT, REVIEW_REQUEST_EXAMPLE_PROMPT, REVIEW_ROUTING_PROMPT, TASK_SPEC_FRESHNESS_PROMPT, WORKER_ASSIGNMENT_PROMPT } from './process-judgment';
 import { REVIEW_GROUNDING_PROMPT } from './review-grounding';
 import { REVIEW_INVESTIGATION_PROMPT } from './review-investigation';
 import { INTERRUPTED_WORKER_RECOVERY_PROMPT, TASK_REPORT_CONTRACT_PROMPT, TASK_REPORT_OWNERSHIP_PROMPT } from './task-reporting';
@@ -921,7 +921,12 @@ describe('Worker assignment contract', () => {
   it('adds Hive and Swarm freshness checks and the Hive task line on top of the shared contract', () => {
     for (const [name, prompt] of [['Hive', QUEEN_BEE_PROMPT], ['Swarm', SWARM_BEE_PROMPT]] as const) {
       expect(prompt, name).toContain('use `hive_status` to check `specStale`: refresh a stale pending task with `hive_tasks_sync({ refreshPending: true })`');
-      expect(prompt, name).toContain('name its current plan section in the assignment');
+      expect(prompt, name).toContain('give it no reassignment or retry until its prior assignment is terminal, its scope is reconciled, and `refreshTasks` under Approval and Task Sync has made its spec current');
+      expect(prompt, name).toContain('If that refresh fails, address the failure before dispatching the task');
+      expect(prompt, name).not.toContain('prefer refreshing');
+      expect(prompt, name).not.toContain('name its current plan section');
+      expect(prompt, name).toContain("refresh an unfinished recipient's spec with `refreshTasks` under Approval and Task Sync, then send the amended requirement to a fresh worker");
+      expect(prompt, name).not.toContain('may first get its spec refreshed');
       expect(prompt, name).toContain('`unowned_heading_after_task_section`, delegate');
     }
     expect(QUEEN_BEE_PROMPT).toContain('State the concrete expected outcome');
@@ -1401,7 +1406,7 @@ describe('Active native-task guidance contradiction checks', () => {
       expect(prompt).toContain('hive_plan_approve({ feature, expectedRevision, sync: true })');
       expect(prompt).toContain('explicit `Depends on` relationship');
       expect(prompt).toContain('When the recipient task has already started or finished, the plan amendment does not reach that assignment');
-      expect(prompt).toContain('send the amended requirement to a fresh worker for that task or record why the existing work already satisfies it');
+      expect(prompt).toContain('then send the amended requirement to a fresh worker for that task, or record why the existing work already satisfies it');
       expect(prompt).toContain('Do not treat the recipient as complete until the amended requirement is addressed');
     }
     expect(SWARM_BEE_PROMPT).not.toContain('Explicit tool whitelist');
@@ -1429,8 +1434,56 @@ describe('Primary tool output contracts', () => {
     ]) expect(PLAN_APPROVAL_SYNC_PROMPT).toContain(field);
     expect(PLAN_APPROVAL_SYNC_PROMPT).toContain('approval remains successful and only sync failed');
     expect(PLAN_APPROVAL_SYNC_PROMPT).toContain('retry `hive_tasks_sync` alone');
+    expect(PLAN_APPROVAL_SYNC_PROMPT).toContain(PLAN_SYNC_RETRY_REQUIREMENT);
+    expect(PLAN_SYNC_RETRY_REQUIREMENT).toContain('After a call with `refreshTasks`, approve-and-sync again on a freshly read and reviewed revision');
+    expect(PLAN_SYNC_RETRY_REQUIREMENT).toContain('any `interrupted` task action');
+    for (const name of ['Hive', 'Swarm', 'Architect']) {
+      const prompt = { Hive: QUEEN_BEE_PROMPT, Swarm: SWARM_BEE_PROMPT, Architect: ARCHITECT_BEE_PROMPT }[name]!;
+      expect(countOccurrences(prompt, PLAN_SYNC_RETRY_REQUIREMENT), name).toBe(1);
+      expect(countOccurrences(prompt, 'Patching never syncs tasks automatically.'), name).toBe(1);
+    }
     expect(PLAN_APPROVAL_SYNC_PROMPT).toContain('re-read and review current state before approving and syncing again');
     expect(PLAN_APPROVAL_SYNC_PROMPT).toContain('delegated Architect returns approval/sync requests to its parent');
+  });
+
+  it('refreshes amended started tasks only through approve-and-sync and keeps planSync advisory', () => {
+    expect(PLAN_APPROVAL_SYNC_PROMPT).toContain("add `refreshTasks: ['<task-folder>', ...]` to that approve-and-sync call");
+    expect(PLAN_APPROVAL_SYNC_PROMPT).toContain('Naming a folder attests that you confirmed its prior assignment is terminal and reconciled its scope');
+    expect(PLAN_APPROVAL_SYNC_PROMPT).toContain('dispatch no new work for it until the refresh succeeds');
+    expect(PLAN_APPROVAL_SYNC_PROMPT).toContain('Refresh keeps the folder, status, reports, and history');
+    expect(PLAN_APPROVAL_SYNC_PROMPT).toContain('Only approve-and-sync accepts `refreshTasks`');
+    expect(PLAN_APPROVAL_SYNC_PROMPT).toContain('on a freshly read and reviewed revision');
+    expect(PLAN_APPROVAL_SYNC_PROMPT).toContain('it is not an approval or dispatch gate and does not authorize a resync');
+    for (const [name, prompt] of [['Hive', QUEEN_BEE_PROMPT], ['Swarm', SWARM_BEE_PROMPT]] as const) {
+      expect(countOccurrences(prompt, TASK_SPEC_FRESHNESS_PROMPT), name).toBe(1);
+    }
+    expect(TASK_SPEC_FRESHNESS_PROMPT).toContain('A running assignment is never rewritten');
+    expect(TASK_SPEC_FRESHNESS_PROMPT).toContain('until its prior assignment is terminal, its scope is reconciled');
+    expect(TASK_SPEC_FRESHNESS_PROMPT).toContain('replace its successor handoff when the amendment supersedes facts in it');
+    expect(HIVE_BUILDER_PROMPT).not.toContain(TASK_SPEC_FRESHNESS_PROMPT);
+  });
+
+  it('reads tasks as goal, responsibility, and pointed context rather than predicted file lists', () => {
+    for (const [name, prompt] of [['Architect', ARCHITECT_BEE_PROMPT], ['Hive', QUEEN_BEE_PROMPT]] as const) {
+      expect(prompt, name).toContain("each a task contract under the writing-plans skill's Task Contracts");
+      expect(prompt, name).toContain('goal, overall acceptance, boundaries, task relationships, and shared contracts');
+      expect(prompt, name).not.toContain('Create/Modify/Test');
+      expect(prompt, name).not.toContain('References must use file:line format');
+    }
+    expect(FORAGER_BEE_PROMPT).toContain("Read the plan's Design Summary for the feature goal, overall acceptance, boundaries, and how your task relates to the others");
+    expect(FORAGER_BEE_PROMPT).toContain('wherever it sits in the plan, including sections after `## Tasks`');
+    expect(FORAGER_BEE_PROMPT).toContain('Source paths and symbols cited as References are discovery leads, not an allowlist');
+    expect(FORAGER_BEE_PROMPT).toContain("A change that would enter a sibling task's named responsibility or alter a binding contract is a conflict to return before making it");
+    expect(FORAGER_BEE_PROMPT).not.toContain('Read relevant pre-');
+    expect(WORKER_ASSIGNMENT_PROMPT).toContain("For a plan task, the task's Responsibility sets this scope");
+    expect(PLAN_REVIEWER_PROMPT).toContain('A predicted list of files to edit is not required');
+    expect(PLAN_REVIEWER_PROMPT).toContain('current execution state (a returned source SHA, worktree status, counts or review hashes from a past run) belongs in the assignment, handoff, or reports');
+    expect(PLAN_REVIEWER_PROMPT).toContain('Binding artifact, version, or schema pins, evidence citations, discovery anchors, and exact shared-ownership paths are fine');
+    expect(PLAN_REVIEWER_PROMPT).toContain('Context reach: the Design Summary gives the feature goal');
+    expect(PLAN_REVIEWER_PROMPT).not.toContain('identify what to create, modify, or test');
+    expect(CODE_REVIEWER_PROMPT).toContain('Judge adherence by outcome');
+    expect(CODE_REVIEWER_PROMPT).toContain('Files the plan did not cite are expected when they serve the goal');
+    expect(CODE_REVIEWER_PROMPT).toContain("reaches a sibling's responsibility or a binding contract without a justification in the worker's report");
   });
 
   it('keeps integrity entries and invalid placements visible without making them runnable', () => {
@@ -1584,7 +1637,7 @@ describe('Task report reliability', () => {
       'never prove integrated acceptance',
       'Do not retranscribe the worker',
       'only for an actual feature task',
-      'Leave the successor handoff alone unless integration changes its facts',
+      'Leave the successor handoff alone unless integration or an approved amendment changes its facts',
       'append one consolidated decision report',
       'accepted, rejected, or deferred',
       'A clean review needs no report. Reviewers stay read-only',

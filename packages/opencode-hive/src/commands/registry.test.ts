@@ -228,7 +228,9 @@ describe('HIVE_COMMANDS', () => {
       expect(output).toContain(field);
     }
     expect(output).toContain('When approval remains successful and only sync failed');
-    expect(output).toContain('retry hive_tasks_sync alone');
+    expect(output).toContain('retry `hive_tasks_sync` alone');
+    expect(output).toContain('After a call with `refreshTasks`, approve-and-sync again');
+    expect(output).not.toContain('address the error and retry hive_tasks_sync alone');
     expect(output).toContain('status: null integrity entries need inspection and repair, never execution');
     expect(output).toContain('synced stored dependsOn graph');
     expect(output).toContain('resolved implicit sequential shorthand');
@@ -316,7 +318,7 @@ describe('HIVE_COMMANDS', () => {
       for (const kept of [
         'hive_plan_approve({ feature, expectedRevision, sync: true })',
         'approvalPersisted',
-        'retry hive_tasks_sync alone',
+        'retry `hive_tasks_sync` alone',
         'projected incremental counts assuming prior listed milestones completed',
         'Run feature "<feature>" until task "<task-folder>" (<task-title>) is complete',
         'Continue feature "<feature>" until task "<next-task-folder>" (<next-task-title>) is done',

@@ -11,6 +11,7 @@ import {
   getSubtaskStatusPath,
   getSubtaskSpecPath,
   getPlanPath,
+  getTaskSyncPath,
   ensureDir,
   readJson,
   writeJson,
@@ -34,7 +35,10 @@ import {
   SubtaskType,
   SubtaskStatus,
   ManualTaskMetadata,
+  PlanSyncStatus,
+  TaskSyncCheckpoint,
 } from '../types.js';
+import { getPlanContentHash } from './planService.js';
 import { RepositoryService } from './repositoryService.js';
 import { SubtaskService } from './subtaskService.js';
 import {
@@ -156,7 +160,137 @@ interface GraphNode extends TaskWithDeps {
 }
 
 export interface SyncOptions {
+  /** Pending plan tasks still in the plan take their title, dependencies, repositories and spec from it. */
   refreshPending?: boolean;
+  /**
+   * Unfinished plan tasks (pending, in_progress, blocked, failed, partial) to refresh from the current plan by
+   * folder identity. Selecting a task is the caller's attestation that no assignment for it is still running and
+   * that its changed scope has been reconciled; sync does not infer either from task status.
+   */
+  refreshTasks?: string[];
+  /** Raw plan.md content hash the caller reviewed and approved; a different plan rejects the sync before any write. */
+  expectedContentHash?: string;
+  /**
+   * Task folders that have a retained worktree, from the caller's inspection, or 'unknown' (the default) when it
+   * was not inspected. A selected task whose repositories change is rejected unless it is known to have none.
+   */
+  retainedWorktreeTasks?: ReadonlySet<string> | 'unknown';
+}
+
+export type TaskSyncStage = 'validation' | 'checkpoint' | 'tasks' | 'verification' | 'publication_unconfirmed';
+
+/** Task changes a sync applied before it failed; sync does not roll them back. */
+export interface TaskSyncApplied {
+  removed: string[];
+  created: string[];
+  refreshed: string[];
+}
+
+export type TaskSyncAction = 'remove' | 'create' | 'refresh';
+
+/**
+ * The task action running when a sync failed. It is not in `applied`: a write can fail before or after its rename
+ * publishes, so its files may be unchanged, partly written or fully written.
+ */
+export interface TaskSyncInterrupted {
+  action: TaskSyncAction;
+  folder: string;
+}
+
+/**
+ * A failed task sync. `validation` failures wrote nothing and `checkpoint` failures wrote no task file. Later stages
+ * may have applied some task changes, listed in `applied`, and may have been cut off inside another action, named in
+ * `interrupted`. A `tasks` failure never attempted the reconciled record, so task-sync.json holds `incomplete`. A
+ * `verification` failure read task-sync.json back after the reconciled write reported an error and found no
+ * reconciliation of this plan content. A `publication_unconfirmed` failure could not read the record back, so whether
+ * the write published is unknown: a later read of plan sync status describes the record then, not what this call
+ * published, and the caller reads it before replaying sync.
+ */
+export class TaskSyncError extends Error {
+  public readonly applied: TaskSyncApplied;
+  public readonly interrupted: TaskSyncInterrupted | null;
+
+  constructor(
+    message: string,
+    public readonly stage: TaskSyncStage,
+    detail: { applied: TaskSyncApplied; interrupted: TaskSyncInterrupted | null; cause?: unknown },
+  ) {
+    super(message, detail.cause === undefined ? undefined : { cause: detail.cause });
+    this.name = 'TaskSyncError';
+    this.applied = detail.applied;
+    this.interrupted = detail.interrupted;
+  }
+}
+
+const UNFINISHED_STATUSES: ReadonlySet<string> = new Set(['pending', 'in_progress', 'blocked', 'failed', 'partial']);
+/** Statuses whose plan task folder holds started or finished work that a renamed heading must not replace. */
+const REPLACEMENT_PROTECTED_STATUSES: ReadonlySet<string> = new Set(['in_progress', 'blocked', 'failed', 'partial', 'done']);
+
+const PLAN_SYNC_CHANGED_HINT =
+  'Plan changed since task sync. Check affected tasks and shared contracts; review/approve and resync as needed before dispatch.';
+
+function sameList(a: readonly string[] | undefined, b: readonly string[] | undefined): boolean {
+  if (a === undefined || b === undefined) return a === b;
+  return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
+function listFolders(folders: string[]): string {
+  const shown = folders.slice(0, 5).join(', ');
+  return folders.length > 5 ? `${shown} (+${folders.length - 5} more)` : shown;
+}
+
+const INTERRUPTED_ACTIONS: Record<TaskSyncAction, { verb: string; files: string }> = {
+  remove: { verb: 'removing', files: 'its task folder may be partly or fully deleted' },
+  create: {
+    verb: 'creating',
+    files: 'its folder, status.json and spec.md may be missing, partly written or complete; a retry with refreshPending: true rewrites a pending plan task\'s files',
+  },
+  refresh: { verb: 'refreshing', files: 'spec.md and status.json may each hold the old or the new content' },
+};
+
+function describeProgress(applied: TaskSyncApplied, interrupted: TaskSyncInterrupted | null): string {
+  const parts = (['removed', 'created', 'refreshed'] as const)
+    .filter((key) => applied[key].length > 0)
+    .map((key) => `${key} ${applied[key].join(', ')}`);
+  const sentences = [
+    ...(parts.length > 0 ? [`Applied before the failure and not rolled back: ${parts.join('; ')}.`] : []),
+    ...(interrupted
+      ? [`Interrupted while ${INTERRUPTED_ACTIONS[interrupted.action].verb} ${interrupted.folder}, which is not counted as applied: ${INTERRUPTED_ACTIONS[interrupted.action].files}. Inspect it before retrying.`]
+      : []),
+  ];
+  return sentences.length === 0 ? 'No task files were changed.' : sentences.join(' ');
+}
+
+/** What each failure stage that may have changed task files says about task-sync.json. */
+const RECORD_AFTER_FAILURE: Partial<Record<TaskSyncStage, string>> = {
+  tasks: 'task-sync.json records incomplete.',
+  verification: 'Reading task-sync.json back showed no reconciliation of this plan content, so plan sync status read at that point was not current.',
+  publication_unconfirmed:
+    'Read plan sync status with hive_status before replaying sync: a later read shows what task-sync.json holds then, not what this call published.',
+};
+
+/** What a read of task-sync.json shows about the reconciliation a sync just tried to publish. */
+type ReconciliationReadback = { outcome: 'recorded' | 'not_recorded' } | { outcome: 'unavailable'; reason: string };
+
+function isTaskSyncCheckpoint(value: unknown): value is TaskSyncCheckpoint {
+  if (typeof value !== 'object' || value === null) return false;
+  const record = value as Record<string, unknown>;
+  if (record.schemaVersion !== 1) return false;
+  if (record.state === 'reconciled') return typeof record.lastReconciledContentHash === 'string';
+  return record.state === 'incomplete'
+    && (record.lastReconciledContentHash === null || typeof record.lastReconciledContentHash === 'string');
+}
+
+function assertRefreshTaskList(refreshTasks: unknown): asserts refreshTasks is string[] {
+  if (!Array.isArray(refreshTasks) || refreshTasks.length === 0) {
+    throw new Error('refreshTasks must be a nonempty list of task folders.');
+  }
+  const seen = new Set<string>();
+  for (const folder of refreshTasks) {
+    if (typeof folder !== 'string' || folder.trim().length === 0) throw new Error('refreshTasks entries must be nonblank task folders.');
+    if (seen.has(folder)) throw new Error(`refreshTasks names "${folder}" more than once.`);
+    seen.add(folder);
+  }
 }
 
 export type TaskStatusEntry =
@@ -245,90 +379,388 @@ export class TaskService {
     this.subtaskService = new SubtaskService(projectRoot);
   }
 
-  sync(featureName: string, options?: SyncOptions): TasksSyncResult {
-    const planContent = this.readNormalizedPlanContent(featureName);
+  /**
+   * Reconcile task records with the current plan. Syncs of one feature are serialized by the task-sync.json lock;
+   * every action is derived and the resulting stored graph validated before anything is written. task-sync.json
+   * durably records `incomplete` before the first task write, and is replaced by `reconciled` only after the plan is
+   * unchanged and every unfinished plan task matches it; a skipped task or a failure before that replacement leaves it
+   * `incomplete`, and an error reported by the replacement itself is settled by reading the record back.
+   */
+  sync(featureName: string, options: SyncOptions = {}): TasksSyncResult {
+    const applied: TaskSyncApplied = { removed: [], created: [], refreshed: [] };
+    let interrupted: TaskSyncInterrupted | null = null;
+    const fail = (stage: TaskSyncStage, message: string, cause?: unknown): never => {
+      const record = RECORD_AFTER_FAILURE[stage];
+      throw new TaskSyncError(
+        stage === 'validation' ? message : `${message} ${describeProgress(applied, interrupted)}${record ? ` ${record}` : ''}`,
+        stage,
+        { applied, interrupted, cause },
+      );
+    };
+    const validationMessage = (error: unknown) => error instanceof Error ? error.message : String(error);
+    try {
+      if (options.refreshTasks !== undefined) assertRefreshTaskList(options.refreshTasks);
+    } catch (error) {
+      fail('validation', `refreshTasks rejected; no task files were changed. ${validationMessage(error)}`);
+    }
+    const planPath = getPlanPath(this.projectRoot, featureName);
+    if (!fileExists(planPath)) fail('validation', `No plan.md found for feature '${featureName}'`);
 
-    if (!planContent) {
-      throw new Error(`No plan.md found for feature '${featureName}'`);
+    const syncPath = getTaskSyncPath(this.projectRoot, featureName);
+    const release = acquireLockSync(syncPath, { staleLockTTL: Number.POSITIVE_INFINITY });
+    try {
+      const rawPlan = readText(planPath);
+      if (rawPlan === null) return fail('validation', `No plan.md found for feature '${featureName}'`);
+      const contentHash = getPlanContentHash(rawPlan);
+      if (options.expectedContentHash !== undefined && options.expectedContentHash !== contentHash) {
+        fail('validation',
+          'Task sync rejected; no task files were changed. plan.md changed after the content this sync was asked to apply '
+          + `(expected content hash ${options.expectedContentHash}, current ${contentHash}). Read and review the current plan before approving and syncing again.`);
+      }
+      const planContent = rawPlan.replace(/\r\n/g, '\n');
+
+      let derived: ReturnType<TaskService['deriveSync']>;
+      try {
+        derived = this.deriveSync(featureName, planContent, options);
+      } catch (error) {
+        return fail('validation', validationMessage(error));
+      }
+      const { result, planTasks, removals, creates, refreshes } = derived;
+
+      let previousHash: string | null = null;
+      try {
+        previousHash = this.readTaskSyncCheckpoint(featureName)?.lastReconciledContentHash ?? null;
+      } catch {
+        // An unreadable record carries no reconciled hash; this sync replaces it.
+      }
+      try {
+        writeJsonAtomicDurable(syncPath, { schemaVersion: 1, state: 'incomplete', lastReconciledContentHash: previousHash } satisfies TaskSyncCheckpoint);
+      } catch (error) {
+        fail('checkpoint', `Task sync could not record its start in task-sync.json: ${validationMessage(error)}.`, error);
+      }
+
+      const skipped: string[] = [];
+      // The action is recorded before it runs and cleared only when its helper returns, so a throw names the
+      // action whose files may be partly written instead of inferring "nothing changed" from the missing result.
+      const act = (action: TaskSyncAction, folder: string, apply: () => boolean, done: string[]) => {
+        interrupted = { action, folder };
+        if (apply()) done.push(folder);
+        else skipped.push(folder);
+        interrupted = null;
+      };
+      try {
+        for (const folder of removals) act('remove', folder, () => this.removePendingPlanTask(featureName, folder), applied.removed);
+        for (const { task, built } of creates) act('create', task.folder, () => this.createFromPlan(featureName, task, built), applied.created);
+        for (const { task, built, selected } of refreshes) {
+          act('refresh', task.folder, () => this.refreshPlanTask(featureName, task, built, selected), applied.refreshed);
+        }
+      } catch (error) {
+        fail('tasks', `Task sync failed while writing task files: ${validationMessage(error)}.`, error);
+      }
+
+      let reconciled = false;
+      try {
+        const currentPlan = readText(planPath);
+        reconciled = skipped.length === 0
+          && currentPlan !== null
+          && getPlanContentHash(currentPlan) === contentHash
+          && this.findTaskDrift(featureName, planContent, planTasks).length === 0;
+      } catch {
+        // Unverifiable task state is not reconciled.
+      }
+      if (reconciled) {
+        // Renaming this record over the incomplete one is the sync's last effect, so no step that can fail runs after
+        // reconciliation becomes visible. It is deliberately not flushed: a directory flush failing after the rename
+        // would report failure for a sync whose reconciliation is already published. A crash can revert the record to
+        // incomplete or leave it unreadable, which reads as incomplete or unknown, not as current.
+        try {
+          writeJsonAtomic(syncPath, { schemaVersion: 1, state: 'reconciled', lastReconciledContentHash: contentHash } satisfies TaskSyncCheckpoint);
+        } catch (error) {
+          // A failed rename leaves the incomplete record. One that reports an error after taking effect, as a retried
+          // request on a network filesystem can, has published reconciliation, so the record read back decides. When
+          // it cannot be read back the outcome is unknown, which is neither success nor a confirmed failure.
+          const readback = this.readbackReconciliation(featureName, contentHash);
+          if (readback.outcome === 'not_recorded') {
+            fail('verification', `Task sync applied its task changes but could not record reconciliation in task-sync.json: ${validationMessage(error)}.`, error);
+          }
+          if (readback.outcome === 'unavailable') {
+            fail('publication_unconfirmed',
+              `Task sync applied its task changes, but whether task-sync.json records reconciliation is unconfirmed: writing it reported "${validationMessage(error)}" and reading it back failed with "${readback.reason}".`,
+              error);
+          }
+        }
+      }
+
+      result.removed = applied.removed;
+      result.created = applied.created;
+      if (applied.refreshed.length > 0) result.refreshed = applied.refreshed;
+      if (skipped.length > 0) result.skipped = skipped;
+      const unownedTaskHeadings = listUnownedTaskHeadings(readPlanTaskLayout(planContent));
+      if (unownedTaskHeadings.length > 0) result.unownedTaskHeadings = unownedTaskHeadings;
+      return result;
+    } finally {
+      release();
+    }
+  }
+
+  /**
+   * Check a refreshTasks selection against the current plan and task records without writing anything, so a caller
+   * can reject it before approval. Sync repeats the same checks under its lock.
+   */
+  validateRefreshTasks(featureName: string, refreshTasks: string[]): void {
+    assertRefreshTaskList(refreshTasks);
+    const planContent = this.readNormalizedPlanContent(featureName);
+    if (!planContent) throw new Error(`No plan.md found for feature '${featureName}'`);
+    const planTasks = this.parseTasksFromPlan(planContent);
+    this.assertRefreshSelection(
+      refreshTasks,
+      new Map(this.readStoredTaskRecords(featureName).map(({ folder, status }) => [folder, status])),
+      new Set(planTasks.map((task) => task.folder)),
+    );
+  }
+
+  /**
+   * Whether stored tasks reflect the current plan content, for advisory display. Read-only: it creates no files,
+   * directories or locks, and an unreadable record reports `unknown` rather than being repaired.
+   */
+  getPlanSyncStatus(featureName: string): PlanSyncStatus {
+    let checkpoint: TaskSyncCheckpoint | null;
+    try {
+      checkpoint = this.readTaskSyncCheckpoint(featureName);
+    } catch {
+      return { state: 'unknown', hint: 'task-sync.json is unreadable, so whether tasks match the plan is unknown. Compare affected tasks with the plan before dispatch; the next task sync rewrites the record.' };
+    }
+    if (!checkpoint) {
+      return { state: 'unknown', hint: 'No task sync is recorded for this feature, so whether tasks match the plan is unknown. Compare affected tasks with the plan, or approve and sync, before dispatch.' };
+    }
+    const rawPlan = readText(getPlanPath(this.projectRoot, featureName));
+    if (rawPlan === null) return { state: 'unknown', hint: 'plan.md is missing, so there is no plan to compare tasks with.' };
+
+    // A content change already decides a reconciled record; comparing every task would be discarded.
+    if (checkpoint.state === 'reconciled' && checkpoint.lastReconciledContentHash !== getPlanContentHash(rawPlan)) {
+      return { state: 'changed', hint: PLAN_SYNC_CHANGED_HINT };
     }
 
+    let drift: string[] | null = null;
+    try {
+      const planContent = rawPlan.replace(/\r\n/g, '\n');
+      const planTasks = this.parseTasksFromPlan(planContent);
+      this.validateDependencyGraph(planTasks, featureName);
+      drift = this.findTaskDrift(featureName, planContent, planTasks);
+    } catch {
+      // An invalid plan or unreadable task record cannot be compared.
+    }
+    if (checkpoint.state === 'incomplete') {
+      return {
+        state: 'incomplete',
+        hint: `Task sync did not finish reconciling tasks with the plan${drift?.length ? `; tasks that differ from the current plan: ${listFolders(drift)}` : ''}. `
+          + 'Check affected tasks and shared contracts; review/approve and resync (refreshTasks for started tasks) before dispatch.',
+      };
+    }
+    if (drift === null) return { state: 'unknown', hint: 'The plan or a task record cannot be read for comparison, so whether tasks match the plan is unknown.' };
+    if (drift.length > 0) {
+      return {
+        state: 'incomplete',
+        hint: `Task records differ from the synced plan: ${listFolders(drift)}. Check them and resync (refreshTasks for started tasks) before dispatch.`,
+      };
+    }
+    return { state: 'current' };
+  }
+
+  /** Every action a sync would take and the stored graph it would produce; throws, writing nothing, when invalid. */
+  private deriveSync(featureName: string, planContent: string, options: SyncOptions) {
     const planTasks = this.parseTasksFromPlan(planContent);
-    
     this.validateDependencyGraph(planTasks, featureName);
 
-    // Derive every action and the resulting stored graph first; nothing is written unless
-    // that graph is valid, and the writes below apply exactly these actions.
-    const result: TasksSyncResult = {
-      created: [],
-      removed: [],
-      kept: [],
-      manual: [],
-    };
+    const result: TasksSyncResult = { created: [], removed: [], kept: [], manual: [] };
     const planByFolder = new Map(planTasks.map(task => [task.folder, task]));
-    const refreshPending = options?.refreshPending === true;
-    const writes: Array<{ task: ParsedTask; built: PlanTaskBuild; refresh: boolean }> = [];
+    const stored = this.readStoredTaskRecords(featureName);
+    const selected = new Set(options.refreshTasks ?? []);
+    this.assertRefreshSelection([...selected], new Map(stored.map(({ folder, status }) => [folder, status])), new Set(planByFolder.keys()));
+    const retainedWorktrees = options.retainedWorktreeTasks ?? 'unknown';
+    const refreshPending = options.refreshPending === true;
+
+    const removals: string[] = [];
+    const creates: Array<{ task: ParsedTask; built: PlanTaskBuild }> = [];
+    const refreshes: Array<{ task: ParsedTask; built: PlanTaskBuild; selected: boolean }> = [];
     const proposed: GraphNode[] = [];
     const existingFolders = new Set<string>();
 
-    for (const { folder, status } of this.readStoredTasks(featureName)) {
+    for (const { folder, status } of stored) {
       existingFolders.add(folder);
       const planTask = planByFolder.get(folder);
+      if (!status) {
+        if (planTask) {
+          throw new Error(
+            `Task sync rejected; no task files were changed. Task folder "${folder}" has no status file, and sync does not recreate it. ` +
+            'Inspect and repair the task record before syncing again.',
+          );
+        }
+        continue;
+      }
       let dependsOn = status.dependsOn;
       let fromPlan = false;
+      const refresh = (task: ParsedTask, isSelected: boolean) => {
+        const built = this.buildPlanTaskSpec(featureName, task, planTasks, planContent);
+        if (isSelected && !sameList(status.repoIds, task.repoIds ?? undefined)
+          && (retainedWorktrees === 'unknown' || retainedWorktrees.has(folder))) {
+          throw new Error(
+            `refreshTasks rejected; no task files were changed. "${folder}" would change repositories from ` +
+            `${status.repoIds?.join(', ') ?? '(project root)'} to ${task.repoIds?.join(', ') ?? '(project root)'}, and ` +
+            (retainedWorktrees === 'unknown' ? 'its worktrees could not be inspected. ' : 'it has a retained worktree whose placement keeps the old repositories. ') +
+            'Integrate or clean up that worktree first, or keep the task\'s Repos line unchanged.',
+          );
+        }
+        refreshes.push({ task, built, selected: isSelected });
+        dependsOn = built.dependsOn;
+        fromPlan = true;
+      };
 
       if (status.origin === 'manual') {
         result.manual.push(folder);
       } else if (status.status !== 'pending') {
-        // Execution history and cancelled records are retained with their stored edges.
+        // Execution history and cancelled records are retained with their stored edges unless explicitly selected.
         result.kept.push(folder);
+        if (planTask && selected.has(folder)) refresh(planTask, true);
       } else if (!planTask) {
-        result.removed.push(folder);
+        const history = this.describeExecutionHistory(featureName, folder, status);
+        if (history) {
+          throw new Error(
+            `Task sync rejected; no task files were changed. Pending plan task "${folder}" has no heading in plan.md but retains ${history}; ` +
+            'sync does not delete task history. Restore its plan heading, or cancel it with hive_task_update to keep it as a retained record, then sync again.',
+          );
+        }
+        removals.push(folder);
         continue;
       } else {
         result.kept.push(folder);
-        if (refreshPending) {
-          const built = this.buildPlanTaskSpec(featureName, planTask, planTasks, planContent);
-          writes.push({ task: planTask, built, refresh: true });
-          dependsOn = built.dependsOn;
-          fromPlan = true;
-        }
+        if (refreshPending || selected.has(folder)) refresh(planTask, selected.has(folder));
       }
       proposed.push({ folder, status: status.status, origin: status.origin, dependsOn, fromPlan });
     }
 
     for (const planTask of planTasks) {
       if (existingFolders.has(planTask.folder)) continue;
+      const replaced = stored.find(({ folder, status }) => status
+        && status.origin !== 'manual'
+        && REPLACEMENT_PROTECTED_STATUSES.has(status.status)
+        && !planByFolder.has(folder)
+        && parseInt(folder, 10) === planTask.order);
+      if (replaced) {
+        throw new Error(
+          `Task sync rejected; no task files were changed. plan.md task ${planTask.order} now produces folder "${planTask.folder}", ` +
+          `but "${replaced.folder}" (${replaced.status!.status}) holds that task's retained work. Sync does not rename task folders or ` +
+          `create a replacement beside started or finished work: restore the heading title that produces "${replaced.folder}", or give the new task its own number.`,
+        );
+      }
       const built = this.buildPlanTaskSpec(featureName, planTask, planTasks, planContent);
-      writes.push({ task: planTask, built, refresh: false });
+      creates.push({ task: planTask, built });
       proposed.push({ folder: planTask.folder, status: 'pending', origin: 'plan', dependsOn: built.dependsOn, fromPlan: true });
-      result.created.push(planTask.folder);
     }
 
     const violation = findUnfinishedDependencyViolation(proposed);
     if (violation) {
       throw new Error(
         `Task sync rejected; no task files were changed. ` +
-        this.describeDependencyViolation(violation, proposed, planTasks, new Set(result.removed)),
+        this.describeDependencyViolation(violation, proposed, planTasks, new Set(removals)),
       );
     }
+    return { result, planTasks, removals, creates, refreshes };
+  }
 
-    for (const folder of result.removed) {
-      this.deleteTask(featureName, folder);
-    }
-    for (const { task, built, refresh } of writes) {
-      if (refresh) {
-        this.refreshPendingTask(featureName, task, built);
-      } else {
-        this.createFromPlan(featureName, task, built);
+  private assertRefreshSelection(
+    refreshTasks: string[],
+    stored: ReadonlyMap<string, TaskStatus | null>,
+    planFolders: ReadonlySet<string>,
+  ): void {
+    for (const folder of refreshTasks) {
+      const reject = (reason: string): never => {
+        throw new Error(`refreshTasks rejected; no task files were changed. ${reason}`);
+      };
+      if (!stored.has(folder)) reject(`"${folder}" is not a task of this feature.`);
+      const status = stored.get(folder);
+      if (!status) reject(`"${folder}" has no readable status file; inspect and repair it first.`);
+      if (status!.origin === 'manual') reject(`"${folder}" is a manual task; refreshTasks applies only to plan tasks.`);
+      if (!UNFINISHED_STATUSES.has(status!.status)) {
+        reject(`"${folder}" is ${status!.status}; refreshTasks applies only to unfinished plan tasks (pending, in_progress, blocked, failed, partial), and finished or cancelled records keep their history.`);
+      }
+      if (!planFolders.has(folder)) {
+        reject(`plan.md has no task heading that produces "${folder}". Refresh matches tasks by folder, so a retitled heading needs its old title back; create new work as a new task.`);
       }
     }
+  }
 
-    const unownedTaskHeadings = listUnownedTaskHeadings(readPlanTaskLayout(planContent));
-    if (unownedTaskHeadings.length > 0) {
-      result.unownedTaskHeadings = unownedTaskHeadings;
+  /**
+   * Folders whose records do not match the current plan: a plan task without a readable record; an unfinished plan
+   * task whose title, dependencies, repositories or spec differ; an unfinished plan task the plan no longer lists;
+   * any status-less folder; or an unfinished task in an invalid stored dependency graph. Manual, done and cancelled
+   * records are history and are not compared.
+   */
+  private findTaskDrift(featureName: string, planContent: string, planTasks: ParsedTask[]): string[] {
+    const records = this.readStoredTaskRecords(featureName);
+    const byFolder = new Map(records.map(({ folder, status }) => [folder, status]));
+    const planFolders = new Set(planTasks.map(task => task.folder));
+    const drift = new Set<string>();
+
+    for (const task of planTasks) {
+      const status = byFolder.get(task.folder);
+      if (!status) {
+        drift.add(task.folder);
+        continue;
+      }
+      if (status.origin === 'manual' || !UNFINISHED_STATUSES.has(status.status)) continue;
+      const built = this.buildPlanTaskSpec(featureName, task, planTasks, planContent);
+      const matches = status.planTitle === task.name
+        && sameList(status.dependsOn ?? [], built.dependsOn)
+        && sameList(status.repoIds, task.repoIds ?? undefined)
+        && readText(getTaskSpecPath(this.projectRoot, featureName, task.folder)) === built.spec;
+      if (!matches) drift.add(task.folder);
+    }
+    for (const { folder, status } of records) {
+      if (!status) drift.add(folder);
+      else if (!planFolders.has(folder) && status.origin !== 'manual' && UNFINISHED_STATUSES.has(status.status)) drift.add(folder);
     }
 
-    return result;
+    const violation = findUnfinishedDependencyViolation(records.flatMap(({ folder, status }) => status
+      ? [{ folder, status: status.status, dependsOn: status.dependsOn }]
+      : []));
+    if (violation) drift.add(violation.kind === 'cycle' ? violation.path[0]! : violation.source);
+    return [...drift].sort();
+  }
+
+  /** What execution history a task folder retains, or null when it has none. */
+  private describeExecutionHistory(featureName: string, folder: string, status: TaskStatus): string | null {
+    const taskPath = getTaskPath(this.projectRoot, featureName, folder);
+    const reportsPath = path.join(taskPath, 'reports');
+    const found = [
+      ...(status.startedAt || status.completedAt ? ['a recorded start'] : []),
+      ...(fileExists(path.join(taskPath, 'report.md')) || (fileExists(reportsPath) && fs.readdirSync(reportsPath).length > 0) ? ['reports'] : []),
+      ...(fileExists(getTaskHandoffPath(this.projectRoot, featureName, folder)) ? ['a handoff'] : []),
+    ];
+    return found.length > 0 ? found.join(', ') : null;
+  }
+
+  /** The task sync record, null when none exists; throws when it is unreadable or malformed. */
+  private readTaskSyncCheckpoint(featureName: string): TaskSyncCheckpoint | null {
+    const checkpoint = readJson<unknown>(getTaskSyncPath(this.projectRoot, featureName));
+    if (checkpoint === null) return null;
+    if (!isTaskSyncCheckpoint(checkpoint)) throw new Error('task-sync.json has an unexpected shape');
+    return checkpoint;
+  }
+
+  /**
+   * Reads task-sync.json to learn whether it records reconciliation of this plan content. Only a readable record
+   * establishes the answer; a missing, unreadable or malformed one is `unavailable`, not proof of nonpublication.
+   */
+  private readbackReconciliation(featureName: string, contentHash: string): ReconciliationReadback {
+    try {
+      const checkpoint = this.readTaskSyncCheckpoint(featureName);
+      if (checkpoint === null) return { outcome: 'unavailable', reason: 'task-sync.json is missing' };
+      const recorded = checkpoint.state === 'reconciled' && checkpoint.lastReconciledContentHash === contentHash;
+      return { outcome: recorded ? 'recorded' : 'not_recorded' };
+    } catch (error) {
+      return { outcome: 'unavailable', reason: error instanceof Error ? error.message : String(error) };
+    }
   }
 
   /**
@@ -397,8 +829,10 @@ export class TaskService {
     return folder;
   }
 
-  private createFromPlan(featureName: string, task: ParsedTask, { dependsOn, spec }: PlanTaskBuild): void {
+  /** Creates a new plan task folder; false, writing nothing, when the folder appeared after sync derived it. */
+  private createFromPlan(featureName: string, task: ParsedTask, { dependsOn, spec }: PlanTaskBuild): boolean {
     const taskPath = getTaskPath(this.projectRoot, featureName, task.folder);
+    if (fileExists(taskPath)) return false;
     ensureDir(taskPath);
 
     const status: TaskStatus = {
@@ -408,24 +842,53 @@ export class TaskService {
       dependsOn,
       ...(task.repoIds !== null ? { repoIds: task.repoIds } : {}),
     };
-    writeJson(getTaskStatusPath(this.projectRoot, featureName, task.folder), status);
-    writeText(getTaskSpecPath(this.projectRoot, featureName, task.folder), spec);
+    writeJsonAtomicDurable(getTaskStatusPath(this.projectRoot, featureName, task.folder), status);
+    writeAtomicDurable(getTaskSpecPath(this.projectRoot, featureName, task.folder), spec);
+    return true;
   }
 
-  private refreshPendingTask(featureName: string, task: ParsedTask, { dependsOn, spec }: PlanTaskBuild): void {
+  /**
+   * Rewrites only the plan-owned fields (title, dependencies, repositories) and spec of an existing plan task, under
+   * the same status lock as update(). Eligibility is rechecked on the locked record, so a concurrent status change
+   * is kept and a task that became finished is not reopened: such a task is skipped and false is returned.
+   */
+  private refreshPlanTask(featureName: string, task: ParsedTask, { dependsOn, spec }: PlanTaskBuild, selected: boolean): boolean {
     const statusPath = getTaskStatusPath(this.projectRoot, featureName, task.folder);
-    const current = readJson<TaskStatus>(statusPath);
-    if (current) {
-      const updated: TaskStatus = {
-        ...current,
-        planTitle: task.name,
-        dependsOn,
-        repoIds: task.repoIds ?? undefined,
-      };
-      writeJson(statusPath, updated);
+    if (!fileExists(statusPath)) return false;
+    const release = acquireLockSync(statusPath, { staleLockTTL: Number.POSITIVE_INFINITY });
+    try {
+      const current = this.readValidatedTaskStatus(statusPath, task.folder);
+      const eligible = current !== null
+        && current.origin !== 'manual'
+        && (selected ? UNFINISHED_STATUSES.has(current.status) : current.status === 'pending');
+      if (!eligible) return false;
+      const updated: TaskStatus = { ...current, planTitle: task.name, dependsOn };
+      if (task.repoIds !== null) updated.repoIds = task.repoIds;
+      else delete updated.repoIds;
+      writeAtomicDurable(getTaskSpecPath(this.projectRoot, featureName, task.folder), spec);
+      writeJsonAtomicDurable(statusPath, updated);
+      return true;
+    } finally {
+      release();
     }
+  }
 
-    writeText(getTaskSpecPath(this.projectRoot, featureName, task.folder), spec);
+  /** Removes a pending plan task without history under its status lock; false when its record changed meanwhile. */
+  private removePendingPlanTask(featureName: string, folder: string): boolean {
+    const statusPath = getTaskStatusPath(this.projectRoot, featureName, folder);
+    if (!fileExists(statusPath)) return false;
+    const release = acquireLockSync(statusPath, { staleLockTTL: Number.POSITIVE_INFINITY });
+    try {
+      const current = this.readValidatedTaskStatus(statusPath, folder);
+      if (!current || current.origin === 'manual' || current.status !== 'pending'
+        || this.describeExecutionHistory(featureName, folder, current)) {
+        return false;
+      }
+      fs.rmSync(getTaskPath(this.projectRoot, featureName, folder), { recursive: true });
+      return true;
+    } finally {
+      release();
+    }
   }
 
   /** Spec input construction shared by sync create, sync refresh, and spec freshness. */
@@ -997,13 +1460,6 @@ export class TaskService {
     return listTaskFolders(getTasksPath(this.projectRoot, featureName));
   }
 
-  private deleteTask(featureName: string, taskFolder: string): void {
-    const taskPath = getTaskPath(this.projectRoot, featureName, taskFolder);
-    if (fileExists(taskPath)) {
-      fs.rmSync(taskPath, { recursive: true });
-    }
-  }
-
   private getNextOrder(existingFolders: string[]): number {
     if (existingFolders.length === 0) return 1;
     
@@ -1014,12 +1470,12 @@ export class TaskService {
     return Math.max(...orders, 0) + 1;
   }
 
-  /** Status files of existing task folders; folders without one are skipped. */
-  private readStoredTasks(featureName: string): Array<{ folder: string; status: TaskStatus }> {
-    return this.listFolders(featureName).flatMap(folder => {
-      const status = this.readValidatedTaskStatus(getTaskStatusPath(this.projectRoot, featureName, folder), folder);
-      return status ? [{ folder, status }] : [];
-    });
+  /** Every task folder with its validated status, null when the folder has no status file; throws on a corrupt one. */
+  private readStoredTaskRecords(featureName: string): Array<{ folder: string; status: TaskStatus | null }> {
+    return this.listFolders(featureName).map(folder => ({
+      folder,
+      status: this.readValidatedTaskStatus(getTaskStatusPath(this.projectRoot, featureName, folder), folder),
+    }));
   }
 
   private validateManualTaskDependsOn(featureName: string, taskFolder: string, dependsOn: string[]): void {
@@ -1110,6 +1566,12 @@ export class TaskService {
         lines.push(
           `"${folder}" is a pending plan task with outdated stored dependencies: amend its "Depends on:" line in ` +
           `plan.md if needed, then run hive_tasks_sync with refreshPending: true.`
+        );
+      } else if (node.origin !== 'manual' && UNFINISHED_STATUSES.has(node.status) && planTasks?.some(task => task.folder === folder)) {
+        lines.push(
+          `"${folder}" is a started plan task with outdated stored dependencies: amend its "Depends on:" line in ` +
+          `plan.md if needed. Once its prior assignment is terminal and its scope reconciled, approve and sync with ` +
+          `hive_plan_approve and refreshTasks naming it; hive_tasks_sync cannot select it.`
         );
       } else {
         lines.push(

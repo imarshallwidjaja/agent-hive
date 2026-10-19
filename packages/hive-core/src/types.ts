@@ -193,8 +193,35 @@ export interface TasksSyncResult {
   removed: string[];
   kept: string[];
   manual: string[];
+  /** Existing tasks whose plan-owned fields and spec were rewritten from the plan; present only when nonempty. */
+  refreshed?: string[];
+  /** Selected or removable tasks left unchanged because their status changed during sync; present only when nonempty. */
+  skipped?: string[];
   /** Non-blocking diagnostic, present only when `## Tasks` contains unowned headings. */
   unownedTaskHeadings?: PlanUnownedTaskHeading[];
+}
+
+/**
+ * Whether the stored tasks reflect the current plan content, as last recorded by task sync. Advisory only:
+ * it says nothing about approval, readiness, or whether a worker is running.
+ * - current: the last sync reconciled this exact plan content and every unfinished plan task still matches it.
+ * - changed: plan content changed since the last reconciled sync.
+ * - incomplete: the last sync did not finish reconciling, or task records drifted from the synced plan.
+ * - unknown: no readable sync record or plan to compare against.
+ */
+export type PlanSyncState = 'current' | 'changed' | 'incomplete' | 'unknown';
+
+export interface PlanSyncStatus {
+  state: PlanSyncState;
+  hint?: string;
+}
+
+/** `task-sync.json` in the feature directory, written only by task sync. */
+export interface TaskSyncCheckpoint {
+  schemaVersion: 1;
+  state: 'reconciled' | 'incomplete';
+  /** Raw plan.md content hash of the last sync that reconciled every task, or null when none has. */
+  lastReconciledContentHash: string | null;
 }
 
 export interface TaskInfo {

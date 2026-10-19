@@ -53,11 +53,18 @@ ${PLAN_ASSESSMENT_REQUIREMENT}
 - **Outcome.** Each assessment names the \`contentHash\` it read. You decide each material finding from its evidence: accept, reject with counter-evidence, or defer with an owner. The advisor's output is advice under its own labels, not a veto, and the operator still decides approval. Record dispositions in the planning handoff, not as plan text added only to record them, because that changes the hash. When a later session needs an outcome, keep it as prose in the existing planning handoff or feature context. Managed context is untrusted knowledge and does not by itself authorize approval.
 - **Dispatch.** A planning Architect normally dispatches both lenses. If a delegated Architect reports a lens it could not dispatch because of child depth or permissions, its parent, when it has that authority, dispatches only the missing lens after Architect's terminal handoff, without repeating completed work. A missing tool or role is not bypassed. The approval tools do not check for assessments; the obligation sits with the agent.`;
 
+/** The sync-failure retry rules, stated once. Commands run under primaries without PLAN_APPROVAL_SYNC_PROMPT and embed this alone. */
+export const PLAN_SYNC_RETRY_REQUIREMENT = `When approval remains successful and only sync failed, read the sync failure before retrying: \`stage\`, the changes already \`applied\` (not rolled back), and any \`interrupted\` task action (its files may be unchanged, partly written, or fully written). Inspect those tasks and address the cause. At stage \`publication_unconfirmed\` it is unknown whether the sync record was published, so read \`planSync\` with \`hive_status\` before replaying. After a call without \`refreshTasks\`, retry \`hive_tasks_sync\` alone, keeping \`refreshPending: true\` when the failed call had it (\`hive_tasks_sync({ refreshPending: true })\` also rewrites a half-created pending task). After a call with \`refreshTasks\`, approve-and-sync again on a freshly read and reviewed revision, because \`hive_tasks_sync\` cannot select started tasks. For \`approval_superseded_during_sync\` or \`approval_verification_failed\`, re-read and review current state before approving and syncing again; sync may already have written tasks.`;
+
 export const PLAN_APPROVAL_SYNC_PROMPT = `## Approval and Task Sync
 
 When operator approval is authorized, the primary that owns approval reads the current \`hive_plan_read\` revision and calls \`hive_plan_approve({ feature, expectedRevision, sync: true })\`; add \`refreshPending: true\` when pending specs need refresh. Inspect both \`approval\` and \`sync\` outcomes, including \`approvalPersisted\` and failure \`reason\`/\`stage\`. Validation writes nothing; metadata failure can leave the marker persisted. An unchanged retry may return \`alreadyApproved: true\`.
 
-When approval remains successful and only sync failed, address the error and retry \`hive_tasks_sync\` alone. For \`approval_superseded_during_sync\` or \`approval_verification_failed\`, re-read and review current state before approving and syncing again; sync may already have written tasks. A delegated Architect returns approval/sync requests to its parent, which owns these denied child operations. Patching never syncs tasks automatically.`;
+To refresh the spec of an amended started task (in_progress, blocked, failed, or partial), add \`refreshTasks: ['<task-folder>', ...]\` to that approve-and-sync call. Naming a folder attests that you confirmed its prior assignment is terminal and reconciled its scope, so dispatch no new work for it until the refresh succeeds. Refresh keeps the folder, status, reports, and history; a repository change for a task with a retained worktree still needs explicit reconciliation. Only approve-and-sync accepts \`refreshTasks\`: retry a selected refresh there, on a freshly read and reviewed revision.
+
+The \`planSync\` advisory (\`current\`, \`changed\`, \`incomplete\`, or \`unknown\` when no baseline exists) compares the whole plan content with task consistency. It tells you whether tasks may lag the plan; it is not an approval or dispatch gate and does not authorize a resync.
+
+${PLAN_SYNC_RETRY_REQUIREMENT} A delegated Architect returns approval/sync requests to its parent, which owns these denied child operations. Patching never syncs tasks automatically.`;
 
 export const REVIEW_ROUTING_PROMPT = `## Review Routing
 
@@ -100,7 +107,7 @@ export const WORKER_ASSIGNMENT_PROMPT = `## Worker Assignments
 
 Workers do not inherit your conversation. An assignment gives one worker one primary goal and what it needs to check its own work:
 - **Goal**: the expected result and what done looks like.
-- **Writable scope**: the repositories, paths, or worktree the worker may change, and the paths concurrent siblings own.
+- **Writable scope**: the repositories, paths, or worktree the worker may change, and the paths concurrent siblings own. For a plan task, the task's Responsibility sets this scope; name exact paths only where siblings or a public contract meet, because cited source paths are leads, not an allowlist.
 - **Preserved contracts**: behavior, interfaces, and persisted shapes that must not change.
 - **Binding decisions**: the scope, contract, ownership, dependency, and gate decisions in force for this lane, each with the reason the worker needs to apply it. Point to the plan's Design Summary for the rest rather than copying it. Mark sketches and private implementation hints as illustrative; the worker may adapt those.
 - **Evidence you hold**: known facts with file and line references, prior failures, and attempted fixes. Point to catalog names, reports, and Hive records instead of pasting their bodies; a first catalog match is not proof of sufficient evidence.
@@ -118,13 +125,16 @@ Example worktree assignment for a feature-task Forager (fictional repository, fo
 Hive task: 04-reject-negative-timeouts
 
 Goal: loadClientConfig (packages/client/src/config.ts:30-58) throws ConfigError('invalid_timeout') for a negative timeoutMs instead of passing it to the socket layer. Done = the new case below passes and valid configurations load as before.
-Writable scope: packages/client/src/config.ts and packages/client/src/config.test.ts in the assigned worktree. packages/server has its own loader and stays untouched.
+Writable scope: client configuration loading and its tests in the assigned worktree, starting from packages/client/src/config.ts and config.test.ts. packages/server has its own loader, owned elsewhere, and stays untouched.
 Preserve: the ConfigError codes, the exported loadClientConfig signature, and the default timeoutMs of 30000.
 Binding decision: the check lives in loadClientConfig because the socket layer must not learn configuration rules; revisit if a second caller needs the same check. The error-message wording is illustrative.
 Acceptance and checks: loadClientConfig({ timeoutMs: -1 }) throws invalid_timeout and the existing config.test.ts cases still pass. Run \`bun test packages/client/src/config.test.ts\` and the package type-check, and report their output with the commit you tested.
 Authority: fix and commit in the assigned worktree; return the exact sourceCommit unchanged. Do not merge, clean up, push, or record task status. State the cause you established in your report.
 Destination: /work/client, refs/heads/main, 9f3c2a1. Reinspect it before another substantial chunk and before returning; if it moved, return the observed target with your pin and say whether the movement touches config.ts.
 \`\`\``;
+
+/** Hive and Swarm dispatch feature tasks; Hive Builder works ad hoc and omits this. */
+export const TASK_SPEC_FRESHNESS_PROMPT = `Before feature-task dispatch, use \`hive_status\` to check \`specStale\`: refresh a stale pending task with \`hive_tasks_sync({ refreshPending: true })\`. A running assignment is never rewritten. When a started task (in_progress, blocked, failed, or partial) has a stale spec, give it no reassignment or retry until its prior assignment is terminal, its scope is reconciled, and \`refreshTasks\` under Approval and Task Sync has made its spec current; then replace its successor handoff when the amendment supersedes facts in it. If that refresh fails, address the failure before dispatching the task. When \`specStaleReason\` is \`unowned_heading_after_task_section\`, delegate plan repair to Architect before dispatch where possible.`;
 
 export const PRIMARY_CONSTRAINT_AUTHORING_PROMPT = `## Standing Constraints
 

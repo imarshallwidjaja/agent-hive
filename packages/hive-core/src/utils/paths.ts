@@ -15,6 +15,7 @@ const STATUS_FILE = 'status.json';
 const REPORT_FILE = 'report.md';
 const HANDOFF_FILE = 'handoff.md';
 const APPROVED_FILE = 'APPROVED';
+const TASK_SYNC_FILE = 'task-sync.json';
 
 export const FEATURE_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 
@@ -163,6 +164,11 @@ export function getTaskSpecPath(projectRoot: string, featureName: string, taskFo
 
 export function getApprovedPath(projectRoot: string, featureName: string): string {
   return path.join(getFeaturePath(projectRoot, featureName), APPROVED_FILE);
+}
+
+/** Task sync checkpoint; its `.lock` sibling serializes syncs of one feature. */
+export function getTaskSyncPath(projectRoot: string, featureName: string): string {
+  return path.join(getFeaturePath(projectRoot, featureName), TASK_SYNC_FILE);
 }
 
 const SUBTASKS_DIR = 'subtasks';

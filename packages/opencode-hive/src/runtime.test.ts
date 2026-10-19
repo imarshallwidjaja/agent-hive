@@ -84,12 +84,15 @@ function createRuntime(options: { detectedFeature?: string; hiveConfig?: Record<
       abort: async () => ({ data: true }),
     },
   };
+  const load = () => createPluginWithHome(home, () => plugin.server({ directory: workTarget, worktree: workTarget, project: { id: 'test', worktree: workTarget }, client } as any));
   return {
     root,
     workTarget,
     sessions,
     transcripts,
-    hooks: createPluginWithHome(home, () => plugin.server({ directory: workTarget, worktree: workTarget, project: { id: 'test', worktree: workTarget }, client } as any)),
+    hooks: load(),
+    /** A second plugin instance over the same project and home, sharing nothing in memory with `hooks`. */
+    reload: load,
   };
 }
 
@@ -1337,28 +1340,50 @@ describe('coordinated runtime hard cut', () => {
     const { root, hooks } = createRuntime();
     const loaded = await hooks;
     const caller = context('approve-sync');
+    const current = { state: 'current' };
     await loaded.tool!.hive_feature_create.execute({ name: 'approve-sync' }, caller);
     await loaded.tool!.hive_plan_write.execute({ content: '# Plan\n\n## Tasks\n\n### 1. Setup\n\nSetup.\n\n### 2. Build\n\nBuild.\n' }, caller);
     const reviewed = JSON.parse(await loaded.tool!.hive_plan_read.execute({}, caller));
+    expect(reviewed.planSync).toEqual({ state: 'unknown', hint: expect.stringContaining('No task sync is recorded') });
     const result = JSON.parse(await loaded.tool!.hive_plan_approve.execute({ sync: true, expectedRevision: reviewed.revision }, caller));
     const approved = JSON.parse(await loaded.tool!.hive_plan_read.execute({}, caller));
-    expect(result).toEqual({ approval: { success: true, feature: 'approve-sync', approvalPersisted: true, revision: approved.revision }, sync: { success: true, created: ['01-setup', '02-build'], removed: [], kept: [], manual: [] } });
+    expect(result).toEqual({ approval: { success: true, feature: 'approve-sync', approvalPersisted: true, revision: approved.revision, contentHash: reviewed.contentHash }, sync: { success: true, created: ['01-setup', '02-build'], removed: [], kept: [], manual: [] }, planSync: current });
     const retry = JSON.parse(await loaded.tool!.hive_plan_approve.execute({ sync: true, expectedRevision: reviewed.revision }, caller));
     expect(retry.approval).toEqual({ ...result.approval, alreadyApproved: true });
     expect(retry.sync).toEqual({ success: true, created: [], removed: [], kept: ['01-setup', '02-build'], manual: [] });
     expect(new PlanService(root).isApproved('approve-sync')).toBe(true);
-    expect(JSON.parse(await loaded.tool!.hive_tasks_sync.execute({}, caller))).toEqual({ created: [], removed: [], kept: ['01-setup', '02-build'], manual: [] });
+    expect(JSON.parse(await loaded.tool!.hive_tasks_sync.execute({}, caller))).toEqual({ created: [], removed: [], kept: ['01-setup', '02-build'], manual: [], planSync: current });
 
     await loaded.tool!.hive_plan_write.execute({ content: reviewed.content.replace('Build.', 'Build again.') }, caller);
     const revised = JSON.parse(await loaded.tool!.hive_plan_read.execute({}, caller));
-    expect(JSON.parse(await loaded.tool!.hive_status.execute({}, caller)).tasks[1].specStale).toBe(true);
+    const drifted = JSON.parse(await loaded.tool!.hive_status.execute({}, caller));
+    expect(drifted.tasks[1].specStale).toBe(true);
+    expect(drifted.planSync).toEqual({ state: 'changed', hint: 'Plan changed since task sync. Check affected tasks and shared contracts; review/approve and resync as needed before dispatch.' });
     const refreshed = JSON.parse(await loaded.tool!.hive_plan_approve.execute({ sync: true, expectedRevision: revised.revision, refreshPending: true }, caller));
-    expect(refreshed.sync).toMatchObject({ success: true, kept: ['01-setup', '02-build'] });
-    expect(JSON.parse(await loaded.tool!.hive_status.execute({}, caller)).tasks[1].specStale).toBe(false);
+    expect(refreshed.sync).toMatchObject({ success: true, kept: ['01-setup', '02-build'], refreshed: ['01-setup', '02-build'] });
+    expect(JSON.parse(await loaded.tool!.hive_status.execute({}, caller))).toMatchObject({ tasks: [{}, { specStale: false }], planSync: current });
+
+    // A started task is refreshed only when the primary selects it after the plan is approved again.
+    await loaded.tool!.hive_task_update.execute({ task: '02-build', status: 'in_progress', summary: 'Halfway.' }, caller);
+    await loaded.tool!.hive_plan_write.execute({ content: revised.content.replace('Build again.', 'Build with the new contract.') }, caller);
+    const amended = JSON.parse(await loaded.tool!.hive_plan_read.execute({}, caller));
+    const plain = JSON.parse(await loaded.tool!.hive_plan_approve.execute({ sync: true, expectedRevision: amended.revision, refreshPending: true }, caller));
+    expect(plain.planSync).toEqual({ state: 'incomplete', hint: expect.stringContaining('tasks that differ from the current plan: 02-build') });
+    expect(JSON.parse(await loaded.tool!.hive_plan_approve.execute({ refreshTasks: ['02-build'] }, caller))).toMatchObject({ success: false, reason: 'refresh_tasks_requires_sync', approvalPersisted: true });
+    const selected = JSON.parse(await loaded.tool!.hive_plan_approve.execute({ sync: true, expectedRevision: amended.revision, refreshTasks: ['02-build'] }, caller));
+    expect(selected).toMatchObject({ approval: { success: true, alreadyApproved: true }, sync: { success: true, refreshed: ['02-build'] }, planSync: current });
+    expect(JSON.parse(await loaded.tool!.hive_status.execute({}, caller)).tasks[1]).toMatchObject({ status: 'in_progress', summary: 'Halfway.', specStale: false });
+
+    await loaded.tool!.hive_task_update.execute({ task: '01-setup', status: 'done' }, caller);
+    await loaded.tool!.hive_plan_write.execute({ content: amended.content.replace('Setup.', 'Setup again.') }, caller);
+    const rejected = JSON.parse(await loaded.tool!.hive_plan_approve.execute({ sync: true, expectedRevision: JSON.parse(await loaded.tool!.hive_plan_read.execute({}, caller)).revision, refreshTasks: ['01-setup'] }, caller));
+    expect(rejected).toMatchObject({ approval: { success: false, reason: 'invalid_refresh_tasks', stage: 'validation', approvalPersisted: false }, sync: { skipped: true }, planSync: { state: 'changed' } });
+    expect(rejected.approval.error).toContain('"01-setup" is done');
 
     await loaded.tool!.hive_feature_create.execute({ name: 'approve-only' }, caller);
     await loaded.tool!.hive_plan_write.execute({ feature: 'approve-only', content: reviewed.content }, caller);
-    expect(JSON.parse(await loaded.tool!.hive_plan_approve.execute({ feature: 'approve-only' }, caller))).toEqual({ success: true, feature: 'approve-only', approvalPersisted: true, revision: JSON.parse(await loaded.tool!.hive_plan_read.execute({ feature: 'approve-only' }, caller)).revision });
+    const approveOnly = JSON.parse(await loaded.tool!.hive_plan_approve.execute({ feature: 'approve-only' }, caller));
+    expect(approveOnly).toEqual({ success: true, feature: 'approve-only', approvalPersisted: true, revision: JSON.parse(await loaded.tool!.hive_plan_read.execute({ feature: 'approve-only' }, caller)).revision, contentHash: reviewed.contentHash, planSync: { state: 'unknown', hint: expect.any(String) } });
     expect(JSON.parse(await loaded.tool!.hive_status.execute({ feature: 'approve-only' }, caller)).tasks).toEqual([]);
   });
 
@@ -1389,6 +1414,99 @@ describe('coordinated runtime hard cut', () => {
     expect(failed.sync.error).toMatch(/99|dependency/i);
     expect(new PlanService(root).isApproved('approve-failure')).toBe(true);
     expect(JSON.parse(await loaded.tool!.hive_status.execute({}, caller)).tasks).toEqual([]);
+  });
+
+  it('agrees with a fresh runtime about plan sync after writing the reconciled record fails', async () => {
+    for (const fault of ['flush-after-rename-fails', 'rename-fails', 'publishes-then-unreadable'] as const) {
+      const { hooks, reload } = createRuntime();
+      const loaded = await hooks;
+      const feature = `sync-record-${fault}`;
+      const caller = context(feature);
+      await loaded.tool!.hive_feature_create.execute({ name: feature }, caller);
+      const written = JSON.parse(await loaded.tool!.hive_plan_write.execute({ content: '# Plan\n\n## Tasks\n\n### 1. Setup\n\nSetup.\n' }, caller));
+      const reviewed = JSON.parse(await loaded.tool!.hive_plan_read.execute({}, caller));
+      const featurePath = path.dirname(written.path);
+      const syncRecord = path.join(featurePath, 'task-sync.json');
+
+      // Once the reconciled record is renamed (or its rename fails), refuse every later change to task-sync.json
+      // and every flush of the feature directory, so no recovery write can repair the outcome.
+      const descriptorPaths = new Map<number, string>();
+      let attempted = false;
+      const open = fs.openSync;
+      const fsync = fs.fsyncSync;
+      const rename = fs.renameSync;
+      const rm = fs.rmSync;
+      const readFile = fs.readFileSync;
+      let readbackFailed = false;
+      const spies = [
+        spyOn(fs, 'readFileSync').mockImplementation(((target: fs.PathOrFileDescriptor, ...rest: unknown[]) => {
+          if (fault === 'publishes-then-unreadable' && attempted && !readbackFailed && String(target) === syncRecord) {
+            readbackFailed = true;
+            throw new Error('Injected readback failure');
+          }
+          return (readFile as (...args: unknown[]) => unknown)(target, ...rest);
+        }) as typeof fs.readFileSync),
+        spyOn(fs, 'openSync').mockImplementation(((target, flags, mode) => {
+          const descriptor = open(target, flags, mode);
+          descriptorPaths.set(descriptor, String(target));
+          return descriptor;
+        }) as typeof fs.openSync),
+        spyOn(fs, 'fsyncSync').mockImplementation(((descriptor: number) => {
+          if (attempted && descriptorPaths.get(descriptor) === featurePath) throw new Error('Injected directory flush failure');
+          fsync(descriptor);
+        }) as typeof fs.fsyncSync),
+        spyOn(fs, 'renameSync').mockImplementation((from: fs.PathLike, to: fs.PathLike) => {
+          if (String(to) !== syncRecord) return rename(from, to);
+          if (attempted) throw new Error('Injected record write failure');
+          if (!fs.readFileSync(from, 'utf8').includes('"reconciled"')) return rename(from, to);
+          attempted = true;
+          if (fault === 'rename-fails') throw new Error('Injected reconciled rename failure');
+          rename(from, to);
+          if (fault === 'publishes-then-unreadable') throw new Error('Injected error after the reconciled rename published');
+        }),
+        spyOn(fs, 'rmSync').mockImplementation(((target, options) => {
+          if (attempted && String(target) === syncRecord) throw new Error('Injected record removal failure');
+          return rm(target, options);
+        }) as typeof fs.rmSync),
+      ];
+      let result;
+      try {
+        result = JSON.parse(await loaded.tool!.hive_plan_approve.execute({ sync: true, expectedRevision: reviewed.revision }, caller));
+      } finally {
+        for (const spy of spies.reverse()) spy.mockRestore();
+      }
+      const fresh = JSON.parse(await (await reload()).tool!.hive_status.execute({ feature }, caller)).planSync;
+
+      expect(result.approval).toMatchObject({ success: true });
+      if (fault === 'rename-fails') {
+        expect(result.sync).toEqual({
+          success: false,
+          reason: 'task_sync_failed',
+          stage: 'verification',
+          applied: { removed: [], created: ['01-setup'], refreshed: [] },
+          interrupted: null,
+          error: expect.stringContaining('Injected reconciled rename failure'),
+        });
+        expect(result.planSync.state).toBe('incomplete');
+        expect(fresh.state).toBe('incomplete');
+      } else if (fault === 'publishes-then-unreadable') {
+        // The call's outcome is unconfirmed; planSync reports the record as read now and does not retract that.
+        expect(result.sync).toMatchObject({
+          success: false,
+          reason: 'task_sync_failed',
+          stage: 'publication_unconfirmed',
+          applied: { removed: [], created: ['01-setup'], refreshed: [] },
+          interrupted: null,
+          error: expect.stringContaining('unconfirmed'),
+        });
+        expect(result.planSync).toEqual({ state: 'current' });
+        expect(fresh).toEqual({ state: 'current' });
+      } else {
+        expect(result.sync).toMatchObject({ success: true, created: ['01-setup'] });
+        expect(result.planSync).toEqual({ state: 'current' });
+        expect(fresh).toEqual({ state: 'current' });
+      }
+    }
   });
 
   it('returns persisted approval and the failed metadata stage while skipping sync', async () => {
@@ -1433,7 +1551,11 @@ describe('coordinated runtime hard cut', () => {
       });
       try {
         const result = JSON.parse(await loaded.tool!.hive_plan_approve.execute({ sync: true, expectedRevision: reviewed.revision }, caller));
-        expect(result).toMatchObject({ approval: { success: false, reason: 'approval_superseded_during_sync', stage: 'sync_verification', approvalPersisted: mutation === 'comment', revision: expect.any(String), currentRevision: service.read(`sync-${mutation}`)!.revision }, sync: { success: true, created: ['01-setup'] } });
+        // Sync applies only the approved content, so a write before it is rejected rather than synced.
+        const sync = mutation === 'write'
+          ? { success: false, reason: 'task_sync_failed', stage: 'validation', applied: { removed: [], created: [], refreshed: [] } }
+          : { success: true, created: ['01-setup'] };
+        expect(result).toMatchObject({ approval: { success: false, reason: 'approval_superseded_during_sync', stage: 'sync_verification', approvalPersisted: mutation === 'comment', revision: expect.any(String), currentRevision: service.read(`sync-${mutation}`)!.revision }, sync });
         expect(result.approval.currentRevision).not.toBe(result.approval.revision);
       } finally {
         concurrent.mockRestore();

@@ -19,6 +19,7 @@
         ├── feature.json         # Feature metadata + lifecycle timestamps
         ├── plan.md              # Execution plan
         ├── APPROVED             # Plan approval marker
+        ├── task-sync.json       # Task sync checkpoint (written only by task sync)
         ├── comments/plan.json   # Plan review threads
         ├── constraints.json     # Optional feature-scoped operator directives
         ├── worklog.json         # Optional shared feature Worklog
@@ -58,6 +59,8 @@ Single-repo projects use the git root directly. Multi-repo topology is stored in
 `feature.json` stores required `name`, `status`, and `createdAt`, with optional `ticket`, `sessionId`, `approvedAt`, `completedAt`, `archivedAt`, and `archiveReason`. New features start in `planning` and use an indexed directory such as `01_example`; callers address them by logical name `example`. Existing unindexed or differently separated indexed feature directories remain resolvable by the logical name in `feature.json`.
 
 `APPROVED` is the approval marker. Approval writes it before updating `feature.json`, so the marker can exist while feature metadata remains `planning` after a failed write. `hive_plan_approve` exposes `approvalPersisted` and a failure `stage` (`validation`, `approval_marker`, or `feature_metadata`) instead of treating partial persistence as pre-write rejection. Success includes the approved `revision`; an unchanged retry of the pre-approval revision adds `alreadyApproved: true` and repairs an incomplete metadata update. With optional task sync, a post-sync revision/approval recheck can return `approval_superseded_during_sync` or `approval_verification_failed` at `sync_verification`, alongside the actual sync outcome. Inspect both outcomes and current state; the operation does not roll back task writes. Exact shapes and reasons: [Plan Management](HIVE-TOOLS.md#plan-management-4-tools).
+
+`task-sync.json` is `{ "schemaVersion": 1, "state": "reconciled" | "incomplete", "lastReconciledContentHash": string | null }`. Task sync writes `incomplete`, keeping the previous hash, and flushes it to disk before its first task write. Only after the plan is unchanged and every unfinished plan task matches it does sync rename a `reconciled` record, carrying the raw `plan.md` content hash, over the incomplete one. That rename is the sync's last effect, so a sync that fails after recording its start and before attempting the rename leaves `incomplete` on disk. When the rename reports an error, sync reads the record back: it counts itself complete if the record holds its own reconciliation, fails with stage `verification` if the record reads back without it, and fails with stage `publication_unconfirmed` if the record cannot be read back, because then whether the rename took effect is unknown. A later read of `planSync` describes the record as read then; it can show the data is current without proving what the earlier call returned. The reconciled record is not flushed, because a flush that failed after the rename would publish reconciliation for a failed sync; after a crash it may revert to `incomplete` or be unreadable, which reads as `incomplete` or `unknown` until the next sync. Its `.lock` sibling serializes syncs of the feature. Reads never create, migrate, or repair the file; a feature without one reports plan sync state `unknown` until its next sync. See [Plan sync status](HIVE-TOOLS.md#plan-sync-status).
 
 ## Execution records
 
@@ -165,7 +168,7 @@ All bundled source consumers must use the hash-aware signatures together. Mixed 
 | `baseCommits` | map? | Base commit hashes keyed by repository ID |
 | `repoIds` | string[]? | Persisted repository selection for a manifest-backed task |
 | `subtasks` | object[]? | Optional nested subtask state when a task is decomposed during execution. |
-| `dependsOn` | string[]? | Task folder names this task depends on (for example, `["01-setup"]`). Plan tasks resolve this from `plan.md` `Depends on:` annotations during `hive_tasks_sync`; manual tasks persist an explicit array and default to `[]`. A missing field in an older record reads as `[]`; reads never rewrite the file. |
+| `dependsOn` | string[]? | Task folder names this task depends on (for example, `["01-setup"]`). Plan tasks resolve this from `plan.md` `Depends on:` annotations during task sync, when the task is created or refreshed; manual tasks persist an explicit array and default to `[]`. A missing field in an older record reads as `[]`; reads never rewrite the file. |
 | `metadata` | object? | Structured manual-task metadata used to generate `spec.md`. Omitted for normal plan-backed tasks. |
 
 **Dependency rules**:
@@ -213,9 +216,11 @@ hive_tasks_sync({ refreshPending: true })
 - Updates `status.json.dependsOn`
 - Updates `status.json.repoIds` from `Repos:` in the plan (or removes it if the plan no longer declares repositories)
 - Regenerates `spec.md`
-- Deletes pending plan-backed tasks removed from `plan.md`
-- Preserves manual tasks and any plan task whose current status is not `pending` (`in_progress`, `done`, `blocked`, `failed`, `partial`, `cancelled`); a plan task reset to `pending` is deleted with its folder when the plan no longer lists it
+- Deletes pending plan-backed tasks removed from `plan.md` when they have no execution history; a removed pending task with a recorded start, report, or handoff rejects the sync instead
+- Preserves manual tasks and any plan task whose current status is not `pending` (`in_progress`, `done`, `blocked`, `failed`, `partial`, `cancelled`)
 - Rejects the whole sync, before any write, when the resulting unfinished-task graph is invalid; refreshing a pending task's outdated dependencies is one of the repair routes
+
+Started plan tasks (`in_progress`, `blocked`, `failed`, `partial`) are refreshed only when the primary names them in `refreshTasks` on `hive_plan_approve({ expectedRevision, sync: true, refreshTasks })`, after confirming no assignment for them is running. The same plan-owned fields and spec are rewritten; status, blocker, timestamps, base commits, reports, and handoff are kept. [Selected task refresh](HIVE-TOOLS.md#selected-task-refresh) lists the rejections.
 
 Ad-hoc orchestration uses `hive_adhoc_worktree_create`, `hive_adhoc_worktree_merge`, and `hive_adhoc_worktree_cleanup` for Git worktree placement. Manual tasks remain for full Hive DAG follow-ups. Route sequencing or scope changes back through `plan.md`, then refresh pending tasks from that graph.
 

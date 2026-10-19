@@ -5,11 +5,15 @@ export {
   ConstraintRegisterError,
 } from './constraintRegister.js';
 export type { ConstraintRegister } from './constraintRegister.js';
-export { PlanService, PlanApprovalError } from './planService.js';
+export { PlanService, PlanApprovalError, getPlanContentHash } from './planService.js';
 export type { PlanApprovalResult, PlanApprovalStage, PlanApprovalFailureReason } from './planService.js';
-export { TaskService, TaskUpdatePersistenceError, TASK_HANDOFF_MAX_BYTES } from './taskService.js';
+export { TaskService, TaskSyncError, TaskUpdatePersistenceError, TASK_HANDOFF_MAX_BYTES } from './taskService.js';
 export type {
   SyncOptions,
+  TaskSyncAction,
+  TaskSyncApplied,
+  TaskSyncInterrupted,
+  TaskSyncStage,
   TaskStatusEntry,
   TaskSpecFreshness,
   TaskSpecFreshnessReason,

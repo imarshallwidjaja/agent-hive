@@ -2,13 +2,13 @@ import { describe, expect, it, beforeEach, afterEach, spyOn } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
 import { spawn } from "node:child_process";
-import { TaskService, TaskUpdatePersistenceError, TASK_STATUS_SCHEMA_VERSION } from "./taskService";
+import { TaskService, TaskSyncError, TaskUpdatePersistenceError, TASK_STATUS_SCHEMA_VERSION } from "./taskService";
 import { PlanService } from "./planService";
 import { SubtaskService } from "./subtaskService";
 import { TaskUpdatePersistenceError as PublicTaskUpdatePersistenceError } from "../index";
 import type { TaskUpdateInput as PublicTaskUpdateInput, TaskUpdateResult as PublicTaskUpdateResult } from "../index";
 import { TaskStatus } from "../types";
-import { getLockPath, readJson } from "../utils/paths";
+import { acquireLockSync, getLockPath, readJson } from "../utils/paths";
 
 const TEST_DIR = "/tmp/hive-core-taskservice-test-" + process.pid;
 const PROJECT_ROOT = TEST_DIR;
@@ -3297,7 +3297,7 @@ Align documentation wording.
       service.update(featureName, "02-taskb", { status: "failed" });
       service.update(featureName, "03-taskc", { status: "partial" });
 
-      const planV2 = `# Plan\n\n## Tasks\n\n### 1. NewTask\n\n**Depends on**: none\n\nNew.\n`;
+      const planV2 = `# Plan\n\n## Tasks\n\n### 4. NewTask\n\n**Depends on**: none\n\nNew.\n`;
       fs.writeFileSync(path.join(featurePath, "plan.md"), planV2);
 
       service.sync(featureName, { refreshPending: true });
@@ -3415,7 +3415,7 @@ Build.
       const before = snapshotTasks();
 
       expect(() => service.sync(featureName, { refreshPending: true })).toThrow(
-        /cycle: 01-alpha -> 02-beta -> 01-alpha.*"01-alpha" keeps its stored dependencies.*"02-beta" takes its dependencies from plan\.md/,
+        /cycle: 01-alpha -> 02-beta -> 01-alpha.*"01-alpha" is a started plan task with outdated stored dependencies.*refreshTasks.*"02-beta" takes its dependencies from plan\.md/,
       );
       expect(snapshotTasks()).toEqual(before);
     });
@@ -3520,6 +3520,475 @@ Build.
       expect(() => service.create(featureName, "follow-up")).toThrow(
         /Manual task creation rejected.*"01-setup" \(pending\) depends on "09-gone"/,
       );
+    });
+  });
+  describe("sync() - selected refresh and plan sync status", () => {
+    const featureName = "sync-status";
+    const featurePath = () => path.join(TEST_DIR, ".hive", "features", featureName);
+    const taskPath = (folder: string) => path.join(featurePath(), "tasks", folder);
+    const syncRecord = () => path.join(featurePath(), "task-sync.json");
+    const writePlan = (content: string) => fs.writeFileSync(path.join(featurePath(), "plan.md"), content);
+    const readRecord = () => JSON.parse(fs.readFileSync(syncRecord(), "utf8"));
+    const tree = (): Record<string, string | null> => {
+      const snapshot: Record<string, string | null> = {};
+      const walk = (dir: string) => {
+        for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+          const full = path.join(dir, entry.name);
+          snapshot[path.relative(featurePath(), full)] = entry.isDirectory() ? null : fs.readFileSync(full, "utf8");
+          if (entry.isDirectory()) walk(full);
+        }
+      };
+      walk(featurePath());
+      return snapshot;
+    };
+    const planV1 = `# Plan\n\n## Tasks\n\n### 1. Setup\n\n**Depends on**: none\n\nSetup.\n\n### 2. Build api\n\n**Repos**: api\n\nBuild.\n\n### 3. Ship\n\n**Depends on**: 1\n\nShip.\n`;
+
+    beforeEach(() => {
+      setupFeature(featureName);
+      writePlan(planV1);
+      service.sync(featureName);
+    });
+
+    it("refreshes selected started tasks by folder identity and keeps their execution record", () => {
+      service.update(featureName, "02-build-api", { status: "blocked", blocker: { reason: "Waiting" }, summary: "Half done", baseCommit: "abc123", report: "First pass.", handoff: "Resume here." });
+      service.update(featureName, "03-ship", { status: "in_progress" });
+      const before = service.getRawStatus(featureName, "02-build-api")!;
+      writePlan(planV1
+        .replace("### 2. Build api\n\n**Repos**: api\n\nBuild.", "### 2. Build API!\n\n**Depends on**: 1\n\n**Repos**: api\n\nBuild with the new contract.")
+        .replace("Ship.", "Ship with docs."));
+
+      expect(service.getPlanSyncStatus(featureName)).toEqual({ state: "changed", hint: expect.stringContaining("Plan changed since task sync.") });
+      const result = service.sync(featureName, { refreshTasks: ["02-build-api", "03-ship"], retainedWorktreeTasks: new Set() });
+
+      expect(result).toMatchObject({ created: [], removed: [], refreshed: ["02-build-api", "03-ship"] });
+      expect(service.getRawStatus(featureName, "02-build-api")).toEqual({ ...before, planTitle: "Build API!", dependsOn: ["01-setup"] });
+      expect(fs.readFileSync(path.join(taskPath("02-build-api"), "spec.md"), "utf8")).toContain("Build with the new contract.");
+      expect(fs.readFileSync(path.join(taskPath("02-build-api"), "reports", "1.md"), "utf8")).toBe("First pass.");
+      expect(fs.readFileSync(path.join(taskPath("02-build-api"), "handoff.md"), "utf8")).toBe("Resume here.");
+      expect(service.getRawStatus(featureName, "03-ship")).toMatchObject({ status: "in_progress", startedAt: expect.any(String) });
+      expect(service.getPlanSyncStatus(featureName)).toEqual({ state: "current" });
+      expect(readRecord()).toEqual({ schemaVersion: 1, state: "reconciled", lastReconciledContentHash: expect.any(String) });
+    });
+
+    it("leaves unselected started tasks unrefreshed and records the sync as incomplete, naming them", () => {
+      service.update(featureName, "03-ship", { status: "in_progress" });
+      writePlan(planV1.replace("Ship.", "Ship with docs.").replace("Setup.", "Setup changed."));
+
+      const result = service.sync(featureName, { refreshPending: true });
+
+      expect(result.refreshed).toEqual(["01-setup", "02-build-api"]);
+      expect(readRecord()).toMatchObject({ state: "incomplete" });
+      expect(service.getPlanSyncStatus(featureName)).toEqual({ state: "incomplete", hint: expect.stringContaining("tasks that differ from the current plan: 03-ship") });
+    });
+
+    it.each([
+      ["a manual task", ["04-manual-fix"], /manual task/],
+      ["a done task", ["01-setup"], /is done; refreshTasks applies only to unfinished/],
+      ["a cancelled task", ["03-ship"], /is cancelled/],
+      ["an unknown folder", ["09-nope"], /not a task of this feature/],
+      ["a duplicate entry", ["02-build-api", "02-build-api"], /more than once/],
+      ["an empty list", [], /nonempty list/],
+    ])("rejects selecting %s before any write", (_label, refreshTasks, message) => {
+      service.create(featureName, "manual-fix");
+      service.update(featureName, "01-setup", { status: "done" });
+      service.update(featureName, "03-ship", { status: "cancelled" });
+      writePlan(planV1.replace("Build.", "Build changed."));
+      const before = tree();
+
+      expect(() => service.validateRefreshTasks(featureName, refreshTasks)).toThrow(message);
+      expect(() => service.sync(featureName, { refreshTasks })).toThrow(message);
+      expect(tree()).toEqual(before);
+    });
+
+    it("rejects a selected task whose heading was retitled to another folder, and any sync that would replace started work", () => {
+      service.update(featureName, "02-build-api", { status: "in_progress" });
+      writePlan(planV1.replace("### 2. Build api", "### 2. Build the gateway"));
+      const before = tree();
+
+      expect(() => service.sync(featureName, { refreshTasks: ["02-build-api"] })).toThrow(/no task heading that produces "02-build-api"/);
+      expect(() => service.sync(featureName)).toThrow(/now produces folder "02-build-the-gateway", but "02-build-api" \(in_progress\) holds that task's retained work/);
+      expect(tree()).toEqual(before);
+
+      service.update(featureName, "02-build-api", { status: "cancelled" });
+      expect(service.sync(featureName).created).toEqual(["02-build-the-gateway"]);
+    });
+
+    it("rejects a selected repository change unless the task is known to have no retained worktree", () => {
+      service.update(featureName, "02-build-api", { status: "in_progress" });
+      writePlan(planV1.replace("**Repos**: api", "**Repos**: web"));
+      const before = tree();
+
+      expect(() => service.sync(featureName, { refreshTasks: ["02-build-api"] })).toThrow(/its worktrees could not be inspected/);
+      expect(() => service.sync(featureName, { refreshTasks: ["02-build-api"], retainedWorktreeTasks: new Set(["02-build-api"]) }))
+        .toThrow(/retained worktree whose placement keeps the old repositories/);
+      expect(tree()).toEqual(before);
+
+      service.sync(featureName, { refreshTasks: ["02-build-api"], retainedWorktreeTasks: new Set(["03-ship"]) });
+      expect(service.getRawStatus(featureName, "02-build-api")?.repoIds).toEqual(["web"]);
+    });
+
+    it("rejects an invalid stored graph from a selected refresh before writing the record or any task file", () => {
+      service.update(featureName, "01-setup", { status: "in_progress" });
+      service.update(featureName, "03-ship", { status: "in_progress" });
+      writePlan(planV1.replace("**Depends on**: none\n\nSetup.", "**Depends on**: 3\n\nSetup.").replace("**Depends on**: 1\n\nShip.", "**Depends on**: none\n\nShip."));
+      const before = tree();
+
+      expect(() => service.sync(featureName, { refreshTasks: ["01-setup"] })).toThrow(/cycle: 01-setup -> 03-ship -> 01-setup/);
+      expect(tree()).toEqual(before);
+    });
+
+    it("never recreates a plan task folder whose status is missing, and keeps pending task history the plan dropped", () => {
+      fs.rmSync(path.join(taskPath("01-setup"), "status.json"));
+      const before = tree();
+      expect(() => service.sync(featureName)).toThrow(/"01-setup" has no status file, and sync does not recreate it/);
+      expect(tree()).toEqual(before);
+
+      setupTask(featureName, "01-setup", { status: "pending", planTitle: "Setup", dependsOn: [] });
+      service.update(featureName, "03-ship", { status: "in_progress" });
+      service.update(featureName, "03-ship", { status: "pending", handoff: "Partial notes." });
+      writePlan(planV1.replace(/### 3\. Ship[\s\S]*$/, ""));
+      const kept = tree();
+      expect(() => service.sync(featureName)).toThrow(/"03-ship" has no heading in plan\.md but retains a recorded start, a handoff/);
+      expect(tree()).toEqual(kept);
+    });
+
+    it("keeps a status change made during sync and does not claim reconciliation", () => {
+      writePlan(planV1.replace("Build.", "Build changed."));
+      const refresh = (service as any).refreshPlanTask;
+      const interleaved = spyOn(service as any, "refreshPlanTask").mockImplementation(function (this: TaskService, ...args: any[]) {
+        service.update(featureName, "02-build-api", { status: "done", summary: "Finished elsewhere." });
+        return refresh.apply(this, args);
+      });
+      try {
+        const result = service.sync(featureName, { refreshTasks: ["02-build-api"], retainedWorktreeTasks: new Set() });
+        expect(result.skipped).toEqual(["02-build-api"]);
+        expect(result.refreshed).toBeUndefined();
+      } finally {
+        interleaved.mockRestore();
+      }
+      expect(service.getRawStatus(featureName, "02-build-api")).toMatchObject({ status: "done", summary: "Finished elsewhere.", repoIds: ["api"] });
+      expect(fs.readFileSync(path.join(taskPath("02-build-api"), "spec.md"), "utf8")).not.toContain("Build changed.");
+      expect(readRecord()).toMatchObject({ state: "incomplete" });
+      expect(service.getPlanSyncStatus(featureName).state).toBe("incomplete");
+    });
+
+    it("reports applied changes and the failed stage when a task write fails, and a retry reconciles", () => {
+      writePlan(`${planV1}\n### 4. Docs\n\n**Depends on**: none\n\nDocs.\n`.replace("Ship.", "Ship changed."));
+      const rename = fs.renameSync;
+      const failing = spyOn(fs, "renameSync").mockImplementation((from: fs.PathLike, to: fs.PathLike) => {
+        if (String(to) === path.join(taskPath("03-ship"), "spec.md")) throw new Error("Injected spec write failure");
+        return rename(from, to);
+      });
+      let error: unknown;
+      try {
+        service.sync(featureName, { refreshPending: true });
+      } catch (caught) {
+        error = caught;
+      } finally {
+        failing.mockRestore();
+      }
+      expect(error).toBeInstanceOf(TaskSyncError);
+      expect(error).toMatchObject({ stage: "tasks", applied: { removed: [], created: ["04-docs"], refreshed: ["01-setup", "02-build-api"] }, interrupted: { action: "refresh", folder: "03-ship" } });
+      expect((error as Error).message).toMatch(/Injected spec write failure.*created 04-docs; refreshed 01-setup, 02-build-api.*records incomplete/);
+      expect(readRecord()).toMatchObject({ state: "incomplete", lastReconciledContentHash: expect.any(String) });
+      expect(service.getPlanSyncStatus(featureName)).toEqual({ state: "incomplete", hint: expect.stringContaining("03-ship") });
+
+      expect(service.sync(featureName, { refreshPending: true }).refreshed).toEqual(["01-setup", "02-build-api", "03-ship", "04-docs"]);
+      expect(service.getPlanSyncStatus(featureName)).toEqual({ state: "current" });
+    });
+
+    describe("publication that fails partway", () => {
+      const failRenameOnto = (...targets: string[]) => {
+        const rename = fs.renameSync;
+        return spyOn(fs, "renameSync").mockImplementation((from: fs.PathLike, to: fs.PathLike) => {
+          if (targets.includes(String(to))) throw new Error(`Injected failure writing ${path.basename(String(to))}`);
+          return rename(from, to);
+        });
+      };
+      const syncFailure = (options: Parameters<TaskService["sync"]>[1] = {}): TaskSyncError => {
+        try {
+          service.sync(featureName, options);
+        } catch (error) {
+          expect(error).toBeInstanceOf(TaskSyncError);
+          return error as TaskSyncError;
+        }
+        throw new Error("sync was expected to fail");
+      };
+      const nothing = { removed: [], created: [], refreshed: [] };
+
+      it("names a refresh whose status write failed after its spec was published, even when no action completed", () => {
+        writePlan(planV1.replace("Setup.", "Setup changed."));
+        const failing = failRenameOnto(path.join(taskPath("01-setup"), "status.json"));
+        let error: TaskSyncError;
+        try {
+          error = syncFailure({ refreshPending: true });
+        } finally {
+          failing.mockRestore();
+        }
+
+        expect(fs.readFileSync(path.join(taskPath("01-setup"), "spec.md"), "utf8")).toContain("Setup changed.");
+        expect(error).toMatchObject({ stage: "tasks", applied: nothing, interrupted: { action: "refresh", folder: "01-setup" } });
+        expect(error.message).not.toContain("No task files were changed");
+        expect(error.message).toMatch(/Injected failure writing status\.json.*Interrupted while refreshing 01-setup.*spec\.md and status\.json may each hold the old or the new content.*records incomplete/);
+        expect(service.getPlanSyncStatus(featureName).state).toBe("incomplete");
+      });
+
+      it("names a created task whose spec write failed after its status was published, and a refresh retry repairs it", () => {
+        writePlan(`${planV1}\n### 4. Docs\n\n**Depends on**: none\n\nDocs.\n`);
+        const failing = failRenameOnto(path.join(taskPath("04-docs"), "spec.md"));
+        let error: TaskSyncError;
+        try {
+          error = syncFailure();
+        } finally {
+          failing.mockRestore();
+        }
+
+        expect(fs.existsSync(path.join(taskPath("04-docs"), "status.json"))).toBe(true);
+        expect(fs.existsSync(path.join(taskPath("04-docs"), "spec.md"))).toBe(false);
+        expect(error).toMatchObject({ stage: "tasks", applied: nothing, interrupted: { action: "create", folder: "04-docs" } });
+        expect(error.message).toMatch(/Interrupted while creating 04-docs.*status\.json and spec\.md may be missing, partly written or complete.*refreshPending: true/);
+        expect(service.getPlanSyncStatus(featureName)).toEqual({ state: "incomplete", hint: expect.stringContaining("04-docs") });
+
+        service.sync(featureName, { refreshPending: true });
+        expect(fs.existsSync(path.join(taskPath("04-docs"), "spec.md"))).toBe(true);
+        expect(service.getPlanSyncStatus(featureName)).toEqual({ state: "current" });
+      });
+
+      // Directory fsync is a no-op on Windows, so these post-rename failures cannot occur there.
+      const failDirectoryFlush = (directory: string, flushes: readonly number[]) => {
+        const descriptorPaths = new Map<number, string>();
+        const open = fs.openSync;
+        const fsync = fs.fsyncSync;
+        let count = 0;
+        const openSpy = spyOn(fs, "openSync").mockImplementation(((target, flags, mode) => {
+          const descriptor = open(target, flags, mode);
+          descriptorPaths.set(descriptor, String(target));
+          return descriptor;
+        }) as typeof fs.openSync);
+        const fsyncSpy = spyOn(fs, "fsyncSync").mockImplementation((descriptor => {
+          if (descriptorPaths.get(descriptor) === directory && flushes.includes(++count)) throw new Error("Injected directory flush failure");
+          fsync(descriptor);
+        }) as typeof fs.fsyncSync);
+        return () => {
+          fsyncSpy.mockRestore();
+          openSpy.mockRestore();
+        };
+      };
+
+      it.skipIf(process.platform === "win32")("names the task action whose directory flush failed after the rename published its file", () => {
+        writePlan(planV1.replace("Ship.", "Ship changed."));
+        const restore = failDirectoryFlush(taskPath("03-ship"), [1]);
+        let error: TaskSyncError;
+        try {
+          error = syncFailure({ refreshPending: true });
+        } finally {
+          restore();
+        }
+
+        expect(fs.readFileSync(path.join(taskPath("03-ship"), "spec.md"), "utf8")).toContain("Ship changed.");
+        expect(error).toMatchObject({
+          stage: "tasks",
+          applied: { removed: [], created: [], refreshed: ["01-setup", "02-build-api"] },
+          interrupted: { action: "refresh", folder: "03-ship" },
+        });
+        expect(error.message).toMatch(/Injected directory flush failure.*Applied before the failure and not rolled back: refreshed 01-setup, 02-build-api\. Interrupted while refreshing 03-ship/);
+      });
+
+      // Each case fails one step of replacing the start record with the reconciled record, then refuses every later
+      // change to task-sync.json and every flush of the feature directory, so no recovery write can repair the
+      // outcome. What the sync reports must match what a fresh reader derives from disk.
+      type ReconciliationFault = "rename-fails" | "rename-publishes-then-throws" | "flush-after-rename-fails" | "rename-publishes-then-throws-and-readback-fails-once";
+      const injectReconciliationFault = (fault: ReconciliationFault) => {
+        const record = syncRecord();
+        const descriptorPaths = new Map<number, string>();
+        let attempted = false;
+        const open = fs.openSync;
+        const fsync = fs.fsyncSync;
+        const rename = fs.renameSync;
+        const rm = fs.rmSync;
+        const unlink = fs.unlinkSync;
+        const readFile = fs.readFileSync;
+        let readbackFailed = false;
+        const spies = [
+          spyOn(fs, "readFileSync").mockImplementation(((target: fs.PathOrFileDescriptor, ...rest: unknown[]) => {
+            if (fault.endsWith("readback-fails-once") && attempted && !readbackFailed && String(target) === record) {
+              readbackFailed = true;
+              throw new Error("Injected readback failure");
+            }
+            return (readFile as (...args: unknown[]) => unknown)(target, ...rest);
+          }) as typeof fs.readFileSync),
+          spyOn(fs, "openSync").mockImplementation(((target, flags, mode) => {
+            const descriptor = open(target, flags, mode);
+            descriptorPaths.set(descriptor, String(target));
+            return descriptor;
+          }) as typeof fs.openSync),
+          spyOn(fs, "fsyncSync").mockImplementation(((descriptor: number) => {
+            if (attempted && descriptorPaths.get(descriptor) === featurePath()) throw new Error("Injected directory flush failure");
+            fsync(descriptor);
+          }) as typeof fs.fsyncSync),
+          spyOn(fs, "renameSync").mockImplementation((from: fs.PathLike, to: fs.PathLike) => {
+            if (String(to) !== record) return rename(from, to);
+            if (attempted) throw new Error("Injected record write failure");
+            if (!fs.readFileSync(from, "utf8").includes('"reconciled"')) return rename(from, to);
+            attempted = true;
+            if (fault === "rename-fails") throw new Error("Injected reconciled rename failure");
+            rename(from, to);
+            if (fault.startsWith("rename-publishes-then-throws")) throw new Error("Injected error after the reconciled rename published");
+          }),
+          spyOn(fs, "rmSync").mockImplementation(((target, options) => {
+            if (attempted && String(target) === record) throw new Error("Injected record removal failure");
+            return rm(target, options);
+          }) as typeof fs.rmSync),
+          spyOn(fs, "unlinkSync").mockImplementation(((target) => {
+            if (attempted && String(target) === record) throw new Error("Injected record removal failure");
+            return unlink(target);
+          }) as typeof fs.unlinkSync),
+        ];
+        return () => {
+          for (const spy of spies.reverse()) spy.mockRestore();
+        };
+      };
+      const syncWithFault = (options: Parameters<TaskService["sync"]>[1], fault: ReconciliationFault): unknown => {
+        const restore = injectReconciliationFault(fault);
+        try {
+          service.sync(featureName, options);
+          return null;
+        } catch (error) {
+          return error;
+        } finally {
+          restore();
+        }
+      };
+      const freshPlanSync = () => new TaskService(PROJECT_ROOT).getPlanSyncStatus(featureName);
+
+      it.each([
+        ["its rename fails", "rename-fails", "fails"],
+        ["its rename publishes and then reports an error", "rename-publishes-then-throws", "completes"],
+        ["the directory flush after its rename would fail", "flush-after-rename-fails", "completes"],
+      ] as const)("reports an outcome that a fresh read of plan sync status agrees with when writing the reconciled record: %s", (_label, fault, expected) => {
+        writePlan(planV1.replace("Ship.", "Ship changed."));
+        const error = syncWithFault({ refreshPending: true }, fault);
+        const fresh = freshPlanSync();
+
+        // A failed sync never leaves a fresh reader at current, and a completed one does.
+        expect({ failed: error !== null, current: fresh.state === "current" }).toEqual({ failed: expected === "fails", current: expected === "completes" });
+        if (expected === "fails") {
+          expect(error).toBeInstanceOf(TaskSyncError);
+          expect(error).toMatchObject({ stage: "verification", applied: { removed: [], created: [], refreshed: ["01-setup", "02-build-api", "03-ship"] }, interrupted: null });
+          expect(error).not.toHaveProperty("checkpoint");
+          expect((error as Error).message).toMatch(/Injected reconciled rename failure.*refreshed 01-setup, 02-build-api, 03-ship\. Reading task-sync\.json back showed no reconciliation of this plan content, so plan sync status read at that point was not current/);
+          expect(readRecord()).toMatchObject({ state: "incomplete" });
+          expect(fresh.state).toBe("incomplete");
+        } else {
+          expect(readRecord()).toEqual({ schemaVersion: 1, state: "reconciled", lastReconciledContentHash: new PlanService(PROJECT_ROOT).read(featureName)!.contentHash });
+        }
+      });
+
+      it("reports an unconfirmed publication, not a failed one, when the rename publishes then errors and the record cannot be read back", () => {
+        writePlan(planV1.replace("Ship.", "Ship changed."));
+        const error = syncWithFault({ refreshPending: true }, "rename-publishes-then-throws-and-readback-fails-once");
+
+        expect(error).toBeInstanceOf(TaskSyncError);
+        expect(error).toMatchObject({ stage: "publication_unconfirmed", applied: { removed: [], created: [], refreshed: ["01-setup", "02-build-api", "03-ship"] }, interrupted: null });
+        const message = (error as Error).message;
+        expect(message).toMatch(/unconfirmed.*Injected error after the reconciled rename published.*Injected readback failure/s);
+        expect(message).toMatch(/refreshed 01-setup, 02-build-api, 03-ship/);
+        expect(message).toMatch(/Read plan sync status with hive_status before replaying sync/);
+        // The earlier call cannot claim nonpublication: a fresh reader now sees current data, which says nothing
+        // retroactive about what this call returned.
+        expect(message).not.toMatch(/showed no reconciliation|was not current|no task files were changed/);
+        expect(freshPlanSync()).toEqual({ state: "current" });
+        expect(readRecord()).toMatchObject({ state: "reconciled" });
+      });
+
+      it("records reconciliation on the next sync after the reconciled record failed to publish, changing no task file", () => {
+        service.update(featureName, "03-ship", { status: "in_progress", report: "First pass.", handoff: "Resume here." });
+        writePlan(planV1.replace("Setup.", "Setup changed."));
+        expect(syncWithFault({ refreshPending: true }, "rename-fails")).toBeInstanceOf(TaskSyncError);
+        const taskFiles = () => {
+          const { ["task-sync.json"]: _record, ...rest } = tree();
+          return rest;
+        };
+        const afterFailure = taskFiles();
+        expect(afterFailure[path.join("tasks", "01-setup", "spec.md")]).toContain("Setup changed.");
+        expect(freshPlanSync().state).toBe("incomplete");
+
+        const retried = service.sync(featureName);
+        expect(retried).toMatchObject({ created: [], removed: [] });
+        expect(retried.refreshed).toBeUndefined();
+        expect(taskFiles()).toEqual(afterFailure);
+        expect(freshPlanSync()).toEqual({ state: "current" });
+      });
+    });
+
+    it("rejects a plan that changed after the reviewed content hash", () => {
+      const reviewed = new PlanService(PROJECT_ROOT).read(featureName)!.contentHash;
+      writePlan(planV1.replace("Ship.", "Ship changed."));
+      const before = tree();
+      expect(() => service.sync(featureName, { expectedContentHash: reviewed })).toThrow(/plan\.md changed after the content this sync was asked to apply/);
+      expect(tree()).toEqual(before);
+    });
+
+    it("waits for the feature's sync lock held by another sync", async () => {
+      writePlan(`${planV1}\n### 4. Docs\n\nDocs.\n`);
+      const release = acquireLockSync(syncRecord());
+      const child = spawn(process.execPath, ["-e", `
+        import { TaskService } from ${JSON.stringify(new URL("./taskService.ts", import.meta.url).href)};
+        new TaskService(process.env.PROJECT_ROOT).sync(process.env.FEATURE);
+      `], { env: { ...process.env, PROJECT_ROOT, FEATURE: featureName } });
+      const exited = new Promise<number | null>(resolve => child.on("exit", resolve));
+      await new Promise(resolve => setTimeout(resolve, 300));
+      expect(fs.existsSync(taskPath("04-docs"))).toBe(false);
+      release();
+      expect(await exited).toBe(0);
+      expect(fs.existsSync(path.join(taskPath("04-docs"), "status.json"))).toBe(true);
+      expect(service.getPlanSyncStatus(featureName)).toEqual({ state: "current" });
+    });
+
+    it("separates content changes from comment, approval and CRLF-only identity, and preamble edits from task drift", () => {
+      const plans = new PlanService(PROJECT_ROOT);
+      expect(service.getPlanSyncStatus(featureName)).toEqual({ state: "current" });
+      plans.approve(featureName);
+      plans.addComment(featureName, { line: 1, body: "Question.", replies: [] });
+      expect(service.getPlanSyncStatus(featureName)).toEqual({ state: "current" });
+
+      writePlan(planV1.replace("# Plan", "# Plan\n\nNew shared contract."));
+      expect(service.getPlanSyncStatus(featureName).state).toBe("changed");
+      service.sync(featureName);
+      expect(service.getPlanSyncStatus(featureName)).toEqual({ state: "current" });
+
+      // Raw bytes are the identity: a CRLF rewrite is a content change even though it parses identically.
+      writePlan(planV1.replace("# Plan", "# Plan\n\nNew shared contract.").replace(/\n/g, "\r\n"));
+      expect(service.getPlanSyncStatus(featureName).state).toBe("changed");
+      service.sync(featureName);
+      expect(service.getPlanSyncStatus(featureName)).toEqual({ state: "current" });
+
+      fs.writeFileSync(path.join(taskPath("02-build-api"), "spec.md"), "hand edited");
+      expect(service.getPlanSyncStatus(featureName)).toEqual({ state: "incomplete", hint: expect.stringContaining("Task records differ from the synced plan: 02-build-api") });
+      service.sync(featureName, { refreshPending: true });
+      service.update(featureName, "03-ship", { status: "done" });
+      expect(service.getPlanSyncStatus(featureName)).toEqual({ state: "current" });
+      setupTask(featureName, "02-build-api", { status: "pending", planTitle: "Build api", dependsOn: ["09-gone"], repoIds: ["api"] });
+      expect(service.getPlanSyncStatus(featureName).state).toBe("incomplete");
+    });
+
+    it("reports an unknown baseline without creating files, directories or locks", () => {
+      const legacy = "legacy-feature";
+      setupFeature(legacy);
+      setupTask(legacy, "01-test-task", { dependsOn: [] });
+      const legacyPath = path.join(TEST_DIR, ".hive", "features", legacy);
+      const listing = () => fs.readdirSync(legacyPath, { recursive: true }).map(String).sort();
+      const before = listing();
+
+      expect(service.getPlanSyncStatus(legacy)).toEqual({ state: "unknown", hint: expect.stringContaining("No task sync is recorded") });
+      fs.writeFileSync(path.join(legacyPath, "task-sync.json"), "{ malformed");
+      expect(service.getPlanSyncStatus(legacy)).toEqual({ state: "unknown", hint: expect.stringContaining("task-sync.json is unreadable") });
+      fs.writeFileSync(path.join(legacyPath, "task-sync.json"), JSON.stringify({ schemaVersion: 1, state: "reconciled", lastReconciledContentHash: null }));
+      expect(service.getPlanSyncStatus(legacy).state).toBe("unknown");
+      fs.rmSync(path.join(legacyPath, "task-sync.json"));
+      expect(listing()).toEqual(before);
+      expect(service.getPlanSyncStatus("never-created").state).toBe("unknown");
+      expect(fs.existsSync(path.join(TEST_DIR, ".hive", "features", "never-created"))).toBe(false);
     });
   });
 });

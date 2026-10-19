@@ -145,7 +145,7 @@ When drafting a plan, materially revising task boundaries or dependencies, or am
 hive_plan_write({ feature: "feature-name", content: "..." })
 \`\`\`
 
-Use \`hive_plan_write\` for the initial plan or a major rewrite. Use \`hive_plan_patch\` with \`expectedRevision\` from \`hive_plan_read\` for bounded review amendments. If task sequencing, dependencies, or scope changed after tasks exist, record the required refresh in the planning handoff. The primary owns approval follow-through under Approval and Task Sync with \`refreshPending: true\`; it performs \`hive_tasks_sync({ refreshPending: true })\` separately only while approval remains successful and sync still needs to run or retry. Patching never syncs tasks automatically.
+Use \`hive_plan_write\` for the initial plan or a major rewrite. Use \`hive_plan_patch\` with \`expectedRevision\` from \`hive_plan_read\` for bounded review amendments. If task sequencing, dependencies, or scope changed after tasks exist, record the required refresh in the planning handoff, naming each amended started task folder for \`refreshTasks\`. The primary owns approval follow-through under Approval and Task Sync with \`refreshPending: true\`.
 
 Settle consequential design decisions in the plan before it is assessed. When Feature Plan Assessment applies, the planning handoff names the assessed \`contentHash\`, each lens's outcome, your dispositions of material findings, any lens you could not dispatch, and the refresh to run.
 
@@ -153,22 +153,20 @@ ${PLAN_ASSESSMENT_PROMPT}
 
 ${PLAN_APPROVAL_SYNC_PROMPT}
 
-Inside \`## Tasks\`, every \`###\` heading must be \`### N. Title\`. Amend an existing task with \`replace_task\` and put the amendment in a \`####\` subsection; put shared notes outside \`## Tasks\`. A patch adding an unnumbered \`###\` there is rejected. If the plan already has one, repair the whole Tasks section with one \`replace_section\` on \`["Tasks"]\`; \`replace_task\` stops at the orphan heading. Approval is blocked by unowned headings or an unreadable task layout (such as two Tasks sections). Use \`unownedTaskHeadings\` from full \`hive_plan_read\` or \`hive_plan_write\` to locate them.
+Inside \`## Tasks\`, every \`###\` heading must be \`### N. Title\`. Amend an existing task with \`replace_task\` under the writing-plans skill's Amending Tasks: one consolidated current body plus one short \`####\` cause-and-scope note that the next amendment replaces; put shared notes outside \`## Tasks\`. A patch adding an unnumbered \`###\` there is rejected. If the plan already has one, repair the whole Tasks section with one \`replace_section\` on \`["Tasks"]\`; \`replace_task\` stops at the orphan heading. Approval is blocked by unowned headings or an unreadable task layout (such as two Tasks sections). Use \`unownedTaskHeadings\` from full \`hive_plan_read\` or \`hive_plan_write\` to locate them.
 
 Plan MUST include:
 - ## Discovery (Original Request, Interview Summary, Research)
 - ## Non-Goals (Explicit exclusions)
-- ## Design Summary (human-facing summary before \`## Tasks\`; optional Mermaid for dependency or sequence overview only)
+- ## Design Summary (human-facing summary before \`## Tasks\` and the feature overview every implementer reads: goal, overall acceptance, boundaries, task relationships, and shared contracts; optional Mermaid for dependency or sequence overview only)
   - Each consequential decision states the decision, its reason, the accepted tradeoff, and the observation that would justify reconsidering it. Mark binding decisions (scope, contracts, ownership, dependencies, gates) apart from illustrative implementation sketches, which a worker may adapt. Routine changes need no such entries and no new template.
-- ## Tasks (### N. Title with Depends on/Files/What/Must NOT/References/Verify)
+- ## Tasks (### N. Title, each a task contract under the writing-plans skill's Task Contracts)
   - Numbered tasks under \`## Tasks\` must represent worktree-backed implementation/docs/test changes
   - numbered tasks are worker-branch units, not micro-steps. Choose coherent outcome and ownership boundaries before assigning dependencies; follow the writing-plans skill's Worker-Branch Task Granularity guidance.
-  - Keep pure final verification outside \`## Tasks\` in \`## Final Verification\`; do not model it as \`### N. Final Verification\` unless it writes tracked artifacts and lists those files
-- ## Final Verification (non-branching verification gate for pure final checks)
-  - Files must list Create/Modify/Test with exact paths and line ranges where applicable
-  - References must use file:line format
+  - Keep pure final verification outside \`## Tasks\` in \`## Final Verification\`; do not model it as \`### N. Final Verification\` unless it writes tracked artifacts
   - A task whose work depends on a Design Summary decision cites it in References; the full rationale stays in the Design Summary
   - Verify must include exact command + expected output
+- ## Final Verification (non-branching verification gate for pure final checks)
 
 When a task changes a shared contract (schema, ID or version scheme, protocol, packaged identity, or public API), name every consumer and assign each required consumer update to a task; do not leave downstream edits as an unnamed worker promise.
 

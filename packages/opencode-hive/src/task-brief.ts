@@ -6,6 +6,7 @@ import {
   getTaskHandoffPath,
   getTaskSpecPath,
   type ContextService,
+  type PlanSyncStatus,
   type TaskStatusEntry,
   type TaskService,
   type TaskSpecFreshness,
@@ -35,7 +36,7 @@ export const TASK_BRIEF_BLOCK = /(?:\n\n)?<!-- hive-task-brief:start -->\n## Hiv
 
 export type TaskBriefSources = {
   projectRoot: string;
-  taskService: Pick<TaskService, 'listStatusEntries' | 'getSpecFreshness'>;
+  taskService: Pick<TaskService, 'listStatusEntries' | 'getSpecFreshness' | 'getPlanSyncStatus'>;
   contextService: Pick<ContextService, 'readSummary'>;
 };
 
@@ -104,6 +105,12 @@ function composeBoundLines(sources: TaskBriefSources, featureName: string, tasks
   } catch {
     // Matches hive_status: an uncomparable plan is reported, not fatal.
   }
+  let planSync: PlanSyncStatus;
+  try {
+    planSync = taskService.getPlanSyncStatus(featureName);
+  } catch {
+    planSync = { state: 'unknown', hint: 'Plan sync status could not be calculated.' };
+  }
   const planPath = getPlanPath(projectRoot, featureName);
   const handoffPath = getTaskHandoffPath(projectRoot, featureName, folder);
   const decisionsPath = path.join(getContextPath(projectRoot, featureName), 'execution-decisions.md');
@@ -127,6 +134,7 @@ function composeBoundLines(sources: TaskBriefSources, featureName: string, tasks
   }
 
   const before = [
+    ...(planSync.state !== 'current' ? [`Plan sync ${planSync.state}: ${inline(planSync.hint ?? '')}`] : []),
     ...(freshness?.unownedHeadingLines?.length
       ? [`Unowned plan headings after this task's section at lines ${freshness.unownedHeadingLines.join(', ')}: read them; they may be binding amendments.`]
       : []),

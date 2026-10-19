@@ -316,7 +316,7 @@ describe('skill content', () => {
     expect(plans).toContain('Mark binding decisions (scope, contracts, ownership, dependencies, gates) apart from illustrative sketches');
     expect(plans).toContain('A routine change needs no such entry and no new template');
     expect(plans).toContain('The Design Summary holds the full rationale; a task\'s References point to the decision it depends on');
-    expect(plans).toContain('- Design Summary: [the decision this task depends on, when one applies]');
+    expect(plans).toContain('- Design Summary: [the decision or shared contract this task depends on, when one applies] - [why]');
     expect(plans).toContain('`plan-reviewer` (readiness) and `approach-advisor` (architecture) assessments of the same `contentHash` before approval');
     expect(plans).toContain("Feature Plan Assessment owns when and how");
     expect(plans).not.toContain('ask whether to consult');
@@ -861,12 +861,56 @@ describe('skill content', () => {
     expect(template).toContain('an unrun node never counts');
   });
 
+  it('shapes each task as a goal, responsibility, proof and pointed context instead of a predicted file inventory', () => {
+    const template = BUILTIN_SKILLS.find((entry) => entry.name === 'writing-plans')!.template;
+    const contracts = template.slice(template.indexOf('## Task Contracts'), template.indexOf('## Plan Structure'));
+    const structure = template.slice(template.indexOf('## Plan Structure'), template.indexOf('## Review Surfaces'));
+
+    expect(contracts).toContain('so a task does not predict the files it will edit');
+    expect(contracts).toContain('Name an exact path or artifact only when a sibling task writes near it or a public contract fixes it');
+    expect(contracts).toContain('Source anchors are discovery leads, not a writable allowlist');
+    expect(contracts).toContain('before or after `## Tasks`');
+    expect(contracts).toContain('Point to the canonical text instead of copying it');
+    expect(contracts).toContain('Facts about where execution stands now go stale at the next commit, so they live in the primary\'s assignment, the task handoff, the reports, and the Worklog');
+    expect(contracts).toContain('Keep a pin the work is bound to: an artifact, version, or schema the task must match, and an evidence citation a decision rests on');
+    expect(contracts).toContain('Keep approved early, feasibility, and live gates and exact required commands where they are');
+    expect(contracts).toContain('as a deferral with its owner, prerequisite, and boundary, and match it under `## Final Verification`');
+    expect(contracts).toContain('the Design Summary must work as the feature overview: the feature goal, overall acceptance, boundaries, and how the tasks relate');
+    expect(contracts).toContain('precisely and once');
+    for (const field of ['**Goal**:', '**Responsibility**:', '**References**:', '**Verify**:', '- Deferred:']) expect(structure, field).toContain(field);
+    expect(structure).not.toContain('**Files**:');
+    expect(structure).not.toContain('Modify: `exact/path');
+
+    expect(template).toContain('Use pseudocode when it makes a decision, algorithm, or protocol clearer than prose, and label it binding semantics or illustrative approach');
+    expect(template).toContain('No task needs a code block, pseudocode, or skeleton by default');
+  });
+
+  it('consolidates amended unfinished tasks and refreshes started specs only after their assignments end', () => {
+    const template = BUILTIN_SKILLS.find((entry) => entry.name === 'writing-plans')!.template;
+    const amending = template.slice(template.indexOf('### Amending Tasks'), template.indexOf('## Review Surfaces'));
+
+    expect(amending).toContain('rewrite its body as one current contract');
+    expect(amending).toContain("the task's single current `Verify` list and decision table, replacing each rather than appending");
+    expect(amending).toContain('pointers to the reports, review, or Worklog entries that hold its history');
+    expect(amending).toContain('the next amendment replaces that note, so correction narrative does not accumulate');
+    expect(amending).toContain('the candidate the amendment was measured against, and past test counts or review hashes stay in those records');
+    expect(amending).toContain('A done or cancelled task keeps its body');
+    expect(amending).toContain('only after confirming the prior assignment is terminal and reconciling its scope');
+    expect(amending).toContain('A repository change for a task with a retained worktree needs explicit reconciliation');
+    expect(amending).toContain('only when asked');
+    expect(template).toContain('adding `refreshTasks` for those started folders');
+
+    const executing = BUILTIN_SKILLS.find((entry) => entry.name === 'executing-plans')!.template;
+    expect(executing).toContain('edits beyond the files a task cites are ordinary when they serve its goal');
+    expect(executing).toContain('plus `refreshTasks` for amended started tasks');
+  });
+
   it('chooses coherent task boundaries before dependencies without parallel quotas', () => {
     const template = BUILTIN_SKILLS.find((entry) => entry.name === 'writing-plans')!.template;
     const granularity = template.slice(template.indexOf('## Worker-Branch Task Granularity'), template.indexOf('## Plan Structure'));
 
     expect(granularity).toContain('Choose task boundaries before assigning dependencies');
-    expect(granularity).toContain('each outcome, required predecessor outputs or capability decisions, owned paths, and verification');
+    expect(granularity).toContain('each outcome, required predecessor outputs or capability decisions, owned responsibility (with exact paths only where siblings meet), and verification');
     expect(granularity).toContain('Keep tightly coupled implementation, tests, docs, and generated artifacts together');
     expect(granularity).toContain('do not split by file or target a task count or parallel quota');
     expect(granularity).toContain('Split only when the handoff is concrete and the parallel work justifies the coordination cost');
@@ -892,7 +936,9 @@ describe('skill content', () => {
     expect(template).toContain('implementation files remain read-only');
     expect(template).toContain('Hive planning state may be written');
     expect(template).toContain('record the required refresh in the planning handoff');
-    expect(template).toContain('orchestrator performs `hive_tasks_sync({ refreshPending: true })`');
+    expect(template).toContain('retries a failed sync under Approval and Task Sync in its prompt');
+    expect(template).toContain('picks the retry call by whether the failed call selected `refreshTasks`');
+    expect(template).not.toContain('orchestrator performs `hive_tasks_sync({ refreshPending: true })`');
     expect(template).not.toContain('run `hive_tasks_sync({ refreshPending: true })` after review or approval');
   });
 

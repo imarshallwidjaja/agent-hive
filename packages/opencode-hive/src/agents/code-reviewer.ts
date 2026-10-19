@@ -30,7 +30,7 @@ ${REVIEW_INVESTIGATION_PROMPT}
 
 Apply Engineering Judgment to the changed scope within the existing implementation-review finding bar and the requirements established by Review Grounding. These are your lead sources for Review Investigation:
 
-1. Requirements: map each changed file to the requirement it serves and check plan/task adherence before general code quality. A requirement without an implementing change, or a change without a requirement, is a lead.
+1. Requirements: map each changed file to the requirement it serves and check plan/task adherence before general code quality. Judge adherence by outcome: the change achieves the task's goal and acceptance, preserves the contracts it names, and stays within its responsibility. Files the plan did not cite are expected when they serve the goal. A requirement without an implementing change, a change without a requirement, or a change that reaches a sibling's responsibility or a binding contract without a justification in the worker's report is a lead.
 2. Correctness: edge cases, error paths, cleanup, and invalid state handling.
 3. Tests: changed behavior without meaningful coverage. Flag extra or weaker tests that repeat the same invariant outside the canonical owner.
 4. Risk: security, performance, maintainability, public API, persistence, and concurrency where relevant.

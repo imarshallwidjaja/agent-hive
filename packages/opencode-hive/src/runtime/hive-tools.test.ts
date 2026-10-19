@@ -91,7 +91,7 @@ const ORDINARY_OPERATION_SIGNATURES = [
   'hive_plan_write(content:string, feature?:string)',
   'hive_plan_patch(expectedRevision:string, operations:{type:replace_section|replace_task|insert_after_section, headingPath?:string[], taskNumber?:number, content:string}[], feature?:string)',
   'hive_plan_read(feature?:string, mode?:full|outline)',
-  'hive_plan_approve(feature?:string, expectedRevision?:string, sync?:boolean, refreshPending?:boolean)',
+  'hive_plan_approve(feature?:string, expectedRevision?:string, sync?:boolean, refreshPending?:boolean, refreshTasks?:string[])',
   'hive_tasks_sync(feature?:string, refreshPending?:boolean)',
   'hive_task_create(name:string, order?:number, feature?:string, description?:string, goal?:string, acceptanceCriteria?:string[], references?:string[], files?:string[], dependsOn?:string[], reason?:string, source?:string, repos?:string[])',
   'hive_task_update(task:string, status?:pending|in_progress|done|cancelled|blocked|failed|partial, summary?:string, blocker?:{reason:string, options?:string[], recommendation?:string, context?:string}|null, report?:string, handoff?:string, feature?:string)',
@@ -158,7 +158,7 @@ describe('ordinary Hive operation arguments', () => {
 
 // Fields whose meaning depends on another argument, an effect or a retry rule carry a description beside the argument.
 const DESCRIBED_FIELDS: Record<string, string[]> = {
-  hive_plan_approve: ['expectedRevision', 'sync', 'refreshPending'],
+  hive_plan_approve: ['expectedRevision', 'sync', 'refreshPending', 'refreshTasks'],
   hive_tasks_sync: ['refreshPending'],
   hive_task_update: ['status', 'blocker', 'report', 'handoff'],
   hive_worktree_create: ['baseRef', 'repoIds', 'candidate'],
@@ -240,12 +240,18 @@ describe('context edit failure guarantees', () => {
 });
 
 describe('ordinary Hive operation metadata retention and naming', () => {
-  it('describes task sync retention by current status and keeps candidate naming out of the argument text', async () => {
+  it('describes task sync retention by current status and history, the refresh handoff, and keeps candidate naming out of the argument text', async () => {
     const { hooks } = await createRuntime();
     const tools = hooks.tool as Record<string, { description: string; args: any }>;
     expect(tools.hive_tasks_sync!.description).toContain('whose current status is not pending');
-    expect(tools.hive_tasks_sync!.description).toContain('including any report or handoff');
-    expect(tools.hive_tasks_sync!.description).not.toContain('execution history');
+    expect(tools.hive_tasks_sync!.description).toContain('only when it has no execution history');
+    expect(tools.hive_tasks_sync!.description).toContain('Started tasks are refreshed only through hive_plan_approve with refreshTasks');
+    expect(tools.hive_tasks_sync!.description).not.toContain('including any report or handoff');
+    const refreshTasks = (z.toJSONSchema(z.object(tools.hive_plan_approve!.args)) as any).properties.refreshTasks.description as string;
+    expect(refreshTasks).toContain('attests that no assignment for it is still running');
+    for (const name of ['hive_plan_read', 'hive_plan_write', 'hive_plan_patch', 'hive_plan_approve', 'hive_tasks_sync']) {
+      expect(tools[name]!.description, name).toContain('it never approves, syncs or blocks anything');
+    }
     const candidate = (z.toJSONSchema(z.object(tools.hive_worktree_create!.args)) as any).properties.candidate.description as string;
     expect(candidate).not.toMatch(/\{task\}|--/);
   });

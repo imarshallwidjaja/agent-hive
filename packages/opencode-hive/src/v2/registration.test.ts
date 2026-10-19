@@ -442,6 +442,29 @@ describe('v2 execution guards', () => {
     expect(denied(await host.execute('hive_context_edit', args, forager))).toContain(`Context changed since revision ${read.revision}`);
   });
 
+  it('carries refreshTasks and planSync through the shared approval operation and keeps it primary-only', async () => {
+    const host = await activate();
+    const output = (exit: Exit.Exit<any, unknown>) => (exit as Exit.Success<any>).value.output;
+    const primary = { sessionID: 'primary', agent: 'hive-master' };
+    const plan = '# Plan\n\n## Tasks\n\n### 1. Build\n\nBuild.\n';
+    output(await host.execute('hive_feature_create', { name: 'refresh' }, primary));
+    output(await host.execute('hive_plan_write', { feature: 'refresh', content: plan }, primary));
+    const first = output(await host.execute('hive_plan_read', { feature: 'refresh' }, primary));
+    output(await host.execute('hive_plan_approve', { feature: 'refresh', sync: true, expectedRevision: first.revision }, primary));
+    output(await host.execute('hive_task_update', { feature: 'refresh', task: '01-build', status: 'in_progress' }, primary));
+    expect(output(await host.execute('hive_plan_write', { feature: 'refresh', content: plan.replace('Build.', 'Build v2.') }, primary)).planSync).toMatchObject({ state: 'changed' });
+    const amended = output(await host.execute('hive_plan_read', { feature: 'refresh' }, primary));
+    const args = { feature: 'refresh', sync: true, expectedRevision: amended.revision, refreshTasks: ['01-build'] };
+
+    const child = { sessionID: 'child', agent: 'hive-master' };
+    expect(denied(await host.before({ tool: 'hive_plan_approve', ...child, input: args }))).toContain('primary-only');
+    expect(denied(await host.execute('hive_plan_approve', args, child))).toContain('primary-only');
+    expect(output(await host.execute('hive_plan_read', { feature: 'refresh' }, primary)).status).toBe('planning');
+
+    expect(output(await host.execute('hive_plan_approve', args, primary))).toMatchObject({ approval: { success: true }, sync: { success: true, refreshed: ['01-build'] }, planSync: { state: 'current' } });
+    expect(output(await host.execute('hive_status', { feature: 'refresh' }, primary))).toMatchObject({ tasks: [{ status: 'in_progress', specStale: false }], planSync: { state: 'current' } });
+  });
+
   it('denies a primary orchestrator as a delegation target even when native configuration makes it callable', async () => {
     const host = await activate();
     const callable = host.agents({

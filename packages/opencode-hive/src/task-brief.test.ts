@@ -31,6 +31,7 @@ const stubSources = (overrides: Partial<TaskBriefSources> = {}): TaskBriefSource
   taskService: {
     listStatusEntries: () => [],
     getSpecFreshness: () => [],
+    getPlanSyncStatus: () => ({ state: 'current' as const }),
   },
   contextService: { readSummary: () => ({ durable: { fileCount: 0 } }) as any },
   ...overrides,
@@ -130,6 +131,7 @@ describe('task dispatch brief', () => {
       taskService: {
         listStatusEntries: () => [{ folder: '01-task', name: 'task', planTitle: 'Fix', status: 'pending', origin: 'plan', dependsOn: ['01-other'] }] as any,
         getSpecFreshness: () => [],
+        getPlanSyncStatus: () => ({ state: 'current' as const }),
       },
     });
     const block = composeTaskBrief(sources, featureName, 'Hive task: 01-task');
@@ -138,6 +140,26 @@ describe('task dispatch brief', () => {
     expect(lines.some((line) => line.startsWith('Dependencies'))).toBe(false);
     expect(lines.some((line) => line.startsWith('Feature context:'))).toBe(false);
     expect(lines).toContain(`Spec: /project/.hive/features/${featureName}/tasks/01-task/spec.md - specStale: null (freshness_unavailable)`);
+  });
+
+  it('names a noncurrent plan sync state before the handoff and drops it before the core locators', () => {
+    const { featureDir, sources } = createProject('drifted', PLAN);
+    fs.writeFileSync(path.join(featureDir, 'plan.md'), `${PLAN}\nShared contract changed.\n`);
+    expect(briefLines(composeTaskBrief(sources, 'drifted', 'Hive task: 01-setup'))[4])
+      .toBe('Plan sync changed: Plan changed since task sync. Check affected tasks and shared contracts; review/approve and resync as needed before dispatch.');
+
+    const featureName = `near${'x'.repeat(1200)}`;
+    const crowded = stubSources({
+      taskService: {
+        listStatusEntries: () => [{ folder: '01-task', name: 'task', planTitle: 'Fix', status: 'pending', origin: 'plan', dependsOn: [] }] as any,
+        getSpecFreshness: () => [],
+        getPlanSyncStatus: () => ({ state: 'unknown' as const, hint: 'y'.repeat(900) }),
+      },
+    });
+    const block = composeTaskBrief(crowded, featureName, 'Hive task: 01-task');
+    expect(Buffer.byteLength(block, 'utf8')).toBeLessThanOrEqual(TASK_BRIEF_MAX_BYTES);
+    expect(briefLines(block).some((line) => line.startsWith('Plan sync'))).toBe(false);
+    expect(briefLines(block)).toContain(`Spec: /project/.hive/features/${featureName}/tasks/01-task/spec.md - specStale: null (freshness_unavailable)`);
   });
 
   it('renders a legacy status without dependsOn as no dependencies', () => {
@@ -154,6 +176,7 @@ describe('task dispatch brief', () => {
       taskService: {
         listStatusEntries: () => [{ folder: '01-task', name: 'task', status: 'pending', origin: 'plan', dependsOn: ['09-ghost'] }] as any,
         getSpecFreshness: () => [],
+        getPlanSyncStatus: () => ({ state: 'current' as const }),
       },
     });
     expect(briefLines(composeTaskBrief(sources, 'ghost', 'Hive task: 01-task'))).toContain('- 09-ghost (unknown)');
@@ -231,6 +254,7 @@ describe('task dispatch brief', () => {
     const sources = stubSources({ taskService: {
       listStatusEntries: () => [{ folder, name: folder, status: null, integrity: { reason: 'status_missing' } }],
       getSpecFreshness: () => [],
+      getPlanSyncStatus: () => ({ state: 'current' as const }),
     } });
     const block = composeTaskBrief(sources, 'broken', `Hive task: ${folder}`);
     expect(Buffer.byteLength(block, 'utf8')).toBeLessThanOrEqual(TASK_BRIEF_MAX_BYTES);

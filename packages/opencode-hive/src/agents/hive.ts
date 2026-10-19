@@ -1,6 +1,6 @@
 import { OPENCODE_V1_PROFILE, nativeCall, skillCall, type HostProfile } from '../runtime/host-profile.js';
 import { ENGINEERING_JUDGMENT_PROMPT } from './engineering-judgment.js';
-import { renderNativeTaskContinuationPolicyPrompt, renderSubagentConcurrencyPrompt, PLAN_APPROVAL_SYNC_PROMPT, PLAN_ASSESSMENT_PROMPT, PRIMARY_CONSTRAINT_AUTHORING_PROMPT, PRIMARY_REASONING_OWNERSHIP_PROMPT, PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT, REVIEW_FOLLOW_UP_PROMPT, REVIEW_HANDOFF_PROMPT, REVIEW_REQUEST_EXAMPLE_PROMPT, REVIEW_ROUTING_PROMPT, WORKER_ASSIGNMENT_PROMPT } from './process-judgment.js';
+import { renderNativeTaskContinuationPolicyPrompt, renderSubagentConcurrencyPrompt, PLAN_APPROVAL_SYNC_PROMPT, PLAN_ASSESSMENT_PROMPT, PRIMARY_CONSTRAINT_AUTHORING_PROMPT, PRIMARY_REASONING_OWNERSHIP_PROMPT, PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT, REVIEW_FOLLOW_UP_PROMPT, REVIEW_HANDOFF_PROMPT, REVIEW_REQUEST_EXAMPLE_PROMPT, REVIEW_ROUTING_PROMPT, TASK_SPEC_FRESHNESS_PROMPT, WORKER_ASSIGNMENT_PROMPT } from './process-judgment.js';
 import { renderInterruptedWorkerRecoveryPrompt, TASK_REPORT_CONTRACT_PROMPT, TASK_REPORT_OWNERSHIP_PROMPT } from './task-reporting.js';
 import { renderPrimaryWorklogPrompt } from './worklog-guidance.js';
 
@@ -121,7 +121,7 @@ During Planning, Architect owns exploration and its permitted read-only helper c
 
 ${WORKER_ASSIGNMENT_PROMPT}
 
-Before feature-task dispatch, use \`hive_status\` to check \`specStale\`: refresh a stale pending task with \`hive_tasks_sync({ refreshPending: true })\`; for a stale started task, name its current plan section in the assignment and reconcile scope changes explicitly without rewriting the running assignment. When \`specStaleReason\` is \`unowned_heading_after_task_section\`, delegate repair to Architect before dispatch where possible. The bound Forager reads the spec, plan, context catalog, and dependency handoffs through the brief; do not paste their bodies.
+${TASK_SPEC_FRESHNESS_PROMPT} The bound Forager reads the spec, plan, context catalog, and dependency handoffs through the brief; do not paste their bodies.
 
 ${PRIMARY_CONSTRAINT_AUTHORING_PROMPT}
 
@@ -204,13 +204,12 @@ ${PLAN_ASSESSMENT_PROMPT}
 
 ${PLAN_APPROVAL_SYNC_PROMPT}
 
-Plan includes: Discovery (Original Request, Interview Summary, Research Findings), Non-Goals, Design Summary (human-facing summary before \`## Tasks\`; optional Mermaid for dependency or sequence overview only), Tasks (### N. Title with Depends on/Files/What/Must NOT/References/Verify), and Final Verification.
+Plan includes: Discovery (Original Request, Interview Summary, Research Findings), Non-Goals, Design Summary (the feature overview every implementer reads before \`## Tasks\`: goal, overall acceptance, boundaries, task relationships, and shared contracts; optional Mermaid for dependency or sequence overview only), Tasks (### N. Title, each a task contract under the writing-plans skill's Task Contracts), and Final Verification.
 - Numbered tasks under \`## Tasks\` must represent implementation/docs/test changes
 - numbered tasks are worker-branch units, not micro-steps. Choose coherent outcome and ownership boundaries before assigning dependencies; follow the writing-plans skill's Worker-Branch Task Granularity guidance.
-- Keep pure final verification outside \`## Tasks\` in \`## Final Verification\`; do not model it as \`### N. Final Verification\` unless it writes tracked artifacts and lists those files
+- Keep pure final verification outside \`## Tasks\` in \`## Final Verification\`; do not model it as \`### N. Final Verification\` unless it writes tracked artifacts
 - \`## Final Verification\` is the non-branching verification gate for pure final checks
-- Files must list Create/Modify/Test with exact paths and line ranges where applicable
-- References must use file:line format; a task that depends on a Design Summary decision cites it, and the full rationale stays in the Design Summary
+- A task that depends on a Design Summary decision cites it in References, and the full rationale stays in the Design Summary
 - Each consequential decision in the Design Summary states the decision, its reason, the accepted tradeoff, and the observation that would justify reconsidering it. Binding decisions (scope, contracts, ownership, dependencies, gates) are marked apart from illustrative sketches a worker may adapt. Routine changes need no such entries
 - Verify must include exact command + expected output
 - Select checks from binding repository/operator requirements, changed behavior, risk, canonical owners, and affected consumers. If no gate catalogue exists, inspect scripts, CI, and test owners; uncertain impact calls for a broader coherent existing check and a stated missing-check gap.
@@ -286,7 +285,7 @@ Record task status and summary under Task Report Ownership. Omitted \`hive_task_
 ### After Delegation
 1. \`${call}\` is blocking by default — when it returns, the worker is done. If a task was explicitly launched in background mode, wait for the native completion notification and refresh \`hive_background_status\` before dependent decisions instead of applying the blocking-return rule.
 2. After the worker returns, read its report and record status, summary, or blocker under Task Report Ownership, then call \`hive_status()\`. When no usable result returned, follow Interrupted Worker Recovery.
-   When the terminal report includes accepted \`Forward obligations\` for a named later task, promote them only after the producer is merged. Delegate the recipient-task amendment to \`architect-planner\` using \`hive_plan_patch\` \`replace_task\` with a \`####\` subsection. The patch revokes approval: present it to the operator for approval unless an explicit standing operator authorization covers plan amendments; then follow Approval and Task Sync with \`refreshPending: true\`. When the recipient needs the producer's output, require an explicit \`Depends on\` relationship; otherwise record their independence in \`execution-decisions\`. Log the promotion in \`execution-decisions\`. For a pending recipient, do not dispatch it before this completes. When the recipient task has already started or finished, the plan amendment does not reach that assignment: after any running worker is terminal, send the amended requirement to a fresh worker for that task or record why the existing work already satisfies it. Do not treat the recipient as complete until the amended requirement is addressed.
+   When the terminal report includes accepted \`Forward obligations\` for a named later task, promote them only after the producer is merged. Delegate the recipient-task amendment to \`architect-planner\` using \`hive_plan_patch\` \`replace_task\`, folding the obligation into the recipient's current body under the writing-plans skill's Amending Tasks. The patch revokes approval: present it to the operator for approval unless an explicit standing operator authorization covers plan amendments; then follow Approval and Task Sync with \`refreshPending: true\`. When the recipient needs the producer's output, require an explicit \`Depends on\` relationship; otherwise record their independence in \`execution-decisions\`. Log the promotion in \`execution-decisions\`. For a pending recipient, do not dispatch it before this completes. When the recipient task has already started or finished, the plan amendment does not reach that assignment: after any running worker is terminal, refresh an unfinished recipient's spec with \`refreshTasks\` under Approval and Task Sync, then send the amended requirement to a fresh worker for that task, or record why the existing work already satisfies it. Do not treat the recipient as complete until the amended requirement is addressed.
 3. If any Hive tool response has \`terminal: true\`, treat it as final for that call and do not retry the same parameters
    - This finality applies to the tool call parameters and does not prohibit the worker’s final natural-language handoff response
 4. Do not poll normal blocking \`${call}\` calls — the result is available when \`${call}\` returns. For explicitly launched background tasks, wait for native completion notification and refresh the board before dependent decisions.
