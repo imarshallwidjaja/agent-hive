@@ -44,7 +44,6 @@ const EXPECTED_COMMANDS = [
     key: 'implement',
     name: '/implement',
     description: 'Implement the work this conversation scoped as ad-hoc work, with any extra steering you add',
-    agent: 'hive-builder',
     literalArguments: true,
   },
   {
@@ -376,11 +375,12 @@ describe('HIVE_COMMANDS', () => {
     }
   });
 
-  it('binds /implement to Hive Builder and hands the skill the whole operator text on every host', () => {
+  it('leaves /implement on the selected agent and model and hands the skill the whole operator text on every host', () => {
     const implement = HIVE_COMMANDS.find((command) => command.key === 'implement');
-    expect(implement).toMatchObject({ agent: 'hive-builder' });
-    // No model, provider, variant or subtask override: the native command keeps the session's model and chat.
-    expect(Object.keys(implement!).sort()).toEqual(['agent', 'description', 'key', 'literalArguments', 'name']);
+    // No agent, model, provider, variant or subtask: the native command keeps the session's agent, model and chat.
+    expect(Object.keys(implement!).sort()).toEqual(['description', 'key', 'literalArguments', 'name']);
+    // Only the two review commands bind an agent, each to its own review primary.
+    expect(HIVE_COMMANDS.filter((command) => 'agent' in command).map((command) => command.key)).toEqual(['dash-review', 'vuln-review']);
     // Only /implement promises its text verbatim through the v1 host; the other commands keep $ARGUMENTS there.
     expect(HIVE_COMMANDS.filter((command) => 'literalArguments' in command).map((command) => command.key)).toEqual(['implement']);
     // Multiline prose with quotes, flag-like words, a placeholder-like token and outer whitespace passes through as written.
@@ -390,7 +390,7 @@ describe('HIVE_COMMANDS', () => {
         agentMode: 'dedicated', host, backgroundGuidance: { available: false }, council: {} as never, agents: {},
         dashReviewLanes: [], vulnerabilityReviewLanes: [],
       }));
-      expect(commands.implement.agent).toBe('hive-builder');
+      expect(commands.implement.agent).toBeUndefined();
       const output = commands.implement.run(prose);
       expect(output).toContain(`<operator-text>\n${prose}\n</operator-text>`);
       expect(output.split('<operator-text>').length).toBe(2);
@@ -405,7 +405,8 @@ describe('HIVE_COMMANDS', () => {
         'further context and natural-language steering and not options to parse',
         'The invocation is the authority to implement that scope; loading the skill, earlier history, or a bare alignment confirmation is not',
         'The invocation does not by itself authorize creating a Hive feature, plan, or task, and an approved feature plan runs through /start-execution',
-        'state the exact limitation and stop instead of substituting another capability',
+        'The command runs under the agent and model selected for this session',
+        'state the exact limitation and stop instead of substituting another capability; choosing another agent belongs to the operator',
       ]) expect(output, required).toContain(required);
       // The command is an adapter; the lifecycle policy stays with the skill and the primary.
       expect(output).not.toMatch(/hive_adhoc_worktree|orchestrating-ad-hoc-work|Review Routing|\btask\(|subagent\(/);

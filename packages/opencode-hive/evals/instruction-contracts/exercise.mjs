@@ -1772,7 +1772,7 @@ export const QUALIFICATION_CHECKS = [
   'protocol.replyAckLost', 'protocol.replyNoReplay', 'protocol.replyResolvedByAnswers', 'protocol.permissionAckLost', 'protocol.permissionStaysUnknown',
   'protocol.lockBusy', 'protocol.lockSurvivesNoDescendant', 'protocol.rotationLatched', 'protocol.latchedInspectWithoutContent', 'protocol.cleanupWithoutAuth',
   'interrupt.started', 'interrupt.ackLost', 'interrupt.noReplay', 'interrupt.staysUnknown', 'interrupt.cleanupWithoutAuth',
-  'command.started', 'command.submitted', 'command.ackLostSafe', 'command.agentBound', 'command.sameSession', 'command.literalText', 'command.noShellEffect',
+  'command.started', 'command.submitted', 'command.ackLostSafe', 'command.selectionPreserved', 'command.sameSession', 'command.literalText', 'command.noShellEffect',
   'command.skillLoaded', 'command.questionPending', 'command.questionReplied', 'command.completed', 'command.cleanupWithoutAuth',
 ];
 
@@ -2140,17 +2140,16 @@ async function qualifyInterruptLoss(base, budget, notes, c) {
 /**
  * A native command in the middle of a conversation, on the installed host with the scripted mock model: an earlier
  * turn under Architect, then `/implement` through the command operation, with text carrying dollar sequences, a
- * shell-looking line and a file reference. The command binds Hive Builder in the same session, its text arrives exactly
- * as written and the shell-looking line never runs, the packaged skill loads, the turn's question is answered through
- * the supervisor and the turn finishes. A lost acknowledgement is resolved by the command's exact message ID on v1; v2,
- * whose command route takes no ID, leaves a second invocation with a lost acknowledgement unknown.
+ * shell-looking line and a file reference. The command binds no agent, so the session stays on Architect and on the
+ * model of the earlier turn; its text arrives exactly as written and the shell-looking line never runs, the packaged
+ * skill loads, the turn's question is answered through the supervisor and the turn finishes. The scripted mock grants
+ * no authority to implement: the run proves the plumbing and the selection, not how Architect would handle the request.
+ * A lost acknowledgement is resolved by the command's exact message ID on v1; v2, whose command route takes no ID,
+ * leaves a second invocation with a lost acknowledgement unknown.
  */
 async function qualifyCommand(base, budget, notes, c) {
   const q = await subRun(base, budget, notes, 'qualification-command', 'qc', {
-    primaryTransitions: [
-      { from: 'architect-planner', to: 'hive-builder', command: 'implement' },
-      { from: 'hive-builder', to: 'hive-builder', command: 'implement' },
-    ],
+    primaryTransitions: [{ from: 'architect-planner', to: 'architect-planner', command: 'implement' }],
     initialStep: 'chat',
   });
   const { journal, helper, turn, inspect, until } = q;
@@ -2190,12 +2189,15 @@ async function qualifyCommand(base, budget, notes, c) {
     c['command.literalText'] = commandAt >= 0 && commandTurn.clipped === false && commandTurn.text.includes(`<operator-text>\n${text}\n</operator-text>`)
       && (base.host === 'v2' || commandTurn.id === commandOp?.intent.messageId);
     c['command.noShellEffect'] = evidence.artifacts?.[0]?.omitted === 'absent';
-    // The command's message (v1) or the session itself (v2) names Hive Builder, and Hive Builder answers every turn after it.
-    c['command.agentBound'] = runState(journal).primary === 'hive-builder' && replies.every((t) => t.agent === 'hive-builder')
-      && (base.host === 'v1' ? commandTurn?.agent === 'hive-builder' : primary?.agent === 'hive-builder');
+    // The command's message (v1) or the session itself (v2) still names Architect, Architect answers every turn after it,
+    // and each of those replies runs on the model that answered the earlier turn.
+    const chatModel = turns.slice(chatAt + 1, commandAt).find((t) => t.role === 'assistant')?.model;
+    c['command.selectionPreserved'] = runState(journal).primary === 'architect-planner' && Boolean(chatModel?.modelID) && replies.length > 0
+      && replies.every((t) => t.agent === 'architect-planner' && JSON.stringify(t.model) === JSON.stringify(chatModel))
+      && (base.host === 'v1' ? commandTurn?.agent === 'architect-planner' : primary?.agent === 'architect-planner');
     c['command.skillLoaded'] = replies.some((t) => t.tools.some((x) => x.name === 'skill' && x.status === 'completed'));
     const last = replies.at(-1);
-    c['command.completed'] = last?.text?.includes('QUALIFICATION-IMPLEMENT-COMPLETE') === true && last.agent === 'hive-builder';
+    c['command.completed'] = last?.text?.includes('QUALIFICATION-IMPLEMENT-COMPLETE') === true && last.agent === 'architect-planner';
     if (base.host === 'v2') {
       const again = await turn('command', { name: 'implement', text: await prompt('implementAgain') }, { dropAcknowledgement: true });
       const noReplay = (await turn('prompt', { text: 'again' })).status.reason === 'operation_unresolved';

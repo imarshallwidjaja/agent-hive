@@ -873,27 +873,38 @@ describe('v2 skills, commands and models', () => {
     expect(host.switches).toHaveLength(1);
     expect(host.prompts[1].text).toContain('an idea');
     expect(host.prompts[1].text).not.toContain('task(');
-    // /implement binds Hive Builder in the same session and prompts it with the operator's prose exactly as typed.
+    // /implement binds no agent: the session keeps the agent and model it has, whichever agent it is and whatever model
+    // Hive Builder is configured with, and the prompt carries the operator's prose exactly as typed.
+    host.useAgentConfig({ agents: { 'hive-builder': { model: { providerID: 'user', id: 'builder', variant: 'high' } }, 'team-custom': {} } });
     const prose = 'ship the retry fix, but keep "legacy" mode\n\n- skip docs for now\n  (and ask before touching $HOME-ish paths)';
-    await Effect.runPromise(commands.get('implement').execute({ sessionID: 's1', prompt: { text: prose }, delivery: 'steer' }));
-    expect(host.switches.at(-1)).toEqual({ sessionID: 's1', agent: 'hive-builder' });
-    expect(host.prompts[2]).toMatchObject({ sessionID: 's1', delivery: 'steer' });
-    expect(host.prompts[2].text).toContain(`<operator-text>\n${prose}\n</operator-text>`);
+    const switchesBefore = host.switches.length;
+    for (const [index, agent] of ['architect-planner', 'swarm-orchestrator', 'build', 'team-custom', 'hive-builder'].entries()) {
+      const sessionID = `i${index}`;
+      host.sessions.set(sessionID, { id: sessionID, agent });
+      await Effect.runPromise(commands.get('implement').execute({ sessionID, prompt: { text: prose }, delivery: 'steer' }));
+      expect(host.prompts.at(-1), agent).toMatchObject({ sessionID, delivery: 'steer' });
+      expect(host.prompts.at(-1).text, agent).toContain(`<operator-text>\n${prose}\n</operator-text>`);
+    }
+    expect(host.switches).toHaveLength(switchesBefore);
     expect(host.modelSwitches).toEqual([]);
-    // A session already on Hive Builder is not switched again, and a blank invocation still prompts the same session.
-    host.sessions.set('s2', { id: 's2', agent: 'hive-builder' });
-    await Effect.runPromise(commands.get('implement').execute({ sessionID: 's2', prompt: { text: '' }, delivery: 'queue' }));
-    expect(host.switches).toHaveLength(2);
-    expect(host.prompts[3]).toMatchObject({ sessionID: 's2', delivery: 'queue' });
-    expect(host.prompts[3].text).toContain('<operator-text>\n\n</operator-text>');
+    // A blank invocation still prompts the same session with its own delivery.
+    await Effect.runPromise(commands.get('implement').execute({ sessionID: 'i0', prompt: { text: '' }, delivery: 'queue' }));
+    expect(host.prompts.at(-1)).toMatchObject({ sessionID: 'i0', delivery: 'queue' });
+    expect(host.prompts.at(-1).text).toContain('<operator-text>\n\n</operator-text>');
+    expect(host.switches).toHaveLength(switchesBefore);
+    expect(host.modelSwitches).toEqual([]);
   });
 
-  it('keeps /implement bound to Hive Builder in unified mode', async () => {
+  it('runs /implement on the selected agent in unified mode, even when Hive Builder is disabled', async () => {
     const host = await activate({}, { agentMode: 'unified' });
     host.sessions.set('s1', { id: 's1', agent: 'hive-master' });
+    host.useAgentConfig({ agents: { 'hive-builder': { disabled: true } } });
     await Effect.runPromise(host.commands().get('implement').execute({ sessionID: 's1', prompt: { text: 'it' }, delivery: 'steer' }));
-    expect(host.switches).toEqual([{ sessionID: 's1', agent: 'hive-builder' }]);
-    expect(host.prompts[0].sessionID).toBe('s1');
+    expect(host.switches).toEqual([]);
+    expect(host.modelSwitches).toEqual([]);
+    expect(host.prompts).toHaveLength(1);
+    expect(host.prompts[0]).toMatchObject({ sessionID: 's1', delivery: 'steer' });
+    expect(host.prompts[0].text).toContain('<operator-text>\nit\n</operator-text>');
   });
 
   it('parses configured models into native references and fails loudly on a model validation should have rejected', () => {

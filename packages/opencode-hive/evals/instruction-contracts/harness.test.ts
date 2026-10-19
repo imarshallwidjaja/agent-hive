@@ -2838,8 +2838,9 @@ describe('supervised exercise inputs and authority', () => {
       expect(code(() => validateRequest({ ...EXERCISE_REQUEST, artifacts: [path] }))).toBe('request_invalid');
     }
     expect(projectPath('.hive/features/')).toBe('.hive/features/');
-    // A transition may name the native command that takes it; then "to" is the agent the command binds, which may be "from".
-    const commands = [{ from: 'architect-planner', to: 'hive-builder', command: 'implement' }, { from: 'hive-builder', to: 'hive-builder', command: 'implement' }];
+    // A transition may name the native command that takes it; then "to" is the agent the command binds, which may be "from"
+    // (/implement binds none, so the primary stays whichever one is selected).
+    const commands = [{ from: 'architect-planner', to: 'architect-planner', command: 'implement' }, { from: 'hive-builder', to: 'hive-builder', command: 'implement' }];
     expect(validateRequest({ ...EXERCISE_REQUEST, primaryTransitions: commands }).primaryTransitions).toEqual(commands);
     for (const transitions of [
       [{ from: 'hive-builder', to: 'hive-builder' }],
@@ -3375,8 +3376,8 @@ describe('supervised exercise native adapters', () => {
       expect(result.reply, refused).toMatchObject({ ok: true, submitted: false, refused });
       expect(result.sends).toEqual([]);
     }
-    // A command that binds no agent runs on the current primary when the request declares it that way.
-    expect((await v1({ catalog: [{ name: 'start-execution' }], op: { name: 'start-execution', agent: 'architect-planner' }, message: { id: 'msg_000000000001AAAAAAAAAAAAAA', role: 'user', agent: 'architect-planner' } })).reply).toMatchObject({ acknowledged: true, agent: 'architect-planner' });
+    // A command that binds no agent, as /implement does, runs on the current primary when the request declares it that way.
+    expect((await v1({ catalog: [{ name: 'implement' }], op: { agent: 'architect-planner' }, message: { id: 'msg_000000000001AAAAAAAAAAAAAA', role: 'user', agent: 'architect-planner' } })).reply).toMatchObject({ acknowledged: true, agent: 'architect-planner' });
 
     // v2: the callback answers once it has admitted its prompt; the session then names the agent it bound.
     const v2 = async ({ before = 'architect-planner', after = 'hive-builder', status = 204, drop = false } = {}) => {
@@ -3763,6 +3764,18 @@ describe('supervised exercise run commands', () => {
     expect((await turnCommand({ run: other.runDir, operation: other.op('prompt', { text: 'continue' }, 'p1') }, other.env, {}, { docker: otherDocker })).status).toMatchObject({ state: 'refused', reason: 'primary_unknown' });
     expect(submits(otherDocker).length).toBe(1);
     expect((await inspectCommand({ run: other.runDir }, other.env, { docker: otherDocker })).status).toMatchObject({ status: 'observed', lifecycle: { primary: null } });
+
+    // /implement binds no agent: declared as architect-planner to architect-planner, the primary stays selected, and a host
+    // that ran it under another agent leaves the primary unknown.
+    const unbound = [{ from: 'architect-planner', to: 'architect-planner', command: 'implement' }];
+    const stays = exerciseRun({ transitions: unbound });
+    const staysDocker = new ExerciseDocker({ driver: { submit: commandReply('architect-planner') } });
+    await turnCommand({ run: stays.runDir, operation: stays.op('command', { name: 'implement', text }, 'c1') }, stays.env, {}, { docker: staysDocker });
+    expect(submits(staysDocker)[0].input.op).toMatchObject({ kind: 'command', from: 'architect-planner', agent: 'architect-planner' });
+    expect(runState(stays.journal).primary).toBe('architect-planner');
+    const moved = exerciseRun({ transitions: unbound });
+    await turnCommand({ run: moved.runDir, operation: moved.op('command', { name: 'implement', text }, 'c1') }, moved.env, {}, { docker: new ExerciseDocker({ driver: { submit: commandReply('hive-builder') } }) });
+    expect(runState(moved.journal).primary).toBeNull();
 
     // A lost v1 acknowledgement resolves only by the command's message ID, and the agent that message names sets the primary.
     const lost = exerciseRun({ transitions });

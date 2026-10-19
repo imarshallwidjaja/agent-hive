@@ -88,11 +88,11 @@ describe('agent registration', () => {
     }
     expect(config.command['dash-review'].agent).toBe('dash-reviewer');
     expect(config.command['vuln-review'].agent).toBe('vulnerability-review-primary');
-    // /implement runs Hive Builder in the current session with no model, variant or subtask pinned. Its v1 template
-    // carries no operator text: one placeholder no argument list fills keeps the host's substitution, append and shell
-    // passes away from that text, and command.execute.before puts the command rendered from the raw text in its place.
-    expect(config.command.implement.agent).toBe('hive-builder');
-    expect(Object.keys(config.command.implement).sort()).toEqual(['agent', 'description', 'template']);
+    // /implement pins no agent, model, variant or subtask, so the host runs it under the session's current selection.
+    // Its v1 template carries no operator text: one placeholder no argument list fills keeps the host's substitution,
+    // append and shell passes away from that text, and command.execute.before puts the command rendered from the raw
+    // text in its place.
+    expect(Object.keys(config.command.implement).sort()).toEqual(['description', 'template']);
     const template: string = config.command.implement.template;
     expect(template).toContain(`<operator-text>\n${V1_UNFILLABLE_ARGUMENT}\n</operator-text>`);
     expect(template).not.toContain('$ARGUMENTS');
@@ -138,8 +138,8 @@ describe('agent registration', () => {
     expect(config.agent['dash-reviewer'].hidden).toBe(true);
     expect(config.agent['vulnerability-review-primary'].hidden).toBe(true);
     expect(config.default_agent).toBe('hive-master');
-    // The ad-hoc seat and its command exist in unified mode too.
+    // The ad-hoc seat exists in unified mode too, and its command still pins no agent.
     expect(config.agent['hive-builder'].hidden).toBeUndefined();
-    expect(config.command.implement.agent).toBe('hive-builder');
+    expect(config.command.implement).not.toHaveProperty('agent');
   });
 });

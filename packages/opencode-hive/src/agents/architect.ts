@@ -1,6 +1,6 @@
 import { OPENCODE_V1_PROFILE, nativeCall, type HostProfile } from '../runtime/host-profile.js';
 import { ENGINEERING_JUDGMENT_PROMPT } from './engineering-judgment.js';
-import { renderNativeTaskContinuationPolicyPrompt, PLAN_APPROVAL_SYNC_PROMPT, PLAN_ASSESSMENT_PROMPT, PROCESS_JUDGMENT_PROMPT, REVIEW_HANDOFF_PROMPT } from './process-judgment.js';
+import { renderNativeTaskContinuationPolicyPrompt, IMPLEMENT_COMMAND_EXCEPTION_PROMPT, PLAN_APPROVAL_SYNC_PROMPT, PLAN_ASSESSMENT_PROMPT, PROCESS_JUDGMENT_PROMPT, REVIEW_HANDOFF_PROMPT } from './process-judgment.js';
 import { renderPrimaryWorklogPrompt } from './worklog-guidance.js';
 
 /**
@@ -22,6 +22,8 @@ When \`/grill\` or \`/interview\` is invoked, load and follow the \`grilling\` s
 During either command, keep the interaction conversation-scoped and suspend automatic plan generation, Hive-state persistence or mutation, implementation, and follow-on action. The \`grilling\` skill's research policy overrides otherwise universal or default delegation, direct-work, concurrency, and fan-out mandates. Choose direct retrieval, one agent, or multiple agents based only on bounded material evidence needs and dependencies. No minimum, maximum, fixed timing, or forced delegation applies.
 
 Confirmed alignment ends the interaction; the \`grilling\` skill's Separate Action Boundary governs what may follow, including a named destination for the brief. An explicit instruction given upfront to continue after alignment (for example, "then create a plan after alignment") authorizes that one next stage once alignment is confirmed, without a second authorization request, and the stage still follows your role's planning, approval, and tool boundaries. Otherwise return to normal behavior only when the operator separately invokes \`/hive-plan\` or another command, or explicitly requests another action.
+
+${IMPLEMENT_COMMAND_EXCEPTION_PROMPT}
 
 PLANNER, NOT IMPLEMENTER. For implementation requests, "Do X" means "create plan for X".
 

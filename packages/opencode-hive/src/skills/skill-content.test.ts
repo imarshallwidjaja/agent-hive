@@ -1213,15 +1213,24 @@ describe('skill content', () => {
     expect(skill).toBeDefined();
     expect(skill!.description).toMatch(/^Use when /);
     // The skill names Hive tools, so its description is scoped to Agent Hive like the other tool-bearing skills.
-    expect(skill!.description).toContain('Agent Hive Builder');
+    expect(skill!.description).toContain('selected Agent Hive primary, such as Hive Builder');
     expect(skill!.description).toContain('`/implement`');
     expect(skill!.description).toContain('"implement it"');
     for (const phrase of [
       // Trigger, role and the arbitrary trailing prose.
       'Text after `/implement` is further context and natural-language steering',
       'A selected feature does not make a request feature work',
+      'which runs under the agent and model already selected for the session',
+      'This skill never changes the selected agent or model and adds no authority to a role',
+      // The agent's own instructions and actual tools decide, not its name: restricted roles stop, an authorized native or custom primary continues.
+      'An agent whose role cannot implement ad-hoc work stays in its role',
+      'Its own instructions and the tools it actually has decide that, not its name',
       'Architect plans only',
-      'point to `/implement`, which runs under Hive Builder',
+      'A primary whose instructions require a plan before implementation, such as unified Hive, keeps that rule',
+      'A role whose instructions limit it to reading or review has no implementation authority',
+      'A native or custom primary whose instructions and available tools authorize ad-hoc implementation continues into the lifecycle below',
+      'it writes no plan as a stand-in and does not widen its own tool access',
+      "Selecting an agent that can implement, such as Hive Builder, and asking again is the operator's choice",
       // Authority: the explicit request, not loading, history or a bare alignment confirmation.
       "The operator's explicit request in this turn authorizes implementing the agreed outcome and the current additional instructions",
       'Loading this skill, earlier history, and a bare confirmation at the end of `/grill` or `/interview` authorize nothing by themselves',
@@ -1241,7 +1250,12 @@ describe('skill content', () => {
       // A missing capability pauses only the work the current path needs it for; skills named for other paths are not needed.
       'or a tool or skill the current path needs, is unavailable, state which one and what it blocks, and pause only the work it blocks',
       'A skill named here for another path, such as `executing-plans` for feature work or `orchestrating-ad-hoc-work` when its triggers do not hold, is not needed',
+      'A different route, such as selecting another agent or model, writing a plan, creating a feature, or editing the canonical checkout directly, is a separate decision for the operator',
     ]) expect(skill!.template, phrase).toContain(phrase);
+    // `/implement` runs under the selection it finds, so the skill never promises a Builder binding or points back to the command as a switch.
+    expect(skill!.template).not.toMatch(/binds Hive Builder|runs under Hive Builder|point to `\/implement`/);
+    // Native `build` and custom primaries keep their own tool permissions, so no category of agent is refused by name or assumed to lack Hive tools.
+    expect(skill!.template).not.toMatch(/native role has no|has no ad-hoc Hive tools/);
     expect(skill!.template).not.toContain('a skill this one points to is unavailable');
     // Lifecycle policy stays with its owners; host syntax is not needed, so no host sections are present.
     expect(skill!.template).not.toContain('<!-- hive-host');

@@ -1165,6 +1165,27 @@ describe('/grill and /interview primary-agent mode exception', () => {
     }
   });
 
+  it('ends /implement for the plan-first primaries without a plan, a feature, or an agent switch', () => {
+    const required = [
+      '## /implement Command Exception',
+      'run under the agent and model they selected',
+      'this exception takes precedence over the plan-first rules and phase routing in this prompt',
+      'that `/implement` does not switch agents',
+      "selecting an agent that can implement, such as Hive Builder, and running `/implement` again is the operator's choice",
+      'create no feature, plan, task, or draft, do not select a feature, and do not delegate plan authoring in its place',
+      'A plain implementation request, execution of an approved feature plan, and `/grill`, `/interview`, or `/hive-plan` follow the rules elsewhere in this prompt',
+    ];
+    for (const [name, prompt] of routedPrimaryPrompts) {
+      for (const phrase of required) expect(prompt, `${name}: ${phrase}`).toContain(phrase);
+    }
+    // The exception precedes the plan-first rules it overrides; the ordinary pins in the role tests above still hold.
+    expect(ARCHITECT_BEE_PROMPT.indexOf('## /implement Command Exception')).toBeLessThan(ARCHITECT_BEE_PROMPT.indexOf('PLANNER, NOT IMPLEMENTER.'));
+    expect(QUEEN_BEE_PROMPT.indexOf('## /implement Command Exception')).toBeLessThan(QUEEN_BEE_PROMPT.indexOf('## Phase Detection (First Action)'));
+    // Hive Builder implements on request and Swarm executes approved plans; neither carries the stop.
+    expect(HIVE_BUILDER_PROMPT).not.toContain('## /implement Command Exception');
+    expect(SWARM_BEE_PROMPT).not.toContain('## /implement Command Exception');
+  });
+
   it('lets an explicit upfront instruction authorize one next stage inside the role boundaries', () => {
     for (const [name, prompt] of routedPrimaryPrompts) {
       expect(prompt, name).toContain('An explicit instruction given upfront to continue after alignment (for example, "then create a plan after alignment") authorizes that one next stage once alignment is confirmed, without a second authorization request');
@@ -1308,9 +1329,11 @@ describe('Active native-task guidance contradiction checks', () => {
   const activeGuidanceFiles = [
     'AGENTS.md',
     'CHANGELOG.md',
+    'README.md',
     'docs/OPERATOR-GUIDE.md',
     'packages/opencode-hive/README.md',
     'packages/opencode-hive/docs/HIVE-TOOLS.md',
+    'packages/opencode-hive/docs/SKILL-OWNERSHIP.md',
     'packages/opencode-hive/skills/background-delegation/SKILL.md',
     'packages/opencode-hive/skills/context-engineering/SKILL.md',
     'packages/opencode-hive/skills/dispatching-parallel-agents/SKILL.md',
@@ -1371,6 +1394,13 @@ describe('Active native-task guidance contradiction checks', () => {
     'permitted helper layer does not include `hive-helper`',
     "Architect's helper layer excludes Hive Helper",
     'returns board/control or trace-investigation requests to its parent',
+    // /implement keeps the selected agent and model; nothing forces Hive Builder.
+    'binds the current session to `hive-builder`',
+    'switches the current session to `hive-builder`',
+    'binds Hive Builder in the current session',
+    'Bound by `config.command` to `hive-builder`',
+    '`/implement` to `hive-builder`',
+    'which runs under Hive Builder',
   ] as const;
 
   it('has no stale native-task or context-delivery guidance', () => {

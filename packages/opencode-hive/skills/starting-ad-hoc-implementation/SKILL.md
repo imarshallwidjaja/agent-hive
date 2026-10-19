@@ -1,6 +1,6 @@
 ---
 name: starting-ad-hoc-implementation
-description: Use when the operator explicitly asks Agent Hive Builder to implement ad-hoc work that the current conversation or detailed supplied context already scopes, through `/implement` or a plain request such as "implement it", before any worktree or dispatch.
+description: Use when the operator explicitly asks the selected Agent Hive primary, such as Hive Builder, to implement ad-hoc work that the current conversation or detailed supplied context already scopes, through `/implement` or a plain request such as "implement it", before any worktree or dispatch.
 ---
 
 # Starting Ad-Hoc Implementation
@@ -9,12 +9,14 @@ This skill covers the step between "we discussed it" and "a lane starts": what t
 
 ## Trigger and Role
 
-Hive Builder, or another primary whose own instructions authorize ad-hoc implementation on request, applies this skill when the operator explicitly asks to implement ad-hoc work. The request is `/implement`, which binds Hive Builder in the current session so the conversation stays in place, or plain words such as "implement it" or "go ahead and build this". The conversation or the supplied context must scope the work.
+The agent the operator has selected applies this skill when the operator explicitly asks it to implement ad-hoc work. The request is `/implement`, which runs under the agent and model already selected for the session so the conversation stays in place, or plain words such as "implement it" or "go ahead and build this". The conversation or the supplied context must scope the work.
+
+This skill never changes the selected agent or model and adds no authority to a role. Hive Builder, or another primary whose own instructions authorize ad-hoc implementation on request, continues into the lifecycle below.
 
 Text after `/implement` is further context and natural-language steering. Read it whole as prose, as part of the request.
 
 - An approved feature plan or feature task runs through `/start-execution` and `executing-plans`. A selected feature does not make a request feature work.
-- Architect plans only. A primary whose instructions require a plan before implementation keeps that rule: say so, and point to `/implement`, which runs under Hive Builder.
+- An agent whose role cannot implement ad-hoc work stays in its role. Its own instructions and the tools it actually has decide that, not its name. Architect plans only. A primary whose instructions require a plan before implementation, such as unified Hive, keeps that rule. A role whose instructions limit it to reading or review has no implementation authority. A native or custom primary whose instructions and available tools authorize ad-hoc implementation continues into the lifecycle below. An agent that cannot implement says which limit applies and stops the work it blocks; it writes no plan as a stand-in and does not widen its own tool access. Selecting an agent that can implement, such as Hive Builder, and asking again is the operator's choice.
 
 ## Authority
 
@@ -53,4 +55,4 @@ Before starting, account for work from this conversation that is already running
 
 ## Missing Capability
 
-When this agent's role, or a tool or skill the current path needs, is unavailable, state which one and what it blocks, and pause only the work it blocks. A skill named here for another path, such as `executing-plans` for feature work or `orchestrating-ad-hoc-work` when its triggers do not hold, is not needed. A different route, such as editing the canonical checkout directly or creating a feature, is a separate decision for the operator.
+When this agent's role, or a tool or skill the current path needs, is unavailable, state which one and what it blocks, and pause only the work it blocks. A skill named here for another path, such as `executing-plans` for feature work or `orchestrating-ad-hoc-work` when its triggers do not hold, is not needed. A different route, such as selecting another agent or model, writing a plan, creating a feature, or editing the canonical checkout directly, is a separate decision for the operator.

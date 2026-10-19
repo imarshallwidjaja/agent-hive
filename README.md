@@ -74,7 +74,7 @@ The [Operator Guide](docs/OPERATOR-GUIDE.md) covers each step in depth: source c
 | `complexity-review` skill | Explicit one-shot complexity review of a diff or bounded named scope; without one, the current staged, unstaged, and relevant nonignored untracked changes | Ask for `complexity-review` by name with the scope in ordinary prose; on the v2 TUI, `@complexity-review <scope>` |
 | `complexity-audit` skill | Explicit one-shot complexity audit of named roots or codebases | Ask for `complexity-audit` by name with the roots; on the v2 TUI, `@complexity-audit <scope>` |
 
-`/dash-review` and `/vuln-review` bind to separate review primaries. `/implement` binds the current session to `hive-builder` and keeps the chat. For ad-hoc work with multiple independently verifiable outcomes, dependency waves, shared write/runtime resources, possible background execution, or an expected need for more than one worker attempt or turn, the ad-hoc seat loads `orchestrating-ad-hoc-work` before creating worktrees or dispatching workers. The [Operator Guide](docs/OPERATOR-GUIDE.md#choose-a-workflow) explains when each workflow fits.
+`/dash-review` and `/vuln-review` bind to separate review primaries. `/implement` keeps the chat and runs under the agent and model you have selected; select `hive-builder` first for it to run the work. For ad-hoc work with multiple independently verifiable outcomes, dependency waves, shared write/runtime resources, possible background execution, or an expected need for more than one worker attempt or turn, the ad-hoc seat loads `orchestrating-ad-hoc-work` before creating worktrees or dispatching workers. The [Operator Guide](docs/OPERATOR-GUIDE.md#choose-a-workflow) explains when each workflow fits.
 
 ## Agents at a glance
 

@@ -34,7 +34,6 @@ export const HIVE_COMMANDS = [
     key: 'implement',
     name: '/implement',
     description: 'Implement the work this conversation scoped as ad-hoc work, with any extra steering you add',
-    agent: 'hive-builder',
     literalArguments: true,
   },
   {
