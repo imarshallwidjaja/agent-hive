@@ -3683,11 +3683,12 @@ describe('host-rendered policy', () => {
     expect(hive).toContain('subagent({ agent: "forager-worker"');
     expect(hive).toContain('`subagent()` is blocking by default');
     expect(hive).not.toContain('subagent_type');
-    // The returned child ID names a session; the board tools take the alias the board lists. The continuation
-    // field is a call input on v1 (`task_id`), so the sentence names the returned ID without it on both hosts.
+    // The returned child ID names a session; the board takes the alias it lists. The continuation field is a
+    // call input on v1 (`task_id`), so the sentence names the returned ID without it on both hosts. The sentence
+    // is always on, so it names no gated board tool.
     for (const host of [OPENCODE_V1_PROFILE, V2_CODEMODE]) {
       for (const prompt of [renderQueenBeePrompt(host), renderSwarmBeePrompt(host), renderHiveBuilderPrompt(host)]) {
-        expect(prompt).toContain(`A native \`${host.nativeTask.tool}()\` call returns the child session ID. For a lane on the background board, pass the \`alias\` that \`hive_background_status\` lists`);
+        expect(prompt).toContain(`A native \`${host.nativeTask.tool}()\` call returns the child session ID. For a lane on the background board, reconcile it or request its cancellation by the alias the board lists, not by that session ID.`);
         expect(prompt).not.toContain(`\`${host.nativeTask.continuationField}\` in a native`);
         expect(prompt).not.toContain('Returned task IDs');
       }

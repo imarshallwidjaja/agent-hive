@@ -32,9 +32,9 @@ Primaries must not pass \`${continuation}\` or infer continuation eligibility fr
 
 export const NATIVE_TASK_CONTINUATION_POLICY_PROMPT = renderNativeTaskContinuationPolicyPrompt(OPENCODE_V1_PROFILE);
 
-/** The child ID a native call returns names a session; the board tools take the lane's listed alias. */
+/** The child ID a native call returns names a session; the board takes the lane's listed alias. Always-on text, so it names no gated board tool. */
 export function renderBackgroundBoardHandlePrompt(host: HostProfile): string {
-  return `A native \`${nativeCall(host)}\` call returns the child session ID. For a lane on the background board, pass the \`alias\` that \`hive_background_status\` lists to \`hive_background_reconcile\` and \`hive_background_cancel\`.`;
+  return `A native \`${nativeCall(host)}\` call returns the child session ID. For a lane on the background board, reconcile it or request its cancellation by the alias the board lists, not by that session ID.`;
 }
 
 export const PROCESS_JUDGMENT_PROMPT = `## Process Judgment
