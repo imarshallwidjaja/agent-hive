@@ -1,6 +1,6 @@
 import { OPENCODE_V1_PROFILE, nativeCall, skillCall, type HostProfile } from '../runtime/host-profile.js';
 import { ENGINEERING_JUDGMENT_PROMPT } from './engineering-judgment.js';
-import { renderNativeTaskContinuationPolicyPrompt, renderSubagentConcurrencyPrompt, IMPLEMENT_COMMAND_EXCEPTION_PROMPT, PLAN_APPROVAL_SYNC_PROMPT, PLAN_ASSESSMENT_PROMPT, PRIMARY_CONSTRAINT_AUTHORING_PROMPT, PRIMARY_REASONING_OWNERSHIP_PROMPT, PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT, REVIEW_FOLLOW_UP_PROMPT, REVIEW_HANDOFF_PROMPT, REVIEW_REQUEST_EXAMPLE_PROMPT, REVIEW_ROUTING_PROMPT, TASK_SPEC_FRESHNESS_PROMPT, WORKER_ASSIGNMENT_PROMPT } from './process-judgment.js';
+import { renderBackgroundBoardHandlePrompt, renderNativeTaskContinuationPolicyPrompt, renderSubagentConcurrencyPrompt, IMPLEMENT_COMMAND_EXCEPTION_PROMPT, PLAN_APPROVAL_SYNC_PROMPT, PLAN_ASSESSMENT_PROMPT, PRIMARY_CONSTRAINT_AUTHORING_PROMPT, PRIMARY_REASONING_OWNERSHIP_PROMPT, PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT, REVIEW_FOLLOW_UP_PROMPT, REVIEW_HANDOFF_PROMPT, REVIEW_REQUEST_EXAMPLE_PROMPT, REVIEW_ROUTING_PROMPT, TASK_SPEC_FRESHNESS_PROMPT, WORKER_ASSIGNMENT_PROMPT } from './process-judgment.js';
 import { renderInterruptedWorkerRecoveryPrompt, TASK_REPORT_CONTRACT_PROMPT, TASK_REPORT_OWNERSHIP_PROMPT } from './task-reporting.js';
 import { renderPrimaryWorklogPrompt } from './worklog-guidance.js';
 
@@ -107,7 +107,7 @@ During orchestration, Hive feature tasks are durable decomposition units: one im
 
 ${renderNativeTaskContinuationPolicyPrompt(host)}
 
-Returned task IDs are also observe-only board handles for \`hive_background_status\`, \`hive_background_reconcile\`, and \`hive_background_cancel\`.
+${renderBackgroundBoardHandlePrompt(host)}
 
 For a blocked feature task: record \`hive_task_update\` with blocked status and blocker; ask via \`question()\`; after the decision, \`hive_task_update\` with an explicit status leaving blocked clears the blocker. Put the decision in the fresh worker prompt. Do not reconstruct blocker details from worker prose or task traces. For failed or retry work, launch a fresh worker with a concise self-contained handoff. Architect is the only subagent that may call one terminal layer of read-only planning helpers; every other subagent is terminal.
 

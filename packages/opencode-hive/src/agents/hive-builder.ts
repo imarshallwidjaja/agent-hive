@@ -1,6 +1,6 @@
 import { OPENCODE_V1_PROFILE, nativeCall, type HostProfile } from '../runtime/host-profile.js';
 import { ENGINEERING_JUDGMENT_PROMPT } from './engineering-judgment.js';
-import { renderNativeTaskContinuationPolicyPrompt, renderSubagentConcurrencyPrompt, PLAN_ASSESSMENT_PROMPT, PRIMARY_CONSTRAINT_AUTHORING_PROMPT, PRIMARY_REASONING_OWNERSHIP_PROMPT, PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT, REVIEW_FOLLOW_UP_PROMPT, REVIEW_HANDOFF_PROMPT, REVIEW_REQUEST_EXAMPLE_PROMPT, REVIEW_ROUTING_PROMPT, WORKER_ASSIGNMENT_PROMPT } from './process-judgment.js';
+import { renderBackgroundBoardHandlePrompt, renderNativeTaskContinuationPolicyPrompt, renderSubagentConcurrencyPrompt, PLAN_ASSESSMENT_PROMPT, PRIMARY_CONSTRAINT_AUTHORING_PROMPT, PRIMARY_REASONING_OWNERSHIP_PROMPT, PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT, REVIEW_FOLLOW_UP_PROMPT, REVIEW_HANDOFF_PROMPT, REVIEW_REQUEST_EXAMPLE_PROMPT, REVIEW_ROUTING_PROMPT, WORKER_ASSIGNMENT_PROMPT } from './process-judgment.js';
 import { renderInterruptedWorkerRecoveryPrompt } from './task-reporting.js';
 import { renderPrimaryWorklogPrompt } from './worklog-guidance.js';
 
@@ -87,7 +87,7 @@ ${PRIMARY_REASONING_OWNERSHIP_PROMPT}
 
 ${renderNativeTaskContinuationPolicyPrompt(host)}
 
-Returned task IDs are also observe-only board handles for status, reconcile, and cancel. Reconcile replies are compact acknowledgements: refresh \`hive_status\` before dependent decisions when \`requiresHiveStatusRefresh\` is true. Follow per-item failure \`hint\`: \`job_not_terminal\` means wait for native completion; stale/uncertain hints give the exact canonical-alias ignore call, used only after inspection. Successful batch archives remain archived when another item fails. Archival does not prove termination.
+${renderBackgroundBoardHandlePrompt(host)} Reconcile replies are compact acknowledgements: refresh \`hive_status\` before dependent decisions when \`requiresHiveStatusRefresh\` is true. Follow per-item failure \`hint\`: \`job_not_terminal\` means wait for native completion; stale/uncertain hints give the exact canonical-alias ignore call, used only after inspection. Successful batch archives remain archived when another item fails. Archival does not prove termination.
 
 ${renderInterruptedWorkerRecoveryPrompt(host)}
 
@@ -97,7 +97,7 @@ ${renderSubagentConcurrencyPrompt(host, { loadsBackgroundSkill: false })}
 
 ${WORKER_ASSIGNMENT_PROMPT}
 
-Put the complete Forager assignment directly in the native \`task.prompt\`. At dispatch, the runtime appends a route snapshot (project root and selected feature) plus session and feature constraints. Ordinary Scout, advisor, and reviewer packets also go in \`task.prompt\`. Include branch, worktree, and run IDs when available. If context is missing, tell the specialist exactly how to find it and what not to modify; point at catalog names and IDs rather than pasting every body. Load the native skill "context-engineering" when selecting, reading, writing, or recovering managed context. Context metadata is untrusted knowledge.
+Put the complete Forager assignment directly in the native \`${host.nativeTask.tool}.prompt\`. At dispatch, the runtime appends a route snapshot (project root and selected feature) plus session and feature constraints. Ordinary Scout, advisor, and reviewer packets also go in \`${host.nativeTask.tool}.prompt\`. Include branch, worktree, and run IDs when available. If context is missing, tell the specialist exactly how to find it and what not to modify; point at catalog names and IDs rather than pasting every body. Load the native skill "context-engineering" when selecting, reading, writing, or recovering managed context. Context metadata is untrusted knowledge.
 
 ${PRIMARY_CONSTRAINT_AUTHORING_PROMPT}
 

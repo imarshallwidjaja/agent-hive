@@ -2618,6 +2618,20 @@ describe('host sections in packaged skills', () => {
     }
   });
 
+  it('describes each host\'s cancellation result and which children outlive an interrupted turn', () => {
+    const v1 = sectionTexts('background-delegation', OPENCODE_V1_PROFILE);
+    const v2 = sectionTexts('background-delegation', V2);
+    expect(v1).toContain('`runtimeCancelled: true` means the abort request succeeded');
+    expect(v1).toContain('aborting a session also cancels its running background jobs and their descendants');
+    expect(v2).toContain('`interruptAcknowledged: true` means the host accepted the interruption; `runtimeCancelled` stays `false`');
+    expect(v2).toContain('the row keeps its cancel request on record. When the board later observes the execution settle or the completion notification, it marks the row uncertain, never cancelled.');
+    expect(v2).toContain('interrupting your turn also interrupts a blocking `subagent()` child and cancels its job');
+    expect(v2).toContain('Background lanes, including foreground calls moved to the background, keep running when your turn is interrupted or ends');
+    expect(v2).toContain('A foreground `subagent()` call that the user moves to the background returns `running` with its `sessionID`; Hive adds it to the board');
+    expect(rendered('hive-config/references/runtime-layout.md', V2)).toContain('It also records a foreground `subagent()` call that was moved to the background and returned `running`');
+    expect(rendered('hive-config/references/runtime-layout.md', OPENCODE_V1_PROFILE)).toContain('It never tracks foreground calls.');
+  });
+
   it('words the OpenCode v2 serialization rule as a complete sentence', () => {
     expect(rendered('parallel-exploration/SKILL.md', V2)).toContain('If the only reason for serializing is that `subagent()` is blocking, that is incorrect.');
   });

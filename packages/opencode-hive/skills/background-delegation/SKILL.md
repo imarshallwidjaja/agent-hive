@@ -81,12 +81,19 @@ If the child may still be active or its lifecycle is uncertain, inspect, wait, o
 Returned task IDs are also observe-only board handles for `hive_background_status`, `hive_background_reconcile`, and `hive_background_cancel`.
 <!-- /hive-host -->
 <!-- hive-host opencode-v2 -->
-The returned `sessionID` identifies the child session. `hive_background_status` lists the observe-only board handle for each lane, which `hive_background_reconcile` and `hive_background_cancel` take.
+The returned `sessionID` identifies the child session. `hive_background_status` lists the observe-only board handle for each lane, which `hive_background_reconcile` and `hive_background_cancel` take. A foreground `subagent()` call that the user moves to the background returns `running` with its `sessionID`; Hive adds it to the board, and it is a background lane under this protocol.
 <!-- /hive-host -->
 
 ## Unresolved Lanes
 
 Before any dependent decision, merge, cleanup, final report, or new overlapping writing/execution lane, inspect scoped `hive_background_status`; `hive_status` is not that surface. Waiting, pending, terminal-unreconciled, stale, or ownership-overlapping lanes need a board action: wait, cancel, reconcile, ignore, or explicit sequencing. Reconcile and ignore are bookkeeping only; they archive the board row and do not stop execution. Cancel acknowledgement does not prove the worker stopped, and neither do expiry, restart, archive, reconcile, or ignore. The board observes the originating native parent and call, not the current feature or agent. Stale and unknown observations stay visible. If completion lacks a call ID or its identity is ambiguous, record unknown and hint `hive_task_trace`; never guess the latest child. Missing or ambiguous completion identity must not block unrelated dispatch, but ownership-overlapping work still requires inspection or waiting; do not send another prompt or launch another writer. Treat installs, builds, formatters, generators, and tests as mutations. Unrelated worktrees may continue. Do not copy mutable progress out of a worktree while the old worker may still be running, and do not edit the active host's `background-jobs.json` board file directly.
+
+<!-- hive-host opencode-v1 -->
+On v1, aborting a session also cancels its running background jobs and their descendants. Inspect each lane before treating it as stopped.
+<!-- /hive-host -->
+<!-- hive-host opencode-v2 -->
+On v2, interrupting your turn also interrupts a blocking `subagent()` child and cancels its job. Background lanes, including foreground calls moved to the background, keep running when your turn is interrupted or ends; cancel a lane that is no longer needed through its own board row.
+<!-- /hive-host -->
 
 The board protocol is primary-owned. Multi-step trace or evidence questions go to `hive-helper` with one named question and known identities; Helper returns evidence, not a termination or replacement-writer decision.
 

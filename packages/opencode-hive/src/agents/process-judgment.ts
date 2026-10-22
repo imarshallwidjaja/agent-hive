@@ -32,6 +32,11 @@ Primaries must not pass \`${continuation}\` or infer continuation eligibility fr
 
 export const NATIVE_TASK_CONTINUATION_POLICY_PROMPT = renderNativeTaskContinuationPolicyPrompt(OPENCODE_V1_PROFILE);
 
+/** The child ID a native call returns names a session; the board tools take the lane's listed alias. */
+export function renderBackgroundBoardHandlePrompt(host: HostProfile): string {
+  return `A native \`${nativeCall(host)}\` call returns the child session ID. For a lane on the background board, pass the \`alias\` that \`hive_background_status\` lists to \`hive_background_reconcile\` and \`hive_background_cancel\`.`;
+}
+
 export const PROCESS_JUDGMENT_PROMPT = `## Process Judgment
 
 Before creating work, blockers, or workflow state:

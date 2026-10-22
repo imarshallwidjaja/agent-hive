@@ -1692,7 +1692,8 @@ describe('Task report reliability', () => {
       'do not add polling',
       'a cancellation acknowledgement, a stale board entry, or closed assistant text alone does not establish termination',
       'Treat an idle runtime after a host restart and an `evidence_only` recovery snapshot as records of what survived, not as proof that the old writer or its subprocesses stopped',
-      'give Helper the parent\'s replay hint or ask it to find the `child_session_id` on that call in a `hive_task_trace` of the parent session; the background board lists only background launches',
+      'give Helper any replay hint or known child ID, or ask it to look for a `child_session_id` on that call in a `hive_task_trace` of the parent session, which appears only when the stored call recorded the child',
+      'the background board has no row for a foreground call that returned no result, and a missing child ID does not establish termination',
       'Route a named trace/lifecycle question with known native session/call identities to `hive-helper`',
       'Spot-check decisive cited event refs with `hive_task_trace_content` before deciding',
       'Helper gathers evidence; the primary decides termination',
@@ -3086,6 +3087,20 @@ describe('README.md documentation', () => {
       expect(hiveToolsContent).toContain('Cancellation is not rollback');
       expect(hiveToolsContent).toContain('originating native parent and call');
       expect(hiveToolsContent).toContain('Cancel acknowledgement does not prove the worker stopped');
+      expect(hiveToolsContent).toContain('On v1 it calls OpenCode\'s session abort, and `runtimeCancelled: true` means the abort request succeeded');
+      expect(hiveToolsContent).toContain('`interruptAcknowledged: true` means the host accepted the interruption; `runtimeCancelled` stays `false`');
+      expect(hiveToolsContent).toContain('On v2, a blocking `subagent()` child is tied to its caller');
+      expect(hiveToolsContent).toContain('also a foreground `subagent()` call that the user moved to the background');
+      expect(hiveToolsContent).toContain('A foreground call that returned no result has no board row on either host');
+      expect(hiveToolsContent).toContain('it marks the row uncertain, never cancelled');
+      expect(hiveToolsContent).toContain('- On v1 only, on each later turn, the runtime adds a replay hint');
+      expect(hiveToolsContent).toContain('only when the stored call records the child\'s session ID in its metadata and the runtime confirms that child belongs to the parent');
+      expect(hiveToolsContent).toContain('a foreground call that never returned may show no `child_session_id`');
+      expect(hiveToolsContent).toContain('a missing child ID does not show that the child stopped');
+      expect(readmeContent).toContain('show a confirmed `child_session_id` only when the stored call recorded the child\'s ID; on v2 a foreground call that never returned may lack it');
+      expect(readmeContent).not.toContain('which is how to find a foreground child after a restart');
+      expect(hiveToolsContent).not.toContain('Foreground `task()` calls never appear');
+      expect(hiveToolsContent).not.toContain('keeps its cancel request until');
       expect(hiveToolsContent).not.toContain('acknowledgeOrphanedAttempt');
       expect(hiveToolsContent).not.toContain('task_status');
     });
@@ -3656,7 +3671,7 @@ describe('host-rendered policy', () => {
     const sentinel = render(SENTINEL);
     for (const host of hostProfiles) expect(fill(maskSkillText(sentinel, SENTINEL), host)).toBe(maskSkillText(render(host), host));
     // Native syntax left behind would be v1 wording that no profile slot controls.
-    expect(sentinel).not.toMatch(/\btask\(/);
+    expect(sentinel).not.toMatch(/\btask\(|`task\.prompt`/);
     expect(sentinel).not.toContain('subagent_type');
     expect(sentinel).not.toMatch(/`bash`|\bBash\b/);
     // `task_id` stays only as the Hive trace tool's own argument.
@@ -3668,6 +3683,16 @@ describe('host-rendered policy', () => {
     expect(hive).toContain('subagent({ agent: "forager-worker"');
     expect(hive).toContain('`subagent()` is blocking by default');
     expect(hive).not.toContain('subagent_type');
+    // The returned child ID names a session; the board tools take the alias the board lists. The continuation
+    // field is a call input on v1 (`task_id`), so the sentence names the returned ID without it on both hosts.
+    for (const host of [OPENCODE_V1_PROFILE, V2_CODEMODE]) {
+      for (const prompt of [renderQueenBeePrompt(host), renderSwarmBeePrompt(host), renderHiveBuilderPrompt(host)]) {
+        expect(prompt).toContain(`A native \`${host.nativeTask.tool}()\` call returns the child session ID. For a lane on the background board, pass the \`alias\` that \`hive_background_status\` lists`);
+        expect(prompt).not.toContain(`\`${host.nativeTask.continuationField}\` in a native`);
+        expect(prompt).not.toContain('Returned task IDs');
+      }
+    }
+    expect(renderHiveBuilderPrompt(V2_CODEMODE)).toContain('complete Forager assignment directly in the native `subagent.prompt`');
     const contract = renderNativeTaskContinuationPolicyPrompt(V2_CODEMODE);
     expect(contract).toContain('Primaries must not pass `sessionID`');
     expect(contract).toContain('Preserve native `sessionID` pass-through only for an explicit operator instruction');

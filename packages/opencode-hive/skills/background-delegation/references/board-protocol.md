@@ -40,6 +40,15 @@ Use `hive_background_reconcile` for one terminal job and `hive_background_reconc
 
 Use `hive_background_cancel` only when a lane is stale, wrong, or no longer needed. A cancel acknowledgement does not prove the worker stopped, and neither do expiry, restart, archive, reconcile, or ignore. Copying mutable progress out of a worktree while the old worker may still be running is also unsafe. Inspect the lane, and for a failed ad-hoc worktree use `hive_adhoc_worktree_inspect` instead of discarding it. Installs, builds, formatters, generators, and tests count as mutations.
 
+Cancel acts on the child session of one board row:
+
+<!-- hive-host opencode-v1 -->
+On v1 it calls OpenCode's session abort. `runtimeCancelled: true` means the abort request succeeded, and the native abort also cancels that session's running background jobs and their descendants.
+<!-- /hive-host -->
+<!-- hive-host opencode-v2 -->
+On v2 it interrupts the child session with resume disabled. `interruptAcknowledged: true` means the host accepted the interruption; `runtimeCancelled` stays `false`, and the row keeps its cancel request on record. When the board later observes the execution settle or the completion notification, it marks the row uncertain, never cancelled. Background children that the interrupted session launched keep running; this cancel does not reach them.
+<!-- /hive-host -->
+
 ## Example
 
 Launch an independent read-only lane in the background, keep doing unrelated foreground work, observe the board, then reconcile once.
