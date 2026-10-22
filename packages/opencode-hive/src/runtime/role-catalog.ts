@@ -185,8 +185,9 @@ export function buildRoleCatalog(host: HostProfile, configService: ConfigService
     'simplicity-reviewer': { body: renderSimplicityReviewerPrompt(host) + systemPrompt },
     'approach-advisor': { body: renderApproachAdvisorPrompt(host) + systemPrompt },
     'vulnerability-reviewer': { body: renderVulnerabilityReviewerPrompt(host) + systemPrompt },
-    'dash-reviewer': { body: renderDashReviewerPrompt(host) + systemPrompt },
-    'vulnerability-review-primary': { body: renderVulnerabilityReviewPrimaryPrompt(host) + systemPrompt },
+    // Review primaries choose reviewers from the command roster; the routing cards add the Foragers a runtime exercise can use.
+    'dash-reviewer': { body: renderDashReviewerPrompt(host) + systemPrompt, routing: routingAppendix(['forager-worker']) },
+    'vulnerability-review-primary': { body: renderVulnerabilityReviewPrimaryPrompt(host) + systemPrompt, routing: routingAppendix(['forager-worker']) },
   };
   const prompts = Object.fromEntries(Object.entries(sources).map(([name, { body, routing = '' }]) =>
     [name, body + (skills ? skillGuidance(name, skills) : '') + routing])) as Record<BuiltInRole, string>;

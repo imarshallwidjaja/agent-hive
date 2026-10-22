@@ -1154,7 +1154,8 @@ describe('coordinated runtime hard cut', () => {
     }
 
     const planningHelpers = ['scout-researcher', 'plan-reviewer', 'approach-advisor'];
-    const reviewHelpers = CUSTOM_AGENT_BASES.filter((base) => base !== 'forager-worker');
+    // Review primaries dispatch every routing base, Foragers included, for report-only runtime exercises.
+    const reviewHelpers = CUSTOM_AGENT_BASES;
     const executors = ['hive-master', 'swarm-orchestrator', 'hive-builder'];
     const reviewOrchestrators = ['dash-reviewer', 'vulnerability-review-primary'];
     for (const agent of Object.keys(matrix)) {

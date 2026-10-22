@@ -1042,6 +1042,9 @@ describe('skill content', () => {
     expect(template).toContain('A Forager keeps its three iterations and three failed approaches, and every failed attempt counts toward them');
     expect(template).toContain('follow the role\'s own safe recovery and reporting');
     expect(template).toContain('A diagnosis-only assignment stays report-only throughout');
+    // Report-only withholds fixes and changes to the original source under diagnosis; scratch and runtime reproduction the mission names, including the candidate's existing bytes in a disposable placement, is separate.
+    expect(template).toContain("A diagnosis-only assignment uses read-only forms unless it names isolated scratch or runtime reproduction. That reproduction may materialize the submitted candidate's existing bytes and normal build output in a disposable placement; it authors no fix and leaves the original source under diagnosis as found");
+    expect(techniques).toContain('a diagnosis-only assignment uses read-only forms, or the isolated scratch and runtime reproduction it names');
     expect(techniques).toContain('It neither resets nor extends any attempt budget the role keeps');
     expect(techniques).toContain('The state protections in `SKILL.md` apply to every experiment');
     // Fictional examples must not reuse identifiers from the evaluation scenarios.
@@ -1356,6 +1359,9 @@ describe('skill content', () => {
     expect(dispatch).toContain('In ad-hoc mode, return result and resource state to `orchestrating-ad-hoc-work`');
     expect(dispatch).toContain('selected integrated acceptance');
     expect(dispatch).toContain('each named integrated deferral');
+    // A report-only diagnosis lane withholds fixes and changes to the original source under diagnosis, not the scratch effects or disposable candidate copy its mission names.
+    expect(dispatch).toContain('it must not author fixes or other implementation changes, modify the original source under diagnosis, commit, or perform destructive reproduction');
+    expect(dispatch).toContain('Scratch scripts, fixtures, builds, local servers, browser sessions, and a disposable copy of the submitted candidate that the mission names are not implementation');
     expect(exploration).toContain('Hive Builder or unified Hive ad-hoc mode loads `orchestrating-ad-hoc-work`');
     expect(background).toContain('`orchestrating-ad-hoc-work` supplies the already-defined lanes');
     expect(background).toContain('owns background observation, reconciliation, cancellation, and wait-mode protocol');
@@ -2127,6 +2133,12 @@ describe('skill content', () => {
     it('names every registered Hive tool and no unregistered one in the ownership reference', () => {
       const named = new Set(codeNames(reference('tool-ownership.md')).filter((name) => name.startsWith('hive_')));
       expect(named).toEqual(new Set(HIVE_TOOL_NAMES));
+    });
+
+    it('lists Foragers among the review primaries\' dispatch targets, for report-only runtime exercises', () => {
+      const row = reference('tool-ownership.md').split('\n').find((line) => line.startsWith('| Review primaries |'))!;
+      expect(row).toContain('Foragers (built-in and derived) for report-only runtime exercises');
+      expect(row).not.toContain('not Forager');
     });
 
     it('matches the paths and branches hive-core produces', () => {

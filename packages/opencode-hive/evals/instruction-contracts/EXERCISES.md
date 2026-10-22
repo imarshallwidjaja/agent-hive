@@ -69,7 +69,7 @@ Rules the tooling enforces:
 - The repository is copied as regular UTF-8 files: at most 256 files, 256 KiB each and 8 MiB in total; prompt, brief and each skill at most 64 KiB. Links, hardlinks, devices, `.git`, `node_modules`, auth or OpenCode configuration files and paths that escape the directory are refused. The container initializes Git and commits these files as the base.
 - `dependencies` runs `npm ci` in the named directory during credential-free setup. It requires a `package-lock.json`. Nothing else is downloaded on the exercise's behalf.
 - `artifacts` is the allowlist for later export: exact paths, or prefixes ending in `/`.
-- A `primaryTransitions` entry without `command` is a primary switch, taken only by `switch-primary` after an observed approval. An entry with `command` names a native slash command the supervisor may send from `from`, and `to` is the agent that command binds the session to, or `from` again for a command that binds none. Each command has at most one entry per `from`.
+- A `primaryTransitions` entry without `command` is a primary switch, taken only by `switch-primary` after an observed approval. An entry with `command` names a native slash command the supervisor may send from `from`, and `to` is the agent that command binds the session to, or `from` again for a command that binds none. Each command has at most one entry per `from`. `initialPrimary`, `from` and `to` name a primary: `hive-master`, `architect-planner`, `swarm-orchestrator`, `hive-builder`, or a hidden review primary (`dash-reviewer`, bound by `/dash-review`; `vulnerability-review-primary`, bound by `/vuln-review`).
 
 Write `prompt.md` as the operator's opening message. The optional brief is appended to it.
 

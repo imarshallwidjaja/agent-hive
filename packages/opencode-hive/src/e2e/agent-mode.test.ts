@@ -111,10 +111,23 @@ describe('agent registration', () => {
     const unrelated: any[] = [{ type: 'text', text: 'grill body' }];
     await hooks['command.execute.before']!({ command: 'grill', sessionID: 's1', arguments: prose }, { parts: unrelated });
     expect(unrelated).toEqual([{ type: 'text', text: 'grill body' }]);
-    expect(await hooks.command!['dash-review'].run('src/runtime.ts')).toContain('Review input: src/runtime.ts');
+    const dashCommand: string = await hooks.command!['dash-review'].run('src/runtime.ts');
+    expect(dashCommand).toContain('Review input: src/runtime.ts');
     const vulnerabilityCommand = await hooks.command!['vuln-review'].run('inline authentication boundary');
     expect(vulnerabilityCommand).toContain('Review input: inline authentication boundary');
     expect(vulnerabilityCommand).toContain('security-specialist');
+    // Both review commands point at the Runtime Exercise rules, and execution workers stay out of the reviewer rosters.
+    for (const output of [dashCommand, vulnerabilityCommand]) {
+      expect(output).toContain('Runtime Exercise');
+      expect(output).not.toContain('implementation-specialist');
+    }
+    // The review primaries can dispatch the built-in Forager and its derivative and find the derivative's description in their routing cards.
+    for (const name of ['dash-reviewer', 'vulnerability-review-primary']) {
+      expect(config.agent[name].permission.task, name).toMatchObject({ '*': 'deny', 'forager-worker': 'allow', 'implementation-specialist': 'allow' });
+      expect(config.agent[name].permission.edit, name).toBe('deny');
+      expect(config.agent[name].prompt, name).toContain('## Runtime Exercise');
+      expect(config.agent[name].prompt, name).toContain('- `implementation-specialist` — kind: custom overlay; base: `forager-worker`; Implements configured specialist work.');
+    }
   });
 
   it('keeps hive-master public only in unified mode', async () => {

@@ -2848,6 +2848,20 @@ describe('supervised exercise inputs and authority', () => {
       [{ from: 'architect-planner', to: 'hive-builder', command: 'implement' }, { from: 'architect-planner', to: 'swarm-orchestrator', command: 'implement' }],
       [{ from: 'architect-planner', to: 'scout-researcher', command: 'implement' }],
     ]) expect(code(() => validateRequest({ ...EXERCISE_REQUEST, primaryTransitions: transitions }))).toBe('request_invalid');
+    // /dash-review and /vuln-review bind the two hidden review primaries, which are real primaries for the initial agent,
+    // for command transitions and for the agentModels primary check; other roles stay refused.
+    const reviewCommands = [{ from: 'hive-builder', to: 'dash-reviewer', command: 'dash-review' }, { from: 'dash-reviewer', to: 'vulnerability-review-primary', command: 'vuln-review' }];
+    const reviewRequest = { ...EXERCISE_REQUEST, initialPrimary: 'hive-builder', primaryTransitions: reviewCommands };
+    expect(validateRequest(reviewRequest).primaryTransitions).toEqual(reviewCommands);
+    for (const initialPrimary of ['dash-reviewer', 'vulnerability-review-primary']) expect(validateRequest({ ...reviewRequest, initialPrimary, primaryTransitions: [] }).initialPrimary).toBe(initialPrimary);
+    expect(code(() => validateRequest({ ...reviewRequest, initialPrimary: 'vulnerability-reviewer' }))).toBe('request_invalid');
+    expect(code(() => validateRequest({ ...reviewRequest, initialPrimary: 'hive-helper' }))).toBe('request_invalid');
+    for (const transitions of [
+      [{ from: 'hive-builder', to: 'vulnerability-reviewer', command: 'vuln-review' }],
+      [{ from: 'code-reviewer', to: 'dash-reviewer', command: 'dash-review' }],
+      [{ from: 'hive-builder', to: 'dash-reviewer', command: 'dash-review' }, { from: 'hive-builder', to: 'vulnerability-review-primary', command: 'dash-review' }],
+    ]) expect(code(() => validateRequest({ ...reviewRequest, primaryTransitions: transitions }))).toBe('request_invalid');
+    expect(code(() => validateRequest({ ...reviewRequest, agentModels: { 'dash-reviewer': { model: 'openai/x', variant: null } } }))).toBe('request_invalid');
   });
 
   test('snapshots hash bytes and the ordered inventory, and refuse links, hardlinks, excluded trees, escapes and oversize input', () => {

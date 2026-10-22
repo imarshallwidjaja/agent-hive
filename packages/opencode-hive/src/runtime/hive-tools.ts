@@ -131,12 +131,12 @@ const candidateArg = {
 
 const adhocRepoIdsArg = {
   repoIds: z.array(z.string()).optional()
-    .describe('Repository selection for the run; the persisted placement is located by runId. Cannot be combined with a foreign sourceDirectory.'),
+    .describe('Repository selection for the run; pass the selection used at creation. Cannot be combined with a foreign sourceDirectory.'),
 };
 
 const adhocSourceDirectoryArg = {
   sourceDirectory: z.string().optional()
-    .describe('Absolute path of the foreign checkout the run was created from; omit it for the active project root. Cannot be combined with repoIds.'),
+    .describe('Absolute path of the foreign checkout the run was created from; pass the same path on every later call for that run, and omit it for the active project root. Cannot be combined with repoIds.'),
 };
 
 // Worklog arguments mirror the hive-core contract (docs/WORKLOG.md). Zod checks shapes only; core enforces the UTF-8,
@@ -533,7 +533,7 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
       description: 'Create the matching ad-hoc Hive worktree and return its initial inspection, including source cleanliness and destination identity/comparison; later checkpoints still require hive_adhoc_worktree_inspect. An absolute sourceDirectory resolving to the active project root is treated as omitted; foreign sourceDirectory cannot be combined with repoIds. Calling it again with an existing runId reuses that run and inspects it again.',
       args: {
         runId: z.string().optional().describe('Run identifier and branch suffix: [A-Za-z0-9][A-Za-z0-9._-]{0,127}. Generated when omitted; the returned runId locates the run on every later call.'),
-        repoIds: z.array(z.string()).optional().describe('Repositories owned by this run. A manifest-backed project needs a nonempty selection here; later calls locate the persisted placement by runId. Cannot be combined with a foreign sourceDirectory.'),
+        repoIds: z.array(z.string()).optional().describe('Repositories owned by this run. A manifest-backed project needs a nonempty selection here; later calls pass the same selection. Cannot be combined with a foreign sourceDirectory.'),
         sourceDirectory: z.string().optional().describe('Absolute path of a foreign checkout to work from. An absolute path resolving to the active project root is treated as omitted.'),
       },
       execute: async ({ sourceDirectory, ...options }) => {

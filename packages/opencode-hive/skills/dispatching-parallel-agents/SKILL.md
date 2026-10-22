@@ -151,7 +151,7 @@ Native helpers keep only their bounded operational permissions. Unknown targets 
 See `background-delegation` for board recovery.
 For read-only research, use `parallel-exploration`; this skill owns writing/change and execution dispatch.
 
-Choose the best-fit available descriptor for the requested output. Scout is for bounded source retrieval, not causal diagnosis or solution selection. A Forager diagnosis-only lane reports evidence, hypotheses tested and untested, a supported conclusion or unresolved status, and options when asked; it must not fix, edit, commit, or perform destructive reproduction unless the mission separately authorizes implementation in appropriate isolation.
+Choose the best-fit available descriptor for the requested output. Scout is for bounded source retrieval, not causal diagnosis or solution selection. A Forager diagnosis-only lane reports evidence, hypotheses tested and untested, a supported conclusion or unresolved status, and options when asked; it must not author fixes or other implementation changes, modify the original source under diagnosis, commit, or perform destructive reproduction unless the mission separately authorizes implementation in appropriate isolation. Scratch scripts, fixtures, builds, local servers, browser sessions, and a disposable copy of the submitted candidate that the mission names are not implementation; the lane keeps its evidence, stops what it started, and removes only the temporary reproduction artifacts it created.
 
 ### 4. Review and Integrate
 

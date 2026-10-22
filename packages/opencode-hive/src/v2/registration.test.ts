@@ -428,6 +428,32 @@ describe('v2 execution guards', () => {
     }
   });
 
+  it('lets both review primaries dispatch Foragers and Forager derivatives, and nothing else new, under a user global allow', async () => {
+    const host = await activate({}, { customAgents: { 'ui-forager': { baseAgent: 'forager-worker', description: 'Browser-visible UI exercises.' } } });
+    host.useAgentConfig({ permissions: [{ action: '*', resource: '*', effect: 'allow' }] });
+    const allowedTargets = ['forager-worker', 'ui-forager', 'scout-researcher', 'code-reviewer', 'hive-helper'];
+    const deniedTargets = ['hive-master', 'swarm-orchestrator', 'hive-builder', 'architect-planner', 'unknown-agent'];
+    for (const agent of ['dash-reviewer', 'vulnerability-review-primary']) {
+      for (const target of allowedTargets) expect(denied(await host.before({ tool: 'subagent', sessionID: 'primary', agent, input: { agent: target } })), `${agent} -> ${target}`).toBeUndefined();
+      for (const target of deniedTargets) expect(denied(await host.before({ tool: 'subagent', sessionID: 'primary', agent, input: { agent: target } })), `${agent} -> ${target}`).toBeDefined();
+      // The review primary stays a source-preserving reviewer: it cannot edit, merge, or bypass Hive worktrees.
+      for (const tool of ['edit', 'write', 'patch', 'hive_worktree_merge', 'hive_adhoc_worktree_merge', 'opencode_worktree_create']) {
+        expect(denied(await host.before({ tool, sessionID: 'primary', agent, input: {} })), `${agent} ${tool}`).toBeDefined();
+      }
+      const rules = host.agents().registry.get(agent)!.permissions.filter((rule) => rule.action === 'subagent');
+      expect(rules).toContainEqual({ action: 'subagent', resource: 'forager-worker', effect: 'allow' });
+      expect(rules).toContainEqual({ action: 'subagent', resource: 'ui-forager', effect: 'allow' });
+      expect(rules).toContainEqual({ action: 'subagent', resource: '*', effect: 'deny' });
+      // The same catalog gives the primary the method and the derivative's routing card, here with the v2 call name.
+      const system = host.agents().registry.get(agent)!.system!;
+      expect(system).toContain('native `subagent()` call');
+      expect(system).toContain('- `ui-forager` — kind: custom overlay; base: `forager-worker`; Browser-visible UI exercises.');
+    }
+    // A Forager session started by a review primary cannot delegate further.
+    host.sessions.set('exercise', { id: 'exercise', parentID: 'primary', agent: 'forager-worker' });
+    expect(denied(await host.before({ tool: 'subagent', sessionID: 'exercise', agent: 'ui-forager', input: { agent: 'scout-researcher' } }))).toBeDefined();
+  });
+
   it('applies a child Forager bounded context edit through the v2 executor', async () => {
     const host = await activate();
     const content = '---\ndescription: Style.\nread_when: Always.\nowner: test\nreview_after: 2099-01-01\n---\nTone: formal\r\nTail\r\n';

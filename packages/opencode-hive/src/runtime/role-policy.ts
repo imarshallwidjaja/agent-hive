@@ -72,7 +72,8 @@ export function createRolePolicy(customAgents: Record<string, ResolvedCustomAgen
   });
   const architectTaskPermission = taskPermission(['scout-researcher', 'plan-reviewer', 'approach-advisor'], ['hive-helper']);
   const primaryTaskPermission = taskPermission(ROUTING_BASES, ['architect-planner', 'hive-helper', 'general', 'explore']);
-  const reviewTaskPermission = taskPermission(ROUTING_BASES.filter((base) => base !== 'forager-worker'), ['hive-helper']);
+  // Review primaries dispatch Foragers only for report-only runtime exercises; edit stays denied for the primary.
+  const reviewTaskPermission = taskPermission(ROUTING_BASES, ['hive-helper']);
   const primary: RolePolicy = { hiveTools: [...HIVE_TOOL_NAMES], permission: { question: 'allow', task: primaryTaskPermission, skill: 'allow' } };
   const readOnlyChild = (hiveTools: readonly string[]): RolePolicy => ({ hiveTools, permission: { edit: 'deny', question: 'deny', task: 'deny', skill: 'allow' } });
   const reviewPrimary: RolePolicy = { hiveTools: REVIEW_PRIMARY_TOOLS, permission: { edit: 'deny', question: 'allow', task: reviewTaskPermission, skill: 'allow' } };

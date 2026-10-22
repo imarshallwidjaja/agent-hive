@@ -1,6 +1,6 @@
 # Diagnostic techniques
 
-Choose a technique by the question the evidence so far leaves open. None is a stage to pass through: stop when the causal-evidence bar in `SKILL.md` is met, and skip any technique whose question is already answered. This reference adds method and not authority. A technique that writes state, runs risky behavior, or touches retained evidence stays inside the authority and isolation rules in `SKILL.md`, and a diagnosis-only assignment uses read-only forms and reports what it could not observe.
+Choose a technique by the question the evidence so far leaves open. None is a stage to pass through: stop when the causal-evidence bar in `SKILL.md` is met, and skip any technique whose question is already answered. This reference adds method and not authority. A technique that writes state, runs risky behavior, or touches retained evidence stays inside the authority and isolation rules in `SKILL.md`, and a diagnosis-only assignment uses read-only forms, or the isolated scratch and runtime reproduction it names, and reports what it could not observe.
 
 The first five techniques adapt the investigation steps of obra/superpowers `systematic-debugging` (MIT, Copyright (c) 2025 Jesse Vincent); `UPSTREAM.md` and `LICENSE.superpowers` record the source revision and what changed. The stale-state, slowness and shared-premise techniques draw on pstack under `LICENSE.pstack`.
 

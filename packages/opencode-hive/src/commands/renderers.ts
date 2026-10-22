@@ -363,9 +363,10 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
         'Resolve the target and operator steering; understand the material change, governing requirements, and relevant consumers before delegation.',
         'Dispatch best-fit reviewers for evidence-linked leads and applicable obligations; preserve explicitly requested reviewer scope.',
         'Independently challenge material candidates, run discriminating tests when useful and authorized, then adjudicate by evidence.',
+        'When running the candidate would settle a question reading cannot, follow Runtime Exercise in your instructions: ask before running development code unless an operator instruction already covers it, then send a report-only Forager.',
       ],
       doNotItems: [
-        'Do not edit source or create an automatic review workspace.',
+        'Do not edit reviewed source. Outside an authorized Runtime Exercise, do not create a review workspace on your own.',
         'Do not silently skip a required configured reviewer or claim a clean review while that obligation or material challenge is open.',
       ],
       outputItems: [
@@ -380,8 +381,13 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
         `Review input: ${topicOrCurrent(args, 'the current checkout and operator request')}`,
         `Configured vulnerability reviewers:\n${configuredVulnerabilityReviewCandidates(context)}`,
       ],
-      doItems: ['Resolve the requested source with ordinary tools.', 'Run every explicitly requested specialist and preserve a snapshot source fingerprint when one is used.', 'Report evidenced attacker-to-impact paths and root causes.'],
-      doNotItems: ['Do not edit source, exploit live systems, scan networks, or silently skip requested reviewers.'],
+      doItems: [
+        'Resolve the requested source with ordinary tools.',
+        'Run every explicitly requested specialist and preserve a snapshot source fingerprint when one is used.',
+        'Reproduce a lead locally only as a Runtime Exercise that its Authorization covers; reviewing a lead does not by itself permit running code.',
+        'Report evidenced attacker-to-impact paths and root causes.',
+      ],
+      doNotItems: ['Do not edit source, exploit live systems, scan remote networks or hosts, or silently skip requested reviewers.'],
       outputItems: ['Severity-ordered vulnerability findings, evidence gaps, and source identity.'],
     });
   },

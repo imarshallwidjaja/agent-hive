@@ -94,7 +94,7 @@ Each role's `subagent` permission denies every agent, then allows named targets 
 |---|---|
 | Full primaries | Scout, Forager, every reviewer and advisor, `architect-planner`, `hive-helper`, native `general` and `explore` |
 | Architect, as primary or task child | One terminal layer of `scout-researcher`, `plan-reviewer`, `approach-advisor`, and `hive-helper` |
-| Review primaries | Scout, every reviewer and advisor, `hive-helper`; not Forager |
+| Review primaries | Scout, every reviewer and advisor, `hive-helper`, and Foragers (built-in and derived) for report-only runtime exercises |
 <!-- hive-host opencode-v1 -->
 | Every other role, including `hive-helper` | Nothing (`task` denied) |
 <!-- /hive-host -->

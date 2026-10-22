@@ -275,7 +275,8 @@ export function validateRequest(value) {
   const allowed = ['schema', 'question', 'observables', 'stopConditions', 'model', 'agentMode', 'initialPrimary', 'primaryTransitions', 'agentModels', 'repository', 'prompt', 'brief', 'skills', 'dependencies', 'artifacts'];
   strictObject(value, allowed, 'request_invalid');
   if (value.schema !== 'ic-exercise-request/v1') throw new HarnessError('request_schema_unknown');
-  const primaries = new Set(['hive-master', 'architect-planner', 'swarm-orchestrator', 'hive-builder']);
+  // The two review primaries are hidden primaries that /dash-review and /vuln-review bind.
+  const primaries = new Set(['hive-master', 'architect-planner', 'swarm-orchestrator', 'hive-builder', 'dash-reviewer', 'vulnerability-review-primary']);
   if (!['dedicated', 'unified'].includes(value.agentMode)) throw new HarnessError('request_invalid', 'agentMode');
   if (!primaries.has(value.initialPrimary)) throw new HarnessError('request_invalid', 'initialPrimary');
   const transitions = (value.primaryTransitions ?? []).map((t) => {

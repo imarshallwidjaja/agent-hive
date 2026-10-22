@@ -227,6 +227,13 @@ describe('e2e: published custom-agent docs example', () => {
     expect(builderPrompt).not.toContain('`approach-advisor` — kind: default');
     expect(builderPrompt).not.toContain('`vulnerability-reviewer` — kind: default');
 
+    // Review primaries choose reviewers from the command roster; the same routing cards offer them the execution workers for runtime exercises.
+    for (const name of ['dash-reviewer', 'vulnerability-review-primary']) {
+      const reviewPrimaryPrompt = opencodeConfig.agent[name]?.prompt as string;
+      expectCandidateSpecificRouting(reviewPrimaryPrompt);
+      expect(routingCards(reviewPrimaryPrompt), name).toEqual([defaultCard('forager-worker'), foragerUiCard]);
+    }
+
     fs.writeFileSync(configPath, JSON.stringify({ ...publishedExample, agentMode: 'unified' }, null, 2));
     const unifiedHooks = await plugin.server(ctx);
     const unifiedConfig: any = { agent: {} };
