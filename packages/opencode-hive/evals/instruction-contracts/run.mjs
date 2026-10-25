@@ -22,7 +22,7 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { CredentialError, assertLifetime, fingerprintAuthFile, hostAuthPath, readAccessOnly, sameFingerprint, secretScanner } from './credentials.mjs';
 import { GUARD_EXIT_CODE } from './guard.mjs';
-import { HOST_IDS, authRequest, requiredLifetimeMs, selectionExpectations } from './hosts.mjs';
+import { HOST_IDS, MANAGED_CONTROL_HOST, authRequest, managedControlPlan, requiredLifetimeMs, sameModelView, selectionExpectations } from './hosts.mjs';
 import {
   AGENT_USER, Docker, GUARD, GUARD_USER, HARNESS_REL, HarnessError, ISOLATION, Journal, Resources, assessContainerIsolation, build,
   containerCreateArgs, createRunDir, gitOut, resolveIdentities, runtimeFailures, runtimeIdentity, sha256File, sha256Text, verifyArtifact,
@@ -531,24 +531,87 @@ export async function rehearseInjection(ctx, host) {
   }
 }
 
-async function wiringHost(ctx, host) {
-  const id = await openContainer(ctx, { network: 'none', ceilingSeconds: CEILING.wiring });
+/**
+ * Wiring observations of one host. `retained` receives the host's observation as soon as the first probe has made it, so
+ * a later probe that fails still leaves what was already seen. When a step fails, `retain` is called with the host, the
+ * phase that was running, and the failure's fixed code and detail, before the host's container is removed; whatever it
+ * writes is therefore durable by the time of teardown. A retention failure and a cleanup failure never replace the
+ * failure that started them: the first is noted on the error as `retention`, and the second is left to the run's
+ * final cleanup, which settles and reports every resource still owned. When every probe succeeded and the container's
+ * removal then fails, that cleanup failure is the failure: `retain` is called with phase `cleanup` before it is thrown.
+ */
+export async function wiringHost(ctx, host, retained = {}, retain = null) {
+  let phase = 'open_container';
+  let failure = null;
+  let id;
+  const retainFailure = async (error) => {
+    if (!retain) return;
+    try {
+      await retain({ host, phase, code: error?.code ?? 'unexpected_exception', detail: error instanceof HarnessError ? error.detail ?? null : null });
+    } catch (retention) {
+      if (error && typeof error === 'object') error.retention = retention?.code ?? 'retention_failed';
+    }
+  };
   try {
+    id = await openContainer(ctx, { network: 'none', ceilingSeconds: CEILING.wiring });
     // Stock permissions: no permissive allow rule. The override fixture supplies a same-name user skill; its case-only overrides stay out of wiring.
     const base = { host, provider: 'mock', model: ctx.scenarios.model.mock, agentMode: 'dedicated', scenario: 'skill-override-reference', permissive: false, wiring: true };
-    await step(ctx, id, 'serve', base);
-    const wiring = (await step(ctx, id, 'wiring', { host }, { timeoutMs: 2_700_000 })).wiring;
+    const at = async (label, command, input, options) => { phase = label; return step(ctx, id, command, input, options); };
+    await at('serve', 'serve', base);
+    const wiring = (await at('wiring', 'wiring', { host }, { timeoutMs: 2_700_000 })).wiring;
+    retained[host] = wiring;
     // Model-selection probes restart the host with their own Hive and native configuration in the same container.
-    await step(ctx, id, 'stop', {});
-    await step(ctx, id, 'serve', { ...base, selection: 'valid' });
-    wiring.modelSelection = (await step(ctx, id, 'model-selection', { host, probe: 'valid' }, { timeoutMs: 1_200_000 })).selection;
-    await step(ctx, id, 'stop', {});
-    const invalidServe = await step(ctx, id, 'serve', { ...base, selection: 'invalid', allowNotReady: true });
-    wiring.invalidModelSelection = { ready: invalidServe.ready === true, ...(await step(ctx, id, 'model-selection', { host, probe: 'invalid' }, { timeoutMs: 300_000 })).selection };
+    await at('stop', 'stop', {});
+    await at('serve:valid', 'serve', { ...base, selection: 'valid' });
+    wiring.modelSelection = (await at('model-selection:valid', 'model-selection', { host, probe: 'valid' }, { timeoutMs: 1_200_000 })).selection;
+    // Same host, same configuration: the managed-model control needs the probe's Hive pairs and native model.
+    if (host === MANAGED_CONTROL_HOST) wiring.managedModelControl = (await at('managed-model-control', 'managed-model-control', { host }, { timeoutMs: 1_500_000 })).control;
+    await at('stop:valid', 'stop', {});
+    const invalidServe = await at('serve:invalid', 'serve', { ...base, selection: 'invalid', allowNotReady: true });
+    wiring.invalidModelSelection = { ready: invalidServe.ready === true, ...(await at('model-selection:invalid', 'model-selection', { host, probe: 'invalid' }, { timeoutMs: 300_000 })).selection };
     return wiring;
+  } catch (error) {
+    failure = error;
+    await retainFailure(error);
+    throw error;
   } finally {
-    await ctx.resources.remove(id);
+    if (id) {
+      try {
+        await ctx.resources.remove(id);
+      } catch (cleanup) {
+        if (!failure) {
+          // Every probe had succeeded, so the observations are complete; keep them before the cleanup error leaves.
+          phase = 'cleanup';
+          await retainFailure(cleanup);
+          throw cleanup;
+        }
+      }
+    }
   }
+}
+
+/**
+ * The retention callback of a wiring run: writes `wiring.partial.json` once, with the failure, the command and the
+ * subject, harness and runtime identities the run was made on, and every observation made so far, and records its hash
+ * in the manifest. It is never a passing wiring record. Called before the failing host's container is removed.
+ */
+export function wiringRetention({ options, manifest, outDir, results }) {
+  return (failure) => {
+    const file = join(outDir, 'wiring.partial.json');
+    const record = {
+      schema: 'ic-wiring-partial/v1',
+      complete: false,
+      command: { phase: options.phase, candidateRef: options.candidateRef, hosts: options.hosts, timeoutSeconds: options.timeoutSeconds, runId: options.runId },
+      subject: manifest.subject ?? null,
+      harness: manifest.harness ?? null,
+      artifactSha256: manifest.artifact?.sha256 ?? null,
+      runtimeIdentity: manifest.runtimeIdentity ?? null,
+      failure,
+      observations: results,
+    };
+    writeOnce(file, JSON.stringify(record, null, 2));
+    manifest.wiringPartial = { file: 'wiring.partial.json', sha256: sha256File(file) };
+  };
 }
 
 /**
@@ -569,6 +632,163 @@ export function modelSelectionFailures(host, observed, invalid, model) {
     if (!invalid.errorLogged || !invalid.errorNamesFile) failures.push(`invalid_model_config_error_missing:${host}`);
     if ((invalid.hiveRolesRegistered ?? []).length > 0 || invalid.hiveToolsExposed) failures.push(`invalid_model_config_registered:${host}`);
   }
+  return failures;
+}
+
+/** A list of records as a prefix of a longer or equal list, entry for entry. */
+function isPrefix(prior, current) {
+  return Array.isArray(prior) && Array.isArray(current) && prior.length <= current.length && prior.every((x, i) => JSON.stringify(x) === JSON.stringify(current[i]));
+}
+
+/** A nonempty list with a host message ID on every entry, all distinct. */
+function identified(list, pick) {
+  const ids = Array.isArray(list) ? list.map(pick) : [];
+  return ids.length > 0 && ids.length === list.length && ids.every((id) => typeof id === 'string' && id !== '') && new Set(ids).size === ids.length;
+}
+
+/**
+ * What a continuation turn added to one child, separated from what was there before: assistant messages beyond the
+ * earlier ones (identified by host message ID, the earlier ones unchanged) and model requests beyond the earlier ones
+ * (the observer's records in order, the earlier ones unchanged). Null when the two reads cannot be told apart.
+ */
+export function continuationAdded(before, after) {
+  const prior = before?.assistants;
+  const current = after?.assistants;
+  const priorRequests = before?.observed?.requests;
+  const currentRequests = after?.observed?.requests;
+  if (!identified(prior, (a) => a?.id) || !identified(current, (a) => a?.id) || !isPrefix(prior, current) || !isPrefix(priorRequests, currentRequests)) return null;
+  return { assistants: current.slice(prior.length), requests: currentRequests.slice(priorRequests.length) };
+}
+
+/** Whether two reads of one child's whole history are the same messages with the same content; null when either lacks the record. */
+function sameHistory(before, after) {
+  const complete = (m) => m && identified(m.ids, (id) => id) && typeof m.digest === 'string' && m.digest !== '';
+  if (!complete(before) || !complete(after)) return null;
+  return JSON.stringify(before.ids) === JSON.stringify(after.ids) && before.digest === after.digest;
+}
+
+/**
+ * Managed-model-control requirements on the v2 host (src/v2/dispatch.ts) from what the real host and the installed
+ * package did. Every `model` override was recorded in the tool input as sent and refused with Hive's own sentence, and
+ * the refusals created no child, provider request or binding; the same override on an unmanaged agent was honored by
+ * the host; fresh children and unchanged continuations ran on the host-catalog model; a child an operator moved to
+ * another model or variant was refused on continuation and left exactly as it was. Missing or partial records are
+ * failures, never passes.
+ */
+export function managedModelControlFailures(host, control, model) {
+  if (host !== MANAGED_CONTROL_HOST) return [];
+  if (!control || !Array.isArray(control.errors)) return [`managed_model_control_unobserved:${host}`];
+  const plan = managedControlPlan(model);
+  const failures = [];
+  const fail = (code, id) => failures.push(`managed_model_${code}:${host}${id === undefined ? '' : `:${id}`}`);
+  for (const name of control.errors) fail('stage_failed', name);
+  for (const name of ['refuse', 'create', 'continue']) {
+    const turn = control.turns?.[name];
+    if (!turn) fail('turn_unobserved', name);
+    else if (turn.exit !== 0 || turn.timedOut || turn.asked) fail('turn_unfinished', name);
+  }
+  for (const [agent, expected] of Object.entries(plan.catalog)) {
+    const entry = control.catalog?.[agent];
+    if (!entry?.listed) fail('catalog_unobserved', agent);
+    else if (expected === null ? entry.model !== null : !sameModelView(entry.model, expected)) fail('catalog_mismatch', agent);
+  }
+  // One model, with nothing contradicting it: a nonempty list in which every entry is the expected model and variant.
+  const allOn = (list, expected, pick = (x) => x) => Array.isArray(list) && list.length > 0 && list.every((x) => sameModelView(pick(x), expected));
+  const ranOn = (state, wire, expected) => sameModelView(state?.model, expected) && sameModelView(state?.recorded, expected)
+    && allOn(state?.assistants, expected, (a) => a?.model) && allOn(state?.observed?.views, expected)
+    && wire?.requests >= 1 && JSON.stringify(wire.models) === JSON.stringify([expected.model]);
+  const related = (state) => state?.readable === true && state.parentOk === true && state.agentOk === true;
+
+  for (const planned of plan.refusals) {
+    const row = control.refusals?.find((r) => r.id === planned.id);
+    if (!row || row.call === 'absent') { fail('refusal_unobserved', planned.id); continue; }
+    if (row.call === 'completed') fail('override_accepted', planned.id);
+    else if (row.call !== 'error') fail('override_unfinished', planned.id);
+    if (row.calls !== 1 || !row.recordedAgent || !row.recordedModel) fail('override_not_recorded', planned.id);
+    if (row.call === 'error' && row.refusal !== 'hive_managed_model') fail('refusal_unrecognized', planned.id);
+  }
+  const after = control.afterRefusals;
+  if (!after) fail('refusal_effects_unobserved');
+  else {
+    if (!after.historyOk) fail('history_incomplete', 'refuse');
+    if (after.childSessions !== 0) fail('refusal_created_child');
+    if (after.wireRequests !== 0) fail('refusal_reached_provider');
+    if (after.boundChildren !== 0) fail('refusal_bound_child');
+  }
+
+  const baseline = control.baseline;
+  if (!baseline || baseline.call === 'absent') fail('unmanaged_baseline_unobserved');
+  else if (baseline.call !== 'completed' || baseline.calls !== 1 || !baseline.recordedAgent || !baseline.recordedModel || !baseline.child) fail('unmanaged_baseline_failed');
+  else if (!related(baseline.state)) fail('unmanaged_baseline_unverified');
+  else if (!ranOn(baseline.state, baseline.wire, plan.baseline.expected)) fail('unmanaged_baseline_model_mismatch');
+  const unmanaged = control.control;
+  if (!unmanaged || unmanaged.call === 'absent') fail('unmanaged_override_unobserved');
+  else {
+    if (unmanaged.call !== 'completed' || unmanaged.calls !== 1 || !unmanaged.recordedAgent || !unmanaged.recordedModel) fail('unmanaged_override_not_accepted');
+    else if (!related(unmanaged.state)) fail('unmanaged_child_unverified');
+    else if (!ranOn(unmanaged.state, unmanaged.wire, plan.control.sent)) fail('unmanaged_override_not_honored');
+  }
+
+  const created = new Set();
+  for (const planned of plan.children) {
+    const row = control.created?.[planned.id];
+    if (!row || row.call === 'absent') { fail('fresh_unobserved', planned.id); continue; }
+    if (row.call !== 'completed' || row.calls !== 1 || !row.recordedAgent || !row.recordedModel || !row.child) { fail('fresh_failed', planned.id); continue; }
+    created.add(row.child);
+    if (!related(row.state)) fail('fresh_child_unverified', planned.id);
+    else if (!ranOn(row.state, row.wire, planned.expected)) fail('fresh_model_mismatch', planned.id);
+    if (!row.state?.binding?.bound || !row.state.binding.parentOk) fail('fresh_unbound', planned.id);
+  }
+  for (const row of [baseline, unmanaged]) if (row?.call === 'completed' && row.child) created.add(row.child);
+  const afterCreate = control.childrenAfterCreate;
+  if (!Array.isArray(afterCreate) || afterCreate.length !== created.size || afterCreate.some((id) => !created.has(id))) fail('children_unaccounted', 'create');
+  if (control.historyOkAfterCreate !== true) fail('history_incomplete', 'create');
+
+  for (const [key, target] of Object.entries(plan.operator)) {
+    const row = control.operator?.[key];
+    if (!row) fail('operator_unobserved', key);
+    else if (!row.idle) fail('operator_child_not_idle', key);
+    else if (!row.switched) fail('operator_switch_failed', key);
+    else if (!sameModelView(row.after, target)) fail('operator_switch_not_applied', key);
+  }
+
+  for (const planned of plan.continuations) {
+    const row = control.continued?.find((r) => r.id === planned.child);
+    const child = plan.children.find((c) => c.id === planned.child);
+    if (!row || row.call === 'absent') { fail('continuation_unobserved', planned.child); continue; }
+    if (!row.before || !row.after) { fail('continuation_state_unobserved', planned.child); continue; }
+    if (row.calls !== 1 || !row.recordedAgent || !row.recordedSession || !row.target) fail('continuation_not_recorded', planned.child);
+    // The child is read from the host with its complete history, related to the parent and on its agent, both before and after.
+    if (!related(row.before)) fail('continuation_before_unverified', planned.child);
+    if (!related(row.after)) fail('continuation_child_unverified', planned.child);
+    if (planned.expect === 'refused') {
+      if (row.call === 'completed') fail('continuation_not_refused', planned.child);
+      else if (row.call !== 'error') fail('continuation_unfinished', planned.child);
+      else if (row.refusal !== 'hive_continuation_model') fail('continuation_refusal_unrecognized', planned.child);
+      if (!sameModelView(row.before.model, plan.operator[planned.child])) fail('continuation_premise_missing', planned.child);
+      if (!sameModelView(row.after.model, row.before.model) || !sameModelView(row.after.recorded, row.before.recorded)) fail('refused_continuation_changed_model', planned.child);
+      if (row.after.assistantMessages !== row.before.assistantMessages || row.after.observed?.count !== row.before.observed?.count || row.wire?.requests !== 0) fail('refused_continuation_prompted', planned.child);
+      // A prompt admitted without a model request still adds a user message or changes one: the whole history must be the same.
+      const unchanged = sameHistory(row.before.messages, row.after.messages);
+      if (unchanged === null) fail('refused_continuation_history_unobserved', planned.child);
+      else if (!unchanged) fail('refused_continuation_prompted', planned.child);
+      if (!row.before.binding?.bound || row.after.binding?.digest !== row.before.binding.digest) fail('refused_continuation_rebound', planned.child);
+    } else {
+      if (row.call !== 'completed' || row.child !== row.target) fail('continuation_not_accepted', planned.child);
+      else {
+        if (!sameModelView(row.before.model, child.expected) || !sameModelView(row.after.model, child.expected)) fail('continuation_model_changed', planned.child);
+        // Only what this turn added counts: new assistant messages (by host ID) and new model requests, each on the configured model.
+        const added = continuationAdded(row.before, row.after);
+        if (!(row.after.assistantMessages > row.before.assistantMessages) || !(row.after.observed?.count > row.before.observed?.count)
+          || !added || !allOn(added.assistants, child.expected, (a) => a?.model) || !allOn(added.requests, child.expected)
+          || row.wire?.requests < 1 || JSON.stringify(row.wire.models) !== JSON.stringify([child.expected.model])) fail('continuation_not_run_on_configured_model', planned.child);
+        if (!row.after.binding?.bound || !row.after.binding.parentOk) fail('continuation_unbound', planned.child);
+      }
+    }
+  }
+  const afterContinue = control.childrenAfterContinue;
+  if (!Array.isArray(afterCreate) || !Array.isArray(afterContinue) || JSON.stringify(afterContinue) !== JSON.stringify(afterCreate)) fail('children_unaccounted', 'continue');
+  if (control.historyOkAfterContinue !== true) fail('history_incomplete', 'continue');
   return failures;
 }
 
@@ -656,6 +876,7 @@ export function wiringFailures(results, model) {
     if (!w.override?.resolvesToUserSkill) failures.push(`override_not_user_skill:${host}`);
     if (!w.override?.loadedUserBody) failures.push(`override_body_not_loaded:${host}`);
     failures.push(...modelSelectionFailures(host, w.modelSelection, w.invalidModelSelection, model));
+    failures.push(...managedModelControlFailures(host, w.managedModelControl, model));
     failures.push(...contextEditFailures(host, w));
   }
   const [a, b] = Object.values(results);
@@ -1066,7 +1287,9 @@ async function runPhase(run) {
 
   if (options.phase === 'wiring') {
     const results = {};
-    for (const host of options.hosts) results[host] = await wiringHost(ctx, host);
+    // A failing host publishes its partial record from inside wiringHost, before its container is removed.
+    const retain = wiringRetention({ options, manifest, outDir, results });
+    for (const host of options.hosts) results[host] = await wiringHost(ctx, host, results, retain);
     writeOnce(join(outDir, 'wiring.json'), JSON.stringify(results, null, 2));
     manifest.wiring = { file: 'wiring.json', sha256: sha256File(join(outDir, 'wiring.json')) };
     manifest.failures = wiringFailures(results, scenarios.model.mock).map((code) => ({ code }));
@@ -1211,6 +1434,7 @@ export async function main(argv, { env = process.env, stdout = process.stdout } 
     status = 'failed';
     const code = error instanceof HarnessError || error instanceof CredentialError ? error.code : 'unexpected_exception';
     manifest.failures.push({ code, detail: error instanceof HarnessError ? error.detail ?? null : null });
+    if (error?.retention) manifest.failures.push({ code: 'wiring_retention_failed', detail: error.retention });
   }
   manifest.cleanup = await resources.removeAll();
   manifest.resources = { ...resources.counts, settled: resources.settled };

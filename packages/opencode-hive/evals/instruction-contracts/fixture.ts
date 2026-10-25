@@ -7,10 +7,11 @@ import { createServer } from 'node:http';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import {
-  HIVE_COMMANDS, HIVE_ROLES, REFRESH_SENTINEL, fieldContractFindings, hiveConfig, hostConfig, hostSpec, nativeToolCall, probeModels,
+  HIVE_COMMANDS, HIVE_ROLES, REFRESH_SENTINEL, fieldContractFindings, hiveConfig, hostConfig, hostSpec, managedControlPlan, modelArgument, nativeToolCall, probeModels,
   PROBE_VARIANTS, neutralArgs, neutralTool, runArgs, serveArgs, sessionCreateRequest,
 } from './hosts.mjs';
-import { HOME, MOCK_PORT, PROJ, SERVER_PORT, STATE, WORK, authHeader, detach } from './container-runtime.ts';
+import { HOME, MOCK_PORT, PROJ, SERVER_PORT, STATE, WORK, authHeader, detach, payload, strictApi, succeeded } from './container-runtime.ts';
+import type { ApiResult } from './container-runtime.ts';
 
 const HARNESS = dirname(new URL(import.meta.url).pathname);
 const SCENARIOS = JSON.parse(readFileSync(join(HARNESS, 'scenarios.json'), 'utf8'));
@@ -355,11 +356,17 @@ async function stopServer(): Promise<Json> {
   return { ok: true, stopped: true };
 }
 
-/** Runs one headless primary prompt. Pending questions or permission requests end the run as an operator stop. */
-export async function runPrompt(host: string, { agent, modelRef, variant, prompt, command }: Json, timeoutMs: number): Promise<Json> {
-  const create = sessionCreateRequest(host, { agent, directory: PROJ });
-  const created = await api(create.path, { method: 'POST', body: JSON.stringify(create.body) });
-  const sessionId = unwrap(created.body)?.id ?? null;
+/**
+ * Runs one headless primary prompt. Pending questions or permission requests end the run as an operator stop. A new
+ * session is created unless `sessionId` names an existing primary session, whose next turn this then is.
+ */
+export async function runPrompt(host: string, { agent, modelRef, variant, prompt, command, sessionId: existing }: Json, timeoutMs: number): Promise<Json> {
+  let sessionId: string | null = existing ?? null;
+  if (!sessionId) {
+    const create = sessionCreateRequest(host, { agent, directory: PROJ });
+    const created = await api(create.path, { method: 'POST', body: JSON.stringify(create.body) });
+    sessionId = unwrap(created.body)?.id ?? null;
+  }
   if (!sessionId) return { exit: -1, sessionId: null, events: [], asked: null, timedOut: false, durationMs: 0 };
   const started = Date.now();
   let exited: Promise<number>;
@@ -542,8 +549,11 @@ function hiveParents(): Map<string, string> {
 }
 
 async function sessionTree(host: string, rootId: string): Promise<Json[]> {
-  const sessions = await listSessions(host);
-  const hive = hiveParents();
+  return treeFrom(await listSessions(host), hiveParents(), rootId);
+}
+
+/** The root and its descendants from a session listing, with Hive's stored parent links for sessions the host lists without one. */
+export function treeFrom(sessions: Json[], hive: Map<string, string>, rootId: string): Json[] {
   const parentOf = (s: Json) => s.parentID ?? s.parentId ?? s.parent?.id ?? hive.get(s.id) ?? null;
   const tree = sessions.filter((s) => s.id === rootId);
   let frontier = [rootId];
@@ -576,6 +586,21 @@ export function refusalKind(message: unknown, tool: string): ToolRefusal {
   return 'other';
 }
 
+/**
+ * A failed call's error text, bounded. It stays in the container for local classification. The only export of any of
+ * it is the managed-model probe's `errorHead` for an error that is not the intended refusal, in a credential-free run.
+ */
+const ERROR_TEXT_CAP = 600;
+function errorTextOf(message: unknown): string | null {
+  return typeof message === 'string' ? message.slice(0, ERROR_TEXT_CAP) : null;
+}
+
+const NATIVE_ID = /^[A-Za-z0-9_.:-]{1,200}$/;
+/** A host-issued message or session ID in the native alphabet, or null; the value is never reshaped. */
+export function nativeId(value: unknown): string | null {
+  return typeof value === 'string' && NATIVE_ID.test(value) ? value : null;
+}
+
 export type HistoryRead = { history: Json[]; complete: boolean; failure: 'history_request_failed' | 'history_body_malformed' | null };
 
 /**
@@ -591,6 +616,7 @@ export async function messagePages(host: string, sessionId: string, get: (path: 
     if (!res?.ok) return { history: [], complete: false, failure: 'history_request_failed' };
     if (!isPage(res.body)) return { history: [], complete: false, failure: 'history_body_malformed' };
     const history = res.body.map((m: Json) => ({
+      id: nativeId(m.info?.id),
       role: m.info?.role,
       agent: m.info?.agent ?? m.info?.mode ?? null,
       model: m.info?.role === 'assistant' ? { providerID: m.info?.providerID ?? null, modelID: m.info?.modelID ?? null, variant: m.info?.variant ?? null } : null,
@@ -601,6 +627,7 @@ export async function messagePages(host: string, sessionId: string, get: (path: 
         name: p.tool, status: p.state?.status, input: p.state?.input, metadata: p.state?.metadata ?? null,
         output: p.state?.output ?? p.state?.error, errorName: p.state?.status === 'error' ? 'tool_error' : null,
         refusal: p.state?.status === 'error' ? refusalKind(p.state?.error, p.tool) : null,
+        errorText: p.state?.status === 'error' ? errorTextOf(p.state?.error) : null,
       })),
     }));
     return { history, complete: true, failure: null };
@@ -615,6 +642,7 @@ export async function messagePages(host: string, sessionId: string, get: (path: 
     if (!isPage(items) || (next !== undefined && next !== null && typeof next !== 'string')) return { history: out, complete: false, failure: 'history_body_malformed' };
     for (const m of items) {
       out.push({
+        id: nativeId(m.id),
         role: m.type === 'assistant' ? 'assistant' : m.type,
         agent: m.agent ?? null,
         model: m.type === 'assistant' ? { providerID: m.model?.providerID ?? null, modelID: m.model?.id ?? null, variant: m.model?.variant ?? null } : null,
@@ -628,6 +656,7 @@ export async function messagePages(host: string, sessionId: string, get: (path: 
           output: p.state?.output ?? (Array.isArray(p.state?.content) ? p.state.content.map((c: Json) => c.text ?? '').join('') : undefined) ?? '',
           errorName: p.state?.status === 'error' ? safeName(p.state?.error?.type ?? p.state?.error?._tag ?? p.state?.error?.name) ?? 'tool_error' : null,
           refusal: p.state?.status === 'error' ? refusalKind(p.state?.error?.message, p.name) : null,
+          errorText: p.state?.status === 'error' ? errorTextOf(p.state?.error?.message) : null,
         })),
       });
     }
@@ -1602,6 +1631,433 @@ async function modelSelection(input: Json): Promise<Json> {
   return { ok: true, selection: observed };
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// Managed-model control (v2). Hive's subagent wrapper (src/v2/dispatch.ts) refuses a `model` argument for a Hive-managed
+// agent, and a continuation of a child whose model no longer matches the agent's configured one, before the host
+// creates, prompts or switches anything. This probe sends those calls through the real host and records, per call, what
+// the tool input carried, which error answered, and whether any child, binding, model request, message or stored model
+// moved. It exports fixed words, booleans, counts, probe model IDs and variants, host-issued session and message IDs, and
+// a digest of each child's history. The one free text is `errorHead`, the bounded first characters of an error that is
+// not the intended refusal, which this credential-free probe keeps so a wiring failure can be read without a rerun.
+
+const CONTROL_MARK = 'mmc';
+// This credential-free probe may keep the first characters of an unrecognized error for diagnosis, as build failures do.
+const ERROR_HEAD_CAP = 200;
+const OWNER_SESSIONS = join(PROJ, '.hive', 'runtime', 'opencode-v2', 'sessions.json');
+// The route fields of a child's Hive binding; timestamps and counters are left out so a refused call can be compared by digest.
+const ROUTE_FIELDS = ['parentSessionId', 'agent', 'baseAgent', 'sessionKind', 'featureName', 'taskFolder', 'projectRoot', 'adHocRunId', 'standingConstraints', 'standingConstraintEntries', 'standingConstraintsRevision', 'directivePrompt'];
+
+/** A model reference as a probe model ID and variant: `other` for anything outside the probe's mock models, null when the host reported none. */
+export function modelView(ref: Json, models: Json): Json {
+  if (!ref || typeof ref !== 'object') return null;
+  const known = ref.providerID === 'mock' && Object.values(models).includes(ref.id);
+  return { model: known ? ref.id : 'other', variant: ref.variant === undefined || ref.variant === null ? null : safeName(ref.variant) };
+}
+
+/** The first sentence of Hive's refusal of a `model` argument, as src/v2/dispatch.ts words it. */
+export function overrideRefusalLead(agent: string, argument: string): string {
+  return `Hive manages the model of agent ${agent}, so this subagent call may not set model (it set ${JSON.stringify(argument)}); the host was not called.`;
+}
+
+/** The first sentence of Hive's refusal of a continuation whose child runs on another model than the agent's configured one. */
+export function continuationRefusalLead(child: string, agent: string, actual: string, expected: string): string {
+  return `Child session ${child} runs on ${actual}, but agent ${agent} is configured for ${expected}; the host was not asked to continue the child.`;
+}
+
+function childOfCall(call: Json): string | null {
+  const metadata = call.metadata && typeof call.metadata === 'object' ? call.metadata : {};
+  const output = typeof call.output === 'string' ? call.output : JSON.stringify(call.output ?? '');
+  const id = metadata.sessionID ?? metadata.sessionId ?? /(?:task id|sessionID)="(ses_[A-Za-z0-9]+)"/.exec(output)?.[1] ?? null;
+  return typeof id === 'string' && /^ses_[A-Za-z0-9]+$/.test(id) ? id : null;
+}
+
+/**
+ * What one scripted `subagent` call (found by the marker its prompt carries) recorded: the outcome, whether the tool
+ * input carried exactly the agent, model and session the script sent, which error answered, and the child it returned.
+ * `refusal` is `hive_managed_model` or `hive_continuation_model` only when the error text begins with the sentence
+ * Hive would write for these very facts, so an unknown-model, permission, schema or runtime failure stays `other`.
+ */
+export function dispatchCallFacts(history: Json[], marker: string, expected: { agent: string; model?: string; sessionID?: string; override?: string; continuation?: string }): Json {
+  const calls = history.filter((m) => m.role === 'assistant').flatMap((m) => m.tools)
+    .filter((t: Json) => neutralTool(t.name) === 'dispatch' && String(t.input?.prompt ?? '').includes(marker));
+  const call = calls[0];
+  const input = call?.input ?? {};
+  const outcome = !call ? 'absent' : call.status === 'completed' ? 'completed' : call.status === 'error' ? 'error' : 'other';
+  const text = typeof call?.errorText === 'string' ? call.errorText : '';
+  const refusal = outcome !== 'error' ? null
+    : expected.override !== undefined && text.startsWith(expected.override) ? 'hive_managed_model'
+      : expected.continuation !== undefined && text.startsWith(expected.continuation) ? 'hive_continuation_model' : 'other';
+  return {
+    calls: calls.length,
+    call: outcome,
+    recordedAgent: input.agent === expected.agent,
+    recordedModel: expected.model === undefined ? input.model === undefined : input.model === expected.model,
+    recordedSession: expected.sessionID === undefined ? input.sessionID === undefined : input.sessionID === expected.sessionID,
+    refusal,
+    // Only an error that is not the intended refusal keeps its head, so a wiring failure can be read without a rerun.
+    ...(refusal === 'other' ? { errorHead: text.slice(0, ERROR_HEAD_CAP) } : {}),
+    child: outcome === 'completed' ? childOfCall(call) : null,
+  };
+}
+
+/**
+ * One child as the host and its own history show it: relationship to the parent, agent, stored and recorded model, and
+ * message counts. `assistants` lists every assistant message by host message ID with the model it ran on, and
+ * `messages` the whole history by ID and a digest of its normalized content, so a later read can tell which messages are
+ * new and whether any earlier one changed.
+ */
+export function childFacts(input: { session: Json; history: Json[]; historyOk: boolean; parent: string; agent: string; models: Json }): Json {
+  const { session, history, models } = input;
+  const assistant = history.filter((m) => m.role === 'assistant');
+  const first = assistant.find((m) => m.model);
+  return {
+    readable: Boolean(session) && input.historyOk,
+    parentOk: session?.parentID === input.parent,
+    agentOk: session?.agent === input.agent,
+    model: modelView(session?.model, models),
+    recorded: first ? modelView({ providerID: first.model.providerID, id: first.model.modelID, variant: first.model.variant }, models) : null,
+    assistantMessages: assistant.length,
+    errors: assistant.filter((m) => m.error).length,
+    assistants: assistant.map((m) => ({
+      id: m.id ?? null,
+      model: m.model ? modelView({ providerID: m.model.providerID, id: m.model.modelID, variant: m.model.variant }, models) : null,
+    })),
+    messages: { ids: history.map((m) => m.id ?? null), digest: sha256(JSON.stringify(history)) },
+  };
+}
+
+/** Mock-provider requests that carry a marker, with the probe model each named on the wire. */
+export function wireFacts(rows: Json[], marker: string, models: Json): Json {
+  const own = rows.filter((r) => String(r.lastUser ?? '').includes(marker));
+  return { requests: own.length, models: [...new Set(own.map((r) => (Object.values(models).includes(r.model) ? r.model : 'other')))].sort() };
+}
+
+/**
+ * Model requests the host resolved for one session, from the observer's `model.request` records: their count, the
+ * distinct models, and each request in order with the time the observer recorded it, so a later read can separate the
+ * requests a turn added from the ones before it.
+ */
+export function modelRequestFacts(records: Json[], sessionId: string, models: Json): Json {
+  const own = records.filter((r) => r.hook === 'model.request' && r.sessionID === sessionId);
+  const views = own.map((r) => modelView({ providerID: r.providerID, id: r.modelID, variant: r.variant }, models));
+  return {
+    count: own.length,
+    views: [...new Map(views.map((v) => [JSON.stringify(v), v])).values()],
+    requests: own.map((r, i) => ({ at: typeof r.at === 'number' ? r.at : null, ...views[i] })),
+  };
+}
+
+/** A child's Hive binding in the host's owner store: whether it exists, belongs to the parent, and a digest of its route fields. */
+export function bindingFacts(store: Json, child: string, parent: string): Json {
+  const entry = (store?.sessions ?? []).find((s: Json) => s?.sessionId === child);
+  if (!entry) return { bound: false, parentOk: false, agent: null, digest: null };
+  return {
+    bound: true, parentOk: entry.parentSessionId === parent, agent: safeName(entry.agent),
+    digest: sha256(JSON.stringify(Object.fromEntries(ROUTE_FIELDS.map((key) => [key, entry[key] ?? null])))),
+  };
+}
+
+export function boundChildren(store: Json, parent: string): string[] {
+  return (store?.sessions ?? []).filter((s: Json) => s?.parentSessionId === parent).map((s: Json) => String(s.sessionId)).sort();
+}
+
+/**
+ * A probe read that did not return a well-formed answer: the request failed or answered with a non-success status, or its
+ * body, file or listing had the wrong shape or may be cut short. The code is a fixed word. A stage that meets one fails by
+ * name; an unreadable listing, store, activity map or log is never read as no children, no binding, an idle child or no
+ * request.
+ */
+export class ProbeReadError extends Error {
+  code: string;
+  constructor(code: string) {
+    super(`probe read failed: ${code}`);
+    this.code = code;
+  }
+}
+
+/** The probe's reads of the host API and of container files. `readText` is null only for a file that does not exist. */
+export type ProbeIo = { get: (path: string) => Promise<ApiResult>; readText: (path: string) => string | null };
+type ProbePaths = { store: string; wire: string; observer: string };
+
+const LIVE_IO: ProbeIo = {
+  get: (path) => strictApi(path, { timeoutMs: 20_000 }),
+  readText: (path) => {
+    try { return readFileSync(path, 'utf8'); } catch (error) {
+      if ((error as Json)?.code === 'ENOENT') return null;
+      throw error;
+    }
+  },
+};
+const LIVE_PATHS: ProbePaths = { store: OWNER_SESSIONS, wire: join(STATE, 'requests.jsonl'), observer: join(STATE, 'observer.jsonl') };
+const LISTING_LIMIT = 200;
+const LISTING_PAGES = 10;
+
+/**
+ * Strict readers for what the managed-model probe concludes from. Each either returns a complete, well-formed answer or
+ * throws a `ProbeReadError`. Optional files differ from unreadable ones only where the lifecycle makes absence a fact:
+ * no Hive store file means no binding was written (the fresh-child checks require a binding on this same path, so a
+ * wrong path cannot pass), and the provider log may be absent before the probe's first turn. The observer log must
+ * exist once a child has run, and every line of every log must parse.
+ */
+export function probeReads(io: ProbeIo, paths: ProbePaths = LIVE_PATHS) {
+  const response = async (what: string, path: string): Promise<ApiResult> => {
+    let res: ApiResult;
+    try { res = await io.get(path); } catch { throw new ProbeReadError(`${what}_unreadable`); }
+    if (res.outcome === 'malformed') throw new ProbeReadError(`${what}_malformed`);
+    if (!succeeded(res)) throw new ProbeReadError(`${what}_unreadable`);
+    return res;
+  };
+  const text = (what: string, path: string): string | null => {
+    try { return io.readText(path); } catch { throw new ProbeReadError(`${what}_unreadable`); }
+  };
+  const rows = (what: string, path: string, absent: 'empty' | 'fail'): Json[] => {
+    const content = text(what, path);
+    if (content === null) {
+      if (absent === 'empty') return [];
+      throw new ProbeReadError(`${what}_missing`);
+    }
+    const out: Json[] = [];
+    for (const line of content.split('\n')) {
+      if (line === '') continue;
+      let row: Json;
+      try { row = JSON.parse(line); } catch { throw new ProbeReadError(`${what}_malformed`); }
+      if (!row || typeof row !== 'object' || Array.isArray(row)) throw new ProbeReadError(`${what}_malformed`);
+      out.push(row);
+    }
+    return out;
+  };
+  /** Every session of the project directory. A page the host may have more after, or one past the page cap, is truncated. */
+  const sessions = async (): Promise<Json[]> => {
+    const all: Json[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < LISTING_PAGES; page++) {
+      const res = await response('listing', `/api/session?directory=${encodeURIComponent(PROJ)}&limit=${LISTING_LIMIT}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`);
+      const items = payload('v2', res.body);
+      const next = res.body?.cursor?.next;
+      if (!Array.isArray(items) || !items.every((s) => s && typeof s === 'object' && nativeId(s.id) !== null) || Array.isArray(res.body?.cursor) || (next !== undefined && next !== null && typeof next !== 'string')) {
+        throw new ProbeReadError('listing_malformed');
+      }
+      all.push(...items);
+      if (next) { cursor = next; continue; }
+      // A full page with no cursor member cannot show that nothing follows it.
+      if (items.length >= LISTING_LIMIT && !(res.body.cursor && typeof res.body.cursor === 'object')) throw new ProbeReadError('listing_truncated');
+      return all;
+    }
+    throw new ProbeReadError('listing_truncated');
+  };
+  const store = (): Json => {
+    const content = text('store', paths.store);
+    if (content === null) return { sessions: [] };
+    let parsed: Json;
+    try { parsed = JSON.parse(content); } catch { throw new ProbeReadError('store_malformed'); }
+    if (!parsed || !Array.isArray(parsed.sessions) || !parsed.sessions.every((s: Json) => s && typeof s === 'object' && typeof s.sessionId === 'string')) throw new ProbeReadError('store_malformed');
+    return parsed;
+  };
+  return {
+    store,
+    sessions,
+    /** The sessions below `parent`, from the complete listing and Hive's stored links. The parent itself must be in the listing. */
+    async children(parent: string): Promise<string[]> {
+      const listed = await sessions();
+      if (!listed.some((s) => s.id === parent)) throw new ProbeReadError('listing_incomplete');
+      const hive = new Map<string, string>(store().sessions.filter((s: Json) => typeof s.parentSessionId === 'string').map((s: Json) => [s.sessionId, s.parentSessionId]));
+      return treeFrom(listed, hive, parent).filter((node) => node.id !== parent).map((node) => node.id).sort();
+    },
+    /** One session as the host reports it, or null when it cannot be read: a child that cannot be read is not `readable`. */
+    async session(id: string): Promise<Json | null> {
+      try {
+        const info = payload('v2', (await response('session', `/api/session/${id}`)).body);
+        return info && typeof info === 'object' && info.id === id ? info : null;
+      } catch (error) {
+        if (error instanceof ProbeReadError) return null;
+        throw error;
+      }
+    },
+    /** The sessions the host reports as running. Anything but a map keyed by session ID is unknown, never idle. */
+    async active(): Promise<Set<string>> {
+      const map = payload('v2', (await response('active', '/api/session/active')).body);
+      if (!map || typeof map !== 'object' || Array.isArray(map) || !Object.keys(map).every((key) => /^ses_[A-Za-z0-9]+$/.test(key))) throw new ProbeReadError('active_malformed');
+      return new Set(Object.keys(map));
+    },
+    /** The mock provider's request log. */
+    wire: (absent: 'empty' | 'fail' = 'fail'): Json[] => rows('wire', paths.wire, absent),
+    /** The observer's `model.request` records for one session; the log exists once any child has run. */
+    observer: (sessionId: string): Json[] => rows('observer', paths.observer, 'fail').filter((r) => r.hook === 'model.request' && r.sessionID === sessionId),
+  };
+}
+
+/** Runs one probe stage. A failure is recorded by stage name, with the fixed word of a failed read, and the probe goes on. */
+export async function probeStage<T>(errors: string[], name: string, fn: () => Promise<T>): Promise<T | null> {
+  try {
+    return await fn();
+  } catch (error) {
+    errors.push(error instanceof ProbeReadError ? `${name}:${error.code}` : name);
+    return null;
+  }
+}
+
+/**
+ * The operator's change: each planned child is switched to its target model only after the host reports it idle, as
+ * the host's own session route requires. A child the host never reported idle is not switched, and an activity read that
+ * fails or is malformed ends the stage with that read's error. Rows are written to `into` as they are made.
+ */
+export async function switchIdleChildren(input: {
+  plan: Json; ids: Json; models: Json; into: Json; attempts?: number;
+  reads: { active: () => Promise<Set<string>>; session: (id: string) => Promise<Json | null> };
+  post: (id: string, target: Json) => Promise<{ ok: boolean; status: number | null }>;
+  sleep?: (ms: number) => Promise<void>;
+}): Promise<void> {
+  const { plan, ids, models, into, reads, post } = input;
+  const sleep = input.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  for (const [key, target] of Object.entries(plan.operator) as [string, Json][]) {
+    const id: string | null = ids[key] ?? null;
+    if (!id) { into[key] = { switched: false, target, idle: false, after: null }; continue; }
+    let idle = false;
+    for (let i = 0; i < (input.attempts ?? 20) && !idle; i++) {
+      idle = !(await reads.active()).has(id);
+      if (!idle) await sleep(500);
+    }
+    const res = idle ? await post(id, target) : null;
+    into[key] = { switched: res?.ok === true, ...(res ? { status: res.status } : {}), target, idle, after: modelView((await reads.session(id))?.model, models) };
+  }
+}
+
+/** The probe's calls into the live host: a prompt turn, an interrupt, and the plain API. A test supplies its own. */
+export type ProbeDrive = { run: typeof runPrompt; interrupt: typeof interruptSession; api: typeof api };
+const LIVE_DRIVE: ProbeDrive = { run: runPrompt, interrupt: interruptSession, api };
+
+/**
+ * Each provider-log offset is read in a named stage. A log that cannot be read ends that stage with its name and leaves
+ * no offset: the stage that counts from it is skipped with `wire_start_unavailable`, never run from a made-up zero.
+ */
+export async function managedModelControl(input: Json, io: ProbeIo = LIVE_IO, drive: ProbeDrive = LIVE_DRIVE): Promise<Json> {
+  const { host } = input;
+  const mock = SCENARIOS.model.mock;
+  const models = probeModels(mock);
+  const plan = managedControlPlan(mock);
+  const reads = probeReads(io);
+  const errors: string[] = [];
+  const out: Json = { host, errors, turns: {}, catalog: {}, refusals: [], afterRefusals: null, baseline: null, control: null, created: {}, operator: {}, continued: [] };
+  // A failed stage is recorded by name and the probe goes on, so the stages that did run stay in the observation.
+  const stage = <T>(name: string, fn: () => Promise<T>) => probeStage(errors, name, fn);
+  const asApi = async (path: string): Promise<Json> => { const res = await io.get(path); return { status: res.status, ok: succeeded(res), body: res.body }; };
+  const historyOf = async (id: string) => { const read = await messagePages(host, id, asApi); return { history: read.history, ok: read.complete && !read.failure }; };
+  const turn = async (name: string, sessionId: string | undefined, script: Json[]) => {
+    const run = await drive.run(host, {
+      agent: 'hive-builder', modelRef: `mock/${models.parent}`, variant: PROBE_VARIANTS.parent, sessionId,
+      prompt: `managed model ${name}\n${scriptDirective([...script, { op: 'text', text: 'ok' }])}`,
+    }, 180_000);
+    if (run.sessionId && (run.exit !== 0 || run.timedOut || run.asked)) await drive.interrupt(host, run.sessionId);
+    out.turns[name] = { exit: run.exit, timedOut: run.timedOut, asked: run.asked ? run.asked.kind : null };
+    return run;
+  };
+  const subagent = (args: Json) => ({ op: 'native', tool: 'subagent', args: { description: 'managed model probe', background: false, ...args } });
+  const state = async (id: string, agent: string, parent: string) => {
+    const read = await historyOf(id);
+    return {
+      ...childFacts({ session: await reads.session(id), history: read.history, historyOk: read.ok, parent, agent, models }),
+      binding: bindingFacts(reads.store(), id, parent),
+      observed: modelRequestFacts(reads.observer(id), id, models),
+    };
+  };
+
+  // Stage 1: every `model` override is refused, and the refusals leave no child, request or binding behind.
+  const refuseStart = await stage('refuse_wire_start', async () => reads.wire('empty').length);
+  const refuseRun = await stage('refuse_turn', () => turn('refuse', undefined, plan.refusals.map((r: Json) => subagent({
+    agent: r.agent, prompt: `${CONTROL_MARK}-refuse-${r.id}`, model: modelArgument(r.sent),
+  }))));
+  const parent: string | null = refuseRun?.sessionId ?? null;
+  out.parent = parent;
+  if (parent === null) return { ok: true, control: out };
+  await stage('catalog', async () => {
+    const listed = unwrap((await drive.api(`/api/agent?directory=${encodeURIComponent(PROJ)}`)).body);
+    for (const agent of Object.keys(plan.catalog)) {
+      const entry = Array.isArray(listed) ? listed.find((a: Json) => (a.name ?? a.id) === agent) : undefined;
+      out.catalog[agent] = entry ? { listed: true, model: modelView(entry.model, models) } : { listed: false, model: null };
+    }
+  });
+  await stage('refusals', async () => {
+    if (refuseStart === null) throw new ProbeReadError('wire_start_unavailable');
+    const read = await historyOf(parent);
+    out.refusals = plan.refusals.map((r: Json) => ({
+      id: r.id, agent: r.agent, sent: r.sent,
+      ...dispatchCallFacts(read.history, `${CONTROL_MARK}-refuse-${r.id}`, { agent: r.agent, model: modelArgument(r.sent), override: overrideRefusalLead(r.agent, modelArgument(r.sent)) }),
+    }));
+    out.afterRefusals = {
+      historyOk: read.ok,
+      childSessions: (await reads.children(parent)).length,
+      wireRequests: reads.wire().slice(refuseStart).filter((r) => String(r.lastUser).includes(`${CONTROL_MARK}-refuse-`)).length,
+      boundChildren: boundChildren(reads.store(), parent).length,
+    };
+  });
+
+  // Stage 2: fresh children without `model`, plus the same override on an unmanaged agent, which the host must accept.
+  const createStart = await stage('create_wire_start', async () => reads.wire().length);
+  const ids: Json = {};
+  await stage('create_turn', () => turn('create', parent, [
+    ...plan.children.map((c: Json) => ({ op: 'dispatch', agent: c.agent, prompt: `${CONTROL_MARK}-create-${c.id}`, script: [{ op: 'text', text: 'ok' }] })),
+    { op: 'dispatch', agent: plan.baseline.agent, prompt: `${CONTROL_MARK}-baseline`, script: [{ op: 'text', text: 'ok' }] },
+    subagent({ agent: plan.control.agent, prompt: `${CONTROL_MARK}-control`, model: modelArgument(plan.control.sent) }),
+  ]));
+  await stage('created', async () => {
+    if (createStart === null) throw new ProbeReadError('wire_start_unavailable');
+    const read = await historyOf(parent);
+    out.historyOkAfterCreate = read.ok;
+    const wire = reads.wire().slice(createStart);
+    for (const c of plan.children) {
+      const marker = `${CONTROL_MARK}-create-${c.id}`;
+      const call = dispatchCallFacts(read.history, marker, { agent: c.agent });
+      ids[c.id] = call.child;
+      out.created[c.id] = { agent: c.agent, expected: c.expected, ...call, state: call.child ? await state(call.child, c.agent, parent) : null, wire: wireFacts(wire, marker, models) };
+    }
+    const baseline = dispatchCallFacts(read.history, `${CONTROL_MARK}-baseline`, { agent: plan.baseline.agent });
+    out.baseline = { agent: plan.baseline.agent, expected: plan.baseline.expected, ...baseline, state: baseline.child ? await state(baseline.child, plan.baseline.agent, parent) : null, wire: wireFacts(wire, `${CONTROL_MARK}-baseline`, models) };
+    const call = dispatchCallFacts(read.history, `${CONTROL_MARK}-control`, { agent: plan.control.agent, model: modelArgument(plan.control.sent) });
+    out.control = { agent: plan.control.agent, sent: plan.control.sent, ...call, state: call.child ? await state(call.child, plan.control.agent, parent) : null, wire: wireFacts(wire, `${CONTROL_MARK}-control`, models) };
+    out.childrenAfterCreate = await reads.children(parent);
+  });
+
+  // Stage 3: the operator switches idle children to another model or variant through the host's own session route.
+  await stage('operator', () => switchIdleChildren({
+    plan, ids, models, reads, into: out.operator,
+    post: async (id, target) => {
+      const res = await drive.api(`/api/session/${id}/model`, { method: 'POST', body: JSON.stringify({ model: { providerID: 'mock', id: target.model, ...(target.variant ? { variant: target.variant } : {}) } }) });
+      return { ok: res.ok, status: res.status };
+    },
+  }));
+
+  // Stage 4: continuations without `model`. A child still on its configured model continues; one an operator moved is refused.
+  const before: Json = {};
+  await stage('before_continue', async () => {
+    for (const c of plan.children) if (ids[c.id]) before[c.id] = await state(ids[c.id], c.agent, parent);
+  });
+  const continueStart = await stage('continue_wire_start', async () => reads.wire().length);
+  const runnable = plan.continuations.filter((c: Json) => ids[c.child]);
+  await stage('continue_turn', () => turn('continue', parent, runnable.map((c: Json) => subagent({
+    agent: plan.children.find((x: Json) => x.id === c.child).agent, prompt: `${CONTROL_MARK}-continue-${c.child}`, sessionID: ids[c.child],
+  }))));
+  await stage('continued', async () => {
+    if (continueStart === null) throw new ProbeReadError('wire_start_unavailable');
+    const read = await historyOf(parent);
+    const wire = reads.wire().slice(continueStart);
+    for (const c of plan.continuations) {
+      const child = plan.children.find((x: Json) => x.id === c.child);
+      const id: string | null = ids[c.child] ?? null;
+      const marker = `${CONTROL_MARK}-continue-${c.child}`;
+      const actual = before[c.child]?.model;
+      const lead = id && actual ? continuationRefusalLead(id, child.agent, modelArgument(actual), modelArgument(child.expected)) : undefined;
+      out.continued.push({
+        id: c.child, agent: child.agent, expect: c.expect, target: id,
+        ...dispatchCallFacts(read.history, marker, { agent: child.agent, sessionID: id ?? undefined, continuation: lead }),
+        before: before[c.child] ?? null, after: id ? await state(id, child.agent, parent) : null, wire: wireFacts(wire, marker, models),
+      });
+    }
+    out.childrenAfterContinue = await reads.children(parent);
+    out.historyOkAfterContinue = read.ok;
+  });
+  return { ok: true, control: out };
+}
+
 /** Bytes of each materialized Hive skill entry point and its references, the depth a role can load on demand. */
 function materializedSkillSizes(): Json {
   const root = join(HOME, '.config', 'opencode', 'agent-hive', 'generated', 'opencode-skills');
@@ -1715,6 +2171,7 @@ const commands: Record<string, (input: Json) => Promise<Json> | Json> = {
   preflight,
   wiring,
   'model-selection': modelSelection,
+  'managed-model-control': managedModelControl,
 };
 
 async function main(): Promise<void> {

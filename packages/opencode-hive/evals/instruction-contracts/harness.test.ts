@@ -14,15 +14,15 @@ import {
 } from './credentials.mjs';
 import { GUARD_EXIT_CODE } from './guard.mjs';
 import {
-  HIVE_ROLES, HOSTS, PROBE_VARIANTS, REFRESH_SENTINEL, TOOL_FIELD_CONTRACT, authRequest, fieldContractFindings, hiveConfig, hostConfig, nativeToolCall, probeModels,
-  requiredLifetimeMs, runArgs, selectionExpectations,
+  HIVE_ROLES, HOSTS, MANAGED_CONTROL_HOST, PROBE_VARIANTS, REFRESH_SENTINEL, TOOL_FIELD_CONTRACT, authRequest, fieldContractFindings, hiveConfig, hostConfig, managedControlPlan, modelArgument,
+  nativeToolCall, probeModels, requiredLifetimeMs, runArgs, sameModelView, selectionExpectations,
 } from './hosts.mjs';
 import { payloadFacts, pickSettings } from './observer/index.js';
 import {
   STATUS_EXIT, candidateBindingMismatches, caseSummary, checkCriterion, classifyCase, effectiveSettings, failedChecks, finalExit, loadRunRecords,
   hostPreflight, modelEvidenceFailures, paidCase, parseCli, prepareResume, recordReadFailures, rehearsalPathFailures, rehearseInjection,
-  modelSelectionFailures, rehearseLifetime, rehearsePaidPath, rehearseSelection, resumePlan, runEndFailure, selectScenarios, selectSharedModel,
-  verifyResumeOrigins, wiringFailures,
+  continuationAdded, managedModelControlFailures, modelSelectionFailures, rehearseLifetime, rehearsePaidPath, rehearseSelection, resumePlan, runEndFailure, selectScenarios, selectSharedModel,
+  verifyResumeOrigins, wiringFailures, wiringHost, wiringRetention,
 } from './run.mjs';
 import {
   HARNESS_REL, HarnessError, Journal, Resources, artifactFailures, assessContainerIsolation, assessDockerBoundary, build, classifyCorePattern, containerCreateArgs,
@@ -30,8 +30,8 @@ import {
 } from './runtime.mjs';
 import {
   ARTIFACT_CAP, ATTEMPT_LOG_HEADER, FINAL_TEXT_CAP, STOP_INSTRUCTION_CAP, allowlistArgs, attemptCount, clipText, clipToolArgs, codeModeBlocks, codeModeFieldDocs, commandDelivery,
-  classifyEditAttempt, containerSecrets, deliveredBodySentence, evidenceLimits, exportDecision, hiveResultFailed, interruptSession, messagePages, mockDecision, preflightReply, readHistories, render, runPrompt, safeName, refusalKind, scenarioOverrides,
-  scriptDirective, skillReferencePointers, toolFieldContract, toolOutcome,
+  ProbeReadError, bindingFacts, boundChildren, childFacts, classifyEditAttempt, containerSecrets, continuationRefusalLead, deliveredBodySentence, dispatchCallFacts, modelRequestFacts, modelView, overrideRefusalLead, wireFacts, evidenceLimits, exportDecision, hiveResultFailed, interruptSession, managedModelControl, messagePages, mockDecision, nativeId, preflightReply, probeReads, probeStage, readHistories, render, runPrompt, safeName, refusalKind, scenarioOverrides,
+  scriptDirective, skillReferencePointers, switchIdleChildren, toolFieldContract, toolOutcome, treeFrom,
 } from './fixture.ts';
 import {
   credentialFromSnapshot, evidenceScanner, fingerprintWire, scanValue, snapshotAuthFile,
@@ -455,6 +455,9 @@ class FakeDocker {
         'verify-credential': { ok: true, present: true, sentinelRetained: this.behavior.sentinelRetained ?? true, accessUnchanged: true },
         'secret-probe': { ok: true, count: this.behavior.secretsDiscovered ?? 2 },
         preflight: this.behavior.preflight,
+        wiring: this.behavior.wiring,
+        'model-selection': this.behavior.modelSelection?.(JSON.parse(args.at(-1)!)),
+        'managed-model-control': this.behavior.managedControl,
       };
       return this.ok(this.behavior.malformed === fixture ? 'not json' : JSON.stringify(replies[fixture] ?? { ok: false, failure: 'unknown' }));
     }
@@ -1927,6 +1930,972 @@ describe('model-selection probes', () => {
   });
 });
 
+const controlPlan = managedControlPlan(SCENARIOS.model.mock);
+/** A complete, passing observation of the v2 managed-model-control probe, derived from its plan; each test breaks one fact of it. */
+const controlState = (agent: string, at: any, digest = 'd0', count = 1, messages = 1) => ({
+  readable: true, parentOk: true, agentOk: true, model: at, recorded: at, assistantMessages: messages, errors: 0,
+  assistants: Array.from({ length: messages }, (_, i) => ({ id: `msg_a${i + 1}`, model: at })),
+  messages: { ids: Array.from({ length: messages }, (_, i) => [`msg_u${i + 1}`, `msg_a${i + 1}`]).flat(), digest: `h${messages}` },
+  binding: { bound: true, parentOk: true, agent, digest },
+  observed: { count, views: [at], requests: Array.from({ length: count }, (_, i) => ({ at: 100 + i, ...at })) },
+});
+const controlCall = (extra: any = {}) => ({ calls: 1, call: 'completed', recordedAgent: true, recordedModel: true, recordedSession: true, refusal: null, child: null, ...extra });
+const passingControl = (): any => {
+  const ids = Object.fromEntries(controlPlan.children.map((c: any) => [c.id, `ses_${c.id}`]));
+  const control: any = {
+    host: 'v2', errors: [], parent: 'ses_parent',
+    turns: Object.fromEntries(['refuse', 'create', 'continue'].map((name) => [name, { exit: 0, timedOut: false, asked: null }])),
+    catalog: Object.fromEntries(Object.entries(controlPlan.catalog).map(([agent, model]) => [agent, { listed: true, model }])),
+    refusals: controlPlan.refusals.map((r: any) => ({ id: r.id, agent: r.agent, sent: r.sent, ...controlCall({ call: 'error', refusal: 'hive_managed_model' }) })),
+    afterRefusals: { historyOk: true, childSessions: 0, wireRequests: 0, boundChildren: 0 },
+    baseline: { agent: controlPlan.baseline.agent, expected: controlPlan.baseline.expected, ...controlCall({ child: 'ses_baseline' }), state: controlState('general', controlPlan.baseline.expected), wire: { requests: 1, models: [controlPlan.baseline.expected.model] } },
+    control: { agent: controlPlan.control.agent, sent: controlPlan.control.sent, ...controlCall({ child: 'ses_control' }), state: controlState('general', controlPlan.control.sent), wire: { requests: 1, models: [controlPlan.control.sent.model] } },
+    created: Object.fromEntries(controlPlan.children.map((c: any) => [c.id, {
+      agent: c.agent, expected: c.expected, ...controlCall({ child: ids[c.id] }), state: controlState(c.agent, c.expected), wire: { requests: 1, models: [c.expected.model] },
+    }])),
+    childrenAfterCreate: [...Object.values(ids), 'ses_baseline', 'ses_control'].sort(),
+    historyOkAfterCreate: true,
+    operator: Object.fromEntries(Object.entries(controlPlan.operator).map(([key, target]) => [key, { switched: true, status: 204, target, idle: true, after: target }])),
+    continued: controlPlan.continuations.map((c: any) => {
+      const child = controlPlan.children.find((x: any) => x.id === c.child);
+      const moved = controlPlan.operator[c.child];
+      return c.expect === 'refused'
+        ? { id: c.child, agent: child.agent, expect: c.expect, target: ids[c.child], ...controlCall({ call: 'error', refusal: 'hive_continuation_model' }), before: controlState(child.agent, moved), after: controlState(child.agent, moved), wire: { requests: 0, models: [] } }
+        : { id: c.child, agent: child.agent, expect: c.expect, target: ids[c.child], ...controlCall({ child: ids[c.child] }), before: controlState(child.agent, child.expected), after: controlState(child.agent, child.expected, 'd0', 2, 2), wire: { requests: 1, models: [child.expected.model] } };
+    }),
+    historyOkAfterContinue: true,
+  };
+  control.childrenAfterContinue = [...control.childrenAfterCreate];
+  return control;
+};
+
+describe('managed-model control probe', () => {
+  const mock = SCENARIOS.model.mock;
+  const models = probeModels(mock);
+  const plan = managedControlPlan(mock);
+  const v = PROBE_VARIANTS;
+  const view = (model: string, variant: string | null = null) => ({ model, variant });
+
+  const judge = (mutate: (control: any) => void) => {
+    const control = passingControl();
+    mutate(control);
+    return managedModelControlFailures('v2', control, mock);
+  };
+  const continued = (control: any, id: string) => control.continued.find((row: any) => row.id === id);
+
+  test('the plan sends representative overrides through the real wrapper, each one a model the host itself would accept', () => {
+    const config: any = hostConfig('v2', { provider: 'mock', model: mock, mockPort: 1, serverPort: 2, observer: '/o', permissive: false, selection: 'valid' });
+    const declared = config.providers.mock.models;
+    const accepted = (sent: any) => sent.model in declared && (sent.variant === null || declared[sent.model].variants?.some((x: any) => x.id === sent.variant));
+    for (const sent of [...plan.refusals.map((r: any) => r.sent), plan.control.sent, ...Object.values(plan.operator) as any[]]) {
+      expect(accepted(sent), JSON.stringify(sent)).toBe(true);
+      expect(modelArgument(sent)).toMatch(/^mock\/[^#/]+(#[^#]+)?$/);
+    }
+    const hiveConfigured = hiveConfig({ provider: 'mock', model: mock, agentMode: 'dedicated', selection: 'valid' });
+    const agentsOf = plan.refusals.map((r: any) => r.agent);
+    const custom = agentsOf.filter((a: string) => a in hiveConfigured.customAgents);
+    const builtIn = agentsOf.filter((a: string) => !(a in hiveConfigured.customAgents));
+    expect(custom.length).toBeGreaterThanOrEqual(2);
+    expect(builtIn.length).toBeGreaterThanOrEqual(2);
+    // The same model as the agent's effective one, another model, with and without a variant.
+    const effective = selectionExpectations('v2', mock);
+    const same = plan.refusals.filter((r: any) => sameModelView(r.sent, effective[r.agent]));
+    const other = plan.refusals.filter((r: any) => !sameModelView(r.sent, effective[r.agent]));
+    expect(same.length).toBeGreaterThanOrEqual(1);
+    expect(other.length).toBeGreaterThanOrEqual(1);
+    expect(plan.refusals.some((r: any) => r.sent.variant !== null)).toBe(true);
+    expect(plan.refusals.some((r: any) => r.sent.variant === null)).toBe(true);
+    expect(plan.refusals.some((r: any) => r.sent.model === effective[r.agent].model && r.sent.variant === null && effective[r.agent].variant !== null)).toBe(true);
+    // A real operator change: each moved child differs from the model its agent is configured for, by model or by variant alone.
+    for (const [key, target] of Object.entries(plan.operator) as [string, any][]) {
+      expect(sameModelView(target, plan.children.find((c: any) => c.id === key).expected)).toBe(false);
+    }
+    expect(Object.values(plan.operator).some((target: any) => target.model === plan.children.find((c: any) => c.id === 'custom').expected.model)).toBe(true);
+    expect(plan.continuations.map((c: any) => c.expect).sort()).toEqual(['accepted', 'accepted', 'refused', 'refused']);
+    // The variantless native model is the case a literal variant comparison would refuse.
+    expect(plan.children.find((c: any) => c.id === 'plain').expected.variant).toBeNull();
+    expect(plan.catalog['scout-researcher']).toBeNull();
+    // The override on the unmanaged agent changes its model, so its run is the argument's doing and not the agent's own setting.
+    expect(sameModelView(plan.control.sent, plan.baseline.expected)).toBe(false);
+    expect(plan.control.agent).toBe(plan.baseline.agent);
+    expect(Object.keys(plan.catalog)).not.toContain(plan.control.agent);
+    expect(MANAGED_CONTROL_HOST).toBe('v2');
+  });
+
+  test('the refusal sentences are the exact ones the collector recognizes', () => {
+    // The wording itself is owned by the production wrapper's tests (src/v2/dispatch.test.ts); this harness may judge an older subject.
+    expect(overrideRefusalLead('code-reviewer', 'mock/m#v')).toBe('Hive manages the model of agent code-reviewer, so this subagent call may not set model (it set "mock/m#v"); the host was not called.');
+    expect(continuationRefusalLead('ses_c', 'code-reviewer', 'mock/a#x', 'mock/b')).toBe('Child session ses_c runs on mock/a#x, but agent code-reviewer is configured for mock/b; the host was not asked to continue the child.');
+  });
+
+  describe('collectors', () => {
+    const sent = modelArgument(view(models.hive, v.hive));
+    const lead = overrideRefusalLead('code-reviewer', sent);
+    const tool = (patch: any) => ({ name: 'subagent', status: 'error', input: { agent: 'code-reviewer', prompt: 'mmc-refuse-x\n[[script:abc]]', model: sent }, errorText: `${lead} Repeat the call without model.`, ...patch });
+    const history = (...tools: any[]) => [{ role: 'user', tools: [] }, { role: 'assistant', tools }];
+    const facts = (tools: any[], expected: any = {}) => dispatchCallFacts(history(...tools), 'mmc-refuse-x', { agent: 'code-reviewer', model: sent, override: lead, ...expected });
+
+    test('only Hive\'s own sentence for these facts counts as a managed-model refusal', () => {
+      expect(facts([tool({})])).toEqual({ calls: 1, call: 'error', recordedAgent: true, recordedModel: true, recordedSession: true, refusal: 'hive_managed_model', child: null });
+      // Host or Hive failures that are not the intended refusal: unknown model, bad reference, schema, permission, another agent or model echoed.
+      for (const errorText of [
+        'Model "mock/nope" is not available. Use the models tool to see what is available.',
+        'Invalid model "x". Use "providerID/modelID" or "providerID/modelID#variant".',
+        'Invalid tool input: Expected string, got number',
+        'Subagent denied: code-reviewer',
+        'Unknown agent: code-reviewer',
+        overrideRefusalLead('scout-researcher', sent),
+        overrideRefusalLead('code-reviewer', modelArgument(view(models.parent, v.parent))),
+        ` ${lead}`, '', null, undefined,
+      ]) expect(facts([tool({ errorText })]).refusal, String(errorText)).toBe('other');
+      // An unrecognized error keeps a bounded head for diagnosis; the intended refusal and non-errors keep none.
+      expect(facts([tool({ errorText: 'x'.repeat(500) })])).toMatchObject({ refusal: 'other', errorHead: 'x'.repeat(200) });
+      expect(facts([tool({ errorText: undefined })])).toMatchObject({ refusal: 'other', errorHead: '' });
+      expect(facts([tool({})])).not.toHaveProperty('errorHead');
+      expect(facts([tool({ status: 'completed' })])).not.toHaveProperty('errorHead');
+    });
+
+    test('a continuation refusal needs the child, both models and the agent it was judged against', () => {
+      const continuation = continuationRefusalLead('ses_c', 'code-reviewer', 'mock/a#x', 'mock/b');
+      const row = (expected: any) => dispatchCallFacts(history(tool({ input: { agent: 'code-reviewer', prompt: 'mmc-refuse-x', sessionID: 'ses_c' }, errorText: `${continuation} Start a new code-reviewer subagent call.` })), 'mmc-refuse-x', { agent: 'code-reviewer', sessionID: 'ses_c', ...expected });
+      expect(row({ continuation })).toMatchObject({ refusal: 'hive_continuation_model', recordedSession: true, recordedModel: true });
+      expect(row({ continuation: continuationRefusalLead('ses_d', 'code-reviewer', 'mock/a#x', 'mock/b') }).refusal).toBe('other');
+      expect(row({ continuation: continuationRefusalLead('ses_c', 'code-reviewer', 'mock/a', 'mock/b') }).refusal).toBe('other');
+      expect(row({ continuation: undefined }).refusal).toBe('other');
+      expect(row({ continuation, sessionID: 'ses_other' }).recordedSession).toBe(false);
+    });
+
+    test('a call whose input did not carry the override as sent, or ran twice, or is missing, is not evidence of a refusal', () => {
+      expect(facts([tool({ input: { agent: 'code-reviewer', prompt: 'mmc-refuse-x' } })])).toMatchObject({ recordedModel: false });
+      expect(facts([tool({ input: { agent: 'code-reviewer', prompt: 'mmc-refuse-x', model: modelArgument(view(models.hive)) } })])).toMatchObject({ recordedModel: false });
+      expect(facts([tool({ input: { agent: 'scout-researcher', prompt: 'mmc-refuse-x', model: sent } })])).toMatchObject({ recordedAgent: false });
+      expect(facts([tool({}), tool({})])).toMatchObject({ calls: 2 });
+      expect(facts([])).toMatchObject({ calls: 0, call: 'absent', refusal: null, recordedModel: false });
+      expect(facts([{ name: 'read', status: 'completed', input: { prompt: 'mmc-refuse-x' } }])).toMatchObject({ call: 'absent' });
+      // A call that completed is never a refusal, and reports the child the host named.
+      expect(facts([tool({ status: 'completed', errorText: null, metadata: { sessionID: 'ses_kid', status: 'completed' } })])).toMatchObject({ call: 'completed', refusal: null, child: 'ses_kid' });
+      expect(facts([tool({ status: 'completed', errorText: null, metadata: null, output: '<subagent sessionID="ses_kid" state="completed">ok</subagent>' })]).child).toBe('ses_kid');
+      expect(facts([tool({ status: 'completed', errorText: null, metadata: { sessionID: 'not a session' } })]).child).toBeNull();
+      expect(facts([tool({ status: 'running' })])).toMatchObject({ call: 'other', refusal: null });
+    });
+
+    test('models are reported as probe IDs and variants, with the host\'s default variant kept distinct from none', () => {
+      expect(modelView({ providerID: 'mock', id: models.hive, variant: v.hive }, models)).toEqual({ model: models.hive, variant: v.hive });
+      expect(modelView({ providerID: 'mock', id: models.hive }, models)).toEqual({ model: models.hive, variant: null });
+      expect(modelView({ providerID: 'mock', id: models.hive, variant: 'default' }, models)).toEqual({ model: models.hive, variant: 'default' });
+      expect(modelView({ providerID: 'openai', id: models.hive }, models)).toEqual({ model: 'other', variant: null });
+      expect(modelView({ providerID: 'mock', id: 'gpt-secret' }, models)).toEqual({ model: 'other', variant: null });
+      expect(modelView({ providerID: 'mock', id: models.hive, variant: 'x y z' }, models).variant).toBe('other');
+      expect(modelView(undefined, models)).toBeNull();
+      expect(sameModelView(view(models.hive), view(models.hive, 'default'))).toBe(true);
+      expect(sameModelView(view(models.hive), view(models.hive, v.hive))).toBe(false);
+      expect(sameModelView(view(models.hive), view(models.parent))).toBe(false);
+      expect(sameModelView(null, null)).toBe(false);
+      expect(modelArgument(view(models.hive, 'default'))).toBe(`mock/${models.hive}`);
+    });
+
+    test('a child is read from the host session and its own history, and a failed read is not a child', () => {
+      const session = { id: 'ses_c', parentID: 'ses_p', agent: 'code-reviewer', model: { providerID: 'mock', id: models.hive, variant: v.hive } };
+      const assistant = { role: 'assistant', model: { providerID: 'mock', modelID: models.hive, variant: v.hive }, error: null };
+      const read = (patch: any = {}) => childFacts({ session, history: [{ role: 'user' }, assistant, { ...assistant, error: 'ProviderError' }], historyOk: true, parent: 'ses_p', agent: 'code-reviewer', models, ...patch });
+      expect(read()).toEqual({
+        readable: true, parentOk: true, agentOk: true, model: view(models.hive, v.hive), recorded: view(models.hive, v.hive), assistantMessages: 2, errors: 1,
+        assistants: [{ id: null, model: view(models.hive, v.hive) }, { id: null, model: view(models.hive, v.hive) }],
+        messages: { ids: [null, null, null], digest: expect.stringMatching(/^[0-9a-f]{64}$/) },
+      });
+      // Message IDs identify each message; the digest moves with any change to the history, including a user message.
+      const withIds = (history: any[]) => read({ history });
+      const base = [{ id: 'msg_u1', role: 'user' }, { id: 'msg_a1', ...assistant }];
+      expect(withIds(base).assistants).toEqual([{ id: 'msg_a1', model: view(models.hive, v.hive) }]);
+      expect(withIds(base).messages.ids).toEqual(['msg_u1', 'msg_a1']);
+      expect(withIds([...base, { id: 'msg_u2', role: 'user' }]).messages.digest).not.toBe(withIds(base).messages.digest);
+      expect(withIds([...base, { id: 'msg_u2', role: 'user' }]).assistantMessages).toBe(1);
+      expect(withIds([{ ...base[0] }, { ...base[1], model: { ...assistant.model, variant: 'other-variant' } }]).messages.digest).not.toBe(withIds(base).messages.digest);
+      expect(withIds([base[0], { ...base[1], model: { providerID: 'openai', modelID: 'secret', variant: null } }]).assistants).toEqual([{ id: 'msg_a1', model: view('other') }]);
+      expect(read({ parent: 'ses_other' }).parentOk).toBe(false);
+      expect(read({ agent: 'scout-researcher' }).agentOk).toBe(false);
+      expect(read({ historyOk: false }).readable).toBe(false);
+      expect(read({ session: null })).toMatchObject({ readable: false, parentOk: false, agentOk: false, model: null });
+      expect(read({ history: [] })).toMatchObject({ recorded: null, assistantMessages: 0 });
+    });
+
+    test('wire and observer evidence counts only the requests that carry the marker or name the session', () => {
+      const rows = [
+        { model: models.hive, lastUser: 'x mmc-create-reviewer y' }, { model: models.parent, lastUser: 'mmc-create-reviewer' },
+        { model: 'gpt-secret', lastUser: 'mmc-create-reviewer' }, { model: models.hive, lastUser: 'unrelated' },
+      ];
+      expect(wireFacts(rows, 'mmc-create-reviewer', models)).toEqual({ requests: 3, models: [models.hive, models.parent, 'other'].sort() });
+      expect(wireFacts(rows, 'mmc-absent', models)).toEqual({ requests: 0, models: [] });
+      const records = [
+        { hook: 'model.request', sessionID: 's', providerID: 'mock', modelID: models.hive, variant: v.hive }, { hook: 'model.request', sessionID: 's', providerID: 'mock', modelID: models.hive, variant: v.hive },
+        { hook: 'http.request', sessionID: 's', providerID: 'mock', modelID: models.parent }, { hook: 'model.request', sessionID: 'other', providerID: 'mock', modelID: models.parent },
+      ];
+      expect(modelRequestFacts(records, 's', models)).toEqual({ count: 2, views: [view(models.hive, v.hive)], requests: [{ at: null, ...view(models.hive, v.hive) }, { at: null, ...view(models.hive, v.hive) }] });
+      expect(modelRequestFacts(records, 'absent', models)).toEqual({ count: 0, views: [], requests: [] });
+      // Requests keep their order and the time the observer recorded them, so a later read can tell them apart; a different variant of one model stays distinct.
+      const timed = [
+        { hook: 'model.request', sessionID: 's', providerID: 'mock', modelID: models.hive, variant: v.hive, at: 5 },
+        { hook: 'model.request', sessionID: 's', providerID: 'mock', modelID: models.hive, variant: null, at: 9 },
+      ];
+      expect(modelRequestFacts(timed, 's', models)).toEqual({
+        count: 2, views: [view(models.hive, v.hive), view(models.hive)], requests: [{ at: 5, ...view(models.hive, v.hive) }, { at: 9, ...view(models.hive) }],
+      });
+    });
+
+    test('a binding is compared by route digest, which ignores activity counters and moves with the route', () => {
+      const entry = { sessionId: 'ses_c', parentSessionId: 'ses_p', agent: 'code-reviewer', featureName: null, startedAt: 'a', lastActiveAt: 'b', messageCount: 1 };
+      const store = { sessions: [entry, { sessionId: 'ses_d', parentSessionId: 'ses_p' }, { sessionId: 'ses_e', parentSessionId: 'ses_q' }] };
+      const first = bindingFacts(store, 'ses_c', 'ses_p');
+      expect(first).toMatchObject({ bound: true, parentOk: true, agent: 'code-reviewer' });
+      expect(bindingFacts({ sessions: [{ ...entry, lastActiveAt: 'later', messageCount: 9 }] }, 'ses_c', 'ses_p').digest).toBe(first.digest);
+      expect(bindingFacts({ sessions: [{ ...entry, agent: 'scout-researcher' }] }, 'ses_c', 'ses_p').digest).not.toBe(first.digest);
+      // The captured standing-constraint entries are part of the route a refused call must not rebind.
+      const constrained = { ...entry, standingConstraintEntries: [{ id: 'c1', text: 'a' }], standingConstraints: 'a', standingConstraintsRevision: 1 };
+      const constrainedDigest = bindingFacts({ sessions: [constrained] }, 'ses_c', 'ses_p').digest;
+      expect(constrainedDigest).not.toBe(first.digest);
+      expect(bindingFacts({ sessions: [{ ...constrained, standingConstraintEntries: [{ id: 'c1', text: 'b' }] }] }, 'ses_c', 'ses_p').digest).not.toBe(constrainedDigest);
+      expect(bindingFacts({ sessions: [{ ...constrained, standingConstraintEntries: [{ id: 'c1', text: 'a' }], lastActiveAt: 'later' }] }, 'ses_c', 'ses_p').digest).toBe(constrainedDigest);
+      expect(JSON.stringify(first)).not.toContain('standingConstraint');
+      expect(bindingFacts({ sessions: [{ ...entry, parentSessionId: 'ses_q' }] }, 'ses_c', 'ses_p')).toMatchObject({ bound: true, parentOk: false });
+      expect(bindingFacts({ sessions: [] }, 'ses_c', 'ses_p')).toEqual({ bound: false, parentOk: false, agent: null, digest: null });
+      expect(bindingFacts(null, 'ses_c', 'ses_p').bound).toBe(false);
+      expect(boundChildren(store, 'ses_p')).toEqual(['ses_c', 'ses_d']);
+      expect(boundChildren(undefined, 'ses_p')).toEqual([]);
+    });
+
+    test('a failed tool call keeps its bounded error text for local classification on both hosts, and completed calls have none', async () => {
+      const get = (body: any) => async () => ({ status: 200, ok: true, body });
+      const v1 = await messagePages('v1', 's', get([{ info: { role: 'assistant' }, parts: [
+        { type: 'tool', tool: 'task', state: { status: 'error', input: {}, error: 'x'.repeat(5000) } },
+        { type: 'tool', tool: 'task', state: { status: 'completed', input: {}, output: 'fine' } },
+      ] }]));
+      expect(v1.history[0].tools.map((t: any) => t.errorText?.length ?? null)).toEqual([600, null]);
+      const v2 = await messagePages('v2', 's', get({ data: [{ type: 'assistant', content: [
+        { type: 'tool', name: 'subagent', state: { status: 'error', input: {}, error: { type: 'unknown', message: lead } } },
+        { type: 'tool', name: 'subagent', state: { status: 'error', input: {}, error: 'not an object' } },
+      ] }], cursor: {} }));
+      expect(v2.history[0].tools.map((t: any) => t.errorText)).toEqual([lead, null]);
+      // The exported record carries none of it but the managed-model probe's bounded `errorHead`; the error name stays a fixed word.
+      expect(v2.history[0].tools.map((t: any) => t.errorName)).toEqual(['unknown', 'tool_error']);
+    });
+  });
+
+  test('history entries carry the host\'s message ID in its native alphabet, or null', async () => {
+    const get = (body: any) => async () => ({ status: 200, ok: true, body });
+    const v1 = await messagePages('v1', 's', get([{ info: { id: 'msg_01', role: 'user' }, parts: [] }, { info: { id: 'bad id', role: 'assistant' }, parts: [] }, { info: { role: 'assistant' }, parts: [] }]));
+    expect(v1.history.map((m: any) => m.id)).toEqual(['msg_01', null, null]);
+    const v2 = await messagePages('v2', 's', get({ data: [{ id: 'msg_02', type: 'user', text: 'p' }, { id: { x: 1 }, type: 'assistant', content: [] }, { type: 'assistant', content: [] }], cursor: {} }));
+    expect(v2.history.map((m: any) => m.id)).toEqual(['msg_02', null, null]);
+    expect(nativeId('ses_abc')).toBe('ses_abc');
+    for (const bad of ['', 'a b', 'x'.repeat(201), 7, null, undefined]) expect(nativeId(bad)).toBeNull();
+  });
+
+  test('a later turn of the same primary reuses its session instead of creating one', async () => {
+    const real = globalThis.fetch;
+    const calls: string[] = [];
+    globalThis.fetch = (async (url: any, init: any = {}) => {
+      calls.push(`${init.method ?? 'GET'} ${new URL(String(url)).pathname}`);
+      return new Response(JSON.stringify({ data: {} }), { status: 200 });
+    }) as any;
+    try {
+      const run = await runPrompt('v2', { agent: 'build', modelRef: 'mock/x', command: 'start-execution', prompt: 'p', sessionId: 'ses_existing' }, 60_000);
+      expect(run).toMatchObject({ exit: 0, sessionId: 'ses_existing' });
+      expect(calls).toContain('POST /api/session/ses_existing/command');
+      expect(calls).not.toContain('POST /api/session');
+    } finally {
+      globalThis.fetch = real;
+    }
+  });
+
+  describe('judging the observation', () => {
+    test('a complete observation passes, and the observation is required on v2 only', () => {
+      expect(managedModelControlFailures('v2', passingControl(), mock)).toEqual([]);
+      expect(managedModelControlFailures('v1', undefined, mock)).toEqual([]);
+      for (const missing of [undefined, null, {}, { errors: 'x' }]) expect(managedModelControlFailures('v2', missing, mock)).toEqual(['managed_model_control_unobserved:v2']);
+    });
+
+    test('a probe stage that failed or a turn that did not finish is named, never skipped', () => {
+      expect(judge((c) => { c.errors = ['create_turn']; })).toEqual(['managed_model_stage_failed:v2:create_turn']);
+      expect(judge((c) => { delete c.turns.continue; })).toEqual(['managed_model_turn_unobserved:v2:continue']);
+      expect(judge((c) => { c.turns.refuse.exit = 1; })).toEqual(['managed_model_turn_unfinished:v2:refuse']);
+      expect(judge((c) => { c.turns.create.timedOut = true; })).toEqual(['managed_model_turn_unfinished:v2:create']);
+      expect(judge((c) => { c.turns.continue.asked = 'permission'; })).toEqual(['managed_model_turn_unfinished:v2:continue']);
+    });
+
+    test('the host catalog must show the model each agent is configured for', () => {
+      expect(judge((c) => { delete c.catalog['code-reviewer']; })).toEqual(['managed_model_catalog_unobserved:v2:code-reviewer']);
+      expect(judge((c) => { c.catalog['approach-advisor'].model = view(models.native, 'default'); })).toEqual([]);
+      expect(judge((c) => { c.catalog['approach-advisor'].model = view(models.advisor, v.advisor); })).toEqual(['managed_model_catalog_mismatch:v2:approach-advisor']);
+      expect(judge((c) => { c.catalog['scout-researcher'].model = view(models.parent); })).toEqual(['managed_model_catalog_mismatch:v2:scout-researcher']);
+      expect(judge((c) => { c.catalog['probe-base'].listed = false; })).toEqual(['managed_model_catalog_unobserved:v2:probe-base']);
+    });
+
+    test('an override the host accepted, lost before the wrapper, or refused for another reason fails its case', () => {
+      const id = plan.refusals[1].id;
+      const row = (c: any) => c.refusals.find((r: any) => r.id === id);
+      expect(judge((c) => { Object.assign(row(c), { call: 'completed', refusal: null, child: 'ses_new' }); })).toEqual([`managed_model_override_accepted:v2:${id}`]);
+      expect(judge((c) => { Object.assign(row(c), { call: 'other', refusal: null }); })).toEqual([`managed_model_override_unfinished:v2:${id}`]);
+      expect(judge((c) => { c.refusals = c.refusals.filter((r: any) => r.id !== id); })).toEqual([`managed_model_refusal_unobserved:v2:${id}`]);
+      expect(judge((c) => { Object.assign(row(c), { call: 'absent', refusal: null }); })).toEqual([`managed_model_refusal_unobserved:v2:${id}`]);
+      // The input did not carry the model as sent (a schema or host stripped it), or the call ran twice.
+      expect(judge((c) => { row(c).recordedModel = false; })).toEqual([`managed_model_override_not_recorded:v2:${id}`]);
+      expect(judge((c) => { row(c).recordedAgent = false; })).toEqual([`managed_model_override_not_recorded:v2:${id}`]);
+      expect(judge((c) => { row(c).calls = 2; })).toEqual([`managed_model_override_not_recorded:v2:${id}`]);
+      // An error that is not Hive's sentence for these facts (unknown model, permission, schema) is not the control.
+      expect(judge((c) => { row(c).refusal = 'other'; })).toEqual([`managed_model_refusal_unrecognized:v2:${id}`]);
+      expect(judge((c) => { row(c).refusal = 'hive_continuation_model'; })).toEqual([`managed_model_refusal_unrecognized:v2:${id}`]);
+    });
+
+    test('a refusal that created a child, reached the provider or bound anything fails, and an unread history is no proof', () => {
+      expect(judge((c) => { c.afterRefusals.childSessions = 1; })).toEqual(['managed_model_refusal_created_child:v2']);
+      expect(judge((c) => { c.afterRefusals.wireRequests = 2; })).toEqual(['managed_model_refusal_reached_provider:v2']);
+      expect(judge((c) => { c.afterRefusals.boundChildren = 1; })).toEqual(['managed_model_refusal_bound_child:v2']);
+      expect(judge((c) => { c.afterRefusals.historyOk = false; })).toEqual(['managed_model_history_incomplete:v2:refuse']);
+      expect(judge((c) => { c.afterRefusals = null; })).toEqual(['managed_model_refusal_effects_unobserved:v2']);
+    });
+
+    test('the unmanaged control must be accepted by the host and run on the model that was sent', () => {
+      // The control's child exists in the host but was not seen to be created: it stays unaccounted for.
+      const unaccounted = 'managed_model_children_unaccounted:v2:create';
+      expect(judge((c) => { c.control = undefined; })).toEqual(['managed_model_unmanaged_override_unobserved:v2', unaccounted]);
+      expect(judge((c) => { c.control.call = 'absent'; })).toEqual(['managed_model_unmanaged_override_unobserved:v2', unaccounted]);
+      expect(judge((c) => { Object.assign(c.control, { call: 'error', refusal: 'other', child: null, state: null }); })).toEqual(['managed_model_unmanaged_override_not_accepted:v2', unaccounted]);
+      expect(judge((c) => { c.control.recordedModel = false; })).toEqual(['managed_model_unmanaged_override_not_accepted:v2']);
+      expect(judge((c) => { c.control.state.parentOk = false; })).toEqual(['managed_model_unmanaged_child_unverified:v2']);
+      expect(judge((c) => { c.control.state.model = view(models.parent, v.parent); })).toEqual(['managed_model_unmanaged_override_not_honored:v2']);
+      expect(judge((c) => { c.control.wire.models = [models.parent]; })).toEqual(['managed_model_unmanaged_override_not_honored:v2']);
+      expect(judge((c) => { c.control.state.observed.views = [view(models.parent, v.parent)]; })).toEqual(['managed_model_unmanaged_override_not_honored:v2']);
+    });
+
+    test('the unmanaged agent without a model must run on the parent\'s, so the override is what changed the control\'s model', () => {
+      const unaccounted = 'managed_model_children_unaccounted:v2:create';
+      expect(judge((c) => { c.baseline = undefined; })).toEqual(['managed_model_unmanaged_baseline_unobserved:v2', unaccounted]);
+      expect(judge((c) => { c.baseline.call = 'absent'; })).toEqual(['managed_model_unmanaged_baseline_unobserved:v2', unaccounted]);
+      expect(judge((c) => { Object.assign(c.baseline, { call: 'error', child: null }); })).toEqual(['managed_model_unmanaged_baseline_failed:v2', unaccounted]);
+      expect(judge((c) => { c.baseline.recordedModel = false; })).toEqual(['managed_model_unmanaged_baseline_failed:v2']);
+      expect(judge((c) => { c.baseline.state.agentOk = false; })).toEqual(['managed_model_unmanaged_baseline_unverified:v2']);
+      // An agent that already runs on the model the control sends proves nothing about the override.
+      expect(judge((c) => { c.baseline.state.model = controlPlan.control.sent; })).toEqual(['managed_model_unmanaged_baseline_model_mismatch:v2']);
+      expect(judge((c) => { c.baseline.wire.models = [models.hive]; })).toEqual(['managed_model_unmanaged_baseline_model_mismatch:v2']);
+    });
+
+    test('a fresh child must run on its configured model, bound to the primary, and every child must be accounted for', () => {
+      const id = 'reviewer';
+      expect(judge((c) => { delete c.created[id]; })).toEqual([`managed_model_fresh_unobserved:v2:${id}`, 'managed_model_children_unaccounted:v2:create']);
+      expect(judge((c) => { Object.assign(c.created[id], { call: 'error', child: null }); })).toEqual([`managed_model_fresh_failed:v2:${id}`, 'managed_model_children_unaccounted:v2:create']);
+      expect(judge((c) => { c.created[id].recordedModel = false; })).toEqual([`managed_model_fresh_failed:v2:${id}`, 'managed_model_children_unaccounted:v2:create']);
+      expect(judge((c) => { c.created[id].state.agentOk = false; })).toEqual([`managed_model_fresh_child_unverified:v2:${id}`]);
+      expect(judge((c) => { c.created[id].state.model = view(models.parent, v.parent); })).toEqual([`managed_model_fresh_model_mismatch:v2:${id}`]);
+      expect(judge((c) => { c.created[id].state.recorded = view(models.parent, v.parent); })).toEqual([`managed_model_fresh_model_mismatch:v2:${id}`]);
+      expect(judge((c) => { c.created[id].wire = { requests: 0, models: [] }; })).toEqual([`managed_model_fresh_model_mismatch:v2:${id}`]);
+      expect(judge((c) => { c.created[id].state.binding.bound = false; })).toEqual([`managed_model_fresh_unbound:v2:${id}`]);
+      expect(judge((c) => { c.created[id].state.binding.parentOk = false; })).toEqual([`managed_model_fresh_unbound:v2:${id}`]);
+      // A variantless configured model is reported by the host as `default`.
+      expect(judge((c) => { const plain = c.created.plain; plain.state.model = view(models.native, 'default'); plain.state.recorded = view(models.native, 'default'); })).toEqual([]);
+      expect(judge((c) => { c.childrenAfterCreate = [...c.childrenAfterCreate, 'ses_stray']; })).toEqual(['managed_model_children_unaccounted:v2:create', 'managed_model_children_unaccounted:v2:continue']);
+    });
+
+    test('the operator\'s change must be applied to an idle child before the continuation means anything', () => {
+      expect(judge((c) => { delete c.operator.reviewer; })).toEqual(['managed_model_operator_unobserved:v2:reviewer']);
+      expect(judge((c) => { c.operator.reviewer.switched = false; })).toEqual(['managed_model_operator_switch_failed:v2:reviewer']);
+      expect(judge((c) => { c.operator.custom.idle = false; })).toEqual(['managed_model_operator_child_not_idle:v2:custom']);
+      // A child that never became idle was not switched: the stage names the missing idleness, not a failed switch.
+      expect(judge((c) => { Object.assign(c.operator.reviewer, { switched: false, idle: false }); delete c.operator.reviewer.status; })).toEqual(['managed_model_operator_child_not_idle:v2:reviewer']);
+      expect(judge((c) => { c.operator.custom.after = view(models.hive, v.hive); })).toEqual(['managed_model_operator_switch_not_applied:v2:custom']);
+      // The host stores a model without a variant as `default`: still the operator's choice.
+      expect(judge((c) => { c.operator.custom.after = view(models.hive, 'default'); })).toEqual([]);
+    });
+
+    test('a refused continuation must leave the child\'s model, history, requests and binding exactly as they were', () => {
+      const refused = 'reviewer';
+      expect(judge((c) => { Object.assign(continued(c, refused), { call: 'completed', refusal: null, child: continued(c, refused).target }); })).toEqual([`managed_model_continuation_not_refused:v2:${refused}`]);
+      expect(judge((c) => { continued(c, refused).refusal = 'other'; })).toEqual([`managed_model_continuation_refusal_unrecognized:v2:${refused}`]);
+      expect(judge((c) => { continued(c, refused).refusal = 'hive_managed_model'; })).toEqual([`managed_model_continuation_refusal_unrecognized:v2:${refused}`]);
+      expect(judge((c) => { continued(c, refused).recordedSession = false; })).toEqual([`managed_model_continuation_not_recorded:v2:${refused}`]);
+      expect(judge((c) => { continued(c, refused).before = null; })).toEqual([`managed_model_continuation_state_unobserved:v2:${refused}`]);
+      // Without the operator's change visible before the call, the refusal proves nothing about a mismatch.
+      expect(judge((c) => { continued(c, refused).before.model = continued(c, refused).after.model = view(models.hive, v.hive); })).toEqual([`managed_model_continuation_premise_missing:v2:${refused}`]);
+      expect(judge((c) => { continued(c, refused).after.model = view(models.hive, v.hive); })).toEqual([`managed_model_refused_continuation_changed_model:v2:${refused}`]);
+      expect(judge((c) => { continued(c, refused).after.assistantMessages += 1; })).toEqual([`managed_model_refused_continuation_prompted:v2:${refused}`]);
+      expect(judge((c) => { continued(c, refused).after.observed.count += 1; })).toEqual([`managed_model_refused_continuation_prompted:v2:${refused}`]);
+      expect(judge((c) => { continued(c, refused).wire = { requests: 1, models: [models.hive] }; })).toEqual([`managed_model_refused_continuation_prompted:v2:${refused}`]);
+      expect(judge((c) => { continued(c, refused).after.binding.digest = 'moved'; })).toEqual([`managed_model_refused_continuation_rebound:v2:${refused}`]);
+      expect(judge((c) => { continued(c, refused).before.binding.bound = false; })).toEqual([`managed_model_refused_continuation_rebound:v2:${refused}`]);
+    });
+
+    test('an unchanged continuation must run again on the configured model in the same child, with its Hive binding kept', () => {
+      const accepted = 'plain';
+      expect(judge((c) => { Object.assign(continued(c, accepted), { call: 'error', refusal: 'other', child: null }); })).toEqual([`managed_model_continuation_not_accepted:v2:${accepted}`]);
+      expect(judge((c) => { continued(c, accepted).child = 'ses_other'; })).toEqual([`managed_model_continuation_not_accepted:v2:${accepted}`]);
+      expect(judge((c) => { continued(c, accepted).after.parentOk = false; })).toEqual([`managed_model_continuation_child_unverified:v2:${accepted}`]);
+      expect(judge((c) => { continued(c, accepted).after.model = view(models.parent, v.parent); })).toEqual([`managed_model_continuation_model_changed:v2:${accepted}`]);
+      expect(judge((c) => { continued(c, accepted).after.assistantMessages = 1; })).toEqual([`managed_model_continuation_not_run_on_configured_model:v2:${accepted}`]);
+      expect(judge((c) => { continued(c, accepted).wire = { requests: 0, models: [] }; })).toEqual([`managed_model_continuation_not_run_on_configured_model:v2:${accepted}`]);
+      expect(judge((c) => { continued(c, accepted).after.observed = { count: 2, views: [view(models.parent, v.parent)] }; })).toEqual([`managed_model_continuation_not_run_on_configured_model:v2:${accepted}`]);
+      expect(judge((c) => { continued(c, accepted).after.binding.bound = false; })).toEqual([`managed_model_continuation_unbound:v2:${accepted}`]);
+      // The host's `default` is the omitted variant of a configured model: the continuation still counts as unchanged.
+      expect(judge((c) => { const row = continued(c, accepted); row.before.model = row.after.model = view(models.native, 'default'); })).toEqual([]);
+      expect(judge((c) => { c.childrenAfterContinue = [...c.childrenAfterContinue, 'ses_extra']; })).toEqual(['managed_model_children_unaccounted:v2:continue']);
+      expect(judge((c) => { c.historyOkAfterContinue = false; })).toEqual(['managed_model_history_incomplete:v2:continue']);
+      expect(judge((c) => { c.continued = c.continued.filter((row: any) => row.id !== accepted); })).toEqual([`managed_model_continuation_unobserved:v2:${accepted}`]);
+    });
+
+    test('fresh evidence needs every recorded model to be the configured one, and a missing record is no evidence', () => {
+      const id = 'bearing';
+      const expected = plan.children.find((c: any) => c.id === id)!.expected;
+      const wrong = view(expected.model);
+      const mismatch = `managed_model_fresh_model_mismatch:v2:${id}`;
+      expect(judge((c) => { c.created[id].state.observed.views = [expected, wrong]; })).toEqual([mismatch]);
+      expect(judge((c) => { c.created[id].state.observed.views = []; })).toEqual([mismatch]);
+      expect(judge((c) => { c.created[id].state.observed.views = undefined; })).toEqual([mismatch]);
+      expect(judge((c) => { c.created[id].state.assistants = [...c.created[id].state.assistants, { id: 'msg_a2', model: wrong }]; })).toEqual([mismatch]);
+      expect(judge((c) => { c.created[id].state.assistants = []; })).toEqual([mismatch]);
+      expect(judge((c) => { c.created[id].state.assistants = [{ id: 'msg_a1', model: null }]; })).toEqual([mismatch]);
+      expect(judge((c) => { c.baseline.state.observed.views = [plan.baseline.expected, wrong]; })).toEqual(['managed_model_unmanaged_baseline_model_mismatch:v2']);
+      expect(judge((c) => { c.control.state.assistants[0].model = wrong; })).toEqual(['managed_model_unmanaged_override_not_honored:v2']);
+    });
+
+    test('a created child\'s history must have been read completely', () => {
+      expect(judge((c) => { c.historyOkAfterCreate = false; })).toEqual(['managed_model_history_incomplete:v2:create']);
+      expect(judge((c) => { delete c.historyOkAfterCreate; })).toEqual(['managed_model_history_incomplete:v2:create']);
+    });
+
+    test('an accepted continuation is judged on what its turn added: a correct earlier message or request cannot cover a wrong new one', () => {
+      const accepted = 'bearing';
+      const expected = plan.children.find((c: any) => c.id === accepted)!.expected;
+      // The same model ID with its variant dropped is the case a model-ID-only comparison would pass.
+      const wrongVariant = view(expected.model);
+      const code = `managed_model_continuation_not_run_on_configured_model:v2:${accepted}`;
+      const after = (c: any) => continued(c, accepted).after;
+      expect(judge(() => {})).toEqual([]);
+      expect(judge((c) => { after(c).assistants[1].model = wrongVariant; })).toEqual([code]);
+      expect(judge((c) => { after(c).assistants[1].model = view(models.parent, v.parent); })).toEqual([code]);
+      expect(judge((c) => { after(c).observed.requests[1] = { at: 101, ...wrongVariant }; })).toEqual([code]);
+      // The former loophole: the earlier request keeps the right model in the set of views, the new one is wrong.
+      expect(judge((c) => { after(c).observed.views = [expected, wrongVariant]; after(c).observed.requests[1] = { at: 101, ...wrongVariant }; })).toEqual([code]);
+      // Unknown new records are not the configured model.
+      expect(judge((c) => { after(c).assistants[1].model = null; })).toEqual([code]);
+      expect(judge((c) => { after(c).observed.requests[1] = { at: 101, model: 'other', variant: null }; })).toEqual([code]);
+      // The turn added nothing that can be told apart from what was there, or the earlier records changed.
+      expect(judge((c) => { delete after(c).assistants; })).toEqual([code]);
+      expect(judge((c) => { delete after(c).observed.requests; })).toEqual([code]);
+      expect(judge((c) => { delete continued(c, accepted).before.assistants; })).toEqual([code]);
+      expect(judge((c) => { after(c).assistants[1].id = null; })).toEqual([code]);
+      expect(judge((c) => { after(c).assistants[1].id = 'msg_a1'; })).toEqual([code]);
+      expect(judge((c) => { after(c).assistants[0].model = wrongVariant; })).toEqual([code]);
+      expect(judge((c) => { after(c).observed.requests[0].at = 7; })).toEqual([code]);
+      expect(judge((c) => { const row = continued(c, accepted); row.after.assistants = row.before.assistants; })).toEqual([code]);
+      expect(judge((c) => { const row = continued(c, accepted); row.after.observed.requests = row.before.observed.requests; })).toEqual([code]);
+      // A second new message that is also right still passes.
+      expect(judge((c) => {
+        const row = continued(c, accepted);
+        row.after.assistantMessages = 3; row.after.assistants.push({ id: 'msg_a3', model: expected });
+        row.after.observed.count = 3; row.after.observed.requests.push({ at: 102, ...expected });
+      })).toEqual([]);
+    });
+
+    test('what a continuation turn added is separated by message ID and request order', () => {
+      const m = view(models.hive, v.hive);
+      const before = { assistants: [{ id: 'a', model: m }], observed: { requests: [{ at: 1, ...m }] } };
+      const after = { assistants: [{ id: 'a', model: m }, { id: 'b', model: m }], observed: { requests: [{ at: 1, ...m }, { at: 2, ...m }] } };
+      expect(continuationAdded(before, after)).toEqual({ assistants: [{ id: 'b', model: m }], requests: [{ at: 2, ...m }] });
+      expect(continuationAdded(before, before)).toEqual({ assistants: [], requests: [] });
+      for (const broken of [undefined, null, {}, { ...after, assistants: [{ id: 'b', model: m }] }, { ...after, assistants: [{ id: 'a', model: m }, { model: m }] },
+        { ...after, assistants: [{ id: 'a', model: m }, { id: 'a', model: m }] }, { ...after, observed: {} }, { ...after, observed: { requests: [{ at: 9, ...m }, { at: 2, ...m }] } }]) {
+        expect(continuationAdded(before, broken as any)).toBeNull();
+      }
+    });
+
+    test('every continuation needs the child read completely, related to the parent and on its agent, before and after', () => {
+      for (const id of ['reviewer', 'plain']) {
+        const unverifiedBefore = `managed_model_continuation_before_unverified:v2:${id}`;
+        const unverifiedAfter = `managed_model_continuation_child_unverified:v2:${id}`;
+        expect(judge((c) => { continued(c, id).before.readable = false; })).toEqual([unverifiedBefore]);
+        expect(judge((c) => { continued(c, id).before.parentOk = false; })).toEqual([unverifiedBefore]);
+        expect(judge((c) => { continued(c, id).before.agentOk = false; })).toEqual([unverifiedBefore]);
+        expect(judge((c) => { continued(c, id).after.readable = false; })).toEqual([unverifiedAfter]);
+        expect(judge((c) => { continued(c, id).after.parentOk = false; })).toEqual([unverifiedAfter]);
+        expect(judge((c) => { continued(c, id).after.agentOk = false; })).toEqual([unverifiedAfter]);
+      }
+    });
+
+    test('a refused continuation must leave the child\'s whole message history as it was, including a user message that reached no model', () => {
+      const id = 'reviewer';
+      const prompted = `managed_model_refused_continuation_prompted:v2:${id}`;
+      const unobserved = `managed_model_refused_continuation_history_unobserved:v2:${id}`;
+      const messages = (c: any) => continued(c, id).after.messages;
+      // A prompt admitted without a model request: no assistant message, no request, no wire request.
+      expect(judge((c) => { messages(c).ids = [...messages(c).ids, 'msg_u_extra']; messages(c).digest = 'h-extra'; })).toEqual([prompted]);
+      expect(judge((c) => { messages(c).ids = [...messages(c).ids, 'msg_u_extra']; })).toEqual([prompted]);
+      expect(judge((c) => { messages(c).digest = 'h-edited'; })).toEqual([prompted]);
+      expect(judge((c) => { messages(c).ids = [...messages(c).ids].reverse(); })).toEqual([prompted]);
+      for (const broken of [undefined, null, {}, { ids: ['msg_u1', null], digest: 'h1' }, { ids: ['msg_u1', 'msg_u1'], digest: 'h1' }, { ids: [], digest: 'h1' }, { ids: ['msg_u1'], digest: '' }]) {
+        expect(judge((c) => { continued(c, id).after.messages = broken; })).toEqual([unobserved]);
+        expect(judge((c) => { continued(c, id).before.messages = broken; })).toEqual([unobserved]);
+      }
+      expect(judge(() => {})).toEqual([]);
+    });
+
+    test('wiring includes the control on v2 and does not ask v1 for it', () => {
+      const w = (id: string) => ({ modelSelection: passingSelection(id), invalidModelSelection: REJECTED_INVALID_SELECTION, roles: {}, commands: {}, roleExposure: {} });
+      const failures = wiringFailures({ v2: w('v2') } as any, mock).filter((f: string) => f.startsWith('managed_model'));
+      expect(failures).toEqual(['managed_model_control_unobserved:v2']);
+      expect(wiringFailures({ v1: w('v1') } as any, mock).filter((f: string) => f.startsWith('managed_model'))).toEqual([]);
+    });
+  });
+
+  describe('probe reads', () => {
+    const sessions = { store: '/s/sessions.json', wire: '/s/requests.jsonl', observer: '/s/observer.jsonl' };
+    const reply = (data: any, extra: any = {}) => ({ outcome: 'response', status: 200, body: { data, ...extra }, bytes: 1 });
+    const status = (code: number, body: any = null) => ({ outcome: 'response', status: code, body, bytes: 1 });
+    const io = (routes: Record<string, any>, files: Record<string, string | Error> = {}) => ({
+      get: async (path: string) => {
+        const hit = Object.entries(routes).find(([prefix]) => path.startsWith(prefix));
+        if (!hit) throw new Error(`no route for ${path}`);
+        const answer = typeof hit[1] === 'function' ? hit[1](path) : hit[1];
+        if (answer instanceof Error) throw answer;
+        return answer;
+      },
+      readText: (path: string) => {
+        if (!(path in files)) return null;
+        const file = files[path];
+        if (file instanceof Error) throw file;
+        return file;
+      },
+    });
+    const reads = (routes: Record<string, any>, files: Record<string, string | Error> = {}) => probeReads(io(routes, files) as any, sessions);
+    const code = async (promise: Promise<any>) => { try { await promise; return 'resolved'; } catch (error) { return error instanceof ProbeReadError ? error.code : `other:${(error as Error).message}`; } };
+    const listing = [{ id: 'ses_p', parentID: null }, { id: 'ses_a', parentID: 'ses_p' }, { id: 'ses_b', parentID: 'ses_a' }, { id: 'ses_x', parentID: 'ses_other' }, { id: 'ses_h' }];
+    const LIST = '/api/session?directory=';
+
+    test('children come from a complete listing and Hive\'s stored links, and an unread or partial listing is no children', async () => {
+      const files = { [sessions.store]: JSON.stringify({ sessions: [{ sessionId: 'ses_h', parentSessionId: 'ses_p' }] }) };
+      expect(await reads({ [LIST]: reply(listing) }, files).children('ses_p')).toEqual(['ses_a', 'ses_b', 'ses_h']);
+      expect(await reads({ [LIST]: reply(listing) }).children('ses_p')).toEqual(['ses_a', 'ses_b']);
+      expect(await reads({ [LIST]: reply([{ id: 'ses_p' }]) }).children('ses_p')).toEqual([]);
+      // HTTP errors, an unreachable server, a body that is not JSON, and the wrong shape all fail by name.
+      expect(await code(reads({ [LIST]: status(500, { error: 'boom' }) }).children('ses_p'))).toBe('listing_unreadable');
+      expect(await code(reads({ [LIST]: status(404) }).children('ses_p'))).toBe('listing_unreadable');
+      expect(await code(reads({ [LIST]: { outcome: 'unreachable', status: null, body: null, bytes: 0 } }).children('ses_p'))).toBe('listing_unreadable');
+      expect(await code(reads({ [LIST]: { outcome: 'timeout', status: null, body: null, bytes: 0 } }).children('ses_p'))).toBe('listing_unreadable');
+      expect(await code(reads({ [LIST]: new Error('ECONNREFUSED') }).children('ses_p'))).toBe('listing_unreadable');
+      expect(await code(reads({ [LIST]: { outcome: 'malformed', status: 200, body: null, bytes: 4 } }).children('ses_p'))).toBe('listing_malformed');
+      for (const body of [{ error: 'nope' }, { data: { sessions: [] } }, { data: 'x' }, { data: [null] }, { data: [{ name: 'no id' }] }, { data: [{ id: 'bad id' }] }, null]) {
+        expect(await code(reads({ [LIST]: { outcome: 'response', status: 200, body } }).children('ses_p')), JSON.stringify(body)).toBe('listing_malformed');
+      }
+      expect(await code(reads({ [LIST]: reply([], { cursor: { next: 5 } }) }).children('ses_p'))).toBe('listing_malformed');
+      // A listing that does not contain the parent itself cannot show that the parent has no children.
+      expect(await code(reads({ [LIST]: reply([{ id: 'ses_q' }]) }).children('ses_p'))).toBe('listing_incomplete');
+    });
+
+    test('a listing that may have more sessions than it returned is truncated, not complete', async () => {
+      const full = Array.from({ length: 200 }, (_, i) => ({ id: `ses_${i}` }));
+      // A full page with no cursor member cannot show that nothing follows it; an explicit empty cursor can.
+      expect(await code(reads({ [LIST]: reply(full) }).children('ses_0'))).toBe('listing_truncated');
+      expect(await reads({ [LIST]: reply(full, { cursor: {} }) }).children('ses_0')).toEqual([]);
+      // An array is not a cursor object: a full page with `cursor: []` is malformed, not an explicit end.
+      expect(await code(reads({ [LIST]: reply(full, { cursor: [] }) }).children('ses_0'))).toBe('listing_malformed');
+      expect(await code(reads({ [LIST]: reply([{ id: 'ses_p' }], { cursor: [] }) }).children('ses_p'))).toBe('listing_malformed');
+      // Pages are followed to the end.
+      const paged = reads({ [LIST]: (path: string) => (path.includes('cursor=c1') ? reply([{ id: 'ses_k', parentID: 'ses_p' }], { cursor: {} }) : reply([{ id: 'ses_p' }], { cursor: { next: 'c1' } })) });
+      expect(await paged.children('ses_p')).toEqual(['ses_k']);
+      // A host that keeps offering pages is cut at the page cap, which proves nothing.
+      expect(await code(reads({ [LIST]: reply([{ id: 'ses_p' }], { cursor: { next: 'more' } }) }).children('ses_p'))).toBe('listing_truncated');
+      expect(await code(reads({ [LIST]: (path: string) => (path.includes('cursor=c1') ? status(500) : reply([{ id: 'ses_p' }], { cursor: { next: 'c1' } })) }).children('ses_p'))).toBe('listing_unreadable');
+    });
+
+    test('the Hive store is absent only when no file exists; a corrupt or unreadable one is a failure, not an empty store', () => {
+      const store = (files: Record<string, string | Error>) => reads({}, files).store();
+      expect(store({})).toEqual({ sessions: [] });
+      expect(store({ [sessions.store]: JSON.stringify({ sessions: [{ sessionId: 'ses_c', parentSessionId: 'ses_p' }] }) }).sessions).toHaveLength(1);
+      for (const text of ['', '{', 'null', '[]', '{}', '{"sessions":{}}', '{"sessions":[null]}', '{"sessions":[{"parentSessionId":"ses_p"}]}', '{"sessions":[7]}']) {
+        expect(() => store({ [sessions.store]: text }), text).toThrow(expect.objectContaining({ code: 'store_malformed' }));
+      }
+      const denied = Object.assign(new Error('EACCES'), { code: 'EACCES' });
+      expect(() => store({ [sessions.store]: denied })).toThrow(expect.objectContaining({ code: 'store_unreadable' }));
+    });
+
+    test('a malformed store fails the child listing and bindings rather than reading as no bindings', async () => {
+      const files = { [sessions.store]: '{"sessions": [' };
+      expect(await code(reads({ [LIST]: reply(listing) }, files).children('ses_p'))).toBe('store_malformed');
+    });
+
+    test('the provider and observer logs: a missing observer log, a torn line or a non-object line is a failure, and only the session\'s model requests are returned', () => {
+      const rows = [{ id: 1, lastUser: 'a' }, { id: 2, lastUser: 'b' }];
+      const wire = (files: Record<string, string | Error>, absent?: 'empty' | 'fail') => reads({}, files).wire(absent);
+      expect(wire({ [sessions.wire]: rows.map((r) => JSON.stringify(r)).join('\n') + '\n' })).toEqual(rows);
+      expect(wire({}, 'empty')).toEqual([]);
+      expect(() => wire({})).toThrow(expect.objectContaining({ code: 'wire_missing' }));
+      for (const text of ['{"id":1}\n{"id":', '{"id":1}\nnot json\n', '{"id":1}\n[1]\n', '{"id":1}\n7\n']) {
+        expect(() => wire({ [sessions.wire]: text }), text).toThrow(expect.objectContaining({ code: 'wire_malformed' }));
+      }
+      expect(() => wire({ [sessions.wire]: Object.assign(new Error('EIO'), { code: 'EIO' }) })).toThrow(expect.objectContaining({ code: 'wire_unreadable' }));
+      const records = [
+        { hook: 'model.request', sessionID: 'ses_c', modelID: 'm', at: 1 }, { hook: 'http.request', sessionID: 'ses_c', modelID: 'm', at: 2 }, { hook: 'model.request', sessionID: 'ses_d', modelID: 'm', at: 3 },
+      ];
+      const observer = (files: Record<string, string | Error>) => reads({}, files).observer('ses_c');
+      expect(observer({ [sessions.observer]: records.map((r) => JSON.stringify(r)).join('\n') + '\n' })).toEqual([records[0]]);
+      // An absent log must not read as "no model requests": a child that ran has one.
+      expect(() => observer({})).toThrow(expect.objectContaining({ code: 'observer_missing' }));
+      expect(() => observer({ [sessions.observer]: `${JSON.stringify(records[0])}\n{"hook":` })).toThrow(expect.objectContaining({ code: 'observer_malformed' }));
+      expect(() => observer({ [sessions.observer]: '{"malformed":true}\nnot json' })).toThrow(expect.objectContaining({ code: 'observer_malformed' }));
+    });
+
+    test('the active map is unknown unless the host answered with a map of session IDs', async () => {
+      const active = (answer: any) => reads({ '/api/session/active': answer }).active();
+      expect([...(await active(reply({})))]).toEqual([]);
+      expect([...(await active(reply({ ses_a: { status: 'running' }, ses_b: {} })))]).toEqual(['ses_a', 'ses_b']);
+      expect(await code(active(status(500, { error: 'boom' })))).toBe('active_unreadable');
+      expect(await code(active(status(500, { data: {} })))).toBe('active_unreadable');
+      expect(await code(active({ outcome: 'unreachable', status: null, body: null, bytes: 0 }))).toBe('active_unreadable');
+      expect(await code(active({ outcome: 'malformed', status: 200, body: null, bytes: 3 }))).toBe('active_malformed');
+      // An error object that a 2xx answer carries is not an empty activity map.
+      for (const body of [{ error: 'boom' }, { data: { error: 'boom' } }, { data: { name: 'UnknownError', message: 'x' } }, { data: [] }, { data: ['ses_a'] }, { data: null }, { data: 'idle' }, null]) {
+        expect(await code(active({ outcome: 'response', status: 200, body })), JSON.stringify(body)).toBe('active_malformed');
+      }
+    });
+
+    test('a child that cannot be read is not readable, while a read of the wrong session is no read at all', async () => {
+      const one = (answer: any) => reads({ '/api/session/ses_c': answer }).session('ses_c');
+      expect(await one(reply({ id: 'ses_c', parentID: 'ses_p' }))).toMatchObject({ id: 'ses_c' });
+      for (const answer of [status(500), status(404), reply({ id: 'ses_other' }), reply(null), reply('x'), { outcome: 'malformed', status: 200, body: null, bytes: 1 }, { outcome: 'timeout', status: null, body: null, bytes: 0 }]) {
+        expect(await one(answer)).toBeNull();
+      }
+    });
+
+    test('the tree is the root and its descendants through the host\'s parent links, then Hive\'s', () => {
+      const hive = new Map([['ses_h', 'ses_a']]);
+      expect(treeFrom(listing, hive, 'ses_p').map((n: any) => n.id)).toEqual(['ses_p', 'ses_a', 'ses_b', 'ses_h']);
+      expect(treeFrom(listing, new Map(), 'ses_p').map((n: any) => n.id)).toEqual(['ses_p', 'ses_a', 'ses_b']);
+    });
+
+    test('a failed read ends its stage with the read\'s name, and the other stages go on', async () => {
+      const errors: string[] = [];
+      expect(await probeStage(errors, 'refusals', async () => 7)).toBe(7);
+      expect(await probeStage(errors, 'refusals', () => reads({ [LIST]: status(500) }).children('ses_p'))).toBeNull();
+      expect(await probeStage(errors, 'operator', () => reads({ '/api/session/active': reply({ error: 'x' }) }).active())).toBeNull();
+      expect(await probeStage(errors, 'created', async () => { throw new Error('unrelated'); })).toBeNull();
+      expect(errors).toEqual(['refusals:listing_unreadable', 'operator:active_malformed', 'created']);
+      // The judge names each one.
+      expect(judge((c) => { c.errors = errors; })).toEqual(errors.map((e) => `managed_model_stage_failed:v2:${e}`));
+    });
+
+    describe('the provider-log offsets of the real probe', () => {
+      // The real managedModelControl over faked host boundaries: the host's API and files through `io`, and the live turn driver through `drive`.
+      const host = (malformedAt: number) => {
+        let wireReads = 0;
+        const turns: string[] = [];
+        const io = {
+          get: async (path: string) => {
+            if (path.startsWith('/api/session/ses_parent/message')) return reply([]);
+            if (path.startsWith('/api/session?directory=')) return reply([{ id: 'ses_parent' }], { cursor: {} });
+            throw new Error(`no route for ${path}`);
+          },
+          readText: (path: string) => {
+            if (!path.endsWith('requests.jsonl')) return null;
+            return ++wireReads === malformedAt ? '{"id":1}\nnot json\n' : '';
+          },
+        };
+        const drive = {
+          run: async (_host: string, args: any) => { turns.push(args.prompt.split('\n')[0]); return { exit: 0, sessionId: args.sessionId ?? 'ses_parent', asked: null, timedOut: false }; },
+          interrupt: async () => true,
+          api: async () => ({ status: 200, ok: true, body: { data: [] } }),
+        };
+        return { io, drive, turns, wireReads: () => wireReads };
+      };
+
+      test('a healthy log gives every stage its offset, so no offset stage fails', async () => {
+        const h = host(0);
+        const { control } = await managedModelControl({ host: 'v2' }, h.io as any, h.drive as any);
+        expect(control.errors).toEqual([]);
+        expect(h.turns).toEqual(['managed model refuse', 'managed model create', 'managed model continue']);
+        expect(control.afterRefusals).toMatchObject({ historyOk: true, childSessions: 0, wireRequests: 0, boundChildren: 0 });
+      });
+
+      for (const [offset, read, dependent] of [['refuse', 1, 'refusals'], ['create', 3, 'created'], ['continue', 5, 'continued']] as const) {
+        test(`a log that cannot be read at the ${offset} offset ends that stage by name, skips ${dependent}, and keeps every other fact`, async () => {
+          const h = host(read);
+          const { ok, control } = await managedModelControl({ host: 'v2' }, h.io as any, h.drive as any);
+          expect(ok).toBe(true);
+          expect(control.errors).toEqual([`${offset}_wire_start:wire_malformed`, `${dependent}:wire_start_unavailable`]);
+          // Nothing was counted from a made-up zero, and every turn still ran and was recorded.
+          expect(h.turns).toEqual(['managed model refuse', 'managed model create', 'managed model continue']);
+          expect(Object.keys(control.turns)).toEqual(['refuse', 'create', 'continue']);
+          expect(control.parent).toBe('ses_parent');
+          expect(Object.keys(control.catalog)).toEqual(Object.keys(plan.catalog));
+          if (offset === 'refuse') {
+            expect(control.afterRefusals).toBeNull();
+            expect(control.refusals).toEqual([]);
+          } else {
+            expect(control.afterRefusals).toMatchObject({ historyOk: true, childSessions: 0, wireRequests: 0, boundChildren: 0 });
+            expect(control.refusals).toHaveLength(plan.refusals.length);
+          }
+          if (offset === 'create') expect(control.baseline).toBeNull();
+          if (offset === 'continue') expect(control.childrenAfterCreate).toEqual([]);
+          if (offset !== 'continue') expect(control.childrenAfterContinue).toEqual([]);
+          else expect(control.childrenAfterContinue).toBeUndefined();
+          // The judge fails the control: the stage by name, and the unobserved facts are failures, not passes.
+          const failures = managedModelControlFailures('v2', control, mock);
+          expect(failures).toContain(`managed_model_stage_failed:v2:${offset}_wire_start:wire_malformed`);
+          expect(failures).toContain(`managed_model_stage_failed:v2:${dependent}:wire_start_unavailable`);
+          expect(failures.length).toBeGreaterThan(2);
+        });
+      }
+    });
+
+    describe('switching the operator\'s children', () => {
+      const ids = { reviewer: 'ses_r', custom: 'ses_c' };
+      const sleeps: number[] = [];
+      const run = async (active: (n: number) => any, extra: any = {}) => {
+        const into: any = {};
+        const posted: string[] = [];
+        let reads_ = 0;
+        const read = { active: async () => { const answer = active(reads_++); if (answer instanceof Error) throw answer; return answer as Set<string>; }, session: async (id: string) => ({ id, model: { providerID: 'mock', id: models.parent, variant: v.parent } }) };
+        const promise = switchIdleChildren({
+          plan, ids, models, into, reads: read, attempts: 3, sleep: async (ms) => { sleeps.push(ms); },
+          post: async (id) => { posted.push(id); return { ok: true, status: 204 }; }, ...extra,
+        });
+        return { into, posted, promise };
+      };
+
+      test('a child is switched only after the host reports it idle', async () => {
+        const { into, posted, promise } = await run((n) => (n === 0 ? new Set(['ses_r']) : new Set()));
+        await promise;
+        expect(posted).toEqual(['ses_r', 'ses_c']);
+        expect(into.reviewer).toMatchObject({ switched: true, idle: true, status: 204 });
+        expect(into.custom).toMatchObject({ switched: true, idle: true });
+      });
+
+      test('a child that never became idle is not switched, and the row says so', async () => {
+        const { into, posted, promise } = await run((n) => (n < 3 ? new Set(['ses_r']) : new Set()));
+        await promise;
+        expect(posted).toEqual(['ses_c']);
+        expect(into.reviewer).toMatchObject({ switched: false, idle: false });
+        expect(into.reviewer).not.toHaveProperty('status');
+        expect(into.custom).toMatchObject({ switched: true, idle: true });
+        expect(judge((c) => { c.operator.reviewer = into.reviewer; })).toContain('managed_model_operator_child_not_idle:v2:reviewer');
+      });
+
+      test('an activity read that fails ends the stage with its name and keeps the rows already made; nothing is switched on it', async () => {
+        const errors: string[] = [];
+        const bad = reads({ '/api/session/active': status(500, { error: 'boom' }) });
+        const into: any = {};
+        const posted: string[] = [];
+        await probeStage(errors, 'operator', () => switchIdleChildren({
+          plan, ids, models, into, reads: { active: bad.active, session: async () => null }, post: async (id) => { posted.push(id); return { ok: true, status: 204 }; }, sleep: async () => {},
+        }));
+        expect(errors).toEqual(['operator:active_unreadable']);
+        expect(posted).toEqual([]);
+        expect(into).toEqual({});
+        const malformed = reads({ '/api/session/active': reply({ error: 'boom' }) });
+        const second: string[] = [];
+        await probeStage(second, 'operator', () => switchIdleChildren({
+          plan, ids, models, into: {}, reads: { active: malformed.active, session: async () => null }, post: async (id) => { posted.push(id); return { ok: true, status: 204 }; }, sleep: async () => {},
+        }));
+        expect(second).toEqual(['operator:active_malformed']);
+        expect(posted).toEqual([]);
+      });
+
+      test('an activity read that fails for the second child keeps the first child\'s row and makes no switch for the second', async () => {
+        const errors: string[] = [];
+        let activeReads = 0;
+        const flaky = reads({ '/api/session/active': () => (activeReads++ === 0 ? reply({}) : status(500, { error: 'boom' })) });
+        const into: any = {};
+        const posted: string[] = [];
+        await probeStage(errors, 'operator', () => switchIdleChildren({
+          plan, ids, models, into, reads: { active: flaky.active, session: async (id) => ({ id, model: { providerID: 'mock', id: plan.operator.reviewer.model, variant: plan.operator.reviewer.variant } }) },
+          post: async (id) => { posted.push(id); return { ok: true, status: 204 }; }, sleep: async () => {},
+        }));
+        expect(errors).toEqual(['operator:active_unreadable']);
+        expect(activeReads).toBe(2);
+        expect(posted).toEqual(['ses_r']);
+        expect(into.reviewer).toMatchObject({ switched: true, idle: true, status: 204, target: plan.operator.reviewer });
+        expect(into).not.toHaveProperty('custom');
+        // The judge still fails the stage and the unobserved child.
+        const failures = judge((c) => { c.errors = errors; c.operator = into; });
+        expect(failures).toContain('managed_model_stage_failed:v2:operator:active_unreadable');
+        expect(failures).toContain('managed_model_operator_unobserved:v2:custom');
+      });
+
+      test('a child the probe never created has no switch to make', async () => {
+        const { into, posted, promise } = await run(() => new Set(), { ids: { custom: 'ses_c' } });
+        await promise;
+        expect(posted).toEqual(['ses_c']);
+        expect(into.reviewer).toEqual({ switched: false, target: plan.operator.reviewer, idle: false, after: null });
+      });
+    });
+  });
+
+  describe('wiring one host', () => {
+    const selection = (input: any) => ({ ok: true, selection: input.probe === 'valid' ? passingSelection('v2') : REJECTED_INVALID_SELECTION });
+    const wiringReply = { ok: true, wiring: { host: 'probe', roles: {} } };
+    const run = (host: string, behavior: any, hooks: { prepare?: (ctx: any) => void; retain?: (ctx: any, retained: any) => any } = {}) => {
+      const docker = new FakeDocker({ wiring: wiringReply, modelSelection: selection, ...behavior });
+      const retained: any = {};
+      const ctx: any = { ...paidContext(docker, 60_000), credential: undefined, secretBearing: false };
+      const commands = () => docker.calls.map((c) => c.args).filter((a) => a.includes('/opt/ic/harness/fixture.ts')).map((a) => a[a.indexOf('/opt/ic/harness/fixture.ts') + 1]);
+      hooks.prepare?.(ctx);
+      return { docker, retained, ctx, commands, done: wiringHost(ctx, host, retained, hooks.retain?.(ctx, retained)) };
+    };
+
+    test('v2 runs the control on the valid selection host, after the model-selection probe and before the host stops', async () => {
+      const control = passingControl();
+      const { retained, commands, done } = run('v2', { managedControl: { ok: true, control } });
+      const wiring = await done;
+      expect(wiring.managedModelControl).toEqual(control);
+      expect(retained.v2).toBe(wiring);
+      const order = commands();
+      const valid = order.indexOf('model-selection');
+      expect(order.slice(valid, valid + 3)).toEqual(['model-selection', 'managed-model-control', 'stop']);
+    });
+
+    test('v1 has no control to run', async () => {
+      const { commands, done } = run('v1', {});
+      expect((await done).managedModelControl).toBeUndefined();
+      expect(commands()).not.toContain('managed-model-control');
+    });
+
+    test('a probe that fails after earlier observations leaves those observations with the caller', async () => {
+      const { retained, done } = run('v2', { managedControl: { ok: false, failure: 'fixture_exception' } });
+      await expect(done).rejects.toMatchObject({ code: 'fixture_exception' });
+      expect(retained.v2).toMatchObject({ host: 'probe', modelSelection: expect.any(Object) });
+      expect(retained.v2.managedModelControl).toBeUndefined();
+    });
+
+    test('a failure before any observation retains nothing', async () => {
+      const { retained, done } = run('v2', { wiring: { ok: false, failure: 'fixture_exception' } });
+      await expect(done).rejects.toMatchObject({ code: 'fixture_exception' });
+      expect(retained).toEqual({});
+    });
+
+    describe('the failure record is durable before the host\'s container is removed', () => {
+      const options = { phase: 'wiring', candidateRef: 'bfa0e54e', hosts: ['v2'], timeoutSeconds: 600, runId: 'run-under-test' };
+      const identity = () => ({
+        subject: { role: 'candidate', ref: 'bfa0e54e', commit: 'c'.repeat(40) }, harness: { commit: 'h'.repeat(40), tree: 't'.repeat(40), scenarioSetVersion: 1, scenariosSha256: 's'.repeat(64) },
+        artifact: { file: 'artifact/oc-arkive.tgz', sha256: 'a'.repeat(64) }, runtimeIdentity: { node: 'v-test' },
+      });
+      /** Wires the retention callback of a real run to a real directory, and records what the output directory held at each removal. */
+      const instrumented = (behavior: any, { failRetention, failCleanup }: { failRetention?: Error; failCleanup?: boolean } = {}) => {
+        const manifest: any = identity();
+        const atRemove: any[] = [];
+        let outDir = '';
+        const started = run('v2', behavior, {
+          prepare: (ctx) => {
+            outDir = ctx.outDir;
+            const real = ctx.resources.remove.bind(ctx.resources);
+            ctx.resources.remove = async (id: string) => {
+              const file = join(ctx.outDir, 'wiring.partial.json');
+              const text = existsSync(file) ? readFileSync(file, 'utf8') : null;
+              atRemove.push({ id, text, sha: text === null ? null : createHash('sha256').update(text).digest('hex'), manifestSha: manifest.wiringPartial?.sha256 ?? null });
+              if (failCleanup) throw new HarnessError('cleanup_unconfirmed', { kind: 'container' });
+              return real(id);
+            };
+          },
+          retain: (ctx, retained) => (failRetention ? () => { throw failRetention; } : wiringRetention({ options, manifest, outDir: ctx.outDir, results: retained })),
+        });
+        return { ...started, manifest, atRemove, outDir: () => outDir };
+      };
+
+      test('a probe that fails publishes its partial record, with the failing phase and the run\'s identities, before the container is removed', async () => {
+        const { done, atRemove, manifest, retained, docker } = instrumented({ managedControl: { ok: false, failure: 'fixture_exception' } });
+        await expect(done).rejects.toMatchObject({ code: 'fixture_exception' });
+        expect(atRemove).toHaveLength(1);
+        const [seen] = atRemove;
+        expect(seen.text).not.toBeNull();
+        // The hash in the manifest is of the bytes that were on disk when the removal began.
+        expect(seen.manifestSha).toBe(seen.sha);
+        expect(manifest.wiringPartial).toEqual({ file: 'wiring.partial.json', sha256: seen.sha });
+        const record = JSON.parse(seen.text);
+        expect(record).toMatchObject({
+          schema: 'ic-wiring-partial/v1', complete: false,
+          command: { phase: 'wiring', candidateRef: 'bfa0e54e', hosts: ['v2'], timeoutSeconds: 600, runId: 'run-under-test' },
+          subject: identity().subject, harness: identity().harness, artifactSha256: 'a'.repeat(64), runtimeIdentity: { node: 'v-test' },
+          failure: { host: 'v2', phase: 'managed-model-control', code: 'fixture_exception' },
+        });
+        expect(record.observations.v2).toMatchObject({ host: 'probe', modelSelection: expect.any(Object) });
+        expect(record.observations.v2).toEqual(JSON.parse(JSON.stringify(retained.v2)));
+        expect(docker.removed.size).toBeGreaterThanOrEqual(1);
+      });
+
+      test('a failure before the first observation still leaves the record of where the run stopped', async () => {
+        const { done, atRemove } = instrumented({ wiring: { ok: false, failure: 'fixture_exception' } });
+        await expect(done).rejects.toMatchObject({ code: 'fixture_exception' });
+        expect(atRemove).toHaveLength(1);
+        expect(JSON.parse(atRemove[0].text)).toMatchObject({ failure: { host: 'v2', phase: 'wiring', code: 'fixture_exception' }, observations: {} });
+      });
+
+      test('the phase is the step that was running when the failure came', async () => {
+        const first = instrumented({ managedControl: { ok: true, control: passingControl() }, modelSelection: (input: any) => (input.probe === 'invalid' ? { ok: false, failure: 'fixture_exception' } : selection(input)) });
+        await expect(first.done).rejects.toMatchObject({ code: 'fixture_exception' });
+        expect(JSON.parse(first.atRemove[0].text).failure).toMatchObject({ phase: 'model-selection:invalid', code: 'fixture_exception' });
+        const second = instrumented({ malformed: 'wiring' });
+        await expect(second.done).rejects.toMatchObject({ code: 'fixture_output_malformed' });
+        expect(JSON.parse(second.atRemove[0].text).failure).toMatchObject({ phase: 'wiring', code: 'fixture_output_malformed' });
+      });
+
+      test('a passing run publishes no partial record', async () => {
+        const { done, atRemove, outDir } = instrumented({ managedControl: { ok: true, control: passingControl() } });
+        await done;
+        expect(atRemove[0].text).toBeNull();
+        expect(existsSync(join(outDir(), 'wiring.partial.json'))).toBe(false);
+      });
+
+      test('a cleanup that fails afterwards does not replace the first failure, and the record is already durable', async () => {
+        const { done, atRemove } = instrumented({ managedControl: { ok: false, failure: 'fixture_exception' } }, { failCleanup: true });
+        await expect(done).rejects.toMatchObject({ code: 'fixture_exception' });
+        expect(atRemove[0].text).not.toBeNull();
+      });
+
+      test('a cleanup failure with nothing earlier failing is still the failure, and every completed observation is kept before it leaves', async () => {
+        const control = passingControl();
+        const { done, atRemove, manifest, retained, outDir } = instrumented({ managedControl: { ok: true, control } }, { failCleanup: true });
+        await expect(done).rejects.toMatchObject({ code: 'cleanup_unconfirmed', detail: { kind: 'container' } });
+        // The removal that failed found no record yet; the record was written after it, once, from the finished observations.
+        expect(atRemove).toHaveLength(1);
+        expect(atRemove[0].text).toBeNull();
+        const text = readFileSync(join(outDir(), 'wiring.partial.json'), 'utf8');
+        expect(manifest.wiringPartial).toEqual({ file: 'wiring.partial.json', sha256: createHash('sha256').update(text).digest('hex') });
+        const record = JSON.parse(text);
+        expect(record).toMatchObject({
+          schema: 'ic-wiring-partial/v1', complete: false,
+          failure: { host: 'v2', phase: 'cleanup', code: 'cleanup_unconfirmed', detail: { kind: 'container' } },
+          subject: identity().subject, artifactSha256: 'a'.repeat(64),
+        });
+        expect(record.observations.v2.managedModelControl).toEqual(control);
+        expect(record.observations.v2).toEqual(JSON.parse(JSON.stringify(retained.v2)));
+        expect(record.observations.v2.invalidModelSelection).toMatchObject({ ready: expect.any(Boolean) });
+      });
+
+      test('a record that cannot be written after a late cleanup failure is noted on that failure', async () => {
+        const { done } = instrumented({ managedControl: { ok: true, control: passingControl() } }, { failCleanup: true, failRetention: new HarnessError('disk_full') });
+        await expect(done).rejects.toMatchObject({ code: 'cleanup_unconfirmed', retention: 'disk_full' });
+      });
+
+      test('an earlier probe failure stays the failure when cleanup also fails, and the record is written once', async () => {
+        const { done, atRemove, outDir } = instrumented({ managedControl: { ok: false, failure: 'fixture_exception' } }, { failCleanup: true });
+        await expect(done).rejects.toMatchObject({ code: 'fixture_exception' });
+        expect(atRemove).toHaveLength(1);
+        expect(JSON.parse(readFileSync(join(outDir(), 'wiring.partial.json'), 'utf8')).failure).toMatchObject({ phase: 'managed-model-control', code: 'fixture_exception' });
+      });
+
+      test('a record that cannot be written does not replace the first failure; it is noted on it, and the container is still removed', async () => {
+        const { done, docker } = instrumented({ managedControl: { ok: false, failure: 'fixture_exception' } }, { failRetention: new HarnessError('disk_full') });
+        await expect(done).rejects.toMatchObject({ code: 'fixture_exception', retention: 'disk_full' });
+        expect(docker.removed.size).toBeGreaterThanOrEqual(1);
+        const plain = instrumented({ managedControl: { ok: false, failure: 'fixture_exception' } }, { failRetention: new Error('boom') });
+        await expect(plain.done).rejects.toMatchObject({ code: 'fixture_exception', retention: 'retention_failed' });
+      });
+
+      test('the record is written once: a second failure cannot rewrite it', async () => {
+        const { done, ctx, retained, manifest } = instrumented({ managedControl: { ok: false, failure: 'fixture_exception' } });
+        await expect(done).rejects.toMatchObject({ code: 'fixture_exception' });
+        const again = wiringRetention({ options, manifest, outDir: ctx.outDir, results: retained });
+        expect(() => again({ host: 'v2', phase: 'serve', code: 'x', detail: null })).toThrow();
+      });
+    });
+  });
+});
+
 describe('wiring contract', () => {
   const writes = (edit = true) => ({ hive_context_write: true, hive_context_append: true, hive_context_edit: edit });
   const target = { targetSha256Before: 'a'.repeat(64), targetSha256After: 'a'.repeat(64), targetUnchanged: true };
@@ -1952,7 +2921,7 @@ describe('wiring contract', () => {
   });
   // Every probe passing, so each test below judges only the observation it changes.
   const wiringFor = (results: Record<string, any>) => wiringFailures(Object.fromEntries(Object.entries(results).map(([id, w]) => [id, {
-    modelSelection: passingSelection(id), invalidModelSelection: REJECTED_INVALID_SELECTION, ...w,
+    modelSelection: passingSelection(id), invalidModelSelection: REJECTED_INVALID_SELECTION, ...(id === 'v2' ? { managedModelControl: passingControl() } : {}), ...w,
   }])), SCENARIOS.model.mock);
 
   test('a complete observation passes', () => {

@@ -1,5 +1,6 @@
 import { Cause, Effect, Exit } from 'effect';
 import type { Scope } from 'effect';
+import type { Model } from '@opencode/schema/model';
 import { Tool } from '@opencode/schema/tool';
 import type { Plugin } from '@opencode/plugin/effect';
 import type { SessionInfo } from 'hive-core';
@@ -20,7 +21,7 @@ class ChildBindingRefused {
   constructor(readonly message: string) {}
 }
 
-type SubagentInput = { agent: string; description?: string; prompt: string; sessionID?: string; background?: boolean };
+type SubagentInput = { agent: string; description?: string; prompt: string; model?: string; sessionID?: string; background?: boolean };
 type ChildRoute = ReturnType<typeof childRouteRecord>;
 
 /**
@@ -38,12 +39,19 @@ type Admissions = Map<string, { route: ChildRoute; calls: Set<string> }>;
  * - The parent's route and standing constraints, captured when the call starts, and the parent's authored prompt
  *   (before the host adds its subagent prefix) composed with the route footer and, for a Forager on a selected feature
  *   route, the task brief from its `Hive task:` line.
+ * - Model selection for Hive-managed targets (built-in roles and custom agents): a call that sets `model` is refused
+ *   before anything else runs, whatever the caller and whatever the value, so the target runs on the model and
+ *   variant its effective native agent entry configures. Native `general`/`explore` and unmanaged targets keep the
+ *   host's behavior. This governs the call's argument only; configuration files and other session APIs are not locked.
  * - For a continued `sessionID`, a preflight before the host runs, because the host switches a continued child's agent
  *   and model before it reports progress. The child must be a native child of the caller and not bound to another
- *   parent. Adopting an unbound child or changing its bound route, constraints or agent needs an idle child: a local
- *   reservation excludes conflicting calls while the host's active-session read qualifies idle. An unreadable answer
- *   is not idle. A continuation on the same proven binding needs no read.
- *   The `sessionID` itself is passed through unchanged.
+ *   parent. Continuing a managed child on its own agent requires its session model to equal that agent's configured
+ *   model, because the host keeps a same-agent child's model; a switch to another agent takes the destination's
+ *   configured model from the host. Adopting an unbound child or changing its bound route, constraints or agent,
+ *   judged against both the binding and the host's session agent, needs an idle child: a local reservation excludes
+ *   conflicting calls while the host's active-session read qualifies idle. An unreadable answer is not idle. A
+ *   continuation on the same proven binding and agent needs no activity read. The `sessionID` itself is passed through
+ *   unchanged.
  * - A barrier on the progress update the host awaits before it admits the child's prompt: Hive reads the child from
  *   the host again, requires that its parent is this call's session and that no other parent owns its binding, and
  *   binds the child to the captured route. If a step fails, the call fails and the child is never prompted.
@@ -63,6 +71,8 @@ export function registerDispatch(input: { context: Plugin.Context; services: Hiv
 }
 
 const NOT_CONTINUED = 'the host was not asked to continue the child';
+/** The variant the host reports for a stored session model that has none. */
+const DEFAULT_VARIANT = 'default';
 const NOT_PROMPTED = 'the child was not prompted';
 
 function dispatchSubagent(
@@ -74,6 +84,9 @@ function dispatchSubagent(
   const { context, services, authority, background, activity, admissions } = deps;
   const parent: string = toolContext.sessionID;
   const call: string = toolContext.id;
+  const target = authority.resolve(args.agent);
+  // Built-in roles and custom agents; native `general`/`explore` and unmanaged agents keep the host's model behavior.
+  const managed = target.kind === 'role';
   let admitted: string | undefined;
   let bound: string | undefined;
   let launchAlias: string | undefined;
@@ -84,7 +97,21 @@ function dispatchSubagent(
   /** The child must be the caller's native child; read from the host each time it is checked. */
   const confirmParent = (child: string, outcome: string) => context.session.get({ sessionID: child as never }).pipe(
     Effect.mapError(() => new ChildBindingRefused(`Hive could not read child session ${child} to confirm its parent; ${outcome}.`)),
-    Effect.flatMap((session) => session.parentID === parent ? Effect.void : refuse(`Child session ${child} is not a child of ${parent}; Hive did not bind it and ${outcome}.`)),
+    Effect.flatMap((session) => session.parentID === parent ? Effect.succeed(session) : refuse(`Child session ${child} is not a child of ${parent}; Hive did not bind it and ${outcome}.`)),
+  );
+
+  /**
+   * A same-agent continuation keeps the child's session model, so it must already be the target's configured model.
+   * The configured model is the host's effective agent entry for the actual target, where native user configuration
+   * wins over Hive's defaults. A target without a configured model inherits natively and is not checked.
+   */
+  const confirmModel = (child: string, actual: Model.Ref | undefined) => context.agent.get({ agentID: args.agent as never }).pipe(
+    Effect.mapError((error) => new ChildBindingRefused(`Hive could not read the configured model of agent ${args.agent} (${describe(error)}), so it cannot confirm that child session ${child} runs on it; ${NOT_CONTINUED}.`)),
+    Effect.flatMap(({ data }) => {
+      const expected = data.model;
+      if (expected === undefined || (actual !== undefined && sameModel(expected, actual))) return Effect.void;
+      return refuse(`Child session ${child} runs on ${actual === undefined ? 'no recorded model' : formatModel(actual)}, but agent ${args.agent} is configured for ${formatModel(expected)}; ${NOT_CONTINUED}. Start a new ${args.agent} subagent call without sessionID to run on the configured model.`);
+    }),
   );
 
   /** The child's Hive binding, if it has one; a binding owned by another parent is never overwritten. */
@@ -125,11 +152,15 @@ function dispatchSubagent(
 
   /** Admits a continued child before the host runs, so a refused continuation leaves its agent and model untouched. */
   const preflight = (child: string, route: ChildRoute) => Effect.gen(function* () {
-    yield* confirmParent(child, NOT_CONTINUED);
+    const session = yield* confirmParent(child, NOT_CONTINUED);
     const stored = yield* ownBinding(child, NOT_CONTINUED);
+    // The host's session agent decides whether it switches the child; a binding that claims the target agent is not
+    // enough when the host reports another one.
+    const switching = session.agent !== args.agent;
+    if (managed && !switching) yield* confirmModel(child, session.model);
     if (heldElsewhere(child, route)) return yield* refuse(running(child));
     admit(child, route);
-    if (stored === undefined || !sameRoute(stored, route)) {
+    if (stored === undefined || !sameRoute(stored, route) || switching) {
       const state = yield* hostActivity(child);
       if (state.unknown !== undefined) {
         return yield* refuse(`Hive could not confirm that child session ${child} is idle (${state.unknown}). Adopting an unbound child or changing its route, constraints or agent needs an idle child, so Hive did not overwrite its binding and ${NOT_CONTINUED}.`);
@@ -139,11 +170,13 @@ function dispatchSubagent(
   });
 
   return Effect.gen(function* () {
+    if (managed && args.model !== undefined) {
+      return yield* Effect.fail(new Tool.Error({ message: `Hive manages the model of agent ${args.agent}, so this subagent call may not set model (it set ${JSON.stringify(args.model)}); the host was not called. Repeat the call without model: the agent runs on its effective configured model and variant, or inherits its parent's model when it has none. The operator changes that model in native agent configuration or agent_hive.json.` }));
+    }
     const snapshot = yield* Effect.try({
       try: () => services.captureRoute(parent),
       catch: (error) => new Tool.Error({ message: `Hive could not capture the dispatch route of session ${parent}: ${describe(error)}` }),
     });
-    const target = authority.resolve(args.agent);
     const prompt = composeDispatchPrompt({
       sources: { projectRoot: services.projectRoot, taskService: services.taskService, contextService: services.contextService },
       snapshot,
@@ -218,6 +251,19 @@ function dispatchSubagent(
 /** Whether the stored child binding already carries every field of the route a new call captured. */
 function sameRoute(stored: SessionInfo | ChildRoute, route: ChildRoute): boolean {
   return (Object.keys(route) as Array<keyof ChildRoute>).every((key) => JSON.stringify(stored[key]) === JSON.stringify(route[key]));
+}
+
+/**
+ * Model references are equal when provider, model and variant match. A missing variant is the model's default: the
+ * agent entry omits it, while the host reports a stored session model with `default` in its place.
+ */
+function sameModel(expected: Model.Ref, actual: Model.Ref): boolean {
+  return expected.providerID === actual.providerID && expected.id === actual.id && (expected.variant ?? DEFAULT_VARIANT) === (actual.variant ?? DEFAULT_VARIANT);
+}
+
+/** Shows the default variant as the omitted variant, as the user writes `provider/model`. */
+function formatModel(ref: Model.Ref): string {
+  return `${ref.providerID}/${ref.id}${ref.variant === undefined || ref.variant === DEFAULT_VARIANT ? '' : `#${ref.variant}`}`;
 }
 
 function describe(error: unknown): string {

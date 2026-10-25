@@ -170,6 +170,67 @@ export function selectionExpectations(id, model) {
   };
 }
 
+/**
+ * The managed-model-control probe as data, shared by the fixture that runs it and the wiring check that judges it.
+ * Only v2 has the control: its subagent wrapper (src/v2/dispatch.ts) refuses a `model` argument for a Hive-managed agent
+ * and a continuation of a child whose model an operator changed away from the agent's configured one. A model view is
+ * `{ model: <probe model ID>, variant: <probe variant | null> }`; the unit tests own the full local matrix, so these
+ * cases only need to reach the real wrapper through the real host: built-in and custom agents, configured and
+ * inheriting ones, the same model and another, with and without a variant.
+ */
+export const MANAGED_CONTROL_HOST = 'v2';
+export function managedControlPlan(model) {
+  const m = probeModels(model);
+  const v = PROBE_VARIANTS;
+  const view = (id, variant = null) => ({ model: id, variant });
+  const effective = selectionExpectations(MANAGED_CONTROL_HOST, model);
+  return {
+    refusals: [
+      { id: 'inheriting-built-in-other-model', agent: 'scout-researcher', sent: view(m.hive) },
+      { id: 'built-in-pair-same', agent: 'code-reviewer', sent: view(m.hive, v.hive) },
+      { id: 'custom-same-model-no-variant', agent: 'probe-base', sent: view(m.hive) },
+      { id: 'native-model-other-variant', agent: 'approach-advisor', sent: view(m.parent, v.parent) },
+      { id: 'custom-pair-same', agent: 'probe-advisor', sent: view(m.advisor, v.advisor) },
+    ],
+    // The host's own catalog entry for each probed agent: its configured model, null when it inherits the parent's.
+    catalog: {
+      'scout-researcher': null,
+      'code-reviewer': effective['code-reviewer'], 'probe-base': effective['probe-base'],
+      'approach-advisor': effective['approach-advisor'], 'probe-advisor': effective['probe-advisor'],
+    },
+    // The unmanaged native agent without a model inherits the parent's, and with the same argument as a refusal above it must
+    // run on that argument: the host accepts it, so a refusal above is Hive's own, and the argument is what changed the model.
+    baseline: { agent: 'general', expected: view(m.parent, v.parent) },
+    control: { agent: 'general', sent: view(m.hive, v.hive) },
+    // Fresh children without a `model`; each runs on its effective configured model.
+    children: [
+      { id: 'reviewer', agent: 'code-reviewer', expected: effective['code-reviewer'] },
+      { id: 'custom', agent: 'probe-base', expected: effective['probe-base'] },
+      { id: 'plain', agent: 'approach-advisor', expected: effective['approach-advisor'] },
+      { id: 'bearing', agent: 'probe-advisor', expected: effective['probe-advisor'] },
+    ],
+    // What the operator switches an idle child to between the parent's turns.
+    operator: { reviewer: view(m.parent, v.parent), custom: view(m.hive) },
+    // Continuations without a `model`, in one parent turn. An accepted one keeps the configured model; a refused one finds the operator's.
+    continuations: [
+      { child: 'reviewer', expect: 'refused' },
+      { child: 'plain', expect: 'accepted' },
+      { child: 'custom', expect: 'refused' },
+      { child: 'bearing', expect: 'accepted' },
+    ],
+  };
+}
+
+/** Two model views name one model. The host reports a stored model without a variant as `default`, and a configured one omits it. */
+export function sameModelView(a, b) {
+  return Boolean(a) && Boolean(b) && a.model === b.model && (a.variant ?? 'default') === (b.variant ?? 'default');
+}
+
+/** A model view written as a `providerID/modelID#variant` argument of the mock provider; `default` is no variant. */
+export function modelArgument(view) {
+  return `mock/${view.model}${view.variant && view.variant !== 'default' ? `#${view.variant}` : ''}`;
+}
+
 /** The variant a probe declares on one of its mock models, if any. */
 function probeVariant(probe, modelID) {
   const key = probe ? Object.keys(probe).find((name) => probe[name] === modelID) : undefined;
