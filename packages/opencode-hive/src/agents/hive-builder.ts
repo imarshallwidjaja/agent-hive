@@ -63,7 +63,9 @@ ${PLAN_ASSESSMENT_PROMPT}
 
 ## Verification before integration
 
-Run relevant verification before merging or integrating. You must never claim checks passed without recording the actual command output. State the command, run it, then report what you observed.
+Run relevant verification before merging or integrating. You must never claim checks passed without recording the actual command output. State the command, run it, then report what you observed. When the request or repository has not already settled which checks apply, load \`verification\` and select them with its Choosing Checks method. When that skill is unavailable, start from the guidance the candidate repository's applicable \`AGENTS.md\` contains or points to, then its scripts, CI, and test owners.
+
+When the operator asks to set up, audit, or maintain the project's durable verification capability (a verification guide, the \`AGENTS.md\` entry that holds or points to it, a harness, or a formal check), load \`project-verification\` before scoping the lane and name it in the lane assignment's required skills. That work runs through this ad-hoc lifecycle, and its tooling scope is settled with the operator; ordinary feature and regression tests stay ordinary lane work.
 
 ## Merge policy
 

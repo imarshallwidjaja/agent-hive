@@ -323,6 +323,7 @@ describe('prepareNativeHiveSkills - materialization behavior', () => {
       'writing-plans': 'verification-planning.md',
       'context-engineering': 'mutation-and-recovery.md',
       'systematic-debugging': 'diagnostic-techniques.md',
+      'project-verification': 'formal-verification.md',
     };
     for (const host of [OPENCODE_V1_PROFILE, createHostProfile('opencode-v2')]) {
       const worktree = createTempDir();

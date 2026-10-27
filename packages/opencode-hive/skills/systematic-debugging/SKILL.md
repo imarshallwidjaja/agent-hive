@@ -92,7 +92,7 @@ For other deep-stack errors, keep tracing up until you find the source. Fix at s
 
 1. **Select Durable Testing and Verification**
    - Reproduction or equivalent root-cause evidence is required before a fix.
-   - Select the durable testing and verification strategy from the defect, repository evidence, and mission.
+   - Select the durable testing and verification strategy from the defect, repository evidence, and mission. When the owning checks are not already settled, load `verification` and select them from the candidate repository's verification guidance with its Choosing Checks method. A regression test or temporary probe for this defect stays part of the diagnosis or fix; `project-verification` applies only when durable verification capability is the requested work.
    - Use strict TDD only when that strategy is selected; then load `test-driven-development` and observe the expected failure before implementation.
    - Other valid strategies include characterization tests before changing uncertain legacy behavior, tests alongside or after implementation when behavior is clear or design needs exploration, existing contract coverage for a pure internal refactor, and proportionate no-new-test verification with concrete rationale.
 

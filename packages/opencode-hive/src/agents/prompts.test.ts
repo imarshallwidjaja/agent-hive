@@ -2270,7 +2270,7 @@ describe('Hive (Hybrid) prompt', () => {
       expect(QUEEN_BEE_PROMPT).toContain('every deferral named by tasks');
       expect(QUEEN_BEE_PROMPT).toContain('use that evidence rather than rerunning solely because it is the last batch');
       expect(QUEEN_BEE_PROMPT).toMatch(
-        /^6\. On the resulting integrated candidate.*If no gate catalogue exists, inspect repository scripts, CI, and test owners\. Uncertain impact calls for a broader coherent existing check and a report of any missing check, not an empty pass\./m,
+        /^6\. On the resulting integrated candidate.*When that skill is unavailable, start from the verification guidance the integrated repository's applicable `AGENTS\.md` contains or points to; without such an entry, inspect repository scripts, CI, and test owners\. Uncertain impact calls for a broader coherent existing check and a report of any missing check, not an empty pass\./m,
       );
     });
 
@@ -2871,7 +2871,7 @@ describe('Forager (Worker/Coder) prompt', () => {
   });
 
   it('sets the mode of work from the assignment verb and checks evidence before reporting', () => {
-    for (const mode of ['Implement or add tests', 'Fix: establish the cause', 'Refactor: preserve behavior', 'Diagnose: report evidence only']) {
+    for (const mode of ['Implement or add tests', 'Fix: establish the cause', 'Refactor: preserve behavior', 'Diagnose or verify only: report evidence only']) {
       expect(FORAGER_BEE_PROMPT).toContain(mode);
     }
     expect(FORAGER_BEE_PROMPT).toContain('check each acceptance criterion against recorded evidence for the candidate you verified');
@@ -3070,6 +3070,39 @@ describe('Change-scoped verification prompts', () => {
       expect(prompt, name).toContain('required skipped or unrun');
     }
     expect(QUEEN_BEE_PROMPT).toContain('hive_feature_complete` does not enforce these checks');
+  });
+
+  it('routes check selection to the candidate repository guidance and keeps capability setup a requested, scoped lane', () => {
+    const selectors = [['Architect', ARCHITECT_BEE_PROMPT], ...executorPrompts, ['Hive Builder', HIVE_BUILDER_PROMPT]] as const;
+    for (const [name, prompt] of selectors) {
+      // Unsettled selection loads `verification` first; the AGENTS.md entry is the fallback when that skill is unavailable.
+      const load = prompt.search(/not already settled[^.]*, load `verification` and select (them|it) with its Choosing Checks method/);
+      expect(load, name).toBeGreaterThanOrEqual(0);
+      expect(prompt.indexOf('When that skill is unavailable, start from', load), name).toBeGreaterThan(load);
+      // Discovery names the repository's own AGENTS.md entry, keeps the scripts/CI/test-owner baseline, and fixes no guide path.
+      expect(prompt, name).toMatch(/applicable `AGENTS\.md` contains or points to/);
+      expect(prompt, name).not.toContain('gate catalogue');
+      expect(prompt, name).not.toMatch(/docs\/verification|VERIFICATION\.md|look for a verification guide/i);
+    }
+    for (const [name, prompt] of [['Architect', ARCHITECT_BEE_PROMPT], ...executorPrompts] as const) {
+      expect(prompt, name).toMatch(/without such an entry, inspect (existing |repository )?scripts, CI, and test owners/);
+    }
+    expect(QUEEN_BEE_PROMPT).toMatch(/verification.*\| Selecting checks that are not already settled, interpreting check results, and before claiming work is complete/);
+    for (const [name, prompt] of [['Architect', ARCHITECT_BEE_PROMPT], ['Hive', QUEEN_BEE_PROMPT], ['Hive Builder', HIVE_BUILDER_PROMPT]] as const) {
+      expect(prompt, name).toContain("durable verification capability");
+      expect(prompt, name).toContain('load `project-verification`');
+      expect(prompt, name).toMatch(/ordinary feature and regression tests stay/);
+    }
+    expect(HIVE_BUILDER_PROMPT).toContain('That work runs through this ad-hoc lifecycle, and its tooling scope is settled with the operator');
+    expect(HIVE_BUILDER_PROMPT).toContain("name it in the lane assignment's required skills");
+  });
+
+  it('maps verify-only work to the existing report-only diagnosis boundary', () => {
+    expect(FORAGER_BEE_PROMPT).toContain('- Diagnose or verify only: report evidence only (see Diagnosis-Only Boundary).');
+    expect(FORAGER_BEE_PROMPT).toContain('A verify-only assignment is diagnosis-only: it changes no candidate source, test, fixture, snapshot, or gate and commits nothing, even when a check fails');
+    expect(FORAGER_BEE_PROMPT).toContain('Builds and the scratch or runtime effects below are not such changes');
+    expect(WORKER_ASSIGNMENT_PROMPT).toContain('report-only diagnosis, which includes verify-only work');
+    expect(WORKER_ASSIGNMENT_PROMPT).toContain('the worker then selects them with `verification`, starting from the candidate repository\'s own guidance');
   });
 });
 

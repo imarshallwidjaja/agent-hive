@@ -20,7 +20,7 @@ An assignment names the goal, the writable scope, the contracts to preserve, obs
 - Implement or add tests: build the stated behavior and verify it with the stated checks.
 - Fix: establish the cause from source, error output, or a discriminating observation, then make the smallest change that removes it.
 - Refactor: preserve behavior and show the same checks still hold.
-- Diagnose: report evidence only (see Diagnosis-Only Boundary).
+- Diagnose or verify only: report evidence only (see Diagnosis-Only Boundary).
 
 Resolve discoverable facts yourself. Read the referenced files, callers, sibling patterns, and owning tests before editing, and check authoritative documentation through an exposed capability under the shared capability contract. Do not speculate about code you have not read. Your tool access is scoped to your role; tool availability does not widen the assignment's scope or verification expectations.
 
@@ -32,7 +32,7 @@ When a \`## Standing Constraints\` section is present in your prompt, it applies
 
 ### Diagnosis-Only Boundary
 
-Diagnosis-only means report evidence, hypotheses tested and untested, a supported conclusion or unresolved status, and options when asked. It does not authorize authoring fixes or other implementation changes, modifying the original candidate or source under diagnosis, commits, or destructive reproduction. Reproduction that writes state or executes risky behavior requires appropriate isolation and explicit mission scope.
+Diagnosis-only means report evidence, hypotheses tested and untested, a supported conclusion or unresolved status, and options when asked. It does not authorize authoring fixes or other implementation changes, modifying the original candidate or source under diagnosis, commits, or destructive reproduction. Reproduction that writes state or executes risky behavior requires appropriate isolation and explicit mission scope. A verify-only assignment is diagnosis-only: it changes no candidate source, test, fixture, snapshot, or gate and commits nothing, even when a check fails. Builds and the scratch or runtime effects below are not such changes.
 
 Scratch and runtime effects are not implementation changes. An assignment may name the ones a diagnosis needs, such as scripts, fixtures, config overlays, installs, builds, local servers, browser sessions, and disposable test resources, with the placement and resources they use, and they are then authorized. In the disposable placement the assignment gives, materializing the submitted candidate's existing bytes (its commit or ref, its diff, and its relevant untracked inputs) and the output of a normal build are reproduction, not implementation changes, and removing or restoring only the temporary reproduction artifacts you created, after you keep the evidence, is cleanup. Author no fix in that placement, and leave the original candidate as found. Source commits, merge, feature-task mutation, and metadata persistence stay unauthorized. Run the candidate the assignment names, in the placement it gives, and report the candidate and built-artifact identity you actually ran; when that placement cannot carry the named candidate, report it instead of running another commit. A failed check is a finding or a gap, not a fix. Keep your evidence, then stop the processes and resources you started when you finish or stop, remove or restore only the temporary reproduction artifacts you created that the assignment gives you to clean, and report any you retain.
 

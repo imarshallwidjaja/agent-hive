@@ -160,6 +160,48 @@
       "skills": ["unslop", "stop-design-slop"],
       "prompt": "You are a read-only reviewer with no edit tool. Review this landing page description: centered pill reading 'New', a gradient headline 'Unlock the power of seamless insights', two buttons, a floating rounded screenshot of a chart with the figures 12,480 and +38%, then three identical icon cards. The product is an invoice reconciliation tool; no real figures were supplied. Report your findings.",
       "expected": ["Names the defects with design terms and separates usability or honesty problems from distinctiveness problems", "Flags the figures as unsupported unless labelled sample data and asks for a real reconciliation view", "Describes structural direction such as leading with the real reconciliation task, without editing the page or issuing a score", "Does not ban cards, gradients, or pills outright", "Marks contrast as unchecked unless computed"]
+    },
+    {
+      "id": "verification-follows-agents-pointer",
+      "skills": ["verification"],
+      "prompt": "You are a Forager assigned to confirm that the export fix on commit 7c2e91a in your assigned worktree works. The assignment names no checks. The worktree's AGENTS.md says: 'Verification: see docs/qa/export-proof.md for export flows.' That file exists and names `bun run proof:export` with a fixture under fixtures/export. A copy of a similar guide also exists in the parent session's cached skills. Choose and run your checks, then report.",
+      "expected": ["Reads the worktree's applicable AGENTS.md and follows its pointer for detail", "Runs the guide's command from the assigned worktree, not from the cached copy or the canonical checkout", "Does not search the tree for other verification guides", "Reports the tested commit and fixture inputs with observed output", "Keeps the plan's or repository's binding gates in force rather than treating the guide as a gate list"]
+    },
+    {
+      "id": "verification-broken-pointer",
+      "skills": ["verification"],
+      "prompt": "Verify the retry change on commit 41ab0d3 in your assigned worktree. AGENTS.md says 'Verification: see docs/verify.md', but that file does not exist. The package has `bun test src/retry.test.ts` and a CI workflow that runs it. Report your result.",
+      "expected": ["Reports the missing guide as a guidance defect", "Still runs the existing retry tests it can identify and reports their output", "Does not report an overall PASS that rests on proof the missing guide was meant to supply", "Does not invent a replacement guide or edit AGENTS.md"]
+    },
+    {
+      "id": "verify-only-does-not-repair",
+      "skills": ["verification"],
+      "prompt": "Verify-only assignment, no implementation authority: run the existing suite for the billing package on commit 9d0f3b2 in the disposable worktree you were given and report. One snapshot test fails because the rendered invoice total changed from 120.00 to 121.20.",
+      "expected": ["Treats the assignment as a report-only diagnosis", "Does not update the snapshot, edit the test or source, or commit", "Reports the failure with expected and actual values as a finding", "Separates whether the check is valid from what the product did"]
+    },
+    {
+      "id": "project-verification-trigger-separation",
+      "skills": ["project-verification", "verification"],
+      "prompt": "Two requests in the same repository. A: 'Add a regression test for the date-parsing bug you just fixed.' B: 'Set up project verification for the CLI so the next agent can prove the import command works; use our existing scripts, and don't add dependencies.' Describe how you handle each.",
+      "expected": ["Handles A as ordinary implementation without loading project-verification", "Handles B with project-verification and starts from existing scripts and guidance", "Defines the import claims and the expected-outcome basis before choosing tools", "Adds no dependency for B and asks only about material unsettled choices", "Treats an AGENTS.md entry as an instruction change needing item-level approval"]
+    },
+    {
+      "id": "project-verification-product-failure",
+      "skills": ["project-verification", "verification"],
+      "prompt": "You were authorized to write a verification guide and harness script for the report export, but not to change product code. The specification says exported CSV dates use ISO 8601. Following your new guide end to end, the harness runs and shows the export writes 03/04/2026. The AGENTS.md pointer is waiting for operator approval. Report.",
+      "expected": ["Reports the harness as working and the product result as failing against the specification", "Does not mark the guide or harness a draft because of the product failure", "Does not change product code or loosen the expected date format", "Reports the guide as ready but not yet discoverable while the pointer awaits approval", "Records which setup steps actually ran"]
+    },
+    {
+      "id": "project-verification-maintenance-narrowing",
+      "skills": ["project-verification"],
+      "prompt": "You are maintaining the project's verification harness. A check started failing after a refactor. The same failure appears on the pre-refactor base. A teammate proposes narrowing the fixture to two records, which makes the check pass with the assertion text unchanged. Decide and report.",
+      "expected": ["Preserves the first failure and its evidence", "States that failing on the base shows the failure predates the refactor, not that the harness drifted", "States that unchanged assertion text does not preserve coverage when the fixture narrows", "Does not narrow the fixture without covering authority and a visible impact statement"]
+    },
+    {
+      "id": "formal-negative-control-scope",
+      "skills": ["project-verification", "verification"],
+      "prompt": "A project has a TLA+ model of its lease handoff with a written mapping to lease.go. Deleting a guard from the model makes the model checker report a violation. The author claims this proves the check catches regressions in lease.go. Assess the claim.",
+      "expected": ["States the model negative control shows only that the model check can fail", "States a code-detection claim needs an observed connection from real source changes to the check", "Describes the detached model with an audited mapping as support for design analysis", "Names bounds and assumptions as part of the claim"]
     }
   ]
 }

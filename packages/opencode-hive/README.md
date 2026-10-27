@@ -583,13 +583,14 @@ Generated/managed shape (for inspection) at `<project>/.hive/repositories.json`:
 | `orchestrating-ad-hoc-work` | Coordinate qualifying ad-hoc work for Hive Builder or unified Hive |
 | `parallel-exploration` | Researcher fan-out for read-only research |
 | `pr-writing` | Draft PR titles, descriptions, and general or inline review comments |
+| `project-verification` | Set up, audit, or maintain a project's durable verification guidance, harness, or formal checks when that is the requested work |
 | `starting-ad-hoc-implementation` | Turn a scoped conversation into authorized ad-hoc implementation when the operator asks to implement it |
 | `stop-design-slop` | Visual foundation for interfaces: composition from the product's task, diagnostics for generic patterns, and refinement that preserves an existing identity |
 | `stop-slop` | Repair staging, formulaic cadence, and structure in existing prose |
 | `systematic-debugging` | Root-cause investigation before fixes |
 | `test-driven-development` | Strict red-green-refactor when TDD is the selected testing strategy |
 | `unslop` | Shared philosophy and router for writing, messaging, and visual work; every Hive role is asked to load it, and it selects depth skills and carries the delegation contract |
-| `verification` | Applicable command/tool evidence before completion or verification claims |
+| `verification` | Select checks from the candidate repository's own guidance, read their results, and require applicable command/tool evidence before completion or verification claims |
 | `why` | Investigate explicitly requested historical rationale with calibrated source evidence |
 | `writing-for-agents` | Reference for authoring documents agents consume: skills, subagent prompts, instructions, and pointer architecture |
 | `writing-for-humans` | Draft substantial reader-centered prose and apply the non-invention finish pass |

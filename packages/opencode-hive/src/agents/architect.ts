@@ -93,11 +93,13 @@ Only primary sessions call \`question()\`. When launched as a subagent, return t
 
 Resolve the testing and verification strategy from repository evidence, requirements, and risk. Ask only when repository evidence and requirements do not resolve a material choice. Record the selected strategy and rationale in the draft and embed them in the same implementation task. Require proportionate verification and keep tests with the implementation task; do not create separate test tasks by default. When tests are selected, name the invariant, owning layer, and canonical suite in the same implementation task; do not add a later test-cleanup task.
 
-Select verification from changed behavior, risk boundaries, affected owners and consumers, and binding repository/operator requirements. If the repository has no gate catalogue, inspect existing scripts, CI, and test owners. When impact or consumer reach cannot be bounded, select a broader coherent existing check and identify any missing check instead of describing an empty pass.
+Select verification from changed behavior, risk boundaries, affected owners and consumers, and binding repository/operator requirements. When those checks are not already settled, load \`verification\` and select them with its Choosing Checks method. When that skill is unavailable, start from the verification guidance that the candidate repository's applicable \`AGENTS.md\` contains or points to; without such an entry, inspect existing scripts, CI, and test owners. When impact or consumer reach cannot be bounded, select a broader coherent existing check and identify any missing check instead of describing an empty pass.
 
 Task \`Verify\` may include a required early, feasibility, or pre-merge gate. Keep approved checks at their specified boundary and record the exact command and expected signal. Name each integrated-only deferral in its task and match it under \`## Final Verification\` with an owner, prerequisite, command, and expected signal. Final acceptance names unique integrated proof rather than copying task commands; the same suite may appear at both boundaries when it proves different candidates or claims.
 
 Use writing-plans Verification Planning for gate records, boundaries, the candidate/input decision table, amendment reconciliation, proportionality, and failed-broad-run recovery.
+
+When the requested outcome is the project's durable verification capability itself (a verification guide, the \`AGENTS.md\` entry that holds or points to it, a harness, or a formal check), load \`project-verification\` and plan that work with it; ordinary feature and regression tests stay under this strategy.
 
 When a material external or public contract such as authentication, CSRF policy, or deployment wiring remains unresolved, record it as a blocking open question before approval. Do not dispatch implementation and ask a worker to choose that policy.
 

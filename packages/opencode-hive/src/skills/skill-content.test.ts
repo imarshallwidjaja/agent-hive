@@ -861,6 +861,148 @@ describe('skill content', () => {
     expect(template).toContain('an unrun node never counts');
   });
 
+  it('selects unsettled checks from the candidate repository AGENTS.md guidance without a fixed layout', () => {
+    const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'verification')!;
+    const choosing = skill.template.slice(skill.template.indexOf('### Choosing Checks'), skill.template.indexOf('### Candidate and Input Applicability'));
+
+    // Trigger covers selection and interpretation as well as completion; capability setup routes elsewhere.
+    expect(skill.description).toMatch(/^Use when selecting checks that are not already settled, interpreting check results, or before claiming work is complete/);
+    expect(skill.template).toContain("use `project-verification`, and keep using this skill for that work's proof run and evidence");
+    // Independent verify-only work reports and does not repair; authorized builds and scratch effects remain allowed.
+    const reportMode = skill.template.slice(skill.template.indexOf('### Verification Report Mode'), skill.template.indexOf('## Iron Laws'));
+    expect(reportMode).toContain('Unless the assignment also grants implementation authority, verifying reports and does not repair: change no candidate source, test, fixture, snapshot, or gate, and commit nothing, even when a check fails');
+    expect(reportMode).toContain('Builds and the scratch or runtime effects the assignment authorizes are not such changes');
+    expect(reportMode).toContain("the role's diagnosis-only boundary governs the rest of the run");
+    // Callers that select checks load this skill early, keeping a short AGENTS.md baseline when it is unavailable.
+    for (const caller of ['writing-plans', 'orchestrating-ad-hoc-work', 'executing-plans', 'systematic-debugging']) {
+      expect(readSkillTemplate(caller), caller).toMatch(/not already settled[^.]*, load `verification` and (select|choose) (them|it)/);
+    }
+    // Settled adequate checks run as named, with no recataloguing.
+    expect(choosing).toContain('already names checks adequate for the claim, run those without recataloguing');
+    // The repository's own AGENTS.md contains or points to the guide; Hive fixes no path and does not search for one.
+    expect(choosing).toContain('It holds concise verification guidance or a scoped pointer to the project\'s canonical detailed guide; follow the pointer for detail');
+    expect(choosing).toContain('Hive prescribes no location, filename, heading, or format for either, so do not search the tree for a guide no instruction names');
+    expect(choosing).not.toMatch(/docs\/verification|VERIFICATION\.md|## Verification heading/);
+    // No entry keeps the existing fallback; a broken pointer is a defect that blocks only an unproven overall PASS.
+    expect(choosing).toContain('When no such entry exists, select from the repository\'s existing scripts, CI workflows, and test owners');
+    expect(choosing).toContain('A pointer whose target is missing, unreadable, or does not cover the scope it claims is a guidance defect');
+    expect(choosing).toContain('Checks it does not affect may still run, but an overall PASS cannot rest on proof the guide was meant to supply');
+    // Guidance is method; binding gates stay and are never deferred by it.
+    expect(choosing).toContain('it does not add or drop a required gate by itself');
+    expect(choosing).toContain("never defer a gate on a guide's say-so");
+    // Candidate and composite roots: the candidate's own worktree, never a cached or canonical sibling copy.
+    expect(choosing).toContain("in a composite workspace means each affected repository's own root");
+    expect(choosing).toContain("A parent's cached skill copy or a canonical sibling checkout is not the candidate");
+    expect(choosing).toContain('global or shared instructions are guidance, not candidate source');
+    expect(choosing).toContain('instead of running the canonical sibling or deferring the gate');
+    // A guide delivered as a native skill is loaded natively and identity-checked; an unavailable one keeps the baseline.
+    expect(choosing).toContain('load it with the native skill tool, because reading its file does not load it');
+    expect(choosing).toContain('without searching generated skill caches for a copy');
+  });
+
+  it('keeps check validity apart from the product result and limits what each proof method supports', () => {
+    const template = readSkillTemplate('verification');
+    const interpreting = template.slice(template.indexOf('## Interpreting Results'), template.indexOf('## Failure Handling'));
+    expect(interpreting).toContain('A correctly working check can find a real product failure');
+    expect(interpreting).toContain('A product failure does not make the check invalid');
+    for (const method of ['A sampled property or generated-input check supports claims about the inputs it sampled', 'An exhaustive bounded model check supports claims inside its stated model and bounds', 'A proof linked to the source supports claims under its stated assumptions']) {
+      expect(interpreting).toContain(method);
+    }
+    expect(interpreting).toContain('it cannot show that the check detects a change to the actual code');
+    expect(interpreting).toContain('A negative control demonstrates detection only on the surface it actually broke');
+    expect(interpreting).toContain('needs an observed connection from the real source to the check');
+  });
+
+  it('confines project-verification to requested durable capability work and keeps its authority with the role', () => {
+    const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'project-verification');
+
+    expect(skill).toBeDefined();
+    const template = skill!.template;
+    // Trigger separation: explicit capability work only; ordinary tests, fixtures and probes stay ordinary work.
+    expect(skill!.description).toMatch(/^Use when the operator explicitly asks for, or an assignment names, setting up, auditing, or maintaining a project's durable verification capability/);
+    expect(skill!.description).toContain('Ordinary feature or regression tests, routine in-scope fixtures, and temporary diagnostic probes stay ordinary implementation or diagnosis');
+    expect(template).toContain('`verification` owns how any agent selects checks, reads their results, and claims completion');
+    // Authority: none granted; verify-only stays report-only; plan-first and ad-hoc lifecycles hold; scoped creation.
+    for (const rule of [
+      'This skill grants no tool, edit, commit, or role authority',
+      'A read-only role reports findings and a proposed guide, pointer, or harness',
+      'A verify-only assignment is a report-only diagnosis',
+      'Architect and a plan-first Hive primary keep planning first',
+      'Hive Builder runs the work through its ordinary ad-hoc lifecycle',
+      'A documentation-only request permits the documentation it names. A request for a concrete harness, script, or dependency authorizes that named work',
+      'Scope tooling with the operators of this project',
+      'Reuse authorization they have already given and ask only about material choices that remain open',
+      'get item-level approval under `agents-md-mastery` before writing it; a documentation-only task never changes instructions as a side effect',
+      'Create no native skill as the project\'s guide by default',
+      'which reading its file does not replace',
+      'the copy the host loaded must match the candidate under test',
+    ]) {
+      expect(template, rule).toContain(rule);
+    }
+    // Expected-outcome basis and claims precede tools; existing checks first; content, not schema.
+    expect(template).toContain('Observed current behavior is a characterization, not an expectation');
+    expect(template).toContain('Ask the operator about product intent only when that evidence cannot settle it');
+    expect(template).toContain('**Define claims and evidence before tools.**');
+    expect(template.indexOf('Define claims and evidence before tools')).toBeLessThan(template.indexOf('Choose owning checks'));
+    expect(template).toContain("Prefer the project's existing scripts and test suites");
+    expect(template).toContain('It is content, not a schema; its location, filename, and headings follow the project');
+    expect(template).toContain('without copying whole command, test, or CI inventories');
+    expect(template).toContain('Evidence from runs belongs in reports and artifacts, not as accumulating run history in the guide');
+    // Proof as the next agent; a working check that finds a product failure is not a draft.
+    expect(template).toContain('never call unrun setup operationally validated');
+    expect(template).toContain('A product failure found by a working check does not make the guide or harness a draft');
+    // Pending AGENTS.md approval: discoverability apart from readiness, and readiness only for a proof run that executed its setup.
+    expect(template).toContain('report discoverability as not yet adopted, apart from readiness');
+    expect(template).toContain('call the guide or harness ready to use only when its proof run below executed every setup step it needs; otherwise report it as unvalidated and name the steps that did not run');
+    expect(template).toContain('A product failure that the proof run finds does not lower readiness');
+    expect(template).not.toContain('report the guide or harness as ready to use and its discoverability');
+    // Maintenance evidence and the weakening guard.
+    for (const rule of [
+      'Preserve the first failure and its evidence before changing anything',
+      'It does not show that the harness drifted',
+      'Unchanged assertion text does not show unchanged coverage when a fixture, selector, input set, or bound narrowed',
+      'needs covering authority and a visible statement of its impact',
+      'Never weaken a check to make it pass; disclosing a weakening does not authorize it',
+      'Fixing the product needs implementation scope that covers the fix',
+      'No periodic job, pull request, or installation is required',
+      'Ordinary changes carry no proof obligation',
+    ]) {
+      expect(template, rule).toContain(rule);
+    }
+    expect(template).not.toMatch(/\.cursor\/skills|features\/README\.md|\/create-verification-skill|\/maintain-verification-skill/);
+  });
+
+  it('discloses the formal method without default tools or an unavailable statechart dependency', () => {
+    const reference = readSkillReference('project-verification', 'formal-verification.md');
+    expect(reference).toContain('It adds method, not authority');
+    expect(reference).toContain('Let the question choose the tool, within the project\'s agreed scope');
+    expect(reference).toContain('Installing a tool is a scoping decision for the operators, never a default step');
+    expect(reference).toContain('What the verification treats as one indivisible step is one indivisible step in the code');
+    expect(reference).toContain('Look for new writers');
+    expect(reference).toContain('Covered code that is renamed, split, or moved is still covered code');
+    // Negative controls follow the surface the check reads; no universal real-code mandate, and code detection needs an observed source connection.
+    const control = reference.slice(reference.indexOf('## Showing the check can fail'), reference.indexOf('## Reading results'));
+    expect(control).toContain('Give each property a negative control on the surface the check actually reads');
+    expect(control).toContain('When the verifier runs on the code itself, break the code it guards');
+    expect(control).toContain('When the check runs on a detached model, break the model. That shows only that the model check is sensitive to the property');
+    expect(control).toContain('it does not show that the check detects a change to the code');
+    expect(control).toContain('Claim that the check detects a code defect only after you observe the connection');
+    expect(control).not.toMatch(/negative control[^.]*\breal code\b/);
+    expect(readFileSync(path.join(resolvePackagedSkillsDir(), 'project-verification', 'UPSTREAM.md'), 'utf8')).not.toContain('show each property failing on a broken variant of the real code');
+    expect(reference).toContain('retold as a short sequence of steps in the code\'s own terms');
+    expect(reference).not.toMatch(/statechart|TLA\+ is the default/i);
+  });
+
+  it('records the pstack verification-skill provenance with the unchanged MIT notice', () => {
+    const root = resolvePackagedSkillsDir();
+    const upstream = readFileSync(path.join(root, 'project-verification', 'UPSTREAM.md'), 'utf8');
+    expect(upstream).toContain('c5149ef275fa7be41e3ffe5e79c8fc16efcaeedc');
+    for (const source of ['create-verification-skill', 'maintain-verification-skill', 'create-formal-verification-skill', 'maintain-formal-verification-skill']) {
+      expect(upstream, source).toContain(`\`${source}\``);
+    }
+    expect(readFileSync(path.join(root, 'project-verification', 'LICENSE.pstack'), 'utf8')).toBe(readFileSync(path.join(root, 'verification', 'LICENSE.pstack'), 'utf8'));
+  });
+
   it('shapes each task as a goal, responsibility, proof and pointed context instead of a predicted file inventory', () => {
     const template = BUILTIN_SKILLS.find((entry) => entry.name === 'writing-plans')!.template;
     const contracts = template.slice(template.indexOf('## Task Contracts'), template.indexOf('## Plan Structure'));
@@ -1334,6 +1476,15 @@ describe('skill content', () => {
     expect(operatorGuide).toContain('A branch result never proves integrated acceptance');
     expect(operatorGuide).toContain('run additional checks only for a named gap, invalidation, or new risk');
     expect(operatorGuide).toContain('the tool does not enforce verification gates');
+    // Operators learn the contains-or-points expectation, the two skills' split, and check versus product results.
+    expect(operatorGuide).toContain('Hive expects that file to contain concise verification guidance or to point, with its scope, to the project\'s canonical detailed guide');
+    expect(operatorGuide).toContain('Hive prescribes no location, filename, heading, or format for the guide');
+    expect(operatorGuide).toContain('### Project verification capability');
+    expect(operatorGuide).toContain('it loads `project-verification`');
+    expect(operatorGuide).toContain('A working check can still find a real product failure');
+    expect(operatorGuide).toContain('A request to verify a candidate, without implementation authority, is handled the same way');
+    expect(operatorGuide).not.toMatch(/\/project-verification|\/create-verification|gate catalogue/);
+    expect(pluginReadme).toContain('| `project-verification` |');
   });
 
   it('keeps escalation advisory without bypassing material questions', () => {
@@ -1916,6 +2067,7 @@ describe('skill content', () => {
       'writing-plans': 'verification-planning.md',
       'context-engineering': 'mutation-and-recovery.md',
       'systematic-debugging': 'diagnostic-techniques.md',
+      'project-verification': 'formal-verification.md',
     };
 
     it('points to each reference with a read-when line and a link that stays inside the skill directory', () => {

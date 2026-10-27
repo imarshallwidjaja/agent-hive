@@ -1,17 +1,21 @@
 ---
 name: verification
-description: Use before claiming work is complete, fixed, passing, or independently verified; requires applicable command/tool evidence, proportional falsification checks, and concise PASS/FAIL/PARTIAL reporting
+description: Use when selecting checks that are not already settled, interpreting check results, or before claiming work is complete, fixed, passing, or independently verified; requires applicable command/tool evidence, proportional falsification checks, and concise PASS/FAIL/PARTIAL reporting
 ---
 
 # Verification
 
 ## Purpose
 
-Verification is the shared evidence protocol for completion claims. It is not plan review, code review, or approach advice.
+Verification is the shared evidence protocol for choosing checks, reading their results, and making completion claims. It is not plan review, code review, or approach advice.
 
 Core principle: evidence before claims, always.
 
 ## When To Use
+
+Use this skill when:
+- Selecting the checks for a claim when the assignment, plan, or a binding requirement has not already settled them
+- Interpreting a check result: what it proves, for which candidate, and whether a failure is the product's or the check's
 
 Use this skill before:
 - Claiming work is complete, fixed, passing, or verified
@@ -24,6 +28,7 @@ Do not use this skill for:
 - Plan readiness review; use `plan-reviewer`
 - Implementation quality review; use `code-reviewer`
 - Strategic approach advice; use `approach-advisor`
+- The method for setting up, auditing, or maintaining a project's durable verification guidance or harness when that is the requested work; use `project-verification`, and keep using this skill for that work's proof run and evidence
 
 ## Modes
 
@@ -34,6 +39,8 @@ Use this mode before your own completion claim. Keep the report compact, but inc
 ### Verification Report Mode
 
 Use this mode when the task is explicitly to independently verify work. Be falsification-first and end with `VERDICT: PASS`, `VERDICT: FAIL`, or `VERDICT: PARTIAL`.
+
+Unless the assignment also grants implementation authority, verifying reports and does not repair: change no candidate source, test, fixture, snapshot, or gate, and commit nothing, even when a check fails. Builds and the scratch or runtime effects the assignment authorizes are not such changes. A failed check is a finding; the role's diagnosis-only boundary governs the rest of the run.
 
 ## Iron Laws
 
@@ -56,6 +63,16 @@ For each coherent claim group:
 4. Identify the tested candidate and relevant inputs: branch/ref and commit, relevant dirty changes, fixtures, configuration, toolchain, generated artifacts, and live or deployed state as applicable.
 5. Compare the observed result with the expected signal and decide whether later changes affect the tested behavior or inputs.
 6. Report the command/tool, observed output, candidate, input applicability, and attribution before making the claim.
+
+### Choosing Checks
+
+When the assignment, plan, or a binding repository or operator requirement already names checks adequate for the claim, run those without recataloguing the project's checks. When the choice is open:
+
+- Read the candidate's applicable `AGENTS.md`: the instruction files in the worktree and repository under test that cover the changed paths, which in a composite workspace means each affected repository's own root. It holds concise verification guidance or a scoped pointer to the project's canonical detailed guide; follow the pointer for detail. Hive prescribes no location, filename, heading, or format for either, so do not search the tree for a guide no instruction names. When the pointer names a native skill, load it with the native skill tool, because reading its file does not load it, and confirm the loaded copy is the candidate's; when it is unavailable, report that and keep this skill's baseline without searching generated skill caches for a copy.
+- When no such entry exists, select from the repository's existing scripts, CI workflows, and test owners.
+- A pointer whose target is missing, unreadable, or does not cover the scope it claims is a guidance defect. Report it. Checks it does not affect may still run, but an overall PASS cannot rest on proof the guide was meant to supply.
+- Guidance describes method; it does not add or drop a required gate by itself. Repository, operator, and plan obligations stay binding. When guidance conflicts with one, report the conflict to the obligation's owner and continue only independent work; never defer a gate on a guide's say-so.
+- Read and run project guidance, scripts, and dependencies from the candidate's own worktree and repository. A parent's cached skill copy or a canonical sibling checkout is not the candidate, and global or shared instructions are guidance, not candidate source. When a check needs another repository or a gate outside your authority, return the mismatch to whoever assigned the work (the primary, or the operator when you are the primary) instead of running the canonical sibling or deferring the gate.
 
 ### Candidate and Input Applicability
 
@@ -107,6 +124,17 @@ For non-trivial behavior changes, run at least one probe that tries to break the
 - Consumer import or CLI usage from a fresh context
 
 Do not require adversarial probes for trivial docs, prompt text, or metadata changes.
+
+## Interpreting Results
+
+A correctly working check can find a real product failure. Report separately whether the check is valid (it ran on the intended candidate and inputs and could fail), the product result it observed, the scope it covered, and whether the next agent can find and run it. A product failure does not make the check invalid, and a pass says nothing about scope the check did not cover.
+
+Proof strength follows the method:
+- A sampled property or generated-input check supports claims about the inputs it sampled.
+- An exhaustive bounded model check supports claims inside its stated model and bounds.
+- A proof linked to the source supports claims under its stated assumptions.
+
+State the assumptions, bounds, and how the model or proof corresponds to the code. A detached model with an audited mapping to the code can support design analysis, but it cannot show that the check detects a change to the actual code. A negative control demonstrates detection only on the surface it actually broke: breaking the model shows the model check can fail, and a claim that the check catches a code defect needs an observed connection from the real source to the check, such as a mutated source file that the check reads and rejects.
 
 ## Failure Handling
 
