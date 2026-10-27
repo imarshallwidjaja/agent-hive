@@ -87,7 +87,7 @@ describe('release documentation and runtime contract', () => {
     assert.match(plugin, /\*\*5\.0\.0\*\* is the first release that serves both OpenCode hosts/);
     assert.match(plugin, /Releases through 4\.2\.0 are v1-only/);
     assert.match(plugin, /^### OpenCode v2$/m);
-    assert.match(plugin, /npm install oc-arkive@5\.0\.0/);
+    assert.match(plugin, /npm install oc-arkive@5\.1\.0/);
     assert.match(plugin, /host-side registry resolution at first use was not part of it/);
     assert.match(plugin, /"readTransport": "direct"/);
     assert.match(plugin, /"package": "\/absolute\/install\/node_modules\/oc-arkive\/dist"/);
