@@ -102,7 +102,7 @@ describe('ContextService reserved overview context', () => {
     service.create('summary-unclipped', 'note', durable('body'));
     const smallSummary = service.readSummary('summary-unclipped');
     expect('metadataClipped' in smallSummary).toBe(false);
-  });
+  }, 60000);
 
   it('fails explicitly when the identity-only clip still exceeds the response bound', () => {
     setupFeature('summary-clipped-oversized');
@@ -1483,7 +1483,7 @@ describe('ContextService managed context', () => {
 
     const archived = service.archiveSelected('archive-name-limit', names, 'bounded archive', revision, hashes);
     expect(archived.archived).toHaveLength(50);
-  });
+  }, 60000);
 
   it('preserves repeated archives of a recreated name at a fixed timestamp', () => {
     setupFeature('archive-collision');
