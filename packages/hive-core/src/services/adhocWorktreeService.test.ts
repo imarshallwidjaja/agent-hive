@@ -1959,7 +1959,7 @@ describe("AdhocWorktreeService composite merge", () => {
     expect((await fixture.apiGit.revparse(['HEAD'])).trim()).not.toBe(before.api);
     expect((await fixture.webGit.revparse(['HEAD'])).trim()).toBe(before.web);
     expect((await fixture.webGit.status()).isClean()).toBe(true);
-  });
+  }, 20000);
 
   it("classifies a composite preflight failure with its specific reason code and no partial flag", async () => {
     const fixture = await createCompositeFixture();

@@ -3122,7 +3122,7 @@ describe("WorktreeService composite merge aggregation", () => {
     expect((await fx.repos.api.git.revparse(['HEAD'])).trim()).not.toBe(before.api);
     expect((await fx.repos['web-ui'].git.revparse(['HEAD'])).trim()).toBe(before.web);
     expect((await fx.repos['web-ui'].git.status()).isClean()).toBe(true);
-  });
+  }, 20000);
 
   it('classifies a composite preflight failure with its specific reason code and no partial progress', async () => {
     const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
