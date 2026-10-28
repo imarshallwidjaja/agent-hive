@@ -2,6 +2,60 @@
 
 These are constructed examples, not external factual claims. Each rewrite preserves only facts in its input.
 
+## Technical and product clarity
+
+Each source note supplies the context for its short before-sentence. The repairs are examples, not required sentence shapes.
+
+**Actor and input**
+
+Source: Software uses satellite data to calculate a screening result.
+
+Before: "Satellite data produces a screening result."
+
+After: "The software uses satellite data to calculate the screening result."
+
+**Reader-relative terminology**
+
+Source: Processing software returns reports and output records in a defined format. The readers are unfamiliar with type systems.
+
+Before: "Processing returns typed evidence about its outputs."
+
+After: "The processing software returns reports and output records in a defined format."
+
+**Identity, checks, and permitted use**
+
+Source: A saved Workflow A result has passed technical checks and meets the rules for use by Workflow B.
+
+Before: "The result is exact, technically ready and eligible."
+
+After: "The saved Workflow A result passed the technical checks and meets the rules for use by Workflow B."
+
+The saved result's identity, the checks, and the rules for its use are separate facts; the source does not say who grants permission.
+
+**Comparison**
+
+Source: A reviewer compares the system's retained or new answer against the answer reported in the submitted study.
+
+Before: "Compare the result with the study."
+
+After: "The reviewer compares the system's retained or new answer with the answer reported in the submitted study."
+
+**Retry scope**
+
+Source: Repeating an acceptance operation after interruption retrieves its recorded outcome instead of duplicating its effect. The source does not say whether earlier calculations run again.
+
+Before: "Retries avoid repeating the work."
+
+After: "After an interruption, repeating the acceptance operation retrieves its recorded outcome without duplicating its effect."
+
+**Responsibilities and recorded cost**
+
+Source: A coordinator assigns jobs to workers. Workers run the jobs, and the coordinator records each job's execution cost. No before-and-after cost measurement is available.
+
+Before: "The architecture reduces processing costs."
+
+After: "The coordinator assigns jobs to workers and records each job's execution cost. Workers run the jobs. The source provides no before-and-after cost measurement."
+
 ## Preserve uncertainty
 
 **Before:**

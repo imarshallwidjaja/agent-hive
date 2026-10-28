@@ -9,3 +9,5 @@ A later oc-arkive policy change, not present in the imported source, renamed the
 The 2026-10-10 integration of [phuryn/work-humanizer](https://github.com/phuryn/work-humanizer) (commit `819ac9925fffc20f12931cdf7a447db69163cbb2`, Pawel Huryn, MIT; notice in `LICENSE.workhumanizer`) extended the em dash policy with substitutes chosen by context, the rule against rerouting a removed dash into a semicolon or a colon reveal, and the rewrite clause for AI-composed prose. This wording is adapted from that source. The policy remains a limit rather than the source's unconditional removal.
 
 The ownership paragraph names `unslop` as the router after `writing-policy` was renamed to it. No other wording changed with the rename.
+
+An oc-arkive adaptation adds a context-sensitive technical clarity check to the existing finish pass and task-based structure for requested working product-alignment notes and structured brain dumps. The existing examples reference now illustrates source-supported actor, terminology, identity, comparison, retry, and architecture repairs. These apply the retained principles; they do not import the ASD-STE100 dictionary or compliance requirements.

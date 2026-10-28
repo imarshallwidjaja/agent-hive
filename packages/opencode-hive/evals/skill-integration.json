@@ -26,6 +26,18 @@
       "expected": ["Retains may and the unresolved cache hypothesis", "Surfaces or preserves the contradiction without choosing a cause", "Keeps every timestamp and the named actor", "Adds no source, number, certainty, or outcome", "Removes empty cadence without deleting substantive claims", "Keeps the unknown flag actor and unconfirmed recovery as stated gaps without inventing affirmative replacements"]
     },
     {
+      "id": "technical-clarity-source-boundaries",
+      "skills": ["unslop", "writing-for-humans"],
+      "prompt": "Explain these notes to a product reader unfamiliar with type systems: Software uses satellite data to calculate a screening result. It returns reports and output records in a defined format. A saved Workflow A result passed technical checks and meets the rules for Workflow B's use. The reviewer compares the system's retained or new answer with the answer reported in the submitted study. Repeating acceptance after interruption retrieves the recorded outcome instead of duplicating its effect; whether calculations rerun is unspecified. A coordinator assigns jobs to workers and records each job's execution cost; workers run jobs. No before-and-after cost measurement is available.",
+      "expected": ["Names software as the calculating actor and satellite data as input", "Explains the returned reports and records in language suited to the reader", "Keeps saved-result identity, technical checks, and rules for use distinct without inventing authority", "Names both answers in the comparison", "Bounds the retry benefit to the acceptance operation and does not claim earlier calculations are avoided", "Explains coordinator and worker responsibilities and the recorded cost without claiming measured savings"]
+    },
+    {
+      "id": "working-product-notes-and-missing-facts",
+      "skills": ["unslop", "writing-for-humans"],
+      "prompt": "Turn these rough notes into working product-alignment notes for a product and engineering discussion: A user starts a review and receives a report. The report includes a quality flag. A worker produces the report after a source is accepted. Who accepts the source and what the quality flag establishes are not specified. Use short task-oriented sections with ideas and commentary where useful.",
+      "expected": ["Uses task-based sections and list-led ideas with brief commentary suited to working notes", "Distinguishes the user workflow, useful output, and worker mechanism without requiring fixed sections for each", "Preserves the acceptance prerequisite and identifies the missing actor and flag meaning instead of inventing them", "Uses prose where needed to explain relationships rather than forcing every sentence into a bullet"]
+    },
+    {
       "id": "design-direction-boundaries",
       "skills": ["unslop", "writing-for-humans"],
       "prompt": "Write a short design-direction page for product designers from these engineering notes, with a caption per mockup. 'The Operator Control Panel (OCP) configures ingestion jobs and shows each run's quality flags. The OCP does not supply customer evidence packs; customers review them in the Investigation surface. Metadata discovery does not download dataset contents; it reads catalog metadata. Quality checks do not measure accuracy; they flag schema drift and missing fields. The lineage view holds no approval authority; it shows which run produced each artifact. Mockups 1-3 are not specifications; they show layout direction, and their labels show intent. Acceptance uses the checklist, not the mockups. Workflows C and D reuse the composer and are not illustrated. Export layout is undecided; no owner or date is set.'",

@@ -312,7 +312,7 @@ describe('prepareNativeHiveSkills - materialization behavior', () => {
     expect(listRelativeFiles(result.materializedPath!).some((file) => file.startsWith('test-driven-development/') || file.startsWith('adversarial-review/'))).toBe(false);
   });
 
-  it('delivers each pointed workflow reference inside its materialized skill directory on both hosts', async () => {
+  it('delivers each pointed reference inside its materialized skill directory on both hosts', async () => {
     // Presence and pointer resolution only: that a consumer selects and reads the reference is shown by the
     // installed-package wiring run and judged qualitatively, not by this materialization check.
     const pointed = {
@@ -324,6 +324,7 @@ describe('prepareNativeHiveSkills - materialization behavior', () => {
       'context-engineering': 'mutation-and-recovery.md',
       'systematic-debugging': 'diagnostic-techniques.md',
       'project-verification': 'formal-verification.md',
+      'writing-for-humans': 'examples.md',
     };
     for (const host of [OPENCODE_V1_PROFILE, createHostProfile('opencode-v2')]) {
       const worktree = createTempDir();

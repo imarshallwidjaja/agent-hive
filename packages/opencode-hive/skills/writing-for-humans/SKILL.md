@@ -35,6 +35,8 @@ Before delivering, run one loop: draft, audit, fix.
 2. Audit with three questions. What makes this read as machine-written? Is each thing introduced by what it is or does, with every remaining exclusion meeting the boundaries test? Does it state any fact, name, number, date, quote, or citation not in the source or conversation?
 3. Fix the hits, then check again. Do not narrate the audit unless asked.
 
+For technical and product prose, check the details relevant to the reader: who or what acts, the action and its object or version, conditions and prerequisites, both sides of a comparison, and what a result establishes. Make relationships explicit before compressing them. Preserve or resolve missing facts; do not invent an actor, condition, benefit, or authority to fill a gap.
+
 A rewrite adds nothing that is not in the source or supplied by the user. Specificity comes from the source, not from the rewrite. If a sentence needs real detail to work, ask for it when necessary or write the plain version without it. Preserve all semantically distinct list items; rhythm is not a reason to add or delete one.
 
 Calibrate before cutting. Look for clusters of tells rather than single instances; one "however" or one short emphatic sentence proves nothing. Preserve specific detail, mixed feelings, unresolved tension, dated references, genuine asides, and varied sentence length. A user-supplied writing sample outranks these defaults.
@@ -77,12 +79,14 @@ Scratch paths that will be deleted can be messy. Git-tracked and exported names 
 
 **Product writing.** Keep the underlying problem, desired outcome, evidence, constraints, success criteria, and proposed capability conceptually distinct. An observation is not a requirement. A capability is not a success criterion.
 
+For requested working product-alignment notes or structured brain dumps, start with short task-based sections, list-led ideas, and brief commentary. Keep user workflows, useful outputs, and implementation mechanisms conceptually distinct when present. Use continuous prose where causal reasoning needs it; the distinctions do not prescribe fixed sections or a universal bullet template.
+
 **Requirements.** Write one need per statement when the text is actually a requirement. Make it verifiable. Do not hide a design choice inside a requirement. Use MUST, SHOULD, and MAY only when the statement is normative; do not sprinkle them through ordinary prose.
 
 **Reviews.** Lead with the finding and its source location. Separate defects from preferences. The reviewer role owns its finding bar and verdict; writing guidance does not change either.
 
 ## Examples and ownership
 
-Read [examples](references/examples.md) when calibrating a rewrite or explaining a system. [Source notes](references/sources.md) record the influences and what not to import from them.
+Read [examples](references/examples.md) when calibrating a rewrite, explaining a system, or drafting technical or product prose where actors, terminology, conditions, comparisons, or evidence need clarification. [Source notes](references/sources.md) record the influences and what not to import from them.
 
 `unslop` owns routing. This skill owns generative discipline, the finish pass, boundaries and alternatives, durable names, and artifact instincts. `stop-slop` owns staging, cadence, and structure rewrites. `humanizer` owns the rewrite workflow for existing prose, including composing from a writer's notes or interview answers, and vocabulary, register, attribution, formatting, and chat-artifact tells. Ordinary drafting needs the finish pass, not automatic activation of both overlays.
