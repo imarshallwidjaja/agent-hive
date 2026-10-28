@@ -22,6 +22,14 @@ Before: "Processing returns typed evidence about its outputs."
 
 After: "The processing software returns reports and output records in a defined format."
 
+**One source, two audiences**
+
+Source: A report generator uses dataset `D-12`. After an analyst approves `D-12`, the generator may reuse a snapshot to create report `R-4`. A snapshot is a saved copy of the dataset at one point in time and may not include later changes to `D-12`. The report describes the data in that snapshot; it does not establish the current state of `D-12`.
+
+Technical peer: "After an analyst approves dataset `D-12`, the report generator may reuse a snapshot, a saved copy of the dataset at one point in time, to create report `R-4`. The snapshot may not include later changes to `D-12`. `R-4` describes the data in that snapshot; it does not establish the current state of `D-12`."
+
+Product partner unfamiliar with the implementation: "After an analyst approves dataset `D-12`, the report generator may create report `R-4` using a previously saved copy of the dataset. This copy, called a snapshot, captures the dataset at one point in time and may not include later changes to `D-12`. `R-4` describes the data in that snapshot; it does not establish the current state of `D-12`."
+
 **Identity, checks, and permitted use**
 
 Source: A saved Workflow A result has passed technical checks and meets the rules for use by Workflow B.
