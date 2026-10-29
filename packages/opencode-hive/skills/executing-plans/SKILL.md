@@ -80,7 +80,7 @@ A rare native `general` exception is an ordinary `subagent()` call with ordinary
 <!-- /hive-host -->
 Native helpers keep only their bounded operational permissions.
 
-For delegated execution, use Forager-derived workers or the explicitly admitted native general exception above. Helper is read-only investigation, not an execution lane. Other mutation-capable or unknown task targets are denied. Architect retains its bounded planning lane. Direct checkout work is unmanaged OpenCode work, not the feature tracked-write path.
+For delegated implementation delivery, use Forager-derived workers or the explicitly admitted native general exception above. Standalone investigation, verify-only checks, and experiments go to an Investigator under the primary's Experiments method; they deliver evidence, not implementation. Helper is read-only investigation, not an execution lane. Other mutation-capable or unknown delivery targets are denied. Architect retains its bounded planning lane. Direct checkout work is unmanaged OpenCode work, not the feature tracked-write path.
 
 ### Step 4: Report
 When batch complete:

@@ -40,6 +40,10 @@ describe('agent registration', () => {
           baseAgent: 'forager-worker',
           description: 'Implements configured specialist work.',
         },
+        'experiment-specialist': {
+          baseAgent: 'forager-investigator',
+          description: 'Runs configured browser experiments.',
+        },
         'architect-*': {
           baseAgent: 'scout-researcher',
           description: 'Wildcard Scout must not be registered.',
@@ -120,13 +124,25 @@ describe('agent registration', () => {
     for (const output of [dashCommand, vulnerabilityCommand]) {
       expect(output).toContain('Runtime Exercise');
       expect(output).not.toContain('implementation-specialist');
+      expect(output).not.toContain('experiment-specialist');
     }
-    // The review primaries can dispatch the built-in Forager and its derivative and find the derivative's description in their routing cards.
+    // The review primaries dispatch the built-in Investigator and its derivative, find the derivative in their routing cards, and cannot dispatch implementation Foragers.
     for (const name of ['dash-reviewer', 'vulnerability-review-primary']) {
-      expect(config.agent[name].permission.task, name).toMatchObject({ '*': 'deny', 'forager-worker': 'allow', 'implementation-specialist': 'allow' });
+      expect(config.agent[name].permission.task, name).toMatchObject({ '*': 'deny', 'forager-investigator': 'allow', 'experiment-specialist': 'allow' });
+      expect(config.agent[name].permission.task, name).not.toHaveProperty('forager-worker');
+      expect(config.agent[name].permission.task, name).not.toHaveProperty('implementation-specialist');
       expect(config.agent[name].permission.edit, name).toBe('deny');
       expect(config.agent[name].prompt, name).toContain('## Runtime Exercise');
-      expect(config.agent[name].prompt, name).toContain('- `implementation-specialist` — kind: custom overlay; base: `forager-worker`; Implements configured specialist work.');
+      expect(config.agent[name].prompt, name).toContain('- `experiment-specialist` — kind: custom overlay; base: `forager-investigator`; Runs configured browser experiments.');
+      expect(config.agent[name].prompt, name).not.toContain('`implementation-specialist`');
+    }
+    // The Investigator keeps native scratch edits and inherits no Hive writes, delegation, or questions.
+    for (const name of ['forager-investigator', 'experiment-specialist']) {
+      expect(config.agent[name].mode, name).toBe('subagent');
+      expect(config.agent[name].permission, name).toMatchObject({ 'hive_*': 'deny', hive_status: 'allow', hive_adhoc_worktree_inspect: 'allow', question: 'deny', task: 'deny', skill: 'allow' });
+      expect(config.agent[name].permission, name).not.toHaveProperty('edit');
+      expect(config.agent[name].permission, name).not.toHaveProperty('hive_context_write');
+      expect(config.agent[name].prompt, name).toBeUndefined();
     }
   });
 

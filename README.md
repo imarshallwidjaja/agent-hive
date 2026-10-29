@@ -85,12 +85,13 @@ and the subagents below are available in both modes.
 
 | Seat | Role |
 |------|------|
-| `architect-planner` | Writes feature plans. Does not implement. Default in dedicated mode. |
+| `architect-planner` | Writes feature plans and may commission Investigator experiments. Does not implement. Default in dedicated mode. |
 | `swarm-orchestrator` | Executes approved feature work. Dedicated-mode execution seat. |
 | `hive-master` | Hybrid planner and orchestrator for feature and ad-hoc work. Unified-mode default. |
 | `hive-builder` | Ad-hoc orchestrator. No feature or task DAG. |
 | `scout-researcher` | Retrieves bounded source evidence; does not own diagnosis, tradeoffs, or solution selection. |
 | `forager-worker` | Implements in the chosen workspace; diagnosis-only work is report-only. Never delegates. |
+| `forager-investigator` | Runs standalone diagnosis, experiments, and verify-only checks, in a disposable placement when a run changes source; returns evidence, never a patch. Never delegates. |
 | `plan-reviewer` | Checks whether a plan is worker-executable. |
 | `code-reviewer` | Checks an implementation against the task or plan. |
 | `simplicity-reviewer` | Deletion-biased cleanup of a completed diff. |

@@ -36,6 +36,13 @@ describe("hive-core", () => {
     expect(CUSTOM_AGENT_BASES).toContain('simplicity-reviewer');
   });
 
+  it("includes forager-investigator as a configurable built-in and custom-agent base with verification-only defaults", () => {
+    expect(BUILT_IN_AGENT_NAMES).toContain('forager-investigator');
+    expect(CUSTOM_AGENT_BASES).toContain('forager-investigator');
+    expect(CUSTOM_AGENT_RESERVED_NAMES).toContain('forager-investigator');
+    expect(DEFAULT_HIVE_CONFIG.agents?.['forager-investigator']).toEqual({ autoLoadSkills: ['verification'] });
+  });
+
   it("includes hive-builder skill defaults, but no model, in DEFAULT_HIVE_CONFIG", () => {
     expect(DEFAULT_HIVE_CONFIG.agents?.['hive-builder']).toEqual({
       autoLoadSkills: ['verification', 'parallel-exploration'],

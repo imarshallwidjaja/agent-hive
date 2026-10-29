@@ -41,7 +41,7 @@ export const HOSTS = {
 // Hive role identifiers composed by src/runtime/role-catalog.ts.
 export const HIVE_ROLES = [
   'hive-master', 'architect-planner', 'swarm-orchestrator', 'hive-builder', 'scout-researcher', 'forager-worker',
-  'hive-helper', 'plan-reviewer', 'code-reviewer', 'simplicity-reviewer', 'approach-advisor', 'vulnerability-reviewer',
+  'forager-investigator', 'hive-helper', 'plan-reviewer', 'code-reviewer', 'simplicity-reviewer', 'approach-advisor', 'vulnerability-reviewer',
   'dash-reviewer', 'vulnerability-review-primary',
 ];
 

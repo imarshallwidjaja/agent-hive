@@ -11,6 +11,7 @@ export const READ_ONLY_COUNCIL_ELIGIBLE_BASES = new Set([
 
 const MUTABLE_COUNCIL_INELIGIBLE_BASES = new Set([
   'forager-worker',
+  'forager-investigator',
   'hive-builder',
   'hive-helper',
   'hive-master',

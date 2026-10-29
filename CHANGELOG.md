@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Investigator role.** `forager-investigator` is a built-in subagent and custom-agent base for standalone diagnosis, experiments, and verify-only checks. It can conclude from source and evidence alone, runs source-changing probes only in a primary-owned disposable placement, can exercise a runtime target such as a URL or environment without a Git placement, returns evidence and a conclusion, and commits nothing. Its Hive grants are reads and worktree inspection only; it gets the route snapshot but never a Forager task brief, report duty, or source pin, and it cannot delegate or ask questions. It loads `verification` by default and is not a council seat.
+- **Shared experiment method.** Hive, Swarm, Hive Builder, Architect and the review primaries compose one Experiments method for authority, candidate, variants, placement, evidence destination, return and cleanup, including the guarded fallback to the original checkout for an unchanged candidate. An authorized implementation, debugging, investigation or feasibility mission covers its local disposable setup; planning or advice alone does not cover running code.
+
+### Changed
+
+- **Architect commissions experiments.** Architect, as primary or delegated planner (including under unified Hive), may dispatch Investigators but never implementation Foragers. A primary Architect may create and clean up ad-hoc experiment placements and never merges them; a delegated Architect returns those requests to its parent.
+- **Review runtime exercises use Investigators.** `dash-reviewer` and `vulnerability-review-primary` dispatch Investigators for runtime exercises and can no longer dispatch `forager-worker` or its derivatives. Their review-only authorization rule is unchanged.
+
 ## [5.1.0] - 2026-10-27
 
 `oc-arkive` 5.1.0 adds Worklogs, exact-text context edits, plan sync status and a project-verification skill, and it changes how models are selected. This minor version number carries the breaking changes listed below, so read them before upgrading. The host support is unchanged: OpenCode v1 has a floor of 1.18.30, and v2 is qualified on 2.0.26 only. Each host now registers 41 Hive tools and 13 commands, up from 37 and 11 in 5.0.0. See [v5.1.0 release notes](docs/releases/v5.1.0.md).

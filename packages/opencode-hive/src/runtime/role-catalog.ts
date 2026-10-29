@@ -4,6 +4,7 @@ import { renderArchitectBeePrompt, architectBeeAgent } from '../agents/architect
 import { renderSwarmBeePrompt, swarmBeeAgent } from '../agents/swarm.js';
 import { renderScoutBeePrompt } from '../agents/scout.js';
 import { FORAGER_BEE_PROMPT } from '../agents/forager.js';
+import { INVESTIGATOR_PROMPT } from '../agents/investigator.js';
 import { renderHiveHelperPrompt, hiveHelperAgent } from '../agents/hive-helper.js';
 import { renderHiveBuilderPrompt, hiveBuilderAgent } from '../agents/hive-builder.js';
 import { renderPlanReviewerPrompt } from '../agents/plan-reviewer.js';
@@ -131,7 +132,7 @@ ${cards.join('\n')}`;
 }
 
 /** Agents whose instructions are added at request time instead of replacing the host's default prompt. */
-const REQUEST_PROMPT_AGENTS = new Set<BuiltInRole>(['hive-master', 'swarm-orchestrator', 'hive-builder', 'forager-worker']);
+const REQUEST_PROMPT_AGENTS = new Set<BuiltInRole>(['hive-master', 'swarm-orchestrator', 'hive-builder', 'forager-worker', 'forager-investigator']);
 
 /** Whether each built-in role's instructions carry background-delegation guidance; every role carries auto-load guidance. */
 const SKILL_GUIDANCE: Record<BuiltInRole, { background: boolean }> = {
@@ -141,6 +142,7 @@ const SKILL_GUIDANCE: Record<BuiltInRole, { background: boolean }> = {
   'hive-builder': { background: true },
   'scout-researcher': { background: false },
   'forager-worker': { background: false },
+  'forager-investigator': { background: false },
   'hive-helper': { background: false },
   'plan-reviewer': { background: false },
   'code-reviewer': { background: false },
@@ -174,20 +176,22 @@ export function buildRoleCatalog(host: HostProfile, configService: ConfigService
   const agentMode = configService.get().agentMode ?? 'dedicated';
   const sources: Record<BuiltInRole, { body: string; routing?: string }> = {
     'hive-master': { body: renderQueenBeePrompt(host) + systemPrompt, routing: agentMode === 'unified' ? routingAppendix(ROUTING_BASES) : '' },
-    'architect-planner': { body: renderArchitectBeePrompt(host) + systemPrompt, routing: agentMode === 'dedicated' ? routingAppendix(['scout-researcher', 'plan-reviewer', 'approach-advisor']) : '' },
+    // Architect also runs delegated under unified Hive, so its helper cards do not depend on the mode.
+    'architect-planner': { body: renderArchitectBeePrompt(host) + systemPrompt, routing: routingAppendix(['scout-researcher', 'forager-investigator', 'plan-reviewer', 'approach-advisor']) },
     'swarm-orchestrator': { body: renderSwarmBeePrompt(host) + systemPrompt, routing: agentMode === 'dedicated' ? routingAppendix(ROUTING_BASES) : '' },
-    'hive-builder': { body: renderHiveBuilderPrompt(host) + systemPrompt, routing: routingAppendix(['scout-researcher', 'forager-worker', 'code-reviewer', 'simplicity-reviewer']) },
+    'hive-builder': { body: renderHiveBuilderPrompt(host) + systemPrompt, routing: routingAppendix(['scout-researcher', 'forager-worker', 'forager-investigator', 'code-reviewer', 'simplicity-reviewer']) },
     'scout-researcher': { body: renderScoutBeePrompt(host) + systemPrompt },
     'forager-worker': { body: FORAGER_BEE_PROMPT + systemPrompt },
+    'forager-investigator': { body: INVESTIGATOR_PROMPT + systemPrompt },
     'hive-helper': { body: renderHiveHelperPrompt(host) + systemPrompt },
     'plan-reviewer': { body: renderPlanReviewerPrompt(host) + systemPrompt },
     'code-reviewer': { body: renderCodeReviewerPrompt(host) + systemPrompt },
     'simplicity-reviewer': { body: renderSimplicityReviewerPrompt(host) + systemPrompt },
     'approach-advisor': { body: renderApproachAdvisorPrompt(host) + systemPrompt },
     'vulnerability-reviewer': { body: renderVulnerabilityReviewerPrompt(host) + systemPrompt },
-    // Review primaries choose reviewers from the command roster; the routing cards add the Foragers a runtime exercise can use.
-    'dash-reviewer': { body: renderDashReviewerPrompt(host) + systemPrompt, routing: routingAppendix(['forager-worker']) },
-    'vulnerability-review-primary': { body: renderVulnerabilityReviewPrimaryPrompt(host) + systemPrompt, routing: routingAppendix(['forager-worker']) },
+    // Review primaries choose reviewers from the command roster; the routing cards add the Investigators a runtime exercise can use.
+    'dash-reviewer': { body: renderDashReviewerPrompt(host) + systemPrompt, routing: routingAppendix(['forager-investigator']) },
+    'vulnerability-review-primary': { body: renderVulnerabilityReviewPrimaryPrompt(host) + systemPrompt, routing: routingAppendix(['forager-investigator']) },
   };
   const prompts = Object.fromEntries(Object.entries(sources).map(([name, { body, routing = '' }]) =>
     [name, body + (skills ? skillGuidance(name, skills) : '') + routing])) as Record<BuiltInRole, string>;
@@ -204,6 +208,7 @@ export function buildRoleCatalog(host: HostProfile, configService: ConfigService
     'hive-builder': mk('hive-builder', 'primary', hiveBuilderAgent.description),
     'scout-researcher': mk('scout-researcher', 'subagent', descriptions['scout-researcher']),
     'forager-worker': mk('forager-worker', 'subagent', descriptions['forager-worker']),
+    'forager-investigator': mk('forager-investigator', 'subagent', descriptions['forager-investigator']),
     'hive-helper': mk('hive-helper', 'subagent', hiveHelperAgent.description),
     'plan-reviewer': mk('plan-reviewer', 'subagent', descriptions['plan-reviewer']),
     'code-reviewer': mk('code-reviewer', 'subagent', descriptions['code-reviewer']),
@@ -221,7 +226,7 @@ export function buildRoleCatalog(host: HostProfile, configService: ConfigService
   const customAgents = buildCustomSubagents({
     customAgents: custom,
     baseAgents: agents as Record<string, RuntimeSubagentConfig>,
-    baseRuntimePrompts: { 'forager-worker': prompts['forager-worker'] },
+    baseRuntimePrompts: { 'forager-worker': prompts['forager-worker'], 'forager-investigator': prompts['forager-investigator'] },
     autoLoadSkillAppendices: customAutoLoad,
     registerRuntimePrompt: (name, prompt) => requestPrompts.set(name, prompt),
   });

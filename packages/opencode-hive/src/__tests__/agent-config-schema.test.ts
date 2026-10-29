@@ -3,7 +3,7 @@ import Ajv2020 from 'ajv/dist/2020.js';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { ConfigService } from 'hive-core';
+import { BUILT_IN_AGENT_NAMES, CUSTOM_AGENT_BASES, ConfigService } from 'hive-core';
 
 const schemaPath = path.resolve(import.meta.dir, '..', '..', 'schema', 'agent_hive.schema.json');
 const schema = JSON.parse(fs.readFileSync(schemaPath, 'utf-8')) as Record<string, any>;
@@ -59,9 +59,11 @@ describe('agent_hive schema customAgents contract', () => {
   });
 
   it('restricts custom baseAgent to supported base agents', () => {
+    expect(schema.$defs.customAgentConfig.properties.baseAgent.enum).toEqual([...CUSTOM_AGENT_BASES]);
     expect(schema.$defs.customAgentConfig.properties.baseAgent.enum).toEqual([
       'scout-researcher',
       'forager-worker',
+      'forager-investigator',
       'plan-reviewer',
       'code-reviewer',
       'simplicity-reviewer',
@@ -78,10 +80,12 @@ describe('agent_hive schema customAgents contract', () => {
     });
   });
 
-  it('exposes routing descriptions only for the seven customizable built-in agents', () => {
+  it('exposes routing descriptions only for the eight customizable built-in agents', () => {
+    expect(Object.keys(schema.properties.agents.properties).sort()).toEqual([...BUILT_IN_AGENT_NAMES].sort());
     const customizable = [
       'scout-researcher',
       'forager-worker',
+      'forager-investigator',
       'plan-reviewer',
       'code-reviewer',
       'simplicity-reviewer',
@@ -168,6 +172,7 @@ describe('agent_hive schema customAgents contract', () => {
     expectReservedNameToFail('swarm-orchestrator');
     expectReservedNameToFail('scout-researcher');
     expectReservedNameToFail('forager-worker');
+    expectReservedNameToFail('forager-investigator');
     expectReservedNameToFail('hive-helper');
     expectReservedNameToFail('plan-reviewer');
     expectReservedNameToFail('code-reviewer');
@@ -313,7 +318,7 @@ describe('agent_hive schema council contract', () => {
       council: {
         defaultGroup: 'decision',
         maxMembers: 4,
-        excludedAgents: ['hive-master', 'swarm-orchestrator', 'forager-worker', 'hive-builder', 'hive-helper'],
+        excludedAgents: ['hive-master', 'swarm-orchestrator', 'forager-worker', 'forager-investigator', 'hive-builder', 'hive-helper'],
         groups: {
           design: {
             description: 'Architecture and implementation-shape advice',

@@ -35,7 +35,7 @@ Record each lane's purpose, kind/owner, inputs/handoffs, path and resource owner
 
 Create only lanes whose handoffs are available, close to dispatch. Code dependencies normally require a verified, committed, integrated predecessor so the successor base contains the code. A report/decision dependency may use an inspected concrete handoff without a source revision.
 
-Parallel writers require distinct ad-hoc `runId`s and worktrees. Writes and fix passes within one run remain sequential. Read-only Scout, advisor, and reviewer lanes need no artificial worktree; reviews target settled source state.
+Parallel writers require distinct ad-hoc `runId`s and worktrees. Writes and fix passes within one run remain sequential. Read-only Scout, advisor, and reviewer lanes need no artificial worktree; reviews target settled source state. An Investigator lane follows the primary's Experiments method: a source-based judgment needs no placement, and a run that changes source gets its own disposable placement. It produces evidence, not commits, so it closes by cleanup and never enters the integration order.
 
 For each ready wave, emit all independent launches in the same assistant message. Blocking is a wait mode, not serial scheduling. Use `dispatching-parallel-agents` for launch mechanics and `background-delegation` when background wait mode is available.
 
@@ -53,4 +53,4 @@ Multi-step forensics (paging a trace, drift comparison, or interrupted-worker ev
 
 ## Closure
 
-A lane closes only after applicable terminal observation, result consumption, required review and lane verification, merge or an explicit no-change/discard decision, and cleanup are recorded. The batch closes only after every lane is closed and selected integrated acceptance, including all named obligations, has applicable passing evidence recorded. Stop once required evidence and reviews suffice; run more checks only for a named gap, invalidation, or new risk.
+A lane closes only after applicable terminal observation, result consumption, required review and lane verification, merge or an explicit no-change/discard decision (an experiment lane's evidence counts as its result), and cleanup are recorded. The batch closes only after every lane is closed and selected integrated acceptance, including all named obligations, has applicable passing evidence recorded. Stop once required evidence and reviews suffice; run more checks only for a named gap, invalidation, or new risk.

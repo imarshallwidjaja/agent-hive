@@ -1555,7 +1555,10 @@ describe('skill content', () => {
     expect(skill!.template).toContain('explicit status leaving blocked');
     expect(skill!.template).toContain('explicitly admitted native general exception');
     expect(skill!.template).toContain('Helper is read-only investigation, not an execution lane');
-    expect(skill!.template).toContain('Other mutation-capable or unknown task targets are denied');
+    expect(skill!.template).toContain('For delegated implementation delivery, use Forager-derived workers');
+    expect(skill!.template).toContain("Standalone investigation, verify-only checks, and experiments go to an Investigator under the primary's Experiments method");
+    expect(skill!.template).toContain('Other mutation-capable or unknown delivery targets are denied');
+    expect(skill!.template).not.toContain('unknown task targets are denied');
     expect(skill!.template).toContain('Architect retains its bounded planning lane');
     expect(skill!.template).not.toContain('Non-Hive mutation-capable or unknown task targets are denied');
     expect(skill!.template).toContain('execution-decisions');
@@ -2287,10 +2290,13 @@ describe('skill content', () => {
       expect(named).toEqual(new Set(HIVE_TOOL_NAMES));
     });
 
-    it('lists Foragers among the review primaries\' dispatch targets, for report-only runtime exercises', () => {
-      const row = reference('tool-ownership.md').split('\n').find((line) => line.startsWith('| Review primaries |'))!;
-      expect(row).toContain('Foragers (built-in and derived) for report-only runtime exercises');
-      expect(row).not.toContain('not Forager');
+    it('lists Investigators, not implementation Foragers, among the review primaries\' and Architect\'s dispatch targets', () => {
+      const rows = reference('tool-ownership.md').split('\n');
+      const review = rows.find((line) => line.startsWith('| Review primaries |'))!;
+      expect(review).toContain('Investigators (built-in and derived) for runtime exercises; never `forager-worker` or its derivatives');
+      const architect = rows.find((line) => line.startsWith('| Architect, as primary or task child |'))!;
+      expect(architect).toContain('`forager-investigator`');
+      expect(architect).toContain('never `forager-worker`');
     });
 
     it('matches the paths and branches hive-core produces', () => {
@@ -2747,7 +2753,22 @@ describe('host sections in packaged skills', () => {
       // Background schedules launches; its safe-launch rule keeps the same continuation strength without the launch recipes.
       expect(background).toContain(`Pass \`${field}\` only when an explicit operator instruction or explicit runtime-owned interruption-recovery mechanism authorizes continuation; otherwise launch fresh.`);
       expect(background).toContain(`Every Forager lane, including report-only diagnosis, needs a native \`${call}\` call with a Forager or Forager-derived agent.`);
+      expect(background).toContain(`A standalone diagnosis, experiment, or verify-only lane needs a native \`${call}\` call with an Investigator or Investigator-derived agent.`);
+      expect(background).toContain('permitted Scout, Investigator, plan-reviewer, or approach-advisor helpers');
+      expect(sectionTexts('dispatching-parallel-agents', host)).toContain(`${host.nativeTask.agentField}: 'forager-investigator'`);
     }
+  });
+
+  it('routes standalone experiments to Investigators as disposable evidence across the workflow skills', () => {
+    const template = (name: string) => BUILTIN_SKILLS.find((entry) => entry.name === name)!.template;
+    expect(template('writing-plans')).toContain("An investigation that settles a planning question follows the primary prompt's Experiments method, and its evidence informs the plan without becoming implementation task work");
+    expect(template('writing-plans')).not.toContain('any placement it uses is disposable');
+    expect(template('orchestrating-ad-hoc-work')).toContain('a source-based judgment needs no placement, and a run that changes source gets its own disposable placement. It produces evidence, not commits, so it closes by cleanup and never enters the integration order');
+    expect(template('parallel-exploration')).toContain('A question that needs running code goes to an Investigator under the primary\'s Experiments method, not to Scout.');
+    expect(template('dispatching-parallel-agents')).toContain("returns evidence and a conclusion, never a patch to merge; temporary variants it runs are labelled evidence. Diagnosis coupled to an implementation lane stays with that lane's Forager.");
+    const debugging = template('systematic-debugging');
+    expect(debugging).toContain('temporary instrumentation, configuration, or prototype variants in that placement are reproduction too, each labelled with its delta from the candidate');
+    expect(debugging).toContain('A verify-only assignment changes no source, test, fixture, snapshot, or gate.');
   });
 
   it('keeps the OpenCode v1 database recipes version-scoped and gives v2 only public reads', () => {

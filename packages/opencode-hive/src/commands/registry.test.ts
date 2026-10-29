@@ -8,6 +8,7 @@ import { buildHiveCommandMap } from './runtime.js';
 import { v1LiteralTemplate, V1_UNFILLABLE_ARGUMENT } from './literal-arguments.js';
 import { OPENCODE_V1_PROFILE, createHostProfile } from '../runtime/host-profile.js';
 import { PLAN_ASSESSMENT_REQUIREMENT } from '../agents/process-judgment.js';
+import { resolveCouncilMembers } from './council.js';
 
 const EXPECTED_COMMANDS = [
   {
@@ -446,5 +447,20 @@ describe('HIVE_COMMANDS', () => {
     expect(output).toContain('preserve explicitly requested reviewer scope');
     expect(output).toContain('required configured reviewer or claim a clean review while that obligation or material challenge is open');
     expect(output).toContain('Review Basis');
+  });
+
+  it('keeps Investigators and their derivatives out of read-only council seats as mutable experiment workers', () => {
+    const descriptor = (baseAgent: string, readOnlyCouncilEligible: boolean) => ({ baseAgent, available: true, description: `${baseAgent} seat`, readOnlyCouncilEligible });
+    const result = resolveCouncilMembers({ groups: { probe: { members: ['forager-investigator', 'experiment-specialist', 'scout-researcher'] } } }, {
+      'forager-investigator': descriptor('forager-investigator', false),
+      // Even a descriptor marked eligible cannot seat an Investigator-derived agent: the base decides.
+      'experiment-specialist': descriptor('forager-investigator', true),
+      'scout-researcher': descriptor('scout-researcher', true),
+    }, 'probe');
+    expect(result.members.map((member) => member.name)).toEqual(['scout-researcher']);
+    expect(result.warnings).toEqual([
+      'Skipped forager-investigator: base agent forager-investigator is mutable and not council-eligible.',
+      'Skipped experiment-specialist: base agent forager-investigator is mutable and not council-eligible.',
+    ]);
   });
 });

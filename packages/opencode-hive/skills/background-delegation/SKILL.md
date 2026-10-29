@@ -51,10 +51,10 @@ Do not simulate background orchestration from this skill alone.
 
 When Architect runs as a primary, the gate-open scheduling and board protocol below apply.
 <!-- hive-host opencode-v1 -->
-When Architect is task-spawned, use blocking `task()` calls for its one terminal layer of permitted Scout, plan-reviewer, or approach-advisor helpers, including configured derivatives, and `hive-helper`.
+When Architect is task-spawned, use blocking `task()` calls for its one terminal layer of permitted Scout, Investigator, plan-reviewer, or approach-advisor helpers, including configured derivatives, and `hive-helper`.
 <!-- /hive-host -->
 <!-- hive-host opencode-v2 -->
-When Architect is task-spawned, use blocking `subagent()` calls for its one terminal layer of permitted Scout, plan-reviewer, or approach-advisor helpers, including configured derivatives, and `hive-helper`.
+When Architect is task-spawned, use blocking `subagent()` calls for its one terminal layer of permitted Scout, Investigator, plan-reviewer, or approach-advisor helpers, including configured derivatives, and `hive-helper`.
 <!-- /hive-host -->
 Emit independent permitted calls together, then wait for their results. Background board tools and primary-control operations are denied in children; return board/control requests and parent-owned lifecycle decisions with known identities to the parent. Trace/evidence investigation may go directly to Helper, which remains read-only and terminal. Keep the inherited feature route and use explicit feature arguments for planning. This branch takes precedence over an inherited Background-First Orchestration heading.
 
@@ -103,12 +103,12 @@ Read [references/board-protocol.md](references/board-protocol.md) when you inter
 
 1. Consume the owning workflow's ready lanes, delegation kinds, ownership boundaries, and safe independent foreground work. Build each lane's launch packet with `dispatching-parallel-agents` without changing its boundary.
 <!-- hive-host opencode-v1 -->
-2. Every Forager lane, including report-only diagnosis, needs a native `task()` call with a Forager or Forager-derived agent.
+2. Every Forager lane, including report-only diagnosis, needs a native `task()` call with a Forager or Forager-derived agent. A standalone diagnosis, experiment, or verify-only lane needs a native `task()` call with an Investigator or Investigator-derived agent.
 <!-- /hive-host -->
 <!-- hive-host opencode-v2 -->
-2. Every Forager lane, including report-only diagnosis, needs a native `subagent()` call with a Forager or Forager-derived agent.
+2. Every Forager lane, including report-only diagnosis, needs a native `subagent()` call with a Forager or Forager-derived agent. A standalone diagnosis, experiment, or verify-only lane needs a native `subagent()` call with an Investigator or Investigator-derived agent.
 <!-- /hive-host -->
-The owning workflow determines placement; create the matching worktree before dispatch for tracked Git writes. Ordinary Scout, advisor, and reviewer calls do not need a worktree.
+The owning workflow determines placement; create the matching worktree before dispatch for tracked Git writes, and the experiment placement before an Investigator lane that needs one. Ordinary Scout, advisor, and reviewer calls do not need a worktree.
 <!-- hive-host opencode-v1 -->
 3. Record returned `task_id` values and inspect the scoped board with `hive_background_status`.
 <!-- /hive-host -->

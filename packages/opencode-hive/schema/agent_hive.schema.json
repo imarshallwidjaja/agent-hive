@@ -101,6 +101,10 @@
           "$ref": "#/$defs/routingAgentConfig",
           "description": "Forager Worker"
         },
+        "forager-investigator": {
+          "$ref": "#/$defs/routingAgentConfig",
+          "description": "Forager Investigator (standalone diagnosis, experiments, and verify-only checks)"
+        },
         "hive-helper": {
           "$ref": "#/$defs/agentConfig",
           "description": "Hive Helper"
@@ -133,7 +137,7 @@
     },
     "customAgents": {
       "type": "object",
-      "description": "Global custom Hive subagent definitions derived from scout-researcher, forager-worker, plan-reviewer, code-reviewer, simplicity-reviewer, approach-advisor, or vulnerability-reviewer. Project-local model and variant overrides may target matching declarations through .hive/agent-hive.override.json. IDs cannot reuse built-in, review-primary, ordinary native subagent, or plugin-reserved names or contain native permission wildcard characters '*' or '?'.",
+      "description": "Global custom Hive subagent definitions derived from scout-researcher, forager-worker, forager-investigator, plan-reviewer, code-reviewer, simplicity-reviewer, approach-advisor, or vulnerability-reviewer. Project-local model and variant overrides may target matching declarations through .hive/agent-hive.override.json. IDs cannot reuse built-in, review-primary, ordinary native subagent, or plugin-reserved names or contain native permission wildcard characters '*' or '?'.",
       "propertyNames": {
         "pattern": "^[^*?]*$",
         "not": {
@@ -143,6 +147,7 @@
             "swarm-orchestrator",
             "scout-researcher",
             "forager-worker",
+            "forager-investigator",
             "hive-helper",
             "plan-reviewer",
             "code-reviewer",
@@ -357,6 +362,7 @@
           "enum": [
             "scout-researcher",
             "forager-worker",
+            "forager-investigator",
             "plan-reviewer",
             "code-reviewer",
             "simplicity-reviewer",

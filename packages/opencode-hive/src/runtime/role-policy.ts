@@ -12,7 +12,7 @@ type AgentPermission = NonNullable<RuntimeSubagentConfig['permission']>;
 
 export type BuiltInRole =
   | 'hive-master' | 'architect-planner' | 'swarm-orchestrator' | 'hive-builder'
-  | 'scout-researcher' | 'forager-worker' | 'hive-helper'
+  | 'scout-researcher' | 'forager-worker' | 'forager-investigator' | 'hive-helper'
   | 'plan-reviewer' | 'code-reviewer' | 'simplicity-reviewer' | 'approach-advisor' | 'vulnerability-reviewer'
   | 'dash-reviewer' | 'vulnerability-review-primary';
 
@@ -25,7 +25,7 @@ export type RolePolicy = {
 
 /** Specialist bases a primary may delegate to; also the bases custom agents can derive from. */
 export const ROUTING_BASES = [
-  'scout-researcher', 'forager-worker', 'plan-reviewer', 'code-reviewer', 'simplicity-reviewer', 'approach-advisor', 'vulnerability-reviewer',
+  'scout-researcher', 'forager-worker', 'forager-investigator', 'plan-reviewer', 'code-reviewer', 'simplicity-reviewer', 'approach-advisor', 'vulnerability-reviewer',
 ] as const satisfies readonly CustomAgentBase[];
 
 const READ_TOOLS = ['hive_context_read', 'hive_constraints_read', 'hive_plan_read', 'hive_status', 'hive_repositories_status', 'hive_git_snapshot',
@@ -70,10 +70,11 @@ export function createRolePolicy(customAgents: Record<string, ResolvedCustomAgen
       .filter(([, config]) => bases.includes(config.baseAgent))
       .map(([name]) => [name, 'allow'])),
   });
-  const architectTaskPermission = taskPermission(['scout-researcher', 'plan-reviewer', 'approach-advisor'], ['hive-helper']);
+  // Architect commissions experiments through Investigators; implementation Foragers stay with execution primaries.
+  const architectTaskPermission = taskPermission(['scout-researcher', 'forager-investigator', 'plan-reviewer', 'approach-advisor'], ['hive-helper']);
   const primaryTaskPermission = taskPermission(ROUTING_BASES, ['architect-planner', 'hive-helper', 'general', 'explore']);
-  // Review primaries dispatch Foragers only for report-only runtime exercises; edit stays denied for the primary.
-  const reviewTaskPermission = taskPermission(ROUTING_BASES, ['hive-helper']);
+  // Review primaries run candidates through Investigators for runtime exercises; edit stays denied for the primary.
+  const reviewTaskPermission = taskPermission(ROUTING_BASES.filter((base) => base !== 'forager-worker'), ['hive-helper']);
   const primary: RolePolicy = { hiveTools: [...HIVE_TOOL_NAMES], permission: { question: 'allow', task: primaryTaskPermission, skill: 'allow' } };
   const readOnlyChild = (hiveTools: readonly string[]): RolePolicy => ({ hiveTools, permission: { edit: 'deny', question: 'deny', task: 'deny', skill: 'allow' } });
   const reviewPrimary: RolePolicy = { hiveTools: REVIEW_PRIMARY_TOOLS, permission: { edit: 'deny', question: 'allow', task: reviewTaskPermission, skill: 'allow' } };
@@ -83,7 +84,9 @@ export function createRolePolicy(customAgents: Record<string, ResolvedCustomAgen
     'architect-planner': {
       hiveTools: [...REVIEW_TOOLS, ...CONSTRAINT_MUTATIONS, ...INSPECTION_TOOLS, ...BACKGROUND_TOOLS, ...TASK_TRACE_TOOLS,
         'hive_feature_create', 'hive_feature_select', 'hive_plan_write', 'hive_plan_patch', 'hive_plan_approve', 'hive_tasks_sync',
-        'hive_repositories_discover', 'hive_repositories_update', 'hive_context_archive', WORKLOG_RECORD],
+        'hive_repositories_discover', 'hive_repositories_update', 'hive_context_archive', WORKLOG_RECORD,
+        // Experiment placement only: Architect never merges, and child sessions deny both as primary-only operations.
+        'hive_adhoc_worktree_create', 'hive_adhoc_worktree_cleanup'],
       permission: { question: 'allow', task: architectTaskPermission, edit: 'deny', skill: 'allow' },
     },
     'swarm-orchestrator': primary,
@@ -93,6 +96,8 @@ export function createRolePolicy(customAgents: Record<string, ResolvedCustomAgen
       hiveTools: [...REVIEW_TOOLS, ...INSPECTION_TOOLS, ...TASK_TRACE_TOOLS, 'hive_task_update', 'hive_worktree_create'],
       permission: { question: 'deny', task: 'deny', skill: 'allow' },
     },
+    // Native edit and shell stay available for scratch experiments; their scope is instruction-bound, not sandboxed.
+    'forager-investigator': { hiveTools: [...READ_TOOLS, ...INSPECTION_TOOLS], permission: { question: 'deny', task: 'deny', skill: 'allow' } },
     'hive-helper': readOnlyChild([...READ_TOOLS, ...INSPECTION_TOOLS, ...TASK_TRACE_TOOLS]),
     'plan-reviewer': readOnlyChild(REVIEW_TOOLS),
     'code-reviewer': readOnlyChild(REVIEW_TOOLS),

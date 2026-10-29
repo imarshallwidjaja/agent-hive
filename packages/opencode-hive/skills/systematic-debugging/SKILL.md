@@ -68,7 +68,7 @@ Pick the technique that answers the question the evidence leaves open. This tabl
 | Is persistent state stale? | Inspect it or reproduce on an isolated copy |
 | Why is it slow? | Same workload and measurement surface before and after |
 
-A technique that writes state, runs risky behavior, or touches retained evidence stays inside your assignment's authority. A diagnosis-only assignment uses read-only forms unless it names isolated scratch or runtime reproduction. That reproduction may materialize the submitted candidate's existing bytes and normal build output in a disposable placement; it authors no fix and leaves the original source under diagnosis as found. The diagnosis reports what it could not observe.
+A technique that writes state, runs risky behavior, or touches retained evidence stays inside your assignment's authority. A diagnosis-only assignment uses read-only forms unless it names isolated scratch or runtime reproduction. That reproduction may materialize the submitted candidate's existing bytes and normal build output in a disposable placement; it authors no fix and leaves the original source under diagnosis as found. When the assignment scopes them, temporary instrumentation, configuration, or prototype variants in that placement are reproduction too, each labelled with its delta from the candidate. A verify-only assignment changes no source, test, fixture, snapshot, or gate. The diagnosis reports what it could not observe.
 
 Read [references/diagnostic-techniques.md](references/diagnostic-techniques.md) when you need a technique's steps, the boundary-observation example, or the hypothesis, stale-state, slowness and shared-premise techniques.
 

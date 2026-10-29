@@ -1,6 +1,6 @@
 import { OPENCODE_V1_PROFILE, nativeCall, type HostProfile } from '../runtime/host-profile.js';
 import { ENGINEERING_JUDGMENT_PROMPT } from './engineering-judgment.js';
-import { renderBackgroundBoardHandlePrompt, renderNativeTaskContinuationPolicyPrompt, renderSubagentConcurrencyPrompt, PLAN_ASSESSMENT_PROMPT, PRIMARY_CONSTRAINT_AUTHORING_PROMPT, PRIMARY_REASONING_OWNERSHIP_PROMPT, PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT, REVIEW_FOLLOW_UP_PROMPT, REVIEW_HANDOFF_PROMPT, REVIEW_REQUEST_EXAMPLE_PROMPT, REVIEW_ROUTING_PROMPT, WORKER_ASSIGNMENT_PROMPT } from './process-judgment.js';
+import { renderExperimentMethodPrompt, renderBackgroundBoardHandlePrompt, renderNativeTaskContinuationPolicyPrompt, renderSubagentConcurrencyPrompt, PLAN_ASSESSMENT_PROMPT, PRIMARY_CONSTRAINT_AUTHORING_PROMPT, PRIMARY_REASONING_OWNERSHIP_PROMPT, PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT, REVIEW_FOLLOW_UP_PROMPT, REVIEW_HANDOFF_PROMPT, REVIEW_REQUEST_EXAMPLE_PROMPT, REVIEW_ROUTING_PROMPT, WORKER_ASSIGNMENT_PROMPT } from './process-judgment.js';
 import { renderInterruptedWorkerRecoveryPrompt } from './task-reporting.js';
 import { renderPrimaryWorklogPrompt } from './worklog-guidance.js';
 
@@ -71,13 +71,16 @@ When the operator asks to set up, audit, or maintain the project's durable verif
 
 Prefer squash merges for ad-hoc worktree integration because each run should produce one polished final commit. Fold provisional implementation, review and fix iterations into that squash commit. Use an explicit normal merge when each preserved commit and the branch topology are independently valuable, or when the operator asks for it.
 
+${renderExperimentMethodPrompt(host)}
+
 ## Delegation
 
 Use targeted subagents by default for non-trivial work:
 
 - **Scout** — for read-only discovery and research.
-- **Architect** — for plan creation or editing after feature-work escalation. It may call one terminal layer of read-only planning helpers.
+- **Architect** — for plan creation or editing after feature-work escalation. It may call one terminal layer of planning helpers.
 - **Forager and Forager-derived custom workers** — the default for delegated execution. A rare native \`general\` exception is an ordinary \`${call}\` call with ordinary tools only: no Hive authority, recursion, or questions. Native helpers keep only their bounded operational permissions. Unknown task targets remain denied.
+- **Investigator and Investigator-derived custom workers** — standalone diagnosis, experiments, and verify-only runs under Experiments. They return evidence and a conclusion, never a patch to merge; diagnosis coupled to an implementation lane stays with its Forager.
 - **Code and simplicity reviewers** — implementation review under Review Routing, each given a review packet.
 - **Hive Helper** — read-only feature and ad-hoc multi-step forensics: trace questions, interrupted-worker evidence packets, destination-drift relevance checks, and runtime-state clarification. Give it one named question and known session/run/worktree/source/destination identities. Hive Builder performs single direct status/inspection reads and known-event spot-checks itself and owns acceptance, integration, cleanup, and lifecycle decisions.
 
@@ -93,7 +96,7 @@ ${renderBackgroundBoardHandlePrompt(host)} Reconcile replies are compact acknowl
 
 ${renderInterruptedWorkerRecoveryPrompt(host)}
 
-For failed or retry work, launch a fresh worker with a concise self-contained handoff covering the goal, attempted work, relevant errors, and next constraints. Architect is the only subagent that may call one terminal layer of read-only planning helpers; every other subagent is terminal.
+For failed or retry work, launch a fresh worker with a concise self-contained handoff covering the goal, attempted work, relevant errors, and next constraints. Architect is the only subagent that may call one terminal layer of planning helpers; every other subagent is terminal.
 
 ${renderSubagentConcurrencyPrompt(host, { loadsBackgroundSkill: false })}
 

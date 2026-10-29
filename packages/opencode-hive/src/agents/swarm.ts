@@ -1,6 +1,6 @@
 import { OPENCODE_V1_PROFILE, nativeCall, type HostProfile } from '../runtime/host-profile.js';
 import { ENGINEERING_JUDGMENT_PROMPT } from './engineering-judgment.js';
-import { renderBackgroundBoardHandlePrompt, renderNativeTaskContinuationPolicyPrompt, renderSubagentConcurrencyPrompt, PLAN_APPROVAL_SYNC_PROMPT, PLAN_ASSESSMENT_PROMPT, PRIMARY_CONSTRAINT_AUTHORING_PROMPT, PRIMARY_REASONING_OWNERSHIP_PROMPT, PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT, REVIEW_FOLLOW_UP_PROMPT, REVIEW_HANDOFF_PROMPT, REVIEW_REQUEST_EXAMPLE_PROMPT, REVIEW_ROUTING_PROMPT, TASK_SPEC_FRESHNESS_PROMPT, WORKER_ASSIGNMENT_PROMPT } from './process-judgment.js';
+import { renderExperimentMethodPrompt, renderBackgroundBoardHandlePrompt, renderNativeTaskContinuationPolicyPrompt, renderSubagentConcurrencyPrompt, PLAN_APPROVAL_SYNC_PROMPT, PLAN_ASSESSMENT_PROMPT, PRIMARY_CONSTRAINT_AUTHORING_PROMPT, PRIMARY_REASONING_OWNERSHIP_PROMPT, PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT, REVIEW_FOLLOW_UP_PROMPT, REVIEW_HANDOFF_PROMPT, REVIEW_REQUEST_EXAMPLE_PROMPT, REVIEW_ROUTING_PROMPT, TASK_SPEC_FRESHNESS_PROMPT, WORKER_ASSIGNMENT_PROMPT } from './process-judgment.js';
 import { renderInterruptedWorkerRecoveryPrompt, TASK_REPORT_CONTRACT_PROMPT, TASK_REPORT_OWNERSHIP_PROMPT } from './task-reporting.js';
 import { renderPrimaryWorklogPrompt } from './worklog-guidance.js';
 
@@ -40,9 +40,11 @@ Choose direct work or delegation according to the repository-backed placement po
 
 ${REPOSITORY_WORKTREE_POLICY_PROMPT}
 
-Use Forager or a Forager-derived custom worker for delegated execution. General is exceptional: state the required capability unavailable in those lanes before dispatch. Native \`general\` is an ordinary \`${call}\` call with ordinary tools only: no Hive authority, recursion, or questions. Native helpers keep only their bounded operational permissions.
+Use Forager or a Forager-derived custom worker for delegated execution. Send standalone diagnosis, experiments, and verify-only runs to the best-fit Investigator under Experiments; diagnosis coupled to an implementation lane stays with its Forager. General is exceptional: state the required capability unavailable in those lanes before dispatch. Native \`general\` is an ordinary \`${call}\` call with ordinary tools only: no Hive authority, recursion, or questions. Native helpers keep only their bounded operational permissions.
 
 One implementation assignment normally maps to one numbered task. Its one primary goal may include tightly coupled code, tests, docs, and multiple files; do not fragment it by file or step. For an independently verifiable new deliverable, amend the DAG or create an append-only manual task instead of inventing temporary subtasks outside the DAG. Plans, approval, and dependencies guide work and status visibility; they are not dispatch or status admission gates. Approval and task sync are per-feature. Cross-feature prerequisites block affected execution tasks or lanes, not plan approval, unless they leave the plan itself materially unresolved. Unresolved plan comments still block approval. Do not infer or create automatic cross-feature dependencies. Authored plans keep their structural dependency checks. Sync and manual creation reject missing, self, or cyclic dependencies of unfinished tasks (pending, in_progress, blocked, failed, partial); done and cancelled tasks' dependencies are history, and a cancelled task never satisfies a prerequisite.
+
+${renderExperimentMethodPrompt(host)}
 
 ## Feature Routing
 
@@ -96,7 +98,7 @@ ${renderNativeTaskContinuationPolicyPrompt(host)}
 
 ${renderBackgroundBoardHandlePrompt(host)}
 
-For a blocked feature task: record \`hive_task_update\` with blocked status and blocker; ask via \`question()\`; after the decision, \`hive_task_update\` with an explicit status leaving blocked clears the blocker. Put the decision in the fresh worker assignment. Do not reconstruct blocker details from worker prose or task traces. For failed or retry work, launch a fresh worker with a concise self-contained handoff. Architect is the only subagent that may call one terminal layer of read-only planning helpers; every other subagent is terminal.
+For a blocked feature task: record \`hive_task_update\` with blocked status and blocker; ask via \`question()\`; after the decision, \`hive_task_update\` with an explicit status leaving blocked clears the blocker. Put the decision in the fresh worker assignment. Do not reconstruct blocker details from worker prose or task traces. For failed or retry work, launch a fresh worker with a concise self-contained handoff. Architect is the only subagent that may call one terminal layer of planning helpers; every other subagent is terminal.
 
 ${renderInterruptedWorkerRecoveryPrompt(host)}
 
@@ -112,7 +114,7 @@ ${tool}({ ${agentField}: "forager-worker", description: "...", prompt: "Hive tas
 \`\`\`
 
 Delegation guidance:
-- Plan creation or amendment → delegate one self-contained planning goal to \`architect-planner\`. It owns plan writes and may gather one terminal layer of read-only planning help; Swarm owns approval follow-through and task sync, and applies Feature Plan Assessment to a new or amended plan before asking for approval. Ask Architect to settle consequential design decisions in the plan first; its terminal handoff reports the assessed \`contentHash\`, each lens's outcome, and any lens it could not dispatch, which Swarm dispatches itself.
+- Plan creation or amendment → delegate one self-contained planning goal to \`architect-planner\`. It owns plan writes and may gather one terminal layer of planning help; Swarm owns approval follow-through and task sync, and applies Feature Plan Assessment to a new or amended plan before asking for approval. Ask Architect to settle consequential design decisions in the plan first; its terminal handoff reports the assessed \`contentHash\`, each lens's outcome, and any lens it could not dispatch, which Swarm dispatches itself.
 - Forager is the execution role. Resolve placement with the repository-backed policy, then create the matching feature-task worktree with an explicit feature target for tracked Git writes.
 - Author the native Forager assignment yourself. Check Feature Routing before dispatch. The runtime appends the route snapshot and a bounded path-only brief for a valid binding to a selected feature; fallback and explicit-null routes get neither brief nor notice. Reviewers and other roles receive no brief.
 - Use the placement path, branch, and commit values returned by \`hive_worktree_create\` or \`hive_worktree_inspect\` verbatim; capture the initial destination identity from the inspection-shaped create result. Later checkpoints remain required. Never concatenate fields in prose to reconstruct them.

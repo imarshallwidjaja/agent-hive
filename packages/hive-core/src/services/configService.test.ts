@@ -42,6 +42,7 @@ describe("ConfigService defaults", () => {
       "approach-advisor",
       "architect-planner",
       "code-reviewer",
+      "forager-investigator",
       "forager-worker",
       "hive-builder",
       "hive-helper",
@@ -58,6 +59,7 @@ describe("ConfigService defaults", () => {
       expect(agentConfig, agentName).not.toHaveProperty('temperature');
     }
     expect(config.agents?.['hive-helper']).toEqual({ autoLoadSkills: ['hive-config'] });
+    expect(config.agents?.['forager-investigator']).toEqual({ autoLoadSkills: ['verification'] });
     expect(config.customAgents).toEqual({});
     expect(config.taskTraceSummarizer).toBeUndefined();
   });
@@ -171,7 +173,7 @@ describe("ConfigService defaults", () => {
     expect(config.council).toEqual(DEFAULT_HIVE_CONFIG.council);
     expect(config.council?.defaultGroup).toBe('decision');
     expect(config.council?.maxMembers).toBe(4);
-    expect(config.council?.excludedAgents).toEqual(['hive-master', 'swarm-orchestrator', 'forager-worker', 'hive-builder', 'hive-helper']);
+    expect(config.council?.excludedAgents).toEqual(['hive-master', 'swarm-orchestrator', 'forager-worker', 'forager-investigator', 'hive-builder', 'hive-helper']);
     expect(config.council?.groups).toEqual({
       design: {
         description: 'Architecture and implementation-shape advice',
@@ -1373,6 +1375,38 @@ describe('ConfigService write validation and persistence', () => {
     expect(reloaded.getRoutingAgentDescription('forager-worker')).toBe(
       DEFAULT_ROUTING_AGENT_DESCRIPTIONS['forager-worker'],
     );
+  });
+
+  it('resolves forager-investigator settings and its custom derivatives through ordinary base inheritance', () => {
+    const service = new ConfigService();
+    const configPath = service.getPath();
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, JSON.stringify({
+      agents: {
+        'forager-investigator': { model: 'user/investigator', variant: 'high', description: '  Runs local experiments.  ' },
+      },
+      customAgents: {
+        'investigator-browser': {
+          baseAgent: 'forager-investigator',
+          description: 'Browser reproduction experiments',
+          autoLoadSkills: ['ui-mockups'],
+        },
+      },
+    }));
+
+    expect(service.getAgentConfig('forager-investigator')).toMatchObject({
+      model: 'user/investigator',
+      variant: 'high',
+      autoLoadSkills: ['verification'],
+    });
+    expect(service.getRoutingAgentDescription('forager-investigator')).toBe('Runs local experiments.');
+    expect(service.getCustomAgentConfigs()['investigator-browser']).toEqual({
+      baseAgent: 'forager-investigator',
+      description: 'Browser reproduction experiments',
+      model: 'user/investigator',
+      variant: 'high',
+      autoLoadSkills: ['verification', 'ui-mockups'],
+    });
   });
 
   it('persists only stored values and requested updates without restoring omitted defaults', () => {

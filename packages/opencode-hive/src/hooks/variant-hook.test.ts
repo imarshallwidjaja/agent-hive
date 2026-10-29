@@ -111,6 +111,8 @@ describe('classifySession', () => {
       ['architect-planner', 'primary'],
       ['swarm-orchestrator', 'primary'],
       ['forager-worker', 'task-worker'],
+      // Investigators are terminal subagents: no task brief, report, or source-pin authority.
+      ['forager-investigator', 'subagent'],
       ['scout-researcher', 'subagent'],
       ['plan-reviewer', 'subagent'],
       ['code-reviewer', 'subagent'],
@@ -126,6 +128,7 @@ describe('classifySession', () => {
   describe('custom agent classification', () => {
     const customAgents: Record<string, { baseAgent: string }> = {
       'forager-ui': { baseAgent: 'forager-worker' },
+      'investigator-ui': { baseAgent: 'forager-investigator' },
       'scout-custom': { baseAgent: 'scout-researcher' },
       'reviewer-security': { baseAgent: 'code-reviewer' },
       'reviewer-minimalist': { baseAgent: 'simplicity-reviewer' },
@@ -134,6 +137,7 @@ describe('classifySession', () => {
 
     it.each([
       ['forager-ui', 'task-worker', 'forager-worker'],
+      ['investigator-ui', 'subagent', 'forager-investigator'],
       ['reviewer-security', 'subagent', 'code-reviewer'],
       ['reviewer-minimalist', 'subagent', 'simplicity-reviewer'],
       ['reviewer-vulnerability', 'subagent', 'vulnerability-reviewer'],

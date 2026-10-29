@@ -428,11 +428,14 @@ describe('v2 execution guards', () => {
     }
   });
 
-  it('lets both review primaries dispatch Foragers and Forager derivatives, and nothing else new, under a user global allow', async () => {
-    const host = await activate({}, { customAgents: { 'ui-forager': { baseAgent: 'forager-worker', description: 'Browser-visible UI exercises.' } } });
+  it('lets both review primaries dispatch Investigators and their derivatives but not implementation Foragers, under a user global allow', async () => {
+    const host = await activate({}, { customAgents: {
+      'ui-investigator': { baseAgent: 'forager-investigator', description: 'Browser-visible UI exercises.' },
+      'ui-forager': { baseAgent: 'forager-worker', description: 'Browser-visible UI implementation.' },
+    } });
     host.useAgentConfig({ permissions: [{ action: '*', resource: '*', effect: 'allow' }] });
-    const allowedTargets = ['forager-worker', 'ui-forager', 'scout-researcher', 'code-reviewer', 'hive-helper'];
-    const deniedTargets = ['hive-master', 'swarm-orchestrator', 'hive-builder', 'architect-planner', 'unknown-agent'];
+    const allowedTargets = ['forager-investigator', 'ui-investigator', 'scout-researcher', 'code-reviewer', 'hive-helper'];
+    const deniedTargets = ['forager-worker', 'ui-forager', 'hive-master', 'swarm-orchestrator', 'hive-builder', 'architect-planner', 'unknown-agent'];
     for (const agent of ['dash-reviewer', 'vulnerability-review-primary']) {
       for (const target of allowedTargets) expect(denied(await host.before({ tool: 'subagent', sessionID: 'primary', agent, input: { agent: target } })), `${agent} -> ${target}`).toBeUndefined();
       for (const target of deniedTargets) expect(denied(await host.before({ tool: 'subagent', sessionID: 'primary', agent, input: { agent: target } })), `${agent} -> ${target}`).toBeDefined();
@@ -441,17 +444,51 @@ describe('v2 execution guards', () => {
         expect(denied(await host.before({ tool, sessionID: 'primary', agent, input: {} })), `${agent} ${tool}`).toBeDefined();
       }
       const rules = host.agents().registry.get(agent)!.permissions.filter((rule) => rule.action === 'subagent');
-      expect(rules).toContainEqual({ action: 'subagent', resource: 'forager-worker', effect: 'allow' });
-      expect(rules).toContainEqual({ action: 'subagent', resource: 'ui-forager', effect: 'allow' });
+      expect(rules).toContainEqual({ action: 'subagent', resource: 'forager-investigator', effect: 'allow' });
+      expect(rules).toContainEqual({ action: 'subagent', resource: 'ui-investigator', effect: 'allow' });
+      expect(rules).not.toContainEqual({ action: 'subagent', resource: 'forager-worker', effect: 'allow' });
       expect(rules).toContainEqual({ action: 'subagent', resource: '*', effect: 'deny' });
       // The same catalog gives the primary the method and the derivative's routing card, here with the v2 call name.
       const system = host.agents().registry.get(agent)!.system!;
       expect(system).toContain('native `subagent()` call');
-      expect(system).toContain('- `ui-forager` — kind: custom overlay; base: `forager-worker`; Browser-visible UI exercises.');
+      expect(system).toContain('- `ui-investigator` — kind: custom overlay; base: `forager-investigator`; Browser-visible UI exercises.');
+      expect(system).not.toContain('`ui-forager`');
     }
-    // A Forager session started by a review primary cannot delegate further.
-    host.sessions.set('exercise', { id: 'exercise', parentID: 'primary', agent: 'forager-worker' });
-    expect(denied(await host.before({ tool: 'subagent', sessionID: 'exercise', agent: 'ui-forager', input: { agent: 'scout-researcher' } }))).toBeDefined();
+    // An Investigator session started by a review primary cannot delegate further.
+    host.sessions.set('exercise', { id: 'exercise', parentID: 'primary', agent: 'forager-investigator' });
+    expect(denied(await host.before({ tool: 'subagent', sessionID: 'exercise', agent: 'ui-investigator', input: { agent: 'scout-researcher' } }))).toBeDefined();
+  });
+
+  it('gives an Investigator exactly read and inspection Hive tools with native scratch edits, and lets Architect dispatch it but not a Forager', async () => {
+    const host = await activate({}, { customAgents: { 'ui-investigator': { baseAgent: 'forager-investigator', description: 'Browser-visible UI exercises.' } } });
+    host.useAgentConfig({ permissions: [{ action: '*', resource: '*', effect: 'allow' }] });
+    host.sessions.set('experiment', { id: 'experiment', parentID: 'primary', agent: 'ui-investigator' });
+    const investigator = { sessionID: 'experiment', agent: 'ui-investigator' };
+    for (const tool of ['hive_status', 'hive_context_read', 'hive_worktree_inspect', 'hive_adhoc_worktree_inspect', 'edit', 'write']) {
+      expect(denied(await host.before({ tool, ...investigator, input: {} })), tool).toBeUndefined();
+    }
+    for (const tool of ['hive_context_write', 'hive_task_update', 'hive_worktree_create', 'hive_task_trace', 'hive_adhoc_worktree_create', 'question']) {
+      expect(denied(await host.before({ tool, ...investigator, input: {} })), tool).toBeDefined();
+    }
+    expect(denied(await host.before({ tool: 'subagent', ...investigator, input: { agent: 'scout-researcher' } }))).toBeDefined();
+    // The custom Investigator gets its base instructions at request time, with no Forager task-report or source-pin contract.
+    const instructions = (await host.request({ sessionID: 'experiment', agent: 'ui-investigator', system: ['x'], tools: ['read'] })).join('\n');
+    expect(instructions).toContain('# Forager Investigator (Experimental Worker)');
+    expect(instructions).not.toContain('# Forager (Worker/Coder)');
+    expect(instructions).not.toContain('sourceCommit');
+    for (const architect of [{ sessionID: 'primary' }, { sessionID: 'experiment' }]) {
+      if (architect.sessionID === 'experiment') host.sessions.set('experiment', { id: 'experiment', parentID: 'primary', agent: 'architect-planner' });
+      for (const target of ['forager-investigator', 'ui-investigator']) {
+        expect(denied(await host.before({ tool: 'subagent', ...architect, agent: 'architect-planner', input: { agent: target } })), target).toBeUndefined();
+      }
+      expect(denied(await host.before({ tool: 'subagent', ...architect, agent: 'architect-planner', input: { agent: 'forager-worker' } }))).toBeDefined();
+    }
+    // Primary Architect places and removes experiments; a delegated Architect returns those requests to its parent.
+    expect(denied(await host.before({ tool: 'hive_adhoc_worktree_create', sessionID: 'primary', agent: 'architect-planner', input: {} }))).toBeUndefined();
+    expect(denied(await host.before({ tool: 'hive_adhoc_worktree_merge', sessionID: 'primary', agent: 'architect-planner', input: {} }))).toBeDefined();
+    for (const tool of ['hive_adhoc_worktree_create', 'hive_adhoc_worktree_cleanup']) {
+      expect(denied(await host.before({ tool, sessionID: 'experiment', agent: 'architect-planner', input: {} })), tool).toBeDefined();
+    }
   });
 
   it('applies a child Forager bounded context edit through the v2 executor', async () => {
@@ -717,7 +754,7 @@ describe('v2 skills, commands and models', () => {
   it('asks every role and custom agent for unslop at request time, through the id of the skill with that name', async () => {
     const roles = [
       'hive-master', 'architect-planner', 'swarm-orchestrator', 'hive-builder', 'scout-researcher', 'forager-worker',
-      'hive-helper', 'plan-reviewer', 'code-reviewer', 'simplicity-reviewer', 'approach-advisor', 'vulnerability-reviewer',
+      'forager-investigator', 'hive-helper', 'plan-reviewer', 'code-reviewer', 'simplicity-reviewer', 'approach-advisor', 'vulnerability-reviewer',
       'dash-reviewer', 'vulnerability-review-primary',
     ];
     const host = await activate({}, { customAgents: { 'audit-reviewer': { baseAgent: 'code-reviewer', description: 'd', autoLoadSkills: ['unslop'] } } });

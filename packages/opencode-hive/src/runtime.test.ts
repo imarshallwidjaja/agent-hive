@@ -1091,9 +1091,11 @@ describe('coordinated runtime hard cut', () => {
       'hive-builder': HIVE_TOOL_NAMES,
       'architect-planner': [...reads, ...contextWrites, ...traces, ...inspections, ...constraints, ...background,
         'hive_feature_create', 'hive_feature_select', 'hive_plan_write', 'hive_plan_patch', 'hive_plan_approve', 'hive_tasks_sync',
-        'hive_repositories_discover', 'hive_repositories_update', 'hive_context_archive', 'hive_worklog_record'],
+        'hive_repositories_discover', 'hive_repositories_update', 'hive_context_archive', 'hive_worklog_record',
+        'hive_adhoc_worktree_create', 'hive_adhoc_worktree_cleanup'],
       'scout-researcher': [...reads, 'hive_repositories_discover'],
       'forager-worker': [...reads, ...contextWrites, ...inspections, ...traces, 'hive_task_update', 'hive_worktree_create'],
+      'forager-investigator': [...reads, ...inspections],
       'hive-helper': [...reads, ...inspections, ...traces],
       'plan-reviewer': [...reads, ...contextWrites],
       'code-reviewer': [...reads, ...contextWrites],
@@ -1153,9 +1155,9 @@ describe('coordinated runtime hard cut', () => {
       expect(action(agent, 'bash'), agent).toBe(agent === TASK_TRACE_SUMMARIZER_AGENT ? 'deny' : 'allow');
     }
 
-    const planningHelpers = ['scout-researcher', 'plan-reviewer', 'approach-advisor'];
-    // Review primaries dispatch every routing base, Foragers included, for report-only runtime exercises.
-    const reviewHelpers = CUSTOM_AGENT_BASES;
+    const planningHelpers = ['scout-researcher', 'forager-investigator', 'plan-reviewer', 'approach-advisor'];
+    // Review primaries dispatch every routing base except implementation Foragers; Investigators run their runtime exercises.
+    const reviewHelpers = CUSTOM_AGENT_BASES.filter((base) => base !== 'forager-worker');
     const executors = ['hive-master', 'swarm-orchestrator', 'hive-builder'];
     const reviewOrchestrators = ['dash-reviewer', 'vulnerability-review-primary'];
     for (const agent of Object.keys(matrix)) {
@@ -1171,7 +1173,7 @@ describe('coordinated runtime hard cut', () => {
         // task is deliberately absent from primary_tools: delegated Architect keeps its one terminal helper layer.
         expect(action(agent, 'task', true, target), `child ${agent} -> ${target}`).toBe(targets.includes(target) ? 'allow' : 'deny');
       }
-      expect(action(agent, 'edit'), agent).toBe([...executors, 'forager-worker', 'audit-forager-worker', 'general'].includes(agent) ? 'allow' : 'deny');
+      expect(action(agent, 'edit'), agent).toBe([...executors, 'forager-worker', 'audit-forager-worker', 'forager-investigator', 'audit-forager-investigator', 'general'].includes(agent) ? 'allow' : 'deny');
       expect(action(agent, 'question'), agent).toBe([...executors, 'architect-planner', ...reviewOrchestrators].includes(agent) ? 'allow' : 'deny');
     }
     for (const agent of ['general', 'explore']) {
@@ -1703,7 +1705,10 @@ describe('coordinated runtime hard cut', () => {
   });
 
   it('appends a task brief after the unchanged route snapshot only for bound Forager dispatches', async () => {
-    const { hooks } = createRuntime({ hiveConfig: { customAgents: { 'forager-specialist': { baseAgent: 'forager-worker', description: 'Specialist Forager.' } } } });
+    const { hooks } = createRuntime({ hiveConfig: { customAgents: {
+      'forager-specialist': { baseAgent: 'forager-worker', description: 'Specialist Forager.' },
+      'investigator-specialist': { baseAgent: 'forager-investigator', description: 'Specialist Investigator.' },
+    } } });
     const loaded = await hooks;
     const caller = context('brief-parent');
     const briefStart = /<!-- hive-task-brief:start -->/g;
@@ -1732,8 +1737,11 @@ describe('coordinated runtime hard cut', () => {
     const scout = await dispatch('scout-researcher', authored, 'call-scout');
     expect(forager.args.prompt.replace(briefBlock, '')).toBe(scout.args.prompt);
     expect(forager.args.prompt.indexOf('<!-- hive-route-snapshot:end -->')).toBeLessThan(forager.args.prompt.indexOf('<!-- hive-task-brief:start -->'));
-    for (const agent of ['code-reviewer', 'scout-researcher', 'approach-advisor', 'general']) {
-      expect((await dispatch(agent, authored, `call-${agent}`)).args.prompt).not.toContain('hive-task-brief');
+    // Investigators get the same route snapshot as any child, never the Forager task brief.
+    for (const agent of ['code-reviewer', 'scout-researcher', 'approach-advisor', 'general', 'forager-investigator', 'investigator-specialist']) {
+      const routed = (await dispatch(agent, authored, `call-${agent}`)).args.prompt;
+      expect(routed).not.toContain('hive-task-brief');
+      expect(routed).toBe(scout.args.prompt);
     }
 
     const custom = await dispatch('forager-specialist', authored, 'call-custom');

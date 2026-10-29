@@ -166,7 +166,7 @@ hive_background_status({});
 
 ## Diagnosis-only fan-out
 
-Read-only diagnosis lanes need no worktree and may launch together. Choose the best-fit available descriptor for the output you need.
+Read-only diagnosis lanes need no worktree and may launch together. Choose the best-fit available descriptor for the output you need: an advisor or reviewer reasons from source, and an Investigator judges from source and evidence or runs the candidate where your Experiments method places it, in a disposable placement you created and named when the run changes source.
 
 <!-- hive-host opencode-v1 -->
 OpenCode v1:
@@ -174,6 +174,7 @@ OpenCode v1:
 ```typescript
 task({ subagent_type: '<chosen-advisor-or-reviewer>', prompt: 'Diagnose failure A and report without edits' })
 task({ subagent_type: '<chosen-advisor-or-reviewer>', prompt: 'Diagnose failure B and report without edits' })
+task({ subagent_type: 'forager-investigator', prompt: 'Reproduce failure C on candidate <commit> in placement <path>; keep evidence in <evidence-dir>; report a conclusion or the unresolved result' })
 ```
 <!-- /hive-host -->
 <!-- hive-host opencode-v2 -->
@@ -182,6 +183,7 @@ OpenCode v2:
 ```typescript
 subagent({ agent: '<chosen-advisor-or-reviewer>', prompt: 'Diagnose failure A and report without edits' })
 subagent({ agent: '<chosen-advisor-or-reviewer>', prompt: 'Diagnose failure B and report without edits' })
+subagent({ agent: 'forager-investigator', prompt: 'Reproduce failure C on candidate <commit> in placement <path>; keep evidence in <evidence-dir>; report a conclusion or the unresolved result' })
 ```
 <!-- /hive-host -->
 

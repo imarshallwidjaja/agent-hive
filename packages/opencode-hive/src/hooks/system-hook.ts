@@ -12,7 +12,7 @@ Each child, including advisors, reviewers, and custom overlays, independently lo
 
 ## Hive — Active Session
 
-\`hive-master\`, \`swarm-orchestrator\`, and \`hive-builder\` are primary-only and are never valid native \`${call}\` targets. \`architect-planner\` is the planning-only exception: a primary may delegate plan work to it, and it may call one layer of permitted read-only planning helpers. Those helpers and every other subagent are terminal.
+\`hive-master\`, \`swarm-orchestrator\`, and \`hive-builder\` are primary-only and are never valid native \`${call}\` targets. \`architect-planner\` is the planning-only exception: a primary may delegate plan work to it, and it may call one layer of permitted planning helpers. Those helpers and every other subagent are terminal.
 
 ## Capability-Based Tool Selection
 

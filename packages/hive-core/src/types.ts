@@ -409,6 +409,7 @@ export const BUILT_IN_AGENT_NAMES = [
   'swarm-orchestrator',
   'scout-researcher',
   'forager-worker',
+  'forager-investigator',
   'hive-helper',
   'plan-reviewer',
   'code-reviewer',
@@ -423,6 +424,7 @@ export type BuiltInAgentName = (typeof BUILT_IN_AGENT_NAMES)[number];
 export const CUSTOM_AGENT_BASES = [
   'scout-researcher',
   'forager-worker',
+  'forager-investigator',
   'plan-reviewer',
   'code-reviewer',
   'simplicity-reviewer',
@@ -434,7 +436,8 @@ export type CustomAgentBase = (typeof CUSTOM_AGENT_BASES)[number];
 
 export const DEFAULT_ROUTING_AGENT_DESCRIPTIONS: Record<CustomAgentBase, string> = {
   'scout-researcher': 'Retrieves bounded internal or external code, context, and data evidence without owning diagnosis, tradeoffs, or solution selection.',
-  'forager-worker': 'Implements and verifies delegated work in its assigned workspace; diagnosis-only assignments remain report-only.',
+  'forager-worker': 'Implements and verifies delegated work in its assigned workspace, including diagnosis coupled to that implementation; any diagnosis-only assignment stays report-only.',
+  'forager-investigator': 'Runs standalone diagnosis, experiments, and verify-only checks, using a disposable placement when a run changes source, and returns evidence and conclusions, never a product patch.',
   'plan-reviewer': 'Default for ordinary plan review covering worker readiness, references, dependencies, and executable verification.',
   'code-reviewer': 'Default for ordinary implementation review covering correctness, tests, risk, scope creep, YAGNI, and dead code.',
   'simplicity-reviewer': 'Default for ordinary post-implementation simplicity review covering unnecessary abstractions, duplication, dead code, and safe deletion.',
@@ -532,6 +535,8 @@ export interface HiveConfig {
     'scout-researcher'?: RoutingAgentConfig;
     /** Forager Worker */
     'forager-worker'?: RoutingAgentConfig;
+    /** Forager Investigator (experimental diagnosis and verification) */
+    'forager-investigator'?: RoutingAgentConfig;
     /** Hive Helper */
     'hive-helper'?: AgentModelConfig;
     /** Plan Reviewer */
@@ -563,7 +568,7 @@ export interface HiveConfig {
 export const DEFAULT_COUNCIL_CONFIG: CouncilConfig = {
   defaultGroup: 'decision',
   maxMembers: 4,
-  excludedAgents: ['hive-master', 'swarm-orchestrator', 'forager-worker', 'hive-builder', 'hive-helper'],
+  excludedAgents: ['hive-master', 'swarm-orchestrator', 'forager-worker', 'forager-investigator', 'hive-builder', 'hive-helper'],
   groups: {
     design: {
       description: 'Architecture and implementation-shape advice',
@@ -623,6 +628,9 @@ export const DEFAULT_HIVE_CONFIG: HiveConfig = {
       autoLoadSkills: [],
     },
     'forager-worker': {
+      autoLoadSkills: ['verification'],
+    },
+    'forager-investigator': {
       autoLoadSkills: ['verification'],
     },
     'hive-helper': {

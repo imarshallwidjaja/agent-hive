@@ -649,12 +649,12 @@ describe('config hook autoLoadSkills guidance', () => {
     const registered = opencodeConfig.agent as Record<string, { prompt?: string }>;
     const roles = [
       'hive-master', 'architect-planner', 'swarm-orchestrator', 'hive-builder', 'scout-researcher', 'forager-worker',
-      'hive-helper', 'plan-reviewer', 'code-reviewer', 'simplicity-reviewer', 'approach-advisor', 'vulnerability-reviewer',
+      'forager-investigator', 'hive-helper', 'plan-reviewer', 'code-reviewer', 'simplicity-reviewer', 'approach-advisor', 'vulnerability-reviewer',
       'dash-reviewer', 'vulnerability-review-primary',
     ];
     const followers: Record<string, string> = {
       'hive-master': 'parallel-exploration', 'architect-planner': 'parallel-exploration', 'swarm-orchestrator': 'parallel-exploration',
-      'hive-builder': 'verification', 'forager-worker': 'verification', 'hive-helper': 'hive-config',
+      'hive-builder': 'verification', 'forager-worker': 'verification', 'forager-investigator': 'verification', 'hive-helper': 'hive-config',
     };
     for (const role of roles) {
       // Roles whose instructions are added at request time carry no prompt in the registered agent.
@@ -665,7 +665,7 @@ describe('config hook autoLoadSkills guidance', () => {
       expect(prompt, role).not.toContain(requireBuiltinSkill('unslop').template);
       expect(prompt, role).not.toContain('## Writing and explanation');
     }
-    expect(roles.length).toBe(14);
+    expect(roles.length).toBe(15);
     const generatedPath = getCurrentHiveManagedPath(opencodeConfig)!;
     for (const file of ['SKILL.md', 'UPSTREAM.md']) expect(fs.existsSync(path.join(generatedPath, 'unslop', file))).toBe(true);
     expect(fs.existsSync(path.join(generatedPath, 'writing-policy'))).toBe(false);

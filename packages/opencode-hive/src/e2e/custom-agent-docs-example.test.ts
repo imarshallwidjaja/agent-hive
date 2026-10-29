@@ -38,7 +38,8 @@ const publishedExample = {
 
 const builtInBaseDescriptions = {
   'scout-researcher': 'Retrieves bounded internal or external code, context, and data evidence without owning diagnosis, tradeoffs, or solution selection.',
-  'forager-worker': 'Implements and verifies delegated work in its assigned workspace; diagnosis-only assignments remain report-only.',
+  'forager-worker': 'Implements and verifies delegated work in its assigned workspace, including diagnosis coupled to that implementation; any diagnosis-only assignment stays report-only.',
+  'forager-investigator': 'Runs standalone diagnosis, experiments, and verify-only checks, using a disposable placement when a run changes source, and returns evidence and conclusions, never a product patch.',
   'plan-reviewer': 'Default for ordinary plan review covering worker readiness, references, dependencies, and executable verification.',
   'code-reviewer': 'Default for ordinary implementation review covering correctness, tests, risk, scope creep, YAGNI, and dead code.',
   'simplicity-reviewer': 'Default for ordinary post-implementation simplicity review covering unnecessary abstractions, duplication, dead code, and safe deletion.',
@@ -73,6 +74,7 @@ const allRoutingCards = [
   scoutDocsCard,
   defaultCard('forager-worker'),
   foragerUiCard,
+  defaultCard('forager-investigator'),
   defaultCard('plan-reviewer'),
   defaultCard('code-reviewer'),
   reviewerSecurityCard,
@@ -179,12 +181,14 @@ describe('e2e: published custom-agent docs example', () => {
     expectCandidateSpecificRouting(architectPrompt);
     expect(architectPrompt).toContain('Do not choose a custom subagent only because the task is important, large, complex, or quality-sensitive.');
     expect(architectPrompt).not.toContain('exception routes, not capability upgrades');
-    expect(routingCards(architectPrompt)).toEqual([
+    const architectCards = [
       defaultCard('scout-researcher'),
       scoutDocsCard,
+      defaultCard('forager-investigator'),
       defaultCard('plan-reviewer'),
       defaultCard('approach-advisor'),
-    ]);
+    ];
+    expect(routingCards(architectPrompt)).toEqual(architectCards);
     expect(architectPrompt).not.toContain('`forager-worker` — kind: default');
     expect(architectPrompt).not.toContain('`forager-ui` — kind: custom overlay');
     expect(architectPrompt).not.toContain('`code-reviewer` — kind: default');
@@ -219,6 +223,7 @@ describe('e2e: published custom-agent docs example', () => {
       scoutDocsCard,
       defaultCard('forager-worker'),
       foragerUiCard,
+      defaultCard('forager-investigator'),
       defaultCard('code-reviewer'),
       reviewerSecurityCard,
       defaultCard('simplicity-reviewer'),
@@ -227,11 +232,12 @@ describe('e2e: published custom-agent docs example', () => {
     expect(builderPrompt).not.toContain('`approach-advisor` — kind: default');
     expect(builderPrompt).not.toContain('`vulnerability-reviewer` — kind: default');
 
-    // Review primaries choose reviewers from the command roster; the same routing cards offer them the execution workers for runtime exercises.
+    // Review primaries run candidates through Investigators; with no Investigator overlay configured, their prompt names the built-in and lists no cards.
     for (const name of ['dash-reviewer', 'vulnerability-review-primary']) {
       const reviewPrimaryPrompt = opencodeConfig.agent[name]?.prompt as string;
-      expectCandidateSpecificRouting(reviewPrimaryPrompt);
-      expect(routingCards(reviewPrimaryPrompt), name).toEqual([defaultCard('forager-worker'), foragerUiCard]);
+      expect(reviewPrimaryPrompt, name).toContain('using `forager-investigator` when no Investigator-derived agent fits closer');
+      expect(routingCards(reviewPrimaryPrompt), name).toEqual([]);
+      expect(reviewPrimaryPrompt, name).not.toContain('`forager-ui`');
     }
 
     fs.writeFileSync(configPath, JSON.stringify({ ...publishedExample, agentMode: 'unified' }, null, 2));
@@ -245,6 +251,8 @@ describe('e2e: published custom-agent docs example', () => {
     await unifiedSystemTransform?.({ sessionID: 'sess_docs_hive', agent: 'hive-master' }, hiveOutput);
     expectCandidateSpecificRouting(hiveOutput.system[0]);
     expect(routingCards(hiveOutput.system[0])).toEqual(allRoutingCards);
+    // Unified Hive delegates planning to Architect, which still sees its helper cards, Investigator included.
+    expect(routingCards(unifiedConfig.agent['architect-planner']?.prompt as string)).toEqual(architectCards);
 
     const readmeContent = fs.readFileSync(README_PATH, 'utf-8');
     expect(readmeContent).toContain(routingGuard);

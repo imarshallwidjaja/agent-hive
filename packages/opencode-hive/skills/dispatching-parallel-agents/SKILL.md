@@ -139,7 +139,7 @@ Batch independent Hive calls in one response/step, while sequencing dependent ca
 
 In feature-task mode, follow the primary prompt's binding and assignment rules. Keep the worker's successor handoff; when a terminal report names accepted Forward obligations, follow the primary prompt's post-merge promotion procedure before recipient dispatch.
 
-Use Forager-derived workers for delegated execution.
+Use Forager-derived workers for delegated execution, and Investigator-derived workers for standalone diagnosis, experiments, and verify-only runs.
 <!-- hive-host opencode-v1 -->
 A rare native `general` exception is an ordinary `task()` call with ordinary tools only: no Hive authority, recursion, or questions.
 <!-- /hive-host -->
@@ -151,7 +151,7 @@ Native helpers keep only their bounded operational permissions. Unknown targets 
 See `background-delegation` for board recovery.
 For read-only research, use `parallel-exploration`; this skill owns writing/change and execution dispatch.
 
-Choose the best-fit available descriptor for the requested output. Scout is for bounded source retrieval, not causal diagnosis or solution selection. A Forager diagnosis-only lane reports evidence, hypotheses tested and untested, a supported conclusion or unresolved status, and options when asked; it must not author fixes or other implementation changes, modify the original source under diagnosis, commit, or perform destructive reproduction unless the mission separately authorizes implementation in appropriate isolation. Scratch scripts, fixtures, builds, local servers, browser sessions, and a disposable copy of the submitted candidate that the mission names are not implementation; the lane keeps its evidence, stops what it started, and removes only the temporary reproduction artifacts it created.
+Choose the best-fit available descriptor for the requested output. Scout is for bounded source retrieval, not causal diagnosis or solution selection. An Investigator runs standalone diagnosis, experiments, and verify-only checks where its assignment places it, or judges from source and evidence alone when reading settles the question, and returns evidence and a conclusion, never a patch to merge; temporary variants it runs are labelled evidence. Diagnosis coupled to an implementation lane stays with that lane's Forager. A Forager diagnosis-only lane reports evidence, hypotheses tested and untested, a supported conclusion or unresolved status, and options when asked; it must not author fixes or other implementation changes, modify the original source under diagnosis, commit, or perform destructive reproduction unless the mission separately authorizes implementation in appropriate isolation. Scratch scripts, fixtures, builds, local servers, browser sessions, and a disposable copy of the submitted candidate that the mission names are not implementation; the lane keeps its evidence, stops what it started, and removes only the temporary reproduction artifacts it created.
 
 ### 4. Review and Integrate
 

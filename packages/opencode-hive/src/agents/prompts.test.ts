@@ -6,6 +6,7 @@ import { QUEEN_BEE_PROMPT } from './hive';
 import { ARCHITECT_BEE_PROMPT } from './architect';
 import { SWARM_BEE_PROMPT } from './swarm';
 import { FORAGER_BEE_PROMPT } from './forager';
+import { INVESTIGATOR_PROMPT } from './investigator';
 import { SCOUT_BEE_PROMPT } from './scout';
 import { HIVE_HELPER_PROMPT } from './hive-helper';
 import { CODEMODE_READ_TOOLS, OPENCODE_V1_PROFILE, createHostProfile, renderReadTransport, renderSkillResolution, requiredSkillIdentity, skillCall, type HostProfile } from '../runtime/host-profile';
@@ -28,7 +29,7 @@ import { renderApproachAdvisorPrompt } from './approach-advisor';
 import { renderVulnerabilityReviewerPrompt } from './vulnerability-reviewer';
 import { renderReviewGroundingPrompt } from './review-grounding';
 import { renderInterruptedWorkerRecoveryPrompt } from './task-reporting';
-import { renderNativeTaskContinuationPolicyPrompt, renderReviewRuntimePrompt } from './process-judgment';
+import { renderExperimentMethodPrompt, renderNativeTaskContinuationPolicyPrompt, renderReviewRuntimePrompt } from './process-judgment';
 import { COMMAND_BEHAVIOR } from '../commands/command-bodies';
 import { buildHiveCommandMap } from '../commands/runtime.js';
 import { hiveCommandRenderers } from '../commands/renderers.js';
@@ -1891,13 +1892,14 @@ describe('Primary retrieval and reasoning ownership', () => {
       ['Swarm', SWARM_BEE_PROMPT],
       ['Hive Builder', HIVE_BUILDER_PROMPT],
     ] as const) {
-      expect(prompt, name).toContain('best-fit available Forager or advisor');
-      expect(prompt, name).toContain('unless implementation is separately authorized');
+      expect(prompt, name).toContain('best-fit available Investigator or advisor');
+      expect(prompt, name).toContain("diagnosis coupled to an implementation lane stays with that lane's Forager");
+      expect(prompt, name).toContain('a fix needs separately authorized implementation');
     }
 
-    expect(ARCHITECT_BEE_PROMPT).toContain('best-fit permitted read-only advisor');
-    expect(ARCHITECT_BEE_PROMPT).toContain('Do not launch a Forager or other execution worker');
-    expect(ARCHITECT_BEE_PROMPT).toContain('hand execution diagnosis that requires state changes back to the primary orchestrator');
+    expect(ARCHITECT_BEE_PROMPT).toContain('best-fit permitted read-only advisor, or to an Investigator under Commissioned Experiments when a run would settle it');
+    expect(ARCHITECT_BEE_PROMPT).toContain('Do not launch an implementation Forager or other implementation worker');
+    expect(ARCHITECT_BEE_PROMPT).toContain('hand diagnosis that requires product changes back to the primary orchestrator');
   });
 
   it('uses Scouts for real evidence gaps without quotas or recursive verification', () => {
@@ -1947,6 +1949,81 @@ describe('Review runtime exercise', () => {
     }
   });
 
+  it('composes the shared Experiments method once into every primary that commissions runs and into no worker or specialist', () => {
+    for (const host of hosts) {
+      const method = renderExperimentMethodPrompt(host);
+      for (const [name, prompt] of [
+        ['Hive', renderQueenBeePrompt(host)], ['Swarm', renderSwarmBeePrompt(host)], ['Architect', renderArchitectBeePrompt(host)], ['Hive Builder', renderHiveBuilderPrompt(host)],
+        ['Dash Reviewer', renderDashReviewerPrompt(host)], ['Vulnerability Review Primary', renderVulnerabilityReviewPrimaryPrompt(host)],
+      ] as const) {
+        expect(countOccurrences(prompt, method), name).toBe(1);
+        // The method opens its own H2, so the composing prompt's next content starts a new top-level section.
+        const following = prompt.slice(prompt.indexOf(method) + method.length).trimStart();
+        expect(following === '' || /^#{1,2} /.test(following), `${name}: ${following.slice(0, 80)}`).toBe(true);
+      }
+      for (const [name, prompt] of [
+        ['Forager', FORAGER_BEE_PROMPT], ['Investigator', INVESTIGATOR_PROMPT], ['Scout', renderScoutBeePrompt(host)], ['Hive Helper', renderHiveHelperPrompt(host)],
+        ['Code Reviewer', renderCodeReviewerPrompt(host)], ['Vulnerability Reviewer', renderVulnerabilityReviewerPrompt(host)],
+      ] as const) {
+        expect(prompt, name).not.toContain('## Experiments');
+      }
+    }
+  });
+
+  it('lets an authorized mission run its local disposable experiments while planning alone and new external effects need authority', () => {
+    const method = renderExperimentMethodPrompt(OPENCODE_V1_PROFILE);
+    for (const phrase of [
+      'An authorized implementation, debugging, investigation, or feasibility mission covers the local disposable setup its experiments need',
+      'and goal-driven exploration inside it, with no further question',
+      'Planning or advice alone does not cover running arbitrary code',
+      'ask the operator once, naming its purpose, candidate, and effects; a child session returns that request to its parent',
+      'A new paid, external, or non-disposable effect',
+      'needs authority that names it',
+    ]) expect(method, phrase).toContain(phrase);
+    // The review-only covering-instruction rule stays in the review wrapper, not in the ordinary mission method.
+    expect(method).not.toContain('A request to review or assess');
+    expect(renderReviewRuntimePrompt(OPENCODE_V1_PROFILE)).toContain('For a review, this rule replaces the Authority rule under Experiments');
+  });
+
+  it('keeps experiment code as labelled evidence, verify-only runs immutable, and evidence outside the placement', () => {
+    const method = renderExperimentMethodPrompt(OPENCODE_V1_PROFILE);
+    for (const phrase of [
+      'It returns evidence and a conclusion, not a product patch: a fix it points to needs a separate implementation assignment',
+      "Diagnosis coupled to an implementation lane stays with that lane's Forager",
+      'An experiment runs the unchanged candidate in the target or placement the assignment authorizes',
+      'variants that change source, and those run only in a disposable placement',
+      "The worker labels each variant's delta from the candidate. Variant code is evidence, never a patch to merge",
+      'A verify-only assignment changes no source, test, fixture, snapshot, or gate',
+      'When a run will produce artifacts, name an evidence destination before dispatching it, outside any source checkout or disposable placement the run exercises or removes, so the artifacts survive cleanup',
+      'You own the placement and its resources',
+    ]) expect(method, phrase).toContain(phrase);
+  });
+
+  it('restores only attributable worker changes and cleans up the placement without discard or force', () => {
+    const method = renderExperimentMethodPrompt(OPENCODE_V1_PROFILE);
+    for (const phrase of [
+      'in a disposable placement restores the tracked changes it can attribute to its materialization, probes, variants, or builds and removes its own untracked scaffolding unless you asked it to retain the placement',
+      'it leaves ignored dependency installs, ignored build output, and unrelated or uncertain state for you',
+      "In the original checkout it undoes only its own run's changes and leaves pre-existing state untouched. It never resets or cleans the whole tree",
+      'remove a Hive placement with `hive_adhoc_worktree_cleanup`, its kept selector, and `deleteBranch: true`, without `discard`',
+      'Ignored dependency installs and build output alone do not block that removal, even when inspect reports the placement unclean; tracked or untracked changes do, and cleanup can remove the worktree while keeping the branch',
+      'report the retained placement or branch instead of forcing its removal',
+      'A disposable file copy has no Hive registration, so the Hive cleanup tool does not apply: the owner the assignment names removes it within the authorized scratch scope',
+      'A runtime-only run ends when its owned processes and resources are stopped or released, and a read-only assessment needs no cleanup',
+      'A child session cannot create or clean up a Hive placement: it returns those requests, with their selectors, to its parent',
+    ]) expect(method, phrase).toContain(phrase);
+  });
+
+  it('names a subject for runtime-only and read-only work without a Git placement, and guards the original-checkout fallback', () => {
+    const method = renderExperimentMethodPrompt(OPENCODE_V1_PROFILE);
+    for (const phrase of [
+      'An Investigator can also settle a standalone diagnosis or stocktake from source and evidence alone; that assignment names the materials to read and needs no run, placement, or cleanup',
+      'For runtime or browser work without a repository candidate, such as an unversioned interactive experiment or a deployed page, name the URL, session, service, or environment and the resources and permissions in scope; it needs no Git placement',
+      'A probe that changes source, such as materialization, instrumentation, or a variant, runs only in a disposable placement',
+      'An assignment that uses this fallback authorizes the unchanged candidate in the original checkout by name, has the worker confirm the same conditions and record that state before the first run, and keeps every variant in a disposable placement',
+    ]) expect(method, phrase).toContain(phrase);
+  });
+
   it('names the native subagent call through the host profile', () => {
     expect(renderReviewRuntimePrompt(OPENCODE_V1_PROFILE)).toContain('native `task()` call');
     expect(renderReviewRuntimePrompt(OPENCODE_V1_PROFILE)).not.toContain('subagent()');
@@ -1990,14 +2067,15 @@ describe('Review runtime exercise', () => {
     ]) expect(fragment, phrase).toContain(phrase);
   });
 
-  it('keeps Foragers out of reviewer participation and reports missing execution tools as a gap', () => {
+  it('keeps Investigators out of reviewer participation and reports missing execution tools as a gap', () => {
     const fragment = renderReviewRuntimePrompt(OPENCODE_V1_PROFILE);
+    expect(fragment).not.toContain('forager-worker');
     for (const phrase of [
-      'Forager or Forager-derived agent on a report-only diagnosis',
-      'choosing by description and using `forager-worker` when none fits closer',
+      'Send the best-fit Investigator',
+      'choosing by description and using `forager-investigator` when no Investigator-derived agent fits closer',
       'it adds nothing to required reviewer participation',
       'report the gap and the proof it leaves open instead of promising the run or working around tool limits',
-      'A small authorized check can be quicker to run yourself',
+      'A small covered check can be quicker to run yourself',
     ]) expect(fragment, phrase).toContain(phrase);
   });
 
@@ -2013,16 +2091,17 @@ describe('Review runtime exercise', () => {
       'use a faithful disposable file copy, such as an export of the commit, at a scratch path the assignment names, not a raw Git worktree',
       'Reproducing the submitted code in a placement is not authoring a fix',
       'confirm the placement matches the named candidate and inputs',
-      'A worktree isolates files, not processes or credentials, so serialize exercises that share a resource',
+      'A worktree isolates files, not processes or credentials, so serialize experiments that share a resource',
       'tracked generated outputs in a disposable placement; they are not a patch to the candidate',
-      'only if the candidate is stable, no live or uncertain writer overlaps it, and the worker leaves its tracked and untracked state as found; otherwise report the gap and the proof it leaves open, or ask under Authorization',
+      'only if the candidate is stable, no live or uncertain writer overlaps it, and the worker leaves its tracked and untracked state as found; otherwise report the gap and the proof it leaves open, or ask under Authority',
       'the operator instruction and scope that cover the run',
-      'the placement path and branch, the effects, resources, and scratch paths the worker may use, its stopping conditions, and who cleans up',
+      'the effects, resources, and scratch paths the worker may use, the evidence destination, its stopping conditions, and who cleans up. For a repository run, also name the filesystem placement path and, for a Hive worktree, its branch',
+      'An assessment from source names the materials and the question and omits the run and placement fields',
+      'A runtime target names the URL, session, or environment and its resources, with no filesystem path unless the run needs one',
       'stops the processes and resources it started',
-      'candidate and built-artifact identity it actually ran, with the placement path and branch',
+      'the candidate and built-artifact identity for an exercised repository candidate, the URL or environment for a runtime target), with the placement path and any branch when it used a filesystem placement',
       'A failed check becomes a finding or a gap, not a fix',
-      'remove the Hive placement with `hive_adhoc_worktree_cleanup` and its kept selector once execution has ended and the useful evidence is kept',
-      'report the retained placement instead of forcing its removal',
+      'Once execution has ended and the useful evidence is kept, remove a Hive placement with `hive_adhoc_worktree_cleanup`',
     ]) expect(fragment, phrase).toContain(phrase);
   });
 
@@ -2048,6 +2127,68 @@ describe('Review runtime exercise', () => {
       'stops further exercise and reports it, still cleaning up its own temporary reproduction artifacts',
       'the narrative lists the actions and commands with exit status, results, and output or artifact paths',
     ]) expect(FORAGER_BEE_PROMPT, phrase).toContain(phrase);
+  });
+});
+
+describe('Investigator prompt', () => {
+  it('returns evidence and conclusions and delivers no product change', () => {
+    for (const phrase of [
+      'You return evidence and a conclusion to the primary that assigned you. You deliver no product change, and you do not delegate.',
+      'Verify only: run the named checks against the candidate as it stands. Change no source, test, fixture, snapshot, or gate, even when a check fails.',
+      'Variant code is reproduction evidence, never a delivered patch: create no commits',
+      'implementing it is a separate assignment',
+      'Label each one: what you changed from the candidate, why, and what it showed.',
+      'no checkout, reset, branch switch, or new Git worktree',
+    ]) expect(INVESTIGATOR_PROMPT, phrase).toContain(phrase);
+  });
+
+  it('identifies the subject it examined, concluding from source without a run when reading settles the question', () => {
+    for (const phrase of [
+      'judge a subject from its source and evidence',
+      'For a repository candidate, the subject is the checkout, the ref or commit, and the relevant staged, unstaged, and untracked inputs',
+      'For runtime or browser work without a repository candidate, it is the URL, session, service, or environment under test, with the resources and permissions in scope',
+      'When reading settles the question, conclude without running code; it needs no placement',
+      'the materials you read for a judgment; the commit, the inputs you materialized, and the built-artifact identity for a repository candidate you exercised; the URL, session, environment, and resources for a runtime target; and, when you used a filesystem placement, its path, with its branch when it has one',
+      'plus the placement for a repository run',
+    ]) expect(INVESTIGATOR_PROMPT, phrase).toContain(phrase);
+  });
+
+  it('keeps source-changing probes in a disposable placement and guards the original-checkout fallback', () => {
+    for (const phrase of [
+      'Materialization, instrumentation, variants, and any other probe that changes source run only here',
+      'Only when the assignment authorizes running the unchanged candidate there because no disposable placement can carry it faithfully',
+      'confirm that the candidate is stable, that no live or uncertain writer overlaps it, and record its tracked and untracked state',
+      'Run only the unchanged candidate there; variants go to a disposable placement',
+      'act only on the target, resources, and permissions the assignment names',
+    ]) expect(INVESTIGATOR_PROMPT, phrase).toContain(phrase);
+  });
+
+  it('states instruction-bound scope instead of a sandbox and returns uncovered effects as requests', () => {
+    for (const phrase of [
+      "Native edit, shell, and browser tools are available under the operator's permissions, and nothing sandboxes them. Your scope is instruction-bound",
+      'especially a paid, external, or non-disposable one',
+      'stop that line of work and return the request with its purpose',
+      'You cannot ask the operator or dispatch other agents',
+      'Session-trace questions belong to Hive Helper',
+      'You write no Hive context, task reports, handoffs, plans, or constraints',
+    ]) expect(INVESTIGATOR_PROMPT, phrase).toContain(phrase);
+  });
+
+  it('ends at a supported or explicitly unresolved result and cleans up only what it can attribute', () => {
+    for (const phrase of [
+      "Stop at a conclusion the evidence supports, or at an explicit unresolved result when the assignment's stop conditions or attempt budget are reached",
+      'Without a stated budget, stop when the next attempt would repeat a tested hypothesis or would need an effect the assignment does not cover',
+      'write it to the evidence destination outside the placement before any cleanup',
+      'In a disposable placement, restore the tracked files your materialization, probes, variants, or builds changed, and remove the untracked scaffolding you created, unless the assignment asks you to retain the placement as it is',
+      'Leave ignored dependency installs, ignored build output, and unrelated or uncertain state for the primary',
+      "In the original checkout, leave its recorded state as found: undo only the changes your run made, and leave pre-existing changes untouched",
+      'Remove the placement itself only when the assignment names you as the owner of a disposable copy; the primary removes a Hive ad-hoc worktree',
+      'A read-only assessment has nothing to clean up',
+      'Never reset or clean the whole tree',
+    ]) expect(INVESTIGATOR_PROMPT, phrase).toContain(phrase);
+    for (const absent of ['sourceCommit', 'hive_task_update', 'Hive task:', 'Task Report Contract']) {
+      expect(INVESTIGATOR_PROMPT, absent).not.toContain(absent);
+    }
   });
 });
 
@@ -2344,12 +2485,23 @@ describe('Multi-repo planning guidance', () => {
 describe('Architect (Planner) prompt', () => {
   describe('delegation planning alignment', () => {
     it('allows read-only research delegation to Scout', () => {
-      expect(ARCHITECT_BEE_PROMPT).toContain('read-only research delegation to Scout is allowed');
+      expect(ARCHITECT_BEE_PROMPT).toContain('read-only research delegation to Scout and commissioned experiments through Investigator are allowed');
     });
 
     it('permits research and review delegation via task()', () => {
-      expect(ARCHITECT_BEE_PROMPT).toContain('one layer of permitted read-only planning and investigation helpers: Scout, plan-reviewer, approach-advisor, custom agents derived from those roles, and `hive-helper`');
-      expect(ARCHITECT_BEE_PROMPT).toContain('Never invoke Architect recursively or use this path for Forager, implementation, or coding workers.');
+      expect(ARCHITECT_BEE_PROMPT).toContain('one layer of permitted planning and investigation helpers: Scout, Investigator (`forager-investigator`), plan-reviewer, approach-advisor, custom agents derived from those roles, and `hive-helper`');
+      expect(ARCHITECT_BEE_PROMPT).toContain('Never invoke Architect recursively or use this path for implementation Foragers (`forager-worker` and its derivatives) or other implementation or coding workers.');
+    });
+
+    it('commissions experiments as planning evidence, with placement only as a primary and parent-owned requests as a child', () => {
+      for (const phrase of [
+        'An experiment you commission to settle a planning question produces evidence, not implementation.',
+        'As the primary, when an experiment uses a Hive ad-hoc placement, create it with `hive_adhoc_worktree_create` and remove it with `hive_adhoc_worktree_cleanup`',
+        'a runtime or browser subject without a repository candidate, needs no Git placement; Experiments below selects any file placement. You never merge an experiment placement',
+        "commission an experiment only inside the scope, resources, and placement your parent's assignment already covers",
+        'return the experiment request, the create and cleanup requests with their selectors, and any authority question to the parent',
+      ]) expect(ARCHITECT_BEE_PROMPT, phrase).toContain(phrase);
+      expect(ARCHITECT_BEE_PROMPT).not.toContain('hive_adhoc_worktree_merge');
       expect(ARCHITECT_BEE_PROMPT).toContain('Never invoke Architect recursively');
     });
 
@@ -3335,7 +3487,7 @@ describe('README.md documentation', () => {
     it('keeps hive-helper out of custom derived subagent docs while documenting simplicity-reviewer as a custom base', () => {
       expect(readmeContent).toContain('is not a custom base agent');
       expect(readmeContent).toContain('### Custom Derived Subagents');
-      expect(readmeContent).toContain('`baseAgent`: one of `scout-researcher`, `forager-worker`, `plan-reviewer`, `code-reviewer`, `simplicity-reviewer`, `approach-advisor`, or `vulnerability-reviewer`');
+      expect(readmeContent).toContain('`baseAgent`: one of `scout-researcher`, `forager-worker`, `forager-investigator`, `plan-reviewer`, `code-reviewer`, `simplicity-reviewer`, `approach-advisor`, or `vulnerability-reviewer`');
       expect(readmeContent).not.toContain('`simplicity-reviewer` is also not a custom base agent');
       expect(readmeContent).not.toContain('`baseAgent`: one of `forager-worker`, `code-reviewer`, or `hive-helper`');
     });
@@ -3688,7 +3840,7 @@ describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
 
   it('routes plan escalation to Architect while keeping other subagents terminal', () => {
     expect(HIVE_BUILDER_PROMPT).toContain('delegate it to `architect-planner`');
-    expect(HIVE_BUILDER_PROMPT).toContain('Architect is the only subagent that may call one terminal layer of read-only planning helpers');
+    expect(HIVE_BUILDER_PROMPT).toContain('Architect is the only subagent that may call one terminal layer of planning helpers');
   });
 
   it('does NOT contain task-DAG defaults', () => {

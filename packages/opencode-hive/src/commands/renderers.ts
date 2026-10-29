@@ -363,7 +363,7 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
         'Resolve the target and operator steering; understand the material change, governing requirements, and relevant consumers before delegation.',
         'Dispatch best-fit reviewers for evidence-linked leads and applicable obligations; preserve explicitly requested reviewer scope.',
         'Independently challenge material candidates, run discriminating tests when useful and authorized, then adjudicate by evidence.',
-        'When running the candidate would settle a question reading cannot, follow Runtime Exercise in your instructions: ask before running development code unless an operator instruction already covers it, then send a report-only Forager.',
+        'When running the candidate would settle a question reading cannot, follow Runtime Exercise in your instructions: ask before running development code unless an operator instruction already covers it, then send an Investigator.',
       ],
       doNotItems: [
         'Do not edit reviewed source. Outside an authorized Runtime Exercise, do not create a review workspace on your own.',

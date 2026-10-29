@@ -245,15 +245,23 @@ describe('v2 native dispatch', () => {
 
   it('keeps explicit-null routes featureless and attaches briefs only to Forager-based targets', async () => {
     const forager: ResolvedCustomAgentConfig = { baseAgent: 'forager-worker', description: 'Team forager' } as ResolvedCustomAgentConfig;
-    const { services, host } = await setup({ customAgents: { 'team-forager': forager } });
+    const investigator: ResolvedCustomAgentConfig = { baseAgent: 'forager-investigator', description: 'Team investigator' } as ResolvedCustomAgentConfig;
+    const { services, host } = await setup({ customAgents: { 'team-forager': forager, 'team-investigator': investigator } });
     services.sessionService.setFeatureRoute('null-parent', null);
     services.sessionService.setFeatureRoute('feature-parent', 'alpha');
 
     await host.call('null-parent', { agent: 'forager-worker', prompt: 'Hive task: 01-build' });
     await host.call('feature-parent', { agent: 'scout-researcher', prompt: 'Look around.' });
     await host.call('feature-parent', { agent: 'team-forager', prompt: 'Hive task: 01-build' });
+    await host.call('feature-parent', { agent: 'forager-investigator', prompt: 'Hive task: 01-build' });
+    await host.call('feature-parent', { agent: 'team-investigator', prompt: 'Hive task: 01-build' });
 
-    const [nullRoute, scout, custom] = host.admissions;
+    const [nullRoute, scout, custom, builtInInvestigator, customInvestigator] = host.admissions;
+    // Investigators carry the generic route snapshot but never the Forager task brief.
+    for (const admission of [builtInInvestigator, customInvestigator]) {
+      expect(admission.text).toContain('"featureRoute":{"selected":true,"feature":"alpha"}');
+      expect(admission.text).not.toContain('hive-task-brief');
+    }
     expect(nullRoute.text).toContain('"featureRoute":{"selected":true,"feature":null}');
     expect(nullRoute.text).not.toContain('hive-task-brief');
     expect(nullRoute.boundFeature).toBeNull();

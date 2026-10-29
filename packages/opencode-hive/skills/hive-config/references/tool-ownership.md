@@ -30,8 +30,8 @@ Each piece of Hive state has one owning tool. If that tool is not exposed to you
 | Set | Tools | Roles |
 |---|---|---|
 | R | `hive_status`, `hive_plan_read`, `hive_context_read`, `hive_constraints_read`, `hive_repositories_status`, `hive_git_snapshot`, `hive_worklog_list`, `hive_worklog_read` | Every Hive role except the hidden trace summarizer |
-| I | `hive_worktree_inspect`, `hive_adhoc_worktree_inspect` | Primaries, Architect, Forager, Hive Helper, review primaries |
-| T | `hive_task_trace`, `hive_task_trace_content` | Same as I |
+| I | `hive_worktree_inspect`, `hive_adhoc_worktree_inspect` | Primaries, Architect, Forager, Investigator, Hive Helper, review primaries |
+| T | `hive_task_trace`, `hive_task_trace_content` | Primaries, Architect, Forager, Hive Helper, review primaries (not Investigator) |
 | Discover | `hive_repositories_discover` | Primaries, Architect, Scout |
 <!-- hive-host opencode-v1 -->
 | Board | `hive_background_status` | Full primaries, Architect as a primary, review primaries. Primary-only (denied in child sessions) and experiment-gated (see below); not part of R |
@@ -42,7 +42,7 @@ Each piece of Hive state has one owning tool. If that tool is not exposed to you
 
 ## Mutating tools
 
-Roles: **P** = full primaries (`hive-master`, `swarm-orchestrator`, `hive-builder`), **A** = `architect-planner` as a primary, **Ac** = `architect-planner` as a task child, **RP** = review primaries (`dash-reviewer`, `vulnerability-review-primary`), **F** = `forager-worker`, **Rev** = `plan-reviewer`, `code-reviewer`, `simplicity-reviewer`, `approach-advisor`, `vulnerability-reviewer`. "Primary-only" tools are denied in every child session.
+Roles: **P** = full primaries (`hive-master`, `swarm-orchestrator`, `hive-builder`), **A** = `architect-planner` as a primary (its ad-hoc create and cleanup are for experiment placements; it never merges), **Ac** = `architect-planner` as a task child, **RP** = review primaries (`dash-reviewer`, `vulnerability-review-primary`), **F** = `forager-worker`, **Rev** = `plan-reviewer`, `code-reviewer`, `simplicity-reviewer`, `approach-advisor`, `vulnerability-reviewer`. "Primary-only" tools are denied in every child session.
 
 | Tool | State it changes | Roles | Primary-only |
 |---|---|---|---|
@@ -57,9 +57,9 @@ Roles: **P** = full primaries (`hive-master`, `swarm-orchestrator`, `hive-builde
 | `hive_worktree_create` | Feature-task worktree, branch, sidecar or `workspace.json` | P, F | |
 | `hive_worktree_merge` | Destination branch (integration commit) | P | yes |
 | `hive_worktree_cleanup` | Removes feature-task worktree, optionally its branch | P | yes |
-| `hive_adhoc_worktree_create` | Ad-hoc worktree, branch, sidecar or `workspace.json` | P, RP | yes |
+| `hive_adhoc_worktree_create` | Ad-hoc worktree, branch, sidecar or `workspace.json` | P, A, RP | yes |
 | `hive_adhoc_worktree_merge` | Destination branch (integration commit) | P | yes |
-| `hive_adhoc_worktree_cleanup` | Removes ad-hoc worktree, optionally its branch | P, RP | yes |
+| `hive_adhoc_worktree_cleanup` | Removes ad-hoc worktree, optionally its branch | P, A, RP | yes |
 | `hive_repositories_update` | `.hive/repositories.json` | P, A, Ac | |
 | `hive_context_write`, `hive_context_append`, `hive_context_edit` | `context/<name>.md`, `context/index.json` (feature or project); edit changes one exact passage of an existing file | P, A, Ac, RP, F, Rev | |
 | `hive_context_archive` | Moves context into `archive/context/` | P, A | yes |
@@ -73,10 +73,10 @@ Roles: **P** = full primaries (`hive-master`, `swarm-orchestrator`, `hive-builde
 <!-- /hive-host -->
 
 <!-- hive-host opencode-v1 -->
-Roles with none of these: `scout-researcher` (read-only; R plus discover), `hive-helper` (R, I, T only; also denied native edit, `task`, and `question`), native `general`/`explore`, and the hidden trace summarizer (all tools denied).
+Roles with none of these: `scout-researcher` (read-only; R plus discover), `forager-investigator` (R and I only; native scratch edit and shell stay under operator permissions, `task` and `question` denied), `hive-helper` (R, I, T only; also denied native edit, `task`, and `question`), native `general`/`explore`, and the hidden trace summarizer (all tools denied).
 <!-- /hive-host -->
 <!-- hive-host opencode-v2 -->
-Roles with none of these: `scout-researcher` (read-only; R plus discover), `hive-helper` (R, I, T only; also denied native edit, `subagent`, and `question`), native `general`/`explore`, and the hidden trace summarizer (all tools denied).
+Roles with none of these: `scout-researcher` (read-only; R plus discover), `forager-investigator` (R and I only; native scratch edit and shell stay under operator permissions, `subagent` and `question` denied), `hive-helper` (R, I, T only; also denied native edit, `subagent`, and `question`), native `general`/`explore`, and the hidden trace summarizer (all tools denied).
 <!-- /hive-host -->
 
 <!-- hive-host opencode-v1 -->
@@ -92,9 +92,9 @@ Each role's `subagent` permission denies every agent, then allows named targets 
 
 | Caller | May dispatch |
 |---|---|
-| Full primaries | Scout, Forager, every reviewer and advisor, `architect-planner`, `hive-helper`, native `general` and `explore` |
-| Architect, as primary or task child | One terminal layer of `scout-researcher`, `plan-reviewer`, `approach-advisor`, and `hive-helper` |
-| Review primaries | Scout, every reviewer and advisor, `hive-helper`, and Foragers (built-in and derived) for report-only runtime exercises |
+| Full primaries | Scout, Forager, Investigator, every reviewer and advisor, `architect-planner`, `hive-helper`, native `general` and `explore` |
+| Architect, as primary or task child | One terminal layer of `scout-researcher`, `forager-investigator`, `plan-reviewer`, `approach-advisor`, and `hive-helper`; never `forager-worker` |
+| Review primaries | Scout, every reviewer and advisor, `hive-helper`, and Investigators (built-in and derived) for runtime exercises; never `forager-worker` or its derivatives |
 <!-- hive-host opencode-v1 -->
 | Every other role, including `hive-helper` | Nothing (`task` denied) |
 <!-- /hive-host -->
@@ -113,6 +113,7 @@ Full primaries are never valid `subagent()` targets, and `hive-helper` is not a 
 
 - `hive_task_update` is tool-level access. A Forager publishes its own report and handoff for its assigned task; the primary records status, summary, and blocker.
 - A Forager may create only the feature-task worktree its assignment names. Ad-hoc placement and new lanes belong to the primary.
+- An Investigator returns evidence; it commits nothing. A run that changes source uses a disposable placement its primary created, and that placement ends with cleanup, not merge. Its native scratch scope is instruction-bound, not a sandbox.
 - Trace tools let Forager support assigned recovery and Hive Helper investigate. They never authorize resuming, retrying, or continuing a session.
 - `hive_worklog_record` stamps the calling session and agent as the author; a session log accepts only its own session, while any primary may record into a feature log. Its executor also checks the live parent on both hosts and refuses when the session cannot be read.
 <!-- hive-host opencode-v1 -->

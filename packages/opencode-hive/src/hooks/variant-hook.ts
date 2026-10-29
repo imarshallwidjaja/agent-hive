@@ -6,6 +6,7 @@ const BUILT_IN_AGENTS: Record<string, { sessionKind: SessionKind; baseAgent: str
   'swarm-orchestrator': { sessionKind: 'primary', baseAgent: 'swarm-orchestrator' },
   'hive-builder': { sessionKind: 'primary', baseAgent: 'hive-builder' },
   'forager-worker': { sessionKind: 'task-worker', baseAgent: 'forager-worker' },
+  'forager-investigator': { sessionKind: 'subagent', baseAgent: 'forager-investigator' },
   'scout-researcher': { sessionKind: 'subagent', baseAgent: 'scout-researcher' },
   'hive-helper': { sessionKind: 'subagent', baseAgent: 'hive-helper' },
   'plan-reviewer': { sessionKind: 'subagent', baseAgent: 'plan-reviewer' },
@@ -18,6 +19,7 @@ const BUILT_IN_AGENTS: Record<string, { sessionKind: SessionKind; baseAgent: str
 const BASE_AGENT_KIND: Record<string, SessionKind> = {
   'scout-researcher': 'subagent',
   'forager-worker': 'task-worker',
+  'forager-investigator': 'subagent',
   'plan-reviewer': 'subagent',
   'code-reviewer': 'subagent',
   'simplicity-reviewer': 'subagent',

@@ -35,7 +35,7 @@ The global file is all-or-nothing. Any of these makes the runtime ignore the **e
 - invalid JSON, or a non-object root;
 - an unknown top-level key (only the keys in the table below are accepted);
 - a wrong type on a known key, such as a non-string `model` or a non-array `autoLoadSkills`;
-- `description` on a built-in agent that is not one of the seven custom bases;
+- `description` on a built-in agent that is not one of the eight custom bases;
 - an `agents.<name>` value that is not an object, or a wrong type on one of its known fields;
 - a `council.groups.<name>` entry without a non-empty string array `members`. Declaring a group replaces the default group of that name, so a group that only changes `description` or `maxMembers` still needs `members`;
 - any other wrong type inside `council` (`defaultGroup` string, `maxMembers` positive integer, `excludedAgents` string array, `groups` object);
@@ -74,17 +74,17 @@ After editing, check that the JSON parses and that every top-level key is in the
 
 ## Built-in agents (`agents.<name>`)
 
-Names: `hive-master`, `architect-planner`, `swarm-orchestrator`, `hive-builder`, `scout-researcher`, `forager-worker`, `hive-helper`, `plan-reviewer`, `code-reviewer`, `simplicity-reviewer`, `approach-advisor`, `vulnerability-reviewer`. The hidden review primaries `dash-reviewer` and `vulnerability-review-primary` are not configurable here.
+Names: `hive-master`, `architect-planner`, `swarm-orchestrator`, `hive-builder`, `scout-researcher`, `forager-worker`, `forager-investigator`, `hive-helper`, `plan-reviewer`, `code-reviewer`, `simplicity-reviewer`, `approach-advisor`, `vulnerability-reviewer`. The hidden review primaries `dash-reviewer` and `vulnerability-review-primary` are not configurable here.
 
 | Field | Meaning |
 |---|---|
 | `model` | `provider/model-id`. Omit `model` and `variant` to use the native OpenCode model for the role |
 | `variant` | Requires an explicit Hive `model` (see above). Passed to OpenCode, which looks it up in the model's resolved variants: the provider's built-in variants for that model, overlaid by `provider.<provider>.models.<model>.variants` in `opencode.json` (which can add, change, or disable entries). Observed OpenCode host behavior, not enforced by Hive: an unknown key is a no-op, and an explicit variant on a prompt wins |
 | `autoLoadSkills` | Skill names to advertise as high-priority loads. **Merged** with the agent's defaults and de-duplicated; you cannot remove a default by listing `[]`. Names resolve through native/user skills first, then eligible Hive bundles; unknown or disabled names warn and are skipped. `onboarding` is silently dropped for every agent except `hive-master` and `architect-planner` (custom agents included) before any lookup |
-| `description` | Only on `scout-researcher`, `forager-worker`, `plan-reviewer`, `code-reviewer`, `simplicity-reviewer`, `approach-advisor`, `vulnerability-reviewer`: overrides the routing description primaries see. Blank inherits the default |
+| `description` | Only on `scout-researcher`, `forager-worker`, `forager-investigator`, `plan-reviewer`, `code-reviewer`, `simplicity-reviewer`, `approach-advisor`, `vulnerability-reviewer`: overrides the routing description primaries see. Blank inherits the default |
 | `skills` | Legacy; accepted, no effect |
 
-Defaults (shipped): `hive-master`, `architect-planner`, `swarm-orchestrator` auto-load `parallel-exploration`; `forager-worker` loads `verification`; `hive-builder` loads `verification` and `parallel-exploration`; `hive-helper` loads `hive-config`; others load none. Every role, including `dash-reviewer`, `vulnerability-review-primary`, and every custom agent, is also asked to load the bundled `unslop` skill ahead of these names. That default is added when guidance is composed, so it is not in `agents.<name>.autoLoadSkills` and listing it there adds nothing. Add `unslop` to `disableSkills` to remove it everywhere; a native or user skill named `unslop` still takes precedence.
+Defaults (shipped): `hive-master`, `architect-planner`, `swarm-orchestrator` auto-load `parallel-exploration`; `forager-worker` and `forager-investigator` load `verification`; `hive-builder` loads `verification` and `parallel-exploration`; `hive-helper` loads `hive-config`; others load none. Every role, including `dash-reviewer`, `vulnerability-review-primary`, and every custom agent, is also asked to load the bundled `unslop` skill ahead of these names. That default is added when guidance is composed, so it is not in `agents.<name>.autoLoadSkills` and listing it there adds nothing. Add `unslop` to `disableSkills` to remove it everywhere; a native or user skill named `unslop` still takes precedence.
 
 `hive-helper` is special: its operator `autoLoadSkills` is ignored and it always gets exactly its defaults, plus the universal `unslop`. To stop it loading `hive-config`, add `hive-config` to `disableSkills` (which disables the bundled skill for every agent).
 
@@ -106,7 +106,7 @@ No role has a shipped model. A stored `model` is kept as written, including one 
 }
 ```
 
-- `baseAgent` (required): one of `scout-researcher`, `forager-worker`, `plan-reviewer`, `code-reviewer`, `simplicity-reviewer`, `approach-advisor`, `vulnerability-reviewer`. Primaries, `hive-builder`, `architect-planner`, and `hive-helper` cannot be bases.
+- `baseAgent` (required): one of `scout-researcher`, `forager-worker`, `forager-investigator`, `plan-reviewer`, `code-reviewer`, `simplicity-reviewer`, `approach-advisor`, `vulnerability-reviewer`. Primaries, `hive-builder`, `architect-planner`, and `hive-helper` cannot be bases.
 - `description` (required, nonblank): routing guidance shown to eligible primaries. Primaries pick a custom agent only when its description is a closer fit for the work than the base; importance, size, or a stronger model are not routing reasons. It cannot widen the base role.
 - `model`, `variant`: each one omitted inherits the base agent's resolved Hive value, including the base's project override. With no model on the custom agent or its base, it uses the native OpenCode model. This is Hive configuration inheritance; a native OpenCode override of the base agent is not inherited.
 - `autoLoadSkills`: merged with the base agent's effective list.

@@ -11,7 +11,7 @@ describe('HIVE_SYSTEM_PROMPT', () => {
   it('states the native task delegation boundary', () => {
     expect(HIVE_SYSTEM_PROMPT).toContain('`hive-master`, `swarm-orchestrator`, and `hive-builder` are primary-only');
     expect(HIVE_SYSTEM_PROMPT).toContain('`architect-planner` is the planning-only exception');
-    expect(HIVE_SYSTEM_PROMPT).toContain('one layer of permitted read-only planning helpers');
+    expect(HIVE_SYSTEM_PROMPT).toContain('one layer of permitted planning helpers');
     expect(HIVE_SYSTEM_PROMPT).toContain('every other subagent are terminal');
   });
 
