@@ -34,6 +34,24 @@ describe('RepositoryService manifest resolution', () => {
     });
   });
 
+  it('resolves matching legacy topology when unrelated global settings are invalid', () => {
+    withTempEnvironment((projectRoot, home) => {
+      initGitRepo(path.join(projectRoot, 'api'));
+      const configPath = path.join(home, '.config', 'opencode', 'agent_hive.json');
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+      fs.writeFileSync(configPath, JSON.stringify({
+        agentMode: 'bogus',
+        repositoryRoot: projectRoot,
+        repositories: [{ id: 'api', path: './api' }],
+      }));
+      const canonicalRoot = fs.realpathSync(projectRoot);
+
+      expect(new RepositoryService(projectRoot).resolveRepositories()).toEqual([
+        { id: 'api', path: path.join(canonicalRoot, 'api'), root: path.join(canonicalRoot, 'api') },
+      ]);
+    });
+  });
+
   it('rejects an external manifest directory symlink instead of falling back to the root repository', () => {
     withTempEnvironment((projectRoot) => {
       const external = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-repos-manifest-external-'));

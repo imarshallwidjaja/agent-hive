@@ -204,12 +204,13 @@ Hive does not run `git check-ref-format` on IDs; the rules above are the whole c
 - Repository manifests are read from `<canonical-project-root>/.hive/repositories.json`
 - Repository paths are relative to the project root and must stay inside it
 - Matching legacy `repositoryRoot`/`repositories` global data is migration-only and is copied on explicit update, never during status or startup
+- Topology reads (`ConfigService.readLegacyRepositoryTopology`) validate only that legacy pair, so unrelated global settings cannot change or block repository resolution; a malformed file or pair is an error, never a single-root fallback
 - A non-git project root without a matching manifest fails worktree create and merge with a manifest-required error. Non-Git or report-only work still requires an explicit existing directory and never invents Git semantics.
 
 **Manifest management tools:**
 - `hive_repositories_status` reports whether the project is using a manifest, legacy single-root mode, or is missing a required manifest
 - `hive_repositories_discover` scans only inside the OpenCode project root for candidate git repositories; it is read-only, bounded to depth 4, capped at 50 candidates, and skips `.git`, `.hive`, `.opencode`, `node_modules`, build outputs, coverage, and temp folders
-- `hive_repositories_update` is add-only and atomic: it accepts project-relative paths, validates the merged topology, writes `.hive/repositories.json`, and then conditionally removes matching legacy global topology while preserving global preferences
+- `hive_repositories_update` is add-only and atomic: it accepts project-relative paths, validates the merged topology, writes `.hive/repositories.json`, and then, under the global config lock, removes the legacy pair only if it still matches, leaving every other stored global key and value unvalidated and unchanged
 - Agents add only repositories they have decided to work in; discovery does not bulk-register every candidate repo
 
 **Composite workspace layout:**

@@ -45,6 +45,8 @@ The global file is all-or-nothing. Any of these makes the runtime ignore the **e
 
 Not validated at this stage, so they never invalidate the file: unknown keys inside an `agents.<name>` declaration (ignored), unknown keys inside `council` or a council group, and anything under `customAgents`. Bad custom agents are skipped one at a time with a warning. The removed key `omoSlimEnabled` is ignored with a warning. The removed setting `temperature`, with any value, is dropped from `agents`, `customAgents` and `taskTraceSummarizer` before validation, with one warning per read that names the file but not the value; the rest of the file applies and the file is not rewritten. Hive sets no sampling options, so each model's native defaults apply. An invalid project override file is ignored on its own; the global file still applies.
 
+Repository topology reads only the legacy `repositoryRoot`/`repositories` pair from the global file, so an invalid or unknown unrelated setting never changes repository status, worktree topology or `hive_repositories_update`. Invalid JSON, a non-object root, or a pair that breaks the rule above is an error for those operations, not a fallback to the single-root repository. When `hive_repositories_update` migrates a matching pair into `.hive/repositories.json`, it removes only those two keys and rewrites the file with every other key and value as stored, including invalid ones; it reports `legacyCleanup: 'skipped'` when the stored pair changed after the migration read it.
+
 ## Model settings are checked, not repaired
 
 After the project override and custom-agent inheritance are applied, every `model` and `variant` the files supply is checked, and a failure stops the plugin at startup instead of falling back to defaults:

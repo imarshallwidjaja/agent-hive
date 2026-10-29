@@ -16,8 +16,15 @@ import type {
   CouncilConfig,
   CustomAgentBase,
   HiveConfig,
+  RepositoryConfig,
   ResolvedCustomAgentConfig,
 } from '../types.js';
+
+/** The legacy global repository topology: migration-only input for the project manifest. */
+export interface LegacyRepositoryTopology {
+  repositoryRoot: string;
+  repositories: RepositoryConfig[];
+}
 
 const STORED_CONFIG_KEYS = new Set([
   '$schema',
@@ -163,25 +170,38 @@ export class ConfigService {
     return stored.value;
   }
 
+  /**
+   * Reads only the legacy `repositoryRoot`/`repositories` pair, so repository topology never depends on the validity of
+   * unrelated settings. Returns null when the file or the pair is absent. Throws when the file is not a JSON object or
+   * the pair breaks the rules a full read applies to it.
+   */
+  readLegacyRepositoryTopology(): LegacyRepositoryTopology | null {
+    const document = this.readStoredDocument();
+    return document === null ? null : this.parseLegacyRepositoryTopology(document);
+  }
+
+  /**
+   * Removes the legacy topology pair when it still matches, under the config lock. Every other key keeps its stored
+   * value, valid or not: this is a topology write, not a full config write, so it neither validates nor sanitizes them.
+   */
   removeLegacyRepositoryManifestIfMatches(
     repositoryRoot: string,
     repositories: NonNullable<HiveConfig['repositories']>,
   ): 'removed' | 'skipped' {
     const release = acquireLockSync(this.configPath);
     try {
-      const stored = this.readStored();
+      const document = this.readStoredDocument();
+      const topology = document === null ? null : this.parseLegacyRepositoryTopology(document);
       if (
-        stored.repositoryRoot !== repositoryRoot
-        || JSON.stringify(stored.repositories) !== JSON.stringify(repositories)
+        document === null
+        || topology?.repositoryRoot !== repositoryRoot
+        || JSON.stringify(topology.repositories) !== JSON.stringify(repositories)
       ) {
         this.cachedConfig = null;
         this.cachedCustomAgentConfigs = null;
         return 'skipped';
       }
-      const next = { ...stored } as Record<string, unknown>;
-      delete next.repositoryRoot;
-      delete next.repositories;
-      this.validatePersistable(next as Partial<HiveConfig>);
+      const { repositoryRoot: _repositoryRoot, repositories: _repositories, ...next } = document;
       writeAtomic(this.configPath, JSON.stringify(next, null, 2));
       this.cachedConfig = null;
       this.cachedCustomAgentConfigs = null;
@@ -875,20 +895,49 @@ export class ConfigService {
       return false;
     }
 
-    if (
-      config.repositories !== undefined
-      && !this.isValidRepositoryConfigArray(config.repositories)
-    ) {
-      return false;
+    return this.legacyRepositoryTopologyProblem(config) === null;
+  }
+
+  /** The one rule for the legacy topology pair, shared by full reads and topology-only reads. */
+  private legacyRepositoryTopologyProblem(config: Record<string, unknown>): string | null {
+    if (config.repositories !== undefined && !this.isValidRepositoryConfigArray(config.repositories)) {
+      return 'repositories must be a non-empty array of repository entries';
     }
     if (config.repositoryRoot !== undefined && (typeof config.repositoryRoot !== 'string' || !path.isAbsolute(config.repositoryRoot))) {
-      return false;
+      return 'repositoryRoot must be an absolute path';
     }
     if ((config.repositories === undefined) !== (config.repositoryRoot === undefined)) {
-      return false;
+      return 'repositoryRoot and repositories must be set together';
     }
+    return null;
+  }
 
-    return true;
+  private parseLegacyRepositoryTopology(document: Record<string, unknown>): LegacyRepositoryTopology | null {
+    const problem = this.legacyRepositoryTopologyProblem(document);
+    if (problem !== null) {
+      throw new Error(`Invalid global Agent Hive config: ${this.configPath}: ${problem}`);
+    }
+    return document.repositoryRoot === undefined
+      ? null
+      : { repositoryRoot: document.repositoryRoot as string, repositories: document.repositories as RepositoryConfig[] };
+  }
+
+  /** The stored global document as written, without validation or removed-setting cleanup; null when absent. */
+  private readStoredDocument(): Record<string, unknown> | null {
+    if (!fs.existsSync(this.configPath)) {
+      return null;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(fs.readFileSync(this.configPath, 'utf-8'));
+    } catch (error) {
+      const reason = error instanceof SyntaxError ? 'invalid JSON' : (error instanceof Error ? error.message : String(error));
+      throw new Error(`Invalid global Agent Hive config: ${this.configPath}: ${reason}`);
+    }
+    if (!isRecord(parsed)) {
+      throw new Error(`Invalid global Agent Hive config: ${this.configPath}: root must be a JSON object`);
+    }
+    return parsed;
   }
 
   private isStringArray(value: unknown): value is string[] {

@@ -31,13 +31,9 @@ export class RepositoryService {
         throw new Error(`Invalid project repository manifest at ${localManifestPath}: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
-    const config = this.configService.get();
-    const manifest = config.repositoryRoot !== undefined && projectRootsMatch(config.repositoryRoot, this.projectRoot)
-      ? config.repositories
-      : undefined;
-
-    if (manifest !== undefined) {
-      return this.resolveManifest(manifest);
+    const legacy = this.configService.readLegacyRepositoryTopology();
+    if (legacy && projectRootsMatch(legacy.repositoryRoot, this.projectRoot)) {
+      return this.resolveManifest(legacy.repositories);
     }
 
     const resolvedProjectRoot = this.projectRoot;

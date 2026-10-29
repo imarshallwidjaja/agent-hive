@@ -4,6 +4,7 @@ import * as childProcess from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { ConfigService } from './configService';
 import { RepositoryManifestService } from './repositoryManifestService';
 
 const initGitRepo = (root: string) => {
@@ -336,21 +337,34 @@ describe('RepositoryManifestService', () => {
     });
   });
 
-  it('migrates matching legacy topology on update and removes only legacy keys', () => {
+  it('reads and migrates matching legacy topology regardless of unrelated settings, removing only legacy keys', () => {
     withTempEnvironment((projectRoot, configPath) => {
       initGitRepo(path.join(projectRoot, 'api'));
       initGitRepo(path.join(projectRoot, 'web'));
       fs.mkdirSync(path.dirname(configPath), { recursive: true });
+      // Every unrelated value here would invalidate a full config read; topology must not depend on them.
+      const unrelated = {
+        agentMode: 'bogus',
+        futureSetting: { nested: true },
+        omoSlimEnabled: true,
+        agents: { 'forager-worker': { variant: 'high', temperature: 0.2 } },
+      };
       fs.writeFileSync(configPath, JSON.stringify({
-        agentMode: 'unified',
+        ...unrelated,
         repositoryRoot: projectRoot,
         repositories: [{ id: 'api', path: './api' }],
       }));
+      const service = new RepositoryManifestService(projectRoot);
 
-      const result = new RepositoryManifestService(projectRoot).add([{ id: 'web', path: './web' }]);
+      expect(service.getStatus()).toMatchObject({
+        mode: 'manifest',
+        source: 'legacy-global',
+        repositories: [{ id: 'api', path: './api', root: path.join(projectRoot, 'api') }],
+      });
+      const result = service.add([{ id: 'web', path: './web' }]);
       expect(result.repositories.map(({ id }) => id)).toEqual(['api', 'web']);
       expect(result.legacyCleanup).toBe('removed');
-      expect(JSON.parse(fs.readFileSync(configPath, 'utf-8'))).toEqual({ agentMode: 'unified' });
+      expect(JSON.parse(fs.readFileSync(configPath, 'utf-8'))).toEqual(unrelated);
     });
   });
 
@@ -362,23 +376,23 @@ describe('RepositoryManifestService', () => {
       const original = JSON.stringify({
         repositoryRoot: projectRoot,
         repositories: [{ id: 'api', path: './api' }],
-        agents: { 'forager-worker': { variant: 'high' } },
       });
       fs.writeFileSync(configPath, original);
-      // The project model completes the global variant for reads, but cleanup may not persist it standalone.
-      fs.mkdirSync(path.join(projectRoot, '.hive'), { recursive: true });
-      fs.writeFileSync(
-        path.join(projectRoot, '.hive', 'agent-hive.override.json'),
-        JSON.stringify({ agents: { 'forager-worker': { model: 'project/forager' } } }),
-      );
+      const cleanup = spyOn(ConfigService.prototype, 'removeLegacyRepositoryManifestIfMatches').mockImplementation(() => {
+        throw new Error('simulated cleanup failure');
+      });
 
-      const result = new RepositoryManifestService(projectRoot).add([{ id: 'web', path: './web' }]);
+      try {
+        const result = new RepositoryManifestService(projectRoot).add([{ id: 'web', path: './web' }]);
 
-      expect(result.repositories.map(({ id }) => id)).toEqual(['api', 'web']);
-      expect(result.legacyCleanup).toBe('failed');
-      expect(result.legacyCleanupError).toContain('agents.forager-worker.variant is set without a Hive model');
-      expect(fs.readFileSync(configPath, 'utf-8')).toBe(original);
-      expect(JSON.parse(fs.readFileSync(path.join(projectRoot, '.hive', 'repositories.json'), 'utf-8')).repositories).toHaveLength(2);
+        expect(result.repositories.map(({ id }) => id)).toEqual(['api', 'web']);
+        expect(result.legacyCleanup).toBe('failed');
+        expect(result.legacyCleanupError).toBe('simulated cleanup failure');
+        expect(fs.readFileSync(configPath, 'utf-8')).toBe(original);
+        expect(JSON.parse(fs.readFileSync(path.join(projectRoot, '.hive', 'repositories.json'), 'utf-8')).repositories).toHaveLength(2);
+      } finally {
+        cleanup.mockRestore();
+      }
     });
   });
 
@@ -587,15 +601,48 @@ describe('RepositoryManifestService', () => {
     });
   });
 
-  it('rejects an invalid global config for status and update operations', () => {
+  it('uses the single-root fallback and writes a first manifest when only unrelated global settings are invalid', () => {
     withTempEnvironment((projectRoot, configPath) => {
       fs.mkdirSync(path.dirname(configPath), { recursive: true });
-      fs.writeFileSync(configPath, JSON.stringify({ agentMode: 'bogus' }));
+      const original = JSON.stringify({ agentMode: 'bogus', futureSetting: true, agents: { 'forager-worker': { variant: 'high' } } });
+      fs.writeFileSync(configPath, original);
       initGitRepo(projectRoot);
       const service = new RepositoryManifestService(projectRoot);
 
+      expect(service.getStatus()).toEqual({
+        mode: 'legacy-root',
+        configPath: path.join(projectRoot, '.hive', 'repositories.json'),
+        repositories: [{ id: 'root', path: '.', root: projectRoot }],
+        source: 'single-root',
+      });
+      const result = service.add([{ id: 'root', path: '.' }]);
+      expect(result.added).toEqual(['root']);
+      expect(result.legacyCleanup).toBeUndefined();
+      expect(service.getStatus()).toMatchObject({ mode: 'manifest', source: 'local' });
+      expect(fs.readFileSync(configPath, 'utf-8')).toBe(original);
+    });
+  });
+
+  it.each([
+    { label: 'malformed JSON', content: () => '{bad json' },
+    { label: 'a non-object root', content: () => '[]' },
+    { label: 'repositoryRoot without repositories', content: (root: string) => JSON.stringify({ repositoryRoot: root }) },
+    { label: 'repositories without repositoryRoot', content: () => JSON.stringify({ repositories: [{ id: 'api', path: './api' }] }) },
+    { label: 'a relative repositoryRoot', content: () => JSON.stringify({ repositoryRoot: 'project', repositories: [{ id: 'api', path: './api' }] }) },
+    { label: 'an empty repositories array', content: (root: string) => JSON.stringify({ repositoryRoot: root, repositories: [] }) },
+    { label: 'an invalid repository entry', content: (root: string) => JSON.stringify({ repositoryRoot: root, repositories: [{ id: 'api', path: '../api' }] }) },
+  ])('reports $label in global legacy topology instead of falling back to a single root', ({ content }) => {
+    withTempEnvironment((projectRoot, configPath) => {
+      initGitRepo(projectRoot);
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+      const original = content(projectRoot);
+      fs.writeFileSync(configPath, original);
+      const service = new RepositoryManifestService(projectRoot);
+
       expect(() => service.getStatus()).toThrow('Invalid global Agent Hive config');
-      expect(() => service.add([])).toThrow('Invalid global Agent Hive config');
+      expect(() => service.add([{ id: 'root', path: '.' }])).toThrow('Invalid global Agent Hive config');
+      expect(fs.existsSync(path.join(projectRoot, '.hive', 'repositories.json'))).toBe(false);
+      expect(fs.readFileSync(configPath, 'utf-8')).toBe(original);
     });
   });
 

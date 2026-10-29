@@ -1498,6 +1498,50 @@ describe('ConfigService write validation and persistence', () => {
     expect(service.get().repositoryRoot).toBe(changedRoot);
   });
 
+  it('removes legacy topology without validating, sanitizing or dropping unrelated settings', () => {
+    const projectRoot = path.join(tempHome, 'project');
+    fs.mkdirSync(projectRoot);
+    const repositories = [{ id: 'api', path: './api' }];
+    const service = new ConfigService(projectRoot);
+    const configPath = service.getPath();
+    // Each unrelated value fails full validation, needs a project model, or is a removed setting a full read strips.
+    const unrelated = {
+      agentMode: 'bogus',
+      futureSetting: { nested: [1, 2] },
+      omoSlimEnabled: true,
+      agents: { 'forager-worker': { variant: 'high', temperature: 0.4 } },
+    };
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    const original = JSON.stringify({ ...unrelated, repositoryRoot: projectRoot, repositories });
+    fs.writeFileSync(configPath, original);
+    fs.mkdirSync(path.join(projectRoot, '.hive'));
+    fs.writeFileSync(
+      path.join(projectRoot, '.hive', 'agent-hive.override.json'),
+      JSON.stringify({ agents: { 'forager-worker': { model: 'project/forager' } } }),
+    );
+
+    expect(service.removeLegacyRepositoryManifestIfMatches(projectRoot, [{ id: 'web', path: './web' }])).toBe('skipped');
+    expect(fs.readFileSync(configPath, 'utf-8')).toBe(original);
+
+    expect(service.removeLegacyRepositoryManifestIfMatches(projectRoot, repositories)).toBe('removed');
+    expect(JSON.parse(fs.readFileSync(configPath, 'utf-8'))).toEqual(unrelated);
+  });
+
+  it.each([
+    { label: 'malformed JSON', content: '{bad json' },
+    { label: 'repositories without repositoryRoot', content: JSON.stringify({ repositories: [{ id: 'api', path: './api' }] }) },
+  ])('fails legacy cleanup on $label without writing', ({ content }) => {
+    const repositoryRoot = path.join(tempHome, 'project');
+    fs.mkdirSync(repositoryRoot);
+    const service = new ConfigService();
+    fs.mkdirSync(path.dirname(service.getPath()), { recursive: true });
+    fs.writeFileSync(service.getPath(), content);
+
+    expect(() => service.removeLegacyRepositoryManifestIfMatches(repositoryRoot, [{ id: 'api', path: './api' }]))
+      .toThrow('Invalid global Agent Hive config');
+    expect(fs.readFileSync(service.getPath(), 'utf-8')).toBe(content);
+  });
+
   it('merges a preference update with fresh stored config instead of a stale instance cache', () => {
     const staleService = new ConfigService();
     const configPath = staleService.getPath();
@@ -2034,29 +2078,6 @@ describe('ConfigService effective model settings', () => {
     const message = rejection(() => service.set({ agents: { 'forager-worker': { model: undefined, variant: undefined } } }));
 
     expect(message).toContain(projectOverridePath(projectRoot));
-    expect(message).toContain('agents.forager-worker.variant is set without a Hive model');
-    expect(fs.readFileSync(service.getPath(), 'utf-8')).toBe(bytes);
-    expect(service.get()).toBe(prior);
-  });
-
-  it('rejects legacy topology cleanup that would persist a global variant only a project model completes', () => {
-    const projectRoot = path.join(tempHome, 'project');
-    fs.mkdirSync(projectRoot);
-    const repositories = [{ id: 'api', path: './api' }];
-    const service = new ConfigService(projectRoot);
-    const bytes = writeGlobal(service, {
-      repositoryRoot: projectRoot,
-      repositories,
-      agents: { 'forager-worker': { variant: 'high' } },
-    });
-    writeProjectOverride(projectRoot, { agents: { 'forager-worker': { model: 'project/forager' } } });
-    const prior = service.get();
-    expect(prior.agents?.['forager-worker']).toMatchObject({ model: 'project/forager', variant: 'high' });
-
-    const message = rejection(() => service.removeLegacyRepositoryManifestIfMatches(projectRoot, repositories));
-
-    expect(message).toContain(service.getPath());
-    expect(message).not.toContain(projectOverridePath(projectRoot));
     expect(message).toContain('agents.forager-worker.variant is set without a Hive model');
     expect(fs.readFileSync(service.getPath(), 'utf-8')).toBe(bytes);
     expect(service.get()).toBe(prior);

@@ -121,6 +121,7 @@ export type {
   RuntimeStatePatch,
 } from './backgroundJobService.js';
 export { ConfigService } from './configService.js';
+export type { LegacyRepositoryTopology } from './configService.js';
 export { RepositoryService } from './repositoryService.js';
 export { readCompositeWorkspaceManifest } from './workspaceManifest.js';
 export { RepositoryManifestService } from './repositoryManifestService.js';

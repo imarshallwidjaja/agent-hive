@@ -7,6 +7,7 @@ import { assertRepositoryManifestContained, canonicalProjectRoot, isValidReposit
 import { acquireLockSync, writeJsonAtomic } from '../utils/paths.js';
 import { isValidRepositoryId } from '../utils/repositoryIds.js';
 import { ConfigService } from './configService.js';
+import type { LegacyRepositoryTopology } from './configService.js';
 import { RepositoryService } from './repositoryService.js';
 import { parseCompositeWorkspaceManifest } from './workspaceManifest.js';
 
@@ -81,20 +82,20 @@ export class RepositoryManifestService {
     const localStatus = this.getLocalManifestStatus();
     if (localStatus) return localStatus;
 
-    const config = this.configService.readStored();
-    if (config.repositoryRoot !== undefined && projectRootsMatch(config.repositoryRoot, this.projectRoot) && Array.isArray(config.repositories)) {
+    const legacy = this.configService.readLegacyRepositoryTopology();
+    if (legacy && projectRootsMatch(legacy.repositoryRoot, this.projectRoot)) {
       try {
         return {
           mode: 'manifest',
           configPath: this.configPath,
-          repositories: this.resolveManifestEntries(config.repositories),
+          repositories: this.resolveManifestEntries(legacy.repositories),
           source: 'legacy-global',
         };
       } catch (error) {
         return {
           mode: 'manifest',
           configPath: this.configPath,
-          repositories: config.repositories.map((repository) => ({ ...repository })),
+          repositories: legacy.repositories.map((repository) => ({ ...repository })),
           error: error instanceof Error ? error.message : String(error),
           source: 'legacy-global',
         };
@@ -198,8 +199,7 @@ export class RepositoryManifestService {
     }
     this.assertManifestParentContained();
 
-    let legacyRepositories: RepositoryConfig[] | undefined;
-    let legacyRepositoryRoot: string | undefined;
+    let legacy: LegacyRepositoryTopology | undefined;
     let additions: RepositoryConfig[];
     let skipped: string[];
     let resolvedRepositories: RepositoryManifestEntry[];
@@ -212,14 +212,9 @@ export class RepositoryManifestService {
       if (fs.existsSync(this.configPath)) {
         currentRepositories = this.readLocalManifest();
       } else {
-        const config = this.configService.readStored();
-        legacyRepositories = config.repositoryRoot !== undefined
-          && projectRootsMatch(config.repositoryRoot, this.projectRoot)
-          && Array.isArray(config.repositories)
-          ? config.repositories
-          : undefined;
-        legacyRepositoryRoot = legacyRepositories ? config.repositoryRoot : undefined;
-        currentRepositories = legacyRepositories ?? [];
+        const stored = this.configService.readLegacyRepositoryTopology();
+        legacy = stored && projectRootsMatch(stored.repositoryRoot, this.projectRoot) ? stored : undefined;
+        currentRepositories = legacy?.repositories ?? [];
       }
       const existingIds = new Set(currentRepositories.map((repository) => repository.id));
       skipped = repositories.filter((repository) => existingIds.has(repository.id)).map((repository) => repository.id);
@@ -235,9 +230,9 @@ export class RepositoryManifestService {
     }
     let legacyCleanup: RepositoryManifestUpdateResult['legacyCleanup'];
     let legacyCleanupError: string | undefined;
-    if (legacyRepositories) {
+    if (legacy) {
       try {
-        legacyCleanup = this.configService.removeLegacyRepositoryManifestIfMatches(legacyRepositoryRoot!, legacyRepositories);
+        legacyCleanup = this.configService.removeLegacyRepositoryManifestIfMatches(legacy.repositoryRoot, legacy.repositories);
       } catch (error) {
         legacyCleanup = 'failed';
         legacyCleanupError = error instanceof Error ? error.message : String(error);
