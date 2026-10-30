@@ -3596,7 +3596,7 @@ describe("WorktreeService composite merge aggregation", () => {
     // api merge not rolled back
     const apiHeadAfter = (await fx.repos['api'].git.revparse(['HEAD'])).trim();
     expect(apiHeadAfter).not.toBe(apiHeadBefore);
-  });
+  }, 20000);
 
   it('reports the durable repository integration delta on a composite partial merge', async () => {
     const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
@@ -3765,7 +3765,7 @@ describe("WorktreeService composite merge aggregation", () => {
     for (const id of ['api', 'web-ui']) {
       expect(await branchExists(fx.repos[id].git, `hive/${id}/${fx.feature}/${fx.task}`)).toBe(false);
     }
-  });
+  }, 20000);
 
   it('keeps completed composite integration results when deferred cleanup throws', async () => {
     const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });

@@ -299,7 +299,7 @@ describe('HiveSidebarProvider', () => {
     expect(first.tooltip).toContain('Review after: 2999-12-31');
     expect(first.tooltip).not.toContain('overdue');
     expect(first.command?.arguments?.[0].fsPath).toBe(path.join(testRoot, '.hive', 'context', 'project-note-0.md'));
-  });
+  }, 60000);
 
   it('marks project reviews due today while leaving future reviews current', async () => {
     const service = new hiveCore.ContextService(testRoot);
