@@ -26,6 +26,10 @@ The `AGENTS.md` entry is an instruction change. Ground its wording and target pa
 
 Create no native skill as the project's guide by default. When the operator asks for one, it must be loaded through the native skill tool, which reading its file does not replace, and the copy the host loaded must match the candidate under test rather than a cached or parent copy.
 
+## Run Records and Versioned Guidance
+
+Keep run-specific decisions and evidence in session or work logs or untracked artifacts, not in commits. Update versioned guidance only when a shared procedure, contract, or requirement changes; state the current rule without decision history. Explicitly required scientific provenance and reusable fixtures may be kept in version control. Retain required evidence through cleanup.
+
 ## Creating Verification Capability
 
 1. **Inspect what exists.** Read the applicable `AGENTS.md` files, any guide they name, the repository's scripts, CI workflows, test suites, and harnesses, and the user-facing claims that matter most: what users touch, what breaks them, and which claims existing checks already reach.
@@ -39,7 +43,6 @@ Create no native skill as the project's guide by default. When the operator asks
    - where evidence is kept, and cleanup that removes what a run started while keeping that evidence;
    - known limitations and the changes that should prompt maintenance.
 
-   Evidence from runs belongs in reports and artifacts, not as accumulating run history in the guide.
 6. **Prove it as the next agent would.** Follow the guide yourself within your authority: prepare, confirm readiness, drive, capture evidence, clean up, and confirm the evidence survived cleanup. A step you did not run is unvalidated; say which, and never call unrun setup operationally validated. When the proof run finds a product failure, report check validity, the product result, the covered scope, and discoverability separately, as `verification` describes. A product failure found by a working check does not make the guide or harness a draft.
 
 ## Maintaining Verification Capability

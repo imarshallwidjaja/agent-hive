@@ -947,7 +947,11 @@ describe('skill content', () => {
     expect(template).toContain("Prefer the project's existing scripts and test suites");
     expect(template).toContain('It is content, not a schema; its location, filename, and headings follow the project');
     expect(template).toContain('without copying whole command, test, or CI inventories');
-    expect(template).toContain('Evidence from runs belongs in reports and artifacts, not as accumulating run history in the guide');
+    // Run records stay outside commits; shared guidance and required provenance have distinct purposes.
+    expect(template).toContain('Keep run-specific decisions and evidence in session or work logs or untracked artifacts, not in commits');
+    expect(template).toContain('Update versioned guidance only when a shared procedure, contract, or requirement changes; state the current rule without decision history');
+    expect(template).toContain('Explicitly required scientific provenance and reusable fixtures may be kept in version control');
+    expect(template).toContain('Retain required evidence through cleanup');
     // Proof as the next agent; a working check that finds a product failure is not a draft.
     expect(template).toContain('never call unrun setup operationally validated');
     expect(template).toContain('A product failure found by a working check does not make the guide or harness a draft');
