@@ -60,6 +60,7 @@ Roles: **P** = full primaries (`hive-master`, `swarm-orchestrator`, `hive-builde
 | `hive_adhoc_worktree_create` | Ad-hoc worktree, branch, sidecar or `workspace.json` | P, A, RP | yes |
 | `hive_adhoc_worktree_merge` | Destination branch (integration commit) | P | yes |
 | `hive_adhoc_worktree_cleanup` | Removes ad-hoc worktree, optionally its branch | P, A, RP | yes |
+| `hive_worktree_recover` | Removes the pending markers in `.hive/.locks/operations/`, or the legacy `.hive/.operation-locks/` file, of one acknowledged interrupted worktree operation; runs no mutating Git command; reads Git state | P, A, RP | yes |
 | `hive_repositories_update` | `.hive/repositories.json` | P, A, Ac | |
 | `hive_context_write`, `hive_context_append`, `hive_context_edit` | `context/<name>.md`, `context/index.json` (feature or project); edit changes one exact passage of an existing file | P, A, Ac, RP, F, Rev | |
 | `hive_context_archive` | Moves context into `archive/context/` | P, A | yes |

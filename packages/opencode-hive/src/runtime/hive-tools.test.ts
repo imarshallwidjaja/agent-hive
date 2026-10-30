@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it, spyOn } from 'bun:test';
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -103,6 +103,7 @@ const ORDINARY_OPERATION_SIGNATURES = [
   'hive_adhoc_worktree_inspect(runId:string, repoIds?:string[], sourceDirectory?:string)',
   'hive_adhoc_worktree_merge(runId:string, repoIds?:string[], sourceDirectory?:string, historyIntent:preserve-source|rewrite-private, strategy?:merge|squash|rebase, message?:string, preserveConflicts?:boolean, cleanup?:none|worktree|worktree+branch, sourceCommit?:string, sourceCommits?:record<string>, expectedTarget?:{path:string, ref:string|null, commit:string}, expectedTargets?:record<{path:string, ref:string|null, commit:string}>)',
   'hive_adhoc_worktree_cleanup(runId:string, repoIds?:string[], sourceDirectory?:string, deleteBranch?:boolean, discard?:boolean)',
+  'hive_worktree_recover(operationId?:string, markerDigest?:string, observedStateDigest?:string, mutatorsStopped?:boolean, sourceDirectory?:string)',
   'hive_context_read(name?:string, scope?:feature|project, feature?:string, view?:summary|catalog, query?:string, limit?:number, cursor?:string, maxBytes?:number, scanChars?:boolean)',
   'hive_context_write(name:string, content:string, kind?:durable|evidence, task?:string, expectedRevision?:number, expectedContentHash?:string, scope?:feature|project, feature?:string)',
   'hive_context_append(name:string, content:string, section?:string, task?:string, expectedRevision:number, expectedContentHash:string, scope?:feature|project, feature?:string)',
@@ -167,6 +168,7 @@ const DESCRIBED_FIELDS: Record<string, string[]> = {
   hive_adhoc_worktree_create: ['runId', 'repoIds', 'sourceDirectory'],
   hive_adhoc_worktree_inspect: ['repoIds', 'sourceDirectory'],
   hive_adhoc_worktree_cleanup: ['repoIds', 'sourceDirectory', 'deleteBranch', 'discard'],
+  hive_worktree_recover: ['operationId', 'markerDigest', 'observedStateDigest', 'mutatorsStopped', 'sourceDirectory'],
   hive_context_read: ['name', 'scope', 'view', 'query', 'limit', 'cursor', 'maxBytes', 'scanChars'],
   hive_context_write: ['content', 'kind', 'task', 'expectedRevision', 'expectedContentHash', 'scope'],
   hive_context_append: ['content', 'section', 'task', 'expectedRevision', 'expectedContentHash', 'scope'],
@@ -371,6 +373,27 @@ describe('ordinary Hive operation results', () => {
       feature: 'intent-feature', task: '01-manual', historyIntent: 'rewrite-private', expectedTarget: task.target,
     });
     expect(featureContained).toMatchObject({ success: true, strategy: 'squash', reasonCode: 'ALREADY_INTEGRATED', taskUpdateRecommended: true });
+  });
+
+  it('returns a created worktree with its failed finalization instead of an error', async () => {
+    const { callJson } = await createRuntime();
+    const originalUnlink = fs.unlinkSync;
+    const unlinkSpy = spyOn(fs, 'unlinkSync').mockImplementation(((target: fs.PathLike) => {
+      if (String(target).includes(`${path.sep}operations${path.sep}`) && String(target).endsWith('.json')) {
+        throw Object.assign(new Error('marker unlink failed'), { code: 'EIO' });
+      }
+      return originalUnlink(target);
+    }) as typeof fs.unlinkSync);
+    let created: any;
+    try {
+      created = await callJson('hive_adhoc_worktree_create', { runId: 'kept' });
+    } finally {
+      unlinkSpy.mockRestore();
+    }
+    expect(created).toMatchObject({ runId: 'kept', branch: 'hive/adhoc/kept', finalization: { markers: 'retained', action: 'manual_recovery' } });
+    expect(fs.existsSync(created.path)).toBe(true);
+    const { pendingOperations } = await callJson('hive_worktree_recover', {});
+    expect(pendingOperations.map((entry: any) => entry.operationId)).toEqual([created.finalization.operationId]);
   });
 
   it('guards context mutation by revision and content hash', async () => {

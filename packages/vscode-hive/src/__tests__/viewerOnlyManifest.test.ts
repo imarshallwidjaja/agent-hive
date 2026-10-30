@@ -12,8 +12,8 @@ describe('viewer-only VS Code manifest', () => {
     expect(pkg.name).toBe('vscode-arkive');
     expect(pkg.displayName).toBe('Arkive');
     expect(pkg.publisher).toBe('arkive');
-    expect(pkg.engines.vscode).toBe('^1.64.0');
-    expect(pkg.devDependencies['@types/vscode']).toBe('1.64.0');
+    expect(pkg.engines.vscode).toBe('^1.67.0');
+    expect(pkg.devDependencies['@types/vscode']).toBe('1.67.0');
   });
 
   it('contributes viewer, review, and limited operator archive commands', () => {

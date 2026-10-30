@@ -7,6 +7,7 @@ import {
   fileExists,
   getContextPath,
   getProjectContextPath,
+  probeLock,
   readText,
   syncDirectory,
   syncFile,
@@ -372,13 +373,23 @@ export class ContextService {
     };
   }
 
-  inspectSummary(scope: string | ContextScope): { status: 'ready'; summary: ContextReadSummary } | { status: 'busy' } {
+  /**
+   * A summary for passive display. `busy` while a live writer holds the index
+   * lock (or a pre-native lock file is present); `reconciliation` when a pending
+   * mutation marker remains with no live writer, because its writer died.
+   */
+  inspectSummary(scope: string | ContextScope): { status: 'ready'; summary: ContextReadSummary } | { status: 'busy' } | { status: 'reconciliation' } {
     const resolved = this.resolveScope(scope);
-    if (this.safeStat(`${this.indexPath(resolved)}.lock`) || this.safeStat(this.markerPath(resolved))) return { status: 'busy' };
+    const writerActive = () => probeLock(this.indexPath(resolved)) !== 'free';
+    if (writerActive()) return { status: 'busy' };
+    if (this.safeStat(this.markerPath(resolved))) return writerActive() ? { status: 'busy' } : { status: 'reconciliation' };
     try {
       return { status: 'ready', summary: this.readSummary(scope, { scanChars: true }) };
     } catch (error) {
-      if (error instanceof ContextMutationError && (error.reason === 'context_changed_during_read' || error.reason === 'context_reconciliation_required')) {
+      if (error instanceof ContextMutationError && error.reason === 'context_reconciliation_required') {
+        return writerActive() || !this.safeStat(this.markerPath(resolved)) ? { status: 'busy' } : { status: 'reconciliation' };
+      }
+      if (error instanceof ContextMutationError && error.reason === 'context_changed_during_read') {
         return { status: 'busy' };
       }
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { status: 'busy' };

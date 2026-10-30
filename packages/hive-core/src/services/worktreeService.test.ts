@@ -8,7 +8,8 @@ import simpleGit, { type SimpleGit } from "simple-git";
 import type { ResolvedRepository } from "../types";
 import { WorktreeService as CoreWorktreeService } from "./worktreeService";
 import type { MergeOptions, MergeResult, WorktreeConfig } from "./worktreeService";
-import { WorktreeLinkageError } from "./worktreeOutcome";
+import { WorktreeLinkageError, WorktreeOperationRecoveryRequiredError } from "./worktreeOutcome";
+import { repositoryResourceName, trustedGitCommonDirectory, WorktreeOperationRecoveryService } from './worktreeOperation.js';
 import { RepositoryService } from './repositoryService.js';
 import { inspectTargetMergeEligibility } from './worktreeIntegration.js';
 import { readWorktreeTargetIdentity } from './worktreeTarget.js';
@@ -310,6 +311,31 @@ async function installPrepareCommitMessageHook(repoPath: string, body: string): 
   await fs.writeFile(hookPath, `#!/bin/sh\n${body}\n`, 'utf-8');
   await fs.chmod(hookPath, 0o755);
   await simpleGit(repoPath).raw(['config', 'core.hooksPath', hookDir]);
+}
+
+async function waitForPath(targetPath: string, timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!(await pathExists(targetPath))) {
+    if (Date.now() > deadline) throw new Error(`Timed out waiting for ${targetPath}`);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
+/**
+ * Stall the next commit in a repository inside its hook, so an operation that
+ * commits there keeps that repository's operation lock until released.
+ */
+async function stallNextCommit(repoPath: string): Promise<{ held: Promise<void>; release: () => Promise<void> }> {
+  const gate = await fs.mkdtemp(path.join(os.tmpdir(), 'hive-task-commit-gate-'));
+  tempDirs.push(gate);
+  await installPrepareCommitMessageHook(
+    repoPath,
+    `touch "${gate}/held"\nwhile [ ! -f "${gate}/release" ]; do sleep 0.05; done`,
+  );
+  return {
+    held: waitForPath(path.join(gate, 'held')),
+    release: () => fs.writeFile(path.join(gate, 'release'), ''),
+  };
 }
 
 describe("WorktreeService merge and commit messages", () => {
@@ -2660,6 +2686,35 @@ describe("WorktreeService composite workspaces", () => {
     expect(await pathExists(retry.path)).toBe(true);
   });
 
+  it('removes nothing when markers cannot be published before cleanup of an already integrated composite', async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
+    const created = await fx.service.create(fx.feature, fx.task);
+    const expectedTargets = {
+      api: await readWorktreeTargetIdentity(fx.repos.api.path),
+      'web-ui': await readWorktreeTargetIdentity(fx.repos['web-ui'].path),
+    };
+    const originalRename = fsSync.renameSync;
+    const renameSpy = spyOn(fsSync, 'renameSync').mockImplementation(((source, destination) => {
+      if (String(destination).includes(`${path.sep}operations${path.sep}`)) throw new Error('marker publication failed');
+      return originalRename(source, destination);
+    }) as typeof fsSync.renameSync);
+    let refused: MergeResult;
+    try {
+      // Every repository is contained, so cleanup is the first effect the operation guard must cover.
+      refused = await fx.service.merge(fx.feature, fx.task, undefined, undefined, { historyIntent: 'preserve-source', cleanup: 'worktree+branch', expectedTargets });
+    } finally {
+      renameSpy.mockRestore();
+    }
+    expect(refused).toMatchObject({ success: false, mutation: 'none', error: expect.stringContaining('marker publication failed') });
+    for (const repoId of ['api', 'web-ui']) {
+      expect(await pathExists(created.repos![repoId].path)).toBe(true);
+      expect(await branchExists(fx.repos[repoId].git, created.repos![repoId].branch)).toBe(true);
+    }
+    expect(await pathExists(path.join(fx.projectRoot, '.hive', '.locks', 'operations'))
+      ? await fs.readdir(path.join(fx.projectRoot, '.hive', '.locks', 'operations'))
+      : []).toEqual([]);
+  });
+
   it("hasUncommittedChanges returns true when any composite repo has changes", async () => {
     const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
     const wt = await fx.service.create(fx.feature, fx.task);
@@ -2887,6 +2942,94 @@ describe("WorktreeService composite workspaces", () => {
 
     expect(result.removed).not.toContain(wt.path);
     expect(await pathExists(wt.path)).toBe(true);
+  });
+
+  it('recovers an interrupted project-wide cleanup whose markers name its sources, and refuses sources outside a linked placement', async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
+    const repositories = Object.entries(fx.repos).map(([id, repo]) => ({ id, path: repo.path, root: repo.path }));
+    const hiveDir = path.join(fx.projectRoot, '.hive');
+    const recovery = new WorktreeOperationRecoveryService({ baseDir: fx.projectRoot, hiveDir, repositoryResolver: () => repositories });
+    const stale = await fx.service.create(fx.feature, fx.task);
+    const kept = await fx.service.create(fx.feature, '02-kept-task');
+    await fs.rm(stale.repos!['web-ui'].path, { recursive: true, force: true });
+
+    const originalUnlink = fsSync.unlinkSync;
+    const unlinkSpy = spyOn(fsSync, 'unlinkSync').mockImplementation(((target: fsSync.PathLike) => {
+      if (String(target).includes(`${path.sep}operations${path.sep}`) && String(target).endsWith('.json')) {
+        throw Object.assign(new Error('marker unlink failed'), { code: 'EIO' });
+      }
+      return originalUnlink(target);
+    }) as typeof fsSync.unlinkSync);
+    let cleaned: Awaited<ReturnType<CoreWorktreeService['cleanup']>>;
+    try {
+      cleaned = await fx.service.cleanup(fx.feature);
+    } finally {
+      unlinkSpy.mockRestore();
+    }
+    expect(cleaned).toMatchObject({ removed: [stale.path], pruned: true, finalization: { markers: 'retained', action: 'manual_recovery' } });
+    const operationId = cleaned.finalization!.operationId!;
+
+    // A project-wide cleanup records no workspace; its sources are the stale workspace's checkouts.
+    const [entry] = await recovery.list();
+    expect(entry).toMatchObject({
+      operationId,
+      marker: { kind: 'cleanup', subject: { type: 'project', feature: fx.feature }, workspacePath: null },
+      recovery: { available: true },
+    });
+    expect(entry!.marker!.repositories.map((repository) => repository.sourceWorktreePath)).toEqual([stale.repos!.api.path, stale.repos!['web-ui'].path]);
+    expect(entry!.observed.repositories.map((repository) => repository.source?.present)).toEqual([false, false]);
+    // The record guards the repositories, so other workspaces of them report it and refuse mutation.
+    expect((await fx.service.inspect(fx.feature, '02-kept-task'))?.pendingOperations?.map((pending) => pending.operationId)).toEqual([operationId]);
+    await expect(fx.service.remove(fx.feature, '02-kept-task')).rejects.toBeInstanceOf(WorktreeOperationRecoveryRequiredError);
+    const request = (pending: { operationId: string; markerDigest: string; observedStateDigest: string }) => ({
+      operationId: pending.operationId,
+      markerDigest: pending.markerDigest,
+      observedStateDigest: pending.observedStateDigest,
+      mutatorsStopped: true,
+    });
+    await recovery.recover(request(entry!));
+    expect(await recovery.list()).toEqual([]);
+
+    // The same project-wide shape is trusted only for a linked checkout of a project worktree placement.
+    const apiCommonDirectory = await trustedGitCommonDirectory(fx.repos.api.path);
+    const markerFile = path.join(hiveDir, '.locks', 'operations', `${repositoryResourceName(apiCommonDirectory)}.json`);
+    const plant = (sourceWorktreePath: string) => fsSync.writeFileSync(markerFile, JSON.stringify({
+      protocol: 'hive-worktree-operation/v1',
+      operationId: 'planted-cleanup',
+      kind: 'cleanup',
+      subject: { type: 'project' },
+      workspacePath: null,
+      repositories: [{ repositoryPath: fx.repos.api.path, commonDirectory: apiCommonDirectory, repoId: 'api', sourceWorktreePath }],
+      startedAt: '2026-10-30T00:00:00.000Z',
+      pid: 1,
+    }));
+    const keptApi = kept.repos!.api.path;
+    plant(keptApi);
+    const [linked] = await recovery.list();
+    expect(linked).toMatchObject({ recovery: { available: true } });
+    expect(linked!.observed.repositories[0]!.source).toMatchObject({ worktreePath: keptApi, present: true, branch: kept.repos!.api.branch });
+
+    const foreign = await makeRepo(fx.projectRoot, 'foreign');
+    const foreignCheckout = path.join(fx.projectRoot, 'foreign-checkout');
+    await foreign.git.raw(['worktree', 'add', '-b', 'foreign-branch', '--', foreignCheckout]);
+    const keptPointer = path.join(keptApi, '.git');
+    const pointer = await fs.readFile(keptPointer, 'utf-8');
+    for (const [label, source, redirect] of [
+      ['outside the worktree placements', fx.repos.api.path, false],
+      ['a placement checkout whose .git names another repository', keptApi, true],
+    ] as const) {
+      plant(source);
+      if (redirect) await fs.copyFile(path.join(foreignCheckout, '.git'), keptPointer);
+      try {
+        const [listed] = await recovery.list();
+        expect({ label, listed }).toMatchObject({ label, listed: { observed: { workspace: null, repositories: [] }, recovery: { available: false } } });
+        expect((await recovery.recover(request(listed!)).catch((error) => error)).reason).toBe('resource_untrusted');
+      } finally {
+        await fs.writeFile(keptPointer, pointer);
+      }
+    }
+    await fs.unlink(markerFile);
+    expect((await fx.service.remove(fx.feature, '02-kept-task')).cleanup.outcome).toBe('complete');
   });
 
   it("remove reports per-step cleanup status for a composite workspace", async () => {
@@ -4115,4 +4258,289 @@ describe("WorktreeService composite merge aggregation", () => {
     expect(result.repos).toBeUndefined();
     expect(result.partial).toBeUndefined();
   });
+});
+
+describe("WorktreeService repository operation locks", () => {
+  it("reports a merge that fails after its first mutation as a non-retryable unknown outcome and refuses later mutations", async () => {
+    const fx = await createFixture();
+    await fs.writeFile(path.join(fx.worktreePath, "guarded.txt"), "guarded\n");
+    await commitTaskChanges(fx.service, fx.feature, fx.task, testCommitMessage("feat: add guarded file"));
+    const spy = spyOn(fx.service as any, "mergeOneRepo").mockImplementationOnce(async (options: any) => {
+      await options.beforeMutation();
+      throw new Error("host lost the integration");
+    });
+    let interrupted: MergeResult;
+    try {
+      interrupted = await fx.service.merge(fx.feature, fx.task, "squash", mergeMessage, { historyIntent: 'rewrite-private' });
+    } finally {
+      spy.mockRestore();
+    }
+    expect(interrupted).toMatchObject({
+      success: false,
+      reasonCode: "OPERATION_RECOVERY_REQUIRED",
+      mutation: "unknown",
+      retryable: false,
+      action: "manual_recovery",
+      error: expect.stringContaining("host lost the integration"),
+    });
+    expect(interrupted.partial).toBeUndefined();
+
+    const refused = await fx.service.merge(fx.feature, fx.task, "squash", mergeMessage, { historyIntent: 'rewrite-private' });
+    expect(refused).toMatchObject({ success: false, reasonCode: "OPERATION_RECOVERY_REQUIRED", mutation: "none", retryable: false, partial: false });
+    const inspected = await fx.service.inspect(fx.feature, fx.task);
+    expect(inspected?.pendingOperations).toEqual([expect.objectContaining({
+      state: "interrupted",
+      marker: expect.objectContaining({ kind: "merge", subject: { type: "task", feature: fx.feature, task: fx.task } }),
+    })]);
+    await expect(fx.service.remove(fx.feature, fx.task)).rejects.toBeInstanceOf(WorktreeOperationRecoveryRequiredError);
+  });
+
+  it("returns a completed merge and its same-call cleanup when its pending markers cannot be cleared", async () => {
+    const fx = await createFixture();
+    await fs.writeFile(path.join(fx.worktreePath, "finalized.txt"), "finalized\n");
+    await commitTaskChanges(fx.service, fx.feature, fx.task, testCommitMessage("feat: add finalized file"));
+    const originalUnlink = fsSync.unlinkSync;
+    const unlinkSpy = spyOn(fsSync, "unlinkSync").mockImplementation(((target: fsSync.PathLike) => {
+      if (String(target).includes(`${path.sep}operations${path.sep}`) && String(target).endsWith(".json")) {
+        throw Object.assign(new Error("marker unlink failed"), { code: "EIO" });
+      }
+      return originalUnlink(target);
+    }) as typeof fsSync.unlinkSync);
+    let result: MergeResult;
+    try {
+      result = await fx.service.merge(fx.feature, fx.task, "merge", mergeMessage, { historyIntent: "preserve-source", cleanup: "worktree+branch" });
+    } finally {
+      unlinkSpy.mockRestore();
+    }
+    // The integration and its cleanup are reported as they happened, not as a generic retryable failure.
+    expect(result).toMatchObject({
+      success: true,
+      merged: true,
+      sha: (await fx.repoGit.revparse(["HEAD"])).trim(),
+      mutation: "applied",
+      retryable: false,
+      cleanup: { outcome: "complete", worktreeRemoved: true, branchDeleted: true },
+      finalization: { markers: "retained", action: "manual_recovery" },
+    });
+    expect(result.reasonCode).toBeUndefined();
+    expect(result.finalization!.markerError).toContain("marker unlink failed");
+    expect(await pathExists(fx.worktreePath)).toBe(false);
+    const refused = await fx.service.merge(fx.feature, fx.task, "merge", mergeMessage, { historyIntent: "preserve-source" });
+    expect(refused).toMatchObject({ reasonCode: "OPERATION_RECOVERY_REQUIRED", mutation: "none", retryable: false });
+  });
+
+  async function createSplitRepositoryFixture() {
+    const projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'hive-split-repositories-'));
+    tempDirs.push(projectRoot);
+    const api = await makeRepo(projectRoot, 'api');
+    const web = await makeRepo(projectRoot, 'web');
+    const repositories: ResolvedRepository[] = [
+      { id: 'api', path: api.path, root: api.path },
+      { id: 'web', path: web.path, root: web.path },
+    ];
+    const taskRepoIds: Record<string, string[]> = {
+      '01-api-task': ['api'],
+      '02-web-task': ['web'],
+      '03-api-holder': ['api'],
+    };
+    const config: WorktreeConfig = {
+      baseDir: projectRoot,
+      hiveDir: path.join(projectRoot, '.hive'),
+      repositoryResolver: { resolveRepositories: () => repositories },
+      taskRepoResolver: { resolveTaskRepoIds: (_feature, task) => taskRepoIds[task] },
+    };
+    return { projectRoot, api, web, config, feature: 'split-feature', service: new WorktreeService(config) };
+  }
+
+  async function commitFile(worktreePath: string, file: string): Promise<void> {
+    await fs.writeFile(path.join(worktreePath, file), `${file}\n`, 'utf-8');
+    const git = simpleGit(worktreePath);
+    await git.add('-A');
+    await git.commit(testCommitMessage(`feat: add ${file}`));
+  }
+
+  it("runs an api-only task's operations while another task holds the web repository lock", async () => {
+    const fx = await createSplitRepositoryFixture();
+    const webTask = await fx.service.create(fx.feature, '02-web-task');
+    await commitFile(webTask.repos!.web.path, 'web.txt');
+    const webStall = await stallNextCommit(fx.web.path);
+    const webMerge = fx.service.merge(fx.feature, '02-web-task', 'squash', mergeMessage, { historyIntent: 'rewrite-private' });
+
+    try {
+      await webStall.held;
+      const created = await fx.service.create(fx.feature, '01-api-task');
+      expect(Object.keys(created.repos!)).toEqual(['api']);
+      const inspected = await fx.service.inspect(fx.feature, '01-api-task');
+      expect(inspected!.clean).toBe(true);
+
+      await commitFile(created.repos!.api.path, 'api.txt');
+      const merged = await fx.service.merge(fx.feature, '01-api-task', 'squash', mergeMessage, { historyIntent: 'rewrite-private', cleanup: 'worktree+branch' });
+      expect(merged).toMatchObject({ success: true, merged: true });
+      expect(Object.keys(merged.repos!)).toEqual(['api']);
+      expect(merged.cleanup.outcome).toBe('complete');
+
+      await fx.service.create(fx.feature, '03-api-holder');
+      const removed = await fx.service.remove(fx.feature, '03-api-holder', true);
+      expect(removed.cleanup.outcome).toBe('complete');
+      expect(await branchExists(fx.api.git, `hive/api/${fx.feature}/03-api-holder`)).toBe(false);
+    } finally {
+      await webStall.release();
+    }
+
+    expect(await webMerge).toMatchObject({ success: true, merged: true });
+    expect(await branchExists(fx.web.git, `hive/web/${fx.feature}/02-web-task`)).toBe(true);
+    expect(await pathExists(path.join(fx.api.path, 'api.txt'))).toBe(true);
+  }, 30_000);
+
+  it("refuses a merge whose persisted repository selection changed while it waited for locks, as inspectable state", async () => {
+    const fx = await createSplitRepositoryFixture();
+    const task = await fx.service.create(fx.feature, '01-api-task');
+    const holder = await fx.service.create(fx.feature, '03-api-holder');
+    await commitFile(holder.repos!.api.path, 'api.txt');
+    const apiStall = await stallNextCommit(fx.api.path);
+    const holderMerge = fx.service.merge(fx.feature, '03-api-holder', 'squash', mergeMessage, { historyIntent: 'rewrite-private' });
+
+    // A second service instance stands in for another process waiting on the api lock.
+    const waiting = new CoreWorktreeService(fx.config);
+    const readManifest = (waiting as any).readWorkspaceManifest.bind(waiting);
+    let selectionRead!: () => void;
+    const firstSelectionRead = new Promise<void>((resolve) => { selectionRead = resolve; });
+    const manifestSpy = spyOn(waiting as any, 'readWorkspaceManifest').mockImplementation(async (...args: unknown[]) => {
+      const manifest = await readManifest(...args);
+      selectionRead();
+      return manifest;
+    });
+    const gitPaths: string[] = [];
+    const getGit = (waiting as any).getGit.bind(waiting);
+    const gitSpy = spyOn(waiting as any, 'getGit').mockImplementation((cwd?: string) => {
+      gitPaths.push(cwd ?? fx.projectRoot);
+      return getGit(cwd);
+    });
+
+    let merge: Promise<MergeResult> | undefined;
+    try {
+      await apiStall.held;
+      merge = waiting.merge(fx.feature, '01-api-task', 'squash', mergeMessage, { historyIntent: 'rewrite-private' });
+      await firstSelectionRead;
+
+      const manifestPath = path.join(task.path, 'workspace.json');
+      const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf-8'));
+      manifest.repos.web = {
+        path: 'repos/web',
+        repoRoot: fx.web.path,
+        repoPath: fx.web.path,
+        branch: `hive/web/${fx.feature}/01-api-task`,
+        commit: manifest.repos.api.commit,
+      };
+      manifest.baseCommits.web = manifest.repos.api.commit;
+      await fs.writeFile(manifestPath, JSON.stringify(manifest), 'utf-8');
+    } finally {
+      await apiStall.release();
+    }
+
+    try {
+      const result = await merge!;
+      // The workspace may be consistent again on the next read, so the caller inspects and retries.
+      expect(result).toMatchObject({
+        success: false,
+        merged: false,
+        reasonCode: 'WORKTREE_LOOKUP_FAILED',
+        phase: 'preflight',
+        mutation: 'none',
+        retryable: true,
+        action: 'inspect_state',
+      });
+      expect(result.error).toMatch(/repository selection changed while waiting for operation locks/);
+      expect(gitPaths.some((gitPath) => gitPath.startsWith(fx.web.path))).toBe(false);
+    } finally {
+      manifestSpy.mockRestore();
+      gitSpy.mockRestore();
+    }
+    expect(await holderMerge).toMatchObject({ success: true, merged: true });
+  }, 30_000);
+
+  it("refuses an operation whose selected repository path moved to another Git common directory while it waited", async () => {
+    const projectRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'hive-moved-common-directory-'));
+    tempDirs.push(projectRoot);
+    const origin = await makeRepo(projectRoot, 'origin');
+    const replacement = await makeRepo(projectRoot, 'replacement');
+    // The api repository is a linked checkout, so its lock is its origin's common directory.
+    const linkedApiPath = path.join(projectRoot, 'api');
+    await origin.git.raw(['worktree', 'add', '-b', 'api-checkout', '--', linkedApiPath]);
+    const repositories: ResolvedRepository[] = [
+      { id: 'api', path: linkedApiPath, root: linkedApiPath },
+      { id: 'origin', path: origin.path, root: origin.path },
+    ];
+    const taskRepoIds: Record<string, string[]> = { '01-api-task': ['api'], '03-origin-holder': ['origin'] };
+    const config: WorktreeConfig = {
+      baseDir: projectRoot,
+      hiveDir: path.join(projectRoot, '.hive'),
+      repositoryResolver: { resolveRepositories: () => repositories },
+      taskRepoResolver: { resolveTaskRepoIds: (_feature, task) => taskRepoIds[task] },
+    };
+    const feature = 'moved-feature';
+    const service = new WorktreeService(config);
+    const holder = await service.create(feature, '03-origin-holder');
+    await commitFile(holder.repos!.origin.path, 'origin.txt');
+    const originStall = await stallNextCommit(origin.path);
+    const holderMerge = service.merge(feature, '03-origin-holder', 'squash', mergeMessage, { historyIntent: 'rewrite-private' });
+
+    const waiting = new CoreWorktreeService(config);
+    const commonDirectory = (waiting as any).trustedGitCommonDirectory.bind(waiting);
+    let lockScopeRead!: () => void;
+    const firstLockScopeRead = new Promise<void>((resolve) => { lockScopeRead = resolve; });
+    const commonDirectorySpy = spyOn(waiting as any, 'trustedGitCommonDirectory').mockImplementation(async (repositoryPath: unknown) => {
+      const resolved = await commonDirectory(repositoryPath);
+      lockScopeRead();
+      return resolved;
+    });
+
+    let creation: Promise<unknown> | undefined;
+    try {
+      await originStall.held;
+      creation = waiting.create(feature, '01-api-task');
+      creation.catch(() => {});
+      await firstLockScopeRead;
+
+      // Replace the checkout at the same path with one of an unrelated repository.
+      await origin.git.raw(['worktree', 'remove', '--', linkedApiPath]);
+      await replacement.git.raw(['worktree', 'add', '-b', 'api-checkout', '--', linkedApiPath]);
+    } finally {
+      await originStall.release();
+    }
+
+    try {
+      await expect(creation!).rejects.toThrow(/repository selection changed while waiting for operation locks/);
+    } finally {
+      commonDirectorySpy.mockRestore();
+    }
+    expect(await branchExists(replacement.git, `hive/api/${feature}/01-api-task`)).toBe(false);
+    expect(await branchExists(origin.git, `hive/api/${feature}/01-api-task`)).toBe(false);
+    expect(await pathExists(service.getWorktreePath(feature, '01-api-task'))).toBe(false);
+    expect(await holderMerge).toMatchObject({ success: true, merged: true });
+  }, 30_000);
+
+  it("serializes concurrent creates of one task workspace whose declared repositories differ", async () => {
+    const fx = await createSplitRepositoryFixture();
+    // Another process read the task after its declared repositories changed to web.
+    const other = new CoreWorktreeService({ ...fx.config, taskRepoResolver: { resolveTaskRepoIds: () => ['web'] } });
+
+    const results = await Promise.allSettled([
+      fx.service.create(fx.feature, '01-api-task'),
+      other.create(fx.feature, '01-api-task'),
+    ]);
+
+    const workspacePath = fx.service.getWorktreePath(fx.feature, '01-api-task');
+    const manifest = JSON.parse(await fs.readFile(path.join(workspacePath, 'workspace.json'), 'utf-8'));
+    const owned = Object.keys(manifest.repos);
+    expect(owned).toHaveLength(1);
+    // The second create adopts the workspace the first one persisted; nothing is orphaned.
+    for (const result of results) {
+      expect(result.status).toBe('fulfilled');
+      expect(Object.keys((result as PromiseFulfilledResult<{ repos?: Record<string, unknown> }>).value.repos!)).toEqual(owned);
+    }
+    expect(await fs.readdir(path.join(workspacePath, 'repos'))).toEqual(owned);
+    expect(await branchExists(fx.api.git, `hive/api/${fx.feature}/01-api-task`)).toBe(owned.includes('api'));
+    expect(await branchExists(fx.web.git, `hive/web/${fx.feature}/01-api-task`)).toBe(owned.includes('web'));
+  }, 30_000);
 });

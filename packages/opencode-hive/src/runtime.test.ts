@@ -1088,10 +1088,10 @@ describe('coordinated runtime hard cut', () => {
     const primaryOnly = [
       'hive_feature_complete', 'hive_feature_select', 'hive_plan_approve', 'hive_tasks_sync', 'hive_task_create',
       'hive_worktree_merge', 'hive_worktree_cleanup', 'hive_adhoc_worktree_create', 'hive_adhoc_worktree_merge', 'hive_adhoc_worktree_cleanup',
-      ...constraints, 'hive_context_archive', ...background, 'hive_worklog_record',
+      'hive_worktree_recover', ...constraints, 'hive_context_archive', ...background, 'hive_worklog_record',
     ];
     const reviewPrimaries = [...reads, ...contextWrites, ...traces, ...inspections, ...constraints, ...background,
-      'hive_feature_select', 'hive_adhoc_worktree_create', 'hive_adhoc_worktree_cleanup', 'hive_worklog_record'];
+      'hive_feature_select', 'hive_adhoc_worktree_create', 'hive_adhoc_worktree_cleanup', 'hive_worktree_recover', 'hive_worklog_record'];
     const matrix: Record<string, readonly string[]> = {
       'hive-master': HIVE_TOOL_NAMES,
       'swarm-orchestrator': HIVE_TOOL_NAMES,
@@ -1099,7 +1099,7 @@ describe('coordinated runtime hard cut', () => {
       'architect-planner': [...reads, ...contextWrites, ...traces, ...inspections, ...constraints, ...background,
         'hive_feature_create', 'hive_feature_select', 'hive_plan_write', 'hive_plan_patch', 'hive_plan_approve', 'hive_tasks_sync',
         'hive_repositories_discover', 'hive_repositories_update', 'hive_context_archive', 'hive_worklog_record',
-        'hive_adhoc_worktree_create', 'hive_adhoc_worktree_cleanup'],
+        'hive_adhoc_worktree_create', 'hive_adhoc_worktree_cleanup', 'hive_worktree_recover'],
       'scout-researcher': [...reads, 'hive_repositories_discover'],
       'forager-worker': [...reads, ...contextWrites, ...inspections, ...traces, 'hive_task_update', 'hive_worktree_create'],
       'forager-investigator': [...reads, ...inspections],
@@ -1115,7 +1115,7 @@ describe('coordinated runtime hard cut', () => {
     };
     for (const base of CUSTOM_AGENT_BASES) matrix[`audit-${base}`] = matrix[base]!;
 
-    expect(HIVE_TOOL_NAMES).toHaveLength(41);
+    expect(HIVE_TOOL_NAMES).toHaveLength(42);
     // The operator's entries stay first and `question` is not repeated; the policy's entries follow in policy order.
     expect(config.experimental.primary_tools).toEqual(['operator_tool', 'question', ...primaryOnly]);
     const bare: any = {};

@@ -39,7 +39,8 @@ export type WorktreeReasonCode =
   | 'ROLLBACK_FAILED'
   | 'POST_INTEGRATION_VERIFICATION_FAILED'
   | 'CLEANUP_FAILED'
-  | 'COMPOSITE_PARTIAL';
+  | 'COMPOSITE_PARTIAL'
+  | 'OPERATION_RECOVERY_REQUIRED';
 
 export type WorktreeRecoveryAction =
   | 'correct_arguments'
@@ -153,10 +154,20 @@ const WORKTREE_OUTCOME_TABLE: Record<WorktreeReasonCode, WorktreeOutcomeRule> = 
   POST_INTEGRATION_VERIFICATION_FAILED: { phase: 'verification', mutation: 'unknown', retryable: false, action: 'inspect_state' },
   CLEANUP_FAILED: { phase: 'cleanup', mutation: 'none', retryable: false, action: 'cleanup_only' },
   COMPOSITE_PARTIAL: { phase: 'integration', mutation: 'partial', retryable: false, action: 'inspect_state' },
+  OPERATION_RECOVERY_REQUIRED: { phase: 'preflight', mutation: 'none', retryable: false, action: 'manual_recovery' },
 };
 
 export function isRetryableWithMutation(mutation: WorktreeMutationState): boolean {
   return mutation === 'none';
+}
+
+/**
+ * Whether a finished integration reports a known destination state: neither the
+ * aggregate nor any repository result says `unknown`. An unknown outcome keeps
+ * the operation's pending markers so no replacement mutation runs blind.
+ */
+export function isMutationOutcomeKnown<T extends { mutation: WorktreeMutationState; repos?: Record<string, { mutation: WorktreeMutationState }> }>(result: T): boolean {
+  return result.mutation !== 'unknown' && !Object.values(result.repos ?? {}).some((repository) => repository.mutation === 'unknown');
 }
 
 /**
@@ -189,13 +200,109 @@ export class WorktreeLinkageError extends Error {
 }
 
 /**
+ * Thrown before any effect when the repositories an operation selected, or the
+ * Git common directories behind them, changed while it waited for operation
+ * locks. The workspace may be consistent on the next read, so the recovery is
+ * to inspect and retry rather than to start a fresh run.
+ */
+export class WorktreeSelectionChangedError extends Error {
+  readonly reasonCode: WorktreeReasonCode = 'WORKTREE_LOOKUP_FAILED';
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'WorktreeSelectionChangedError';
+  }
+}
+
+/**
+ * Thrown when an interrupted worktree mutation still guards a resource, or a
+ * pre-native operation lock file is present. `mutation` is `unknown` when the
+ * operation that throws had itself begun mutating; `none` when it was refused
+ * before any effect. Never retryable: inspect, confirm every mutator stopped,
+ * then acknowledge the operation through supported recovery.
+ */
+export class WorktreeOperationRecoveryRequiredError extends Error {
+  readonly reasonCode: WorktreeReasonCode = 'OPERATION_RECOVERY_REQUIRED';
+  readonly mutation: WorktreeMutationState;
+  readonly operationIds: string[];
+
+  constructor(message: string, options: { mutation: WorktreeMutationState; operationIds: string[]; cause?: unknown }) {
+    super(message, options.cause === undefined ? undefined : { cause: options.cause });
+    this.name = 'WorktreeOperationRecoveryRequiredError';
+    this.mutation = options.mutation;
+    this.operationIds = options.operationIds;
+  }
+}
+
+/**
+ * Bookkeeping that failed after a worktree mutation produced its result. The
+ * result itself stands: it reports what the operation did, and nothing was
+ * rolled back. `markers` says whether this call's pending markers still guard
+ * its resources:
+ * - `retained`: the files in `retainedMarkers` remain, and later mutations of
+ *   the resources they guard stay refused until the operation is acknowledged
+ *   through Hive worktree recovery.
+ * - `cleared_unflushed`: every marker file was removed, so nothing guards the
+ *   resources now, but flushing the removal failed and it may not survive a
+ *   host crash.
+ * - `cleared` or `not_published`: no marker of this call exists.
+ */
+export interface WorktreeFinalizationFailure {
+  /** The operation whose markers are retained or whose removal was not flushed; omitted otherwise. */
+  operationId?: string;
+  markers: 'not_published' | 'cleared' | 'cleared_unflushed' | 'retained';
+  /** With `retained`: the marker files still present. */
+  retainedMarkers?: string[];
+  /** Why markers could not be removed, or why their removal could not be flushed. */
+  markerError?: string;
+  /** Why releasing an operation lock failed; the operating system releases it when this host process exits. */
+  lockReleaseError?: string;
+  /** `manual_recovery` while markers are retained; otherwise `inspect_state`, with nothing to acknowledge. */
+  action: Extract<WorktreeRecoveryAction, 'manual_recovery' | 'inspect_state'>;
+}
+
+/**
+ * Thrown by the operation guard when a mutation returned a result but clearing
+ * its markers or releasing its locks failed. `result` is the unchanged result
+ * the mutation returned. Callers report it with `finalization` instead of
+ * turning the failure into a generic error.
+ */
+export class WorktreeOperationFinalizationError<T = unknown> extends Error {
+  readonly result: T;
+  readonly finalization: WorktreeFinalizationFailure;
+
+  constructor(message: string, result: T, finalization: WorktreeFinalizationFailure, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = 'WorktreeOperationFinalizationError';
+    this.result = result;
+    this.finalization = finalization;
+  }
+}
+
+/**
+ * Report a mutation result together with its failed finalization. A classified
+ * result becomes non-retryable once the operation began mutating, because a
+ * repeat would be refused while markers remain or could repeat applied work;
+ * its reason, mutation state, per-repository results and cleanup are kept.
+ */
+export function withFinalizationFailure<T extends object>(
+  result: T,
+  finalization: WorktreeFinalizationFailure,
+): T & { finalization: WorktreeFinalizationFailure } {
+  const began = finalization.markers !== 'not_published';
+  return { ...result, ...(began && 'retryable' in result ? { retryable: false } : {}), finalization };
+}
+
+/**
  * Classify an exception thrown by a worktree service into a stable reason code.
- * Returns undefined when the error is not a trusted-identity denial, so callers
- * can fall back to a generic operational failure.
+ * Returns undefined when the error is neither a trusted-identity denial nor a
+ * selection change, so callers can fall back to a generic operational failure.
  */
 export function classifyThrownWorktreeError(error: unknown): WorktreeReasonCode | undefined {
   if (error instanceof WorktreeTopologyMismatchError) return 'WORKSPACE_TOPOLOGY_MISMATCH';
   if (error instanceof WorktreeLinkageError) return 'WORKTREE_LINKAGE_INVALID';
+  if (error instanceof WorktreeSelectionChangedError) return 'WORKTREE_LOOKUP_FAILED';
+  if (error instanceof WorktreeOperationRecoveryRequiredError) return 'OPERATION_RECOVERY_REQUIRED';
   return undefined;
 }
 

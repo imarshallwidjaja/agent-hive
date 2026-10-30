@@ -10,6 +10,7 @@ import {
   getTaskHandoffPath,
   getTaskPath,
   listFeatureDirectories,
+  probeLock,
   WorklogService,
   getWorklogKey,
 } from 'hive-core'
@@ -23,7 +24,7 @@ import type {
 import { contextDescription, contextTooltip } from './contextInspection.js'
 import { describeAge, describeFailure, formatTimestamp } from './worklogPresentation.js'
 
-const CONTEXT_INDEX_LOCK_NAME = 'index.json.lock'
+const CONTEXT_INDEX_NAME = 'index.json'
 const CONTEXT_PENDING_MARKER_NAME = '.managed-mutation-pending.json'
 const CONTEXT_PAGE_SIZE = 10
 
@@ -605,9 +606,15 @@ export class HiveSidebarProvider implements vscode.TreeDataProvider<SidebarItem>
   private loadSnapshot(scope: ContextScope): ContextSnapshot {
     const service = new ContextService(this.workspaceRoot)
     const contextPath = this.contextPathFor(scope)
-    const lockPresent = () => fs.existsSync(path.join(contextPath, CONTEXT_INDEX_LOCK_NAME))
+    // A live writer (or a lock file from a host that predates native locking) holds the index lock.
+    const lockPresent = () => probeLock(path.join(contextPath, CONTEXT_INDEX_NAME)) !== 'free'
     const markerPresent = () => fs.existsSync(path.join(contextPath, CONTEXT_PENDING_MARKER_NAME))
-    if (lockPresent()) return { state: 'busy' }
+    try {
+      if (lockPresent()) return { state: 'busy' }
+    } catch (error) {
+      // Without a native lock backend the writer's state is unknown; show the failure instead of guessing.
+      return { state: 'failed', message: error instanceof Error ? error.message : String(error) }
+    }
     if (markerPresent()) return { state: 'reconciliation', recovery: this.loadRecovery(service, scope) }
     try {
       return { state: 'ready', catalog: service.readManagementCatalog(scope, { limit: CONTEXT_PAGE_SIZE }) }

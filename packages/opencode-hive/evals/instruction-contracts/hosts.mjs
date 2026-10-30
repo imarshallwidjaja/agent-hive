@@ -99,6 +99,7 @@ export const TOOL_FIELD_CONTRACT = Object.freeze({
   hive_adhoc_worktree_inspect: ['repoIds', 'sourceDirectory'],
   hive_adhoc_worktree_merge: ['repoIds', 'sourceDirectory', ...MERGE_FIELDS],
   hive_adhoc_worktree_cleanup: ['repoIds', 'sourceDirectory', 'deleteBranch', 'discard'],
+  hive_worktree_recover: ['operationId', 'markerDigest', 'observedStateDigest', 'mutatorsStopped', 'sourceDirectory'],
   hive_plan_approve: ['expectedRevision', 'sync', 'refreshPending'],
   hive_tasks_sync: ['refreshPending'],
   hive_task_update: ['status', 'blocker', 'report', 'handoff'],

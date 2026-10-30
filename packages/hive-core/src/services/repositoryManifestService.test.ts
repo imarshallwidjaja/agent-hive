@@ -6,6 +6,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { ConfigService } from './configService';
 import { RepositoryManifestService } from './repositoryManifestService';
+import { probeLock } from '../utils/paths';
 
 const initGitRepo = (root: string) => {
   fs.mkdirSync(root, { recursive: true });
@@ -224,7 +225,7 @@ describe('RepositoryManifestService', () => {
       const deadline = Date.now() + 5000;
       while (true) {
         const readCount = markers.filter((marker) => fs.existsSync(marker)).length;
-        if (readCount === markers.length || (readCount > 0 && fs.existsSync(`${manifestPath}.lock`))) break;
+        if (readCount === markers.length || (readCount > 0 && probeLock(manifestPath) === 'held')) break;
         if (Date.now() >= deadline) throw new Error('Timed out waiting for concurrent manifest reads');
         await Bun.sleep(10);
       }

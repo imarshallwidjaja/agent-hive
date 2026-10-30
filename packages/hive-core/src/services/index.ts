@@ -64,8 +64,24 @@ export {
   combineRepoCleanupOutcomes,
   isRetryableWithMutation,
   WorktreeLinkageError,
+  WorktreeOperationRecoveryRequiredError,
   WorktreeTopologyMismatchError,
 } from './worktreeOutcome.js';
+export { WorktreeOperationRecoveryService, WorktreeRecoveryRefusedError } from './worktreeOperation.js';
+export type {
+  ObservedRepositoryState,
+  ObservedWorkspaceState,
+  PendingWorktreeOperation,
+  WorktreeOperationKind,
+  WorktreeOperationMarker,
+  WorktreeOperationObservation,
+  WorktreeOperationRecoveryConfig,
+  WorktreeOperationRepositoryRecord,
+  WorktreeOperationSubject,
+  WorktreeRecoveryRefusalReason,
+  WorktreeRecoveryRequest,
+  WorktreeRecoveryResult,
+} from './worktreeOperation.js';
 export type {
   WorktreeTargetComparison,
   WorktreeTargetIdentity,
@@ -75,6 +91,7 @@ export type {
   CleanupStepOutcome,
   CleanupStepStatus,
   WorktreeCleanupOutcome,
+  WorktreeFinalizationFailure,
   WorktreeMutationState,
   WorktreeOperationPhase,
   WorktreeReasonCode,

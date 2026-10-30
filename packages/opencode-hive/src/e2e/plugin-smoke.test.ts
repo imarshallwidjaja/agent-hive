@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import plugin from '../index.js';
 import { HIVE_TOOL_NAMES } from '../utils/plugin-manifest.js';
 import { createPluginWithHome } from './plugin-test-home.js';
@@ -160,6 +161,38 @@ describe('plugin hard-cut surface', () => {
     expect(mixed).toMatchObject({ schema: 'hive-git-snapshot/v1', status: 'failed' });
     const relative = JSON.parse(await hooks.tool!.hive_git_snapshot.execute({ directory: '.' }, {}));
     expect(relative).toMatchObject({ schema: 'hive-git-snapshot/v1', status: 'failed' });
+  });
+
+  it('refuses worktree mutations behind a pre-native operation lock until a primary acknowledges it', async () => {
+    const { root, hooks, context } = await fixture();
+    execFileSync('git', ['init', '-b', 'main'], { cwd: root });
+    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: root });
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: root });
+    fs.writeFileSync(path.join(root, '.gitignore'), '.hive/\n');
+    execFileSync('git', ['add', '.'], { cwd: root });
+    execFileSync('git', ['commit', '-m', 'test: base'], { cwd: root });
+    await hooks.tool!.hive_adhoc_worktree_create.execute({ runId: 'guarded' }, context);
+    // The name a pre-native host gave the lock of this repository's Git common directory.
+    const name = createHash('sha256').update(fs.realpathSync(path.join(root, '.git'))).digest('hex');
+    const legacyLock = path.join(root, '.hive', '.operation-locks', `${name}.lock`);
+    fs.mkdirSync(path.dirname(legacyLock), { recursive: true });
+    fs.writeFileSync(legacyLock, JSON.stringify({ pid: 3858212 }));
+
+    const inspected = JSON.parse(await hooks.tool!.hive_adhoc_worktree_inspect.execute({ runId: 'guarded' }, context));
+    expect(inspected.pendingOperations).toEqual([expect.objectContaining({ operationId: `legacy:${name}`, state: 'legacy_lock' })]);
+    await expect(hooks.tool!.hive_adhoc_worktree_cleanup.execute({ runId: 'guarded', deleteBranch: true }, context)).rejects.toThrow(/refused before any effect/);
+
+    const listed = JSON.parse(await hooks.tool!.hive_worktree_recover.execute({}, context));
+    expect(listed.pendingOperations.map((entry: any) => entry.operationId)).toEqual([`legacy:${name}`]);
+    const [entry] = listed.pendingOperations;
+    const unattested = JSON.parse(await hooks.tool!.hive_worktree_recover.execute({ operationId: entry.operationId, markerDigest: entry.markerDigest, observedStateDigest: entry.observedStateDigest }, context));
+    expect(unattested).toMatchObject({ success: false, reason: 'attestation_required' });
+    const recovered = JSON.parse(await hooks.tool!.hive_worktree_recover.execute({
+      operationId: entry.operationId, markerDigest: entry.markerDigest, observedStateDigest: entry.observedStateDigest, mutatorsStopped: true,
+    }, context));
+    expect(recovered).toEqual({ success: true, operationId: entry.operationId, state: 'legacy_lock', cleared: [legacyLock], replayed: false });
+    const cleaned = JSON.parse(await hooks.tool!.hive_adhoc_worktree_cleanup.execute({ runId: 'guarded', deleteBranch: true }, context));
+    expect(cleaned.cleanup.outcome).toBe('complete');
   });
 
   it('validates manifest repository selections and snapshots all repositories by default', async () => {

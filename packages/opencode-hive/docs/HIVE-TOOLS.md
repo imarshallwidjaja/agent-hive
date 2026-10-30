@@ -4,9 +4,9 @@ Tool availability plus instructions govern action. Each tool validates its own o
 
 ## Host entries and read transport
 
-From 5.0.0, one package supplies native v1 and v2 entries, each with all 41 tools and 13 commands. Releases through 4.2.0 are v1-only. The qualified hosts are v1.18.30 and v2.0.26. Installation, `plugins` options and actual model-selection semantics are in the [plugin README](../README.md#opencode-v2).
+From 5.0.0, one package supplies native v1 and v2 entries, each with all 42 tools and 13 commands. Releases through 4.2.0 are v1-only. The qualified hosts are v1.18.30 and v2.0.26. Installation, `plugins` options and actual model-selection semantics are in the [plugin README](../README.md#opencode-v2).
 
-V2 registers every tool through one validating registrar. `readTransport: "codemode"` (default) explicitly admits only `hive_repositories_status`, `hive_git_snapshot` and `hive_task_trace_content` to Code Mode; controls, repairing reads, worktree inspections and mixed `hive_task_trace` stay direct. `readTransport: "direct"` makes all 41 direct, with the same IDs and authority. The three Worklog tools are direct under both transports. Use direct mode when global, per-role or custom-agent permissions deny `execute`. Hive diagnoses unavailable Code Mode reads and preserves the denial.
+V2 registers every tool through one validating registrar. `readTransport: "codemode"` (default) explicitly admits only `hive_repositories_status`, `hive_git_snapshot` and `hive_task_trace_content` to Code Mode; controls, repairing reads, worktree inspections and mixed `hive_task_trace` stay direct. `readTransport: "direct"` makes all 42 direct, with the same IDs and authority. The three Worklog tools are direct under both transports. Use direct mode when global, per-role or custom-agent permissions deny `execute`. Hive diagnoses unavailable Code Mode reads and preserves the denial.
 
 Both hosts deliver the same tool descriptions and argument descriptions to the model, built from one definition per operation. Those descriptions explain how arguments relate, what an operation changes, what its result means and when a retry is unsafe. They do not enforce anything: the Zod argument shapes, the services and the role guards do, and this document is the reference for operators and engineers. The runtime does not read it.
 
@@ -20,7 +20,7 @@ On v1, OpenCode's `experimental.primary_tools` adds session-level deny rules whe
 
 - Feature control: `hive_feature_complete`, `hive_feature_select`.
 - Plan/task control: `hive_plan_approve`, `hive_tasks_sync`, `hive_task_create`.
-- Integration/placement: `hive_worktree_merge`, `hive_worktree_cleanup`, `hive_adhoc_worktree_create`, `hive_adhoc_worktree_merge`, `hive_adhoc_worktree_cleanup`.
+- Integration/placement: `hive_worktree_merge`, `hive_worktree_cleanup`, `hive_adhoc_worktree_create`, `hive_adhoc_worktree_merge`, `hive_adhoc_worktree_cleanup`, `hive_worktree_recover`.
 - Constraints/archive: `hive_constraints_add`, `hive_constraints_edit`, `hive_constraints_clear`, `hive_context_archive`.
 - Parent-owned board: `hive_background_status`, `hive_background_reconcile`, `hive_background_reconcile_batch`, `hive_background_cancel`.
 - Worklog authorship: `hive_worklog_record`.
@@ -45,13 +45,14 @@ Abbreviations enumerate exact tools:
 - **V**: `hive_feature_select`, `hive_adhoc_worktree_create`, `hive_adhoc_worktree_cleanup` for operator-authorized isolated review placement.
 - **X**: `hive_adhoc_worktree_create`, `hive_adhoc_worktree_cleanup` for experiment placement; primary sessions only, and never paired with merge.
 - **W**: `hive_worklog_record`; primary sessions only.
+- **K**: `hive_worktree_recover`; primary sessions only. Every primary that can create or clean up a placement holds it.
 
 | Agent | Hive tools | Native boundary / usage |
 |-------|------------|-------------------------|
-| `hive-master` | All 41 registered Hive tools | Primary; integration and cleanup owner |
-| `swarm-orchestrator` | All 41 | Primary; integration and cleanup owner |
-| `hive-builder` | All 41 | Primary; ad-hoc integration and cleanup owner |
-| `architect-planner` (primary) | R + C + I + T + B + M + P + W + X | Planning plus commissioned Investigator experiments; terminal planning helpers and Helper investigation; no merge; edit denied |
+| `hive-master` | All 42 registered Hive tools | Primary; integration and cleanup owner |
+| `swarm-orchestrator` | All 42 | Primary; integration and cleanup owner |
+| `hive-builder` | All 42 | Primary; ad-hoc integration and cleanup owner |
+| `architect-planner` (primary) | R + C + I + T + B + M + P + W + X + K | Planning plus commissioned Investigator experiments; terminal planning helpers and Helper investigation; no merge; edit denied |
 | `architect-planner` (task child) | R + C + I + T + `hive_feature_create`, `hive_plan_write`, `hive_plan_patch`, `hive_repositories_discover`, `hive_repositories_update` | Feature/plan/context authoring, repository registration, terminal planning helpers (Investigator included) and Helper investigation inside parent-covered placement; edit/question/board and placement create/cleanup denied |
 | `scout-researcher` | R + `hive_repositories_discover` | Read-only retrieval; edit/task/question denied; trace retrieval goes to Helper |
 | `forager-worker` | R + C + I + T + `hive_task_update`, `hive_worktree_create` | Assigned implementation/recovery, including implementation-coupled diagnosis; task/question denied; own report/handoff only |
@@ -62,8 +63,8 @@ Abbreviations enumerate exact tools:
 | `simplicity-reviewer` | R + C | Same |
 | `approach-advisor` | R + C | Same |
 | `vulnerability-reviewer` | R + C | Same; shell/scanners/external probing additionally forbidden by its instructions |
-| `dash-reviewer` | R + C + I + T + B + M + V + W | Hidden review primary; edit and plan/task/integration mutations denied; may dispatch Investigators for runtime exercises, never implementation Foragers |
-| `vulnerability-review-primary` | R + C + I + T + B + M + V + W | Hidden review primary; same |
+| `dash-reviewer` | R + C + I + T + B + M + V + W + K | Hidden review primary; edit and plan/task/integration mutations denied; may dispatch Investigators for runtime exercises, never implementation Foragers |
+| `vulnerability-review-primary` | R + C + I + T + B + M + V + W + K | Hidden review primary; same |
 | Custom derivatives of all eight supported bases | Exactly their base's set | Inherit base prompt and permissions; extra skills do not expand authority |
 | Native `general`, `explore` | None (`'hive_*': 'deny'`) | Ordinary tools; task/question denied; native `skill` allowed; explore edit denied |
 | Hidden `__hive_task_trace_summarizer` | None (`'*': 'deny'`) | Supplied evidence only; all tools denied |
@@ -254,7 +255,11 @@ Merge results and ad-hoc cleanup results carry recovery classification fields al
 | `POST_INTEGRATION_VERIFICATION_FAILED` | `verification` | `applied` when the operation checkpoint confirms the created commit; otherwise `unknown` | `false` | `inspect_state` |
 | `CLEANUP_FAILED` | `cleanup` | `applied` after a completed integration; `none` for cleanup-only runs | `false` | `cleanup_only` |
 | `COMPOSITE_PARTIAL` | `integration` | `partial` | `false` | `inspect_state` |
+| `OPERATION_RECOVERY_REQUIRED` | `preflight` | `none` when refused before any effect; `unknown` when this operation began mutating | `false` | `manual_recovery` |
 
+- `WORKTREE_LOOKUP_FAILED` on a feature-task merge also reports a workspace whose selected repositories, or the Git common directories behind them, changed while the merge waited for its operation locks. Nothing was changed; inspect the workspace and retry. Ad-hoc merge and the other worktree tools throw the same `repository selection changed while waiting for operation locks` error instead of returning a result.
+- `OPERATION_RECOVERY_REQUIRED` means an interrupted worktree operation, or a lock file from a host that predates native locking, guards the workspace or one of its repositories. With `mutation: 'none'` this call changed nothing. With `mutation: 'unknown'` this call itself failed after it began mutating, and its own pending markers now guard the resources. Feature-task merge returns the result; ad-hoc tools and the other worktree tools throw the same error. Follow [Interrupted operations and recovery](#interrupted-operations-and-recovery); do not repeat the call until the operation is acknowledged.
+- A `finalization` block on a merge, create or cleanup result means the operation returned the rest of that result, but its own bookkeeping failed afterwards: some of its pending markers could not be removed or their removal could not be flushed (`markerError`), or releasing its operation locks failed (`lockReleaseError`; the operating system releases them when the host process exits). The result keeps its `success`, `merged`, `sha`, `reasonCode`, `mutation`, per-repository results and `cleanup` exactly as the operation reported them; nothing was rolled back. When the operation began mutating, `retryable` is `false`. `finalization.markers` is `retained` when markers of the operation still exist (also when an `unknown` outcome retained them on purpose): `retainedMarkers` lists exactly those files, later mutations of the resources they guard are refused with `OPERATION_RECOVERY_REQUIRED`, and `finalization.operationId` names the entry to inspect and acknowledge (`action: 'manual_recovery'`). It is `cleared_unflushed` when every marker file was removed but flushing the marker directory failed: nothing guards the resources and there is nothing to acknowledge, but the removal may not survive a host crash (`action: 'inspect_state'`; `operationId` identifies a marker that reappears after one). It is `cleared` or `not_published` when no marker of this call exists (`action: 'inspect_state'`). A create result with `finalization` is the create result without the initial inspection; inspect before relying on it. A failure thrown before the operation returned a result keeps its own classification.
 - `ALREADY_INTEGRATED` means the pinned source is an ancestor of, or equal to, the target under either intent. It is classified after the identity, cleanliness, and active-operation guards and before topology and local-data eligibility, so differing trees or protected ignored data do not turn it into `TARGET_RECONCILIATION_REQUIRED`. The result has `reason: 'already_integrated'`, `merged: false`, `mutation: 'none'`, `filesChanged: []`, `cleanupEligible: true`, no `sha`, and needs no `message`; feature results add `taskUpdateRecommended: true`. A source equal to the target reports `ALREADY_INTEGRATED`.
 - `NO_TRACKED_CHANGES` applies only to `rewrite-private`: the source is not contained in the target and has no net tracked changes, so nothing is squashed or replayed. The operation is a successful no-op, `merged` stays `false`, and no `sha` is reported. Under `preserve-source` the same source is joined by a normal merge commit with `merged: true` and `filesChanged: []`.
 - A composite no-op aggregate reports `ALREADY_INTEGRATED` only when every repository is contained; any private content no-op makes it `NO_TRACKED_CHANGES`. A graph-only preservation merge counts as an actual merge.
@@ -266,7 +271,7 @@ Merge results and ad-hoc cleanup results carry recovery classification fields al
 - After a `preserve-source` merge commit exists, Hive verifies that the target contains the source. When that check is negative or cannot be read, the result is `POST_INTEGRATION_VERIFICATION_FAILED`: the created commit is not rolled back, no cleanup runs, and `observedTarget` names the created commit.
 - A missing, unknown, or incompatible `historyIntent` or `strategy` returns `INVALID_ARGUMENTS` before any lock, Git read, or mutation. When no strategy was resolved, the result omits `strategy`.
 
-## Worktree families (8 tools)
+## Worktree families (9 tools)
 
 Public names are fixed. Git helpers do not change task status, auto-commit source, or assign workers.
 
@@ -282,6 +287,7 @@ The primary calls the matching merge tool with the worker's unchanged verified s
 | `hive_adhoc_worktree_inspect` | Inspect an ad-hoc workspace |
 | `hive_adhoc_worktree_merge` | Integrate an ad-hoc branch |
 | `hive_adhoc_worktree_cleanup` | Remove an ad-hoc worktree and optionally its branch |
+| `hive_worktree_recover` | List or acknowledge interrupted task and ad-hoc worktree operations |
 
 Canonical workspace names are metadata. Existing slotted or composite workspaces are selectable. Merge wants a clean source, a destination with a clean index and tracked working tree, the pinned SHA, a declared `historyIntent`, and an explicit message when it creates a commit. A commit message needs a nonempty one-line subject, blank line, and nonempty body. Disjoint untracked or ignored destination files may remain when the pinned source contains the pinned target history; rebase also requires a linear replay range. A source already contained in the target returns `ALREADY_INTEGRATED` before this check. For a noncontained source, unsafe topology with local data requires same-worktree reconciliation and fresh pins, even when Git reports a clean worktree because Hive state, dependencies, or build output is ignored. Incoming path collisions always block. Hive preflight and rechecks protect local data without relying on Git merge flags. Locks are operation-local. Dirty, untracked, ignored, and unmerged data is protected; there is no force or rm fallback. Same-call cleanup runs only after a proof across every selected repository; later ambiguous branches stay unless `discard: true` is explicit. `deleteBranch` alone does not discard an unmerged branch.
 
@@ -297,6 +303,7 @@ Stable public inputs:
 | `hive_adhoc_worktree_inspect` | `runId`, optional `repoIds`, optional absolute `sourceDirectory` |
 | `hive_adhoc_worktree_merge` | `runId`, `historyIntent`; required `expectedTarget` or `expectedTargets`; optional `repoIds`, absolute `sourceDirectory`, `strategy`, `message`, `preserveConflicts`, `cleanup`, `sourceCommit`, `sourceCommits` |
 | `hive_adhoc_worktree_cleanup` | `runId`, optional `repoIds`, optional absolute `sourceDirectory`, plus `deleteBranch`, `discard` |
+| `hive_worktree_recover` | none to list; to acknowledge, `operationId`, `markerDigest`, `observedStateDigest`, `mutatorsStopped: true`; optional absolute `sourceDirectory` for an ad-hoc run on a foreign checkout |
 
 `historyIntent` is required and has no default. `preserve-source` permits only `strategy: 'merge'`, its default; it keeps existing source commits and their messages unchanged and validates only the new merge commit message. `rewrite-private` attests that all source-only history in every selected repository is private and authorized for rewriting; it permits `'squash'`, its default, or `'rebase'`, and rebase also validates every replayed source message. Hive does not prove privacy. For published-history repair, confirm that the known published commit is in the source or target ancestry and verify that it is in the final destination's ancestry before claiming repair.
 
@@ -330,6 +337,42 @@ A legacy inspection has top-level `target` and `comparison`; composite results p
 Every merge must include exactly one target expectation: the exact inspect value as `expectedTarget` for legacy mode, or `expectedTargets` as a complete map for composite mode. In a composite, the map's keys must equal the candidate's repository IDs, and each value is that repository's `repos[repoId].target` from inspect. A singleton composite accepts a scalar expectation and normalizes it without changing identity values. Missing, both, malformed, extra, or topology-incompatible expectation forms fail with `INVALID_ARGUMENTS`. The two target fields stay optional in the argument shape because the choice depends on the workspace; the merge service validates the rule. Runtime forwarding never fills or refreshes target expectations. `TARGET_MISMATCH` includes expected and observed identities, performs no mutation, is not retryable, and requires `inspect_state`. All composite targets are checked before the first repository mutation and each target is checked again at its integration boundary. Earlier composite integrations remain when a later boundary fails.
 
 The identity guard coordinates Hive operations under the existing repository locks. It does not exclude arbitrary Git writers or another lock namespace; callers still need exclusive destination ownership. Squash integration rechecks identity after staging and before commit. If it moved, Hive leaves the source and staged operation state for inspection and reports post-integration verification with unknown mutation rather than committing or destructively resetting external changes. Before any destructive same-call cleanup, Hive rereads the full target path/ref/commit and the source pin, including for no-op cleanup, and checks the proof the completed work requires: source containment in the target for `preserve-source` merges and `ALREADY_INTEGRATED` no-ops, or verified completion plus the `rewrite-private` attestation for squash, rebase, and private content no-ops. A composite proves every repository before removing anything. A failed proof retains every source placement and reports a `cleanup.failures` entry (`identity-recheck` or `ancestry-proof`).
+
+### Interrupted operations and recovery
+
+Worktree operations hold operating-system locks on their workspace and on the Git common directory of each repository they select. The operating system releases a lock when the holding process exits, so a crashed or rebooted host never leaves an operation lock that blocks later work. A read (inspect) holds the same locks and records nothing.
+
+A lock that disappears with its host does not show that the host's work stopped or finished: a Git command the host started can keep running, and a mutation can stop half-done. So a create, merge, remove or cleanup writes one pending marker per workspace and repository it guards (`.hive/.locks/operations/`) immediately before its first workspace or Git mutation. Preflight, reuse of an existing workspace, and refusals before any effect write none. The operation removes its markers when every Git command it ran has finished with a known outcome. It keeps them when it stops part-way, reports `mutation: 'unknown'` (including a failed rollback), or throws after it began mutating. When it finished but cannot remove its markers, it keeps them and reports its result with a `finalization` block.
+
+While a marker remains, or a `.hive/.operation-locks/<name>.lock` file from a host that predates native locking is present, every later mutation of that workspace or repository is refused before any effect with `OPERATION_RECOVERY_REQUIRED`. Inspection keeps working and adds `pendingOperations` to its result, one entry per interrupted operation or legacy lock file:
+
+| Field | Meaning |
+|------|---------|
+| `operationId` | The marker's ID, or `legacy:<name>` / `unreadable:<name>` for a legacy lock file or a marker that cannot be parsed |
+| `state` | `interrupted`, `legacy_lock`, or `unreadable_marker` |
+| `marker` | For `interrupted`: `kind`, `subject` (task or ad-hoc run), the exact `workspacePath` and repositories, `startedAt`, a diagnostic `pid`, and, when the operation knew them, each repository's `sourceCommit` and `expectedTarget` checkpoint and the merge `strategy` |
+| `record` | For a legacy or unreadable record: its path and leading bytes |
+| `observed` | Current destination identity, source branch and commit, and Git operation or lock state (`MERGE_HEAD`, `SQUASH_MSG`, rebase or cherry-pick state, `index.lock`, `HEAD.lock`, `packed-refs.lock`, the source branch's ref lock) of every guarded resource |
+| `markerDigest`, `observedStateDigest` | Digests a recovery call must present unchanged |
+| `recovery` | `{ available: true }`, or `{ available: false, reason }` for a record whose resource this project cannot identify, or a marker that names a workspace outside the project's worktree placements, a repository outside its trusted repositories, a source checkout that is not a checkout of the marker's workspace (for a project-wide cleanup, which names no workspace, of any worktree placement), a guarded checkout reached through a symlink or whose `.git` linkage does not select its trusted repository, or a malformed branch name; such a record is preserved |
+
+Marker files are untrusted data. Before Hive reads anything a marker names or runs Git there, it checks the declared paths against the project and checks every checkout it would observe on disk: no symlinked path component, and a `.git` pointer, `commondir` and backlink that register it as a worktree of the expected trusted repository. An entry that fails either check has an empty `observed` (`workspace: null`, no repositories): nothing it names was read, and an empty observation there does not describe the named paths.
+
+The checkpoints describe what the interrupted operation intended. They are evidence for deciding the next step, never an instruction to replay it. Git can run without holding any lock Hive can see (a commit hook, for example), so an empty `activeGitState` does not show that the operation stopped.
+
+`hive_worktree_recover` without arguments lists every such entry in the project, including those whose workspace is gone. To acknowledge one entry, a primary first confirms that no process of the operation is still running, including a Git child that outlived its host, and that Git has no unresolved operation in the guarded checkouts. Then it calls the tool with the entry's `operationId`, `markerDigest` and `observedStateDigest` from its latest listing or inspection, and `mutatorsStopped: true`. The tool takes the same operation locks and refuses, removing nothing, with `success: false` and a `reason`:
+
+| `reason` | Meaning |
+|------|---------|
+| `attestation_required` | `mutatorsStopped` was not `true` |
+| `operation_not_found` | No entry has that `operationId` |
+| `recovery_unavailable` | The record's resource cannot be identified in this project |
+| `resource_untrusted` | A recorded workspace, repository or source checkout is not part of this project (pass the run's absolute `sourceDirectory` for an ad-hoc run on a foreign checkout), or a repository now resolves to another Git common directory, including after it changed while recovery waited for the operation locks |
+| `marker_changed` | The entry's records changed since the listing |
+| `git_operation_active` | Git operation or lock state remains in a guarded checkout; resolve or abort it with Git first |
+| `observed_state_changed` | Source or destination state changed since the listing; list or inspect again |
+
+A successful call removes only that entry's record files and returns `{ success: true, operationId, state, cleared, replayed: false }`. It never runs, retries or rolls back the interrupted operation and never touches another operation's records. Inspect again before deciding whether the merge, cleanup or create still needs to run.
 
 ## Background Orchestration (4 tools)
 
@@ -562,6 +605,7 @@ Skills are loaded via OpenCode's native `skill` tool. Hive bundles are materiali
 | Task | 3 | sync, create, update |
 | Worktree | 4 | create, inspect, merge, cleanup |
 | Ad-hoc worktree | 4 | create, inspect, merge, cleanup |
+| Worktree recovery | 1 | recover |
 | Background Orchestration | 4 | status, reconcile, batch reconcile, cancel |
 | Runtime Session Inspection | 2 | trace, source-backed content |
 | Context | 4 | read, write, append, archive |

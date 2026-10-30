@@ -1,6 +1,17 @@
 import * as path from 'path';
 import * as fs from 'fs';
 import type { FeatureDirectoryInfo, FeatureJson, ReviewDocument } from '../types.js';
+import {
+  describeNativeLockHolder,
+  isNativeLockHeld,
+  resolveLockAnchor,
+  sleepSync,
+  tryAcquireNativeLock,
+  writeNativeLockDiagnostic,
+} from './nativeLock.js';
+import type { LockAnchor } from './nativeLock.js';
+
+export { NativeLockUnavailableError } from './nativeLock.js';
 
 const HIVE_DIR = '.hive';
 const FEATURES_DIR = 'features';
@@ -225,7 +236,7 @@ export interface LockOptions {
   timeout?: number;
   /** Time between lock acquisition attempts (ms). Default: 50 */
   retryInterval?: number;
-  /** Retained for source compatibility. Locks require explicit manual recovery. */
+  /** Retained for source compatibility and ignored: the operating system releases a dead owner's lock. */
   staleLockTTL?: number | null;
 }
 
@@ -237,16 +248,26 @@ const DEFAULT_LOCK_OPTIONS: Required<LockOptions> = {
 };
 
 /**
- * Get the lock file path for a given file
+ * Path of the exclusive-create lock file that Hive hosts used before native
+ * locking. Current hosts never create it; its presence means a host that
+ * predates native locking holds the file or crashed while holding it.
  */
 export function getLockPath(filePath: string): string {
   return `${filePath}.lock`;
 }
 
-/**
- * Check if a lock file is stale (older than TTL)
- */
-function describeLockHolder(lockPath: string): string {
+/** Thrown when a lock wait ends because a pre-native exclusive-create lock file is still present. */
+export class LegacyLockError extends Error {
+  readonly legacyLockPath: string;
+
+  constructor(message: string, legacyLockPath: string) {
+    super(message);
+    this.name = 'LegacyLockError';
+    this.legacyLockPath = legacyLockPath;
+  }
+}
+
+function describeLegacyLockHolder(lockPath: string): string {
   try {
     const parsed = JSON.parse(fs.readFileSync(lockPath, 'utf8')) as { pid?: unknown; timestamp?: unknown };
     const details = [];
@@ -258,126 +279,106 @@ function describeLockHolder(lockPath: string): string {
   }
 }
 
+type LockAttempt =
+  | { status: 'acquired'; release: () => void }
+  | { status: 'busy' }
+  | { status: 'legacy' };
+
 /**
- * Acquire an exclusive lock on a file.
- * Uses exclusive file creation (O_EXCL) for atomic lock acquisition.
- * 
+ * One attempt under the native lock. A legacy exclusive-create lock file can
+ * belong to a live host that predates native locking, so it is never ignored:
+ * the native lock is released again and the caller keeps waiting.
+ */
+function attemptStateLock(anchor: LockAnchor): LockAttempt {
+  const ownership = tryAcquireNativeLock(anchor);
+  if (!ownership) return { status: 'busy' };
+  try {
+    if (fs.existsSync(anchor.legacyLockPath)) {
+      ownership.release();
+      return { status: 'legacy' };
+    }
+    writeNativeLockDiagnostic(ownership);
+  } catch (error) {
+    ownership.release();
+    throw error;
+  }
+  return { status: 'acquired', release: () => ownership.release() };
+}
+
+function lockTimeoutError(anchor: LockAnchor, timeout: number, legacy: boolean): Error {
+  if (legacy) {
+    return new LegacyLockError(
+      `Failed to acquire lock ${anchor.resourcePath} after ${timeout}ms: legacy lock file ${anchor.legacyLockPath} is present${describeLegacyLockHolder(anchor.legacyLockPath)}. A Hive host that predates native locking may still hold it. Stop every such host, confirm its owner is gone, then remove that file.`,
+      anchor.legacyLockPath,
+    );
+  }
+  return new Error(
+    `Failed to acquire lock ${anchor.resourcePath} after ${timeout}ms${describeNativeLockHolder(anchor)}. A live process holds it; the operating system releases it when that process exits.`,
+  );
+}
+
+function prepareStateLock(filePath: string): LockAnchor {
+  // Lock acquisition has always created the locked file's directory.
+  ensureDir(path.dirname(filePath));
+  return resolveLockAnchor(filePath);
+}
+
+/**
+ * Acquire an exclusive, crash-released lock on a file.
+ *
+ * The lock is native operating-system ownership of a stable anchor file; see
+ * `nativeLock.ts`. It is released by the returned function or, if the process
+ * dies first, by the operating system.
+ *
  * @param filePath - Path to the file to lock
  * @param options - Lock acquisition options
- * @returns A release function to call when done
- * @throws Error if lock cannot be acquired within timeout
+ * @returns An idempotent release function to call when done
+ * @throws Error if the lock cannot be acquired within timeout, LegacyLockError
+ *   when a pre-native lock file blocked it, NativeLockUnavailableError when no
+ *   native backend can run
  */
 export async function acquireLock(
   filePath: string,
   options: LockOptions = {}
 ): Promise<() => void> {
   const opts = { ...DEFAULT_LOCK_OPTIONS, ...options };
-  const lockPath = getLockPath(filePath);
-  const lockDir = path.dirname(lockPath);
+  const anchor = prepareStateLock(filePath);
   const startTime = Date.now();
-  const lockContent = JSON.stringify({
-    pid: process.pid,
-    timestamp: new Date().toISOString(),
-    filePath,
-  });
-
-  // Ensure lock directory exists before first acquisition attempt.
-  ensureDir(lockDir);
-
-  while (true) {
-    try {
-      // Attempt exclusive create (O_CREAT | O_EXCL | O_WRONLY)
-      const fd = fs.openSync(lockPath, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY);
-      fs.writeSync(fd, lockContent);
-      fs.closeSync(fd);
-      
-      // Lock acquired - return release function
-      return () => {
-        try {
-          fs.unlinkSync(lockPath);
-        } catch {
-          // Lock file already removed, that's fine
-        }
-      };
-    } catch (err: unknown) {
-      const error = err as NodeJS.ErrnoException;
-      if (error.code === 'ENOENT') {
-        // Parent directory can be transiently unavailable on some filesystems.
-        // Recreate and retry until timeout.
-        ensureDir(lockDir);
-      } else if (error.code !== 'EEXIST') {
-        throw error; // Unexpected error
-      }
-
-      // Check timeout
-      if (Date.now() - startTime >= opts.timeout) {
-        throw new Error(
-          `Failed to acquire lock ${lockPath} after ${opts.timeout}ms${describeLockHolder(lockPath)}. Manual recovery is required if the owner is no longer running.`
-        );
-      }
-
-      // Wait and retry with exponential backoff
-      await new Promise(resolve => setTimeout(resolve, opts.retryInterval));
-    }
+  for (;;) {
+    const attempt = attemptStateLock(anchor);
+    if (attempt.status === 'acquired') return attempt.release;
+    if (Date.now() - startTime >= opts.timeout) throw lockTimeoutError(anchor, opts.timeout, attempt.status === 'legacy');
+    await new Promise(resolve => setTimeout(resolve, opts.retryInterval));
   }
 }
 
 /**
- * Synchronous version of acquireLock for simpler use cases
+ * Synchronous version of acquireLock. It waits by blocking the thread, not by spinning.
  */
 export function acquireLockSync(
   filePath: string,
   options: LockOptions = {}
 ): () => void {
   const opts = { ...DEFAULT_LOCK_OPTIONS, ...options };
-  const lockPath = getLockPath(filePath);
-  const lockDir = path.dirname(lockPath);
+  const anchor = prepareStateLock(filePath);
   const startTime = Date.now();
-  const lockContent = JSON.stringify({
-    pid: process.pid,
-    timestamp: new Date().toISOString(),
-    filePath,
-  });
-
-  // Ensure lock directory exists before first acquisition attempt.
-  ensureDir(lockDir);
-
-  while (true) {
-    try {
-      const fd = fs.openSync(lockPath, fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_WRONLY);
-      fs.writeSync(fd, lockContent);
-      fs.closeSync(fd);
-      
-      return () => {
-        try {
-          fs.unlinkSync(lockPath);
-        } catch {
-          // Lock file already removed
-        }
-      };
-    } catch (err: unknown) {
-      const error = err as NodeJS.ErrnoException;
-      if (error.code === 'ENOENT') {
-        // Parent directory can be transiently unavailable on some filesystems.
-        // Recreate and retry until timeout.
-        ensureDir(lockDir);
-      } else if (error.code !== 'EEXIST') {
-        throw error;
-      }
-
-      if (Date.now() - startTime >= opts.timeout) {
-        throw new Error(
-          `Failed to acquire lock ${lockPath} after ${opts.timeout}ms${describeLockHolder(lockPath)}. Manual recovery is required if the owner is no longer running.`
-        );
-      }
-
-      // Busy-wait with small intervals for sync version
-      const waitUntil = Date.now() + opts.retryInterval;
-      while (Date.now() < waitUntil) {
-        // Spin
-      }
-    }
+  for (;;) {
+    const attempt = attemptStateLock(anchor);
+    if (attempt.status === 'acquired') return attempt.release;
+    if (Date.now() - startTime >= opts.timeout) throw lockTimeoutError(anchor, opts.timeout, attempt.status === 'legacy');
+    sleepSync(opts.retryInterval);
   }
+}
+
+/**
+ * Report, without waiting, creating, or writing anything, whether a file's lock
+ * is held: `held` by a live process, `legacy` when a pre-native lock file is
+ * present (its owner cannot be known), or `free`.
+ */
+export function probeLock(filePath: string): 'free' | 'held' | 'legacy' {
+  const anchor = resolveLockAnchor(filePath);
+  if (isNativeLockHeld(anchor)) return 'held';
+  return fs.existsSync(anchor.legacyLockPath) ? 'legacy' : 'free';
 }
 
 /**

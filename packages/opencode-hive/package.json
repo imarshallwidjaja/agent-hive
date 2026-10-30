@@ -41,7 +41,8 @@
     "@opencode/client": "2.0.26",
     "@opencode/plugin": "2.0.26",
     "@types/json-schema": "7.0.15",
-    "gray-matter": "^4.0.3"
+    "gray-matter": "^4.0.3",
+    "koffi": "2.16.3"
   },
   "devDependencies": {
     "@opencode-ai/plugin": "^1.18.30",

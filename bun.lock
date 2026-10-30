@@ -9,6 +9,7 @@
       "name": "hive-core",
       "version": "5.1.0",
       "dependencies": {
+        "koffi": "2.16.3",
         "simple-git": "^3.27.0",
         "yaml": "^2.9.0",
       },
@@ -26,6 +27,7 @@
         "@opencode/plugin": "2.0.26",
         "@types/json-schema": "7.0.15",
         "gray-matter": "^4.0.3",
+        "koffi": "2.16.3",
       },
       "devDependencies": {
         "@opencode-ai/plugin": "^1.18.30",
@@ -50,9 +52,10 @@
         "hive-core": "5.1.0",
       },
       "devDependencies": {
-        "@types/vscode": "1.64.0",
+        "@types/vscode": "1.67.0",
         "@vscode/vsce": "^3.7.1",
         "esbuild": "^0.27.2",
+        "koffi": "2.16.3",
         "typescript": "^5.0.0",
       },
     },
@@ -406,7 +409,7 @@
 
     "@types/sarif": ["@types/sarif@2.1.7", "", {}, "sha512-kRz0VEkJqWLf1LLVN4pT1cg1Z9wAuvI6L97V3m2f5B76Tg8d413ddvLBPTEHAZJlnn4XSvu0FkZtViCQGVyrXQ=="],
 
-    "@types/vscode": ["@types/vscode@1.64.0", "", {}, "sha512-bSlAWz5WtcSL3cO9tAT/KpEH9rv5OBnm93OIIFwdCshaAiqr2bp1AUyEwW9MWeCvZBHEXc3V0fTYVdVyzDNwHA=="],
+    "@types/vscode": ["@types/vscode@1.67.0", "", {}, "sha512-GH8BDf8cw9AC9080uneJfulhSa7KHSMI2s/CyKePXoGNos9J486w2V4YKoeNUqIEkW4hKoEAWp6/cXTwyGj47g=="],
 
     "@types/ws": ["@types/ws@8.18.2", "", { "dependencies": { "@types/node": "*" } }, "sha512-67MQl+fpWKVTT1NYdnmo3U4sc/xPo/zQBncVnI74qmQa0z/b+1g6iYqNmGCPbxO+zz2aklb08a0oHfegiVd0/w=="],
 
@@ -783,6 +786,8 @@
     "keytar": ["keytar@7.9.0", "", { "dependencies": { "node-addon-api": "^4.3.0", "prebuild-install": "^7.0.1" } }, "sha512-VPD8mtVtm5JNtA2AErl6Chp06JBfy7diFQ7TQQhdpWOl6MrCRB+eRbvAZUsbGQS9kiMq0coJsy0W0vHpDCkWsQ=="],
 
     "kind-of": ["kind-of@6.0.3", "", {}, "sha512-dcS1ul+9tmeD95T+x28/ehLgd9mENa3LsvDTtzm3vyBEO7RPptvAD+t44WVXaUjTBRcrpFeFlC8WCruUR456hw=="],
+
+    "koffi": ["koffi@2.16.3", "", {}, "sha512-E9y1AsgYGlaxMhcZzHr8y96QF2U5XzA12GGVAfbWqIubTwPNMXQarfBzePNXHe0xtIEtNd6ifAv3GAKYGUeBAQ=="],
 
     "kubernetes-types": ["kubernetes-types@1.30.0", "", {}, "sha512-Dew1okvhM/SQcIa2rcgujNndZwU8VnSapDgdxlYoB84ZlpAD43U6KLAFqYo17ykSFGHNPrg0qry0bP+GJd9v7Q=="],
 

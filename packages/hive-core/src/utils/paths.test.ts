@@ -19,7 +19,10 @@ import {
   getHivePath,
   getProjectContextPath,
   getFeaturePath,
+  LegacyLockError,
+  probeLock,
 } from "./paths";
+import { isNativeLockHeld, resolveLockAnchor, windowsBackend } from "./nativeLock";
 import {
   NATIVE_OBSERVATION_OWNERS,
   getNativeBackgroundJobsPath,
@@ -47,124 +50,301 @@ describe("Atomic + Locked JSON Utilities", () => {
   });
 
   describe("acquireLock", () => {
-    it("creates lock file and returns release function", async () => {
-      const filePath = path.join(TEST_DIR, "lock-create.json");
-      const lockPath = getLockPath(filePath);
-
-      const release = await acquireLock(filePath);
-
-      expect(fs.existsSync(lockPath)).toBe(true);
-
-      release();
-
-      expect(fs.existsSync(lockPath)).toBe(false);
-    });
-
-    it("blocks second acquirer until lock is released", async () => {
+    it("serializes acquirers in one process and keeps a stable anchor after release", async () => {
       const filePath = path.join(TEST_DIR, "lock-blocking.json");
       const order: string[] = [];
 
       const release1 = await acquireLock(filePath);
       order.push("lock1-acquired");
+      const anchorPath = resolveLockAnchor(filePath).anchorPath;
+      const anchorInode = fs.statSync(anchorPath).ino;
 
-      // Start second lock attempt (will wait)
-      const lock2Promise = acquireLock(filePath, { timeout: 1000 }).then(
-        (release) => {
-          order.push("lock2-acquired");
-          return release;
-        }
-      );
-
-      // Give lock2 a chance to attempt
+      const lock2Promise = acquireLock(filePath, { timeout: 1000 }).then((release) => {
+        order.push("lock2-acquired");
+        return release;
+      });
       await new Promise((r) => setTimeout(r, 100));
-
-      // Release first lock
       release1();
       order.push("lock1-released");
-
-      // Wait for lock2
       const release2 = await lock2Promise;
       release2();
       order.push("lock2-released");
 
-      expect(order).toEqual([
-        "lock1-acquired",
-        "lock1-released",
-        "lock2-acquired",
-        "lock2-released",
-      ]);
+      expect(order).toEqual(["lock1-acquired", "lock1-released", "lock2-acquired", "lock2-released"]);
+      expect(fs.existsSync(getLockPath(filePath))).toBe(false);
+      expect(fs.statSync(anchorPath).ino).toBe(anchorInode);
     });
 
-    it("times out when lock cannot be acquired", async () => {
+    it("times out while a live owner holds the lock and names the recorded holder", async () => {
       const filePath = path.join(TEST_DIR, "lock-timeout.json");
-
       const release = await acquireLock(filePath);
-
-      await expect(
-        acquireLock(filePath, { timeout: 100, retryInterval: 10 })
-      ).rejects.toThrow(/Failed to acquire lock/);
-
-      release();
+      try {
+        await expect(acquireLock(filePath, { timeout: 100, retryInterval: 10 }))
+          .rejects.toThrow(new RegExp(`Failed to acquire lock .*recorded holder pid ${process.pid}`));
+      } finally {
+        release();
+      }
     });
 
-    it("never age-steals a lock and reports its holder for manual recovery", async () => {
-      const filePath = path.join(TEST_DIR, "lock-stale.json");
+    it("never ignores a legacy exclusive-create lock file and leaves it in place", async () => {
+      const filePath = path.join(TEST_DIR, "lock-legacy.json");
       const lockPath = getLockPath(filePath);
-
-      // Create a stale lock manually
       fs.writeFileSync(lockPath, JSON.stringify({ pid: 99999, timestamp: '2026-09-17T01:00:00.000Z' }));
-      // Set mtime to past
       const pastTime = new Date(Date.now() - 60000);
       fs.utimesSync(lockPath, pastTime, pastTime);
 
-      await expect(acquireLock(filePath, {
-        timeout: 50,
-        retryInterval: 5,
-        staleLockTTL: 1000,
-      })).rejects.toThrow(new RegExp(`${lockPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}.*holder pid 99999.*2026-09-17T01:00:00.000Z`));
+      const failure = await acquireLock(filePath, { timeout: 50, retryInterval: 5, staleLockTTL: 1000 }).catch((error) => error);
+      expect(failure).toBeInstanceOf(LegacyLockError);
+      expect(failure.message).toContain('holder pid 99999');
+      expect(failure.message).toContain('2026-09-17T01:00:00.000Z');
       expect(fs.existsSync(lockPath)).toBe(true);
-    });
-
-    it('does not age-steal an operation lock when staleLockTTL is null', async () => {
-      const filePath = path.join(TEST_DIR, 'lock-no-age-steal.json');
-      const lockPath = getLockPath(filePath);
-      fs.writeFileSync(lockPath, JSON.stringify({ pid: 99999 }));
-      const pastTime = new Date(Date.now() - 60000);
-      fs.utimesSync(lockPath, pastTime, pastTime);
-
-      await expect(acquireLock(filePath, {
-        timeout: 50,
-        retryInterval: 5,
-        staleLockTTL: null,
-      })).rejects.toThrow(/Failed to acquire lock/);
-      expect(fs.existsSync(lockPath)).toBe(true);
+      expect(probeLock(filePath)).toBe('legacy');
+      // Waiting released the native lock again; the legacy owner still decides.
+      expect(isNativeLockHeld(resolveLockAnchor(filePath))).toBe(false);
     });
   });
 
   describe("acquireLockSync", () => {
-    it("creates lock file synchronously", () => {
-      const filePath = path.join(TEST_DIR, "lock-sync-create.json");
-      const lockPath = getLockPath(filePath);
-
-      const release = acquireLockSync(filePath);
-
-      expect(fs.existsSync(lockPath)).toBe(true);
-
-      release();
-
-      expect(fs.existsSync(lockPath)).toBe(false);
-    });
-
     it("times out synchronously when lock held", () => {
       const filePath = path.join(TEST_DIR, "lock-sync-timeout.json");
-
       const release = acquireLockSync(filePath);
+      try {
+        expect(() => acquireLockSync(filePath, { timeout: 100, retryInterval: 10 })).toThrow(/Failed to acquire lock/);
+      } finally {
+        release();
+      }
+      acquireLockSync(filePath, { timeout: 0 })();
+    });
 
-      expect(() =>
-        acquireLockSync(filePath, { timeout: 100, retryInterval: 10 })
-      ).toThrow(/Failed to acquire lock/);
+    it("anchors .hive resources outside deletable task directories", () => {
+      const taskPath = path.join(TEST_DIR, "project", ".hive", "features", "01_f", "tasks", "01-t");
+      const statusPath = path.join(taskPath, "status.json");
+      const release = acquireLockSync(statusPath);
+      try {
+        const anchor = resolveLockAnchor(statusPath);
+        expect(path.dirname(anchor.anchorPath)).toBe(path.join(fs.realpathSync(TEST_DIR), "project", ".hive", ".locks"));
+        fs.rmSync(taskPath, { recursive: true, force: true });
+        expect(() => acquireLockSync(statusPath, { timeout: 0 })).toThrow(/Failed to acquire lock/);
+      } finally {
+        release();
+      }
+      expect(probeLock(statusPath)).toBe('free');
+    });
 
-      release();
+    it("keeps excluding contenders when an atomic write replaces a locked leaf symlink", () => {
+      const realDirectory = path.join(TEST_DIR, "leaf-link-real");
+      const linkDirectory = path.join(TEST_DIR, "leaf-link-config");
+      fs.mkdirSync(realDirectory, { recursive: true });
+      fs.mkdirSync(linkDirectory, { recursive: true });
+      fs.writeFileSync(path.join(realDirectory, "agent_hive.json"), "{}");
+      const configPath = path.join(linkDirectory, "agent_hive.json");
+      fs.symlinkSync(path.join(realDirectory, "agent_hive.json"), configPath);
+
+      const release = acquireLockSync(configPath);
+      try {
+        // The configuration write renames over the logical name, turning the link into a regular file.
+        writeAtomic(configPath, '{"replaced":true}');
+        expect(fs.lstatSync(configPath).isSymbolicLink()).toBe(false);
+        expect(probeLock(configPath)).toBe('held');
+        expect(() => acquireLockSync(configPath, { timeout: 0 })).toThrow(/Failed to acquire lock/);
+      } finally {
+        release();
+      }
+      expect(probeLock(configPath)).toBe('free');
+    });
+
+    it("gives a resource reached through a symlinked parent directory the same anchor", () => {
+      const realDirectory = path.join(TEST_DIR, "parent-alias-real");
+      const aliasDirectory = path.join(TEST_DIR, "parent-alias-link");
+      fs.mkdirSync(realDirectory, { recursive: true });
+      fs.symlinkSync(realDirectory, aliasDirectory);
+      const viaAlias = path.join(aliasDirectory, "state.json");
+      expect(resolveLockAnchor(viaAlias).anchorPath).toBe(resolveLockAnchor(path.join(realDirectory, "state.json")).anchorPath);
+      const release = acquireLockSync(viaAlias);
+      try {
+        expect(() => acquireLockSync(path.join(realDirectory, "state.json"), { timeout: 0 })).toThrow(/Failed to acquire lock/);
+      } finally {
+        release();
+      }
+    });
+
+    it("diagnostic opens and a repeated release never drop the successor's lock", () => {
+      const filePath = path.join(TEST_DIR, "lock-successor.json");
+      const releaseFirst = acquireLockSync(filePath);
+      releaseFirst();
+      const releaseSecond = acquireLockSync(filePath);
+      try {
+        releaseFirst();
+        const anchorPath = resolveLockAnchor(filePath).anchorPath;
+        fs.closeSync(fs.openSync(anchorPath, 'r'));
+        expect(JSON.parse(fs.readFileSync(anchorPath, 'utf8'))).toMatchObject({ protocol: 'hive-native-lock/v1', pid: process.pid });
+        expect(probeLock(filePath)).toBe('held');
+        expect(() => acquireLockSync(filePath, { timeout: 0 })).toThrow(/Failed to acquire lock/);
+      } finally {
+        releaseSecond();
+      }
+      expect(probeLock(filePath)).toBe('free');
+    });
+
+    it("releases native ownership when the diagnostic record cannot be written", () => {
+      const filePath = path.join(TEST_DIR, "lock-diagnostic-failure.json");
+      const truncateSpy = spyOn(fs, "ftruncateSync").mockImplementation((() => {
+        throw Object.assign(new Error("diagnostic write failed"), { code: "EIO" });
+      }) as typeof fs.ftruncateSync);
+      try {
+        expect(() => acquireLockSync(filePath)).toThrow(/diagnostic write failed/);
+      } finally {
+        truncateSpy.mockRestore();
+      }
+      expect(probeLock(filePath)).toBe('free');
+    });
+
+    it("fails closed when the anchor cannot carry a native lock", () => {
+      const filePath = path.join(TEST_DIR, "lock-anchor-directory.json");
+      fs.mkdirSync(resolveLockAnchor(filePath).anchorPath, { recursive: true });
+      expect(() => acquireLockSync(filePath, { timeout: 0 })).toThrow(/EISDIR|not a regular file/);
+      expect(() => probeLock(filePath)).toThrow(/EISDIR|not a regular file/);
+    });
+
+    it("reports a failed native release instead of treating it as clean", () => {
+      const filePath = path.join(TEST_DIR, "lock-release-failure.json");
+      const release = acquireLockSync(filePath);
+      const originalClose = fs.closeSync;
+      const closeSpy = spyOn(fs, "closeSync").mockImplementationOnce(((descriptor: number) => {
+        originalClose(descriptor);
+        throw Object.assign(new Error("close failed"), { code: "EIO" });
+      }) as typeof fs.closeSync);
+      try {
+        expect(() => release()).toThrow(/close failed/);
+      } finally {
+        closeSpy.mockRestore();
+      }
+      expect(probeLock(filePath)).toBe('free');
+    });
+  });
+
+  // Linux cannot load kernel32, so these drive the Windows backend through a stand-in for Koffi's kernel32 calls.
+  // They pin how Windows error codes are classified, not Windows runtime behavior.
+  describe("Windows backend error classification", () => {
+    function backendFailingOpenWith(lastError: number) {
+      const calls: string[] = [];
+      const functions: Record<string, (...args: unknown[]) => unknown> = {
+        CreateFileW: () => { calls.push("CreateFileW"); return -1; },
+        GetLastError: () => lastError,
+      };
+      const koffi = {
+        load: () => ({ func: (signature: string) => functions[/(\w+)\(/.exec(signature)![1]!] ?? (() => { throw new Error(`unexpected call: ${signature}`); }) }),
+        struct: () => undefined,
+      };
+      return { backend: windowsBackend(koffi as never), calls };
+    }
+
+    it("reports an anchor as free when the file or its parent directory is missing", () => {
+      for (const missing of [2, 3]) {
+        const { backend, calls } = backendFailingOpenWith(missing);
+        expect(backend.isLocked("C:\\project\\.hive\\.locks\\absent.lock")).toBe(false);
+        expect(calls).toEqual(["CreateFileW"]);
+      }
+    });
+
+    it("fails closed for other open errors and whenever acquisition cannot open the anchor", () => {
+      expect(() => backendFailingOpenWith(5).backend.isLocked("C:\\anchor.lock")).toThrow(/Windows error 5/);
+      expect(() => backendFailingOpenWith(3).backend.tryLock("C:\\anchor.lock")).toThrow(/Windows error 3/);
+    });
+  });
+
+  describe("crash release across processes", () => {
+    const bunExecutable = process.execPath;
+    const nodeExecutable = Bun.which("node");
+    let nodeHelperPath: string;
+
+    beforeAll(async () => {
+      // Node runs the product helpers from a bundle of this source; Koffi resolves from this installation.
+      const output = await Bun.build({
+        entrypoints: [path.join(import.meta.dir, "paths.ts")],
+        outdir: path.join(TEST_DIR, "node-helper"),
+        target: "node",
+        format: "esm",
+        external: ["koffi"],
+        define: { __HIVE_KOFFI_MODULE__: JSON.stringify(require.resolve("koffi")) },
+      });
+      if (!output.success) throw new AggregateError(output.logs, "node helper bundle failed");
+      nodeHelperPath = output.outputs[0]!.path;
+    });
+
+    const ownerScript = (helper: string, filePath: string) => `
+      const { acquireLockSync } = await import(${JSON.stringify(helper)});
+      acquireLockSync(${JSON.stringify(filePath)});
+      process.stdout.write("locked\\n");
+      setInterval(() => {}, 1000);
+    `;
+    const contenderScript = (helper: string, filePath: string) => `
+      const { acquireLockSync } = await import(${JSON.stringify(helper)});
+      try { acquireLockSync(${JSON.stringify(filePath)}, { timeout: 0 })(); process.stdout.write("acquired"); }
+      catch (error) { process.stdout.write("refused: " + error.message); process.exitCode = 3; }
+    `;
+
+    async function startOwner(executable: string, args: string[]) {
+      const child = Bun.spawn([executable, ...args], { stdout: "pipe", stderr: "pipe" });
+      const reader = child.stdout.getReader();
+      const { value } = await reader.read();
+      expect(new TextDecoder().decode(value)).toContain("locked");
+      return child;
+    }
+
+    function runContender(executable: string, args: string[]) {
+      const result = Bun.spawnSync([executable, ...args], { stdout: "pipe", stderr: "pipe" });
+      return { exitCode: result.exitCode, output: `${result.stdout.toString()}${result.stderr.toString()}` };
+    }
+
+    it("a SIGKILLed Node owner's lock is acquired by Bun without filesystem cleanup", async () => {
+      expect(nodeExecutable).toBeTruthy();
+      const filePath = path.join(TEST_DIR, "project", ".hive", "crash-node.json");
+      const owner = await startOwner(nodeExecutable!, ["--input-type=module", "-e", ownerScript(nodeHelperPath, filePath)]);
+      try {
+        const anchorInode = fs.statSync(resolveLockAnchor(filePath).anchorPath).ino;
+        expect(probeLock(filePath)).toBe('held');
+        expect(() => acquireLockSync(filePath, { timeout: 0 })).toThrow(new RegExp(`recorded holder pid ${owner.pid}`));
+        owner.kill("SIGKILL");
+        expect(await owner.exited).not.toBe(0);
+        const release = acquireLockSync(filePath, { timeout: 1000 });
+        expect(fs.statSync(resolveLockAnchor(filePath).anchorPath).ino).toBe(anchorInode);
+        release();
+      } finally {
+        owner.kill("SIGKILL");
+      }
+    });
+
+    it("a SIGKILLed Bun owner's lock is acquired by a fresh Node process", async () => {
+      expect(nodeExecutable).toBeTruthy();
+      const filePath = path.join(TEST_DIR, "project", ".hive", "crash-bun.json");
+      const ownerFile = path.join(TEST_DIR, "bun-owner.ts");
+      fs.writeFileSync(ownerFile, ownerScript(path.join(import.meta.dir, "paths.ts"), filePath));
+      const owner = await startOwner(bunExecutable, [ownerFile]);
+      try {
+        const nodeContender = ["--input-type=module", "-e", contenderScript(nodeHelperPath, filePath)];
+        const refused = runContender(nodeExecutable!, nodeContender);
+        expect(refused.exitCode).toBe(3);
+        expect(refused.output).toContain(`recorded holder pid ${owner.pid}`);
+        owner.kill("SIGKILL");
+        await owner.exited;
+        expect(runContender(nodeExecutable!, nodeContender)).toEqual({ exitCode: 0, output: "acquired" });
+      } finally {
+        owner.kill("SIGKILL");
+      }
+    });
+
+    it("a child process started while the lock is held does not inherit it", async () => {
+      const filePath = path.join(TEST_DIR, "project", ".hive", "inherit.json");
+      const release = acquireLockSync(filePath);
+      const child = Bun.spawn(["sleep", "30"], { stdout: "ignore", stderr: "ignore" });
+      try {
+        release();
+        expect(probeLock(filePath)).toBe('free');
+      } finally {
+        child.kill("SIGKILL");
+        await child.exited;
+      }
     });
   });
 

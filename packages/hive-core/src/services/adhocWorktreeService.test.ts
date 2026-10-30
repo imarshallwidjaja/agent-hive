@@ -167,6 +167,31 @@ async function installPrepareCommitMessageHook(repoPath: string, body: string): 
   await simpleGit(repoPath).raw(['config', 'core.hooksPath', hookDir]);
 }
 
+async function waitForPath(targetPath: string, timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!(await pathExists(targetPath))) {
+    if (Date.now() > deadline) throw new Error(`Timed out waiting for ${targetPath}`);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
+/**
+ * Stall the next commit in a repository inside its hook, so an operation that
+ * commits there keeps that repository's operation lock until released.
+ */
+async function stallNextCommit(repoPath: string): Promise<{ held: Promise<void>; release: () => Promise<void> }> {
+  const gate = await fs.mkdtemp(path.join(os.tmpdir(), 'hive-adhoc-commit-gate-'));
+  tempDirs.push(gate);
+  await installPrepareCommitMessageHook(
+    repoPath,
+    `touch "${gate}/held"\nwhile [ ! -f "${gate}/release" ]; do sleep 0.05; done`,
+  );
+  return {
+    held: waitForPath(path.join(gate, 'held')),
+    release: () => fs.writeFile(path.join(gate, 'release'), ''),
+  };
+}
+
 describe("AdhocWorktreeService.create", () => {
   it("creates worktree at .hive/.worktrees/adhoc/<runId> and branch hive/adhoc/<runId>", async () => {
     const fixture = await createFixture();
@@ -3155,4 +3180,218 @@ describe("AdhocWorktreeService linkage preflight", () => {
     expect(await fs.readFile(path.join(created.path, "adhoc-file.txt"))).toEqual(preservedBytes);
     expect(await branchExists(fixture.repoGit, created.branch)).toBe(true);
   });
+});
+
+describe("AdhocWorktreeService repository operation locks", () => {
+  it("runs an api-only run's operations while another run holds the web repository lock", async () => {
+    const fixture = await createCompositeFixture();
+    const [apiRepo, webRepo] = fixture.repos;
+    const webRun = await fixture.service.create({ runId: 'web-holder', repoIds: ['web'] });
+    await fs.writeFile(path.join(webRun.repos!.web.path, 'web.txt'), 'web change\n', 'utf-8');
+    await commitAdhocChanges(fixture.service, webRun.runId, testCommitMessage('feat: web change'));
+    const webStall = await stallNextCommit(webRepo!.path);
+    const webMerge = fixture.service.merge(webRun.runId, 'squash', mergeMessage, { historyIntent: 'rewrite-private' });
+
+    try {
+      await webStall.held;
+      const apiRun = await fixture.service.create({ runId: 'api-only', repoIds: ['api'] });
+      const inspected = await fixture.service.inspect(apiRun.runId);
+      expect(Object.keys(inspected!.repos!)).toEqual(['api']);
+      expect(inspected!.clean).toBe(true);
+
+      await fs.writeFile(path.join(apiRun.repos!.api.path, 'api.txt'), 'api change\n', 'utf-8');
+      await commitAdhocChanges(fixture.service, apiRun.runId, testCommitMessage('feat: api change'));
+      const merged = await fixture.service.merge(apiRun.runId, 'squash', mergeMessage, { historyIntent: 'rewrite-private', cleanup: 'worktree+branch' });
+      expect(merged).toMatchObject({ success: true, merged: true });
+      expect(Object.keys(merged.repos!)).toEqual(['api']);
+      expect(merged.cleanup.outcome).toBe('complete');
+      expect(await branchExists(fixture.apiGit, 'hive/adhoc/api/api-only')).toBe(false);
+      expect(await pathExists(apiRun.workspacePath!)).toBe(false);
+
+      const idleRun = await fixture.service.create({ runId: 'api-idle', repoIds: ['api'] });
+      const cleanup = await fixture.service.cleanup(idleRun.runId, true);
+      expect(cleanup.cleanup.outcome).toBe('complete');
+      expect(await branchExists(fixture.apiGit, 'hive/adhoc/api/api-idle')).toBe(false);
+    } finally {
+      await webStall.release();
+    }
+
+    expect(await webMerge).toMatchObject({ success: true, merged: true });
+    expect(await branchExists(fixture.webGit, 'hive/adhoc/web/web-holder')).toBe(true);
+    expect(await pathExists(path.join(apiRepo!.path, 'api.txt'))).toBe(true);
+  }, 30_000);
+
+  it("refuses an operation whose persisted repository selection changed while it waited for locks", async () => {
+    const fixture = await createCompositeFixture();
+    const [apiRepo, webRepo] = fixture.repos;
+    const run = await fixture.service.create({ runId: 'api-selection', repoIds: ['api'] });
+    const holder = await fixture.service.create({ runId: 'api-holder', repoIds: ['api'] });
+    await fs.writeFile(path.join(holder.repos!.api.path, 'api.txt'), 'api change\n', 'utf-8');
+    await commitAdhocChanges(fixture.service, holder.runId, testCommitMessage('feat: api change'));
+    const apiStall = await stallNextCommit(apiRepo!.path);
+    const holderMerge = fixture.service.merge(holder.runId, 'squash', mergeMessage, { historyIntent: 'rewrite-private' });
+
+    // A second service instance stands in for another process waiting on the api lock.
+    const waiting = new CoreAdhocWorktreeService({
+      baseDir: fixture.baseDir,
+      hiveDir: fixture.hiveDir,
+      repositoryResolver: () => fixture.repos,
+    });
+    const readManifest = (waiting as any).readCompositeManifest.bind(waiting);
+    let selectionRead!: () => void;
+    const firstSelectionRead = new Promise<void>((resolve) => { selectionRead = resolve; });
+    const manifestSpy = spyOn(waiting as any, 'readCompositeManifest').mockImplementation(async (runId: unknown) => {
+      const manifest = await readManifest(runId);
+      selectionRead();
+      return manifest;
+    });
+    const gitPaths: string[] = [];
+    const getGit = (waiting as any).getGit.bind(waiting);
+    const gitSpy = spyOn(waiting as any, 'getGit').mockImplementation((cwd?: string) => {
+      gitPaths.push(cwd ?? fixture.baseDir);
+      return getGit(cwd);
+    });
+
+    let inspection: Promise<unknown> | undefined;
+    try {
+      await apiStall.held;
+      inspection = waiting.inspect(run.runId);
+      inspection.catch(() => {});
+      await firstSelectionRead;
+
+      const manifestPath = path.join(run.workspacePath!, 'workspace.json');
+      const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf-8'));
+      manifest.repos.web = {
+        path: 'repos/web',
+        repoRoot: webRepo!.root,
+        repoPath: webRepo!.path,
+        branch: 'hive/adhoc/web/api-selection',
+        commit: manifest.repos.api.commit,
+      };
+      manifest.baseCommits.web = manifest.repos.api.commit;
+      await fs.writeFile(manifestPath, JSON.stringify(manifest), 'utf-8');
+    } finally {
+      await apiStall.release();
+    }
+
+    try {
+      await expect(inspection!).rejects.toThrow(/repository selection changed while waiting for operation locks/);
+      expect(gitPaths.some((gitPath) => gitPath.startsWith(webRepo!.path))).toBe(false);
+    } finally {
+      manifestSpy.mockRestore();
+      gitSpy.mockRestore();
+    }
+    expect(await holderMerge).toMatchObject({ success: true, merged: true });
+  }, 30_000);
+
+  it("refuses to reuse an existing run for a different repository selection", async () => {
+    const fixture = await createCompositeFixture();
+    await fixture.service.create({ runId: 'owned-selection', repoIds: ['api'] });
+
+    await expect(
+      fixture.service.create({ runId: 'owned-selection', repoIds: ['api', 'web'] }),
+    ).rejects.toThrow(/owns repositories api; requested api, web/);
+
+    expect(await branchExists(fixture.webGit, 'hive/adhoc/web/owned-selection')).toBe(false);
+    expect(await pathExists(path.join(fixture.hiveDir, '.worktrees', 'adhoc', 'owned-selection', 'repos', 'web'))).toBe(false);
+  });
+
+  it("lets only one of two concurrent creates of a run own it when their repository selections differ", async () => {
+    const fixture = await createCompositeFixture();
+
+    const results = await Promise.allSettled([
+      fixture.service.create({ runId: 'contested', repoIds: ['api'] }),
+      fixture.service.create({ runId: 'contested', repoIds: ['web'] }),
+    ]);
+
+    const workspacePath = path.join(fixture.hiveDir, '.worktrees', 'adhoc', 'contested');
+    const manifest = JSON.parse(await fs.readFile(path.join(workspacePath, 'workspace.json'), 'utf-8'));
+    const owned = Object.keys(manifest.repos);
+    expect(owned).toHaveLength(1);
+    const fulfilled = results.filter((result) => result.status === 'fulfilled');
+    const rejected = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(String(rejected[0]!.reason)).toMatch(new RegExp(`owns repositories ${owned[0]}; requested`));
+    expect(await fs.readdir(path.join(workspacePath, 'repos'))).toEqual(owned);
+    expect(await branchExists(fixture.apiGit, 'hive/adhoc/api/contested')).toBe(owned.includes('api'));
+    expect(await branchExists(fixture.webGit, 'hive/adhoc/web/contested')).toBe(owned.includes('web'));
+  }, 30_000);
+
+  it("creates in the repository it selected and locked even when the resolver later answers differently", async () => {
+    const fixture = await createCompositeFixture();
+    const [apiRepo] = fixture.repos;
+    const { repoPath: decoyPath, repoGit: decoyGit } = await createTempRepo();
+    const decoy: ResolvedRepository[] = [{ id: 'api', path: decoyPath, root: decoyPath }];
+    // The resolver answers the selection before and after locking, then points api elsewhere.
+    let resolutions = 0;
+    const service = new CoreAdhocWorktreeService({
+      baseDir: fixture.baseDir,
+      hiveDir: fixture.hiveDir,
+      repositoryResolver: () => (++resolutions <= 2 ? fixture.repos : decoy),
+    });
+
+    const created = await service.create({ runId: 'resolved-once', repoIds: ['api'] });
+
+    expect(await branchExists(fixture.apiGit, 'hive/adhoc/api/resolved-once')).toBe(true);
+    expect(await branchExists(decoyGit, 'hive/adhoc/api/resolved-once')).toBe(false);
+    const manifest = JSON.parse(await fs.readFile(path.join(created.workspacePath!, 'workspace.json'), 'utf-8'));
+    expect(manifest.repos.api.repoPath).toBe(apiRepo!.path);
+  });
+
+  it("refuses an operation whose selected repository path moved to another Git common directory while it waited", async () => {
+    const fixture = await createCompositeFixture();
+    const { repoPath: originPath, repoGit: originGit } = await createTempRepo();
+    const { repoGit: replacementGit } = await createTempRepo();
+    const checkoutRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'hive-adhoc-linked-checkout-'));
+    tempDirs.push(checkoutRoot);
+    // The api repository is a linked checkout, so its lock is its origin's common directory.
+    const linkedApiPath = path.join(checkoutRoot, 'api');
+    await originGit.raw(['worktree', 'add', '-b', 'api-checkout', '--', linkedApiPath]);
+    const repositories: ResolvedRepository[] = [
+      { id: 'api', path: linkedApiPath, root: linkedApiPath },
+      { id: 'origin', path: originPath, root: originPath },
+    ];
+    const config = { baseDir: fixture.baseDir, hiveDir: fixture.hiveDir, repositoryResolver: () => repositories };
+    const service = new AdhocWorktreeService(config);
+    const holder = await service.create({ runId: 'origin-holder', repoIds: ['origin'] });
+    await fs.writeFile(path.join(holder.repos!.origin.path, 'origin.txt'), 'origin change\n', 'utf-8');
+    await commitAdhocChanges(service, holder.runId, testCommitMessage('feat: origin change'));
+    const originStall = await stallNextCommit(originPath);
+    const holderMerge = service.merge(holder.runId, 'squash', mergeMessage, { historyIntent: 'rewrite-private' });
+
+    const waiting = new CoreAdhocWorktreeService(config);
+    const commonDirectory = (waiting as any).trustedGitCommonDirectory.bind(waiting);
+    let lockScopeRead!: () => void;
+    const firstLockScopeRead = new Promise<void>((resolve) => { lockScopeRead = resolve; });
+    const commonDirectorySpy = spyOn(waiting as any, 'trustedGitCommonDirectory').mockImplementation(async (repositoryPath: unknown) => {
+      const resolved = await commonDirectory(repositoryPath);
+      lockScopeRead();
+      return resolved;
+    });
+
+    let creation: Promise<unknown> | undefined;
+    try {
+      await originStall.held;
+      creation = waiting.create({ runId: 'api-run', repoIds: ['api'] });
+      creation.catch(() => {});
+      await firstLockScopeRead;
+
+      // Replace the checkout at the same path with one of an unrelated repository.
+      await originGit.raw(['worktree', 'remove', '--', linkedApiPath]);
+      await replacementGit.raw(['worktree', 'add', '-b', 'api-checkout', '--', linkedApiPath]);
+    } finally {
+      await originStall.release();
+    }
+
+    try {
+      await expect(creation!).rejects.toThrow(/repository selection changed while waiting for operation locks/);
+    } finally {
+      commonDirectorySpy.mockRestore();
+    }
+    expect(await branchExists(replacementGit, 'hive/adhoc/api/api-run')).toBe(false);
+    expect(await branchExists(originGit, 'hive/adhoc/api/api-run')).toBe(false);
+    expect(await pathExists(path.join(fixture.hiveDir, '.worktrees', 'adhoc', 'api-run'))).toBe(false);
+    expect(await holderMerge).toMatchObject({ success: true, merged: true });
+  }, 30_000);
 });

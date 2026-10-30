@@ -23,7 +23,7 @@ describe('release documentation and runtime contract', () => {
 
   it('publishes only the canonical tool runtime', () => {
     const manifest = JSON.parse(read('packages/opencode-hive/plugin.json'));
-    assert.equal(manifest.tools.length, 41);
+    assert.equal(manifest.tools.length, 42);
     for (const required of [
       'hive_feature_select',
       'hive_worktree_create',
@@ -34,6 +34,7 @@ describe('release documentation and runtime contract', () => {
       'hive_adhoc_worktree_inspect',
       'hive_adhoc_worktree_merge',
       'hive_adhoc_worktree_cleanup',
+      'hive_worktree_recover',
       'hive_git_snapshot',
       'hive_context_edit',
     ]) assert.ok(manifest.tools.includes(required), required);
@@ -83,7 +84,7 @@ describe('release documentation and runtime contract', () => {
     const guide = read('docs/OPERATOR-GUIDE.md');
     const agents = read('AGENTS.md');
     assert.doesNotMatch(plugin, /background orchestration and session-trace tools are not yet/);
-    assert.match(plugin, /41 Hive tools.*13 commands/);
+    assert.match(plugin, /42 Hive tools.*13 commands/);
     assert.match(plugin, /\*\*5\.0\.0\*\* is the first release that serves both OpenCode hosts/);
     assert.match(plugin, /Releases through 4\.2\.0 are v1-only/);
     assert.match(plugin, /^### OpenCode v2$/m);

@@ -8,6 +8,8 @@ import {
   readText,
   writeText,
   fileExists,
+  acquireLockSync,
+  LegacyLockError,
 } from '../utils/paths.js';
 import type {
   FeatureJson,
@@ -276,21 +278,21 @@ function assertInsertedSectionPathIsNew(content: string, target: ParsedHeading, 
   }
 }
 
+/**
+ * A patch does not wait: a concurrent patch of the same feature fails at once. A
+ * `.plan-patch.lock` directory left by a host that predates native locking is
+ * the legacy lock of this resource and also refuses the patch.
+ */
 function acquirePlanPatchLock(projectRoot: string, featureName: string): () => void {
-  const lockPath = path.join(getFeaturePath(projectRoot, featureName), '.plan-patch.lock');
   try {
-    fs.mkdirSync(lockPath);
+    return acquireLockSync(path.join(getFeaturePath(projectRoot, featureName), '.plan-patch'), { timeout: 0 });
   } catch (error) {
-    const lockError = error as NodeJS.ErrnoException;
-    if (lockError.code === 'EEXIST') {
+    if (error instanceof LegacyLockError) throw error;
+    if (error instanceof Error && error.message.startsWith('Failed to acquire lock')) {
       throw new Error(`Plan patch lock is already held for feature '${featureName}'`);
     }
     throw error;
   }
-
-  return () => {
-    fs.rmSync(lockPath, { recursive: true, force: true });
-  };
 }
 
 function replaceRange(content: string, start: number, end: number, replacement: string): string {

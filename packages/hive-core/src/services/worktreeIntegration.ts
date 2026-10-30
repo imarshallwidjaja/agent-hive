@@ -112,6 +112,11 @@ const gitOperationStates = [
 
 export interface WorktreeIntegrationResult extends WorktreeRepositoryMergeResult {}
 
+/** Carries a failure of the pre-mutation hook past the rollback path: nothing ran, so nothing is rolled back. */
+class BeforeMutationFailure {
+  constructor(readonly cause: unknown) {}
+}
+
 export function integrationFailure(
   reasonCode: WorktreeReasonCode,
   error: string,
@@ -536,6 +541,8 @@ export async function integrateWorktreeRepository(options: {
   cleanupMode: CleanupMode;
   cleanup: (deleteBranch: boolean) => Promise<WorktreeCleanupOutcome>;
   readCommitMessage: (git: SimpleGit, hash: string) => Promise<string>;
+  /** Called immediately before the first command that changes the destination or removes the source. */
+  beforeMutation: () => Promise<void>;
 }): Promise<WorktreeIntegrationResult> {
   const {
     targetGit,
@@ -554,6 +561,13 @@ export async function integrateWorktreeRepository(options: {
     readCommitMessage,
   } = options;
   const { strategy } = policy;
+  const beginMutation = async (): Promise<void> => {
+    try {
+      await options.beforeMutation();
+    } catch (error) {
+      throw new BeforeMutationFailure(error);
+    }
+  };
   let startingHead: string | undefined;
   let targetRoot: string | undefined;
   let operationTarget: WorktreeTargetIdentity | undefined;
@@ -642,6 +656,8 @@ export async function integrateWorktreeRepository(options: {
       completion,
     });
     if (proofFailure) return buildSkippedCleanupOutcome(cleanupMode, proofFailure);
+    // A failed pre-mutation hook is not a cleanup outcome: nothing was removed.
+    await beginMutation();
     try {
       return await cleanup(cleanupMode === 'worktree+branch');
     } catch (error) {
@@ -747,6 +763,7 @@ export async function integrateWorktreeRepository(options: {
     if ('error' in immediateEligibility) {
       return integrationFailure(immediateEligibility.reasonCode, immediateEligibility.error);
     }
+    await beginMutation();
     if (strategy === 'squash') {
       await targetGit.raw(['merge', '--squash', '--no-overwrite-ignore', sourceCommit]);
       const stagedTargetFailure = await targetIdentityFailure(
@@ -898,6 +915,7 @@ export async function integrateWorktreeRepository(options: {
       ...mergeSuccessClassification(cleanupMode, cleanupOutcome, 'applied'),
     };
   } catch (error: unknown) {
+    if (error instanceof BeforeMutationFailure) throw error.cause;
     const message = (error as { message?: string }).message;
     const conflicts = await activeConflictFiles(targetGit);
     const isConflict = conflicts.length > 0;

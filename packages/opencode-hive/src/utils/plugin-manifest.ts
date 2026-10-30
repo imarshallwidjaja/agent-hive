@@ -42,6 +42,7 @@ export const HIVE_TOOL_NAMES = [
   'hive_adhoc_worktree_inspect',
   'hive_adhoc_worktree_merge',
   'hive_adhoc_worktree_cleanup',
+  'hive_worktree_recover',
   'hive_background_status',
   'hive_background_reconcile',
   'hive_background_reconcile_batch',

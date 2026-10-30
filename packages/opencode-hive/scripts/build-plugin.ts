@@ -5,7 +5,8 @@
  * stays a lazily imported chunk that a v1 host never evaluates. The verified read client (`src/v2/client.ts`) is a
  * third entry so it also ships as its own module, which a disposable-host proof imports from the packed artifact.
  * The v2 host provides `effect` and `@opencode/plugin` at runtime and requires a single Effect instance, so those
- * stay external; everything else is bundled as before.
+ * stay external. Koffi, the native module behind Hive's crash-released locks, stays external so its loader finds the
+ * prebuilt binaries in the installed `koffi` dependency; everything else is bundled as before.
  */
 const result = await Bun.build({
   entrypoints: ['src/index.ts', 'src/v2/plugin.ts', 'src/v2/client.ts'],
@@ -14,7 +15,7 @@ const result = await Bun.build({
   format: 'esm',
   packages: 'bundle',
   splitting: true,
-  external: ['effect', 'effect/*', '@opencode/plugin', '@opencode/plugin/*'],
+  external: ['effect', 'effect/*', '@opencode/plugin', '@opencode/plugin/*', 'koffi'],
 });
 
 if (!result.success) {

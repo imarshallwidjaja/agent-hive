@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { PlanApprovalError, PlanService } from './planService';
 import { ReviewService } from './reviewService';
+import { acquireLockSync, LegacyLockError } from '../utils/paths';
 
 const TEST_DIR = `/tmp/hive-core-planservice-test-${process.pid}`;
 
@@ -378,17 +379,25 @@ Do the second task.
     service.addComment(featureName, { line: 7, body: 'Do not clear this', replies: [] });
     const revision = service.read(featureName)!.revision;
     const before = fs.readFileSync(path.join(featurePath, 'plan.md'), 'utf-8');
+    const patch = () => service.patch(featureName, revision, [
+      {
+        type: 'replace_section',
+        headingPath: ['Design Summary'],
+        content: '## Design Summary\n\nUse the revised design.\n',
+      },
+    ]);
+    // A live patch in another process or call holds the native lock; the patch fails at once.
+    const release = acquireLockSync(path.join(featurePath, '.plan-patch'));
+    try {
+      expect(patch).toThrow(`Plan patch lock is already held for feature '${featureName}'`);
+    } finally {
+      release();
+    }
+    // A `.plan-patch.lock` directory from a host that predates native locking also refuses it.
     const lockPath = path.join(featurePath, '.plan-patch.lock');
     fs.mkdirSync(lockPath);
-
     try {
-      expect(() => service.patch(featureName, revision, [
-        {
-          type: 'replace_section',
-          headingPath: ['Design Summary'],
-          content: '## Design Summary\n\nUse the revised design.\n',
-        },
-      ])).toThrow(/lock/i);
+      expect(patch).toThrow(LegacyLockError);
     } finally {
       fs.rmSync(lockPath, { recursive: true, force: true });
     }

@@ -38,4 +38,15 @@ describe('HiveWatcher', () => {
 
     expect(changes).toHaveLength(stores.length + 1);
   });
+
+  it('ignores lock anchors and worktree operation markers under .hive/.locks', () => {
+    const root = '/workspace';
+    const changes: string[] = [];
+    new HiveWatcher(root, () => changes.push('refresh'));
+    ui.watchers[0].change({ fsPath: path.join(root, '.hive', '.locks', `${'a'.repeat(64)}.lock`) });
+    ui.watchers[0].create({ fsPath: path.join(root, '.hive', '.locks', 'operations', `${'b'.repeat(64)}.json`) });
+    expect(changes).toEqual([]);
+    ui.watchers[0].change({ fsPath: path.join(root, '.hive', 'features', '01_feature', 'plan.md') });
+    expect(changes).toEqual(['refresh']);
+  });
 });

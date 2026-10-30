@@ -12,6 +12,7 @@ import {
   SessionService,
   TaskService,
   WorklogService,
+  WorktreeOperationRecoveryService,
   WorktreeService,
   assertValidFeatureName,
   type ContextScope,
@@ -85,6 +86,12 @@ export function createHiveServices(options: { projectRoot: string; detectedFeatu
       repositoryResolver: { resolveRepositories: sourceDirectory ? () => [] : repositoryResolver },
     });
   };
+
+  const worktreeRecoveryService = new WorktreeOperationRecoveryService({
+    baseDir: projectRoot,
+    hiveDir: path.join(projectRoot, '.hive'),
+    repositoryResolver: { resolveRepositories: repositoryResolver },
+  });
 
   const liveFeatures = (): string[] => featureService.list().filter((name) => {
     const status = featureService.get(name)?.status;
@@ -181,6 +188,7 @@ export function createHiveServices(options: { projectRoot: string; detectedFeatu
     backgroundJobService,
     worklogService,
     worktreeService,
+    worktreeRecoveryService,
     configFallbackWarning,
     hasManifest,
     repositoryResolver,

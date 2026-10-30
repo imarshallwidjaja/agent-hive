@@ -37,15 +37,17 @@ const REVIEW_TOOLS = [...READ_TOOLS, ...CONTEXT_WRITES];
 const TASK_TRACE_TOOLS = ['hive_task_trace', 'hive_task_trace_content'];
 const INSPECTION_TOOLS = ['hive_worktree_inspect', 'hive_adhoc_worktree_inspect'];
 const BACKGROUND_TOOLS = ['hive_background_status', 'hive_background_reconcile', 'hive_background_reconcile_batch', 'hive_background_cancel'];
+/** Acknowledges an interrupted worktree operation; every primary that can create or clean up a placement holds it. */
+const WORKTREE_RECOVERY = 'hive_worktree_recover';
 const REVIEW_PRIMARY_TOOLS = [...REVIEW_TOOLS, ...TASK_TRACE_TOOLS, ...INSPECTION_TOOLS, ...CONSTRAINT_MUTATIONS, ...BACKGROUND_TOOLS,
-  'hive_feature_select', 'hive_adhoc_worktree_create', 'hive_adhoc_worktree_cleanup', WORKLOG_RECORD];
+  'hive_feature_select', 'hive_adhoc_worktree_create', 'hive_adhoc_worktree_cleanup', WORKTREE_RECOVERY, WORKLOG_RECORD];
 
 /** Operations only a primary session may run; child sessions deny them. */
 export const PRIMARY_ONLY_TOOLS = [
   'question', 'hive_feature_complete', 'hive_feature_select',
   'hive_plan_approve', 'hive_tasks_sync', 'hive_task_create',
   'hive_worktree_merge', 'hive_worktree_cleanup',
-  'hive_adhoc_worktree_create', 'hive_adhoc_worktree_merge', 'hive_adhoc_worktree_cleanup',
+  'hive_adhoc_worktree_create', 'hive_adhoc_worktree_merge', 'hive_adhoc_worktree_cleanup', WORKTREE_RECOVERY,
   ...CONSTRAINT_MUTATIONS, 'hive_context_archive', ...BACKGROUND_TOOLS, WORKLOG_RECORD,
 ];
 
@@ -86,7 +88,7 @@ export function createRolePolicy(customAgents: Record<string, ResolvedCustomAgen
         'hive_feature_create', 'hive_feature_select', 'hive_plan_write', 'hive_plan_patch', 'hive_plan_approve', 'hive_tasks_sync',
         'hive_repositories_discover', 'hive_repositories_update', 'hive_context_archive', WORKLOG_RECORD,
         // Experiment placement only: Architect never merges, and child sessions deny both as primary-only operations.
-        'hive_adhoc_worktree_create', 'hive_adhoc_worktree_cleanup'],
+        'hive_adhoc_worktree_create', 'hive_adhoc_worktree_cleanup', WORKTREE_RECOVERY],
       permission: { question: 'allow', task: architectTaskPermission, edit: 'deny', skill: 'allow' },
     },
     'swarm-orchestrator': primary,

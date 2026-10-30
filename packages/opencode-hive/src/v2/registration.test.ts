@@ -214,8 +214,8 @@ function denied(exit: Exit.Exit<unknown, unknown>): string | undefined {
 }
 
 describe('v2 tool registration', () => {
-  it('registers all 41 Hive tools once, with an explicit Code Mode flag from the selected transport', async () => {
-    expect(HIVE_TOOL_NAMES).toHaveLength(41);
+  it('registers all 42 Hive tools once, with an explicit Code Mode flag from the selected transport', async () => {
+    expect(HIVE_TOOL_NAMES).toHaveLength(42);
     for (const transport of ['codemode', 'direct'] as const) {
       const host = await activate({ readTransport: transport });
       const tools = host.tools();
@@ -487,7 +487,8 @@ describe('v2 execution guards', () => {
     // Primary Architect places and removes experiments; a delegated Architect returns those requests to its parent.
     expect(denied(await host.before({ tool: 'hive_adhoc_worktree_create', sessionID: 'primary', agent: 'architect-planner', input: {} }))).toBeUndefined();
     expect(denied(await host.before({ tool: 'hive_adhoc_worktree_merge', sessionID: 'primary', agent: 'architect-planner', input: {} }))).toBeDefined();
-    for (const tool of ['hive_adhoc_worktree_create', 'hive_adhoc_worktree_cleanup']) {
+    expect(denied(await host.before({ tool: 'hive_worktree_recover', sessionID: 'primary', agent: 'architect-planner', input: {} }))).toBeUndefined();
+    for (const tool of ['hive_adhoc_worktree_create', 'hive_adhoc_worktree_cleanup', 'hive_worktree_recover']) {
       expect(denied(await host.before({ tool, sessionID: 'experiment', agent: 'architect-planner', input: {} })), tool).toBeDefined();
     }
   });

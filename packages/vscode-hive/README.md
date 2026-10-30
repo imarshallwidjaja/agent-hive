@@ -14,6 +14,8 @@ OpenCode runs the work. This extension keeps plans, comments, context, task repo
 
 Download `vscode-arkive.vsix` from [GitHub Releases](https://github.com/imarshallwidjaja/agent-hive/releases) and install manually.
 
+The single VSIX works on every platform: it carries the Koffi native module and its prebuilt binaries, which Hive uses for crash-released locks. Koffi needs Node 16, so the extension requires VS Code 1.67 or later.
+
 ## Features
 
 ### Feature Sidebar
@@ -25,7 +27,7 @@ Expand **Project Context** or a feature's Context folder to see Markdown documen
 
 The folder header shows the document count, durable usage against the scope's guidelines (feature: 8 files / 40,000 UTF-16 characters; project: 32 files / 160,000 characters), and durable byte and character totals. Bytes come from file stats; exact character totals exist only after the explicit **Scan Context Character Totals** action (folder context menu), which reads the durable bodies once. Until then the header reports `chars unavailable`, and a measurement taken before later changes is reported as stale rather than current. A warning icon appears when durable usage exceeds either guideline or when a durable project document is missing owner/review metadata or its review is overdue. Tooltips show description, read_when guidance, kind, task association, project owner and review date with due state, per-document diagnostics, update time, automatic execution/network inclusion, and consolidation hints. Evidence is excluded from automatic injection, not protected from explicit reads or disclosure.
 
-Empty scopes keep an expandable folder whose **No context documents** node explains how context is created; expansion never creates directories, metadata, or writer locks, including in read-only workspaces. An active writer lock takes precedence over every other state, including a leftover pending mutation marker: the folder shows `Waiting for context changes to finish` and reads again after the next watcher refresh or manual Refresh. With no writer lock, a leftover pending marker shows **Reconciliation required** and an invalid context index shows **Invalid context index** — both with a bounded observational recovery inspection (revision, control digests, pending operation and affected names) plus the out-of-band recovery guidance and raw open entries for the index, pending marker, and archive manifest. Nothing in the tree repairs, resets, or reclassifies anything. Oversized inventories show an explicit inventory-too-large state whose diagnostic names the exact construction limit exceeded; catalog listing and Archive Context share that limit and stay blocked until the inventory is reduced out of band through trusted local editing, after which the tree refreshes normally. This viewer snapshot is not execution authority, and internal lock-file events alone do not refresh the tree.
+Empty scopes keep an expandable folder whose **No context documents** node explains how context is created; expansion never creates directories, metadata, or writer locks, including in read-only workspaces. A lock held by a live writer, or a lock file left by an older Hive host, takes precedence over every other state, including a leftover pending mutation marker: the folder shows `Waiting for context changes to finish` and reads again after the next watcher refresh or manual Refresh. With no live writer, a leftover pending marker shows **Reconciliation required** and an invalid context index shows **Invalid context index** — both with a bounded observational recovery inspection (revision, control digests, pending operation and affected names) plus the out-of-band recovery guidance and raw open entries for the index, pending marker, and archive manifest. Nothing in the tree repairs, resets, or reclassifies anything. Oversized inventories show an explicit inventory-too-large state whose diagnostic names the exact construction limit exceeded; catalog listing and Archive Context share that limit and stay blocked until the inventory is reduced out of band through trusted local editing, after which the tree refreshes normally. This viewer snapshot is not execution authority, and internal lock-file events alone do not refresh the tree.
 
 Right-click the Project Context folder, a feature Context folder, or a document and choose **Archive Context**. The picker lists the scope's durable, evidence, and reserved documents and offers **Load more context documents** when a page is incomplete. Select documents, enter a nonblank reason, and confirm the exact filenames; the operation captures the revision and each document's content hash before confirmation, then checks both when archiving. Cancellation changes nothing. If the revision changed while the picker was open, the operation fails without retrying; reopen it to review current documents. The confirmation flags a document if its byte size differs from the listing or it carries a warning that its bytes differ from the last managed write; you can still proceed. Archived files leave active context and remain available for audit.
 
@@ -135,7 +137,7 @@ It does not start worktrees, commit changes, merge branches, cancel jobs, or rec
 
 ## Requirements
 
-- VS Code 1.64.0 or higher
+- VS Code 1.67.0 or higher
 - A project with `.hive/` folder (created by `oc-arkive`)
 
 ## License

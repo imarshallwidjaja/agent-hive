@@ -21,6 +21,7 @@ import {
   WORKLOG_SUMMARY_MAX_BYTES,
   WORKLOG_TITLE_MAX_BYTES,
   WorklogError,
+  WorktreeRecoveryRefusedError,
   canonicalProjectRoot,
   computeRunnableAndBlocked,
   getPlanPath,
@@ -199,8 +200,13 @@ function mergeDescription(subject: string, inspectTool: string): string {
     + 'A missing worktree, an unresolved feature, a repoIds mismatch or a source pin that conflicts with the inspection throws an error before any mutation. Failures the merge service classifies return success: false with phase, reasonCode, mutation, retryable and action; follow action, and repeat the identical call only when retryable is true. '
     + 'A source already contained in the destination returns ALREADY_INTEGRATED with no commit. Same-call cleanup runs only after proof: source containment for preserve-source and contained work, a completed operation for rewrite-private. '
     + 'Read reasonCode, action and cleanup even when success is true: an integration that succeeded can still report CLEANUP_FAILED with action cleanup_only, and then only the cleanup is repeated. '
-    + 'Composite repositories integrate one after another, and an earlier integration is not rolled back when a later one fails (COMPOSITE_PARTIAL).';
+    + 'Composite repositories integrate one after another, and an earlier integration is not rolled back when a later one fails (COMPOSITE_PARTIAL). '
+    + 'OPERATION_RECOVERY_REQUIRED means an interrupted worktree operation guards the workspace or a repository; inspect pendingOperations and use hive_worktree_recover, never a repeated merge. '
+    + FINALIZATION_NOTE;
 }
+
+/** Shared by every worktree mutation tool: a finished result whose own bookkeeping failed afterwards. */
+const FINALIZATION_NOTE = 'A finalization field means the operation returned the rest of this result, but clearing its pending markers or releasing its locks failed afterwards. Nothing was rolled back, and a result from an operation that began mutating is never retryable. With finalization.markers "retained", the files in finalization.retainedMarkers remain, and later mutations of the resources they guard are refused until you inspect and acknowledge finalization.operationId through hive_worktree_recover. With "cleared_unflushed", no marker remains and there is nothing to acknowledge, but the removal was not flushed and may not survive a host crash.';
 
 function normalizeMergePins(
   inspected: { commit: string; repos?: Record<string, { commit: string }> },
@@ -316,7 +322,7 @@ function createNamedContextReader(services: HiveServices) {
 export function createHiveOperations(services: HiveServices): Record<string, HiveOperation> {
   const {
     projectRoot, featureService, planService, taskService, sessionService, featureConstraintService, contextService,
-    repositoryManifestService, worktreeService, worklogService, nativeObservationOwner, configFallbackWarning, hasManifest,
+    repositoryManifestService, worktreeService, worktreeRecoveryService, worklogService, nativeObservationOwner, configFallbackWarning, hasManifest,
     repositoryResolver, adhocService, requireFeature, contextScope, constraintTarget, resolveWorklogRef, readConstraints,
     assertTaskRepoIds,
   } = services;
@@ -505,12 +511,14 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
       },
     }),
     hive_worktree_create: operation({
-      description: 'Create a task worktree without changing task state and return its initial inspection, including source cleanliness and destination identity/comparison; later checkpoints still require hive_worktree_inspect. An existing worktree for the same task and candidate is reused and inspected again, so the result reflects its current state.',
+      description: 'Create a task worktree without changing task state and return its initial inspection, including source cleanliness and destination identity/comparison; later checkpoints still require hive_worktree_inspect. An existing worktree for the same task and candidate is reused and inspected again, so the result reflects its current state. With finalization the result is the create result without that inspection. ' + FINALIZATION_NOTE,
       args: { feature: z.string().optional(), task: z.string(), baseRef: z.string().optional().describe('Ref the new worktree branch starts from; omitted, the current HEAD of the destination checkout.'), ...taskRepoIdsArgs, ...candidateArg },
       execute: async ({ feature, task, baseRef, repoIds, candidate }, invocation) => {
         const selected = requireFeature(feature, invocation);
         assertTaskRepoIds(selected, task, repoIds);
-        await worktreeService.create(selected, task, baseRef, candidate);
+        const created = await worktreeService.create(selected, task, baseRef, candidate);
+        // A lock that failed to release could block the inspection, so the create result is reported as it is.
+        if (created.finalization) return created;
         const inspected = await worktreeService.inspect(selected, task, candidate);
         if (!inspected) throw new Error('Created task worktree not found during initial inspection');
         return inspected;
@@ -544,7 +552,7 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
       },
     }),
     hive_worktree_cleanup: operation({
-      description: 'Clean up a task worktree. Set discard to explicitly retire unintegrated work. Use this for state retained or left incomplete after a merge, not as part of a merge that already succeeded with cleanup requested.',
+      description: 'Clean up a task worktree. Set discard to explicitly retire unintegrated work. Use this for state retained or left incomplete after a merge, not as part of a merge that already succeeded with cleanup requested. ' + FINALIZATION_NOTE,
       args: { feature: z.string().optional(), task: z.string(), ...taskRepoIdsArgs, ...candidateArg, ...cleanupOptionArgs },
       execute: async ({ feature, task, repoIds, candidate, deleteBranch, discard }, invocation) => {
         const selected = requireFeature(feature, invocation);
@@ -553,7 +561,7 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
       },
     }),
     hive_adhoc_worktree_create: operation({
-      description: 'Create the matching ad-hoc Hive worktree and return its initial inspection, including source cleanliness and destination identity/comparison; later checkpoints still require hive_adhoc_worktree_inspect. An absolute sourceDirectory resolving to the active project root is treated as omitted; foreign sourceDirectory cannot be combined with repoIds. Calling it again with an existing runId reuses that run and inspects it again.',
+      description: 'Create the matching ad-hoc Hive worktree and return its initial inspection, including source cleanliness and destination identity/comparison; later checkpoints still require hive_adhoc_worktree_inspect. An absolute sourceDirectory resolving to the active project root is treated as omitted; foreign sourceDirectory cannot be combined with repoIds. Calling it again with an existing runId reuses that run and inspects it again. With finalization the result is the create result without that inspection. ' + FINALIZATION_NOTE,
       args: {
         runId: z.string().optional().describe('Run identifier and branch suffix: [A-Za-z0-9][A-Za-z0-9._-]{0,127}. Generated when omitted; the returned runId locates the run on every later call.'),
         repoIds: z.array(z.string()).optional().describe('Repositories owned by this run. A manifest-backed project needs a nonempty selection here; later calls pass the same selection. Cannot be combined with a foreign sourceDirectory.'),
@@ -573,6 +581,7 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
         }
         const service = adhocService(normalizedSourceDirectory, repoIds);
         const created = await service.create({ ...options, repoIds });
+        if (created.finalization) return created;
         const inspected = await service.inspect(created.runId);
         if (!inspected) throw new Error('Created ad-hoc worktree not found during initial inspection');
         return inspected;
@@ -601,9 +610,40 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
       },
     }),
     hive_adhoc_worktree_cleanup: operation({
-      description: 'Clean up an ad-hoc worktree. Set discard to explicitly retire unintegrated work. Use this for state retained or left incomplete after a merge, not as part of a merge that already succeeded with cleanup requested.',
+      description: 'Clean up an ad-hoc worktree. Set discard to explicitly retire unintegrated work. Use this for state retained or left incomplete after a merge, not as part of a merge that already succeeded with cleanup requested. ' + FINALIZATION_NOTE,
       args: { runId: z.string(), ...adhocRepoIdsArg, ...adhocSourceDirectoryArg, ...cleanupOptionArgs },
       execute: ({ runId, repoIds, sourceDirectory, deleteBranch, discard }) => adhocService(sourceDirectory, repoIds).cleanup(runId, deleteBranch, { discard }),
+    }),
+    hive_worktree_recover: operation({
+      description: 'List or acknowledge interrupted task and ad-hoc worktree operations. A worktree merge, create or cleanup publishes a pending record before its first mutation and clears it when its outcome is known; a record left by a host that stopped mid-operation, or a lock file from a host that predates native locking, refuses every later mutation of the same workspace or repository (OPERATION_RECOVERY_REQUIRED). Without operationId this only lists every such record with the source and destination state it observes now; the worktree inspect tools show the entries that guard one workspace as pendingOperations. With operationId it removes that one entry\'s records, and nothing else, after you confirm that no process of the operation, including a Git child it started, is still running: pass mutatorsStopped: true and the markerDigest and observedStateDigest from your latest listing or inspection unchanged. It refuses when the records or the observed state changed, Git operation or lock state remains, or a resource is not part of this project. It never runs, retries or rolls back the interrupted operation: inspect the result and decide the next merge or cleanup yourself.',
+      args: {
+        operationId: z.string().optional().describe('Entry to acknowledge, copied from pendingOperations. Omit to list.'),
+        markerDigest: z.string().optional().describe('The entry\'s markerDigest from the latest listing or inspection.'),
+        observedStateDigest: z.string().optional().describe('The entry\'s observedStateDigest from the same listing or inspection.'),
+        mutatorsStopped: z.boolean().optional().describe('true only after confirming no process of the interrupted operation, including a Git child, is still running.'),
+        sourceDirectory: z.string().optional().describe('Absolute foreign checkout an ad-hoc run used, so its repository is recognized; an absolute path resolving to the active project root is treated as omitted.'),
+      },
+      execute: async ({ operationId, markerDigest, observedStateDigest, mutatorsStopped, sourceDirectory }) => {
+        let foreign: string | undefined;
+        if (sourceDirectory !== undefined) {
+          if (!path.isAbsolute(sourceDirectory)) throw new Error('sourceDirectory must be absolute');
+          const resolved = canonicalProjectRoot(sourceDirectory);
+          foreign = projectRootsMatch(resolved, projectRoot) ? undefined : resolved;
+        }
+        if (operationId === undefined) {
+          if ([markerDigest, observedStateDigest, mutatorsStopped].some((value) => value !== undefined)) {
+            throw new Error('markerDigest, observedStateDigest and mutatorsStopped require operationId');
+          }
+          return { pendingOperations: await worktreeRecoveryService.list({ sourceDirectory: foreign }) };
+        }
+        if (markerDigest === undefined || observedStateDigest === undefined) throw new Error('Recovery requires markerDigest and observedStateDigest');
+        try {
+          return { success: true, ...await worktreeRecoveryService.recover({ operationId, markerDigest, observedStateDigest, mutatorsStopped: mutatorsStopped === true, sourceDirectory: foreign }) };
+        } catch (error) {
+          if (!(error instanceof WorktreeRecoveryRefusedError)) throw error;
+          return { success: false, reason: error.reason, error: error.message, ...(error.current ? { current: error.current } : {}) };
+        }
+      },
     }),
     hive_context_read: operation({
       description: 'Read managed project or feature context. Without name it lists: the summary view (default) or the durable catalog. With name it returns one exact document in chunks, with the revision and file.contentHash that later mutations require; every chunk carries the whole-file hash. Follow nextCursor until complete is true before relying on the whole document or replacing it with hive_context_write; for hive_context_edit, read until you have the passage and enough surrounding text. A cursor that no longer matches the document, revision or content fails as stale_context_cursor: restart the read.',

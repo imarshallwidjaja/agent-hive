@@ -45,7 +45,7 @@ The config hook intentionally mutates these OpenCode fields:
 
 ### OpenCode v2
 
-The same package loads through its `server` entry on v1 and its synchronous `effect` entry on v2. On v2 it registers all **41 Hive tools** and **13 commands**, dedicated and unified modes, custom agents, packaged skills, native dispatch and background observation, and the forensic and recovery tools. Qualification ran against stock v1.18.30 and v2.0.26 with scripted model providers, which establishes wiring rather than real-model judgment. On both hosts it loaded a package already installed with plain npm; host-side registry resolution at first use was not part of it.
+The same package loads through its `server` entry on v1 and its synchronous `effect` entry on v2. On v2 it registers all **42 Hive tools** and **13 commands**, dedicated and unified modes, custom agents, packaged skills, native dispatch and background observation, and the forensic and recovery tools. Qualification ran against stock v1.18.30 and v2.0.26 with scripted model providers, which establishes wiring rather than real-model judgment. On both hosts it loaded a package already installed with plain npm; host-side registry resolution at first use was not part of it.
 
 Install the released package with npm into a dedicated directory that the v2 host can read:
 
@@ -290,6 +290,7 @@ Use ad-hoc orchestration when you need delegation, verification, and a managed w
 | `hive_adhoc_worktree_inspect` | Inspect the source and destination identities |
 | `hive_adhoc_worktree_merge` | Integrate the pinned source against the inspected destination |
 | `hive_adhoc_worktree_cleanup` | Remove the integrated workspace; `discard: true` explicitly retires unintegrated work |
+| `hive_worktree_recover` | List or acknowledge an interrupted task or ad-hoc worktree operation after its processes stopped; it never replays the operation |
 
 The ad-hoc orchestrator resolves repository ownership with `hive_repositories_status` unless scope is already explicit, then calls `hive_adhoc_worktree_create` with the owned `repoIds` and a meaningful kebab-case `runId` before an ordinary native Forager call. These runs do not create feature/task records and do not appear in `hive_status`. The response supplies the `runId`, placement, and initial inspection. Record its destination identity before dispatch; later inspection checkpoints remain required. The primary integrates with `hive_adhoc_worktree_merge` using the unchanged inspected identity, the returned source pin, and a declared `historyIntent`, with same-call cleanup when retention is not needed. Ad-hoc worktrees are temporary workspace metadata only. See [Hive Tools](docs/HIVE-TOOLS.md) for the full contracts.
 

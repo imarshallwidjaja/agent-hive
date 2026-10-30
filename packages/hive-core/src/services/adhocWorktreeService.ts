@@ -1,9 +1,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import simpleGit, { type SimpleGit } from 'simple-git';
-import { createHash } from 'crypto';
 import type { ResolvedRepository } from '../types.js';
-import { acquireLock } from '../utils/paths.js';
 import { projectRootsMatch } from '../utils/repositoryConfig.js';
 import type {
   AdhocWorkspaceManifest as AdhocCompositeManifest,
@@ -22,11 +20,22 @@ import {
   classifyThrownWorktreeError,
   classifyWorktreeOutcome,
   combineRepoCleanupOutcomes,
+  isMutationOutcomeKnown,
   isRetryableWithMutation,
+  withFinalizationFailure,
+  WorktreeOperationFinalizationError,
   WorktreeTopologyMismatchError,
   WorktreeLinkageError,
   toMergeCleanupBlock,
 } from './worktreeOutcome.js';
+import {
+  trustedGitCommonDirectory,
+  withWorktreeMutation,
+  withWorktreeRead,
+  worktreeOperationLocalPaths,
+} from './worktreeOperation.js';
+import type { PendingWorktreeOperation, WorktreeMutationGuard, WorktreeOperationKind } from './worktreeOperation.js';
+import { assertNoSymlinkComponents, validateExactWorktreeRegistration } from './worktreeLinkage.js';
 import {
   inspectWorktreeTarget,
   readWorktreeTargetIdentity,
@@ -54,6 +63,7 @@ import type {
 import type {
   CleanupStepOutcome,
   WorktreeCleanupOutcome,
+  WorktreeFinalizationFailure,
   WorktreeMutationState,
   WorktreeOperationPhase,
   WorktreeReasonCode,
@@ -112,6 +122,10 @@ export interface AdhocWorktreeInfo {
   clean?: boolean;
   target?: WorktreeTargetIdentity | null;
   comparison?: WorktreeTargetComparison;
+  /** Interrupted operations or pre-native lock files guarding this run or its repositories; inspection only. */
+  pendingOperations?: PendingWorktreeOperation[];
+  /** Create only: the run was created, but clearing its pending markers or releasing its locks then failed. */
+  finalization?: WorktreeFinalizationFailure;
 }
 
 export type AdhocMergeStrategy = IntegrationStrategy;
@@ -165,6 +179,8 @@ export interface AdhocMergeResult {
   action: WorktreeRecoveryAction;
   expectedTarget?: WorktreeTargetIdentity;
   observedTarget?: WorktreeTargetIdentity | null;
+  /** Present when the merge returned this result but clearing its pending markers or releasing its locks then failed. */
+  finalization?: WorktreeFinalizationFailure;
 }
 
 export interface AdhocCleanupResult {
@@ -178,6 +194,8 @@ export interface AdhocCleanupResult {
   mutation: WorktreeMutationState;
   retryable: boolean;
   action: WorktreeRecoveryAction;
+  /** Present when cleanup returned this result but clearing its pending markers or releasing its locks then failed. */
+  finalization?: WorktreeFinalizationFailure;
 }
 
 function cleanupResultFromOutcome(
@@ -241,6 +259,26 @@ function mergeFailure(
   };
 }
 
+interface RepositorySelection {
+  /** Trusted repository paths the operation may touch; their common directories are locked. */
+  repositoryPaths: string[];
+}
+
+interface RunRepositorySelection extends RepositorySelection {
+  manifest: AdhocCompositeManifest | null;
+}
+
+interface CreateRepositorySelection extends RepositorySelection {
+  /** The requested repositories as resolved under the locks; null for a single-root run. */
+  repositories: ResolvedRepository[] | null;
+  /** The run's existing composite manifest, already checked against the requested repositories. */
+  manifest: AdhocCompositeManifest | null;
+}
+
+function sameEntries(left: string[], right: string[]): boolean {
+  return left.join('\n') === right.join('\n');
+}
+
 const RUN_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const REPO_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
@@ -266,26 +304,62 @@ export class AdhocWorktreeService {
     return simpleGit(cwd || this.config.baseDir);
   }
 
-  private async withRepositoryLocks<T>(repositoryPaths: string[], operation: () => Promise<T>): Promise<T> {
-    const commonDirectories = [...new Set(await Promise.all(
-      repositoryPaths.map((repositoryPath) => this.trustedGitCommonDirectory(repositoryPath)),
-    ))].sort();
-    const releases: Array<() => void> = [];
-    try {
-      for (const commonDirectory of commonDirectories) {
-        const key = createHash('sha256').update(commonDirectory).digest('hex');
-        releases.push(await acquireLock(path.join(this.config.hiveDir, '.operation-locks', key), {
-          staleLockTTL: null,
-        }));
-      }
-      return await operation();
-    } finally {
-      for (const release of releases.reverse()) release();
-    }
+  /**
+   * Lock order and selection rechecks are owned by `worktreeOperation.ts`: the
+   * run's workspace lock first, then each selected repository's Git common
+   * directory, sorted. Global task-worktree cleanup takes no workspace lock and
+   * holds every repository lock, so the order never inverts.
+   */
+  private readRun<S extends RepositorySelection, T>(
+    runId: string,
+    select: () => Promise<S>,
+    read: (selection: S, pending: PendingWorktreeOperation[]) => Promise<T>,
+  ): Promise<T> {
+    this.assertSafeRunId(runId);
+    return withWorktreeRead({ hiveDir: this.config.hiveDir, workspacePath: this.getWorktreePath(runId), select, commonDirectory: (repositoryPath) => this.trustedGitCommonDirectory(repositoryPath), trustedRepositoryPaths: () => this.trustedRepositoryPaths() }, read);
   }
 
+  /** The checkout this service works from and every manifest repository: the paths a pending operation record may name. */
+  private trustedRepositoryPaths(): string[] {
+    return [this.config.baseDir, ...(this.resolveRepositories() ?? []).map((repository) => repository.path)];
+  }
+
+  /**
+   * Run a mutation under the operation guard. A result whose marker clearing
+   * or lock release failed afterwards is returned with `finalization` rather
+   * than lost to that failure.
+   */
+  private mutateRun<S extends RepositorySelection, T extends object>(
+    kind: WorktreeOperationKind,
+    runId: string,
+    select: () => Promise<S>,
+    operation: (selection: S, guard: WorktreeMutationGuard) => Promise<T>,
+    outcomeKnown?: (result: T) => boolean,
+  ): Promise<T> {
+    this.assertSafeRunId(runId);
+    return withWorktreeMutation({
+      hiveDir: this.config.hiveDir,
+      workspacePath: this.getWorktreePath(runId),
+      select,
+      commonDirectory: (repositoryPath) => this.trustedGitCommonDirectory(repositoryPath),
+      trustedRepositoryPaths: () => this.trustedRepositoryPaths(),
+      kind,
+      subject: { type: 'adhoc', runId },
+    }, operation, outcomeKnown).catch((error: unknown) => {
+      if (error instanceof WorktreeOperationFinalizationError) return withFinalizationFailure(error.result as T, error.finalization);
+      throw error;
+    });
+  }
+
+  /** The repositories an operation on this run touches: its persisted composite selection, or the single root. */
+  private async selectRunRepositories(runId: string): Promise<RunRepositorySelection> {
+    const manifest = await this.readCompositeManifest(runId);
+    return { manifest, repositoryPaths: this.workspaceRepositoryPaths(manifest, this.getWorktreePath(runId)) };
+  }
+
+  /** Read-only: skips the optional index refresh so inspection takes no index.lock. */
   private async isCompletelyClean(git: SimpleGit): Promise<boolean> {
-    return (await git.raw(['status', '--porcelain=v1', '--ignored'])).trim() === '';
+    return (await git.raw(['--no-optional-locks', 'status', '--porcelain=v1', '--ignored'])).trim() === '';
   }
 
   private async isGitClean(git: SimpleGit): Promise<boolean> {
@@ -372,31 +446,8 @@ export class AdhocWorktreeService {
     return typeof resolver === 'function' ? resolver() : resolver.resolveRepositories();
   }
 
-  private isContained(root: string, candidate: string): boolean {
-    const relative = path.relative(root, candidate);
-    return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
-  }
-
   private async trustedGitCommonDirectory(repositoryPath: string): Promise<string> {
-    const raw = (await this.getGit(repositoryPath).raw(['rev-parse', '--git-common-dir'])).trim();
-    if (!raw) throw new WorktreeLinkageError(`Worktree linkage preflight failed: trusted repository has no Git common directory (${repositoryPath})`);
-    return fs.realpath(path.isAbsolute(raw) ? raw : path.resolve(repositoryPath, raw));
-  }
-
-  private async assertNoSymlinkComponents(root: string, candidate: string, allowMissing = false): Promise<void> {
-    const relative = path.relative(root, candidate);
-    let current = root;
-    for (const segment of relative.split(path.sep).filter(Boolean)) {
-      current = path.join(current, segment);
-      const stat = await fs.lstat(current).catch((error: NodeJS.ErrnoException) => {
-        if (allowMissing && error.code === 'ENOENT') return null;
-        throw new WorktreeLinkageError(`Worktree linkage preflight failed: cannot inspect path component ${current}: ${error.message}`);
-      });
-      if (!stat) return;
-      if (stat.isSymbolicLink()) {
-        throw new WorktreeLinkageError(`Worktree linkage preflight failed: path contains a symlink (${current})`);
-      }
-    }
+    return trustedGitCommonDirectory(repositoryPath, this.getGit(repositoryPath));
   }
 
   private async lstatOrNull(candidate: string) {
@@ -411,47 +462,17 @@ export class AdhocWorktreeService {
     trustedRepositoryPath: string,
     repositoryId: string,
   ): Promise<void> {
-    await this.assertNoSymlinkComponents(path.parse(worktreePath).root, worktreePath);
-    const commonDirectory = await this.trustedGitCommonDirectory(trustedRepositoryPath);
-    const localGitPath = path.join(worktreePath, '.git');
-    const localGitStat = await fs.lstat(localGitPath).catch(() => null);
-    if (!localGitStat?.isFile() || localGitStat.isSymbolicLink()) {
-      throw new WorktreeLinkageError(`Worktree linkage preflight failed for repository ${repositoryId}: local .git must be a regular pointer file`);
-    }
-    const pointer = await fs.readFile(localGitPath, 'utf8');
-    const match = pointer.match(/^gitdir:\s*(.+?)\s*$/);
-    if (!match) throw new WorktreeLinkageError(`Worktree linkage preflight failed for repository ${repositoryId}: invalid local .git pointer`);
-    const administrationPath = path.normalize(path.isAbsolute(match[1]!)
-      ? match[1]!
-      : path.resolve(worktreePath, match[1]!));
-    const worktreesDirectory = path.join(commonDirectory, 'worktrees');
-    if (!this.isContained(worktreesDirectory, administrationPath) || administrationPath === worktreesDirectory) {
-      throw new WorktreeLinkageError(`Worktree linkage preflight failed for repository ${repositoryId}: administration entry is outside the trusted Git common directory`);
-    }
-    await this.assertNoSymlinkComponents(commonDirectory, administrationPath);
-    await this.assertNoSymlinkComponents(administrationPath, path.join(administrationPath, 'commondir'));
-    await this.assertNoSymlinkComponents(administrationPath, path.join(administrationPath, 'gitdir'));
-
-    const commondirBytes = await fs.readFile(path.join(administrationPath, 'commondir'), 'utf8');
-    const selectedCommonDirectory = path.normalize(path.resolve(administrationPath, commondirBytes.trim()));
-    if (selectedCommonDirectory !== path.normalize(commonDirectory)) {
-      throw new WorktreeLinkageError(`Worktree linkage preflight failed for repository ${repositoryId}: commondir does not match the trusted repository`);
-    }
-    const backlinkBytes = await fs.readFile(path.join(administrationPath, 'gitdir'), 'utf8');
-    const backlink = path.normalize(path.isAbsolute(backlinkBytes.trim())
-      ? backlinkBytes.trim()
-      : path.resolve(administrationPath, backlinkBytes.trim()));
-    if (backlink !== path.normalize(localGitPath)) {
-      throw new WorktreeLinkageError(`Worktree linkage preflight failed for repository ${repositoryId}: administration backlink does not select this exact worktree`);
-    }
+    await validateExactWorktreeRegistration(worktreePath, () => this.trustedGitCommonDirectory(trustedRepositoryPath), repositoryId);
   }
 
+  /** The trusted repositories a run manifest selects, keyed by repository ID; only validated manifest entries. */
   private trustedRepositoriesForManifest(manifest: AdhocCompositeManifest): Map<string, ResolvedRepository> {
     const trustedRepositories = this.resolveRepositories();
     if (!trustedRepositories?.length) {
       throw new WorktreeLinkageError('Worktree linkage preflight failed: trusted repository topology is unavailable');
     }
     const trustedById = new Map(trustedRepositories.map((repository) => [repository.id, repository]));
+    const selected = new Map<string, ResolvedRepository>();
     for (const [id, entry] of Object.entries(manifest.repos)) {
       const trusted = trustedById.get(id);
       if (!trusted
@@ -460,12 +481,13 @@ export class AdhocWorktreeService {
         || entry.path !== path.posix.join('repos', id)) {
         throw new WorktreeTopologyMismatchError(`Worktree linkage preflight failed for repository ${id}: workspace topology does not match the trusted repository manifest`);
       }
+      selected.set(id, trusted);
     }
-    return trustedById;
+    return selected;
   }
 
   private workspaceRepositoryPaths(manifest: AdhocCompositeManifest | null, workspacePath: string): string[] {
-    if (manifest) return [...this.trustedRepositoriesForManifest(manifest).values()].map(repository => repository.path);
+    if (manifest) return [...this.trustedRepositoriesForManifest(manifest).values()].map((repository) => repository.path);
     const repositories = this.resolveRepositories();
     if (repositories?.length && !repositories.some(repository => projectRootsMatch(repository.path, this.config.baseDir))) {
       throw new WorktreeLinkageError(`Composite workspace manifest not found at ${path.join(workspacePath, 'workspace.json')}. Select an existing runId; manifest-backed workspaces require persisted repository placement.`);
@@ -475,7 +497,7 @@ export class AdhocWorktreeService {
 
   private async readCompositeManifest(runId: string): Promise<AdhocCompositeManifest | null> {
     const compositeRoot = this.getCompositeRoot(runId);
-    await this.assertNoSymlinkComponents(path.parse(compositeRoot).root, path.join(compositeRoot, 'workspace.json'), true);
+    await assertNoSymlinkComponents(path.parse(compositeRoot).root, path.join(compositeRoot, 'workspace.json'), true);
     const manifest = await readCompositeWorkspaceManifest(compositeRoot);
     if (manifest === null) return null;
     if (!('runId' in manifest) || manifest.runId !== runId) {
@@ -488,7 +510,7 @@ export class AdhocWorktreeService {
 
   private async inspectSingleWorktree(runId: string): Promise<{ path: string; exists: boolean }> {
     const worktreePath = this.getWorktreePath(runId);
-    await this.assertNoSymlinkComponents(path.parse(worktreePath).root, worktreePath, true);
+    await assertNoSymlinkComponents(path.parse(worktreePath).root, worktreePath, true);
     const stat = await this.lstatOrNull(worktreePath);
     if (!stat) return { path: worktreePath, exists: false };
     this.workspaceRepositoryPaths(null, worktreePath);
@@ -660,34 +682,52 @@ export class AdhocWorktreeService {
       this.assertSafeRunId(runId);
     }
 
-    if (explicit && options.repoIds?.length) {
-      await this.readCompositeManifest(runId);
-    }
-
-    const resolved = this.resolveRepositories();
-    if (resolved?.length && !options.repoIds?.length) {
-      throw new WorktreeTopologyMismatchError('Ad-hoc worktree creation in a manifest-backed project requires repoIds; select the declared repositories for this run.');
-    }
-    const missing = options.repoIds?.filter((repoId) => !resolved?.some((repository) => repository.id === repoId)) ?? [];
-    if (missing.length > 0) {
-      throw new Error(`Repository manifest is missing required repos for ad-hoc run ${runId}: ${missing.join(', ')}`);
-    }
-    const repositories = options.repoIds?.length
-      ? options.repoIds.map((repoId) => resolved?.find((repository) => repository.id === repoId)?.path ?? this.config.baseDir)
-      : [this.config.baseDir];
-    return this.withRepositoryLocks(repositories, () => options.repoIds?.length
-      ? this.createComposite(runId, options.repoIds, explicit)
-      : this.createSingle(runId, explicit));
+    const repoIds = options.repoIds?.length ? options.repoIds : undefined;
+    const selectRepositories = async (): Promise<CreateRepositorySelection> => {
+      const manifest = explicit && repoIds ? await this.readCompositeManifest(runId) : null;
+      const resolved = this.resolveRepositories();
+      if (resolved?.length && !repoIds) {
+        throw new WorktreeTopologyMismatchError('Ad-hoc worktree creation in a manifest-backed project requires repoIds; select the declared repositories for this run.');
+      }
+      if (!repoIds) return { repositoryPaths: [this.config.baseDir], repositories: null, manifest: null };
+      const missing = repoIds.filter((repoId) => !resolved?.some((repository) => repository.id === repoId));
+      if (missing.length > 0) {
+        throw new Error(`Repository manifest is missing required repos for ad-hoc run ${runId}: ${missing.join(', ')}`);
+      }
+      if (manifest) {
+        // Reusing a run must not widen or narrow the repositories it owns.
+        const owned = Object.keys(manifest.repos).sort();
+        const requested = [...new Set(repoIds)].sort();
+        if (!sameEntries(owned, requested)) {
+          throw new WorktreeTopologyMismatchError(
+            `Ad-hoc run ${runId} owns repositories ${owned.join(', ')}; requested ${requested.join(', ')}. Pass the selection used at creation or start a new run.`,
+          );
+        }
+      }
+      const repositories = repoIds.map((repoId) => resolved!.find((repository) => repository.id === repoId)!);
+      return {
+        repositoryPaths: manifest
+          ? this.workspaceRepositoryPaths(manifest, this.getCompositeRoot(runId))
+          : repositories.map((repository) => repository.path),
+        repositories,
+        manifest,
+      };
+    };
+    // Every effect uses the selection read under the locks, never a later resolver answer.
+    return this.mutateRun('create', runId, selectRepositories, ({ repositories, manifest }, guard) => repositories
+      ? this.createComposite(guard, runId, repositories, manifest)
+      : this.createSingle(guard, runId, explicit));
   }
 
   private async createSingle(
+    guard: WorktreeMutationGuard,
     runId: string,
     explicit: boolean,
   ): Promise<AdhocWorktreeInfo> {
     const worktreePath = this.getWorktreePath(runId);
     const branchName = this.getBranchName(runId);
     const git = this.getGit();
-    await this.assertNoSymlinkComponents(path.parse(worktreePath).root, worktreePath, true);
+    await assertNoSymlinkComponents(path.parse(worktreePath).root, worktreePath, true);
 
     const pathExists = await fs
       .access(worktreePath)
@@ -720,9 +760,9 @@ export class AdhocWorktreeService {
       );
     }
 
-    await fs.mkdir(path.dirname(worktreePath), { recursive: true });
-
     const base = (await git.revparse(['HEAD'])).trim();
+    await guard.begin({ repositories: [{ repositoryPath: this.config.baseDir, sourceWorktreePath: worktreePath, sourceBranch: branchName }] });
+    await fs.mkdir(path.dirname(worktreePath), { recursive: true });
 
     try {
       await git.raw(['worktree', 'add', '-b', branchName, '--', worktreePath, base]);
@@ -747,8 +787,8 @@ export class AdhocWorktreeService {
     } catch (error) {
       const removed = await git.raw(['worktree', 'remove', worktreePath]).then(() => true).catch(() => false);
       if (removed) {
-        await git.raw(['worktree', 'prune']).catch(() => {});
-        await this.deleteBranchStep(git, branchName, commit);
+        const pruned = await git.raw(['worktree', 'prune']).then(() => true).catch(() => false);
+        if (cleanupStepDone(await this.deleteBranchStep(git, branchName, commit)) && pruned) guard.markOutcomeKnown();
       }
       throw error;
     }
@@ -756,31 +796,24 @@ export class AdhocWorktreeService {
     return { runId, path: worktreePath, branch: branchName, commit, baseCommit: commit, mode: 'adhoc-single' };
   }
 
+  /**
+   * Create a composite run in the repositories selected under the operation
+   * locks. An existing manifest is the run's own, already checked against the
+   * requested repositories; it is reused instead of creating anything.
+   */
   private async createComposite(
+    guard: WorktreeMutationGuard,
     runId: string,
-    repoIds: string[],
-    explicit: boolean,
+    repositories: ResolvedRepository[],
+    existingManifest: AdhocCompositeManifest | null,
   ): Promise<AdhocWorktreeInfo> {
     // Validate inputs
-    for (const repoId of repoIds) this.assertSafeRepoId(repoId);
-    const stableRepoIds = [...repoIds].sort();
-
-    const resolved = this.resolveRepositories();
-    if (!resolved) {
-      throw new Error(
-        'Composite ad-hoc workspace requested but no repositoryResolver is configured',
-      );
-    }
-    const byId = new Map(resolved.map((r) => [r.id, r]));
-    const missing = repoIds.filter((id) => !byId.has(id));
-    if (missing.length > 0) {
-      throw new Error(
-        `Repository manifest is missing required repos for ad-hoc run ${runId}: ${missing.join(', ')}`,
-      );
-    }
+    for (const repository of repositories) this.assertSafeRepoId(repository.id);
+    const stableRepoIds = repositories.map((repository) => repository.id).sort();
+    const byId = new Map(repositories.map((repository) => [repository.id, repository]));
 
     const compositeRoot = this.getCompositeRoot(runId);
-    await this.assertNoSymlinkComponents(path.parse(compositeRoot).root, compositeRoot, true);
+    await assertNoSymlinkComponents(path.parse(compositeRoot).root, compositeRoot, true);
 
     // Preflight: workspace root must not already exist
     let rootExists = false;
@@ -792,8 +825,7 @@ export class AdhocWorktreeService {
       if (err && err.code && err.code !== 'ENOENT') throw e;
     }
     if (rootExists) {
-      const manifest = explicit ? await this.readCompositeManifest(runId) : null;
-      const existing = manifest ? await this.refreshCompositeInfo(manifest) : null;
+      const existing = existingManifest ? await this.refreshCompositeInfo(existingManifest) : null;
       if (existing) return existing;
       throw new Error(`Composite ad-hoc workspace already exists at ${compositeRoot}`);
     }
@@ -816,6 +848,14 @@ export class AdhocWorktreeService {
       }
     }
 
+    await guard.begin({
+      repositories: stableRepoIds.map((repoId) => ({
+        repositoryPath: byId.get(repoId)!.path,
+        repoId,
+        sourceWorktreePath: this.getCompositeRepoPath(runId, repoId),
+        sourceBranch: this.getCompositeBranchName(repoId, runId),
+      })),
+    });
     await fs.mkdir(compositeRoot, { recursive: true });
     await fs.mkdir(path.join(compositeRoot, 'repos'), { recursive: true });
 
@@ -836,7 +876,7 @@ export class AdhocWorktreeService {
         const repoGit = this.getGit(repo.path);
         const base = (await repoGit.revparse(['HEAD'])).trim();
 
-        await this.assertNoSymlinkComponents(path.parse(repoWtPath).root, repoWtPath, true);
+        await assertNoSymlinkComponents(path.parse(repoWtPath).root, repoWtPath, true);
         await fs.mkdir(path.dirname(repoWtPath), { recursive: true });
 
         try {
@@ -888,17 +928,16 @@ export class AdhocWorktreeService {
       };
     } catch (createError) {
       // Rollback: remove created per-repo worktrees, prune, delete ad-hoc branches, remove workspace root
+      let rolledBack = true;
       for (const created of createdRepos) {
         const repoWtPath = this.getCompositeRepoPath(runId, created.repoId);
         const removed = await created.git.raw(['worktree', 'remove', repoWtPath]).then(() => true).catch(() => false);
-        try {
-          await created.git.raw(['worktree', 'prune']);
-        } catch {
-          /* intentional */
-        }
-        if (removed) await this.deleteBranchStep(created.git, created.branchName, created.commit);
+        const pruned = await created.git.raw(['worktree', 'prune']).then(() => true).catch(() => false);
+        const branchDeleted = removed && cleanupStepDone(await this.deleteBranchStep(created.git, created.branchName, created.commit));
+        if (!pruned || !branchDeleted) rolledBack = false;
       }
       await this.removeEmptyWorkspaceRoot(compositeRoot);
+      if (rolledBack) guard.markOutcomeKnown();
       throw createError;
     }
   }
@@ -939,11 +978,10 @@ export class AdhocWorktreeService {
 
   /** Inspect registration, branch, HEAD, and tracked/untracked/ignored dirt. */
   async inspect(runId: string): Promise<AdhocWorktreeInfo | null> {
-    const manifest = await this.readCompositeManifest(runId);
-    const repositories = this.workspaceRepositoryPaths(manifest, this.getWorktreePath(runId));
-    return this.withRepositoryLocks(repositories, async () => {
+    return this.readRun(runId, () => this.selectRunRepositories(runId), async ({ manifest }, pending) => {
       const info = await this.get(runId);
       if (!info) return null;
+      if (pending.length > 0) info.pendingOperations = pending;
       if (info.repos) {
         const trustedById = this.trustedRepositoriesForManifest(manifest!);
         for (const [repoId, repo] of Object.entries(info.repos)) {
@@ -973,20 +1011,24 @@ export class AdhocWorktreeService {
   ): Promise<AdhocMergeResult> {
     const resolved = resolveIntegrationPolicy(options?.historyIntent, strategy);
     if ('error' in resolved) return mergeFailure(undefined, 'INVALID_ARGUMENTS', resolved.error);
-    const manifest = await this.readCompositeManifest(runId);
-    const repositories = this.workspaceRepositoryPaths(manifest, this.getWorktreePath(runId));
-    return this.withRepositoryLocks(repositories, () => this.mergeUnlocked(runId, resolved.policy, message, options));
+    return this.mutateRun(
+      'merge',
+      runId,
+      () => this.selectRunRepositories(runId),
+      ({ manifest }, guard) => this.mergeUnlocked(guard, runId, manifest, resolved.policy, message, options),
+      isMutationOutcomeKnown,
+    );
   }
 
   private async mergeUnlocked(
+    guard: WorktreeMutationGuard,
     runId: string,
+    manifest: AdhocCompositeManifest | null,
     policy: IntegrationPolicy,
     message: string | undefined,
     options: AdhocMergeOptions,
   ): Promise<AdhocMergeResult> {
-    this.assertSafeRunId(runId);
     const { strategy } = policy;
-
     const cleanupMode = options.cleanup ?? 'none';
     const preserveConflicts = options.preserveConflicts ?? false;
 
@@ -994,8 +1036,6 @@ export class AdhocWorktreeService {
       return mergeFailure(strategy, 'MESSAGE_NOT_ALLOWED_FOR_REBASE', 'Custom merge message is not supported for rebase strategy');
     }
 
-    const manifest = await this.readCompositeManifest(runId);
-    this.workspaceRepositoryPaths(manifest, this.getWorktreePath(runId));
     let targets: ReturnType<typeof validateTargetExpectations>;
     try {
       targets = validateTargetExpectations(manifest ? Object.keys(manifest.repos) : null, options.expectedTarget, options.expectedTargets);
@@ -1003,7 +1043,7 @@ export class AdhocWorktreeService {
       return mergeFailure(strategy, 'INVALID_ARGUMENTS', error instanceof Error ? error.message : String(error));
     }
     if (manifest) {
-      return this.mergeComposite(runId, manifest, policy, message, {
+      return this.mergeComposite(guard, runId, manifest, policy, message, {
         cleanup: cleanupMode,
         preserveConflicts,
         sourceCommits: options.sourceCommits,
@@ -1011,7 +1051,7 @@ export class AdhocWorktreeService {
       });
     }
 
-    return this.mergeSingle(runId, policy, message, {
+    return this.mergeSingle(guard, runId, policy, message, {
       cleanup: cleanupMode,
       preserveConflicts,
       sourceCommit: options.sourceCommit,
@@ -1020,6 +1060,7 @@ export class AdhocWorktreeService {
   }
 
   private async mergeSingle(
+    guard: WorktreeMutationGuard,
     runId: string,
     policy: IntegrationPolicy,
     message: string | undefined,
@@ -1056,6 +1097,7 @@ export class AdhocWorktreeService {
     }
 
     const git = this.getGit();
+    const sourceCommit = options.sourceCommit ?? registered.commit;
     const repoResult = await this.mergeOneRepo({
       git,
       branchName,
@@ -1063,10 +1105,14 @@ export class AdhocWorktreeService {
       message,
       preserveConflicts: options.preserveConflicts,
       cleanupMode: options.cleanup,
-      sourceCommit: options.sourceCommit ?? registered.commit,
+      sourceCommit,
       expectedTarget: options.expectedTarget,
       sourceWorktreePath: registered.path,
-      cleanupFn: async (deleteBranch: boolean) => (await this.cleanupSingle(runId, deleteBranch, {}, options.sourceCommit ?? registered.commit)).cleanup,
+      beforeMutation: () => guard.begin({
+        strategy,
+        repositories: [{ repositoryPath: this.config.baseDir, sourceWorktreePath: registered.path, sourceBranch: branchName, sourceCommit, expectedTarget: options.expectedTarget }],
+      }),
+      cleanupFn: async (deleteBranch: boolean) => (await this.cleanupSingle(guard, runId, deleteBranch, {}, sourceCommit)).cleanup,
     });
 
     return {
@@ -1093,6 +1139,7 @@ export class AdhocWorktreeService {
   }
 
   private async mergeComposite(
+    guard: WorktreeMutationGuard,
     runId: string,
     manifest: AdhocCompositeManifest,
     policy: IntegrationPolicy,
@@ -1173,7 +1220,7 @@ export class AdhocWorktreeService {
           targetCommit: options.expectedTargets[repoId].commit,
           sourceCommit: pinnedSourceCommits[repoId],
           policy,
-          excludedLocalPaths: [repoWtPath, path.join(this.config.hiveDir, '.operation-locks')],
+          excludedLocalPaths: [repoWtPath, ...worktreeOperationLocalPaths(this.config.hiveDir)],
         });
         if ('error' in eligibility) return preflightFailure(repoId, eligibility.error, eligibility.reasonCode);
         precomputedCandidates[repoId] = eligibility;
@@ -1184,6 +1231,18 @@ export class AdhocWorktreeService {
         return preflightFailure(repoId, msg, 'GIT_OPERATION_FAILED');
       }
     }
+
+    const beginMerge = () => guard.begin({
+      strategy,
+      repositories: repoIds.map((repoId) => ({
+        repositoryPath: trustedById.get(repoId)!.path,
+        repoId,
+        sourceWorktreePath: path.join(this.getCompositeRoot(runId), manifest.repos[repoId].path),
+        sourceBranch: manifest.repos[repoId].branch,
+        sourceCommit: pinnedSourceCommits[repoId],
+        expectedTarget: options.expectedTargets[repoId],
+      })),
+    });
 
     // Execute per-repo merges in stable id order
     const repos: Record<string, AdhocRepoMergeResult> = {};
@@ -1210,6 +1269,7 @@ export class AdhocWorktreeService {
         expectedTarget: options.expectedTargets[repoId],
         sourceWorktreePath: path.join(this.getCompositeRoot(runId), entry.path),
         precomputedCandidates: precomputedCandidates[repoId],
+        beforeMutation: beginMerge,
         cleanupFn: async () => buildNotRequestedCleanupOutcome(),
       });
       repos[repoId] = {
@@ -1290,6 +1350,9 @@ export class AdhocWorktreeService {
           break;
         }
       }
+      // Publish the pending markers before the first removal, outside the
+      // per-repository catch: a refused or failed publication is not a cleanup outcome.
+      if (!proofFailure) await beginMerge();
       for (const repoId of repoIds) {
         let repoCleanup: AdhocCleanupResult;
         if (proofFailure) {
@@ -1297,6 +1360,7 @@ export class AdhocWorktreeService {
         } else {
           try {
             repoCleanup = await this.removeCompositeRepo(
+              guard,
               runId,
               repoId,
               trustedById.get(repoId)!.path,
@@ -1363,6 +1427,7 @@ export class AdhocWorktreeService {
   }
 
   private async removeCompositeRepo(
+    guard: WorktreeMutationGuard,
     runId: string,
     repoId: string,
     trustedRepositoryPath: string,
@@ -1383,6 +1448,7 @@ export class AdhocWorktreeService {
         branchPreparationError = (error as Error).message;
       }
     }
+    await guard.begin({ repositories: [{ repositoryPath: trustedRepositoryPath, repoId, sourceWorktreePath: repoWtPath, sourceBranch: branchName }] });
     const worktreeRemoval = await this.removeWorktreeStep(repoGit, repoWtPath);
     const outcome = buildCleanupOutcome(deleteBranch ? 'worktree+branch' : 'worktree', {
       worktreeRemoval,
@@ -1479,6 +1545,7 @@ export class AdhocWorktreeService {
     expectedTarget: WorktreeTargetIdentity;
     sourceWorktreePath: string;
     precomputedCandidates?: TargetMergeCandidates;
+    beforeMutation: () => Promise<void>;
     cleanupFn: (deleteBranch: boolean) => Promise<WorktreeCleanupOutcome>;
   }): Promise<AdhocRepoMergeResult> {
     return integrateWorktreeRepository({
@@ -1488,8 +1555,9 @@ export class AdhocWorktreeService {
       sourceCommit: options.sourceCommit,
       expectedTarget: options.expectedTarget,
       sourceDiagnosticPath: options.sourceWorktreePath,
-      excludedLocalPaths: [path.join(this.config.hiveDir, '.operation-locks')],
+      excludedLocalPaths: worktreeOperationLocalPaths(this.config.hiveDir),
       precomputedCandidates: options.precomputedCandidates,
+      beforeMutation: options.beforeMutation,
       policy: options.policy,
       message: options.message,
       preserveConflicts: options.preserveConflicts,
@@ -1504,6 +1572,7 @@ export class AdhocWorktreeService {
   }
 
   private async cleanupComposite(
+    guard: WorktreeMutationGuard,
     manifest: AdhocCompositeManifest,
     deleteBranch: boolean,
     options: AdhocCleanupOptions = {},
@@ -1538,6 +1607,7 @@ export class AdhocWorktreeService {
     const perRepo: Array<{ repoId: string; cleanup: AdhocCleanupResult }> = [];
     for (const repoId of repoIds) {
       const perRepoResult = await this.removeCompositeRepo(
+        guard,
         manifest.runId,
         repoId,
         trustedById.get(repoId)!.path,
@@ -1566,24 +1636,18 @@ export class AdhocWorktreeService {
   }
 
   async cleanup(runId: string, deleteBranch = false, options: AdhocCleanupOptions = {}): Promise<AdhocCleanupResult> {
-    const manifest = await this.readCompositeManifest(runId);
-    const repositories = this.workspaceRepositoryPaths(manifest, this.getWorktreePath(runId));
-    return this.withRepositoryLocks(repositories, () => this.cleanupUnlocked(runId, deleteBranch, options));
-  }
-
-  private async cleanupUnlocked(runId: string, deleteBranch = false, options: AdhocCleanupOptions = {}): Promise<AdhocCleanupResult> {
-    this.assertSafeRunId(runId);
-
-    const manifest = await this.readCompositeManifest(runId);
-    if (manifest) {
-      return this.cleanupComposite(manifest, deleteBranch, options);
-    }
-
-    this.workspaceRepositoryPaths(null, this.getWorktreePath(runId));
-    return this.cleanupSingle(runId, deleteBranch, options);
+    return this.mutateRun(
+      'cleanup',
+      runId,
+      () => this.selectRunRepositories(runId),
+      ({ manifest }, guard) => manifest
+        ? this.cleanupComposite(guard, manifest, deleteBranch, options)
+        : this.cleanupSingle(guard, runId, deleteBranch, options),
+    );
   }
 
   private async cleanupSingle(
+    guard: WorktreeMutationGuard,
     runId: string,
     deleteBranch: boolean,
     options: AdhocCleanupOptions,
@@ -1591,7 +1655,7 @@ export class AdhocWorktreeService {
   ): Promise<AdhocCleanupResult> {
     const worktreePath = this.getWorktreePath(runId);
     const branchName = this.getBranchName(runId);
-    await this.assertNoSymlinkComponents(path.parse(worktreePath).root, worktreePath, true);
+    await assertNoSymlinkComponents(path.parse(worktreePath).root, worktreePath, true);
     const stat = await this.lstatOrNull(worktreePath);
     if (stat) {
       await this.validateExactWorktreeRegistration(worktreePath, this.config.baseDir, 'adhoc');
@@ -1607,6 +1671,7 @@ export class AdhocWorktreeService {
         branchPreparationError = (error as Error).message;
       }
     }
+    await guard.begin({ repositories: [{ repositoryPath: this.config.baseDir, sourceWorktreePath: worktreePath, sourceBranch: branchName }] });
     const worktreeRemoval = stat
       ? await this.removeWorktreeStep(git, worktreePath)
       : { status: 'already_absent' as const };

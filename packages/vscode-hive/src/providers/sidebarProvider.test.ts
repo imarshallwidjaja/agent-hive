@@ -888,14 +888,16 @@ describe('HiveSidebarProvider', () => {
         expect(recovery.tooltip).toContain('Context index: present');
       }
       expect(inner.every(item => item.contextValue !== 'context-file')).toBe(true);
-      expect(open).not.toHaveBeenCalled();
+      // The writer probe may open the lock anchor read-only; nothing is opened for writing or created.
+      const writeFlags = fs.constants.O_WRONLY | fs.constants.O_RDWR | fs.constants.O_CREAT;
+      expect(open.mock.calls.filter(([, flags]) => typeof flags !== 'number' || (flags & writeFlags) !== 0)).toEqual([]);
       expect(write).not.toHaveBeenCalled();
     } finally { read.mockRestore(); open.mockRestore(); write.mockRestore(); }
     expect(fs.readFileSync(indexPath, 'utf8')).toBe(before);
     expect(fs.readFileSync(path.join(contextPath, 'notes.md'), 'utf8')).toBe(
       '---\ndescription: Sidebar fixture\nread_when: Read when testing sidebar context.\n---\n\npreserved',
     );
-    expect(fs.existsSync(`${indexPath}.lock`)).toBe(false);
+    expect(hiveCore.probeLock(indexPath)).toBe('free');
   });
 
   it('represents pending reconciliation with observational recovery guidance and raw file inspection', async () => {
@@ -970,6 +972,15 @@ describe('HiveSidebarProvider', () => {
     expect(((reconciling.iconPath as any).id)).toBe('error');
     expect((await provider.getChildren(reconciling))[0].label).toBe('Context recovery inspection');
     expect(fs.existsSync(markerPath)).toBe(true);
+
+    // A live native writer is busy; once it is gone the same marker needs reconciliation, though the anchor file remains.
+    const releaseWriter = hiveCore.acquireLockSync(path.join(contextPath, 'index.json'));
+    try {
+      expect((await folderOf()).description).toBe('Waiting for context changes to finish');
+    } finally {
+      releaseWriter();
+    }
+    expect((await folderOf()).description).toBe('Reconciliation required');
   });
 
   it('reaches oversized-inventory guidance through an expandable folder without claiming catalog or archive recovery', async () => {

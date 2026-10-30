@@ -3439,7 +3439,7 @@ describe('README.md documentation', () => {
       expect(operatorGuideContent).toContain('hive_task_update');
       expect(operatorGuideContent).not.toContain('reports/<revision>.md');
       expect(dataModelContent).toContain('Task status and reports are the execution record');
-      expect(hiveToolsContent).toContain('## Worktree families (8 tools)');
+      expect(hiveToolsContent).toContain('## Worktree families (9 tools)');
       expect(hiveToolsContent).toContain('hive_worktree_create');
       expect(hiveToolsContent).toContain('hive_adhoc_worktree_create');
       expect(hiveToolsContent).not.toContain('### Merge (1 tool)');

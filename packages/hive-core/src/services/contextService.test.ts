@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { createHash } from 'crypto';
 import { ContextService, CONTEXT_CANDIDATE_MAX, CONTEXT_NAMESPACE_ENTRY_MAX } from './contextService.js';
-import { getProjectContextPath } from '../utils/paths.js';
+import { acquireLockSync, getProjectContextPath, probeLock } from '../utils/paths.js';
 
 const TEST_DIR = '/tmp/hive-core-contextservice-services-test-' + process.pid;
 const PROJECT_ROOT = TEST_DIR;
@@ -217,8 +217,24 @@ describe('ContextService reserved overview context', () => {
       expect(snapshot.summary.files.find(file => file.name === 'proof')?.includeInExecution).toBe(false);
       expect(writerOpens).toBe(0);
     } finally { open.mockRestore(); fs.chmodSync(contextPath, 0o755); }
+    // A pre-native lock file may belong to a live host, so it reads as busy.
     fs.writeFileSync(path.join(contextPath, 'index.json.lock'), 'writer');
     expect(service.inspectSummary('inspection')).toEqual({ status: 'busy' });
+    fs.unlinkSync(path.join(contextPath, 'index.json.lock'));
+
+    // A live writer is busy; a pending marker whose writer died needs reconciliation, however long the anchor exists.
+    const indexPath = path.join(contextPath, 'index.json');
+    const markerPath = path.join(contextPath, '.managed-mutation-pending.json');
+    fs.writeFileSync(markerPath, JSON.stringify({ schemaVersion: 1, operation: 'replace', names: ['notes'] }));
+    const releaseWriter = acquireLockSync(indexPath);
+    try {
+      expect(service.inspectSummary('inspection')).toEqual({ status: 'busy' });
+    } finally {
+      releaseWriter();
+    }
+    expect(service.inspectSummary('inspection')).toEqual({ status: 'reconciliation' });
+    fs.unlinkSync(markerPath);
+    expect(service.inspectSummary('inspection').status).toBe('ready');
   });
 
   it('rejects unstable inspection snapshots and transient missing files without partial results', () => {
@@ -260,7 +276,10 @@ describe('ContextService reserved overview context', () => {
       const write = spyOn(fs, 'writeFileSync');
       try {
         expect(() => service.inspectSummary('inspection')).toThrow('Context index');
-        expect(open).not.toHaveBeenCalled();
+        // The writer probe may open the lock anchor read-only; nothing is opened for writing or created.
+        const writeFlags = fs.constants.O_WRONLY | fs.constants.O_RDWR | fs.constants.O_CREAT;
+        expect(open.mock.calls.filter(([, flags]) => typeof flags !== 'number' || (flags & writeFlags) !== 0)).toEqual([]);
+        expect(probeLock(indexPath)).toBe('free');
         expect(write).not.toHaveBeenCalled();
       } finally { open.mockRestore(); write.mockRestore(); }
       expect(fs.readFileSync(indexPath, 'utf8')).toBe(text);
@@ -1336,13 +1355,13 @@ describe('ContextService managed context', () => {
     setupFeature('locked-reads');
     service.create('locked-reads', 'notes', durable('snapshot bytes'));
     const contextPath = path.join(TEST_DIR, '.hive', 'features', 'locked-reads', 'context');
-    const lockPath = path.join(contextPath, 'index.json.lock');
+    const indexPath = path.join(contextPath, 'index.json');
     const originalOpendirSync = fs.opendirSync;
     let observations = 0;
     const opendirSpy = spyOn(fs, 'opendirSync').mockImplementation(((targetPath, options) => {
       if (String(targetPath) === contextPath) {
         observations += 1;
-        expect(fs.existsSync(lockPath)).toBe(false);
+        expect(probeLock(indexPath)).toBe('free');
       }
       return originalOpendirSync(targetPath, options as never);
     }) as typeof fs.opendirSync);

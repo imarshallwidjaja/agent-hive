@@ -357,8 +357,52 @@ function typeCheckPackedConsumer(tarballPath) {
         assert.fail(`packed consumer should type-check the public entry with library checks under ${mode.name}:\n${error.stdout}${error.stderr}`);
       }
     }
+    assertPackedNativeLock(consumerRoot);
   } finally {
     fs.rmSync(consumerRoot, { recursive: true, force: true });
+  }
+}
+
+// Runs the installed plugin outside the workspace and takes a real Hive lock: a project context write. The Koffi
+// binary that loads must come from the consumer's own install, so a workspace or source-tree copy cannot satisfy it.
+function assertPackedNativeLock(consumerRoot) {
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'oc-arkive-native-lock-'));
+  try {
+    const project = path.join(scratch, 'project');
+    const home = path.join(scratch, 'home');
+    fs.mkdirSync(path.join(project, '.hive'), { recursive: true });
+    fs.mkdirSync(home);
+    fs.writeFileSync(path.join(consumerRoot, 'native-lock.mjs'), [
+      "import { createRequire } from 'node:module';",
+      "import plugin from 'oc-arkive';",
+      'const [project] = process.argv.slice(2);',
+      "const client = { session: { get: async ({ path }) => ({ data: { id: path.id } }), abort: async () => ({ data: true }) } };",
+      "const hooks = await plugin.server({ directory: project, worktree: project, project: { id: 'packed', worktree: project }, client });",
+      "const context = { sessionID: 'primary', messageID: 'message', agent: 'hive-master', abort: new AbortController().signal };",
+      "const content = '---\\ndescription: Packed lock check\\nread_when: Never.\\nowner: release\\nreview_after: 2099-01-01\\n---\\nbody\\n';",
+      "await hooks.tool.hive_context_write.execute({ scope: 'project', name: 'packed-lock', content }, context);",
+      "const loaded = Object.keys(createRequire(import.meta.url).cache).filter((file) => file.endsWith('koffi.node'));",
+      'process.stdout.write(JSON.stringify({ loaded }));',
+      '',
+    ].join('\n'));
+    let output;
+    try {
+      output = execFileSync(process.execPath, [path.join(consumerRoot, 'native-lock.mjs'), project], {
+        cwd: consumerRoot, encoding: 'utf8', stdio: 'pipe', env: { ...process.env, HOME: home, NODE_PATH: '' },
+      });
+    } catch (error) {
+      assert.fail(`installed oc-arkive should take a native Hive lock:\n${error.stdout}${error.stderr}`);
+    }
+    const { loaded } = JSON.parse(output);
+    assert.equal(loaded.length, 1, `exactly one koffi binary should load: ${loaded.join(', ')}`);
+    assert.ok(
+      fs.realpathSync(loaded[0]).startsWith(`${fs.realpathSync(path.join(consumerRoot, 'node_modules', 'koffi'))}${path.sep}`),
+      `koffi should load from the installed dependency, not ${loaded[0]}`,
+    );
+    assert.ok(fs.readdirSync(path.join(project, '.hive', '.locks')).some((name) => name.endsWith('.lock')), 'the context write should leave its lock anchor');
+    assert.ok(fs.existsSync(path.join(project, '.hive', 'context', 'packed-lock.md')), 'the locked context write should complete');
+  } finally {
+    fs.rmSync(scratch, { recursive: true, force: true });
   }
 }
 
@@ -592,12 +636,16 @@ describe(`release ${releaseVersion} artifact contract on main`, () => {
       const packedManifest = JSON.parse(fs.readFileSync(path.join(packageRoot, 'package.json'), 'utf8'));
       // The public declarations import @opencode/plugin and, through it, JSON Schema types, so an installed consumer
       // can only resolve them if the tarball's required dependencies bring them.
+      // Koffi is the one intentional runtime dependency the bundle leaves external: its loader selects the prebuilt
+      // binary for the platform from the installed package, so the exact pin comes with every install.
       assert.deepEqual(packedManifest.dependencies, {
         '@opencode/client': '2.0.26',
         '@opencode/plugin': '2.0.26',
         '@types/json-schema': '7.0.15',
         'gray-matter': '^4.0.3',
+        koffi: '2.16.3',
       });
+      assert.equal(packedManifest.dependencies.koffi, readJson('packages/hive-core/package.json').dependencies.koffi, 'oc-arkive and hive-core should pin the same koffi');
       // effect is a peer so a v1 host can resolve the one eager import; the v2 host replaces it with its own copy.
       assert.deepEqual(packedManifest.peerDependencies, {
         '@opencode-ai/plugin': '>=1.18.30',
@@ -642,6 +690,10 @@ describe(`release ${releaseVersion} artifact contract on main`, () => {
         /import\(["']\.\/v2\/plugin\.js["']\)/,
         'the shared entry should load the v2 adapter lazily'
       );
+      const nativeLoaders = [...packedFiles]
+        .filter((file) => file.startsWith('dist/') && file.endsWith('.js'))
+        .filter((file) => fs.readFileSync(path.join(packageRoot, file), 'utf8').includes('typeof __HIVE_KOFFI_MODULE__'));
+      assert.equal(nativeLoaders.length, 1, 'one packed chunk should load koffi from the installed dependency at run time');
       assertPackedDeclarationGraph(packageRoot, packedManifest);
       typeCheckPackedConsumer(tarballPath);
     });
