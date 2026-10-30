@@ -97,11 +97,11 @@ const ORDINARY_OPERATION_SIGNATURES = [
   'hive_task_update(task:string, status?:pending|in_progress|done|cancelled|blocked|failed|partial, summary?:string, blocker?:{reason:string, options?:string[], recommendation?:string, context?:string}|null, report?:string, handoff?:string, feature?:string)',
   'hive_worktree_create(feature?:string, task:string, baseRef?:string, repoIds?:string[], candidate?:string)',
   'hive_worktree_inspect(feature?:string, task:string, repoIds?:string[], candidate?:string)',
-  'hive_worktree_merge(feature?:string, task:string, repoIds?:string[], candidate?:string, strategy?:merge|squash|rebase, message?:string, preserveConflicts?:boolean, cleanup?:none|worktree|worktree+branch, sourceCommit?:string, sourceCommits?:record<string>, expectedTarget?:{path:string, ref:string|null, commit:string}, expectedTargets?:record<{path:string, ref:string|null, commit:string}>)',
+  'hive_worktree_merge(feature?:string, task:string, repoIds?:string[], candidate?:string, historyIntent:preserve-source|rewrite-private, strategy?:merge|squash|rebase, message?:string, preserveConflicts?:boolean, cleanup?:none|worktree|worktree+branch, sourceCommit?:string, sourceCommits?:record<string>, expectedTarget?:{path:string, ref:string|null, commit:string}, expectedTargets?:record<{path:string, ref:string|null, commit:string}>)',
   'hive_worktree_cleanup(feature?:string, task:string, repoIds?:string[], candidate?:string, deleteBranch?:boolean, discard?:boolean)',
   'hive_adhoc_worktree_create(runId?:string, repoIds?:string[], sourceDirectory?:string)',
   'hive_adhoc_worktree_inspect(runId:string, repoIds?:string[], sourceDirectory?:string)',
-  'hive_adhoc_worktree_merge(runId:string, repoIds?:string[], sourceDirectory?:string, strategy?:merge|squash|rebase, message?:string, preserveConflicts?:boolean, cleanup?:none|worktree|worktree+branch, sourceCommit?:string, sourceCommits?:record<string>, expectedTarget?:{path:string, ref:string|null, commit:string}, expectedTargets?:record<{path:string, ref:string|null, commit:string}>)',
+  'hive_adhoc_worktree_merge(runId:string, repoIds?:string[], sourceDirectory?:string, historyIntent:preserve-source|rewrite-private, strategy?:merge|squash|rebase, message?:string, preserveConflicts?:boolean, cleanup?:none|worktree|worktree+branch, sourceCommit?:string, sourceCommits?:record<string>, expectedTarget?:{path:string, ref:string|null, commit:string}, expectedTargets?:record<{path:string, ref:string|null, commit:string}>)',
   'hive_adhoc_worktree_cleanup(runId:string, repoIds?:string[], sourceDirectory?:string, deleteBranch?:boolean, discard?:boolean)',
   'hive_context_read(name?:string, scope?:feature|project, feature?:string, view?:summary|catalog, query?:string, limit?:number, cursor?:string, maxBytes?:number, scanChars?:boolean)',
   'hive_context_write(name:string, content:string, kind?:durable|evidence, task?:string, expectedRevision?:number, expectedContentHash?:string, scope?:feature|project, feature?:string)',
@@ -176,7 +176,7 @@ const DESCRIBED_FIELDS: Record<string, string[]> = {
   hive_worklog_read: ['ref', 'view', 'limit', 'cursor', 'maxBytes'],
   hive_worklog_record: ['ref', 'operationId', 'title', 'checkpoint', 'briefing', 'expectedRevision'],
   ...Object.fromEntries(['hive_worktree_merge', 'hive_adhoc_worktree_merge'].map((name) => [name, [
-    'strategy', 'message', 'preserveConflicts', 'cleanup', 'sourceCommit', 'sourceCommits', 'expectedTarget', 'expectedTargets',
+    'historyIntent', 'strategy', 'message', 'preserveConflicts', 'cleanup', 'sourceCommit', 'sourceCommits', 'expectedTarget', 'expectedTargets',
   ]])),
 };
 
@@ -221,6 +221,12 @@ describe('ordinary Hive operation metadata', () => {
       // Descriptions explain the relationships; the argument shape still leaves both expectations optional.
       expect(schema.required, name).not.toContain('expectedTarget');
       expect(schema.required, name).not.toContain('expectedTargets');
+      // History intent is required and has no default; the strategy default follows the intent.
+      expect(schema.required, name).toContain('historyIntent');
+      expect(schema.properties.historyIntent.enum, name).toEqual(['preserve-source', 'rewrite-private']);
+      expect(schema.properties.historyIntent.description, name).toContain('there is no default');
+      expect(schema.properties.strategy.description, name).toContain("'merge' for preserve-source, 'squash' for rewrite-private");
+      expect(schema.properties.strategy.description, name).not.toContain("Default 'squash'");
     }
   });
 });
@@ -336,8 +342,35 @@ describe('ordinary Hive operation results', () => {
     expect(await failure('hive_adhoc_worktree_merge', { runId: 'pins', sourceCommit: 'a', sourceCommits: { root: 'a' } })).toBe('sourceCommit and sourceCommits cannot both be supplied');
     expect(await failure('hive_adhoc_worktree_merge', { runId: 'pins', sourceCommits: { root: 'a' } })).toBe('sourceCommits require a composite candidate');
     expect(await failure('hive_adhoc_worktree_merge', { runId: 'pins', sourceCommit: 'beef' })).toBe('sourceCommit does not match the inspected candidate');
-    const missingTarget = await callJson('hive_adhoc_worktree_merge', { runId: 'pins', message: 'feat: x\n\nbody' });
+    const missingTarget = await callJson('hive_adhoc_worktree_merge', { runId: 'pins', historyIntent: 'rewrite-private', message: 'feat: x\n\nbody' });
     expect(missingTarget).toMatchObject({ success: false, merged: false, error: 'expectedTarget or expectedTargets is required', reasonCode: 'INVALID_ARGUMENTS', mutation: 'none' });
+  });
+
+  // The executors forward intent and strategy unchanged; the service owns validation and the intent-derived default.
+  it('forwards history intent and an omitted strategy to the merge services without a default', async () => {
+    const { call, callJson } = await createRuntime();
+    await callJson('hive_adhoc_worktree_create', { runId: 'intent' });
+    const inspected = await callJson('hive_adhoc_worktree_inspect', { runId: 'intent' });
+
+    const missing = await callJson('hive_adhoc_worktree_merge', { runId: 'intent', expectedTarget: inspected.target });
+    expect(missing).toMatchObject({ success: false, reasonCode: 'INVALID_ARGUMENTS', mutation: 'none' });
+    expect(missing.error).toContain('historyIntent is required');
+    expect(missing).not.toHaveProperty('strategy');
+
+    const contained = await callJson('hive_adhoc_worktree_merge', { runId: 'intent', historyIntent: 'preserve-source', expectedTarget: inspected.target });
+    expect(contained).toMatchObject({ success: true, merged: false, strategy: 'merge', reasonCode: 'ALREADY_INTEGRATED' });
+
+    await callJson('hive_feature_create', { name: 'intent-feature' });
+    await callJson('hive_plan_write', { feature: 'intent-feature', content: '# Plan\n\n## Tasks\n\n### 1. First\nDo it.\n' });
+    expect(await call('hive_task_create', { feature: 'intent-feature', name: 'manual' })).toBe('01-manual');
+    const task = await callJson('hive_worktree_create', { feature: 'intent-feature', task: '01-manual' });
+    const featureMissing = await callJson('hive_worktree_merge', { feature: 'intent-feature', task: '01-manual', expectedTarget: task.target });
+    expect(featureMissing).toMatchObject({ success: false, reasonCode: 'INVALID_ARGUMENTS' });
+    expect(featureMissing).not.toHaveProperty('strategy');
+    const featureContained = await callJson('hive_worktree_merge', {
+      feature: 'intent-feature', task: '01-manual', historyIntent: 'rewrite-private', expectedTarget: task.target,
+    });
+    expect(featureContained).toMatchObject({ success: true, strategy: 'squash', reasonCode: 'ALREADY_INTEGRATED', taskUpdateRecommended: true });
   });
 
   it('guards context mutation by revision and content hash', async () => {

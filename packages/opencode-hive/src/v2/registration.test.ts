@@ -259,7 +259,8 @@ describe('v2 tool registration', () => {
     const merge = tools.get('hive_worktree_merge').input['~standard'].jsonSchema.input({ target: 'draft-2020-12' }) as any;
     expect(merge.properties.expectedTarget.description).toBe((operations.hive_worktree_merge!.args.expectedTarget as any).description);
     expect(merge.properties.expectedTarget.description).toContain('Exactly one of expectedTarget and expectedTargets');
-    expect(merge.required).toEqual(['task']);
+    expect(merge.required).toEqual(['task', 'historyIntent']);
+    expect(merge.properties.historyIntent.enum).toEqual(['preserve-source', 'rewrite-private']);
   });
 
   it('returns the structured domain result with its v1 JSON text, and plain text for text operations', async () => {

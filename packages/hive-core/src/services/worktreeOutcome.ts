@@ -31,6 +31,7 @@ export type WorktreeReasonCode =
   | 'TARGET_DIRTY'
   | 'TARGET_RECONCILIATION_REQUIRED'
   | 'GIT_OPERATION_IN_PROGRESS'
+  | 'ALREADY_INTEGRATED'
   | 'NO_TRACKED_CHANGES'
   | 'MERGE_CONFLICT_ABORTED'
   | 'MERGE_CONFLICT_PRESERVED'
@@ -143,6 +144,7 @@ const WORKTREE_OUTCOME_TABLE: Record<WorktreeReasonCode, WorktreeOutcomeRule> = 
   TARGET_DIRTY: { phase: 'preflight', mutation: 'none', retryable: true, action: 'clean_target' },
   TARGET_RECONCILIATION_REQUIRED: { phase: 'preflight', mutation: 'none', retryable: false, action: 'reconcile_target' },
   GIT_OPERATION_IN_PROGRESS: { phase: 'preflight', mutation: 'none', retryable: false, action: 'inspect_state' },
+  ALREADY_INTEGRATED: { phase: 'integration', mutation: 'none', retryable: false, action: 'none' },
   NO_TRACKED_CHANGES: { phase: 'integration', mutation: 'none', retryable: false, action: 'none' },
   MERGE_CONFLICT_ABORTED: { phase: 'integration', mutation: 'none', retryable: true, action: 'retry_same_operation' },
   MERGE_CONFLICT_PRESERVED: { phase: 'integration', mutation: 'preserved', retryable: false, action: 'resolve_conflicts' },
@@ -274,6 +276,71 @@ export function buildCleanupOutcome(
   };
 }
 
+/**
+ * Cleanup that never reached a destructive step: a failed pre-cleanup proof
+ * or identity recheck. Every requested step is not_attempted.
+ */
+export function buildSkippedCleanupOutcome(
+  requested: Exclude<WorktreeCleanupOutcome['requested'], 'none'>,
+  failure: { step: string; repoId?: string; cause: string },
+): WorktreeCleanupOutcome {
+  return buildCleanupOutcome(requested, {
+    worktreeRemoval: { status: 'not_attempted' },
+    branchDeletion: requested === 'worktree+branch' ? { status: 'not_attempted' } : { status: 'not_requested' },
+    prune: { status: 'not_attempted' },
+    failures: [failure],
+  });
+}
+
+/**
+ * Thrown when a cleanup action fails after the worktree, prune, and branch
+ * steps already produced `outcome`. Standalone cleanup surfaces the throw;
+ * an integration caller reports the known steps with `step` as the failure.
+ */
+export class CleanupActionError extends Error {
+  constructor(
+    readonly outcome: WorktreeCleanupOutcome,
+    readonly step: string,
+    cause: unknown,
+  ) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+    this.name = 'CleanupActionError';
+  }
+}
+
+/**
+ * Cleanup that threw after a completed integration. A CleanupActionError keeps
+ * the steps it already observed and adds its failing action. Otherwise the
+ * steps that ran before the exception are unknown, so no requested step is
+ * reported complete. Either way the caller still reports the completed
+ * integration with CLEANUP_FAILED.
+ */
+export function buildThrownCleanupOutcome(
+  requested: Exclude<WorktreeCleanupOutcome['requested'], 'none'>,
+  error: unknown,
+  repoId?: string,
+): WorktreeCleanupOutcome {
+  const cause = error instanceof Error ? error.message : String(error);
+  if (error instanceof CleanupActionError) {
+    return buildCleanupOutcome(error.outcome.requested, {
+      worktreeRemoval: error.outcome.worktreeRemoval,
+      branchDeletion: error.outcome.branchDeletion,
+      prune: error.outcome.prune,
+      failures: [
+        ...error.outcome.failures,
+        { step: error.step, ...(repoId !== undefined ? { repoId } : {}), cause },
+      ],
+    });
+  }
+  const unknownStep: CleanupStepOutcome = { status: 'failed', error: `Cleanup threw before reporting this step: ${cause}` };
+  return buildCleanupOutcome(requested, {
+    worktreeRemoval: unknownStep,
+    branchDeletion: requested === 'worktree+branch' ? unknownStep : { status: 'not_requested' },
+    prune: unknownStep,
+    failures: [{ step: 'cleanup', ...(repoId !== undefined ? { repoId } : {}), cause }],
+  });
+}
+
 export function cleanupStepDone(step: CleanupStepOutcome): boolean {
   return step.status === 'succeeded' || step.status === 'already_absent';
 }
@@ -310,9 +377,11 @@ export function buildNotRequestedMergeCleanupBlock(): WorktreeMergeCleanupBlock 
 
 /**
  * Aggregate per-repository cleanup outcomes, attributing every failed step to
- * its repository so a composite failure names what needs attention. A step
- * succeeds only when every requested repository step succeeded or was already
- * absent. `rootFailure` records composite-root removal failure.
+ * its repository so a composite failure names what needs attention. Failures
+ * not tied to a step (a skipped proof, a cleanup exception) carry over once,
+ * keeping the repository they name. A step succeeds only when every requested
+ * repository step succeeded or was already absent. `rootFailure` records
+ * composite-root removal failure.
  */
 export function combineRepoCleanupOutcomes(
   requested: WorktreeCleanupOutcome['requested'],
@@ -320,6 +389,16 @@ export function combineRepoCleanupOutcomes(
   rootFailure?: { cause: string },
 ): WorktreeCleanupOutcome {
   const failures: Array<{ step: string; repoId?: string; cause: string }> = [];
+  const stepLabels = new Set(['worktree-removal', 'branch-deletion', 'prune']);
+  for (const entry of perRepo) {
+    for (const failure of entry.cleanup.failures) {
+      if (stepLabels.has(failure.step)) continue;
+      const attributed = { ...failure, repoId: failure.repoId ?? entry.repoId };
+      const seen = failures.some((existing) =>
+        existing.step === attributed.step && existing.repoId === attributed.repoId && existing.cause === attributed.cause);
+      if (!seen) failures.push(attributed);
+    }
+  }
 
   const combineStep = (
     step: 'worktreeRemoval' | 'branchDeletion' | 'prune',

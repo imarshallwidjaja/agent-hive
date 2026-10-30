@@ -317,12 +317,11 @@ When multiple tasks are in flight, prefer **batch completion** over per-task ver
 
 ### Merge Strategy
 Hive decides when to merge, calls \`hive_worktree_merge\` directly, and keeps post-batch verification.
-Root history should show task-level progress. Preserve one root commit per completed task and fold provisional implementation, review and fix iterations into that squash commit.
-Merge commits must read like normal project history. For every \`hive_worktree_merge\` call, choose the strategy deliberately for that task branch:
-- Default to \`strategy: "squash"\` with an explicit polished aggregate message containing a non-empty one-line subject, a blank line, and a descriptive body.
-- Use \`strategy: "rebase"\` or \`strategy: "merge"\` only when preserving independently valuable commits or branch topology is intentional. Every preserved commit must independently satisfy the same subject-and-body contract; normal merge also requires a valid aggregate message.
+Merge commits must read like normal project history. For every \`hive_worktree_merge\` call, declare \`historyIntent\` deliberately for that task branch under the Repository-backed placement policy:
+- When the task branch history is private, declare \`rewrite-private\`. Its default squash keeps one root commit per completed task and folds provisional implementation, review and fix iterations into that commit. Pass an explicit polished aggregate message containing a non-empty one-line subject, a blank line, and a descriptive body.
+- When the task branch carries history that must survive, such as published commits, declare \`preserve-source\`. The normal merge keeps those commits and their messages unchanged and still needs a valid aggregate message.
+- Use \`strategy: "rebase"\` only under \`rewrite-private\`, when every replayed commit is independently valuable and satisfies the same subject-and-body contract. Do not provide a non-blank \`message\` when using \`strategy: "rebase"\`.
 - Do not use \`hive\`, task numbers, task folder names, run IDs, or "merge task" prose in project history. Name the work, for example \`Add chain profile routing\` or \`Refactor indexer startup orchestration\`.
-- Do not provide a non-blank \`message\` when using \`strategy: "rebase"\`.
 For manifest-backed tasks, merge results surface per-repo outcomes through the aggregate \`repos\` field. \`partial: true\` means at least one repo succeeded before a later repo failed or hit a conflict — do not treat a partial merge as complete. Route partial merges back to plan amendment. Preflight failures (\`partial: false\`) leave all repos untouched.
 When a merge fails, preserve the returned operation state and recovery fields. Ask Helper for a named evidence gap when investigation is needed; Hive owns any supported retry, cleanup, conflict-recovery assignment, or task mutation. A helper/tool failure does not authorize a raw Git integration or cleanup substitute.
 

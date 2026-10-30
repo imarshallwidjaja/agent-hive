@@ -3,9 +3,10 @@ import * as path from 'path';
 import type { SimpleGit } from 'simple-git';
 import { normalizeCommitMessage } from '../utils/mergeMessage.js';
 import {
-  buildCleanupOutcome,
   buildNotRequestedCleanupOutcome,
   buildNotRequestedMergeCleanupBlock,
+  buildSkippedCleanupOutcome,
+  buildThrownCleanupOutcome,
   classifyWorktreeOutcome,
   toMergeCleanupBlock,
 } from './worktreeOutcome.js';
@@ -21,15 +22,81 @@ import {
 } from './worktreeTarget.js';
 import type { WorktreeTargetIdentity } from './worktreeTarget.js';
 
-type IntegrationStrategy = 'merge' | 'squash' | 'rebase';
+/**
+ * What the caller declares about the source-only history being integrated.
+ * - preserve-source: source ancestry must survive in the destination.
+ * - rewrite-private: every source-only commit in every selected repository is
+ *   private and authorized for rewriting. The declaration is an attestation;
+ *   Hive does not prove privacy.
+ */
+export type HistoryIntent = 'preserve-source' | 'rewrite-private';
+export type IntegrationStrategy = 'merge' | 'squash' | 'rebase';
+export type PreserveSourcePolicy = Readonly<{ historyIntent: 'preserve-source'; strategy: 'merge' }>;
+export type RewritePrivatePolicy = Readonly<{ historyIntent: 'rewrite-private'; strategy: 'squash' | 'rebase' }>;
+/** The one integration operation a validated intent and strategy permit. */
+export type IntegrationPolicy = PreserveSourcePolicy | RewritePrivatePolicy;
+
+/**
+ * Validate a caller's history intent and optional strategy at runtime, so
+ * untyped callers cannot fall back to a default intent. preserve-source
+ * permits only merge; rewrite-private permits squash (its default) or rebase.
+ */
+export function resolveIntegrationPolicy(
+  historyIntent: unknown,
+  strategy: unknown,
+): { policy: IntegrationPolicy } | { error: string } {
+  if (historyIntent === undefined) {
+    return { error: "historyIntent is required: declare 'preserve-source' or 'rewrite-private'" };
+  }
+  if (historyIntent !== 'preserve-source' && historyIntent !== 'rewrite-private') {
+    return { error: `Unknown historyIntent ${JSON.stringify(historyIntent)}: use 'preserve-source' or 'rewrite-private'` };
+  }
+  if (strategy !== undefined && strategy !== 'merge' && strategy !== 'squash' && strategy !== 'rebase') {
+    return { error: `Unknown strategy ${JSON.stringify(strategy)}: use 'merge', 'squash' or 'rebase'` };
+  }
+  if (historyIntent === 'preserve-source') {
+    if (strategy === undefined || strategy === 'merge') {
+      return { policy: Object.freeze({ historyIntent, strategy: 'merge' as const }) };
+    }
+    return { error: `historyIntent 'preserve-source' permits only strategy 'merge'; '${strategy}' rewrites source history` };
+  }
+  if (strategy === 'merge') {
+    return { error: "historyIntent 'rewrite-private' permits strategy 'squash' or 'rebase'; declare 'preserve-source' for a normal merge" };
+  }
+  return { policy: Object.freeze({ historyIntent, strategy: strategy === 'rebase' ? 'rebase' as const : 'squash' as const }) };
+}
+
+/**
+ * The integration work the pinned source requires, classified once and shared
+ * by composite preflight and execution:
+ * - contained: the source is already an ancestor of (or equal to) the target.
+ * - preservation: preserve-source must join the source history, even when the
+ *   endpoint trees are equal.
+ * - private-content-noop: rewrite-private with no net tracked difference.
+ * - private-integration: rewrite-private with content to squash or replay.
+ */
+export type IntegrationWorkKind = 'contained' | 'preservation' | 'private-content-noop' | 'private-integration';
+
 type CleanupMode = WorktreeCleanupOutcome['requested'];
 export type TargetMergeCandidates = Readonly<{
   targetCommit: string;
   sourceCommit: string;
-  strategy: IntegrationStrategy;
+  policy: IntegrationPolicy;
+  workKind: IntegrationWorkKind;
   candidateFiles: readonly string[];
   collisionCandidates: readonly string[];
 }>;
+
+/**
+ * What a completed integration must prove before destructive same-call
+ * cleanup. Preserved and contained work prove source containment in the
+ * target. Rewritten work proves completion and fresh identities and carries
+ * the caller's private attestation instead of original-source containment.
+ */
+export type CompletedIntegration =
+  | { kind: 'contained' }
+  | { kind: 'preserved' }
+  | { kind: 'rewritten'; attestation: RewritePrivatePolicy };
 
 type TargetMergeEligibility =
   | TargetMergeCandidates
@@ -108,10 +175,10 @@ async function activeGitOperationStates(git: SimpleGit, repoRoot: string): Promi
 
 export async function validateSourceCommitMessages(
   git: SimpleGit,
-  currentBranch: string,
-  branchName: string,
+  targetCommit: string,
+  sourceCommit: string,
 ): Promise<string | null> {
-  const output = (await git.raw(['rev-list', '--reverse', `${currentBranch}..${branchName}`])).trim();
+  const output = (await git.raw(['rev-list', '--reverse', `${targetCommit}..${sourceCommit}`])).trim();
   const hashes = output ? output.split('\n').filter(Boolean) : [];
   for (const hash of hashes) {
     const rawMessage = await git.raw(['show', '-s', '--format=%B', hash]);
@@ -166,27 +233,127 @@ async function commitChangedPaths(git: SimpleGit, commit: string): Promise<strin
   ]));
 }
 
-async function computeTargetMergeCandidates(
+/**
+ * Whether `ancestor` is reachable from or equal to `descendant`. Git errors
+ * propagate: an unreadable relationship is not a negative one.
+ */
+async function isAncestorOrEqual(git: SimpleGit, ancestor: string, descendant: string): Promise<boolean> {
+  const output = (await git.raw(['rev-list', '--count', `${descendant}..${ancestor}`])).trim();
+  if (!/^\d+$/.test(output)) {
+    throw new Error(`Unable to read whether ${ancestor} is contained in ${descendant}: unexpected rev-list output ${JSON.stringify(output)}`);
+  }
+  return output === '0';
+}
+
+async function classifyIntegrationWork(
   git: SimpleGit,
   targetCommit: string,
   sourceCommit: string,
-  strategy: IntegrationStrategy,
+  policy: IntegrationPolicy,
 ): Promise<TargetMergeCandidates> {
+  const pins = { targetCommit, sourceCommit, policy };
+  if (await isAncestorOrEqual(git, sourceCommit, targetCommit)) {
+    const none = Object.freeze([] as string[]);
+    return Object.freeze({ ...pins, workKind: 'contained', candidateFiles: none, collisionCandidates: none });
+  }
   const candidateFiles = Object.freeze(await changedPaths(git, targetCommit, sourceCommit));
-  if (candidateFiles.length === 0 || strategy !== 'rebase') {
-    return Object.freeze({ targetCommit, sourceCommit, strategy, candidateFiles, collisionCandidates: candidateFiles });
+  if (policy.historyIntent === 'preserve-source') {
+    return Object.freeze({ ...pins, workKind: 'preservation', candidateFiles, collisionCandidates: candidateFiles });
+  }
+  if (candidateFiles.length === 0) {
+    return Object.freeze({ ...pins, workKind: 'private-content-noop', candidateFiles, collisionCandidates: candidateFiles });
+  }
+  if (policy.strategy !== 'rebase') {
+    return Object.freeze({ ...pins, workKind: 'private-integration', candidateFiles, collisionCandidates: candidateFiles });
   }
 
   const commitsOutput = (await git.raw(['rev-list', '--reverse', `${targetCommit}..${sourceCommit}`])).trim();
   const commits = commitsOutput ? commitsOutput.split('\n').filter(Boolean) : [];
   const commitPaths = await Promise.all(commits.map(commit => commitChangedPaths(git, commit)));
   const collisionCandidates = Object.freeze([...new Set([...candidateFiles, ...commitPaths.flat()])]);
-  return Object.freeze({ targetCommit, sourceCommit, strategy, candidateFiles, collisionCandidates });
+  return Object.freeze({ ...pins, workKind: 'private-integration', candidateFiles, collisionCandidates });
 }
 
-async function isAncestor(git: SimpleGit, ancestor: string, descendant: string): Promise<boolean> {
-  const mergeBases = await git.raw(['merge-base', '--all', ancestor, descendant]).catch(() => '');
-  return mergeBases.split('\n').some(commit => commit.trim() === ancestor);
+/**
+ * Message requirements of the classified work, checked before any mutation.
+ * Contained and private content no-op work creates no commit. Preservation and
+ * squash create one aggregate commit; private replay keeps and validates each
+ * source message and rejects a custom message. Preservation never validates
+ * existing source messages: they are kept verbatim.
+ */
+export async function integrationMessageFailure(
+  git: SimpleGit,
+  candidates: TargetMergeCandidates,
+  message: string | undefined,
+): Promise<{ reasonCode: WorktreeReasonCode; error: string } | null> {
+  if (candidates.workKind === 'contained' || candidates.workKind === 'private-content-noop') return null;
+  if (candidates.policy.strategy === 'rebase') {
+    if (message?.trim()) {
+      return { reasonCode: 'MESSAGE_NOT_ALLOWED_FOR_REBASE', error: 'Custom merge message is not supported for rebase strategy' };
+    }
+    const sourceError = await validateSourceCommitMessages(git, candidates.targetCommit, candidates.sourceCommit);
+    return sourceError ? { reasonCode: 'INVALID_COMMIT_MESSAGE', error: sourceError } : null;
+  }
+  try {
+    normalizeCommitMessage(message);
+    return null;
+  } catch (error: unknown) {
+    return { reasonCode: 'INVALID_MERGE_MESSAGE', error: (error as { message?: string }).message || 'Invalid merge message' };
+  }
+}
+
+export function completedIntegration(
+  policy: IntegrationPolicy,
+  result: Pick<WorktreeIntegrationResult, 'reasonCode'>,
+): CompletedIntegration {
+  if (result.reasonCode === 'ALREADY_INTEGRATED') return { kind: 'contained' };
+  return policy.historyIntent === 'preserve-source'
+    ? { kind: 'preserved' }
+    : { kind: 'rewritten', attestation: policy };
+}
+
+/**
+ * The single proof gate before destructive same-call cleanup on every route.
+ * It rereads source and target identities, then requires source containment
+ * for preserved or contained work; rewritten work relies on its completed
+ * operation and the caller's private attestation. Returns the failure that
+ * retains the source placement, or null when cleanup may proceed.
+ */
+export async function proveCleanupEligibility(options: {
+  targetGit: SimpleGit;
+  targetRoot: string;
+  sourceBranch: string;
+  sourceCommit: string;
+  expectedTarget: WorktreeTargetIdentity;
+  completion: CompletedIntegration;
+}): Promise<{ step: string; cause: string } | null> {
+  const { targetGit, targetRoot, sourceBranch, sourceCommit, expectedTarget, completion } = options;
+  let currentTarget: WorktreeTargetIdentity;
+  let currentSource: string;
+  try {
+    currentTarget = await readWorktreeTargetIdentity(targetRoot);
+    currentSource = (await targetGit.revparse([sourceBranch])).trim();
+  } catch (error) {
+    const cause = error instanceof Error ? error.message : String(error);
+    return { step: 'identity-recheck', cause: `Source or target could not be read after integration; cleanup was skipped: ${cause}` };
+  }
+  if (!sameWorktreeTarget(expectedTarget, currentTarget) || currentSource !== sourceCommit) {
+    return { step: 'identity-recheck', cause: 'Source or target moved after integration; cleanup was skipped' };
+  }
+  if (completion.kind === 'rewritten') {
+    if (completion.attestation.historyIntent === 'rewrite-private') return null;
+    return { step: 'ancestry-proof', cause: 'Rewritten history lacks a private attestation; cleanup was skipped' };
+  }
+  try {
+    if (await isAncestorOrEqual(targetGit, sourceCommit, currentTarget.commit)) return null;
+    return {
+      step: 'ancestry-proof',
+      cause: `Source ${sourceCommit} is not contained in target ${currentTarget.commit}; cleanup was skipped to retain the source history`,
+    };
+  } catch (error) {
+    const cause = error instanceof Error ? error.message : String(error);
+    return { step: 'ancestry-proof', cause: `Source ancestry in the target could not be read; cleanup was skipped: ${cause}` };
+  }
 }
 
 async function isPathBoundedTopology(
@@ -195,7 +362,7 @@ async function isPathBoundedTopology(
   sourceCommit: string,
   strategy: IntegrationStrategy,
 ): Promise<boolean> {
-  if (!(await isAncestor(git, targetCommit, sourceCommit))) return false;
+  if (!(await isAncestorOrEqual(git, targetCommit, sourceCommit))) return false;
   if (strategy !== 'rebase') return true;
   const mergeCommit = await git.raw(['rev-list', '--merges', '--max-count=1', `${targetCommit}..${sourceCommit}`]);
   return mergeCommit.trim().length === 0;
@@ -271,7 +438,7 @@ export async function inspectTargetMergeEligibility(options: {
   targetCommit: string;
   topologyTargetCommit?: string;
   sourceCommit: string;
-  strategy: IntegrationStrategy;
+  policy: IntegrationPolicy;
   excludedLocalPaths?: string[];
   precomputedCandidates?: TargetMergeCandidates;
 }): Promise<TargetMergeEligibility> {
@@ -281,7 +448,7 @@ export async function inspectTargetMergeEligibility(options: {
     targetCommit,
     topologyTargetCommit = targetCommit,
     sourceCommit,
-    strategy,
+    policy,
     excludedLocalPaths = [],
     precomputedCandidates,
   } = options;
@@ -303,15 +470,18 @@ export async function inspectTargetMergeEligibility(options: {
   if (precomputedCandidates && (
     precomputedCandidates.targetCommit !== topologyTargetCommit
     || precomputedCandidates.sourceCommit !== sourceCommit
-    || precomputedCandidates.strategy !== strategy
+    || precomputedCandidates.policy.historyIntent !== policy.historyIntent
+    || precomputedCandidates.policy.strategy !== policy.strategy
   )) {
-    throw new Error('Precomputed merge candidates do not match the immutable integration pins');
+    throw new Error('Precomputed merge candidates do not match the immutable integration pins and history policy');
   }
+  // Containment is classified before topology and local-data eligibility: an
+  // already integrated source needs no target change, whatever the trees.
   const candidates = precomputedCandidates
-    ?? await computeTargetMergeCandidates(targetGit, targetCommit, sourceCommit, strategy);
-  if (candidates.candidateFiles.length === 0) return candidates;
+    ?? await classifyIntegrationWork(targetGit, targetCommit, sourceCommit, policy);
+  if (candidates.workKind === 'contained' || candidates.workKind === 'private-content-noop') return candidates;
 
-  const pathBounded = await isPathBoundedTopology(targetGit, topologyTargetCommit, sourceCommit, strategy);
+  const pathBounded = await isPathBoundedTopology(targetGit, topologyTargetCommit, sourceCommit, policy.strategy);
   const localDataPath = pathBounded
     ? null
     : await hasLocalUntrackedOrIgnoredData(targetGit, targetRoot, excludedLocalPaths);
@@ -360,7 +530,7 @@ export async function integrateWorktreeRepository(options: {
   sourceDiagnosticPath: string;
   excludedLocalPaths?: string[];
   precomputedCandidates?: TargetMergeCandidates;
-  strategy: IntegrationStrategy;
+  policy: IntegrationPolicy;
   message: string | undefined;
   preserveConflicts: boolean;
   cleanupMode: CleanupMode;
@@ -376,17 +546,17 @@ export async function integrateWorktreeRepository(options: {
     sourceDiagnosticPath,
     excludedLocalPaths = [],
     precomputedCandidates,
-    strategy,
+    policy,
     message,
     preserveConflicts,
     cleanupMode,
     cleanup,
     readCommitMessage,
   } = options;
+  const { strategy } = policy;
   let startingHead: string | undefined;
   let targetRoot: string | undefined;
   let operationTarget: WorktreeTargetIdentity | undefined;
-  let cleanupFailureMutation: WorktreeMutationState | undefined;
   let verificationFailure = false;
   const eligibilityExcludedLocalPaths = [
     sourceDiagnosticPath,
@@ -456,29 +626,60 @@ export async function integrateWorktreeRepository(options: {
     return null;
   };
 
-  const cleanupWithIdentityRecheck = async (expectedCleanupTarget: WorktreeTargetIdentity): Promise<WorktreeCleanupOutcome> => {
+  // Same-call cleanup runs only after the completed work's proof. An exception
+  // from cleanup is a cleanup outcome: the completed integration result stands.
+  const cleanupAfterProof = async (
+    postTarget: WorktreeTargetIdentity,
+    completion: CompletedIntegration,
+  ): Promise<WorktreeCleanupOutcome> => {
     if (cleanupMode === 'none') return buildNotRequestedCleanupOutcome();
-    let identityMatches = false;
-    let identityError: string | undefined;
+    const proofFailure = await proveCleanupEligibility({
+      targetGit,
+      targetRoot: targetRoot!,
+      sourceBranch,
+      sourceCommit,
+      expectedTarget: postTarget,
+      completion,
+    });
+    if (proofFailure) return buildSkippedCleanupOutcome(cleanupMode, proofFailure);
     try {
-      if (!targetRoot) throw new Error('Trusted target repository root has not been resolved');
-      const currentTarget = await readWorktreeTargetIdentity(targetRoot);
-      const currentSource = (await targetGit.revparse([sourceBranch])).trim();
-      identityMatches = sameWorktreeTarget(expectedCleanupTarget, currentTarget) && currentSource === sourceCommit;
+      return await cleanup(cleanupMode === 'worktree+branch');
     } catch (error) {
-      identityError = error instanceof Error ? error.message : String(error);
+      return buildThrownCleanupOutcome(cleanupMode, error);
     }
-    if (identityMatches) return cleanup(cleanupMode === 'worktree+branch');
-    return buildCleanupOutcome(cleanupMode, {
-      worktreeRemoval: { status: 'not_attempted' },
-      branchDeletion: { status: 'not_attempted' },
-      prune: { status: 'not_attempted' },
-      failures: [{
-        step: 'identity-recheck',
-        cause: identityError
-          ? `Source or target could not be read after integration; cleanup was skipped: ${identityError}`
-          : 'Source or target moved after integration; cleanup was skipped',
-      }],
+  };
+
+  const noOpResult = (
+    completion: CompletedIntegration,
+    cleanupOutcome: WorktreeCleanupOutcome,
+  ): WorktreeIntegrationResult => ({
+    success: true,
+    merged: false,
+    ...(completion.kind === 'contained'
+      ? { reason: 'already_integrated', reasonCode: 'ALREADY_INTEGRATED' as const }
+      : { reason: 'nothing_to_merge', reasonCode: 'NO_TRACKED_CHANGES' as const }),
+    cleanupEligible: true,
+    filesChanged: [],
+    conflicts: [],
+    conflictState: 'none',
+    cleanup: toMergeCleanupBlock(cleanupOutcome),
+    ...mergeSuccessClassification(cleanupMode, cleanupOutcome, 'none'),
+  });
+
+  // The created preservation commit is retained: a negative or unreadable
+  // ancestry check is reported without rollback or cleanup.
+  const sourcePreservationFailure = async (finalCommit: string): Promise<WorktreeIntegrationResult | null> => {
+    let cause: string;
+    try {
+      if (await isAncestorOrEqual(targetGit, sourceCommit, finalCommit)) return null;
+      cause = `Integrated commit ${finalCommit} does not contain source ${sourceCommit}`;
+    } catch (error) {
+      cause = `Unable to verify that integrated commit ${finalCommit} contains source ${sourceCommit}: ${error instanceof Error ? error.message : String(error)}`;
+    }
+    return integrationFailure('POST_INTEGRATION_VERIFICATION_FAILED', `${cause}; the integration commit and source placement were retained`, {
+      mutation: 'applied',
+      expectedTarget,
+      observedTarget: operationTarget,
     });
   };
 
@@ -507,46 +708,26 @@ export async function integrateWorktreeRepository(options: {
       targetRoot,
       targetCommit: startingHead,
       sourceCommit,
-      strategy,
+      policy,
       excludedLocalPaths: eligibilityExcludedLocalPaths,
       precomputedCandidates,
     });
     if ('error' in eligibility) return integrationFailure(eligibility.reasonCode, eligibility.error);
-    const { candidateFiles } = eligibility;
+    const operationCompletion: CompletedIntegration = policy.historyIntent === 'preserve-source'
+      ? { kind: 'preserved' }
+      : { kind: 'rewritten', attestation: policy };
 
-    if (candidateFiles.length === 0) {
-      cleanupFailureMutation = 'none';
-      const cleanupOutcome = await cleanupWithIdentityRecheck(expectedTarget);
-      return {
-        success: true,
-        merged: false,
-        reason: 'nothing_to_merge',
-        reasonCode: 'NO_TRACKED_CHANGES',
-        cleanupEligible: true,
-        filesChanged: [],
-        conflicts: [],
-        conflictState: 'none',
-        cleanup: toMergeCleanupBlock(cleanupOutcome),
-        ...mergeSuccessClassification(cleanupMode, cleanupOutcome, 'none'),
-      };
+    if (eligibility.workKind === 'contained') {
+      const completion: CompletedIntegration = { kind: 'contained' };
+      return noOpResult(completion, await cleanupAfterProof(expectedTarget, completion));
+    }
+    if (eligibility.workKind === 'private-content-noop') {
+      return noOpResult(operationCompletion, await cleanupAfterProof(expectedTarget, operationCompletion));
     }
 
-    let commitMessage: string | undefined;
-    if (strategy === 'rebase') {
-      if (message?.trim()) {
-        return integrationFailure('MESSAGE_NOT_ALLOWED_FOR_REBASE', 'Custom merge message is not supported for rebase strategy');
-      }
-    } else {
-      try {
-        commitMessage = normalizeCommitMessage(message);
-      } catch (error: unknown) {
-        return integrationFailure('INVALID_MERGE_MESSAGE', (error as { message?: string }).message || 'Invalid merge message');
-      }
-    }
-    if (strategy !== 'squash') {
-      const sourceError = await validateSourceCommitMessages(targetGit, expectedTarget.commit, sourceCommit);
-      if (sourceError) return integrationFailure('INVALID_COMMIT_MESSAGE', sourceError);
-    }
+    const messageFailure = await integrationMessageFailure(targetGit, eligibility, message);
+    if (messageFailure) return integrationFailure(messageFailure.reasonCode, messageFailure.error);
+    const commitMessage = strategy === 'rebase' ? undefined : normalizeCommitMessage(message);
 
     let finalHead: string;
     let conflicts: string[] = [];
@@ -559,7 +740,7 @@ export async function integrateWorktreeRepository(options: {
       targetCommit: operationTarget.commit,
       topologyTargetCommit: startingHead,
       sourceCommit,
-      strategy,
+      policy,
       excludedLocalPaths: eligibilityExcludedLocalPaths,
       precomputedCandidates: eligibility,
     });
@@ -612,7 +793,7 @@ export async function integrateWorktreeRepository(options: {
           targetCommit: operationTarget.commit,
           topologyTargetCommit: startingHead,
           sourceCommit,
-          strategy,
+          policy,
           excludedLocalPaths: eligibilityExcludedLocalPaths,
           precomputedCandidates: eligibility,
         });
@@ -687,6 +868,8 @@ export async function integrateWorktreeRepository(options: {
         throw error;
       }
       conflicts = result.conflicts?.map((conflict) => conflict.file || String(conflict)) || [];
+      const preservationFailure = await sourcePreservationFailure(finalHead);
+      if (preservationFailure) return preservationFailure;
     }
 
     const finalTargetFailure = await targetIdentityFailure(
@@ -698,25 +881,11 @@ export async function integrateWorktreeRepository(options: {
     if (finalTargetFailure) return finalTargetFailure;
 
     if (finalHead === startingHead) {
-      cleanupFailureMutation = 'none';
-      const cleanupOutcome = await cleanupWithIdentityRecheck(expectedTarget);
-      return {
-        success: true,
-        merged: false,
-        reason: 'nothing_to_merge',
-        reasonCode: 'NO_TRACKED_CHANGES',
-        cleanupEligible: true,
-        filesChanged: [],
-        conflicts: [],
-        conflictState: 'none',
-        cleanup: toMergeCleanupBlock(cleanupOutcome),
-        ...mergeSuccessClassification(cleanupMode, cleanupOutcome, 'none'),
-      };
+      return noOpResult(operationCompletion, await cleanupAfterProof(expectedTarget, operationCompletion));
     }
 
     const filesChanged = await observedDeltaFiles(targetGit, startingHead, finalHead);
-    cleanupFailureMutation = 'applied';
-    const cleanupOutcome = await cleanupWithIdentityRecheck({ ...expectedTarget, commit: finalHead });
+    const cleanupOutcome = await cleanupAfterProof({ ...expectedTarget, commit: finalHead }, operationCompletion);
     return {
       success: true,
       merged: true,
@@ -730,10 +899,6 @@ export async function integrateWorktreeRepository(options: {
     };
   } catch (error: unknown) {
     const message = (error as { message?: string }).message;
-    if (cleanupFailureMutation !== undefined) {
-      return integrationFailure('CLEANUP_FAILED', message || 'Cleanup failed', { mutation: cleanupFailureMutation });
-    }
-
     const conflicts = await activeConflictFiles(targetGit);
     const isConflict = conflicts.length > 0;
     const preserveConflictState = isConflict && preserveConflicts;

@@ -69,7 +69,7 @@ When the operator asks to set up, audit, or maintain the project's durable verif
 
 ## Merge policy
 
-Prefer squash merges for ad-hoc worktree integration because each run should produce one polished final commit. Fold provisional implementation, review and fix iterations into that squash commit. Use an explicit normal merge when each preserved commit and the branch topology are independently valuable, or when the operator asks for it.
+Every \`hive_adhoc_worktree_merge\` declares \`historyIntent\` under the Repository-backed placement policy. When the run's history is private, declare \`rewrite-private\` and squash, so each run produces one polished final commit that folds provisional implementation, review and fix iterations. Declare \`preserve-source\` for an explicit normal merge when the source carries published commits, when each preserved commit and the branch topology are independently valuable, or when the operator asks for it.
 
 ${renderExperimentMethodPrompt(host)}
 
@@ -118,7 +118,7 @@ Track each lane's state, owned paths, dependencies, verification status, and whe
 
 Let \`hive_adhoc_worktree_merge\` auto-abort conflicts by default unless explicitly preserving conflicts for recovery.
 
-For integration strategy, default to \`squash\` and pass an explicit aggregate message with a non-empty one-line subject, a blank line, and a descriptive body. Use \`rebase\` or \`merge\` only when every preserved commit is independently valuable and has the same message structure; normal merge also requires a valid aggregate message. Do not use \`hive\`, task/run IDs, or "merge task" subjects in project history. Do not provide a non-blank \`message\` for \`rebase\`.
+For squash and normal merge, pass an explicit aggregate message with a non-empty one-line subject, a blank line, and a descriptive body. Use \`rebase\` only under \`rewrite-private\`, when every replayed commit is independently valuable and has the same message structure. Do not use \`hive\`, task/run IDs, or "merge task" subjects in project history. Do not provide a non-blank \`message\` for \`rebase\`.
 
 ## Tools
 

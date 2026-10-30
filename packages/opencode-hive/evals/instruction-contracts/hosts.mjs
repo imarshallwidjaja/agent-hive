@@ -89,7 +89,7 @@ export function authRequest(id, credential) {
 // targets, approval and sync, report and handoff publication, and hash-guarded context operations. Each must carry a
 // non-empty description on the surface the host actually shows the model: the direct tool schema, or the Code Mode
 // declaration for a read exposed there. Other undescribed fields are listed for information only.
-const MERGE_FIELDS = ['strategy', 'message', 'preserveConflicts', 'cleanup', 'sourceCommit', 'sourceCommits', 'expectedTarget', 'expectedTargets'];
+const MERGE_FIELDS = ['historyIntent', 'strategy', 'message', 'preserveConflicts', 'cleanup', 'sourceCommit', 'sourceCommits', 'expectedTarget', 'expectedTargets'];
 export const TOOL_FIELD_CONTRACT = Object.freeze({
   hive_worktree_create: ['baseRef', 'repoIds', 'candidate'],
   hive_worktree_inspect: ['repoIds', 'candidate'],

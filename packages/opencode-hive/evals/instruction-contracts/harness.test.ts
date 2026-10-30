@@ -3039,8 +3039,8 @@ describe('wiring contract', () => {
 
   test('the field contract names the pin, target, approval, sync, publication and context fields task 1 documents', () => {
     const fields = (tool: string) => TOOL_FIELD_CONTRACT[tool as keyof typeof TOOL_FIELD_CONTRACT];
-    expect(fields('hive_worktree_merge')).toEqual(expect.arrayContaining(['sourceCommit', 'sourceCommits', 'expectedTarget', 'expectedTargets']));
-    expect(fields('hive_adhoc_worktree_merge')).toEqual(expect.arrayContaining(['sourceCommit', 'sourceCommits', 'expectedTarget', 'expectedTargets']));
+    expect(fields('hive_worktree_merge')).toEqual(expect.arrayContaining(['historyIntent', 'sourceCommit', 'sourceCommits', 'expectedTarget', 'expectedTargets']));
+    expect(fields('hive_adhoc_worktree_merge')).toEqual(expect.arrayContaining(['historyIntent', 'sourceCommit', 'sourceCommits', 'expectedTarget', 'expectedTargets']));
     expect(fields('hive_plan_approve')).toEqual(['expectedRevision', 'sync', 'refreshPending']);
     expect(fields('hive_task_update')).toEqual(expect.arrayContaining(['report', 'handoff']));
     expect(fields('hive_context_write')).toEqual(expect.arrayContaining(['expectedRevision', 'expectedContentHash', 'kind']));

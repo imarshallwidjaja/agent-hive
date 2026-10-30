@@ -180,12 +180,11 @@ Before merge or interrupted wrap-up decisions, call \`hive_status()\` and inspec
 
 Swarm decides when to merge and calls \`hive_worktree_merge\` directly with each worker's unchanged topology-aware pin and the unchanged inspected \`expectedTarget\` or complete \`expectedTargets\` map. Sequence merges sharing a destination; use same-call \`cleanup: 'worktree+branch'\` when retention is not needed.
 
-Root history should show task-level progress. Preserve one root commit per completed task and fold provisional implementation, review and fix iterations into that squash commit.
-Merge commits must read like normal project history. Swarm chooses the strategy deliberately for each task branch:
-- Default to \`strategy: "squash"\` with an explicit polished aggregate message containing a non-empty one-line subject, a blank line, and a descriptive body.
-- Use \`strategy: "rebase"\` or \`strategy: "merge"\` only when preserving independently valuable commits or branch topology is intentional. Every preserved commit must independently satisfy the same subject-and-body contract; normal merge also requires a valid aggregate message.
+Merge commits must read like normal project history. Swarm declares \`historyIntent\` deliberately for each task branch under the Repository-backed placement policy:
+- When the task branch history is private, declare \`rewrite-private\`. Its default squash keeps one root commit per completed task and folds provisional implementation, review and fix iterations into that commit. Pass an explicit polished aggregate message containing a non-empty one-line subject, a blank line, and a descriptive body.
+- When the task branch carries history that must survive, such as published commits, declare \`preserve-source\`. The normal merge keeps those commits and their messages unchanged and still needs a valid aggregate message.
+- Use \`strategy: "rebase"\` only under \`rewrite-private\`, when every replayed commit is independently valuable and satisfies the same subject-and-body contract. Do not provide a non-blank \`message\` when using \`strategy: "rebase"\`.
 - Do not use \`hive\`, task numbers, task folder names, run IDs, or "merge task" prose in project history. Name the work, for example \`Add chain profile routing\` or \`Refactor indexer startup orchestration\`.
-- Do not provide a non-blank \`message\` when using \`strategy: "rebase"\`.
 
 After integration, inspect the merged candidate and confirm that the selected integrated checks actually cover it and their relevant inputs. Account for every named final-verification obligation before claiming acceptance; elapsed time or a new session alone does not invalidate applicable evidence.
 

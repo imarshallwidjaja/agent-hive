@@ -34,6 +34,7 @@ import {
   type PlanUnownedTaskHeading,
   type TaskSpecFreshness,
   type WorklogRef,
+  type WorktreeTargetIdentity,
 } from 'hive-core';
 import { GitSnapshotError, inspectGitSnapshot, isExactGitTopLevel } from '../utils/git-snapshot.js';
 import type { HiveInvocation, HiveServices } from './hive-services.js';
@@ -88,13 +89,29 @@ const targetIdentitySchema = z.object({
   commit: z.string().describe('Full destination commit ID.'),
 });
 
+/**
+ * The parsed target expectations as service identities. The schema requires the nullable `ref`; only this
+ * package's non-strict type inference reports it as optional.
+ */
+function parsedTargetExpectations(
+  expectedTarget: z.infer<typeof targetIdentitySchema> | undefined,
+  expectedTargets: Record<string, z.infer<typeof targetIdentitySchema>> | undefined,
+): { expectedTarget?: WorktreeTargetIdentity; expectedTargets?: Record<string, WorktreeTargetIdentity> } {
+  return {
+    expectedTarget: expectedTarget as WorktreeTargetIdentity | undefined,
+    expectedTargets: expectedTargets as Record<string, WorktreeTargetIdentity> | undefined,
+  };
+}
+
 // Field notes shared by the feature-task and ad-hoc merge tools. Descriptions explain argument relationships and
 // results; the merge service and normalizeMergePins below enforce them.
 const mergeOptionArgs = {
+  historyIntent: z.enum(['preserve-source', 'rewrite-private'])
+    .describe("Required; there is no default. 'preserve-source' keeps the source ancestry and its commit messages unchanged and permits only strategy 'merge'. 'rewrite-private' declares that all source-only history in every selected repository is private and may be rewritten, and permits 'squash' or 'rebase'. A missing, unknown or incompatible value is rejected before any mutation."),
   strategy: z.enum(['merge', 'squash', 'rebase']).optional()
-    .describe("Default 'squash'. 'rebase' rejects a nonblank message."),
+    .describe("Omitted, the intent selects it: 'merge' for preserve-source, 'squash' for rewrite-private. 'rebase' rejects a nonblank message."),
   message: z.string().optional()
-    .describe('Integration commit message: nonblank one-line subject, blank line, nonblank body. Needed whenever the operation creates a commit; omit it for rebase.'),
+    .describe('Integration commit message: nonblank one-line subject, blank line, nonblank body. Needed whenever the operation creates a commit (merge or squash); omit it for rebase. A source already contained in the destination needs none.'),
   preserveConflicts: z.boolean().optional()
     .describe('Default false: a conflicting integration is aborted and the destination restored. true leaves the conflict in the destination checkout (MERGE_CONFLICT_PRESERVED); do not merge again while that Git operation is active.'),
   cleanup: z.enum(['none', 'worktree', 'worktree+branch']).optional()
@@ -180,6 +197,7 @@ function mergeDescription(subject: string, inspectTool: string): string {
     + `Requires a clean source and a destination with a clean index and tracked working tree, and exactly one target expectation copied unchanged from ${inspectTool}. `
     + 'Source pins are optional at this API: omitted, the currently inspected source is merged, which is an observation, not evidence that it was verified. '
     + 'A missing worktree, an unresolved feature, a repoIds mismatch or a source pin that conflicts with the inspection throws an error before any mutation. Failures the merge service classifies return success: false with phase, reasonCode, mutation, retryable and action; follow action, and repeat the identical call only when retryable is true. '
+    + 'A source already contained in the destination returns ALREADY_INTEGRATED with no commit. Same-call cleanup runs only after proof: source containment for preserve-source and contained work, a completed operation for rewrite-private. '
     + 'Read reasonCode, action and cleanup even when success is true: an integration that succeeded can still report CLEANUP_FAILED with action cleanup_only, and then only the cleanup is repeated. '
     + 'Composite repositories integrate one after another, and an earlier integration is not rolled back when a later one fails (COMPOSITE_PARTIAL).';
 }
@@ -510,14 +528,19 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
     hive_worktree_merge: operation({
       description: mergeDescription('a feature-task worktree', 'hive_worktree_inspect'),
       args: { feature: z.string().optional(), task: z.string(), ...taskRepoIdsArgs, ...candidateArg, ...mergeOptionArgs },
-      execute: async ({ feature, task, repoIds, candidate, strategy = 'squash', message, ...options }, invocation) => {
+      execute: async ({ feature, task, repoIds, candidate, historyIntent, strategy, message, preserveConflicts, cleanup, sourceCommit, sourceCommits, expectedTarget, expectedTargets }, invocation) => {
         const selected = requireFeature(feature, invocation);
         assertTaskRepoIds(selected, task, repoIds);
         const inspected = await worktreeService.inspect(selected, task, candidate);
         if (!inspected) throw new Error('Task worktree not found');
-        const { sourceCommit, sourceCommits, ...mergeOptions } = options;
-        const pins = normalizeMergePins(inspected, sourceCommit, sourceCommits);
-        return worktreeService.merge(selected, task, strategy, message, { ...mergeOptions, ...pins } as MergeOptions, candidate);
+        const options: MergeOptions = {
+          historyIntent,
+          preserveConflicts,
+          cleanup,
+          ...parsedTargetExpectations(expectedTarget, expectedTargets),
+          ...normalizeMergePins(inspected, sourceCommit, sourceCommits),
+        };
+        return worktreeService.merge(selected, task, strategy, message, options, candidate);
       },
     }),
     hive_worktree_cleanup: operation({
@@ -563,13 +586,18 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
     hive_adhoc_worktree_merge: operation({
       description: mergeDescription('an ad-hoc worktree', 'hive_adhoc_worktree_inspect'),
       args: { runId: z.string(), ...adhocRepoIdsArg, ...adhocSourceDirectoryArg, ...mergeOptionArgs },
-      execute: async ({ runId, repoIds, sourceDirectory, strategy = 'squash', message, ...options }) => {
+      execute: async ({ runId, repoIds, sourceDirectory, historyIntent, strategy, message, preserveConflicts, cleanup, sourceCommit, sourceCommits, expectedTarget, expectedTargets }) => {
         const service = adhocService(sourceDirectory, repoIds);
         const inspected = await service.inspect(runId);
         if (!inspected) throw new Error('Ad-hoc worktree not found');
-        const { sourceCommit, sourceCommits, ...mergeOptions } = options;
-        const pins = normalizeMergePins(inspected, sourceCommit, sourceCommits);
-        return service.merge(runId, strategy, message, { ...mergeOptions, ...pins } as AdhocMergeOptions);
+        const options: AdhocMergeOptions = {
+          historyIntent,
+          preserveConflicts,
+          cleanup,
+          ...parsedTargetExpectations(expectedTarget, expectedTargets),
+          ...normalizeMergePins(inspected, sourceCommit, sourceCommits),
+        };
+        return service.merge(runId, strategy, message, options);
       },
     }),
     hive_adhoc_worktree_cleanup: operation({

@@ -132,7 +132,7 @@ describe('HIVE_COMMANDS', () => {
       const output = commands['start-execution'].run('');
       const once = [
         'do not start without an approved and synced plan',
-        "Verify before the primary calls hive_worktree_merge with the worker's unchanged source pin and inspected target expectation",
+        "Verify before the primary calls hive_worktree_merge with the worker's unchanged source pin and inspected target expectation and the declared historyIntent",
         'capture its initial destination identity from the inspection-shaped create result',
         // Report ownership and partial publication: the command is the only prompt a non-Hive primary sees.
         'A bound implementation worker publishes its own report and successor handoff and returns the numbered reportPath',

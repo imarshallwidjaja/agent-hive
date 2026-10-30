@@ -543,6 +543,7 @@
                   "path": "target"
                 }
               },
+              "historyIntent": "rewrite-private",
               "strategy": "squash",
               "message": "feat: add ledger balance\n\nSum entry amounts with tests.",
               "cleanup": "worktree+branch"
@@ -803,6 +804,7 @@
                   "path": "target"
                 }
               },
+              "historyIntent": "rewrite-private",
               "strategy": "squash",
               "message": "feat: add subtract and document math helpers\n\nExport subtract and describe multiply and subtract in the README.",
               "cleanup": "worktree+branch"

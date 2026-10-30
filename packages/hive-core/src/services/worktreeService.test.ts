@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
+import { spawnSync } from "child_process";
 import * as fsSync from "fs";
 import * as fs from "fs/promises";
 import * as os from "os";
@@ -24,9 +25,12 @@ interface TestFixture {
 const tempDirs: string[] = [];
 const mergeMessage = 'feat: integrate task work\n\nIntegrate the verified task implementation into project history.';
 const testCommitMessage = (subject: string): string => `${subject}\n\nCreate test fixture history with a descriptive body.`;
+// Parameterized strategy tests declare the intent each strategy requires.
+const intentFor = (strategy: 'merge' | 'squash' | 'rebase') => strategy === 'merge' ? 'preserve-source' as const : 'rewrite-private' as const;
 
 // Existing behavior tests supply the inspect result as an operator would. Tests
-// for the mandatory expectation contract instantiate CoreWorktreeService.
+// for the mandatory expectation and history-intent contracts instantiate
+// CoreWorktreeService. This subclass never supplies a strategy or intent.
 class WorktreeService extends CoreWorktreeService {
   private readonly testConfig: WorktreeConfig;
 
@@ -38,9 +42,9 @@ class WorktreeService extends CoreWorktreeService {
   override async merge(
     feature: string,
     step: string,
-    strategy: 'merge' | 'squash' | 'rebase' = 'squash',
-    message?: string,
-    options: MergeOptions = {},
+    strategy: 'merge' | 'squash' | 'rebase' | undefined,
+    message: string | undefined,
+    options: MergeOptions,
     attemptSlot?: string,
   ): Promise<MergeResult> {
     if (options.expectedTarget === undefined && options.expectedTargets === undefined) {
@@ -286,6 +290,13 @@ async function branchExists(git: SimpleGit, branchName: string): Promise<boolean
   return branches.all.includes(branchName);
 }
 
+// Reads ancestry through Git's own exit status, independently of the service.
+function gitIsAncestor(repoPath: string, ancestor: string, descendant: string): boolean {
+  const result = spawnSync('git', ['merge-base', '--is-ancestor', ancestor, descendant], { cwd: repoPath });
+  if (result.status !== 0 && result.status !== 1) throw new Error(`merge-base failed: ${result.stderr}`);
+  return result.status === 0;
+}
+
 async function readHeadBody(targetPath: string): Promise<string> {
   const git = simpleGit(targetPath);
   const body = await git.raw(["log", "-1", "--format=%B"]);
@@ -463,7 +474,7 @@ describe("WorktreeService merge and commit messages", () => {
     const fixture = await createCommittedFixture();
     const message = "feat(core): merge task\n\nmerge body";
 
-    const result = await fixture.service.merge(fixture.feature, fixture.task, "merge", message);
+    const result = await fixture.service.merge(fixture.feature, fixture.task, "merge", message, { historyIntent: 'preserve-source' });
 
     expect(result.success).toBe(true);
     expect(result.strategy).toBe('merge');
@@ -482,7 +493,7 @@ describe("WorktreeService merge and commit messages", () => {
     const fixture = await createCommittedFixture();
     const message = "feat(core): squash task\n\nsquash body";
 
-    const result = await fixture.service.merge(fixture.feature, fixture.task, "squash", message);
+    const result = await fixture.service.merge(fixture.feature, fixture.task, "squash", message, { historyIntent: 'rewrite-private' });
 
     expect(result.success).toBe(true);
     expect(result.strategy).toBe('squash');
@@ -501,7 +512,7 @@ describe("WorktreeService merge and commit messages", () => {
     const fixture = await createCommittedFixture();
     const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
 
-    const result = await fixture.service.merge(fixture.feature, fixture.task);
+    const result = await fixture.service.merge(fixture.feature, fixture.task, undefined, undefined, { historyIntent: 'rewrite-private' });
 
     expect(result.success).toBe(false);
     expect(result.strategy).toBe('squash');
@@ -523,7 +534,7 @@ describe("WorktreeService merge and commit messages", () => {
     await fixture.repoGit.checkout('main');
     const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
 
-    const result = await fixture.service.merge(fixture.feature, fixture.task, 'rebase');
+    const result = await fixture.service.merge(fixture.feature, fixture.task, 'rebase', undefined, { historyIntent: 'rewrite-private' });
 
     expect(result.success).toBe(false);
     expect(result.error).toContain(malformedHead.slice(0, 7));
@@ -536,7 +547,7 @@ describe("WorktreeService merge and commit messages", () => {
     const fixture = await createConflictingFixture();
     const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
 
-    const result = await fixture.service.merge(fixture.feature, fixture.task, 'squash', mergeMessage);
+    const result = await fixture.service.merge(fixture.feature, fixture.task, 'squash', mergeMessage, { historyIntent: 'rewrite-private' });
 
     expect(result).toMatchObject({
       success: false,
@@ -556,7 +567,7 @@ describe("WorktreeService merge and commit messages", () => {
     await fixture.repoGit.raw(['config', 'core.hooksPath', path.dirname(hookPath)]);
     const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
 
-    const result = await fixture.service.merge(fixture.feature, fixture.task, 'squash', mergeMessage);
+    const result = await fixture.service.merge(fixture.feature, fixture.task, 'squash', mergeMessage, { historyIntent: 'rewrite-private' });
 
     expect(result.success).toBe(false);
     expect(result.merged).toBe(false);
@@ -573,7 +584,7 @@ describe("WorktreeService merge and commit messages", () => {
       await installPrepareCommitMessageHook(fixture.repoPath, hookBody);
       const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
 
-      const result = await fixture.service.merge(fixture.feature, fixture.task, strategy, mergeMessage);
+      const result = await fixture.service.merge(fixture.feature, fixture.task, strategy, mergeMessage, { historyIntent: intentFor(strategy) });
 
       expect(result.success).toBe(false);
       expect(result.merged).toBe(false);
@@ -588,7 +599,7 @@ describe("WorktreeService merge and commit messages", () => {
     await installPrepareCommitMessageHook(fixture.repoPath, `printf '%s\\n' 'subject only' > "$1"`);
     const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
 
-    const result = await fixture.service.merge(fixture.feature, fixture.task, 'rebase');
+    const result = await fixture.service.merge(fixture.feature, fixture.task, 'rebase', undefined, { historyIntent: 'rewrite-private' });
 
     expect(result.success).toBe(false);
     expect(result.merged).toBe(false);
@@ -603,6 +614,7 @@ describe("WorktreeService merge and commit messages", () => {
     const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
 
     const result = await fixture.service.merge(fixture.feature, fixture.task, 'squash', mergeMessage, {
+      historyIntent: 'rewrite-private',
       preserveConflicts: true,
     });
 
@@ -622,7 +634,7 @@ describe("WorktreeService merge and commit messages", () => {
     const beforeStatus = await fixture.repoGit.raw(['status', '--porcelain=v1']);
     const beforeIndex = await fixture.repoGit.raw(['diff', '--cached', '--binary']);
 
-    const result = await fixture.service.merge(fixture.feature, fixture.task, 'squash', mergeMessage);
+    const result = await fixture.service.merge(fixture.feature, fixture.task, 'squash', mergeMessage, { historyIntent: 'rewrite-private' });
 
     expect(result).toMatchObject({ success: false, merged: false, conflictState: 'none' });
     expect(result.error).toMatch(/dirty|uncommitted/i);
@@ -654,6 +666,7 @@ describe("WorktreeService merge and commit messages", () => {
         fixture.task,
         strategy,
         strategy === 'rebase' ? undefined : mergeMessage,
+        { historyIntent: intentFor(strategy) },
       );
 
       expect(result).toMatchObject({ success: true, merged: true });
@@ -673,7 +686,7 @@ describe("WorktreeService merge and commit messages", () => {
     expect(await fixture.repoGit.raw(['status', '--porcelain=v1'])).toBe('');
     const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
 
-    const result = await fixture.service.merge(fixture.feature, fixture.task, 'merge', mergeMessage);
+    const result = await fixture.service.merge(fixture.feature, fixture.task, 'merge', mergeMessage, { historyIntent: 'preserve-source' });
 
     expect(result).toMatchObject({ success: false, reasonCode: 'TARGET_DIRTY', mutation: 'none' });
     expect(result.error).toMatch(/untracked path.*renamed\.txt.*collides/i);
@@ -698,6 +711,7 @@ describe("WorktreeService merge and commit messages", () => {
         fixture.task,
         strategy,
         strategy === 'rebase' ? undefined : mergeMessage,
+        { historyIntent: intentFor(strategy) },
       );
 
       expect(result).toMatchObject({
@@ -732,7 +746,7 @@ describe("WorktreeService merge and commit messages", () => {
     const foreignHead = (await foreignGit.revparse(['HEAD'])).trim();
     const foreignStatus = await foreignGit.raw(['status', '--porcelain=v1', '-z']);
 
-    const result = await fixture.service.merge(fixture.feature, fixture.task, 'squash', mergeMessage);
+    const result = await fixture.service.merge(fixture.feature, fixture.task, 'squash', mergeMessage, { historyIntent: 'rewrite-private' });
 
     expect(result).toMatchObject({
       success: false,
@@ -758,7 +772,7 @@ describe("WorktreeService merge and commit messages", () => {
     expect(await fixture.repoGit.raw(['status', '--porcelain=v1'])).toBe('');
     const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
 
-    const result = await fixture.service.merge(fixture.feature, fixture.task, 'merge', mergeMessage);
+    const result = await fixture.service.merge(fixture.feature, fixture.task, 'merge', mergeMessage, { historyIntent: 'preserve-source' });
 
     expect(result).toMatchObject({
       success: false,
@@ -783,7 +797,7 @@ describe("WorktreeService merge and commit messages", () => {
     await fs.writeFile(hiveStatePath, hiveState, 'utf-8');
     const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
 
-    const result = await fixture.service.merge(fixture.feature, fixture.task, 'merge', mergeMessage);
+    const result = await fixture.service.merge(fixture.feature, fixture.task, 'merge', mergeMessage, { historyIntent: 'preserve-source' });
 
     expect(result).toMatchObject({
       success: false,
@@ -821,7 +835,7 @@ describe("WorktreeService merge and commit messages", () => {
       targetRoot: repoPath,
       targetCommit,
       sourceCommit,
-      strategy: 'rebase',
+      policy: { historyIntent: 'rewrite-private', strategy: 'rebase' },
       excludedLocalPaths: [excludedPath],
     });
 
@@ -847,7 +861,7 @@ describe("WorktreeService merge and commit messages", () => {
     await fs.writeFile(localPath, 'local\n', 'utf-8');
     const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
 
-    const result = await fixture.service.merge(fixture.feature, fixture.task, 'rebase');
+    const result = await fixture.service.merge(fixture.feature, fixture.task, 'rebase', undefined, { historyIntent: 'rewrite-private' });
 
     expect(result).toMatchObject({
       success: false,
@@ -870,7 +884,7 @@ describe("WorktreeService merge and commit messages", () => {
     await fs.writeFile(path.join(fixture.repoPath, 'nested'), 'user content\n', 'utf-8');
     const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
 
-    const result = await fixture.service.merge(fixture.feature, fixture.task, 'squash', mergeMessage);
+    const result = await fixture.service.merge(fixture.feature, fixture.task, 'squash', mergeMessage, { historyIntent: 'rewrite-private' });
 
     expect(result).toMatchObject({ success: false, reasonCode: 'TARGET_DIRTY', mutation: 'none' });
     expect(result.error).toMatch(/untracked path.*nested.*collides/i);
@@ -900,6 +914,7 @@ describe("WorktreeService merge and commit messages", () => {
         fixture.task,
         strategy,
         strategy === 'rebase' ? undefined : mergeMessage,
+        { historyIntent: intentFor(strategy) },
       );
 
       expect(result).toMatchObject({ success: false, reasonCode: 'TARGET_DIRTY', mutation: 'none' });
@@ -938,6 +953,7 @@ describe("WorktreeService merge and commit messages", () => {
         fixture.task,
         strategy,
         strategy === 'rebase' ? undefined : mergeMessage,
+        { historyIntent: intentFor(strategy) },
       );
 
       expect(result).toMatchObject({ success: false, reasonCode: 'TARGET_DIRTY', mutation: 'none' });
@@ -972,6 +988,7 @@ describe("WorktreeService merge and commit messages", () => {
         fixture.task,
         strategy,
         strategy === 'rebase' ? undefined : mergeMessage,
+        { historyIntent: intentFor(strategy) },
       );
 
       expect(result).toMatchObject({ success: false, reasonCode: 'TARGET_DIRTY', mutation: 'none' });
@@ -1007,7 +1024,7 @@ describe("WorktreeService merge and commit messages", () => {
 
     let result;
     try {
-      result = await fixture.service.merge(fixture.feature, fixture.task, 'squash', mergeMessage);
+      result = await fixture.service.merge(fixture.feature, fixture.task, 'squash', mergeMessage, { historyIntent: 'rewrite-private' });
     } finally {
       gitSpy.mockRestore();
     }
@@ -1034,7 +1051,7 @@ describe("WorktreeService merge and commit messages", () => {
     await fixture.repoGit.commit(testCommitMessage('feat: conflicting target commit'));
     const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
 
-    const result = await fixture.service.merge(fixture.feature, fixture.task, 'rebase');
+    const result = await fixture.service.merge(fixture.feature, fixture.task, 'rebase', undefined, { historyIntent: 'rewrite-private' });
 
     expect(result).toMatchObject({ success: false, merged: false, conflictState: 'aborted' });
     expect((await fixture.repoGit.revparse(['HEAD'])).trim()).toBe(beforeHead);
@@ -1070,7 +1087,7 @@ describe("WorktreeService merge and commit messages", () => {
 
     let result;
     try {
-      result = await fixture.service.merge(fixture.feature, fixture.task, 'rebase');
+      result = await fixture.service.merge(fixture.feature, fixture.task, 'rebase', undefined, { historyIntent: 'rewrite-private' });
     } finally {
       gitSpy.mockRestore();
     }
@@ -1132,7 +1149,7 @@ describe("WorktreeService merge and commit messages", () => {
 
     let result;
     try {
-      result = await fixture.service.merge(fixture.feature, fixture.task, 'rebase');
+      result = await fixture.service.merge(fixture.feature, fixture.task, 'rebase', undefined, { historyIntent: 'rewrite-private' });
     } finally {
       gitSpy.mockRestore();
     }
@@ -1182,7 +1199,7 @@ describe("WorktreeService merge and commit messages", () => {
 
       let result;
       try {
-        result = await fixture.service.merge(fixture.feature, fixture.task, 'rebase');
+        result = await fixture.service.merge(fixture.feature, fixture.task, 'rebase', undefined, { historyIntent: 'rewrite-private' });
       } finally {
         gitSpy.mockRestore();
       }
@@ -1207,7 +1224,7 @@ describe("WorktreeService merge and commit messages", () => {
   it('returns helper-friendly merge details and preserves branch/worktree by default', async () => {
     const fixture = await createCommittedFixture();
 
-    const result = await fixture.service.merge(fixture.feature, fixture.task, 'merge', mergeMessage);
+    const result = await fixture.service.merge(fixture.feature, fixture.task, 'merge', mergeMessage, { historyIntent: 'preserve-source' });
 
     expect(result).toMatchObject({
       success: true,
@@ -1231,6 +1248,7 @@ describe("WorktreeService merge and commit messages", () => {
     const fixture = await createCommittedFixture();
 
     const result = await fixture.service.merge(fixture.feature, fixture.task, 'merge', mergeMessage, {
+      historyIntent: 'preserve-source',
       cleanup: 'worktree',
     });
 
@@ -1253,6 +1271,7 @@ describe("WorktreeService merge and commit messages", () => {
     const fixture = await createCommittedFixture();
 
     const result = await fixture.service.merge(fixture.feature, fixture.task, 'merge', mergeMessage, {
+      historyIntent: 'preserve-source',
       cleanup: 'worktree+branch',
     });
 
@@ -1294,6 +1313,7 @@ describe("WorktreeService merge and commit messages", () => {
     let result;
     try {
       result = await fixture.service.merge(fixture.feature, fixture.task, 'merge', mergeMessage, {
+        historyIntent: 'preserve-source',
         cleanup: 'worktree+branch',
       });
     } finally {
@@ -1324,7 +1344,7 @@ describe("WorktreeService merge and commit messages", () => {
     });
     let result;
     try {
-      result = await fixture.service.merge(fixture.feature, fixture.task, 'merge', mergeMessage);
+      result = await fixture.service.merge(fixture.feature, fixture.task, 'merge', mergeMessage, { historyIntent: 'preserve-source' });
     } finally {
       gitSpy.mockRestore();
       await fixture.repoGit.raw(['merge', '--abort']).catch(() => {});
@@ -1350,30 +1370,88 @@ describe("WorktreeService merge and commit messages", () => {
     let result: MergeResult;
     try {
       result = await fixture.service.merge(fixture.feature, fixture.task, 'merge', mergeMessage, {
+        historyIntent: 'preserve-source',
         cleanup: 'worktree',
       });
     } finally {
       cleanupSpy.mockRestore();
     }
 
+    // The integration commit is durable: no --hard reset to the starting HEAD.
+    const afterHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
+    expect(afterHead).not.toBe(beforeHead);
     expect(result).toMatchObject({
-      success: false,
-      merged: false,
+      success: true,
+      merged: true,
+      sha: afterHead,
+      filesChanged: ['task-change.txt'],
       reasonCode: 'CLEANUP_FAILED',
       phase: 'cleanup',
       mutation: 'applied',
       retryable: false,
       action: 'cleanup_only',
     });
-    expect(result.error).toMatch(/simulated cleanup failure/);
-    // The integration commit is durable: no --hard reset to the starting HEAD.
-    const afterHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
-    expect(afterHead).not.toBe(beforeHead);
+    expect(result.cleanup.outcome).toBe('failed');
+    expect(result.cleanup.failures).toContainEqual(expect.objectContaining({
+      step: 'cleanup',
+      cause: expect.stringMatching(/simulated cleanup failure/),
+    }));
     expect(await readHeadBody(fixture.repoPath)).toBe(mergeMessage);
     expect(await pathExists(fixture.worktreePath)).toBe(true);
   });
 
-  it('returns NO_TRACKED_CHANGES for divergent histories with identical endpoint trees and leaves target HEAD untouched', async () => {
+  it('keeps a completed integration result when same-call cleanup cannot remove worktree metadata', async () => {
+    const fixture = await createCommittedFixture();
+    const metadataPath = `${fixture.worktreePath}.json`;
+    const originalUnlink = fs.unlink;
+    const unlinkSpy = spyOn(fs, 'unlink').mockImplementation(async (file: any) => {
+      if (String(file) === metadataPath) {
+        throw Object.assign(new Error('EACCES: simulated metadata unlink failure'), { code: 'EACCES' });
+      }
+      return originalUnlink(file);
+    });
+    let result: MergeResult;
+    try {
+      result = await fixture.service.merge(fixture.feature, fixture.task, 'merge', mergeMessage, {
+        historyIntent: 'preserve-source',
+        cleanup: 'worktree+branch',
+      });
+    } finally {
+      unlinkSpy.mockRestore();
+    }
+
+    const afterHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
+    expect(result).toMatchObject({
+      success: true,
+      merged: true,
+      sha: afterHead,
+      reasonCode: 'CLEANUP_FAILED',
+      phase: 'cleanup',
+      mutation: 'applied',
+      retryable: false,
+      action: 'cleanup_only',
+    });
+    // The worktree and branch were removed before metadata removal threw; the
+    // reported steps match the repository state.
+    expect(await pathExists(fixture.worktreePath)).toBe(false);
+    expect(await branchExists(fixture.repoGit, 'hive/test-feature/01-test-task')).toBe(false);
+    expect(await pathExists(metadataPath)).toBe(true);
+    expect(result.cleanup).toMatchObject({
+      outcome: 'partial',
+      worktreeRemoval: { status: 'succeeded' },
+      prune: { status: 'succeeded' },
+      branchDeletion: { status: 'succeeded' },
+      worktreeRemoved: true,
+      pruned: true,
+      branchDeleted: true,
+    });
+    expect(result.cleanup.failures).toEqual([{
+      step: 'metadata-removal',
+      cause: expect.stringMatching(/simulated metadata unlink failure/),
+    }]);
+  });
+
+  async function createDivergentEqualTreeFixture(): Promise<TestFixture & { sourceCommit: string }> {
     const fixture = await createFixture();
     const worktreeGit = simpleGit(fixture.worktreePath);
     await fs.writeFile(path.join(fixture.worktreePath, 'tracked.txt'), 'branch-path\n', 'utf-8');
@@ -1390,24 +1468,55 @@ describe("WorktreeService merge and commit messages", () => {
     await fs.writeFile(path.join(fixture.repoPath, 'tracked.txt'), 'converged\n', 'utf-8');
     await fixture.repoGit.add('-A');
     await fixture.repoGit.commit(testCommitMessage('feat: main converges'));
+    return { ...fixture, sourceCommit: (await worktreeGit.revparse(['HEAD'])).trim() };
+  }
 
+  it('joins divergent histories with identical endpoint trees under preserve-source', async () => {
+    const fixture = await createDivergentEqualTreeFixture();
     const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
-    const beforeStatus = await fixture.repoGit.status();
+    const beforeTree = (await fixture.repoGit.revparse(['HEAD^{tree}'])).trim();
+    expect(gitIsAncestor(fixture.repoPath, fixture.sourceCommit, beforeHead)).toBe(false);
 
-    const result = await fixture.service.merge(fixture.feature, fixture.task, 'merge', mergeMessage);
+    const result = await fixture.service.merge(fixture.feature, fixture.task, undefined, mergeMessage, {
+      historyIntent: 'preserve-source',
+      cleanup: 'worktree+branch',
+    });
+
+    const afterHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
+    expect(result).toMatchObject({
+      success: true,
+      merged: true,
+      strategy: 'merge',
+      sha: afterHead,
+      filesChanged: [],
+      mutation: 'applied',
+      action: 'none',
+      cleanup: { outcome: 'complete', worktreeRemoved: true, branchDeleted: true },
+    });
+    expect((await fixture.repoGit.raw(['rev-list', '--parents', '-n', '1', 'HEAD'])).trim().split(' ').slice(1))
+      .toEqual([beforeHead, fixture.sourceCommit]);
+    expect((await fixture.repoGit.revparse(['HEAD^{tree}'])).trim()).toBe(beforeTree);
+    expect(gitIsAncestor(fixture.repoPath, fixture.sourceCommit, afterHead)).toBe(true);
+  });
+
+  it('keeps a divergent identical-tree source as a private content no-op under rewrite-private', async () => {
+    const fixture = await createDivergentEqualTreeFixture();
+    const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
+
+    const result = await fixture.service.merge(fixture.feature, fixture.task, 'squash', undefined, { historyIntent: 'rewrite-private' });
 
     expect(result).toMatchObject({
       success: true,
       merged: false,
+      strategy: 'squash',
       reason: 'nothing_to_merge',
       reasonCode: 'NO_TRACKED_CHANGES',
       filesChanged: [],
+      mutation: 'none',
     });
     expect('sha' in result).toBe(false);
     expect((await fixture.repoGit.revparse(['HEAD'])).trim()).toBe(beforeHead);
-    const afterStatus = await fixture.repoGit.status();
-    expect(afterStatus.isClean()).toBe(true);
-    expect(afterStatus.current).toBe(beforeStatus.current);
+    expect((await fixture.repoGit.status()).isClean()).toBe(true);
   });
 
   // The reported delta must describe the integration, not the endpoint
@@ -1442,6 +1551,7 @@ describe("WorktreeService merge and commit messages", () => {
         fixture.task,
         strategy,
         strategy === 'rebase' ? undefined : mergeMessage,
+        { historyIntent: intentFor(strategy) },
       );
 
       expect(result).toMatchObject({
@@ -1470,7 +1580,7 @@ describe("WorktreeService merge and commit messages", () => {
     await fs.writeFile(path.join(fixture.worktreePath, '.git'), formerPointer, 'utf8');
     const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
 
-    const result = await fixture.service.merge(fixture.feature, fixture.task, 'merge', mergeMessage);
+    const result = await fixture.service.merge(fixture.feature, fixture.task, 'merge', mergeMessage, { historyIntent: 'preserve-source' });
 
     expect(result).toMatchObject({
       success: false,
@@ -1495,7 +1605,7 @@ describe("WorktreeService merge and commit messages", () => {
     });
     let untyped: MergeResult;
     try {
-      untyped = await fixture.service.merge(fixture.feature, fixture.task, 'merge', mergeMessage);
+      untyped = await fixture.service.merge(fixture.feature, fixture.task, 'merge', mergeMessage, { historyIntent: 'preserve-source' });
     } finally {
       untypedSpy.mockRestore();
     }
@@ -1519,7 +1629,7 @@ describe("WorktreeService merge and commit messages", () => {
     });
     let typed: MergeResult;
     try {
-      typed = await fixture.service.merge(fixture.feature, fixture.task, 'merge', mergeMessage);
+      typed = await fixture.service.merge(fixture.feature, fixture.task, 'merge', mergeMessage, { historyIntent: 'preserve-source' });
     } finally {
       typedSpy.mockRestore();
     }
@@ -1542,7 +1652,7 @@ describe("WorktreeService merge and commit messages", () => {
     await fixture.repoGit.raw(['worktree', 'remove', fixture.worktreePath, '--force']);
     const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
 
-    const result = await fixture.service.merge(fixture.feature, fixture.task, 'merge', mergeMessage);
+    const result = await fixture.service.merge(fixture.feature, fixture.task, 'merge', mergeMessage, { historyIntent: 'preserve-source' });
 
     expect(result).toMatchObject({
       success: false,
@@ -1565,7 +1675,7 @@ describe("WorktreeService merge and commit messages", () => {
     await fixture.repoGit.raw(['config', 'core.hooksPath', path.dirname(hookPath)]);
     const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
 
-    const result = await fixture.service.merge(fixture.feature, fixture.task, 'squash', mergeMessage);
+    const result = await fixture.service.merge(fixture.feature, fixture.task, 'squash', mergeMessage, { historyIntent: 'rewrite-private' });
 
     expect(result).toMatchObject({
       success: false,
@@ -1586,38 +1696,16 @@ describe("WorktreeService merge and commit messages", () => {
     expect((await fixture.repoGit.status()).isClean()).toBe(true);
   });
 
-  for (const strategy of ['merge', 'squash', 'rebase'] as const) {
-    it(`does not report merged=true when ${strategy} leaves the target HEAD unchanged`, async () => {
+  // A private content no-op is not contained in the target; same-call cleanup
+  // relies on the completed operation and the private attestation instead.
+  for (const strategy of ['squash', 'rebase'] as const) {
+    it(`returns a cleanup-eligible private no-op for a net-zero ${strategy} task merge`, async () => {
       const fixture = await createNetZeroCommittedFixture();
       const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
-
-      const result = await fixture.service.merge(
-        fixture.feature,
-        fixture.task,
-        strategy,
-        strategy === 'rebase' ? undefined : mergeMessage,
-      );
-
-      expect(result.merged).toBe(false);
-      expect(result).toMatchObject({
-        success: true,
-        reasonCode: 'NO_TRACKED_CHANGES',
-        filesChanged: [],
-        mutation: 'none',
-        retryable: false,
-        action: 'none',
-      });
-      expect('sha' in result).toBe(false);
-      expect((await fixture.repoGit.revparse(['HEAD'])).trim()).toBe(beforeHead);
-    });
-  }
-
-  for (const strategy of ['merge', 'squash', 'rebase'] as const) {
-    it(`returns a cleanup-eligible no-op for a net-zero ${strategy} task merge`, async () => {
-      const fixture = await createNetZeroCommittedFixture();
-      const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
+      const sourceCommit = (await fixture.repoGit.revparse(['hive/test-feature/01-test-task'])).trim();
 
       const result = await fixture.service.merge(fixture.feature, fixture.task, strategy, undefined, {
+        historyIntent: 'rewrite-private',
         cleanup: 'worktree+branch',
       });
 
@@ -1632,6 +1720,9 @@ describe("WorktreeService merge and commit messages", () => {
         conflictState: 'none',
         cleanupEligible: true,
         taskUpdateRecommended: true,
+        mutation: 'none',
+        retryable: false,
+        action: 'none',
         cleanup: {
           worktreeRemoved: true,
           branchDeleted: true,
@@ -1640,10 +1731,227 @@ describe("WorktreeService merge and commit messages", () => {
       });
       expect('sha' in result).toBe(false);
       expect((await fixture.repoGit.revparse(['HEAD'])).trim()).toBe(beforeHead);
+      expect(gitIsAncestor(fixture.repoPath, sourceCommit, beforeHead)).toBe(false);
       expect(await pathExists(fixture.worktreePath)).toBe(false);
       expect(await branchExists(fixture.repoGit, 'hive/test-feature/01-test-task')).toBe(false);
     });
   }
+
+  it('records net-zero source history as graph progress under preserve-source before cleanup', async () => {
+    const fixture = await createNetZeroCommittedFixture();
+    const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
+    const sourceCommit = (await fixture.repoGit.revparse(['hive/test-feature/01-test-task'])).trim();
+
+    const result = await fixture.service.merge(fixture.feature, fixture.task, 'merge', mergeMessage, {
+      historyIntent: 'preserve-source',
+      cleanup: 'worktree+branch',
+    });
+
+    const afterHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
+    expect(result).toMatchObject({
+      success: true,
+      merged: true,
+      sha: afterHead,
+      filesChanged: [],
+      mutation: 'applied',
+      cleanup: { outcome: 'complete', worktreeRemoved: true, branchDeleted: true },
+    });
+    expect(afterHead).not.toBe(beforeHead);
+    expect(gitIsAncestor(fixture.repoPath, sourceCommit, afterHead)).toBe(true);
+    expect(await branchExists(fixture.repoGit, 'hive/test-feature/01-test-task')).toBe(false);
+  });
+
+  for (const historyIntent of ['preserve-source', 'rewrite-private'] as const) {
+    it(`classifies a source equal to the target as ALREADY_INTEGRATED under ${historyIntent}`, async () => {
+      const fixture = await createFixture();
+      const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
+
+      const result = await fixture.service.merge(fixture.feature, fixture.task, undefined, undefined, {
+        historyIntent,
+        cleanup: 'worktree+branch',
+      });
+
+      expect(result).toEqual({
+        success: true,
+        merged: false,
+        strategy: historyIntent === 'preserve-source' ? 'merge' : 'squash',
+        reason: 'already_integrated',
+        reasonCode: 'ALREADY_INTEGRATED',
+        cleanupEligible: true,
+        taskUpdateRecommended: true,
+        filesChanged: [],
+        conflicts: [],
+        conflictState: 'none',
+        cleanup: expect.objectContaining({ requested: 'worktree+branch', outcome: 'complete' }),
+        phase: 'integration',
+        mutation: 'none',
+        retryable: false,
+        action: 'none',
+      });
+      expect((await fixture.repoGit.revparse(['HEAD'])).trim()).toBe(beforeHead);
+      expect(await pathExists(fixture.worktreePath)).toBe(false);
+    });
+  }
+
+  it('classifies a contained source before local-data eligibility when target trees differ', async () => {
+    const fixture = await createFixture();
+    const sourceCommit = (await fixture.repoGit.revparse(['hive/test-feature/01-test-task'])).trim();
+    await fs.writeFile(path.join(fixture.repoPath, 'target-only.txt'), 'target change\n', 'utf-8');
+    await fixture.repoGit.add('-A');
+    await fixture.repoGit.commit(testCommitMessage('feat: advance target past the source'));
+    await fs.appendFile(path.join(fixture.repoPath, '.git', 'info', 'exclude'), 'build/\n', 'utf-8');
+    const ignoredPath = path.join(fixture.repoPath, 'build', 'cache.bin');
+    await fs.mkdir(path.dirname(ignoredPath));
+    await fs.writeFile(ignoredPath, 'protected\n', 'utf-8');
+    const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
+    expect(gitIsAncestor(fixture.repoPath, sourceCommit, beforeHead)).toBe(true);
+
+    const result = await fixture.service.merge(fixture.feature, fixture.task, 'merge', undefined, {
+      historyIntent: 'preserve-source',
+    });
+
+    expect(result).toMatchObject({
+      success: true,
+      merged: false,
+      reasonCode: 'ALREADY_INTEGRATED',
+      mutation: 'none',
+      taskUpdateRecommended: true,
+    });
+    expect((await fixture.repoGit.revparse(['HEAD'])).trim()).toBe(beforeHead);
+    expect(await fs.readFile(ignoredPath, 'utf-8')).toBe('protected\n');
+  });
+
+  it('cleans up a completed private squash without requiring source containment', async () => {
+    const fixture = await createCommittedFixture();
+    const sourceCommit = (await fixture.repoGit.revparse(['hive/test-feature/01-test-task'])).trim();
+
+    const result = await fixture.service.merge(fixture.feature, fixture.task, 'squash', mergeMessage, {
+      historyIntent: 'rewrite-private',
+      cleanup: 'worktree+branch',
+    });
+
+    const afterHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
+    expect(result).toMatchObject({
+      success: true,
+      merged: true,
+      sha: afterHead,
+      cleanup: { outcome: 'complete', worktreeRemoved: true, branchDeleted: true },
+    });
+    expect(gitIsAncestor(fixture.repoPath, sourceCommit, afterHead)).toBe(false);
+  });
+
+  it('preserves published source history after a source-side join with protected local data', async () => {
+    const fixture = await createCommittedFixture();
+    const worktreeGit = simpleGit(fixture.worktreePath);
+    const published = (await worktreeGit.revparse(['HEAD'])).trim();
+    const remotePath = await fs.mkdtemp(path.join(os.tmpdir(), 'hive-published-remote-'));
+    tempDirs.push(remotePath);
+    await simpleGit().raw(['init', '--bare', remotePath]);
+    await worktreeGit.raw(['push', remotePath, `${published}:refs/heads/published`]);
+
+    await fs.writeFile(path.join(fixture.repoPath, 'target-only.txt'), 'target change\n', 'utf-8');
+    await fixture.repoGit.add('-A');
+    await fixture.repoGit.commit(testCommitMessage('feat: advance destination independently'));
+    await fs.appendFile(path.join(fixture.repoPath, '.git', 'info', 'exclude'), 'build/\n', 'utf-8');
+    const ignoredPath = path.join(fixture.repoPath, 'build', 'cache.bin');
+    await fs.mkdir(path.dirname(ignoredPath));
+    await fs.writeFile(ignoredPath, 'protected\n', 'utf-8');
+    const pinnedTarget = (await fixture.repoGit.revparse(['HEAD'])).trim();
+    await worktreeGit.merge([pinnedTarget, '--no-ff', '-m', testCommitMessage('merge: join destination history')]);
+    const sourceCommit = (await worktreeGit.revparse(['HEAD'])).trim();
+
+    const result = await fixture.service.merge(fixture.feature, fixture.task, undefined, mergeMessage, {
+      historyIntent: 'preserve-source',
+      sourceCommit,
+      cleanup: 'worktree+branch',
+    });
+
+    const finalHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
+    expect(result).toMatchObject({ success: true, merged: true, sha: finalHead, mutation: 'applied' });
+    expect(gitIsAncestor(fixture.repoPath, published, finalHead)).toBe(true);
+    expect(gitIsAncestor(fixture.repoPath, sourceCommit, finalHead)).toBe(true);
+    expect(await fs.readFile(path.join(fixture.repoPath, 'task-change.txt'), 'utf-8')).toBe('task change\n');
+    expect(await fs.readFile(path.join(fixture.repoPath, 'target-only.txt'), 'utf-8')).toBe('target change\n');
+    expect(await fs.readFile(ignoredPath, 'utf-8')).toBe('protected\n');
+    expect((await simpleGit(remotePath).revparse(['refs/heads/published'])).trim()).toBe(published);
+  });
+
+  for (const verification of ['negative', 'unreadable'] as const) {
+    it(`retains the preservation commit and placements when post-merge ancestry verification is ${verification}`, async () => {
+      const fixture = await createCommittedFixture();
+      const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
+      const sourceCommit = (await fixture.repoGit.revparse(['hive/test-feature/01-test-task'])).trim();
+      const originalGetGit = (fixture.service as any).getGit.bind(fixture.service);
+      const gitSpy = spyOn(fixture.service as any, 'getGit').mockImplementation((cwd?: string) => {
+        const git = originalGetGit(cwd);
+        if (cwd !== undefined) return git;
+        return new Proxy(git, {
+          get(target, key) {
+            if (key !== 'raw') return Reflect.get(target, key);
+            return async (args: string[]) => {
+              // Only the check against the created commit: earlier checks start at the pinned target or source.
+              const left = args[0] === 'rev-list' && args[1] === '--count' ? args[2]!.split('..')[0] : undefined;
+              if (left && left !== beforeHead && left !== sourceCommit) {
+                if (verification === 'unreadable') throw new Error('simulated ancestry read failure');
+                return '1\n';
+              }
+              return target.raw(args);
+            };
+          },
+        });
+      });
+      let result: MergeResult;
+      try {
+        result = await fixture.service.merge(fixture.feature, fixture.task, 'merge', mergeMessage, {
+          historyIntent: 'preserve-source',
+          cleanup: 'worktree+branch',
+        });
+      } finally {
+        gitSpy.mockRestore();
+      }
+
+      const afterHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
+      expect(afterHead).not.toBe(beforeHead);
+      expect((await fixture.repoGit.raw(['rev-list', '--parents', '-n', '1', 'HEAD'])).trim().split(' ').slice(1))
+        .toEqual([beforeHead, sourceCommit]);
+      expect(result).toMatchObject({
+        success: false,
+        reasonCode: 'POST_INTEGRATION_VERIFICATION_FAILED',
+        phase: 'verification',
+        mutation: 'applied',
+        retryable: false,
+        action: 'inspect_state',
+        observedTarget: { commit: afterHead },
+        cleanup: { requested: 'none', outcome: 'not_requested' },
+      });
+      expect(result.error).toMatch(verification === 'unreadable' ? /simulated ancestry read failure/ : /does not contain source/);
+      expect(await pathExists(fixture.worktreePath)).toBe(true);
+      expect(await branchExists(fixture.repoGit, 'hive/test-feature/01-test-task')).toBe(true);
+    });
+  }
+
+  it('rejects a precomputed classification under a different history policy', async () => {
+    const fixture = await createCommittedFixture();
+    const targetCommit = (await fixture.repoGit.revparse(['HEAD'])).trim();
+    const sourceCommit = (await fixture.repoGit.revparse(['hive/test-feature/01-test-task'])).trim();
+    const preserved = await inspectTargetMergeEligibility({
+      targetGit: fixture.repoGit,
+      targetRoot: fixture.repoPath,
+      targetCommit,
+      sourceCommit,
+      policy: { historyIntent: 'preserve-source', strategy: 'merge' },
+    });
+    expect(preserved).toMatchObject({ workKind: 'preservation', candidateFiles: ['task-change.txt'] });
+
+    await expect(inspectTargetMergeEligibility({
+      targetGit: fixture.repoGit,
+      targetRoot: fixture.repoPath,
+      targetCommit,
+      sourceCommit,
+      policy: { historyIntent: 'rewrite-private', strategy: 'squash' },
+      precomputedCandidates: preserved as Exclude<typeof preserved, { error: string }>,
+    })).rejects.toThrow(/history policy/);
+  });
 
   for (const { stateName, label } of [
     { stateName: 'MERGE_HEAD', label: 'merge' },
@@ -1655,6 +1963,7 @@ describe("WorktreeService merge and commit messages", () => {
       await fs.writeFile(path.join(fixture.repoPath, '.git', stateName), 'deadbeef\n', 'utf-8');
 
       const result = await fixture.service.merge(fixture.feature, fixture.task, 'merge', undefined, {
+        historyIntent: 'preserve-source',
         cleanup: 'worktree+branch',
       });
 
@@ -1692,7 +2001,7 @@ describe("WorktreeService merge and commit messages", () => {
   it('aborts merge conflicts by default and reports the conflict state', async () => {
     const fixture = await createConflictingFixture();
 
-    const result = await fixture.service.merge(fixture.feature, fixture.task, 'merge', mergeMessage);
+    const result = await fixture.service.merge(fixture.feature, fixture.task, 'merge', mergeMessage, { historyIntent: 'preserve-source' });
 
     expect(result).toMatchObject({
       success: false,
@@ -1720,6 +2029,7 @@ describe("WorktreeService merge and commit messages", () => {
     const fixture = await createConflictingFixture();
 
     const result = await fixture.service.merge(fixture.feature, fixture.task, 'merge', mergeMessage, {
+      historyIntent: 'preserve-source',
       preserveConflicts: true,
     });
 
@@ -1748,7 +2058,7 @@ describe("WorktreeService merge and commit messages", () => {
   it("rejects rebase plus custom message", async () => {
     const fixture = await createCommittedFixture();
 
-    const result = await fixture.service.merge(fixture.feature, fixture.task, "rebase", "feat: custom\n\nbody");
+    const result = await fixture.service.merge(fixture.feature, fixture.task, "rebase", "feat: custom\n\nbody", { historyIntent: 'rewrite-private' });
 
     expect(result).toMatchObject({
       success: false,
@@ -1769,6 +2079,68 @@ describe("WorktreeService merge and commit messages", () => {
       },
       error: "Custom merge message is not supported for rebase strategy",
     });
+  });
+});
+
+// These tests use the core service directly: no subclass supplies a strategy,
+// intent or target expectation.
+describe('WorktreeService history intent contract', () => {
+  for (const { name, strategy, options } of [
+    { name: 'a missing intent', strategy: undefined, options: {} },
+    { name: 'missing options from an untyped caller', strategy: 'squash', options: undefined },
+    { name: 'an unknown intent', strategy: undefined, options: { historyIntent: 'keep-everything' } },
+    { name: 'an unknown strategy', strategy: 'octopus', options: { historyIntent: 'preserve-source' } },
+    { name: 'preserve-source with squash', strategy: 'squash', options: { historyIntent: 'preserve-source' } },
+    { name: 'preserve-source with rebase', strategy: 'rebase', options: { historyIntent: 'preserve-source' } },
+    { name: 'rewrite-private with merge', strategy: 'merge', options: { historyIntent: 'rewrite-private' } },
+  ] as const) {
+    it(`rejects ${name} before any Git access or mutation`, async () => {
+      const fixture = await createCommittedFixture();
+      const core = new CoreWorktreeService({ baseDir: fixture.repoPath, hiveDir: path.join(fixture.repoPath, '.hive') });
+      const expectedTarget = await readWorktreeTargetIdentity(fixture.repoPath);
+      const beforeHead = (await fixture.repoGit.revparse(['HEAD'])).trim();
+      const gitSpy = spyOn(core as any, 'getGit');
+
+      const untypedMerge = core.merge.bind(core) as (...args: unknown[]) => Promise<MergeResult>;
+      const result = await untypedMerge(
+        fixture.feature,
+        fixture.task,
+        strategy,
+        mergeMessage,
+        options === undefined ? undefined : { ...options, expectedTarget, cleanup: 'worktree+branch' },
+      );
+
+      expect(gitSpy).not.toHaveBeenCalled();
+      expect(result).toMatchObject({
+        success: false,
+        merged: false,
+        reasonCode: 'INVALID_ARGUMENTS',
+        phase: 'validation',
+        mutation: 'none',
+        retryable: false,
+        action: 'correct_arguments',
+        partial: false,
+      });
+      expect('strategy' in result).toBe(false);
+      expect(result.error).toMatch(/historyIntent|strategy/);
+      expect((await fixture.repoGit.revparse(['HEAD'])).trim()).toBe(beforeHead);
+      expect(await pathExists(fixture.worktreePath)).toBe(true);
+      expect(await branchExists(fixture.repoGit, 'hive/test-feature/01-test-task')).toBe(true);
+    });
+  }
+
+  it('resolves an omitted strategy from preserve-source as a normal merge', async () => {
+    const fixture = await createCommittedFixture();
+    const core = new CoreWorktreeService({ baseDir: fixture.repoPath, hiveDir: path.join(fixture.repoPath, '.hive') });
+    const sourceCommit = (await fixture.repoGit.revparse(['hive/test-feature/01-test-task'])).trim();
+
+    const result = await core.merge(fixture.feature, fixture.task, undefined, mergeMessage, {
+      historyIntent: 'preserve-source',
+      expectedTarget: await readWorktreeTargetIdentity(fixture.repoPath),
+    });
+
+    expect(result).toMatchObject({ success: true, merged: true, strategy: 'merge' });
+    expect(gitIsAncestor(fixture.repoPath, sourceCommit, result.sha!)).toBe(true);
   });
 });
 
@@ -2029,7 +2401,7 @@ describe("WorktreeService composite workspaces", () => {
 
   it.each([
     ['merge', async (fixture: TestFixture) => {
-      const result = await fixture.service.merge(fixture.feature, fixture.task, 'squash', mergeMessage);
+      const result = await fixture.service.merge(fixture.feature, fixture.task, 'squash', mergeMessage, { historyIntent: 'rewrite-private' });
       if (!result.success) throw new Error(result.error);
       return result;
     }],
@@ -2390,6 +2762,7 @@ describe("WorktreeService composite workspaces", () => {
       await expect(fx.service.inspect(fx.feature, fx.task)).rejects.toThrow('Composite workspace manifest not found');
       await expect(fx.service.remove(fx.feature, fx.task, true, { discard: true })).rejects.toThrow('Composite workspace manifest not found');
       const merged = await fx.service.merge(fx.feature, fx.task, 'squash', mergeMessage, {
+        historyIntent: 'rewrite-private',
         sourceCommits: { api: created.repos!.api.commit },
         expectedTargets: { api: inspected!.repos!.api.target! },
       });
@@ -2723,7 +3096,7 @@ describe("WorktreeService composite merge aggregation", () => {
     await fx.service.create(fx.feature, fx.task);
     await commitChangeInRepo(fx, 'api', 'task.txt', 'task\n');
 
-    const result = await fx.service.merge(fx.feature, fx.task, 'merge', mergeMessage);
+    const result = await fx.service.merge(fx.feature, fx.task, 'merge', mergeMessage, { historyIntent: 'preserve-source' });
 
     expect(result.success).toBe(true);
     expect(result.merged).toBe(true);
@@ -2745,7 +3118,7 @@ describe("WorktreeService composite merge aggregation", () => {
     await commitChangeInRepo(fx, 'api', 'a.txt', 'a\n');
     await commitChangeInRepo(fx, 'web-ui', 'w.txt', 'w\n');
 
-    const result = await fx.service.merge(fx.feature, fx.task, 'merge', mergeMessage);
+    const result = await fx.service.merge(fx.feature, fx.task, 'merge', mergeMessage, { historyIntent: 'preserve-source' });
 
     expect(result.success).toBe(true);
     expect(result.merged).toBe(true);
@@ -2774,6 +3147,7 @@ describe("WorktreeService composite merge aggregation", () => {
     let result;
     try {
       result = await fx.service.merge(fx.feature, fx.task, 'merge', mergeMessage, {
+        historyIntent: 'preserve-source',
         sourceCommits: { api: inspected!.repos!.api.commit },
         expectedTargets: { api: inspected!.repos!.api.target! },
       });
@@ -2799,7 +3173,7 @@ describe("WorktreeService composite merge aggregation", () => {
     await commitChangeInRepo(fx, 'web-ui', 'w.txt', 'w\n');
 
     const message = 'feat(core): multi merge\n\nbody line';
-    const result = await fx.service.merge(fx.feature, fx.task, 'merge', message);
+    const result = await fx.service.merge(fx.feature, fx.task, 'merge', message, { historyIntent: 'preserve-source' });
 
     expect(result.success).toBe(true);
     expect(await readHeadBody(fx.repos['api'].path)).toBe(message);
@@ -2813,7 +3187,7 @@ describe("WorktreeService composite merge aggregation", () => {
     await commitChangeInRepo(fx, 'web-ui', 'w.txt', 'w\n');
 
     const message = 'feat(core): squash multi\n\nsquash body';
-    const result = await fx.service.merge(fx.feature, fx.task, 'squash', message);
+    const result = await fx.service.merge(fx.feature, fx.task, 'squash', message, { historyIntent: 'rewrite-private' });
 
     expect(result.success).toBe(true);
     expect(result.repos!['api'].success).toBe(true);
@@ -2833,7 +3207,7 @@ describe("WorktreeService composite merge aggregation", () => {
       web: (await fx.repos['web-ui'].git.revparse(['HEAD'])).trim(),
     };
 
-    const result = await fx.service.merge(fx.feature, fx.task, 'rebase', 'feat: nope');
+    const result = await fx.service.merge(fx.feature, fx.task, 'rebase', 'feat: nope', { historyIntent: 'rewrite-private' });
 
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/Custom merge message is not supported for rebase/);
@@ -2842,6 +3216,34 @@ describe("WorktreeService composite merge aggregation", () => {
     // No repo mutated
     expect((await fx.repos['api'].git.revparse(['HEAD'])).trim()).toBe(before.api);
     expect((await fx.repos['web-ui'].git.revparse(['HEAD'])).trim()).toBe(before.web);
+  });
+
+  it('rejects a later repository source message in preflight against detached pinned targets', async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
+    const wt = await fx.service.create(fx.feature, fx.task);
+    await commitChangeInRepo(fx, 'api', 'a.txt', 'a\n');
+    const webWorktreeGit = simpleGit(wt.repos!['web-ui'].path);
+    await fs.writeFile(path.join(wt.repos!['web-ui'].path, 'w.txt'), 'w\n', 'utf-8');
+    await webWorktreeGit.add('-A');
+    await webWorktreeGit.commit('one-line web source');
+    const before: Record<string, string> = {};
+    for (const id of ['api', 'web-ui']) {
+      await fx.repos[id].git.raw(['checkout', '--detach']);
+      before[id] = (await fx.repos[id].git.revparse(['HEAD'])).trim();
+    }
+
+    const result = await fx.service.merge(fx.feature, fx.task, 'rebase', undefined, { historyIntent: 'rewrite-private' });
+
+    expect(result).toMatchObject({
+      success: false,
+      partial: false,
+      reasonCode: 'INVALID_COMMIT_MESSAGE',
+      mutation: 'none',
+    });
+    expect(result.error).toMatch(/^web-ui: Source commit/);
+    for (const id of ['api', 'web-ui']) {
+      expect((await fx.repos[id].git.revparse(['HEAD'])).trim()).toBe(before[id]);
+    }
   });
 
   it("fails preflight when a per-repo task branch is missing and does not mutate any repo", async () => {
@@ -2860,7 +3262,7 @@ describe("WorktreeService composite merge aggregation", () => {
 
     const before = (await fx.repos['api'].git.revparse(['HEAD'])).trim();
 
-    const result = await fx.service.merge(fx.feature, fx.task, 'merge', mergeMessage);
+    const result = await fx.service.merge(fx.feature, fx.task, 'merge', mergeMessage, { historyIntent: 'preserve-source' });
 
     expect(result.success).toBe(false);
     expect(result.partial).toBe(false);
@@ -2881,7 +3283,7 @@ describe("WorktreeService composite merge aggregation", () => {
 
     const beforeWeb = (await fx.repos['web-ui'].git.revparse(['HEAD'])).trim();
 
-    const result = await fx.service.merge(fx.feature, fx.task, 'merge', mergeMessage);
+    const result = await fx.service.merge(fx.feature, fx.task, 'merge', mergeMessage, { historyIntent: 'preserve-source' });
 
     expect(result.success).toBe(false);
     expect(result.partial).toBe(false);
@@ -2901,7 +3303,7 @@ describe("WorktreeService composite merge aggregation", () => {
     await fs.writeFile(apiNote, 'api user content\n', 'utf-8');
     await fs.writeFile(webNote, 'web user content\n', 'utf-8');
 
-    const result = await fx.service.merge(fx.feature, fx.task, 'squash', mergeMessage);
+    const result = await fx.service.merge(fx.feature, fx.task, 'squash', mergeMessage, { historyIntent: 'rewrite-private' });
 
     expect(result).toMatchObject({ success: true, merged: true });
     expect(await fs.readFile(apiNote, 'utf-8')).toBe('api user content\n');
@@ -2921,7 +3323,7 @@ describe("WorktreeService composite merge aggregation", () => {
     const beforeApi = (await fx.repos.api.git.revparse(['HEAD'])).trim();
     const beforeWeb = (await fx.repos['web-ui'].git.revparse(['HEAD'])).trim();
 
-    const result = await fx.service.merge(fx.feature, fx.task, 'squash', mergeMessage);
+    const result = await fx.service.merge(fx.feature, fx.task, 'squash', mergeMessage, { historyIntent: 'rewrite-private' });
 
     expect(result).toMatchObject({
       success: false,
@@ -2950,7 +3352,7 @@ describe("WorktreeService composite merge aggregation", () => {
 
     const beforeWeb = (await fx.repos['web-ui'].git.revparse(['HEAD'])).trim();
 
-    const result = await fx.service.merge(fx.feature, fx.task, 'merge', mergeMessage);
+    const result = await fx.service.merge(fx.feature, fx.task, 'merge', mergeMessage, { historyIntent: 'preserve-source' });
 
     expect(result.success).toBe(false);
     expect(result.partial).toBe(false);
@@ -2976,7 +3378,7 @@ describe("WorktreeService composite merge aggregation", () => {
     await fx.repos['web-ui'].git.add('-A');
     await fx.repos['web-ui'].git.commit('chore: main side');
 
-    const result = await fx.service.merge(fx.feature, fx.task, 'merge', mergeMessage);
+    const result = await fx.service.merge(fx.feature, fx.task, 'merge', mergeMessage, { historyIntent: 'preserve-source' });
 
     expect(result.success).toBe(false);
     expect(result.merged).toBe(false);
@@ -3010,6 +3412,7 @@ describe("WorktreeService composite merge aggregation", () => {
     const apiHeadBefore = (await fx.repos['api'].git.revparse(['HEAD'])).trim();
 
     const result = await fx.service.merge(fx.feature, fx.task, 'merge', mergeMessage, {
+      historyIntent: 'preserve-source',
       preserveConflicts: true,
     });
 
@@ -3040,7 +3443,7 @@ describe("WorktreeService composite merge aggregation", () => {
 
     const apiHeadBefore = (await fx.repos['api'].git.revparse(['HEAD'])).trim();
 
-    const result = await fx.service.merge(fx.feature, fx.task, 'merge', mergeMessage);
+    const result = await fx.service.merge(fx.feature, fx.task, 'merge', mergeMessage, { historyIntent: 'preserve-source' });
 
     expect(result.success).toBe(false);
     expect(result.partial).toBe(true);
@@ -3066,7 +3469,7 @@ describe("WorktreeService composite merge aggregation", () => {
     await fs.writeFile(hookPath, '#!/bin/sh\nexit 1\n', 'utf-8');
     await fs.chmod(hookPath, 0o755);
 
-    const result = await fx.service.merge(fx.feature, fx.task, 'merge', mergeMessage);
+    const result = await fx.service.merge(fx.feature, fx.task, 'merge', mergeMessage, { historyIntent: 'preserve-source' });
 
     expect(result).toMatchObject({
       success: false,
@@ -3103,7 +3506,7 @@ describe("WorktreeService composite merge aggregation", () => {
       web: (await fx.repos['web-ui'].git.revparse(['HEAD'])).trim(),
     };
 
-    const result = await fx.service.merge(fx.feature, fx.task, 'rebase');
+    const result = await fx.service.merge(fx.feature, fx.task, 'rebase', undefined, { historyIntent: 'rewrite-private' });
 
     expect(result).toMatchObject({
       success: false,
@@ -3132,7 +3535,7 @@ describe("WorktreeService composite merge aggregation", () => {
     await fs.writeFile(path.join(fx.repos['api'].path, 'README.md'), 'dirty\n', 'utf-8');
     const beforeWeb = (await fx.repos['web-ui'].git.revparse(['HEAD'])).trim();
 
-    const result = await fx.service.merge(fx.feature, fx.task, 'merge', mergeMessage);
+    const result = await fx.service.merge(fx.feature, fx.task, 'merge', mergeMessage, { historyIntent: 'preserve-source' });
 
     expect(result).toMatchObject({
       success: false,
@@ -3157,7 +3560,7 @@ describe("WorktreeService composite merge aggregation", () => {
     await fs.writeFile(path.join(selectedPath, '.git'), siblingPointer, 'utf8');
     const beforeHead = (await fx.repos.api.git.revparse(['HEAD'])).trim();
 
-    const result = await fx.service.merge(fx.feature, fx.task, 'merge', mergeMessage);
+    const result = await fx.service.merge(fx.feature, fx.task, 'merge', mergeMessage, { historyIntent: 'preserve-source' });
 
     expect(result).toMatchObject({
       success: false,
@@ -3184,7 +3587,7 @@ describe("WorktreeService composite merge aggregation", () => {
     await fs.writeFile(manifestPath, JSON.stringify(manifest));
     const beforeHead = (await fx.repos.api.git.revparse(['HEAD'])).trim();
 
-    const result = await fx.service.merge(fx.feature, fx.task, 'merge', mergeMessage);
+    const result = await fx.service.merge(fx.feature, fx.task, 'merge', mergeMessage, { historyIntent: 'preserve-source' });
 
     expect(result).toMatchObject({
       success: false,
@@ -3207,6 +3610,7 @@ describe("WorktreeService composite merge aggregation", () => {
     await commitChangeInRepo(fx, 'web-ui', 'w.txt', 'w\n');
 
     const result = await fx.service.merge(fx.feature, fx.task, 'merge', mergeMessage, {
+      historyIntent: 'preserve-source',
       cleanup: 'worktree+branch',
     });
 
@@ -3218,6 +3622,48 @@ describe("WorktreeService composite merge aggregation", () => {
     for (const id of ['api', 'web-ui']) {
       expect(await branchExists(fx.repos[id].git, `hive/${id}/${fx.feature}/${fx.task}`)).toBe(false);
     }
+  });
+
+  it('keeps completed composite integration results when deferred cleanup throws', async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
+    await fx.service.create(fx.feature, fx.task);
+    await commitChangeInRepo(fx, 'api', 'a.txt', 'a\n');
+    await commitChangeInRepo(fx, 'web-ui', 'w.txt', 'w\n');
+    const originalRemove = (fx.service as any).removeWorktreeStep.bind(fx.service);
+    const removeSpy = spyOn(fx.service as any, 'removeWorktreeStep').mockImplementation(async (...args: any[]) => {
+      if (String(args[1]).endsWith(path.join('repos', 'web-ui'))) {
+        throw Object.assign(new Error('EACCES: simulated lstat failure'), { code: 'EACCES' });
+      }
+      return originalRemove(...args);
+    });
+    let result: MergeResult;
+    try {
+      result = await fx.service.merge(fx.feature, fx.task, 'merge', mergeMessage, {
+        historyIntent: 'preserve-source',
+        cleanup: 'worktree+branch',
+      });
+    } finally {
+      removeSpy.mockRestore();
+    }
+
+    const apiHead = (await fx.repos.api.git.revparse(['HEAD'])).trim();
+    const webHead = (await fx.repos['web-ui'].git.revparse(['HEAD'])).trim();
+    expect(result).toMatchObject({
+      success: true,
+      merged: true,
+      sha: apiHead,
+      reasonCode: 'CLEANUP_FAILED',
+      phase: 'cleanup',
+      mutation: 'applied',
+      retryable: false,
+      action: 'cleanup_only',
+    });
+    expect(result.repos!.api).toMatchObject({ success: true, merged: true, sha: apiHead });
+    expect(result.repos!['web-ui']).toMatchObject({ success: true, merged: true, sha: webHead });
+    expect(result.repos!['web-ui'].cleanup.failures).toContainEqual(expect.objectContaining({
+      cause: expect.stringMatching(/simulated lstat failure/),
+    }));
+    expect(result.filesChanged.sort()).toEqual(['api:a.txt', 'web-ui:w.txt']);
   });
 
   it('skips all task-composite cleanup when an earlier target moves after integration', async () => {
@@ -3240,6 +3686,7 @@ describe("WorktreeService composite merge aggregation", () => {
     let result;
     try {
       result = await fx.service.merge(fx.feature, fx.task, 'merge', mergeMessage, {
+        historyIntent: 'preserve-source',
         cleanup: 'worktree+branch',
       });
     } finally {
@@ -3247,10 +3694,25 @@ describe("WorktreeService composite merge aggregation", () => {
     }
 
     expect(result.cleanup.outcome).toBe('failed');
+    expect(result.cleanup).toMatchObject({
+      worktreeRemoval: { status: 'not_attempted' },
+      branchDeletion: { status: 'not_attempted' },
+      prune: { status: 'not_attempted' },
+      worktreeRemoved: false,
+      branchDeleted: false,
+      pruned: false,
+    });
+    expect(result.cleanup.failures).toEqual([{
+      step: 'identity-recheck',
+      repoId: 'api',
+      cause: expect.stringMatching(/moved after integration; cleanup was skipped/),
+    }]);
     expect(result.repos!.api.cleanup.worktreeRemoval.status).toBe('not_attempted');
     expect(result.repos!['web-ui'].cleanup.worktreeRemoval.status).toBe('not_attempted');
     expect(await pathExists(created.repos!.api.path)).toBe(true);
     expect(await pathExists(created.repos!['web-ui'].path)).toBe(true);
+    expect(await branchExists(fx.repos.api.git, created.repos!.api.branch)).toBe(true);
+    expect(await branchExists(fx.repos['web-ui'].git, created.repos!['web-ui'].branch)).toBe(true);
   });
 
   it('skips all task-composite cleanup when a target switches branches at the same commit after integration', async () => {
@@ -3273,6 +3735,7 @@ describe("WorktreeService composite merge aggregation", () => {
     let result;
     try {
       result = await fx.service.merge(fx.feature, fx.task, 'merge', mergeMessage, {
+        historyIntent: 'preserve-source',
         cleanup: 'worktree+branch',
       });
     } finally {
@@ -3280,6 +3743,19 @@ describe("WorktreeService composite merge aggregation", () => {
     }
 
     expect(result.cleanup.outcome).toBe('failed');
+    expect(result.cleanup).toMatchObject({
+      worktreeRemoval: { status: 'not_attempted' },
+      branchDeletion: { status: 'not_attempted' },
+      prune: { status: 'not_attempted' },
+      worktreeRemoved: false,
+      branchDeleted: false,
+      pruned: false,
+    });
+    expect(result.cleanup.failures).toEqual([{
+      step: 'identity-recheck',
+      repoId: 'api',
+      cause: expect.stringMatching(/moved after integration; cleanup was skipped/),
+    }]);
     expect(result.repos!.api.cleanup.worktreeRemoval.status).toBe('not_attempted');
     expect(result.repos!['web-ui'].cleanup.worktreeRemoval.status).toBe('not_attempted');
     expect(await pathExists(created.repos!.api.path)).toBe(true);
@@ -3295,6 +3771,7 @@ describe("WorktreeService composite merge aggregation", () => {
     await commitChangeInRepo(fx, 'web-ui', 'w.txt', 'w\n');
 
     const result = await fx.service.merge(fx.feature, fx.task, 'merge', mergeMessage, {
+      historyIntent: 'preserve-source',
       cleanup: 'worktree+branch',
     });
 
@@ -3322,6 +3799,7 @@ describe("WorktreeService composite merge aggregation", () => {
     await commitChangeInRepo(fx, 'web-ui', 'w.txt', 'w\n');
 
     const result = await fx.service.merge(fx.feature, fx.task, 'merge', mergeMessage, {
+      historyIntent: 'preserve-source',
       cleanup: 'worktree',
     });
 
@@ -3337,7 +3815,7 @@ describe("WorktreeService composite merge aggregation", () => {
     expect(result.cleanup.pruned).toBe(true);
   });
 
-  it('returns an all-repo composite no-op when every repo has zero tracked diff', async () => {
+  it('returns an all-repo private composite no-op when every repo has zero tracked diff', async () => {
     const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
     const wt = await fx.service.create(fx.feature, fx.task);
     await commitNetZeroChangeInRepo(fx, 'api');
@@ -3347,7 +3825,8 @@ describe("WorktreeService composite merge aggregation", () => {
       web: (await fx.repos['web-ui'].git.revparse(['HEAD'])).trim(),
     };
 
-    const result = await fx.service.merge(fx.feature, fx.task, 'merge', undefined, {
+    const result = await fx.service.merge(fx.feature, fx.task, 'squash', undefined, {
+      historyIntent: 'rewrite-private',
       cleanup: 'worktree+branch',
     });
 
@@ -3377,13 +3856,57 @@ describe("WorktreeService composite merge aggregation", () => {
     expect(await branchExists(fx.repos['web-ui'].git, `hive/web-ui/${fx.feature}/${fx.task}`)).toBe(false);
   });
 
-  it('aggregates mixed composite no-op and changed repos as a successful actual merge', async () => {
+  it('returns ALREADY_INTEGRATED only when every composite repository is contained', async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
+    const wt = await fx.service.create(fx.feature, fx.task);
+    await fs.writeFile(path.join(fx.repos['web-ui'].path, 'web-target.txt'), 'target change\n', 'utf-8');
+    await fx.repos['web-ui'].git.add('-A');
+    await fx.repos['web-ui'].git.commit(testCommitMessage('feat: advance web target past the source'));
+    await fs.appendFile(path.join(fx.repos['web-ui'].path, '.git', 'info', 'exclude'), 'cache/\n', 'utf-8');
+    const ignoredPath = path.join(fx.repos['web-ui'].path, 'cache', 'local.bin');
+    await fs.mkdir(path.dirname(ignoredPath));
+    await fs.writeFile(ignoredPath, 'protected\n', 'utf-8');
+
+    const result = await fx.service.merge(fx.feature, fx.task, undefined, undefined, {
+      historyIntent: 'preserve-source',
+      cleanup: 'worktree+branch',
+    });
+
+    expect(result).toMatchObject({
+      success: true,
+      merged: false,
+      strategy: 'merge',
+      reason: 'already_integrated',
+      reasonCode: 'ALREADY_INTEGRATED',
+      mutation: 'none',
+      taskUpdateRecommended: true,
+      cleanup: { outcome: 'complete' },
+    });
+    expect(result.repos!.api).toMatchObject({ success: true, merged: false, reasonCode: 'ALREADY_INTEGRATED' });
+    expect(result.repos!['web-ui']).toMatchObject({ success: true, merged: false, reasonCode: 'ALREADY_INTEGRATED' });
+    expect(await fs.readFile(ignoredPath, 'utf-8')).toBe('protected\n');
+    expect(await pathExists(wt.path)).toBe(false);
+  });
+
+  it('aggregates contained and private content no-op repositories as NO_TRACKED_CHANGES', async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
+    await fx.service.create(fx.feature, fx.task);
+    await commitNetZeroChangeInRepo(fx, 'web-ui');
+
+    const result = await fx.service.merge(fx.feature, fx.task, 'squash', undefined, { historyIntent: 'rewrite-private' });
+
+    expect(result).toMatchObject({ success: true, merged: false, reasonCode: 'NO_TRACKED_CHANGES', mutation: 'none' });
+    expect(result.repos!.api.reasonCode).toBe('ALREADY_INTEGRATED');
+    expect(result.repos!['web-ui'].reasonCode).toBe('NO_TRACKED_CHANGES');
+  });
+
+  it('aggregates mixed private composite no-op and changed repos as a successful actual merge', async () => {
     const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
     await fx.service.create(fx.feature, fx.task);
     await commitNetZeroChangeInRepo(fx, 'api');
     await commitChangeInRepo(fx, 'web-ui', 'w.txt', 'w\n');
 
-    const result = await fx.service.merge(fx.feature, fx.task, 'merge', mergeMessage);
+    const result = await fx.service.merge(fx.feature, fx.task, 'squash', mergeMessage, { historyIntent: 'rewrite-private' });
 
     expect(result.success).toBe(true);
     expect(result.merged).toBe(true);
@@ -3394,7 +3917,22 @@ describe("WorktreeService composite merge aggregation", () => {
     expect(result.repos!['web-ui'].merged).toBe(true);
   });
 
-  it('does not mark a composite failure partial after only no-op repos have succeeded', async () => {
+  it('counts a graph-only preservation merge as actual composite progress', async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
+    await fx.service.create(fx.feature, fx.task);
+    await commitNetZeroChangeInRepo(fx, 'api');
+    await commitChangeInRepo(fx, 'web-ui', 'w.txt', 'w\n');
+    const apiSource = (await fx.repos.api.git.revparse([`hive/api/${fx.feature}/${fx.task}`])).trim();
+
+    const result = await fx.service.merge(fx.feature, fx.task, 'merge', mergeMessage, { historyIntent: 'preserve-source' });
+
+    const apiHead = (await fx.repos.api.git.revparse(['HEAD'])).trim();
+    expect(result).toMatchObject({ success: true, merged: true, sha: apiHead, filesChanged: ['web-ui:w.txt'] });
+    expect(result.repos!.api).toMatchObject({ success: true, merged: true, sha: apiHead, filesChanged: [] });
+    expect(gitIsAncestor(fx.repos.api.path, apiSource, apiHead)).toBe(true);
+  });
+
+  it('does not mark a composite failure partial after only private no-op repos have succeeded', async () => {
     const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
     await fx.service.create(fx.feature, fx.task);
     await commitNetZeroChangeInRepo(fx, 'api');
@@ -3409,7 +3947,7 @@ describe("WorktreeService composite merge aggregation", () => {
     await fx.repos['web-ui'].git.add('-A');
     await fx.repos['web-ui'].git.commit('chore: web-ui main side');
 
-    const result = await fx.service.merge(fx.feature, fx.task, 'merge', mergeMessage);
+    const result = await fx.service.merge(fx.feature, fx.task, 'squash', mergeMessage, { historyIntent: 'rewrite-private' });
 
     expect(result.success).toBe(false);
     expect(result.merged).toBe(false);
@@ -3417,6 +3955,36 @@ describe("WorktreeService composite merge aggregation", () => {
     expect(result.repos!['api']).toMatchObject({ success: true, merged: false, reasonCode: 'NO_TRACKED_CHANGES' });
     expect(result.repos!['web-ui'].success).toBe(false);
     expect(result.conflicts).toContain('web-ui:README.md');
+  });
+
+  it('reports a later failure after a graph-only preservation merge as partial and defers cleanup', async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
+    const wt = await fx.service.create(fx.feature, fx.task);
+    await commitNetZeroChangeInRepo(fx, 'api');
+    await fs.writeFile(path.join(wt.repos!['web-ui'].path, 'README.md'), 'task-side\n', 'utf-8');
+    const wg = simpleGit(wt.repos!['web-ui'].path);
+    await wg.add('-A');
+    await wg.commit(testCommitMessage('chore: web-ui task side'));
+    await fs.writeFile(path.join(fx.repos['web-ui'].path, 'README.md'), 'main-side\n', 'utf-8');
+    await fx.repos['web-ui'].git.add('-A');
+    await fx.repos['web-ui'].git.commit(testCommitMessage('chore: web-ui main side'));
+
+    const result = await fx.service.merge(fx.feature, fx.task, 'merge', mergeMessage, {
+      historyIntent: 'preserve-source',
+      cleanup: 'worktree+branch',
+    });
+
+    expect(result).toMatchObject({
+      success: false,
+      partial: true,
+      reasonCode: 'COMPOSITE_PARTIAL',
+      mutation: 'partial',
+      cleanup: { requested: 'none', outcome: 'not_requested' },
+    });
+    expect(result.repos!.api).toMatchObject({ success: true, merged: true, filesChanged: [] });
+    expect(result.repos!['web-ui']).toMatchObject({ success: false, conflictState: 'aborted' });
+    expect(await pathExists(wt.repos!.api.path)).toBe(true);
+    expect(await pathExists(wt.repos!['web-ui'].path)).toBe(true);
   });
 
   it("does not report aggregate merged=true when a per-repo result is success=true but merged=false", async () => {
@@ -3437,7 +4005,7 @@ describe("WorktreeService composite merge aggregation", () => {
       return result;
     };
 
-    const result = await fx.service.merge(fx.feature, fx.task, 'merge', mergeMessage);
+    const result = await fx.service.merge(fx.feature, fx.task, 'merge', mergeMessage, { historyIntent: 'preserve-source' });
 
     expect(result.success).toBe(false);
     expect(result.merged).toBe(false);
@@ -3527,7 +4095,7 @@ describe("WorktreeService composite merge aggregation", () => {
 
     const webHeadBefore = (await webRepo.git.revparse(['HEAD'])).trim();
 
-    const result = await service.merge(feature, task, 'merge');
+    const result = await service.merge(feature, task, 'merge', undefined, { historyIntent: 'preserve-source' });
 
     expect(result.success).toBe(false);
     expect(result.partial).toBe(false);
@@ -3540,7 +4108,7 @@ describe("WorktreeService composite merge aggregation", () => {
   it("preserves legacy single-repo merge shape when no manifest is configured", async () => {
     const fixture = await createCommittedFixture();
 
-    const result = await fixture.service.merge(fixture.feature, fixture.task, 'merge', mergeMessage);
+    const result = await fixture.service.merge(fixture.feature, fixture.task, 'merge', mergeMessage, { historyIntent: 'preserve-source' });
 
     expect(result.success).toBe(true);
     expect(result.merged).toBe(true);

@@ -2366,6 +2366,13 @@ describe('Hive (Hybrid) prompt', () => {
       expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain("keep `status: 'in_progress'` with pending-integration detail in `summary` or `report` and no blocker");
       expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('A destination may retain disjoint untracked or ignored files');
       expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('TARGET_RECONCILIATION_REQUIRED with reconcile_target');
+      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('a declared `historyIntent`; the tool has no default intent');
+      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('keeps existing source commits and their messages unchanged');
+      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('only when all source-only history in every selected repository is private');
+      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain("verify that it is in the final destination's ancestry before claiming repair");
+      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('returns `ALREADY_INTEGRATED` with no commit');
+      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('a failed proof retains the source placements');
+      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).not.toContain('squash by default');
       expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('without deleting Hive state, dependencies, build output, or user files');
       expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('without relying on Git merge flags');
       expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('incoming-path collision state still blocks merge');
@@ -2415,12 +2422,16 @@ describe('Hive (Hybrid) prompt', () => {
       );
     });
 
-    it('defaults to one polished squash commit per task', () => {
-      expect(QUEEN_BEE_PROMPT).toContain('Default to `strategy: "squash"`');
+    it('declares history intent per task, squashing private history and preserving surviving history', () => {
+      expect(QUEEN_BEE_PROMPT).toContain('`historyIntent` deliberately');
+      expect(QUEEN_BEE_PROMPT).toContain('When the task branch history is private, declare `rewrite-private`');
+      expect(QUEEN_BEE_PROMPT).toContain('keeps one root commit per completed task');
+      expect(QUEEN_BEE_PROMPT).toContain('review and fix iterations into that commit');
+      expect(QUEEN_BEE_PROMPT).toContain('such as published commits, declare `preserve-source`');
+      expect(QUEEN_BEE_PROMPT).toContain('keeps those commits and their messages unchanged');
       expect(QUEEN_BEE_PROMPT).toContain('subject, a blank line, and a descriptive body');
-      expect(QUEEN_BEE_PROMPT).toContain('Preserve one root commit per completed task');
-      expect(QUEEN_BEE_PROMPT).toContain('review and fix iterations into that squash commit');
       expect(QUEEN_BEE_PROMPT).toContain('Do not use `hive`, task numbers, task folder names, run IDs, or "merge task" prose');
+      expect(QUEEN_BEE_PROMPT).not.toContain('Default to `strategy: "squash"`');
       expect(QUEEN_BEE_PROMPT).not.toContain('Prefer `strategy: "rebase"`');
     });
 
@@ -2843,12 +2854,16 @@ describe('Swarm (Orchestrator) prompt', () => {
       expect(SWARM_BEE_PROMPT).not.toContain('recovery escape');
     });
 
-    it('defaults to one polished squash commit per task', () => {
-      expect(SWARM_BEE_PROMPT).toContain('Default to `strategy: "squash"`');
+    it('declares history intent per task, squashing private history and preserving surviving history', () => {
+      expect(SWARM_BEE_PROMPT).toContain('`historyIntent` deliberately');
+      expect(SWARM_BEE_PROMPT).toContain('When the task branch history is private, declare `rewrite-private`');
+      expect(SWARM_BEE_PROMPT).toContain('keeps one root commit per completed task');
+      expect(SWARM_BEE_PROMPT).toContain('review and fix iterations into that commit');
+      expect(SWARM_BEE_PROMPT).toContain('such as published commits, declare `preserve-source`');
+      expect(SWARM_BEE_PROMPT).toContain('keeps those commits and their messages unchanged');
       expect(SWARM_BEE_PROMPT).toContain('subject, a blank line, and a descriptive body');
-      expect(SWARM_BEE_PROMPT).toContain('Preserve one root commit per completed task');
-      expect(SWARM_BEE_PROMPT).toContain('review and fix iterations into that squash commit');
       expect(SWARM_BEE_PROMPT).toContain('Do not use `hive`, task numbers, task folder names, run IDs, or "merge task" prose');
+      expect(SWARM_BEE_PROMPT).not.toContain('Default to `strategy: "squash"`');
       expect(SWARM_BEE_PROMPT).not.toContain('Prefer `strategy: "rebase"`');
     });
 
@@ -3735,9 +3750,12 @@ describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
     expect(QUEEN_BEE_PROMPT).toContain('concise kebab-case `runId` derived from the lane goal');
   });
 
-  it('prefers squash merges while allowing explicit normal merges', () => {
-    expect(HIVE_BUILDER_PROMPT).toContain('Prefer squash merges');
-    expect(HIVE_BUILDER_PROMPT).toContain('explicit normal merge');
+  it('declares history intent for every ad-hoc merge, squashing private runs and allowing preserving normal merges', () => {
+    expect(HIVE_BUILDER_PROMPT).toContain('Every `hive_adhoc_worktree_merge` declares `historyIntent`');
+    expect(HIVE_BUILDER_PROMPT).toContain("When the run's history is private, declare `rewrite-private` and squash");
+    expect(HIVE_BUILDER_PROMPT).toContain('Declare `preserve-source` for an explicit normal merge');
+    expect(HIVE_BUILDER_PROMPT).not.toContain('Prefer squash merges');
+    expect(HIVE_BUILDER_PROMPT).not.toContain('default to `squash`');
   });
 
   it('tells agents to omit unused optional ad-hoc arguments', () => {

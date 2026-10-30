@@ -122,7 +122,8 @@ For whole-feature execution, after all tasks complete (a target milestone uses i
 - **REQUIRED SUB-SKILL:** Use `skill({ id })` for the catalog entry named "verification"
 <!-- /hive-host -->
 - Verify with evidence from that skill
-- For worktree placement, the primary calls `hive_worktree_merge` with the worker's unchanged pin and inspected target expectation, using same-call cleanup when retention is not needed; do not use raw `git merge` / `git worktree remove` as the Hive finish path
+- For worktree placement, the primary calls `hive_worktree_merge` with the worker's unchanged pin, inspected target expectation and declared `historyIntent` (`preserve-source` when source ancestry must survive, `rewrite-private` only for private history), using same-call cleanup when retention is not needed; do not use raw `git merge` / `git worktree remove` as the Hive finish path
+- Read `reasonCode` and `cleanup` after merge: `ALREADY_INTEGRATED` means the target already contained the source, and a failed cleanup proof retains the source placements
 - For non-Git or report-only placement, verify the target and skip Hive merge and cleanup because no managed Git placement exists
 - Do not present a generic merge/PR/keep/discard menu
 

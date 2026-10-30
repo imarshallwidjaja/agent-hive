@@ -14,6 +14,9 @@ import {
   buildCleanupOutcome,
   buildNotRequestedCleanupOutcome,
   buildNotRequestedMergeCleanupBlock,
+  buildSkippedCleanupOutcome,
+  buildThrownCleanupOutcome,
+  CleanupActionError,
   cleanupFacts,
   cleanupStepDone,
   classifyThrownWorktreeError,
@@ -32,14 +35,22 @@ import {
 } from './worktreeTarget.js';
 import type { WorktreeTargetComparison, WorktreeTargetIdentity } from './worktreeTarget.js';
 import {
+  completedIntegration,
   integrateWorktreeRepository,
   inspectTargetMergeEligibility,
   integrationFailure,
+  integrationMessageFailure,
   mergeSuccessClassification,
+  proveCleanupEligibility,
   readValidatedCommitMessage,
-  validateSourceCommitMessages,
+  resolveIntegrationPolicy,
 } from './worktreeIntegration.js';
-import type { TargetMergeCandidates } from './worktreeIntegration.js';
+import type {
+  HistoryIntent,
+  IntegrationPolicy,
+  IntegrationStrategy,
+  TargetMergeCandidates,
+} from './worktreeIntegration.js';
 import type {
   CleanupStepOutcome,
   WorktreeCleanupOutcome,
@@ -103,9 +114,11 @@ export interface AdhocWorktreeInfo {
   comparison?: WorktreeTargetComparison;
 }
 
-export type AdhocMergeStrategy = 'merge' | 'squash' | 'rebase';
+export type AdhocMergeStrategy = IntegrationStrategy;
 
 export interface AdhocMergeOptions {
+  /** Required declaration of source history handling; there is no default. */
+  historyIntent: HistoryIntent;
   preserveConflicts?: boolean;
   cleanup?: 'none' | 'worktree' | 'worktree+branch';
   /** Exact source commits to integrate. A moved source is rejected before mutation. */
@@ -130,7 +143,8 @@ export interface AdhocRepoMergeResult extends WorktreeRepositoryMergeResult {
 export interface AdhocMergeResult {
   success: boolean;
   merged: boolean;
-  strategy: AdhocMergeStrategy;
+  /** The resolved strategy; omitted when intent/strategy validation failed before one was resolved. */
+  strategy?: AdhocMergeStrategy;
   sha?: string;
   commitMessage?: string;
   reason?: string;
@@ -191,7 +205,7 @@ function cleanupResultFromOutcome(
 }
 
 function mergeFailure(
-  strategy: AdhocMergeStrategy,
+  strategy: AdhocMergeStrategy | undefined,
   reasonCode: WorktreeReasonCode,
   error: string,
   options: {
@@ -209,7 +223,7 @@ function mergeFailure(
   return {
     success: false,
     merged: false,
-    strategy,
+    ...(strategy !== undefined ? { strategy } : {}),
     filesChanged: options.filesChanged ?? [],
     conflicts: options.conflicts ?? [],
     conflictState: options.conflictState ?? 'none',
@@ -945,24 +959,33 @@ export class AdhocWorktreeService {
     });
   }
 
+  /**
+   * Integrate an ad-hoc worktree. `options.historyIntent` is required and
+   * selects the permitted strategy; an omitted strategy resolves from the
+   * intent (preserve-source: merge, rewrite-private: squash). Missing, unknown
+   * or incompatible intent is rejected before any lock, Git read or mutation.
+   */
   async merge(
     runId: string,
-    strategy: AdhocMergeStrategy = 'squash',
-    message?: string,
-    options: AdhocMergeOptions = {},
+    strategy: AdhocMergeStrategy | undefined,
+    message: string | undefined,
+    options: AdhocMergeOptions,
   ): Promise<AdhocMergeResult> {
+    const resolved = resolveIntegrationPolicy(options?.historyIntent, strategy);
+    if ('error' in resolved) return mergeFailure(undefined, 'INVALID_ARGUMENTS', resolved.error);
     const manifest = await this.readCompositeManifest(runId);
     const repositories = this.workspaceRepositoryPaths(manifest, this.getWorktreePath(runId));
-    return this.withRepositoryLocks(repositories, () => this.mergeUnlocked(runId, strategy, message, options));
+    return this.withRepositoryLocks(repositories, () => this.mergeUnlocked(runId, resolved.policy, message, options));
   }
 
   private async mergeUnlocked(
     runId: string,
-    strategy: AdhocMergeStrategy,
+    policy: IntegrationPolicy,
     message: string | undefined,
     options: AdhocMergeOptions,
   ): Promise<AdhocMergeResult> {
     this.assertSafeRunId(runId);
+    const { strategy } = policy;
 
     const cleanupMode = options.cleanup ?? 'none';
     const preserveConflicts = options.preserveConflicts ?? false;
@@ -980,7 +1003,7 @@ export class AdhocWorktreeService {
       return mergeFailure(strategy, 'INVALID_ARGUMENTS', error instanceof Error ? error.message : String(error));
     }
     if (manifest) {
-      return this.mergeComposite(runId, manifest, strategy, message, {
+      return this.mergeComposite(runId, manifest, policy, message, {
         cleanup: cleanupMode,
         preserveConflicts,
         sourceCommits: options.sourceCommits,
@@ -988,7 +1011,7 @@ export class AdhocWorktreeService {
       });
     }
 
-    return this.mergeSingle(runId, strategy, message, {
+    return this.mergeSingle(runId, policy, message, {
       cleanup: cleanupMode,
       preserveConflicts,
       sourceCommit: options.sourceCommit,
@@ -998,7 +1021,7 @@ export class AdhocWorktreeService {
 
   private async mergeSingle(
     runId: string,
-    strategy: AdhocMergeStrategy,
+    policy: IntegrationPolicy,
     message: string | undefined,
     options: {
       cleanup: 'none' | 'worktree' | 'worktree+branch';
@@ -1007,6 +1030,7 @@ export class AdhocWorktreeService {
       expectedTarget: WorktreeTargetIdentity;
     },
   ): Promise<AdhocMergeResult> {
+    const { strategy } = policy;
     const branchName = this.getBranchName(runId);
 
     let registered: AdhocWorktreeInfo | null;
@@ -1035,7 +1059,7 @@ export class AdhocWorktreeService {
     const repoResult = await this.mergeOneRepo({
       git,
       branchName,
-      strategy,
+      policy,
       message,
       preserveConflicts: options.preserveConflicts,
       cleanupMode: options.cleanup,
@@ -1071,7 +1095,7 @@ export class AdhocWorktreeService {
   private async mergeComposite(
     runId: string,
     manifest: AdhocCompositeManifest,
-    strategy: AdhocMergeStrategy,
+    policy: IntegrationPolicy,
     message: string | undefined,
     options: {
       cleanup: 'none' | 'worktree' | 'worktree+branch';
@@ -1080,6 +1104,7 @@ export class AdhocWorktreeService {
       expectedTargets: Record<string, WorktreeTargetIdentity>;
     },
   ): Promise<AdhocMergeResult> {
+    const { strategy } = policy;
     const repoIds = Object.keys(manifest.repos).sort();
     const trustedById = this.trustedRepositoriesForManifest(manifest);
     const pinnedSourceCommits: Record<string, string> = {};
@@ -1147,16 +1172,13 @@ export class AdhocWorktreeService {
           targetRoot: repoRoot,
           targetCommit: options.expectedTargets[repoId].commit,
           sourceCommit: pinnedSourceCommits[repoId],
-          strategy,
+          policy,
           excludedLocalPaths: [repoWtPath, path.join(this.config.hiveDir, '.operation-locks')],
         });
         if ('error' in eligibility) return preflightFailure(repoId, eligibility.error, eligibility.reasonCode);
         precomputedCandidates[repoId] = eligibility;
-        if (eligibility.candidateFiles.length > 0 && strategy !== 'squash') {
-          const currentBranch = (await repoGit.branch()).current;
-          const sourceError = await validateSourceCommitMessages(repoGit, currentBranch, entry.branch);
-          if (sourceError) return preflightFailure(repoId, sourceError, 'INVALID_COMMIT_MESSAGE');
-        }
+        const messageFailure = await integrationMessageFailure(repoGit, eligibility, message);
+        if (messageFailure) return preflightFailure(repoId, messageFailure.error, messageFailure.reasonCode);
       } catch (e: unknown) {
         const msg = (e as { message?: string }).message ?? 'unable to read status';
         return preflightFailure(repoId, msg, 'GIT_OPERATION_FAILED');
@@ -1180,7 +1202,7 @@ export class AdhocWorktreeService {
       const repoResult = await this.mergeOneRepo({
         git: repoGit,
         branchName: entry.branch,
-        strategy,
+        policy,
         message,
         preserveConflicts: options.preserveConflicts,
         cleanupMode: 'none',
@@ -1207,7 +1229,7 @@ export class AdhocWorktreeService {
       }
 
       if (!repoResult.merged) {
-        if (repoResult.reasonCode === 'NO_TRACKED_CHANGES') {
+        if (repoResult.reasonCode === 'NO_TRACKED_CHANGES' || repoResult.reasonCode === 'ALREADY_INTEGRATED') {
           continue;
         }
         stoppedRepoId = repoId;
@@ -1246,49 +1268,52 @@ export class AdhocWorktreeService {
     // All repos merged -> apply cleanup (all repos passed preflight above)
     let cleanup = buildNotRequestedCleanupOutcome();
     if (options.cleanup !== 'none') {
-      const deleteBranch = options.cleanup === 'worktree+branch';
+      const cleanupMode = options.cleanup;
+      const deleteBranch = cleanupMode === 'worktree+branch';
       const perRepo: Array<{ repoId: string; cleanup: AdhocCleanupResult }> = [];
-      let identityFailure: { repoId: string; cause: string } | undefined;
+      // Every repository proves its completed work before any repository is cleaned up.
+      let proofFailure: { repoId: string; step: string; cause: string } | undefined;
       for (const repoId of repoIds) {
-        const repoGit = this.getGit(trustedById.get(repoId)!.path);
-        try {
-          const source = (await repoGit.revparse([manifest.repos[repoId].branch])).trim();
-          const target = await readWorktreeTargetIdentity(trustedById.get(repoId)!.path);
-          const expectedTarget = {
+        const failure = await proveCleanupEligibility({
+          targetGit: this.getGit(trustedById.get(repoId)!.path),
+          targetRoot: trustedById.get(repoId)!.path,
+          sourceBranch: manifest.repos[repoId].branch,
+          sourceCommit: pinnedSourceCommits[repoId],
+          expectedTarget: {
             ...options.expectedTargets[repoId],
             commit: repos[repoId].sha ?? options.expectedTargets[repoId].commit,
-          };
-          if (source !== pinnedSourceCommits[repoId] || !sameWorktreeTarget(expectedTarget, target)) {
-            identityFailure = { repoId, cause: `source or target moved before cleanup (source ${source}, target ${target})` };
-            break;
-          }
-        } catch (error) {
-          identityFailure = { repoId, cause: `source or target could not be read before cleanup: ${(error as Error).message}` };
+          },
+          completion: completedIntegration(policy, repos[repoId]),
+        });
+        if (failure) {
+          proofFailure = { repoId, ...failure };
           break;
         }
       }
       for (const repoId of repoIds) {
-        const repoCleanup = identityFailure
-          ? cleanupResultFromOutcome(buildCleanupOutcome(options.cleanup, {
-            worktreeRemoval: { status: 'not_attempted' },
-            branchDeletion: deleteBranch ? { status: 'not_attempted' } : { status: 'not_requested' },
-            prune: { status: 'not_attempted' },
-            failures: [{ step: 'identity-recheck', repoId: identityFailure.repoId, cause: identityFailure.cause }],
-          }), 'CLEANUP_FAILED')
-          : await this.removeCompositeRepo(
-            runId,
-            repoId,
-            trustedById.get(repoId)!.path,
-            deleteBranch,
-            {},
-            pinnedSourceCommits[repoId],
-          );
+        let repoCleanup: AdhocCleanupResult;
+        if (proofFailure) {
+          repoCleanup = cleanupResultFromOutcome(buildSkippedCleanupOutcome(cleanupMode, proofFailure), 'CLEANUP_FAILED');
+        } else {
+          try {
+            repoCleanup = await this.removeCompositeRepo(
+              runId,
+              repoId,
+              trustedById.get(repoId)!.path,
+              deleteBranch,
+              {},
+              pinnedSourceCommits[repoId],
+            );
+          } catch (error) {
+            repoCleanup = cleanupResultFromOutcome(buildThrownCleanupOutcome(cleanupMode, error, repoId), 'CLEANUP_FAILED');
+          }
+        }
         repos[repoId].cleanup = toMergeCleanupBlock(repoCleanup.cleanup);
         perRepo.push({ repoId, cleanup: repoCleanup });
       }
       const compositeRoot = this.getCompositeRoot(runId);
       let rootFailure: { cause: string } | undefined;
-      if (!identityFailure && perRepo.every(({ cleanup }) => cleanup.cleanup.outcome === 'complete')) {
+      if (!proofFailure && perRepo.every(({ cleanup }) => cleanup.cleanup.outcome === 'complete')) {
         try {
           await this.removeEmptyWorkspaceRoot(compositeRoot);
         } catch (error: unknown) {
@@ -1304,12 +1329,14 @@ export class AdhocWorktreeService {
     }
 
     if (!anyActualMerge) {
+      const allContained = repoIds.every((repoId) => repos[repoId].reasonCode === 'ALREADY_INTEGRATED');
       return {
         success: true,
         merged: false,
         strategy,
-        reason: 'nothing_to_merge',
-        reasonCode: 'NO_TRACKED_CHANGES',
+        ...(allContained
+          ? { reason: 'already_integrated', reasonCode: 'ALREADY_INTEGRATED' as const }
+          : { reason: 'nothing_to_merge', reasonCode: 'NO_TRACKED_CHANGES' as const }),
         cleanupEligible: true,
         filesChanged: [],
         conflicts: [],
@@ -1444,7 +1471,7 @@ export class AdhocWorktreeService {
   private async mergeOneRepo(options: {
     git: SimpleGit;
     branchName: string;
-    strategy: AdhocMergeStrategy;
+    policy: IntegrationPolicy;
     message: string | undefined;
     preserveConflicts: boolean;
     cleanupMode: 'none' | 'worktree' | 'worktree+branch';
@@ -1463,7 +1490,7 @@ export class AdhocWorktreeService {
       sourceDiagnosticPath: options.sourceWorktreePath,
       excludedLocalPaths: [path.join(this.config.hiveDir, '.operation-locks')],
       precomputedCandidates: options.precomputedCandidates,
-      strategy: options.strategy,
+      policy: options.policy,
       message: options.message,
       preserveConflicts: options.preserveConflicts,
       cleanupMode: options.cleanupMode,
@@ -1596,7 +1623,7 @@ export class AdhocWorktreeService {
     });
     if (cleanupStepDone(outcome.worktreeRemoval)) {
       await fs.unlink(this.getSingleMetadataPath(runId)).catch((error: NodeJS.ErrnoException) => {
-        if (error.code !== 'ENOENT') throw error;
+        if (error.code !== 'ENOENT') throw new CleanupActionError(outcome, 'metadata-removal', error);
       });
     }
     return cleanupResultFromOutcome(outcome, outcome.outcome === 'complete' ? undefined : 'CLEANUP_FAILED');

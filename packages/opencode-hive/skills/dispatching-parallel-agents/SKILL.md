@@ -158,7 +158,7 @@ Choose the best-fit available descriptor for the requested output. Scout is for 
 When agents return:
 - Read each summary
 - Verify fixes don't conflict
-- In feature-task mode, pass each returned topology-aware pin unchanged through the feature workflow's verification and primary-owned `hive_worktree_merge` lifecycle with the unchanged inspected target expectation. Use same-call `cleanup: 'worktree+branch'` when retention is not needed. Use the complete map when persisted `repos` are present; a singleton composite scalar is accepted, while multiple repositories require the complete map.
+- In feature-task mode, pass each returned topology-aware pin unchanged through the feature workflow's verification and primary-owned `hive_worktree_merge` lifecycle with the unchanged inspected target expectation and the task's declared `historyIntent`. Use same-call `cleanup: 'worktree+branch'` when retention is not needed. Use the complete map when persisted `repos` are present; a singleton composite scalar is accepted, while multiple repositories require the complete map.
 - In ad-hoc mode, return result state and its exact pin to `orchestrating-ad-hoc-work`, which owns review gates, deterministic integration, selected integrated acceptance, and `hive_adhoc_worktree_merge`.
 
 ## Agent Prompt Structure

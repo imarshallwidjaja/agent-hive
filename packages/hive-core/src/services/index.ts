@@ -55,6 +55,7 @@ export type {
   AdhocCleanupResult,
   AdhocCleanupOptions,
 } from './adhocWorktreeService.js';
+export type { HistoryIntent, IntegrationStrategy } from './worktreeIntegration.js';
 export {
   buildCleanupOutcome,
   buildNotRequestedMergeCleanupBlock,

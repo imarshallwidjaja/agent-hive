@@ -607,6 +607,7 @@ describe('coordinated runtime hard cut', () => {
 
     const result = JSON.parse(await loaded.tool!.hive_adhoc_worktree_merge.execute({
       runId: 'singleton-adhoc',
+      historyIntent: 'rewrite-private',
       sourceCommit: inspected.repos.api.commit,
       expectedTarget: inspected.repos.api.target,
       message: 'test: merge singleton source\n\nMerge the persisted singleton candidate.',
@@ -639,6 +640,7 @@ describe('coordinated runtime hard cut', () => {
     const result = JSON.parse(await loaded.tool!.hive_worktree_merge.execute({
       feature: 'singleton-feature',
       task,
+      historyIntent: 'rewrite-private',
       sourceCommit: inspected.repos.api.commit,
       expectedTarget: inspected.repos.api.target,
       message: 'test: merge feature singleton source\n\nMerge the persisted singleton feature candidate.',
@@ -758,6 +760,7 @@ describe('coordinated runtime hard cut', () => {
 
     const result = JSON.parse(await loaded.tool!.hive_adhoc_worktree_merge.execute({
       runId: 'pin-validation',
+      historyIntent: 'rewrite-private',
       sourceCommits: { api: inspected.repos.api.commit },
       expectedTargets: { api: inspected.repos.api.target },
       message: 'test: merge singleton map\n\nMerge the exact singleton map.',
@@ -827,6 +830,7 @@ describe('coordinated runtime hard cut', () => {
     const inspected = JSON.parse(await loaded.tool!.hive_adhoc_worktree_inspect.execute({ runId: 'legacy-pin' }, {}));
     const result = JSON.parse(await loaded.tool!.hive_adhoc_worktree_merge.execute({
       runId: 'legacy-pin',
+      historyIntent: 'rewrite-private',
       sourceCommit: inspected.commit,
       expectedTarget: inspected.target,
       message: 'test: merge legacy source\n\nMerge the exact legacy pin.',
@@ -851,13 +855,15 @@ describe('coordinated runtime hard cut', () => {
 
     const missing = JSON.parse(await loaded.tool!.hive_adhoc_worktree_merge.execute({
       runId: created.runId,
+      historyIntent: 'rewrite-private',
       sourceCommit: inspected.commit,
     }, {}));
-    expect(missing).toMatchObject({ success: false, reasonCode: 'INVALID_ARGUMENTS' });
+    expect(missing).toMatchObject({ success: false, reasonCode: 'INVALID_ARGUMENTS', error: 'expectedTarget or expectedTargets is required' });
 
     const callerTarget = { ...inspected.target, ref: 'refs/heads/not-the-target' };
     const mismatch = JSON.parse(await loaded.tool!.hive_adhoc_worktree_merge.execute({
       runId: created.runId,
+      historyIntent: 'rewrite-private',
       sourceCommit: inspected.commit,
       expectedTarget: callerTarget,
     }, {}));
@@ -906,6 +912,7 @@ describe('coordinated runtime hard cut', () => {
 
     const result = JSON.parse(await loaded.tool!.hive_adhoc_worktree_merge.execute({
       runId: created.runId,
+      historyIntent: 'rewrite-private',
       expectedTarget: inspected.target,
       message: 'test: merge observed source\n\nOmitting the pin merges the source inspected at merge time.',
       cleanup: 'worktree+branch',

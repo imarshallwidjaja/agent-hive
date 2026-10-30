@@ -112,7 +112,7 @@ describe('plugin hard-cut surface', () => {
     fs.writeFileSync(path.join(created.path, 'tracked.txt'), 'changed\n');
     execFileSync('git', ['add', '.'], { cwd: created.path });
     execFileSync('git', ['commit', '-m', 'test: move source', '-m', 'Exercise caller-supplied source pin validation.'], { cwd: created.path });
-    await expect(hooks.tool!.hive_adhoc_worktree_merge.execute({ runId: 'foreign', sourceDirectory: source, sourceCommit: created.commit, message: 'test: merge\n\nMerge candidate.' }, {})).rejects.toThrow(/does not match/);
+    await expect(hooks.tool!.hive_adhoc_worktree_merge.execute({ runId: 'foreign', sourceDirectory: source, historyIntent: 'rewrite-private', sourceCommit: created.commit, message: 'test: merge\n\nMerge candidate.' }, {})).rejects.toThrow(/does not match/);
     const cleaned = JSON.parse(await hooks.tool!.hive_adhoc_worktree_cleanup.execute({ runId: 'foreign', sourceDirectory: source, discard: true, deleteBranch: true }, {}));
     expect(cleaned.cleanup.outcome).toBe('complete');
     await expect(hooks.tool!.hive_adhoc_worktree_inspect.execute({ runId: 'foreign', sourceDirectory: '.' }, {})).rejects.toThrow(/must be absolute/);

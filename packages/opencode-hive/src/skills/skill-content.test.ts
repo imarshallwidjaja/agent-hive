@@ -1756,10 +1756,21 @@ describe('skill content', () => {
     expect(completeDevelopment).toContain('skip Hive merge and cleanup');
     expect(completeDevelopment).toContain('Do not present a generic merge/PR/keep/discard menu');
     expect(completeDevelopment).toContain('do not use raw `git merge` / `git worktree remove` as the Hive finish path');
+    expect(completeDevelopment).toContain('declared `historyIntent`');
+    expect(completeDevelopment).toContain('`ALREADY_INTEGRATED` means the target already contained the source');
     expect(completeDevelopment).not.toContain('present options');
     expect(completeDevelopment).not.toContain('execute choice');
     expect(template).not.toContain('verify tests, present options, execute choice');
     expect(template).not.toContain('finishing-a-development-branch');
+  });
+
+  it('carries a declared history intent through every packaged merge finish path without a squash default', () => {
+    expect(readSkillTemplate('orchestrating-ad-hoc-work')).toContain('with a declared `historyIntent` for the whole run');
+    expect(readSkillTemplate('orchestrating-ad-hoc-work')).toContain('`rewrite-private` only when all source-only history in every selected repository is private');
+    expect(readSkillTemplate('dispatching-parallel-agents')).toContain("the task's declared `historyIntent`");
+    for (const skill of ['executing-plans', 'orchestrating-ad-hoc-work', 'dispatching-parallel-agents']) {
+      expect(readSkillTemplate(skill), skill).not.toMatch(/squash by default|default to `?squash/i);
+    }
   });
 
   it('includes task() parallel guidance for dispatching-parallel-agents', () => {
