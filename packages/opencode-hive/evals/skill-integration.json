@@ -164,14 +164,20 @@
     {
       "id": "visual-refinement-preserves-identity",
       "skills": ["unslop", "stop-design-slop"],
-      "prompt": "You may edit. Refine the Billing settings screen in this app: 'tighten it up, the cards feel heavy'. Facts: the project tokens define an ink-blue accent, a 4 px radius, and a serif heading face. The screen wraps each of four short fields in its own bordered card inside a bordered panel. The copy says 'Invoices are issued on the 1st'. Do not change anything outside this screen.",
-      "expected": ["Reads the incumbent tokens and a component before editing", "Diagnoses nested containers and fixes them with grouping, spacing, or dividers while the ink-blue accent, 4 px radius, and serif heading stay", "Leaves the invoice copy unchanged and asks before replacing factual copy or adding claims", "Adds no invented metrics, customers, or decorative effects", "Checks the changed states and records contrast as computed or as unchecked, not judged by eye"]
+      "prompt": "You may edit. Refine the Billing settings screen in this app: 'tighten it up, the cards feel heavy'. The strong brand uses a colorful palette, an ink-blue accent, a 4 px radius, and a serif heading face. The screen wraps each of four short fields in its own bordered card inside a bordered panel. The copy says 'Invoices are issued on the 1st'. Do not change anything outside this screen.",
+      "expected": ["Reads the incumbent tokens and a component before editing", "Diagnoses nested containers and makes a small grouping, spacing, or divider repair while the colorful palette, ink-blue accent, 4 px radius, and serif heading stay", "Stops after the identified defects instead of imposing a new direction or every inspection lens", "Leaves the invoice copy unchanged and asks before replacing factual copy or adding claims", "Adds no invented metrics, customers, or decorative effects", "Checks the changed states and records contrast as computed or as unchecked, not judged by eye"]
     },
     {
       "id": "visual-review-diagnoses-without-editing",
       "skills": ["unslop", "stop-design-slop"],
-      "prompt": "You are a read-only reviewer with no edit tool. Review this landing page description: centered pill reading 'New', a gradient headline 'Unlock the power of seamless insights', two buttons, a floating rounded screenshot of a chart with the figures 12,480 and +38%, then three identical icon cards. The product is an invoice reconciliation tool; no real figures were supplied. Report your findings.",
-      "expected": ["Names the defects with design terms and separates usability or honesty problems from distinctiveness problems", "Flags the figures as unsupported unless labelled sample data and asks for a real reconciliation view", "Describes structural direction such as leading with the real reconciliation task, without editing the page or issuing a score", "Does not ban cards, gradients, or pills outright", "Marks contrast as unchecked unless computed"]
+      "prompt": "You are a read-only reviewer with no edit tool. Review this landing page description: centered pill reading 'New', a gradient headline 'Unlock the power of seamless insights', two buttons, a floating rounded screenshot of a chart with the figures 12,480 and +38% without a comparison period, then three identical icon cards with inconsistent icon alignment. The product is an invoice reconciliation tool; no real figures were supplied. Report your findings.",
+      "expected": ["Names concrete comparison-label and icon-alignment defects and separates usability or honesty problems from distinctiveness problems", "Flags the figures as unsupported unless labelled sample data and asks for a real reconciliation view", "Describes structural direction such as leading with the real reconciliation task, without editing the page or issuing a score", "Does not demand imagery or motion, or ban cards, gradients, or pills outright", "Marks contrast as unchecked unless computed"]
+    },
+    {
+      "id": "visual-operational-chart-series",
+      "skills": ["unslop", "stop-design-slop"],
+      "prompt": "You may edit an incident-monitoring dashboard. Operators compare four live service series at once; each has a distinct meaningful color and an authentic legend. A decorative sparkline repeats a single total without adding a comparison, and one change reads +12% with no period. The data feed is available for the main chart; a proposed preview has no source data.",
+      "expected": ["Keeps task-fit density and the meaningful series colors and legend", "Removes or repairs the decorative sparkline and supplies a comparison period only if supported", "Uses source-backed data for the main chart and labels representative preview data as sample or leaves it empty", "Does not impose a one-accent chart or invent product facts"]
     },
     {
       "id": "verification-follows-agents-pointer",

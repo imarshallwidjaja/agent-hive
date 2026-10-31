@@ -17,6 +17,8 @@ Take the smaller reading when the request is ambiguous, or ask one question if t
 4. **Keep copy factual.** Ask before replacing factual copy or adding a claim, a figure, or a customer reference.
 5. **Check the result** at the sizes and states the product ships: working states, both themes where present, contrast computed with `contrast_check.py`, and a keyboard pass through the changed region.
 
+Inspect spacing, color, icons, copy, type, layout, details, visuals, and motion when they bear on the request or a diagnosed defect. These are lenses, not required passes or a fixed order; hierarchy-first remediation above still applies. Preserve a sound design, resolve the identified defects, and stop. Larger ideas can be recommendations when outside the requested scope.
+
 Removing slop is not the same as designing. A result that is merely flat, clean, and gray has also failed, so supply the missing idea from the product's task and objects.
 
 ## Redesign

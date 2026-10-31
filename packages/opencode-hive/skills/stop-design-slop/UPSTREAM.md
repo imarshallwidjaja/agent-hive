@@ -18,6 +18,14 @@ The local source is `~/.config/opencode/skills/impeccable/SKILL.md`, which repor
 
 Upstream's `NOTICE.md` credits ehmo's `platform-design-skills` (MIT) for upstream's `ios.md` and `android.md` references. Nothing from those files is adapted here, so that notice is not carried, as Apache 2.0 section 4(d) allows for notices that do not pertain.
 
+### heydamir/unslop
+
+Selected guidance in `references/composition.md`, `references/diagnostics.md`, and `references/refinement.md` adapts [unslop](https://github.com/heydamir/unslop/tree/4652254daff586ff4739849395a127b56f7f8cc7/skills/unslop) by Damir Sokolovsky ([@heydamir](https://x.com/heydamir)), licensed under [Creative Commons Attribution 4.0 International](https://creativecommons.org/licenses/by/4.0/). The upstream license and warranty disclaimer are in `LICENSE.heydamir`; this notice applies to those adapted portions, not the entire existing skill. No endorsement is implied.
+
+Retained in adapted form: direction grounded in product character and world, focal moments and a recurring signature; inspection of number formatting, comparison labels, icon alignment, small-text tracking, spacing, nested geometry, color emphasis, and chart usefulness; and preserving a sound design during light polish. Adapted by making evidence and task fit govern direction, placing each craft issue beside its valid exception, and treating upstream's layers as conditional lenses under the existing hierarchy-first method. The numeric corner example illustrates geometry, not a required token scale.
+
+Not imported: a compulsory nine-pass order, checklist or render cap; fixed aesthetic bans, a neutral-and-one-accent mandate, mandatory imagery, logo replacement, plausible unlabelled data, upstream snapshot/story scripts and video workflow, or image-service setup and permission flow. Image, mockup, data-dense, and motion specialists remain conditional pointers, not bundled dependencies or policy copied into this foundation.
+
 ## Changes from the source
 
 - One skill with three scoped references (composition, diagnostics, refinement) replaces the single long file plus separate rubric, catalog, and terminology files. No second visual skill exists.

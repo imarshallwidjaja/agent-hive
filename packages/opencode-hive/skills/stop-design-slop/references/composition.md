@@ -13,6 +13,8 @@ Before proposing a layout, name:
 - **Real artifacts:** the screenshots, outputs, media, or data the product can show.
 - **Brand character:** the structural traits that recur, such as typography, geometry, density, imagery, iconography, motion, chart language, interaction patterns, and tone, not only color.
 
+Extend this direction with character and, where the evidence supports it, a product world: the people, objects, materials, or working environment that inform the visual choices. Choose focal moments where color, detail, or a real artifact helps the task, and a small recurring signature when it reinforces identity. The mode and existing brand determine how expressive these choices can be; a dense operational surface may make its data the focal point.
+
 When these are unknown, produce a restrained wireframe and say what is missing. Invented decorative specificity misleads more than an honest gap.
 
 ## 2. Choose one governing idea

@@ -189,6 +189,12 @@ describe('skill content', () => {
     expect(apache).toContain('Copyright 2025 Paul Bakaus');
     for (const text of [skill, refinement]) expect(text).toContain('`impeccable` (Apache 2.0)');
     expect(readSkillReference('stop-design-slop', 'source-index.md')).not.toContain('without copying its text');
+    expect(provenance).toContain('Damir Sokolovsky');
+    expect(provenance).toContain('4652254daff586ff4739849395a127b56f7f8cc7');
+    expect(readFileSync(path.join(directory, 'LICENSE.heydamir'), 'utf8')).toContain('Creative Commons Attribution 4.0 International Public License');
+    for (const specialist of ['imagegen-frontend-web', 'ui-mockups', 'aero-design', 'animate']) {
+      expect(skill, specialist).toContain(`\`${specialist}\``);
+    }
   });
 
   it('computes contrast with the packaged stop-design-slop script', () => {

@@ -4,6 +4,8 @@ The imported guidance listed these sources. Its access date was 2026-08-19; none
 
 The wording of the surface modes, of refinement that preserves and redesign that replaces, and of the brief winning over a pattern warning is adapted from the operator-maintained `impeccable` skill (Apache 2.0), which is not one of the sources below. See [UPSTREAM](../UPSTREAM.md) for the adapted portions, the license, and the changes.
 
+The product direction, craft diagnostics, and conditional refinement lenses also adapt [unslop by Damir Sokolovsky (@heydamir)](https://github.com/heydamir/unslop/tree/4652254daff586ff4739849395a127b56f7f8cc7/skills/unslop), CC BY 4.0. These are design guidance, not claims established by the research listed below. See [UPSTREAM](../UPSTREAM.md) for the scope, changes, and license notice.
+
 ## HCI, perception, aesthetics
 
 4. Rosenholtz, R., Li, Y., & Nakano, L. (2007). **Measuring visual clutter**. *Journal of Vision, 7*(2):17, 1–22. DOI: 10.1167/7.2.17. https://doi.org/10.1167/7.2.17

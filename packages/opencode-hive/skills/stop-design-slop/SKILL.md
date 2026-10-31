@@ -37,6 +37,8 @@ Read the reference that matches the case before acting on it.
 
 [Source index](references/source-index.md) lists where the imported guidance came from. The mode descriptions and the rule that the brief wins adapt `impeccable` (Apache 2.0) with changes; see [UPSTREAM](UPSTREAM.md).
 
+For image-generated site references or visuals, use `imagegen-frontend-web` when available; for image-generated UI mockups or storyboards, use `ui-mockups`. For data-dense work, use `aero-design` if useful. For actual motion work, use `animate`. These specialists are conditional on the task and may not be installed.
+
 ## Always true
 
 - **Accessibility.** Keep readable contrast, visible focus, usable targets, text scaling, and a logical reading and focus order. Distinctiveness never trades them away. Compute a color pair with `python3 <base directory>/scripts/contrast_check.py <fg> <bg>` (see [contrast_check.py](scripts/contrast_check.py)), where the base directory is this skill's, and check the worst spot when text sits over an image or gradient. Without code execution, report the contrast as unchecked.
