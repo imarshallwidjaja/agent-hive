@@ -287,7 +287,7 @@ describe('skill content', () => {
       expect(modeling).toContain(preserved);
     }
 
-    const quality = readSkillReference('test-driven-development', 'test-quality.md');
+    const quality = BUILTIN_SKILLS.find((entry) => entry.name === 'test-quality')!.template;
     expect(quality).toContain('Judge a changed behavior test against two imagined edits');
     expect(quality).toContain('**Break the behavior.**');
     expect(quality).toContain('**Change the internals.**');
@@ -296,7 +296,16 @@ describe('skill content', () => {
     expect(quality).toContain('a call to a private helper is not');
     expect(quality).toContain('Prompt, configuration, and packaging pins can be legitimate');
     expect(quality).not.toContain('returned `undefined`');
-    expect(quality).toContain('reading it does not select TDD');
+    expect(quality).toContain('Loading it does not select TDD');
+    for (const contract of ['public observable result, exercised subject and path, independent oracle', 'valid metamorphic relation', 'Reading a fixture after the product mutates it can prove observable state', "asserting only the fixture's setup data cannot", 'credible observability', 'distinct faults', 'not LLM compliance or model behavior', 'Audit is report-only', 'separate implementation request', 'Establish the baseline, preserve unique coverage, and run affected checks']) {
+      expect(quality, contract).toContain(contract);
+    }
+    const audit = readSkillReference('test-quality', 'suite-audit.md');
+    for (const contract of ['when none is named, use the current repository', 'owning layer (unit, integration, or end-to-end)', 'Test and source anchors', 'plausible undetected fault', "duplicate's retained canonical owner", 'Unique coverage that must survive', '**keep**, **rewrite**, **fold**, or **remove**', 'Do not describe a sample as exhaustive', 'Test count and coverage percentage alone are not quality verdicts', 'does not authorize remediation']) {
+      expect(audit, contract).toContain(contract);
+    }
+    expect(existsSync(path.join(root, 'test-driven-development/references/test-quality.md'))).toBe(false);
+    expect(BUILTIN_SKILLS.find((entry) => entry.name === 'test-driven-development')!.template).toContain('Load `test-quality`');
     expect(BUILTIN_SKILLS.find((entry) => entry.name === 'test-driven-development')!.template).toContain('Loading this skill means that selection has been made');
 
     const verification = BUILTIN_SKILLS.find((entry) => entry.name === 'verification')!.template;
@@ -306,7 +315,7 @@ describe('skill content', () => {
     }
 
     // Each adapted passage keeps its license beside a record of both pstack revisions.
-    for (const skill of ['code-design-principles', 'test-driven-development', 'verification']) {
+    for (const skill of ['code-design-principles', 'test-quality', 'verification']) {
       const upstream = readFileSync(path.join(root, skill, 'UPSTREAM.md'), 'utf8');
       expect(upstream, skill).toContain('09d06eb4b97a1020ab31e84030e38baf1099c7dc');
       expect(upstream, skill).toContain('fae2c6ed95821bd85f614a73e4842e13229fa5e5');

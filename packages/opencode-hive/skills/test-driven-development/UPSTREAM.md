@@ -1,5 +1,7 @@
 # Selective pstack material
 
+Ownership note: the reference described below moved to the independent `test-quality` skill, which now holds its canonical content, adaptation record, and license. This file retains the history of its original TDD integration.
+
 The test-quality reference adapts Lauren Tan's `principle-test-behavior-not-implementation` from pstack 0.15.25, `cursor/plugins` revision `09d06eb4b97a1020ab31e84030e38baf1099c7dc`, and `tdd` from pstack 0.15.5, `cursor/plugins` revision `fae2c6ed95821bd85f614a73e4842e13229fa5e5`. Sources: https://github.com/cursor/plugins/tree/09d06eb4b97a1020ab31e84030e38baf1099c7dc/pstack/skills and https://github.com/cursor/plugins/tree/fae2c6ed95821bd85f614a73e4842e13229fa5e5/pstack/skills . `LICENSE.pstack` covers those passages; the license text is identical at both revisions.
 
 Revision change: the 0.15.5 import carried one heuristic, whether a test would still pass if every function it imports returned `undefined`. The 0.15.25 principle replaces it with two counterfactuals, which the reference now follows: a plausible break of the observable contract should fail the test, and a private refactor that preserves behavior should pass it. The principle's account of observable behavior (return values, errors, readable state, and effects on external systems, with the payload a mocked external service receives counted and a private helper call not) and its absence-assertion pairing are kept.

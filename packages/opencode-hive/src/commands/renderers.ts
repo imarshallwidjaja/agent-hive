@@ -1,7 +1,7 @@
 import type { HiveCommandKey } from './registry.js';
 import type { HiveCommandContext, HiveCommandRenderers } from './types.js';
 import { renderCommandBehavior, type CommandBodyKey } from './command-bodies.js';
-import { nativeCall } from '../runtime/host-profile.js';
+import { nativeCall, skillCall } from '../runtime/host-profile.js';
 import { resolveCouncilMembers } from './council.js';
 
 type CommandSectionInput = {
@@ -79,8 +79,9 @@ function configuredGroupNames(context: HiveCommandContext): string {
   return names.length > 0 ? names.join(', ') : 'none configured';
 }
 
-function configuredDashReviewCandidates(context: HiveCommandContext): string {
+function configuredDashReviewCandidates(context: HiveCommandContext, suiteAudit = false): string {
   const candidates = context.dashReviewLanes
+    .filter((lane) => !suiteAudit || lane.baseAgent === 'code-reviewer' || lane.baseAgent === 'simplicity-reviewer')
     .map((lane) => {
       const model = lane.model ?? 'unknown';
       const variant = lane.variant ?? 'unknown';
@@ -371,6 +372,26 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
       ],
       outputItems: [
         'Severity-ordered findings with confidence and source locations; a compact Review Basis, unresolved questions, and required-review or proof gaps.',
+      ],
+    });
+  },
+
+  'test-audit'(args, context) {
+    return renderSections({
+      details: [
+        `Test audit scope: ${topicOrCurrent(args, 'the current repository')}`,
+        `Configured reviewer candidates:\n${configuredDashReviewCandidates(context, true)}`,
+      ],
+      doItems: [
+        `Load the effective test-quality skill with ${skillCall(context.host, 'test-quality')} and follow its audit guidance, whether inline in SKILL.md or in its own referenced material. Read the supplied audit reference when directed. If the guidance needed for the audit is unavailable, report the affected audit gap and stop; respect native overrides and disabled skills without searching generated caches.`,
+        'Audit the named roots or natural-language scope as a repository/suite audit, not just the current diff. Use your existing understanding-led review and independent challenge method with code and simplicity reviewer roles within their permissions; require each selected reviewer to load test-quality.',
+      ],
+      doNotItems: [
+        'Do not fix or delete tests, edit source, or start remediation. Remediation requires an explicit follow-up implementation request through an authorized implementation lifecycle.',
+        'Do not run the candidate without the authorization required by your Runtime Exercise method.',
+      ],
+      outputItems: [
+        'An evidence-backed test-quality report with test/source anchors, keep/rewrite/fold/remove recommendations, preserved unique coverage, and covered/uninspected areas. Report findings first; sampling is not exhaustive coverage.',
       ],
     });
   },

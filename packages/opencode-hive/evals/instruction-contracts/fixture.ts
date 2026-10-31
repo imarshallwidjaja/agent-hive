@@ -1237,6 +1237,7 @@ export const PLANNED_REFERENCES = [
   'writing-plans/references/verification-planning.md',
   'context-engineering/references/mutation-and-recovery.md',
   'systematic-debugging/references/diagnostic-techniques.md',
+  'test-quality/references/suite-audit.md',
 ];
 
 /**

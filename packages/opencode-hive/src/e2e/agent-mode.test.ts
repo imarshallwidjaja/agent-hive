@@ -91,6 +91,7 @@ describe('agent registration', () => {
       expect(config.agent[name], name).toBeUndefined();
     }
     expect(config.command['dash-review'].agent).toBe('dash-reviewer');
+    expect(config.command['test-audit'].agent).toBe('dash-reviewer');
     expect(config.command['vuln-review'].agent).toBe('vulnerability-review-primary');
     // /implement pins no agent, model, variant or subtask, so the host runs it under the session's current selection.
     // Its v1 template carries no operator text: one placeholder no argument list fills keeps the host's substitution,
@@ -103,6 +104,7 @@ describe('agent registration', () => {
     expect(template.match(/\$\d+/g)).toEqual([V1_UNFILLABLE_ARGUMENT]);
     // Commands without the literal-argument contract keep the host's own $ARGUMENTS substitution.
     expect(config.command['dash-review'].template).toContain('$ARGUMENTS');
+    expect(config.command['test-audit'].template).toContain('Test audit scope: $ARGUMENTS');
     // The pinned host hands the hook the template with the placeholder emptied and trimmed, then any attached files.
     const prose = "keep $& and $$ and $` and $' literal\n!`touch /tmp/hive-shell-ran` and @general stay text";
     const attachment = { type: 'file', mime: 'text/plain', filename: 'a.ts', url: 'file:///tmp/a.ts' };
@@ -116,12 +118,15 @@ describe('agent registration', () => {
     await hooks['command.execute.before']!({ command: 'grill', sessionID: 's1', arguments: prose }, { parts: unrelated });
     expect(unrelated).toEqual([{ type: 'text', text: 'grill body' }]);
     const dashCommand: string = await hooks.command!['dash-review'].run('src/runtime.ts');
+    const auditCommand: string = await hooks.command!['test-audit'].run('src/retry.test.ts');
+    expect(auditCommand).toContain('Test audit scope: src/retry.test.ts');
+    expect(auditCommand).toContain('Load the effective test-quality skill');
     expect(dashCommand).toContain('Review input: src/runtime.ts');
     const vulnerabilityCommand = await hooks.command!['vuln-review'].run('inline authentication boundary');
     expect(vulnerabilityCommand).toContain('Review input: inline authentication boundary');
     expect(vulnerabilityCommand).toContain('security-specialist');
-    // Both review commands point at the Runtime Exercise rules, and execution workers stay out of the reviewer rosters.
-    for (const output of [dashCommand, vulnerabilityCommand]) {
+    // Review commands point at the Runtime Exercise rules, and execution workers stay out of the reviewer rosters.
+    for (const output of [dashCommand, auditCommand, vulnerabilityCommand]) {
       expect(output).toContain('Runtime Exercise');
       expect(output).not.toContain('implementation-specialist');
       expect(output).not.toContain('experiment-specialist');

@@ -69,12 +69,13 @@ The [Operator Guide](docs/OPERATOR-GUIDE.md) covers each step in depth: source c
 | Ad-hoc (`hive-builder`) | Bounded non-feature work that should not create feature or task records | Talk to `hive-builder` (dedicated mode) or `hive-master` (unified) |
 | `/implement` | Implement, as ad-hoc work, what the current conversation scoped; text after the command is extra context and steering | `/implement [steering]` |
 | `/dash-review` | Read-only review of a folder, inline text, or the current checkout | `/dash-review [intent]` |
+| `/test-audit` | Report test-quality gaps and duplicate coverage in a repository or suite | `/test-audit [paths or natural-language scope]` |
 | `/vuln-review` | Authorized read-only security review of a requested source | `/vuln-review [intent]` |
 | `/worklog` | Catch up on where a feature or session stands from its shared Worklog, read-only | `/worklog [request]` |
 | `complexity-review` skill | Explicit one-shot complexity review of a diff or bounded named scope; without one, the current staged, unstaged, and relevant nonignored untracked changes | Ask for `complexity-review` by name with the scope in ordinary prose; on the v2 TUI, `@complexity-review <scope>` |
 | `complexity-audit` skill | Explicit one-shot complexity audit of named roots or codebases | Ask for `complexity-audit` by name with the roots; on the v2 TUI, `@complexity-audit <scope>` |
 
-`/dash-review` and `/vuln-review` bind to separate review primaries. `/implement` keeps the chat and runs under the agent and model you have selected; select `hive-builder` first for it to run the work. For ad-hoc work with multiple independently verifiable outcomes, dependency waves, shared write/runtime resources, possible background execution, or an expected need for more than one worker attempt or turn, the ad-hoc seat loads `orchestrating-ad-hoc-work` before creating worktrees or dispatching workers. The [Operator Guide](docs/OPERATOR-GUIDE.md#choose-a-workflow) explains when each workflow fits.
+`/dash-review` and `/test-audit` bind to the read-only review primary; `/vuln-review` binds to the security review primary. `/test-audit` uses the packaged `test-quality` skill and reports findings first; remediation requires an explicit follow-up implementation request. `/implement` keeps the chat and runs under the agent and model you have selected; select `hive-builder` first for it to run the work. For ad-hoc work with multiple independently verifiable outcomes, dependency waves, shared write/runtime resources, possible background execution, or an expected need for more than one worker attempt or turn, the ad-hoc seat loads `orchestrating-ad-hoc-work` before creating worktrees or dispatching workers. The [Operator Guide](docs/OPERATOR-GUIDE.md#choose-a-workflow) explains when each workflow fits.
 
 ## Agents at a glance
 

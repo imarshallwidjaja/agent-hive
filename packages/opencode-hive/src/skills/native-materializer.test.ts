@@ -297,7 +297,8 @@ describe('prepareNativeHiveSkills - materialization behavior', () => {
   it('does not require bundled reviewer support files from a minimal override or disabled skill', async () => {
     const worktree = createTempDir();
     const home = path.join(worktree, 'home');
-    const native = createNativeSkill(home, '.agents/skills/test-driven-development/SKILL.md', 'test-driven-development');
+    const auditGuidance = 'Audit the named suite against product outcomes and independent oracles. Report duplicate failure modes with source and test anchors, preserve unique coverage, and recommend keep, rewrite, fold, or remove without editing tests.';
+    const native = createSkillFile(home, '.agents/skills/test-quality/SKILL.md', `---\nname: test-quality\ndescription: Audit suite outcomes and duplicate coverage.\n---\n\n${auditGuidance}\n`);
     const result = await prepareNativeHiveSkills({
       directory: worktree,
       worktree,
@@ -305,11 +306,12 @@ describe('prepareNativeHiveSkills - materialization behavior', () => {
       disableSkills: ['adversarial-review'],
       env: { HOME: home, OPENCODE_CONFIG_DIR: path.join(home, '.config/opencode'), OPENCODE_DISABLE_EXTERNAL_SKILLS: '0' },
     });
-    expect(result.nativeSkillsByName.has('test-driven-development')).toBe(true);
-    expect(result.skillsByName.has('test-driven-development')).toBe(false);
+    expect(result.nativeSkillsByName.get('test-quality')).toMatchObject({ source: native });
+    expect(result.nativeSkillsByName.get('test-quality')!.content).toContain(auditGuidance);
+    expect(result.skillsByName.has('test-quality')).toBe(false);
     expect(result.skillsByName.has('adversarial-review')).toBe(false);
-    expect(fs.existsSync(path.join(path.dirname(native), 'references/test-quality.md'))).toBe(false);
-    expect(listRelativeFiles(result.materializedPath!).some((file) => file.startsWith('test-driven-development/') || file.startsWith('adversarial-review/'))).toBe(false);
+    expect(fs.existsSync(path.join(path.dirname(native), 'references/suite-audit.md'))).toBe(false);
+    expect(listRelativeFiles(result.materializedPath!).some((file) => file.startsWith('test-quality/') || file.startsWith('adversarial-review/'))).toBe(false);
   });
 
   it('delivers each pointed reference inside its materialized skill directory on both hosts', async () => {
@@ -324,6 +326,7 @@ describe('prepareNativeHiveSkills - materialization behavior', () => {
       'context-engineering': 'mutation-and-recovery.md',
       'systematic-debugging': 'diagnostic-techniques.md',
       'project-verification': 'formal-verification.md',
+      'test-quality': 'suite-audit.md',
       'writing-for-humans': 'examples.md',
     };
     for (const host of [OPENCODE_V1_PROFILE, createHostProfile('opencode-v2')]) {

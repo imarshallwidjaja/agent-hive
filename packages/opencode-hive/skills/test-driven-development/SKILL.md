@@ -48,7 +48,7 @@ Search for tests that assert the same invariant. Keep the strongest owned locati
 - Mock only boundaries that cannot be exercised directly; do not test the mock's script instead of product behavior.
 - Do not require one test per function. Coverage follows behavior, risk, and contract ownership.
 
-Read [test quality](references/test-quality.md) when choosing assertions or assessing a weak regression test. Reviewers may read that reference directly without loading this skill or selecting TDD.
+Load `test-quality` when choosing assertions or assessing a weak regression test; it owns the common outcome/oracle and duplicate-coverage lens independently of TDD.
 
 ## Legacy and Refactor Work
 

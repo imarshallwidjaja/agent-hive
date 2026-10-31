@@ -84,7 +84,8 @@ describe('release documentation and runtime contract', () => {
     const guide = read('docs/OPERATOR-GUIDE.md');
     const agents = read('AGENTS.md');
     assert.doesNotMatch(plugin, /background orchestration and session-trace tools are not yet/);
-    assert.match(plugin, /42 Hive tools.*13 commands/);
+    const manifest = JSON.parse(read('packages/opencode-hive/plugin.json'));
+    assert.match(plugin, new RegExp(`${manifest.tools.length} Hive tools.*${manifest.commands.length} commands`));
     assert.match(plugin, /\*\*5\.0\.0\*\* is the first release that serves both OpenCode hosts/);
     assert.match(plugin, /Releases through 4\.2\.0 are v1-only/);
     assert.match(plugin, /^### OpenCode v2$/m);

@@ -4,7 +4,7 @@ Tool availability plus instructions govern action. Each tool validates its own o
 
 ## Host entries and read transport
 
-From 5.0.0, one package supplies native v1 and v2 entries, each with all 42 tools and 13 commands. Releases through 4.2.0 are v1-only. The qualified hosts are v1.18.30 and v2.0.26. Installation, `plugins` options and actual model-selection semantics are in the [plugin README](../README.md#opencode-v2).
+From 5.0.0, one package supplies native v1 and v2 entries, now each with all 42 tools and 14 commands. Releases through 4.2.0 are v1-only. The qualified hosts are v1.18.30 and v2.0.26. Installation, `plugins` options and actual model-selection semantics are in the [plugin README](../README.md#opencode-v2).
 
 V2 registers every tool through one validating registrar. `readTransport: "codemode"` (default) explicitly admits only `hive_repositories_status`, `hive_git_snapshot` and `hive_task_trace_content` to Code Mode; controls, repairing reads, worktree inspections and mixed `hive_task_trace` stay direct. `readTransport: "direct"` makes all 42 direct, with the same IDs and authority. The three Worklog tools are direct under both transports. Use direct mode when global, per-role or custom-agent permissions deny `execute`. Hive diagnoses unavailable Code Mode reads and preserves the denial.
 
@@ -589,7 +589,7 @@ To fit the budget, trailing dependency entries are dropped with `- (+<k> more; s
 
 Each snapshot has `repository`, `scope`, `consistency`, `limits`, `changedPaths` (comparison, staged, unstaged, untracked), `fingerprint`, `patch`, and `omissions` (counts by changed-path group, patch truncation/omitted bytes, and per-section captured/returned/omitted bytes and reason). Error codes are `INVALID_REQUEST`, `UNSAFE_REPOSITORY_STATE`, `INCOMPLETE_UNTRACKED_CAPTURE`, `OUTPUT_LIMIT_EXCEEDED`, `OPERATION_TIMEOUT`, `SOURCE_DRIFT`, `INTERNAL_ERROR`, `missing-ref`, `merge-base-unavailable`, `output-truncated`, and `timeout`. Phases are `validation`, `ref-resolution`, `preflight`, `capture`, `untracked-capture`, `revalidation`, or `serialization`; retry values are `fresh-capture`, `narrow-scope`, `operator-action`, or `not-retryable`. `maxFiles` defaults to 100 (cap 200); `maxPatchBytes` defaults to 64 KiB (cap 256 KiB). Supplied limits above the caps are clamped. At most 32 repositories can be captured in one call. A composite snapshot set is all-or-error.
 
-`/dash-review` and `/vuln-review` are ordinary orchestrators over natural folders, inline text, or the current checkout. Optional snapshot `directory` and an ad-hoc worktree cover a foreign PR or ref.
+`/dash-review`, `/test-audit`, and `/vuln-review` are ordinary orchestrators over natural folders, inline text, or the current checkout. `/test-audit` limits the review to test quality in its named scope. Optional snapshot `directory` and an ad-hoc worktree cover a foreign PR or ref.
 
 ## Skill Loading
 

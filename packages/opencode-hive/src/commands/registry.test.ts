@@ -64,6 +64,12 @@ const EXPECTED_COMMANDS = [
     agent: 'dash-reviewer',
   },
   {
+    key: 'test-audit',
+    name: '/test-audit',
+    description: 'Audit test outcomes and duplicate coverage without changing files',
+    agent: 'dash-reviewer',
+  },
+  {
     key: 'vuln-review',
     name: '/vuln-review',
     description: 'Assess a requested scope for evidenced vulnerabilities without changing files',
@@ -88,7 +94,7 @@ function uniqueCount(values: string[]): number {
 describe('HIVE_COMMANDS', () => {
   it('defines the canonical command metadata in stable order', () => {
     expect(HIVE_COMMANDS).toEqual(EXPECTED_COMMANDS);
-    expect(HIVE_COMMANDS).toHaveLength(13);
+    expect(HIVE_COMMANDS).toHaveLength(14);
     expect(HIVE_COMMANDS.map((command) => command.name)).not.toContain('/hive');
   });
 
@@ -380,8 +386,8 @@ describe('HIVE_COMMANDS', () => {
     const implement = HIVE_COMMANDS.find((command) => command.key === 'implement');
     // No agent, model, provider, variant or subtask: the native command keeps the session's agent, model and chat.
     expect(Object.keys(implement!).sort()).toEqual(['description', 'key', 'literalArguments', 'name']);
-    // Only the two review commands bind an agent, each to its own review primary.
-    expect(HIVE_COMMANDS.filter((command) => 'agent' in command).map((command) => command.key)).toEqual(['dash-review', 'vuln-review']);
+    // Review commands bind to their read-only primary.
+    expect(HIVE_COMMANDS.filter((command) => 'agent' in command).map((command) => command.key)).toEqual(['dash-review', 'test-audit', 'vuln-review']);
     // Only /implement promises its text verbatim through the v1 host; the other commands keep $ARGUMENTS there.
     expect(HIVE_COMMANDS.filter((command) => 'literalArguments' in command).map((command) => command.key)).toEqual(['implement']);
     // Multiline prose with quotes, flag-like words, a placeholder-like token and outer whitespace passes through as written.
@@ -447,6 +453,30 @@ describe('HIVE_COMMANDS', () => {
     expect(output).toContain('preserve explicitly requested reviewer scope');
     expect(output).toContain('required configured reviewer or claim a clean review while that obligation or material challenge is open');
     expect(output).toContain('Review Basis');
+  });
+
+  it('delivers the report-only suite audit scope and skill loading on both hosts', () => {
+    for (const host of [OPENCODE_V1_PROFILE, createHostProfile('opencode-v2')]) {
+      const commands = buildHiveCommandMap(hiveCommandRenderers, () => ({
+        agentMode: 'unified', host, backgroundGuidance: { available: false }, council: {} as never,
+        agents: {}, dashReviewLanes: [
+          { sourceAgent: 'test-contracts', baseAgent: 'code-reviewer', taskTarget: 'test-contracts', description: 'Outcome contracts' },
+          { sourceAgent: 'test-redundancy', baseAgent: 'simplicity-reviewer', taskTarget: 'test-redundancy', description: 'Duplicate invariants' },
+          { sourceAgent: 'architecture-only', baseAgent: 'approach-advisor', taskTarget: 'architecture-only', description: 'Architecture advice' },
+        ], vulnerabilityReviewLanes: [],
+      }));
+      expect(commands['test-audit'].agent).toBe('dash-reviewer');
+      expect(commands['test-audit'].run('')).toContain('Test audit scope: the current repository');
+      const output = commands['test-audit'].run('packages/api and duplicate retry coverage');
+      expect(output).toContain('Test audit scope: packages/api and duplicate retry coverage');
+      expect(output).toContain(host.host === 'opencode-v1' ? 'skill({ name: "test-quality" })' : 'skill({ id })` for the catalog entry named "test-quality"');
+      expect(output).toContain('test-contracts');
+      expect(output).toContain('test-redundancy');
+      expect(output).not.toContain('architecture-only');
+      for (const obligation of ['Load the effective test-quality skill', 'whether inline in SKILL.md or in its own referenced material', 'Read the supplied audit reference when directed', 'If the guidance needed for the audit is unavailable', 'report the affected audit gap and stop', 'not just the current diff', 'independent challenge method with code and simplicity reviewer roles', 'explicit follow-up implementation request', 'Do not run the candidate without the authorization', 'sampling is not exhaustive coverage']) {
+        expect(output, obligation).toContain(obligation);
+      }
+    }
   });
 
   it('keeps Investigators and their derivatives out of read-only council seats as mutable experiment workers', () => {

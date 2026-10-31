@@ -3817,9 +3817,9 @@ describe('supervised exercise inputs and authority', () => {
       [{ from: 'architect-planner', to: 'hive-builder', command: 'implement' }, { from: 'architect-planner', to: 'swarm-orchestrator', command: 'implement' }],
       [{ from: 'architect-planner', to: 'scout-researcher', command: 'implement' }],
     ]) expect(code(() => validateRequest({ ...EXERCISE_REQUEST, primaryTransitions: transitions }))).toBe('request_invalid');
-    // /dash-review and /vuln-review bind the two hidden review primaries, which are real primaries for the initial agent,
+    // /dash-review, /test-audit and /vuln-review bind the two hidden review primaries, which are real primaries for the initial agent,
     // for command transitions and for the agentModels primary check; other roles stay refused.
-    const reviewCommands = [{ from: 'hive-builder', to: 'dash-reviewer', command: 'dash-review' }, { from: 'dash-reviewer', to: 'vulnerability-review-primary', command: 'vuln-review' }];
+    const reviewCommands = [{ from: 'hive-builder', to: 'dash-reviewer', command: 'dash-review' }, { from: 'hive-builder', to: 'dash-reviewer', command: 'test-audit' }, { from: 'dash-reviewer', to: 'vulnerability-review-primary', command: 'vuln-review' }];
     const reviewRequest = { ...EXERCISE_REQUEST, initialPrimary: 'hive-builder', primaryTransitions: reviewCommands };
     expect(validateRequest(reviewRequest).primaryTransitions).toEqual(reviewCommands);
     for (const initialPrimary of ['dash-reviewer', 'vulnerability-review-primary']) expect(validateRequest({ ...reviewRequest, initialPrimary, primaryTransitions: [] }).initialPrimary).toBe(initialPrimary);

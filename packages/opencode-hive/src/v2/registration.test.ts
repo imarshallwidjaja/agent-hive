@@ -919,8 +919,10 @@ describe('v2 skills, commands and models', () => {
     const host = await activate();
     host.sessions.set('s1', { id: 's1', agent: 'swarm-orchestrator' });
     host.useAgentConfig({ agents: { 'dash-reviewer': { disabled: true } } });
-    const exit = await Effect.runPromiseExit(host.commands().get('dash-review').execute({ sessionID: 's1', prompt: { text: 'HEAD' }, delivery: 'steer' }));
-    expect(denied(exit)).toContain('needs the dash-reviewer agent');
+    for (const name of ['dash-review', 'test-audit']) {
+      const exit = await Effect.runPromiseExit(host.commands().get(name).execute({ sessionID: 's1', prompt: { text: 'HEAD' }, delivery: 'steer' }));
+      expect(denied(exit)).toContain('needs the dash-reviewer agent');
+    }
     expect(host.prompts).toEqual([]);
     expect(host.switches).toEqual([]);
   });
@@ -930,10 +932,10 @@ describe('v2 skills, commands and models', () => {
     const commands = host.commands();
     expect([...commands.keys()].sort()).toEqual(HIVE_COMMANDS.map((command) => command.key).sort());
     host.sessions.set('s1', { id: 's1', agent: 'swarm-orchestrator' });
-    await Effect.runPromise(commands.get('dash-review').execute({ sessionID: 's1', prompt: { text: 'HEAD~1..HEAD' }, delivery: 'steer' }));
+    await Effect.runPromise(commands.get('test-audit').execute({ sessionID: 's1', prompt: { text: 'packages/api retry tests' }, delivery: 'steer' }));
     expect(host.switches).toEqual([{ sessionID: 's1', agent: 'dash-reviewer' }]);
     expect(host.prompts[0]).toMatchObject({ sessionID: 's1', delivery: 'steer' });
-    expect(host.prompts[0].text).toContain('HEAD~1..HEAD');
+    expect(host.prompts[0].text).toContain('Test audit scope: packages/api retry tests');
     await Effect.runPromise(commands.get('interview').execute({ sessionID: 's1', prompt: { text: 'an idea' }, delivery: 'queue' }));
     expect(host.switches).toHaveLength(1);
     expect(host.prompts[1].text).toContain('an idea');

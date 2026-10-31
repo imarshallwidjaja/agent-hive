@@ -45,7 +45,7 @@ The config hook intentionally mutates these OpenCode fields:
 
 ### OpenCode v2
 
-The same package loads through its `server` entry on v1 and its synchronous `effect` entry on v2. On v2 it registers all **42 Hive tools** and **13 commands**, dedicated and unified modes, custom agents, packaged skills, native dispatch and background observation, and the forensic and recovery tools. Qualification ran against stock v1.18.30 and v2.0.26 with scripted model providers, which establishes wiring rather than real-model judgment. On both hosts it loaded a package already installed with plain npm; host-side registry resolution at first use was not part of it.
+The same package loads through its `server` entry on v1 and its synchronous `effect` entry on v2. On v2 it registers all **42 Hive tools** and **14 commands**, dedicated and unified modes, custom agents, packaged skills, native dispatch and background observation, and the forensic and recovery tools. Qualification ran against stock v1.18.30 and v2.0.26 with scripted model providers, which establishes wiring rather than real-model judgment. On both hosts it loaded a package already installed with plain npm; host-side registry resolution at first use was not part of it.
 
 Install the released package with npm into a dedicated directory that the v2 host can read:
 
@@ -118,7 +118,7 @@ Use the feature flow when work needs plan review, a task DAG, and a durable audi
 
 ### Operator Commands
 
-`oc-arkive` registers these slash commands as operator entry prompts. They prepare the active agent with workflow-specific instructions; they do not replace Hive tools or make unavailable tools available to the current agent. Each command carries its own authority and stop rules, so it is safe when invoked with no arguments or under a primary that is not Hive. `/dash-review` and `/vuln-review` are exceptions: their generated OpenCode commands bind to separate private review primaries. `/implement` binds nothing and runs under the agent and model already selected.
+`oc-arkive` registers these slash commands as operator entry prompts. They prepare the active agent with workflow-specific instructions; they do not replace Hive tools or make unavailable tools available to the current agent. Each command carries its own authority and stop rules, so it is safe when invoked with no arguments or under a primary that is not Hive. `/dash-review`, `/test-audit`, and `/vuln-review` are exceptions: their generated OpenCode commands bind to private review primaries. `/implement` binds nothing and runs under the agent and model already selected.
 
 | Command | Purpose |
 |---------|---------|
@@ -132,6 +132,7 @@ Use the feature flow when work needs plan review, a task DAG, and a durable audi
 | `/council-directive` | Turn rough input into a reusable directive for a council run. |
 | `/council` | Run a read-only council and synthesize a recommendation. |
 | `/dash-review [intent]` | Review a folder, inline text, or the current checkout without changing source. |
+| `/test-audit [paths or natural-language scope]` | Report outcome, oracle, and duplicate-coverage findings for a suite; defaults to the current repository. |
 | `/vuln-review [scope]` | Review requested source for evidenced vulnerabilities with configured specialists. |
 | `/worklog [request]` | Explain where the current work stands from its Worklog, read-only. |
 | `/compact-summary` | Produce a compact recovery summary for the current session. |
@@ -157,17 +158,20 @@ Routing depends on `agentMode`:
 | `/approve-sync-plan`, `/start-execution` | Use `hive-master`. | Route or delegate to `swarm-orchestrator`. |
 | `/implement` | Runs under the selected agent and model; binds none. | Runs under the selected agent and model; binds none. |
 | `/dash-review` | Bound by `config.command` to a private review primary. | Bound by `config.command` to a private review primary. |
+| `/test-audit` | Bound to `dash-reviewer`; report-only suite audit. | Bound to `dash-reviewer`; report-only suite audit. |
 | `/vuln-review` | Bound by `config.command` to a private vulnerability-review primary. | Bound by `config.command` to a private vulnerability-review primary. |
 | `/compact-summary` | Use `hive-master`. | Route or delegate to `scout-researcher`. |
 | `/worklog` | Runs under the active agent. | Runs under the active agent. |
 
-Except for `/dash-review` and `/vuln-review`, dedicated-mode slash commands do not switch agents by themselves. If the active agent is not the route target, delegate or reroute to the target agent and stop if that is not possible.
+Except for `/dash-review`, `/test-audit`, and `/vuln-review`, dedicated-mode slash commands do not switch agents by themselves. If the active agent is not the route target, delegate or reroute to the target agent and stop if that is not possible.
 
 Use `/grill <context>` when you want a confirmed, plan-ready brief (decisions with rationale, constraints, acceptance criteria) to hand to `/hive-plan`. Use `/interview <idea>` to clarify an idea with a flexible endpoint, including ad-hoc work, and no fixed next step or implementation-brief funnel. Both follow the `grilling` skill: the agent gets its bearings from existing context, explains what it found in plain terms and says where the evidence is uncertain, skips decisions you already made, and asks one material question at a time. Every option carries a short pro and con and a recommendation, and a confident recommendation still leaves a choice that is yours to make. Both run within one continuing invocation: when the `question` tool is available, each answer returns to the same run, which keeps researching, checking, and asking until you confirm alignment or stop it. Without that tool, each plain chat question waits for your reply and the next turn resumes the same loop. The commands do not automatically create a plan, implement, or start follow-on work; a bare confirmation is understanding only, and later action requires a separate operator request, unless you asked upfront for the next stage (for example, "then create a plan after alignment"), which then runs once within the agent's normal planning and approval limits. A named destination authorizes writing only the confirmed alignment brief there. Discoverable facts are researched without forced fan-out. Unavailable or failed research is disclosed as unresolved or an explicit assumption; it is never guessed.
 
 Use `/implement [steering]` when a conversation has scoped work and you want it implemented as ad-hoc work. The command switches neither agent nor model, so the chat stays in place and the selected agent keeps its model, and it points that agent at the `starting-ad-hoc-implementation` skill. Select `hive-builder` first to have it run the work; an agent that cannot implement ad-hoc work, such as `architect-planner` or a plan-first primary, names that limit and stops, and choosing another agent is yours. Everything you type after `/implement` reaches the agent unchanged as further context and steering, so you can add requests in plain language, such as `/implement keep the public API unchanged and skip the docs for now`; with nothing after it, the conversation alone scopes the work. On OpenCode v1 as on v2, `$` sequences and `` !`...` `` spans in that text arrive as typed, and nothing in it runs as a shell command. Invoking the command authorizes implementing the agreed scope and your added instructions through the ad-hoc lifecycle. Loading the skill, earlier discussion, or a confirmation at the end of `/grill` or `/interview` does not. The agent rebuilds the latest agreed scope from the chat, reuses design decisions already settled there, investigates what it needs, and asks only about decisions that are yours, one at a time. When the scope is not ready it says what is unready, why it matters, and what to do next. It does not create a feature, plan, or task by itself, and work under an approved plan still starts with `/start-execution`. Running `/implement` again accounts for work already running or retained instead of starting a second writer on it.
 
 Use `/dash-review` for one read-only Git, process/concept, or local-artifact review. It does not edit source, create Hive tasks, or start a fix. See [Reviews in the Operator Guide](../../docs/OPERATOR-GUIDE.md#reviews).
+
+Use `/test-audit` for a repository or named suite audit using `test-quality`. It reports meaningful-outcome gaps and duplicate failure-mode coverage with source/test anchors, recommendations, and honest sampling limits. The audit never fixes tests by default; give a separate implementation request for remediation. Code and simplicity reviewers also load the skill for relevant assertions, coverage claims, and duplicate tests within their assigned review scope. A missing or disabled skill leaves the affected review coverage open; native overrides remain authoritative.
 
 `/dash-review` is a read-only orchestrator over a folder, inline text, or the current checkout. An optional `hive_git_snapshot({ directory })` or operator-selected worktree covers foreign Git evidence. The primary understands the change and consumers before assigning evidence-linked questions to best-fit reviewers, honors required participation, and independently tries to disprove material candidates. Useful, authorized tests and source evidence determine whether findings survive; unresolved material gaps remain visible. When running the candidate would settle a question, the primary can send an Investigator on a runtime exercise within your authorization ([Runtime exercises](../../docs/OPERATOR-GUIDE.md#runtime-exercises)). It does not edit source, create Hive tasks, or start a fix; findings remain review context. Use `pr-writing` to draft grounded PR titles, descriptions, and review comments without posting them.
 
@@ -467,7 +471,7 @@ In both modes:
 }
 ```
 
-Dedicated mode does not auto-switch the live chat agent when you run a slash command. If the active agent is not the route target, delegate or reroute to that target and stop if that is not possible. `/dash-review` and `/vuln-review` always bind to private review primaries regardless of mode.
+Dedicated mode does not auto-switch the live chat agent when you run a slash command. If the active agent is not the route target, delegate or reroute to that target and stop if that is not possible. `/dash-review`, `/test-audit`, and `/vuln-review` always bind to private review primaries regardless of mode.
 
 ### Task trace summarizer
 
@@ -590,6 +594,7 @@ Generated/managed shape (for inspection) at `<project>/.hive/repositories.json`:
 | `stop-slop` | Repair staging, formulaic cadence, and structure in existing prose |
 | `systematic-debugging` | Root-cause investigation before fixes |
 | `test-driven-development` | Strict red-green-refactor when TDD is the selected testing strategy |
+| `test-quality` | Outcome/oracle and duplicate-coverage lens for reviewers, report-only suite audits, and explicitly authorized remediation |
 | `unslop` | Shared philosophy and router for writing, messaging, and visual work; every Hive role is asked to load it, and it selects depth skills and carries the delegation contract |
 | `verification` | Select checks from the candidate repository's own guidance, read their results, and require applicable command/tool evidence before completion or verification claims |
 | `why` | Investigate explicitly requested historical rationale with calibrated source evidence |

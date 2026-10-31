@@ -53,6 +53,12 @@ export const HIVE_COMMANDS = [
     agent: 'dash-reviewer',
   },
   {
+    key: 'test-audit',
+    name: '/test-audit',
+    description: 'Audit test outcomes and duplicate coverage without changing files',
+    agent: 'dash-reviewer',
+  },
+  {
     key: 'vuln-review',
     name: '/vuln-review',
     description: 'Assess a requested scope for evidenced vulnerabilities without changing files',

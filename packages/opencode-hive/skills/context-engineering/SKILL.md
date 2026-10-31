@@ -74,4 +74,4 @@ Catalogs are live at the current project root; do not follow a stored former roo
 
 ## Reviews and direct requirements
 
-Direct mandatory requirements and standing constraints remain outside optional knowledge budgets. `/dash-review` and `/vuln-review` stay isolated. No agent may silently skip required configured review targets.
+Direct mandatory requirements and standing constraints remain outside optional knowledge budgets. `/dash-review`, `/test-audit`, and `/vuln-review` stay isolated. No agent may silently skip required configured review targets.

@@ -75,7 +75,8 @@
     },
     {
       "id": "test-and-recovery-scope",
-      "references": ["skills/test-driven-development/references/test-quality.md", "skills/code-design-principles/references/lifecycle-and-migration.md"],
+      "skills": ["test-quality"],
+      "references": ["skills/code-design-principles/references/lifecycle-and-migration.md"],
       "prompt": "A changed test asserts only that a mocked save was called. An unchanged prompt composition test guards a named safety requirement. A previous worker's lock remains and its termination is uncertain. Recommend a next step without executing anything.",
       "expected": ["Improves the changed test through observable payload or behavior", "Does not mass-delete prompt-contract pins", "Does not select TDD merely by reading test-quality criteria", "Preserves the lock and retained evidence until supported recovery establishes termination"]
     },

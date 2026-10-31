@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Reviewer-first test quality.** The packaged `test-quality` skill owns outcome/oracle and duplicate-coverage guidance formerly under TDD. Code and simplicity reviewers load it for relevant assertions, coverage claims, and duplicate tests. `/test-audit [paths or natural-language scope]` routes a report-only suite audit to `dash-reviewer`; remediation requires an explicit follow-up implementation request. Findings preserve unique coverage and state sampling limits. Guidance and delivery checks do not establish model compliance.
+
 ## [5.2.0] - 2026-10-31
 
 `oc-arkive` 5.2.0 adds the Investigator role, crash-safe native locks and guarded worktree recovery. It also requires an explicit history intent for integration. This minor version intentionally carries the compatibility changes below. See [v5.2.0 release notes](docs/releases/v5.2.0.md).

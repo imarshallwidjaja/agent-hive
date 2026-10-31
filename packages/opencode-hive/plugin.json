@@ -45,6 +45,10 @@
       "description": "Review one Git, inline, or local-artifact evidence bundle without changing files"
     },
     {
+      "name": "/test-audit",
+      "description": "Audit test outcomes and duplicate coverage without changing files"
+    },
+    {
       "name": "/vuln-review",
       "description": "Assess a requested scope for evidenced vulnerabilities without changing files"
     },

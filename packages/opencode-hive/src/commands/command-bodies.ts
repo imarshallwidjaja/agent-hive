@@ -2,8 +2,8 @@ import type { HiveCommandKey } from './registry.js';
 import { OPENCODE_V1_PROFILE, type HostProfile } from '../runtime/host-profile.js';
 import { PLAN_ASSESSMENT_REQUIREMENT, PLAN_SYNC_RETRY_REQUIREMENT } from '../agents/process-judgment.js';
 
-/** Commands whose wrapper appends a static body; /dash-review and /vuln-review run their agent's own method. */
-export type CommandBodyKey = Exclude<HiveCommandKey, 'dash-review' | 'vuln-review'>;
+/** Commands whose wrapper appends a static body; review commands run their agent's own method. */
+export type CommandBodyKey = Exclude<HiveCommandKey, 'dash-review' | 'test-audit' | 'vuln-review'>;
 
 /** The static obligations of each command, stated once. The wrapper in renderers.ts owns invocation context, rosters and mechanics. */
 export function renderCommandBehavior(host: HostProfile): Record<CommandBodyKey, string> {

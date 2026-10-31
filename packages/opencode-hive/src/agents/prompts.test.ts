@@ -314,11 +314,39 @@ describe('Process judgment prompt reach', () => {
       expect(prompt).not.toMatch(/ask[^\n]*which recommended review path|Would you like me to consult plan-reviewer|delegate by default/i);
       expect(prompt).toContain('explicit operator');
     }
-    expect(CODE_REVIEWER_PROMPT).toContain('do not load TDD merely to locate it');
     for (const prompt of [CODE_REVIEWER_PROMPT, DASH_REVIEWER_PROMPT]) {
       expect(prompt).toContain('native override or disabled bundle may omit');
       expect(prompt).toContain('suppressed caches');
       expect(prompt).toContain('not a required-review gap');
+    }
+  });
+
+  it('conditionally loads test-quality and admits no-diff audits under each reviewer finding bar on both hosts', () => {
+    for (const render of [renderCodeReviewerPrompt, renderSimplicityReviewerPrompt]) {
+      for (const host of [OPENCODE_V1_PROFILE, createHostProfile('opencode-v2')]) {
+        const prompt = render(host);
+        // Delivery contract only, not evidence that a model follows the instruction.
+        expect(prompt).toContain('When reviewing changed assertions, test coverage claims, or duplicate tests, load `test-quality`');
+        expect(prompt).toContain(host.host === 'opencode-v1' ? 'skill({ name: "test-quality" })' : 'skill({ id })` for the catalog entry named "test-quality"');
+        expect(prompt).toContain('report the precise affected review coverage as a gap');
+        expect(prompt).toContain('not a repository-wide audit or TDD selection');
+        expect(prompt).toContain('When explicitly assigned a suite audit, the named roots are the review scope and no diff is required');
+        expect(prompt).toContain('existing tests, exercised product paths, and current contracts as evidence');
+        expect(prompt).toContain('existing defects in the named scope are eligible findings');
+        expect(prompt).toContain('newly introduced defects are not required');
+        expect(prompt).toContain('For diff reviews, report defects, requirement mismatches');
+        expect(prompt).toContain('leave out minor pre-existing issues');
+        if (render === renderSimplicityReviewerPrompt) {
+          expect(prompt).toContain('The changed code (or named suite for an assigned audit) and current requirements support it');
+          expect(prompt).toContain('behavior stays equivalent');
+          expect(prompt).toContain('The simplification is more valuable than the churn');
+        } else {
+          expect(prompt).toContain('an absent implementing change is not a defect');
+          expect(prompt).toContain('In either mode, if the requirement cannot be established from the supplied scope, reviewed code, and authoritative contracts and multiple interpretations remain plausible, mark NEEDS_DISCUSSION instead of inventing requirements.');
+          expect(prompt).toContain('REQUEST_CHANGES requires a supported material failure');
+          expect(prompt).toContain('supported by a discriminating test or reproduction');
+        }
+      }
     }
   });
   const primaryPrompts = [
@@ -681,7 +709,7 @@ describe('Review investigation contract', () => {
       'state in one sentence what the change must achieve',
       'contracts, interfaces, persisted shapes, or reader-facing behaviors',
       'who consumes them',
-      'Orientation is done when you can name each boundary the change crosses',
+      'Orientation is done when you can name each relevant boundary',
       'List leads before verifying any of them',
       'A lead is a source anchor, the concern, its possible consequence, and the question that would settle it',
       "Generate your own leads first from your Review Method's lead sources and the skim paths below, then add the packet's leads",
@@ -710,8 +738,9 @@ describe('Review investigation contract', () => {
       'Name any install, build, test, or reproduction that would settle a candidate, for the primary to run, unless your assignment explicitly authorizes you to run it',
       'Anchor each finding to `file:line` with a short quote of the decisive line',
       'its consequence, and what your disproof attempt checked',
-      'Report defects, requirement mismatches, and applicable-rule violations that the change introduces or depends on',
-      'Leave out style preferences no governing rule backs, alternatives you merely prefer, and minor pre-existing issues',
+      'report defects, requirement mismatches, and applicable-rule violations that the change introduces or depends on',
+      'leave out style preferences no governing rule backs and alternatives you merely prefer',
+      'leave out minor pre-existing issues',
       "Drift the change creates in an untouched sibling is the change's finding",
       'Report a serious pre-existing defect you meet on a traced path at its severity, marked `(pre-existing)`, so the primary can route it separately',
       'In your Coverage section, give one line per material lead you cleared, with the clearing evidence',
