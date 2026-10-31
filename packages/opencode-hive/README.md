@@ -22,7 +22,7 @@ For a brand-new config, add the plugin to `opencode.json` or `opencode.jsonc`. O
 }
 ```
 
-Pin `oc-arkive@5.1.0` instead of `@latest` when you want a fixed version. Restart OpenCode after changing plugins.
+Pin `oc-arkive@5.2.0` instead of `@latest` when you want a fixed version. Restart OpenCode after changing plugins.
 
 ### Package dependencies
 
@@ -52,14 +52,14 @@ Install the released package with npm into a dedicated directory that the v2 hos
 ```bash
 mkdir -p /absolute/install
 cd /absolute/install
-npm install oc-arkive@5.1.0
+npm install oc-arkive@5.2.0
 ```
 
 Point the v2 `plugins` entry at the absolute installed **dist directory**, `/absolute/install/node_modules/oc-arkive/dist`, which contains `index.js`; the tested local-directory loader needs that entry at the directory root. The host then uses the installed package without another cold registry resolution at first prompt. Preserve server logs if first use stalls before the `loading plugin` event; the cause of that stall is still unknown, and a green retry does not explain it.
 
 #### Contributor build
 
-To load a checkout instead of a release, run `bun install && bun run build` at the checkout root. Create the artifact directory before packing: in `packages/opencode-hive`, run `mkdir -p /absolute/artifact-directory && npm pack --pack-destination /absolute/artifact-directory`. The tarball name carries the package version from `packages/opencode-hive/package.json`, for example `oc-arkive-5.1.0.tgz`. In a clean installation directory, run `npm install /absolute/artifact-directory/oc-arkive-5.1.0.tgz`, then point the v2 entry at that installation's `node_modules/oc-arkive/dist` directory as above. A package-name file specifier such as `oc-arkive@file:/absolute/artifact-directory/oc-arkive-5.1.0.tgz` is also supported by the tested host loader, but resolves its dependencies into the host's cache on first use.
+To load a checkout instead of a release, run `bun install && bun run build` at the checkout root. Create the artifact directory before packing: in `packages/opencode-hive`, run `mkdir -p /absolute/artifact-directory && npm pack --pack-destination /absolute/artifact-directory`. The tarball name carries the package version from `packages/opencode-hive/package.json`, for example `oc-arkive-5.2.0.tgz`. In a clean installation directory, run `npm install /absolute/artifact-directory/oc-arkive-5.2.0.tgz`, then point the v2 entry at that installation's `node_modules/oc-arkive/dist` directory as above. A package-name file specifier such as `oc-arkive@file:/absolute/artifact-directory/oc-arkive-5.2.0.tgz` is also supported by the tested host loader, but resolves its dependencies into the host's cache on first use.
 
 #### Upgrade on v2
 

@@ -52,7 +52,7 @@ These checks are not preparation shortcuts:
 - `npm access list collaborators oc-arkive --json` lists package collaborators for human inspection. It does not verify GitHub OIDC Trusted Publishing or authority to make the first publish.
 - `bun run release:check` installs dependencies; builds `hive-core` and `vscode-arkive`; checks release artifacts, the workflow, and VS Code bundle reproducibility; then builds `oc-arkive` and runs the three package test suites. The artifact check also builds and packs `oc-arkive` and runs the release documentation contract in an isolated staging tree.
 
-The documentation contract checks that canonical documents exist, the 37-tool manifest contains required tools, the manifest and runtime omit retired tools, the release guide includes `workflow_dispatch` without a preparation shortcut, and the host setup guidance matches the shipped entries. Run it on its own with:
+The documentation contract checks that canonical documents exist, the tool manifest contains required tools, the manifest and runtime omit retired tools, the release guide includes `workflow_dispatch` without a preparation shortcut, and the host setup guidance matches the shipped entries. Run it on its own with:
 
 ```bash
 node --test release-docs.test.mjs

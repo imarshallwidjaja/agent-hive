@@ -14,7 +14,9 @@ OpenCode runs the work. This extension keeps plans, comments, context, task repo
 
 Download `vscode-arkive.vsix` from [GitHub Releases](https://github.com/imarshallwidjaja/agent-hive/releases) and install manually.
 
-The single VSIX works on every platform: it carries the Koffi native module and its prebuilt binaries, which Hive uses for crash-released locks. Koffi needs Node 16, so the extension requires VS Code 1.67 or later.
+The single VSIX carries the Koffi native module and its prebuilt binaries for Linux, macOS, Windows, FreeBSD and OpenBSD on the architectures supplied by Koffi. Hive uses it for crash-released locks. Locking has been exercised on Linux x64 under Node and Bun; packaged coverage does not establish runtime validation on the other platforms. Koffi needs Node 16, so the extension requires VS Code 1.67 or later.
+
+Before upgrading to 5.2.0, stop all older OpenCode processes, workers and Git children, and all VS Code instances that can write the same project or shared global Hive configuration. Old and new locking protocols cannot safely share writers. Follow the [upgrade and lock recovery instructions](../../docs/OPERATOR-GUIDE.md#upgrade) before restarting.
 
 ## Features
 

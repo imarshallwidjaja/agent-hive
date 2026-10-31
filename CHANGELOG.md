@@ -7,15 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.2.0] - 2026-10-31
+
+`oc-arkive` 5.2.0 adds the Investigator role, crash-safe native locks and guarded worktree recovery. It also requires an explicit history intent for integration. This minor version intentionally carries the compatibility changes below. See [v5.2.0 release notes](docs/releases/v5.2.0.md).
+
+### Breaking
+
+- **Explicit integration intent.** `hive_worktree_merge` and `hive_adhoc_worktree_merge`, and their core service APIs, require `historyIntent` with no default. `preserve-source` permits only normal merge and preserves source ancestry and messages. `rewrite-private` attests that all selected source-only history is private and permits squash (the default) or rebase. Merge and squash commits require a subject, blank line and descriptive body; rebase refuses a nonblank message.
+- **Native locking and coordinated upgrades.** Hive now depends on `koffi@2.16.3` for operating-system locks and refuses lock-dependent operations if the native backend cannot load. Older hosts do not participate in this protocol. Stop every older OpenCode process, worker, Git child and VS Code instance that can write the same project or shared global configuration before upgrading or restarting. Preserve current `.hive/.locks/` anchors and global-config `.hive-lock` anchors; handle legacy locks and interrupted operations through the documented upgrade and recovery procedure.
+- **VS Code minimum.** The extension now requires VS Code 1.67.0 instead of 1.64.0 because Koffi requires Node 16. Its VSIX includes the native loader and prebuilt binaries. Runtime locking has been exercised on Linux x64 under Node and Bun; other packaged platforms are not claimed validated.
+
 ### Added
 
 - **Investigator role.** `forager-investigator` is a built-in subagent and custom-agent base for standalone diagnosis, experiments, and verify-only checks. It can conclude from source and evidence alone, runs source-changing probes only in a primary-owned disposable placement, can exercise a runtime target such as a URL or environment without a Git placement, returns evidence and a conclusion, and commits nothing. Its Hive grants are reads and worktree inspection only; it gets the route snapshot but never a Forager task brief, report duty, or source pin, and it cannot delegate or ask questions. It loads `verification` by default and is not a council seat.
 - **Shared experiment method.** Hive, Swarm, Hive Builder, Architect and the review primaries compose one Experiments method for authority, candidate, variants, placement, evidence destination, return and cleanup, including the guarded fallback to the original checkout for an unchanged candidate. An authorized implementation, debugging, investigation or feasibility mission covers its local disposable setup; planning or advice alone does not cover running code.
+- **Guarded worktree recovery.** `hive_worktree_recover` lists and acknowledges interrupted operations and legacy operation locks. Recovery requires the exact operation ID, marker and observed-state digests, and an explicit `mutatorsStopped: true` attestation. It checks trusted workspace/repository linkage and open Git state, removes only the acknowledged records, and never replays an operation. Inspections expose `pendingOperations`.
+- **Crash-safe locking and operation markers.** State and worktree operations use permanent native lock anchors. Worktree mutations lock the workspace and selected Git common directories, publish pending markers before effects, and retain markers after unknown outcomes. Durable marker publication and removal flush files and directories where supported; finalization failures report retained or unflushed bookkeeping without hiding the operation's result.
 
 ### Changed
 
 - **Architect commissions experiments.** Architect, as primary or delegated planner (including under unified Hive), may dispatch Investigators but never implementation Foragers. A primary Architect may create and clean up ad-hoc experiment placements and never merges them; a delegated Architect returns those requests to its parent.
 - **Review runtime exercises use Investigators.** `dash-reviewer` and `vulnerability-review-primary` dispatch Investigators for runtime exercises and can no longer dispatch `forager-worker` or its derivatives. Their review-only authorization rule is unchanged.
+- **Integration outcomes and cleanup.** A source already contained in its destination returns `ALREADY_INTEGRATED` after identity, cleanliness and active-operation guards, before topology/local-data eligibility checks. Noncontained private content no-ops remain `NO_TRACKED_CHANGES`. Same-call cleanup rechecks source and target identity and proves source containment or verified private-rewrite completion as appropriate; a failed proof retains the placement.
+- **Technical and product writing.** `writing-for-humans` adds audience-sensitive clarity checks and examples for actors, terminology, conditions, comparisons and evidence. Requested product-alignment notes use task-based sections with list-led ideas and brief commentary, with continuous prose where reasoning needs it.
+- **Verification records.** `project-verification` keeps run-specific decisions and evidence in logs or untracked artifacts, while versioned guidance states shared current procedures, contracts and requirements. Explicitly required scientific provenance and reusable fixtures may remain versioned; required evidence survives cleanup. This includes commit `e592434f`.
+
+### Fixed
+
+- **Repository topology validation.** Legacy global `repositoryRoot`/`repositories` reads and migration no longer depend on unrelated agent settings being valid. Malformed JSON, non-object roots and invalid topology pairs still fail. Topology-only cleanup removes only the matching pair and preserves all other stored settings.
+- **Lock-aware viewers.** The VS Code context view detects active native locks and legacy locks without writing during inspection, and ignores internal lock-file events to avoid refresh loops.
+- **Durability fixture timing.** Durable-lock test fixtures allow bounded time for slower startup without changing production lock behavior.
+
+### Upgrade
+
+- Install `oc-arkive@5.2.0` and the matching VSIX after quiescing all older writers, including hosts sharing the global configuration. Restart the process that actually loaded the plugin and use fresh child sessions. Update custom merge callers with `historyIntent`. Existing plans, tasks, context and Worklogs need no wholesale format conversion. See the [Operator Guide](docs/OPERATOR-GUIDE.md#upgrade) for legacy-lock handling.
+- OpenCode support remains v1 >= 1.18.30 and v2 qualified on 2.0.26 only. Packaged native binaries do not establish all-platform runtime validation.
 
 ## [5.1.0] - 2026-10-27
 
@@ -1052,7 +1078,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - See the GitHub release/tag `v0.8.2` for details.
 
-[Unreleased]: https://github.com/imarshallwidjaja/agent-hive/compare/v5.1.0...HEAD
+[Unreleased]: https://github.com/imarshallwidjaja/agent-hive/compare/v5.2.0...HEAD
+[5.2.0]: https://github.com/imarshallwidjaja/agent-hive/compare/v5.1.0...v5.2.0
 [5.1.0]: https://github.com/imarshallwidjaja/agent-hive/compare/v5.0.0...v5.1.0
 [5.0.0]: https://github.com/imarshallwidjaja/agent-hive/compare/v4.2.0...v5.0.0
 [4.2.0]: https://github.com/imarshallwidjaja/agent-hive/compare/v4.1.0...v4.2.0
