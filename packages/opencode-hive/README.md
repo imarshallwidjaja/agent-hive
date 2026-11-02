@@ -148,7 +148,7 @@ On either host, ask for the skill by name with the scope and any philosophy or p
 
 `/hive` has been removed. Feature creation now belongs to the planning flow and the Hive tools, usually `hive_feature_create` followed by explicitly targeted plan writes, review, per-feature approval and task sync, execution, and merge.
 
-`/council` accepts `/council --group <group> <directive>`. If `--group` is omitted, Hive uses `council.defaultGroup`. Free-text tokens are directive text, not implicit group selectors.
+`/council` accepts ordinary prose, for example `/council use the design group to assess this plan`. The agent selects a group only when you explicitly request one; otherwise it uses `council.defaultGroup`. With no trailing text, it uses the current operator request as the directive. The council renderer treats quotes, line breaks, and flag-like text passed by the host as prose. Native host processing of special template syntax still applies; literal preservation of that syntax is not guaranteed. Hive renders every configured group's resolved roster before native host substitution, including filtering warnings and fallback information. An unknown or unusable requested group falls back visibly to the configured default; if that resolution has no usable seats, the council stops. `/council-directive` prepares a reusable directive and natural-language invocation.
 
 Routing depends on `agentMode`:
 

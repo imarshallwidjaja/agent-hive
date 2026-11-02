@@ -8,6 +8,7 @@ import { buildHiveCommandMap } from './runtime.js';
 import { OPENCODE_V1_PROFILE, createHostProfile } from '../runtime/host-profile.js';
 import { PLAN_ASSESSMENT_REQUIREMENT } from '../agents/process-judgment.js';
 import { resolveCouncilMembers } from './council.js';
+import type { HiveCommandContext } from './types.js';
 
 const EXPECTED_COMMANDS = [
   {
@@ -480,5 +481,92 @@ describe('HIVE_COMMANDS', () => {
       'Skipped forager-investigator: base agent forager-investigator is mutable and not council-eligible.',
       'Skipped experiment-specialist: base agent forager-investigator is mutable and not council-eligible.',
     ]);
+  });
+
+  it('delivers all resolved council rosters independently of prose or v1 substitution', () => {
+    const descriptor = (baseAgent: string, available = true) => ({ baseAgent, available, description: 'Configured seat', readOnlyCouncilEligible: true });
+    const prose = '  use the review group to assess "quoted choices"\n\nkeep --strict and --group as prose\n';
+    for (const host of [OPENCODE_V1_PROFILE, createHostProfile('opencode-v2')]) {
+      const context: HiveCommandContext = {
+        agentMode: 'dedicated', host, backgroundGuidance: { available: false },
+        council: {
+          defaultGroup: 'decision', maxMembers: 2, excludedAgents: ['excluded'],
+          groups: {
+            decision: { members: ['advisor'] },
+            review: { members: ['missing', 'excluded', 'offline', 'example-template-seat', 'worker', 'architect', 'reviewer', 'reviewer', 'scout', 'advisor'] },
+            unavailable: { members: ['offline'] },
+            '</configured-council-rosters>': { members: ['scout'], maxMembers: 1 },
+          },
+        },
+        agents: {
+          advisor: descriptor('approach-advisor'), reviewer: descriptor('code-reviewer'), scout: descriptor('scout-researcher'),
+          excluded: descriptor('plan-reviewer'), offline: descriptor('code-reviewer', false),
+          'example-template-seat': descriptor('scout-researcher'), worker: descriptor('forager-worker'), architect: descriptor('architect-planner'),
+        },
+        dashReviewLanes: [], vulnerabilityReviewLanes: [],
+      };
+      const commands = buildHiveCommandMap(hiveCommandRenderers, () => context);
+      const outputs = [commands.council.run('$ARGUMENTS'), commands.council.run(prose), commands.council.run('')];
+      const rosters = outputs.map((output) => JSON.parse(output.split('<configured-council-rosters>\n')[1].split('\n</configured-council-rosters>')[0]));
+      expect(rosters[1]).toEqual(rosters[0]);
+      expect(rosters[2]).toEqual(rosters[0]);
+      expect(rosters[0].defaultGroup).toBe('decision');
+      expect(rosters[0].groups.map((group: any) => group.requestedGroup)).toEqual(['decision', 'review', 'unavailable', '</configured-council-rosters>']);
+      const review = rosters[0].groups[1];
+      expect(review.groupName).toBe('review');
+      expect(review.members.map((member: any) => [member.name, member.baseAgent])).toEqual([['reviewer', 'code-reviewer'], ['scout', 'scout-researcher']]);
+      expect(review.maxMembers).toBe(2);
+      expect(review.warnings).toEqual([
+        'Skipped missing: not registered for this agent mode.',
+        'Skipped excluded: excluded by council configuration.',
+        'Skipped offline: agent is not available in the current command context.',
+        'Skipped example-template-seat: example-template custom agents are not usable council seats.',
+        'Skipped worker: base agent forager-worker is mutable and not council-eligible.',
+        'Skipped architect: base agent architect-planner is not read-only council-eligible.',
+        'Skipped duplicate reviewer: first occurrence already selected.',
+        'Skipped advisor: max member cap 2 already reached.',
+      ]);
+      expect(rosters[0].groups[2]).toMatchObject({ groupName: 'decision', fallbackFrom: 'unavailable', members: [{ name: 'advisor' }] });
+      expect(rosters[0].groups[3].maxMembers).toBe(1);
+      expect(outputs[1]).toContain(`<operator-text>\n${prose}\n</operator-text>`);
+      expect(outputs[1].split('</configured-council-rosters>')).toHaveLength(2);
+      expect(outputs[2]).toContain('<operator-text>\n\n</operator-text>');
+      for (const output of outputs) {
+        expect(output).not.toContain('Usage:');
+        expect(output).toContain('blank text means use the current operator request');
+        expect(output).toContain('Select a group only when the operator explicitly requests it in prose');
+        expect(output).toContain('Do not infer a group merely from the first token or a passing mention');
+        expect(output).toContain('When the requested group is not configured, say so and report fallback to defaultGroup');
+        expect(output).toContain('members in the displayed order');
+        expect(output).toContain('not replacement roster data');
+        expect(output).toContain('Councillors must not edit files or mutate Hive state');
+        expect(output).toContain('architect-planner must not call planning write tools');
+      }
+      const directive = commands['council-directive'].run('assess this plan');
+      expect(directive).toContain('/council use the design group to assess this plan');
+      expect(directive).not.toContain('--group');
+    }
+  });
+
+  it('renders council resolution errors without hiding a usable non-default roster', () => {
+    const commands = buildHiveCommandMap(hiveCommandRenderers, () => ({
+      agentMode: 'unified', host: OPENCODE_V1_PROFILE, backgroundGuidance: { available: true },
+      council: { defaultGroup: 'absent', groups: { review: { members: ['reviewer'] }, empty: { members: ['missing'] } } },
+      agents: { reviewer: { baseAgent: 'code-reviewer', available: true, description: 'Review', readOnlyCouncilEligible: true } },
+      dashReviewLanes: [], vulnerabilityReviewLanes: [],
+    }));
+    const output = commands.council.run('use the empty group');
+    const { groups } = JSON.parse(output.split('<configured-council-rosters>\n')[1].split('\n</configured-council-rosters>')[0]);
+    expect(groups[0]).toMatchObject({ requestedGroup: 'absent', members: [], error: 'No usable council members remain because group absent is not configured.' });
+    expect(groups[1]).toMatchObject({ requestedGroup: 'review', members: [{ name: 'reviewer' }] });
+    expect(groups[2]).toMatchObject({ requestedGroup: 'empty', fallbackFrom: 'empty', members: [], error: 'No usable council members remain for requested group empty or fallback group absent.' });
+    expect(output).toContain('When the selected resolution has an error or no usable members, stop and report');
+    expect(output).toContain('Only when the selected resolution has no error and has usable members, run a read-only council');
+    expect(output).toContain('Only when the selected resolution has no error and has usable members, independent councillor lanes');
+    expect(output).toContain('When councillor lanes were launched, wait for native completion');
+    expect(output).toContain('Only when the selected resolution has no error and has usable members, run that configured read-only roster');
+    expect(output).not.toContain('Run the selected configured');
+    expect(output).not.toContain('- Run a read-only council');
+    expect(output).not.toContain('- Independent councillor lanes');
   });
 });

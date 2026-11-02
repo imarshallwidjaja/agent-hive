@@ -867,7 +867,7 @@ describe('v2 skills, commands and models', () => {
   });
 
   it('renders commands against the agents the host has now', async () => {
-    const host = await activate({}, { customAgents: {
+    const host = await activate({}, { council: { groups: { review: { members: ['primary-simplicity', 'code-reviewer'] } } }, customAgents: {
       'primary-simplicity': { baseAgent: 'simplicity-reviewer', description: 'custom simplicity' },
       'disabled-security': { baseAgent: 'vulnerability-reviewer', description: 'disabled security' },
       'security-specialist': { baseAgent: 'vulnerability-reviewer', description: 'security specialist' },
@@ -884,7 +884,13 @@ describe('v2 skills, commands and models', () => {
     });
     host.sessions.set('s1', { id: 's1', agent: 'swarm-orchestrator' });
     const commands = host.commands();
-    await Effect.runPromise(commands.get('council').execute({ sessionID: 's1', prompt: { text: 'is this safe?' }, delivery: 'steer' }));
+    const councilProse = 'use the review group to assess "is this safe?"\nKeep --strict as prose.';
+    await Effect.runPromise(commands.get('council').execute({ sessionID: 's1', prompt: { text: councilProse }, delivery: 'steer' }));
+    expect(host.prompts[0].text).toContain(`<operator-text>\n${councilProse}\n</operator-text>`);
+    const councilRosters = JSON.parse(host.prompts[0].text.split('<configured-council-rosters>\n')[1].split('\n</configured-council-rosters>')[0]);
+    expect(councilRosters.defaultGroup).toBe('decision');
+    expect(councilRosters.groups.find((group: any) => group.requestedGroup === 'review').members.map((member: any) => member.name)).toEqual(['code-reviewer']);
+    expect(host.switches).toEqual([]);
     expect(host.prompts[0].text).toContain('Skipped approach-advisor: agent is not available');
     await Effect.runPromise(commands.get('dash-review').execute({ sessionID: 's1', prompt: { text: 'HEAD~1..HEAD' }, delivery: 'steer' }));
     expect(host.prompts[1].text).toContain('code-reviewer (base: code-reviewer; model: user/reviewer; variant: max; USER REVIEWER DESCRIPTION');

@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `/council` now accepts ordinary prose on both OpenCode hosts. It displays all configured, filtered rosters so the agent can select an explicitly requested group or use the configured default, with visible fallback and no-usable-seat errors. `/council-directive` recommends natural-language invocation.
 - `/implement` now uses ordinary `$ARGUMENTS` command templates on OpenCode v1, like `/grill` and `/interview`, so clients that expand templates before sending supplemental context retain ordinary steering text. Native host substitution semantics apply; the former literal-text guarantee is removed. The command keeps the selected agent and model, and OpenCode v2 continues to pass arguments directly to the renderer.
 
 ### Added
