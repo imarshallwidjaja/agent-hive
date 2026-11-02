@@ -1773,7 +1773,7 @@ export const QUALIFICATION_CHECKS = [
   'protocol.replyAckLost', 'protocol.replyNoReplay', 'protocol.replyResolvedByAnswers', 'protocol.permissionAckLost', 'protocol.permissionStaysUnknown',
   'protocol.lockBusy', 'protocol.lockSurvivesNoDescendant', 'protocol.rotationLatched', 'protocol.latchedInspectWithoutContent', 'protocol.cleanupWithoutAuth',
   'interrupt.started', 'interrupt.ackLost', 'interrupt.noReplay', 'interrupt.staysUnknown', 'interrupt.cleanupWithoutAuth',
-  'command.started', 'command.submitted', 'command.ackLostSafe', 'command.selectionPreserved', 'command.sameSession', 'command.literalText', 'command.noShellEffect',
+  'command.started', 'command.submitted', 'command.ackLostSafe', 'command.selectionPreserved', 'command.sameSession', 'command.operatorText',
   'command.skillLoaded', 'command.questionPending', 'command.questionReplied', 'command.completed', 'command.cleanupWithoutAuth',
 ];
 
@@ -2140,10 +2140,10 @@ async function qualifyInterruptLoss(base, budget, notes, c) {
 
 /**
  * A native command in the middle of a conversation, on the installed host with the scripted mock model: an earlier
- * turn under Architect, then `/implement` through the command operation, with text carrying dollar sequences, a
- * shell-looking line and a file reference. The command binds no agent, so the session stays on Architect and on the
- * model of the earlier turn; its text arrives exactly as written and the shell-looking line never runs, the packaged
- * skill loads, the turn's question is answered through the supervisor and the turn finishes. The scripted mock grants
+ * turn under Architect, then `/implement` through the command operation, with ordinary multiline steering. The command
+ * binds no agent, so the session stays on Architect and on the model of the earlier turn; the steering reaches its
+ * operator-text block under ordinary host substitution, the packaged skill loads, the turn's question is answered
+ * through the supervisor and the turn finishes. The scripted mock grants
  * no authority to implement: the run proves the plumbing and the selection, not how Architect would handle the request.
  * A lost acknowledgement is resolved by the command's exact message ID on v1; v2, whose command route takes no ID,
  * leaves a second invocation with a lost acknowledgement unknown.
@@ -2177,7 +2177,7 @@ async function qualifyCommand(base, budget, notes, c) {
     const question = asked.pending.find((p) => p.kind === 'question');
     c['command.questionPending'] = question.sessionId === sessionId && question.complete === true && question.questions?.[0]?.options?.includes('proceed') === true;
     c['command.questionReplied'] = (await turn('reply', { requestId: question.id, answers: [['proceed']] })).exit === EXIT.ok;
-    const done = await until((s) => s.quiescent === true, 120_000, { conversation: {}, artifacts: ['src/shell-ran.txt'] });
+    const done = await until((s) => s.quiescent === true, 120_000, { conversation: {} });
     const evidence = JSON.parse(readFileSync(done.evidence, 'utf8'));
     const primary = evidence.conversation.sessions.find((s) => s.id === sessionId);
     const turns = primary?.turns ?? [];
@@ -2186,10 +2186,9 @@ async function qualifyCommand(base, budget, notes, c) {
     const commandTurn = turns[commandAt];
     const replies = turns.slice(commandAt + 1).filter((t) => t.role === 'assistant');
     c['command.sameSession'] = evidence.conversation.sessions[0]?.id === sessionId && chatAt >= 0 && commandAt > chatAt && replies.length > 0;
-    // The text the operator typed sits whole inside the command's own user message: the one with its message ID on v1.
-    c['command.literalText'] = commandAt >= 0 && commandTurn.clipped === false && commandTurn.text.includes(`<operator-text>\n${text}\n</operator-text>`)
+    // Ordinary steering reaches the command's own user message: the one with its message ID on v1.
+    c['command.operatorText'] = commandAt >= 0 && commandTurn.clipped === false && commandTurn.text.includes(`<operator-text>\n${text}\n</operator-text>`)
       && (base.host === 'v2' || commandTurn.id === commandOp?.intent.messageId);
-    c['command.noShellEffect'] = evidence.artifacts?.[0]?.omitted === 'absent';
     // The command's message (v1) or the session itself (v2) still names Architect, Architect answers every turn after it,
     // and each of those replies runs on the model that answered the earlier turn.
     const chatModel = turns.slice(chatAt + 1, commandAt).find((t) => t.role === 'assistant')?.model;

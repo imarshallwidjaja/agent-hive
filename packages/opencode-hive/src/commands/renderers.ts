@@ -266,8 +266,7 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
 
   implement(args, context) {
     return renderHybridCommand('implement', context, {
-      // The operator text is inserted as written so multiline prose, quotes, and punctuation reach the agent unchanged.
-      details: [`Operator text after /implement (verbatim; blank when none):\n<operator-text>\n${args}\n</operator-text>`],
+      details: [`Operator text after /implement (blank when none):\n<operator-text>\n${args}\n</operator-text>`],
       doItems: [
         'Load the `starting-ad-hoc-implementation` skill and follow it with this conversation and the operator text above; blank operator text means the conversation alone scopes the work.',
       ],

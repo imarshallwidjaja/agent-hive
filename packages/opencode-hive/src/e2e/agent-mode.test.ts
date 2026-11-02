@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it } from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import plugin from '../index.js';
-import { V1_UNFILLABLE_ARGUMENT } from '../commands/literal-arguments.js';
 
 const roots: string[] = [];
 let originalHome: string | undefined;
@@ -94,29 +93,16 @@ describe('agent registration', () => {
     expect(config.command['test-audit'].agent).toBe('dash-reviewer');
     expect(config.command['vuln-review'].agent).toBe('vulnerability-review-primary');
     // /implement pins no agent, model, variant or subtask, so the host runs it under the session's current selection.
-    // Its v1 template carries no operator text: one placeholder no argument list fills keeps the host's substitution,
-    // append and shell passes away from that text, and command.execute.before puts the command rendered from the raw
-    // text in its place.
     expect(Object.keys(config.command.implement).sort()).toEqual(['description', 'template']);
     const template: string = config.command.implement.template;
-    expect(template).toContain(`<operator-text>\n${V1_UNFILLABLE_ARGUMENT}\n</operator-text>`);
-    expect(template).not.toContain('$ARGUMENTS');
-    expect(template.match(/\$\d+/g)).toEqual([V1_UNFILLABLE_ARGUMENT]);
-    // Commands without the literal-argument contract keep the host's own $ARGUMENTS substitution.
+    // /implement uses the same ordinary template substitution as /grill and /interview.
+    expect(template).toContain('<operator-text>\n$ARGUMENTS\n</operator-text>');
+    expect(template.match(/\$ARGUMENTS/g)).toHaveLength(1);
+    expect(template).not.toMatch(/\$\d+/);
+    for (const name of ['grill', 'interview']) expect(config.command[name].template).toContain('$ARGUMENTS');
+    expect(hooks).not.toHaveProperty('command.execute.before');
     expect(config.command['dash-review'].template).toContain('$ARGUMENTS');
     expect(config.command['test-audit'].template).toContain('Test audit scope: $ARGUMENTS');
-    // The pinned host hands the hook the template with the placeholder emptied and trimmed, then any attached files.
-    const prose = "keep $& and $$ and $` and $' literal\n!`touch /tmp/hive-shell-ran` and @general stay text";
-    const attachment = { type: 'file', mime: 'text/plain', filename: 'a.ts', url: 'file:///tmp/a.ts' };
-    const parts: any[] = [{ type: 'text', text: template.replace(V1_UNFILLABLE_ARGUMENT, '').trim() }, attachment];
-    await hooks['command.execute.before']!({ command: 'implement', sessionID: 's1', arguments: prose }, { parts });
-    expect(parts).toEqual([{ type: 'text', text: await hooks.command!.implement.run(prose) }, attachment]);
-    expect(parts[0].text).toContain(`<operator-text>\n${prose}\n</operator-text>`);
-    // A prompt built any other way fails the command instead of sending it without the operator's text; other commands are untouched.
-    await expect(hooks['command.execute.before']!({ command: 'implement', sessionID: 's1', arguments: prose }, { parts: [{ type: 'text', text: 'another template' }] as any })).rejects.toThrow('cannot pass your text on unchanged');
-    const unrelated: any[] = [{ type: 'text', text: 'grill body' }];
-    await hooks['command.execute.before']!({ command: 'grill', sessionID: 's1', arguments: prose }, { parts: unrelated });
-    expect(unrelated).toEqual([{ type: 'text', text: 'grill body' }]);
     const dashCommand: string = await hooks.command!['dash-review'].run('src/runtime.ts');
     const auditCommand: string = await hooks.command!['test-audit'].run('src/retry.test.ts');
     expect(auditCommand).toContain('Test audit scope: src/retry.test.ts');

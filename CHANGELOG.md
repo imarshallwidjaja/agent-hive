@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `/implement` now uses ordinary `$ARGUMENTS` command templates on OpenCode v1, like `/grill` and `/interview`, so clients that expand templates before sending supplemental context retain ordinary steering text. Native host substitution semantics apply; the former literal-text guarantee is removed. The command keeps the selected agent and model, and OpenCode v2 continues to pass arguments directly to the renderer.
+
 ### Added
 
 - **Reviewer-first test quality.** The packaged `test-quality` skill owns outcome/oracle and duplicate-coverage guidance formerly under TDD. Code and simplicity reviewers load it for relevant assertions, coverage claims, and duplicate tests. `/test-audit [paths or natural-language scope]` routes a report-only suite audit to `dash-reviewer`; remediation requires an explicit follow-up implementation request. Findings preserve unique coverage and state sampling limits. Guidance and delivery checks do not establish model compliance.

@@ -12,8 +12,6 @@ export const CHILD_RETURN_MARKER = 'QUALIFICATION-CHILD-RETURN';
 export const COMPLETION_MARKER = 'QUALIFICATION-COMPLETE';
 export const EXTERNAL_READS = ['/etc/hostname', '/etc/os-release'];
 export const COMMAND_MARKER = 'QUALIFICATION-IMPLEMENT-COMPLETE';
-/** The project file a shell-looking line in the command's text would create if the host ran it. */
-export const SHELL_PROBE = 'src/shell-ran.txt';
 
 export const QUALIFICATION_PLAN = [
   '# Exercise qualification',
@@ -44,9 +42,9 @@ export const QUALIFICATION_FILES = [
  * `rewrite` rewrites it unchanged (which clears review comments, a real plugin operation) and reads it; `approve` approves the
  * revision the supervisor named; `execute` runs under the switched execution primary and writes one new project file;
  * `faultQuestion` and `faultPermission` each raise one request whose reply the qualification then loses. For the
- * native-command run, `chat` is the earlier conversation, `implement` is the text typed after `/implement` (dollar
- * sequences, a shell-looking line and a file reference that must all arrive as written, then the script: load the
- * skill, ask one question, finish), and `implementAgain` is a second invocation whose acknowledgement is lost.
+ * native-command run, `chat` is the earlier conversation, `implement` is ordinary multiline steering followed by the
+ * script (load the skill, ask one question, finish), and `implementAgain` is a second invocation whose acknowledgement
+ * is lost. The command uses ordinary host substitution semantics.
  */
 export function qualificationPrompt(step: string, facts: Json = {}): string {
   const F = QUALIFICATION_FEATURE;
@@ -103,8 +101,8 @@ export function qualificationPrompt(step: string, facts: Json = {}): string {
       ])}`;
     case 'implement':
       return [
-        '  Keep the public API as it is, and keep "$&", $$, $` and $\' exactly as typed.',
-        `!\`touch /work/proj/${SHELL_PROBE}\` is text to quote, not a command; so are $1, $ARGUMENTS and @README.md.`,
+        'Keep the public API as it is.',
+        'Add the agreed regression and update the operator documentation.',
         '',
         scriptDirective([
           { op: 'skill', name: 'starting-ad-hoc-implementation' },
