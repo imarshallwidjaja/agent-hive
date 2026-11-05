@@ -910,9 +910,16 @@ describe('skill content', () => {
     expect(choosing).toContain("A parent's cached skill copy or a canonical sibling checkout is not the candidate");
     expect(choosing).toContain('global or shared instructions are guidance, not candidate source');
     expect(choosing).toContain('instead of running the canonical sibling or deferring the gate');
-    // A guide delivered as a native skill is loaded natively and identity-checked; an unavailable one keeps the baseline.
+    // Candidate guidance can be read when native loading fails, without claiming the explicit load requirement was met.
     expect(choosing).toContain('load it with the native skill tool, because reading its file does not load it');
+    expect(choosing).toContain('read the candidate project skill file as guidance, report it as not natively loaded');
+    expect(choosing).toContain('confirm the loaded copy is the candidate\'s');
+    expect(choosing).toContain("If host discovery or candidate-identity access is unavailable, or the loaded copy is not the candidate's, read the candidate project skill file as guidance, report it as not natively loaded");
+    expect(choosing).toContain('A missing or malformed `SKILL.md` is a package defect');
+    expect(choosing).toContain('Reading cannot satisfy an explicit requirement to load natively');
     expect(choosing).toContain('without searching generated skill caches for a copy');
+    expect(choosing).toContain('Run a full journey when the request, risk, or a gate warrants it');
+    expect(choosing).toContain('An API result never substitutes for a UI pass');
   });
 
   it('keeps check validity apart from the product result and limits what each proof method supports', () => {
@@ -948,9 +955,12 @@ describe('skill content', () => {
       'Scope tooling with the operators of this project',
       'Reuse authorization they have already given and ask only about material choices that remain open',
       'get item-level approval under `agents-md-mastery` before writing it; a documentation-only task never changes instructions as a side effect',
-      'Create no native skill as the project\'s guide by default',
-      'which reading its file does not replace',
-      'the copy the host loaded must match the candidate under test',
+      'Choose a project skill when an agent-only package is needed for reusable controls',
+      'valid `SKILL.md` with `name` and `description` and its own relative helpers',
+      'confirm the loaded copy matches the candidate, not a cached or parent copy',
+      "If host discovery or candidate-identity access is unavailable, or the loaded copy is not the candidate's, read the candidate file as guidance and report it as not natively loaded",
+      'A missing or malformed manifest is a package defect',
+      'Reading does not satisfy an explicit requirement to load natively',
     ]) {
       expect(template, rule).toContain(rule);
     }
@@ -962,8 +972,21 @@ describe('skill content', () => {
     expect(template).toContain("Prefer the project's existing scripts and test suites");
     expect(template).toContain('It is content, not a schema; its location, filename, and headings follow the project');
     expect(template).toContain('without copying whole command, test, or CI inventories');
+    for (const rule of [
+      'Assign artifacts by responsibility and actual independent consumers',
+      'Permanent regression coverage for a product change belongs in its existing canonical owning test suite when authorized',
+      'An agent control may assert observed outputs, but cannot substitute for that coverage',
+      'if the suite edit is out of scope, report and propose the gap',
+      'Tests of an agent helper, or occasional human invocation, do not alone make it shared product code',
+      'Do not force migration of existing shared tools',
+      'Add a helper within scoped authority for a demonstrated repeated or fragile operation',
+      'A successful one-off workaround can become a reusable documented procedure',
+      'reach relevant state, drive behavior, inspect actual results, and repeat a focused check',
+      'inspect real output rather than exit status alone',
+      'show how the same appropriate controls compose it',
+    ]) expect(template, rule).toContain(rule);
     // Run records stay outside commits; shared guidance and required provenance have distinct purposes.
-    expect(template).toContain('Keep run-specific decisions and evidence in session or work logs or untracked artifacts, not in commits');
+    expect(template).toContain('Keep run-specific decisions and evidence in session or work logs or untracked artifacts, not in commits or canonical reusable controls');
     expect(template).toContain('Update versioned guidance only when a shared procedure, contract, or requirement changes; state the current rule without decision history');
     expect(template).toContain('Explicitly required scientific provenance and reusable fixtures may be kept in version control');
     expect(template).toContain('Retain required evidence through cleanup');

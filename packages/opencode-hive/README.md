@@ -588,7 +588,7 @@ Generated/managed shape (for inspection) at `<project>/.hive/repositories.json`:
 | `orchestrating-ad-hoc-work` | Coordinate qualifying ad-hoc work for Hive Builder or unified Hive |
 | `parallel-exploration` | Researcher fan-out for read-only research |
 | `pr-writing` | Draft PR titles, descriptions, and general or inline review comments |
-| `project-verification` | Set up, audit, or maintain a project's durable verification guidance, harness, or formal checks when that is the requested work |
+| `project-verification` | Set up, audit, or maintain a project's durable verification guidance, reusable agent controls, harness, or formal checks when requested |
 | `starting-ad-hoc-implementation` | Turn a scoped conversation into authorized ad-hoc implementation when the operator asks to implement it |
 | `stop-design-slop` | Visual foundation for interfaces: composition from the product's task, diagnostics for generic patterns, and refinement that preserves an existing identity |
 | `stop-slop` | Repair staging, formulaic cadence, and structure in existing prose |
