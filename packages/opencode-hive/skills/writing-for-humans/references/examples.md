@@ -26,9 +26,11 @@ After: "The processing software returns reports and output records in a defined 
 
 Source: A report generator uses dataset `D-12`. After an analyst approves `D-12`, the generator may reuse a snapshot to create report `R-4`. A snapshot is a saved copy of the dataset at one point in time and may not include later changes to `D-12`. The report describes the data in that snapshot; it does not establish the current state of `D-12`.
 
-Technical peer: "After an analyst approves dataset `D-12`, the report generator may reuse a snapshot, a saved copy of the dataset at one point in time, to create report `R-4`. The snapshot may not include later changes to `D-12`. `R-4` describes the data in that snapshot; it does not establish the current state of `D-12`."
+Technical peer: "After an analyst approves dataset `D-12`, the report generator may reuse a snapshot, a saved copy of the dataset at one point in time, to create report `R-4`. The report describes the data in that snapshot."
 
-Product partner unfamiliar with the implementation: "After an analyst approves dataset `D-12`, the report generator may create report `R-4` using a previously saved copy of the dataset. This copy, called a snapshot, captures the dataset at one point in time and may not include later changes to `D-12`. `R-4` describes the data in that snapshot; it does not establish the current state of `D-12`."
+Product partner unfamiliar with the implementation: "After an analyst approves dataset `D-12`, the report generator may create report `R-4` using a previously saved copy of the dataset. This copy, called a snapshot, captures the dataset at one point in time; `R-4` describes that copy."
+
+Asked whether `R-4` verifies the current dataset: "The snapshot may omit later changes, so `R-4` does not establish the current state of `D-12`."
 
 **Identity, checks, and permitted use**
 
@@ -62,7 +64,11 @@ Source: A coordinator assigns jobs to workers. Workers run the jobs, and the coo
 
 Before: "The architecture reduces processing costs."
 
-After: "The coordinator assigns jobs to workers and records each job's execution cost. Workers run the jobs. The source provides no before-and-after cost measurement."
+Mechanism question: "The coordinator assigns jobs to workers and records each job's execution cost. Workers run the jobs."
+
+Did costs drop? "The coordinator records each job's execution cost, but no before-and-after cost measurement is available."
+
+The missing measurement matters to the second question. It need not accompany the mechanism description.
 
 ## Preserve uncertainty
 
@@ -116,9 +122,11 @@ The rewrite preserves the supplied severity label. A correctness reviewer might 
 >
 > Open: the tax and credit-note views reuse the invoice table and have no screenshots.
 
-Each affirmative sentence carries the scope its exclusion stated. For a reader who would still expect a forecast, add "usage charts do not show forecasts" once, beside the chart.
+Each affirmative sentence states supported scope without claiming it is exhaustive. If the request asks whether the charts forecast usage, answer that question directly.
 
 A runbook guard keeps its form. "Do not fail over while replication lag exceeds 30 s" stays as written, because "fail over when lag is under 30 s" turns a guard into a trigger.
+
+A caption can say "Search composer" without calling the image illustrative or high quality. When documenting a button by its exact product label, retain that quoted label; ordinary interface copy can be revised when requested.
 
 ## Rejected alternatives
 

@@ -18,10 +18,10 @@ Apply to every human-facing output, short replies included, without announcing i
 - **One reading.** Each "it", "this", "they", and "which" points at one obvious noun; repeat the noun when in doubt. Place "only" and "not" beside the word they change. Keep the verb and the small words that show a sentence's structure.
 - **Enough words.** Compression that makes the reader rebuild the sentence moves the work to them. Shorter is clearer only when nothing the reader needs was cut.
 - **Only what the sources hold.** Every fact, name, number, date, quote, source, and outcome comes from the sources or the conversation.
-- **The source's judgment.** Carry taste, scope, caveats, claims, actors, and voice through unchanged unless asked to change them: a sharp opinion stays sharp, a hedge keeps its strength, the actor stays the actor, and an instruction, requirement, or warning keeps its force, exceptions included.
+- **Meaning and authority.** Describe things by what they are, do, accept, or produce. Evidence, requirements, and the human's stance constrain meaning; draft prose is editable, and agent repetition grants it no authority. Keep necessary claim qualifiers and binding guards at their original force. A standalone exclusion earns its place through a concrete reader consequence; `writing-for-humans` owns that decision.
 - **Draft, audit, fix.** Before delivering, read the draft as the reader would and ask what a careful editor would mark. Fix it, then check again.
 
-Exact quotations, code, public strings, required schemas, titles, and meaning-bearing confidence labels are not style targets.
+Preserve actual literals, quotations, identifiers, schema and protocol values, and UI strings quoted to match the product. Ordinary headings and UI copy are editable when copy is in scope; retain their meaning and commitments.
 
 Product copy, announcements, and interface labels meet the same test: concrete product nouns, the action, and the outcome. A visual choice meets it too, through hierarchy, grouping, state, identity, or access.
 
@@ -43,12 +43,12 @@ Routing is a load obligation. When a row matches, load the skills it names with 
 - `how` and `why` own the content of an explanation of current code or of history. This skill owns the presentation.
 - `writing-for-agents` owns instructional structure and invocation. Human-facing explanations about those instructions follow this skill. When importing instructions, keep their wording, examples, and exceptions; prose cleanup does not permit weakening their force.
 - `pr-writing` owns the artifact requirements and the publication boundary. This skill owns the prose routing.
-- A personal voice overlay loads only when applicable instructions or the operator name it. Availability alone selects no voice.
+- Select a personal voice overlay from the artifact's authorship or intended voice, or an operator or workspace instruction whose conditions apply to that artifact. A generic technical-register preference or the requester's identity alone does not select an overlay.
 - Domain-specific writing skills stay conditional on their own triggers.
 
 ## Delegation
 
-Parent-loaded skills do not imply child loading. When delegation is permitted, a prose handoff names the artifact, audience, voice when specified, the operator's stated reader outcome when there is one, and required writing skills. Require the child to load those skills itself. Give boundaries as facts, with the affirmative fact behind each when known, and leave their wording and placement to `writing-for-humans`. Quote wording only when it must appear verbatim, since writers tend to reproduce quoted sentences, and check requested sections against the reader outcome before dispatch. A fresh follow-up or prose review receives the same writing contract; the reviewer checks the prose against the reader outcome alongside factual fidelity, within its role's finding bar. Where nested delegation is permitted, descendants preserve that contract rather than assuming the parent's loaded set. This rule does not authorize delegation or extend a child's role.
+Parent-loaded skills do not imply child loading. When delegation is permitted, a prose handoff names the artifact, audience, voice when specified, the operator's stated reader outcome when there is one, and required writing skills. Carry only the overlay selection applicable to the artifact; do not turn an inferred register into an operator requirement. Require the child to load those skills itself. Give boundaries as facts, with the affirmative fact behind each when known, and leave their wording and placement to `writing-for-humans`. Quote wording only when it must appear verbatim, since writers tend to reproduce quoted sentences, and check requested sections against the reader outcome before dispatch. A fresh follow-up or prose review receives the same writing contract; the reviewer checks the prose against the reader outcome alongside factual fidelity within the role's finding bar, and applies the `writing-for-humans` boundary rule to proposed additions, restorations, and deletions. Where nested delegation is permitted, descendants preserve that contract rather than assuming the parent's loaded set. This rule does not authorize delegation or extend a child's role.
 
 ## Ownership
 

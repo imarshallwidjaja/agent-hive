@@ -41,13 +41,13 @@
       "id": "design-direction-boundaries",
       "skills": ["unslop", "writing-for-humans"],
       "prompt": "Write a short design-direction page for product designers from these engineering notes, with a caption per mockup. 'The Operator Control Panel (OCP) configures ingestion jobs and shows each run's quality flags. The OCP does not supply customer evidence packs; customers review them in the Investigation surface. Metadata discovery does not download dataset contents; it reads catalog metadata. Quality checks do not measure accuracy; they flag schema drift and missing fields. The lineage view holds no approval authority; it shows which run produced each artifact. Mockups 1-3 are not specifications; they show layout direction, and their labels show intent. Acceptance uses the checklist, not the mockups. Workflows C and D reuse the composer and are not illustrated. Export layout is undecided; no owner or date is set.'",
-      "expected": ["Introduces each surface and feature by what it does, using the affirmative facts in the notes", "States mockup status and the checklist's acceptance role once rather than under each caption", "Keeps labels as showing intent", "Keeps an exclusion only where a designer would still expect the excluded behavior, stated once", "Lists workflows C and D and the export decision once without inventing an owner, date, or commitment", "Adds no fact absent from the notes"]
+      "expected": ["Introduces each surface and feature by what it does, using the affirmative facts in the notes", "States mockup status and the checklist's acceptance role once rather than under each caption", "Keeps labels as showing intent", "Keeps an exclusion only for a concrete consequence grounded in the reader's job or supplied context", "Captions identify content without self-quality labels", "Lists workflows C and D and the export decision once without inventing an owner, date, or commitment", "Adds no fact absent from the notes"]
     },
     {
       "id": "refine-defensive-draft",
       "skills": ["unslop", "writing-for-humans", "stop-slop"],
       "prompt": "Refine this draft for product designers; its facts match the notes. Draft: 'The OCP is not the customer Investigation surface. It does not supply customer evidence packs. Images are illustrations of direction, not specifications. 1. Search composer. Images are illustrations of direction, not specifications. 2. Results list. Their labels show intent rather than final copy. 3. Run detail. Images are illustrations of direction, not specifications. Quality checks do not measure accuracy. Other workflows reuse the composer and are not illustrated yet.' Notes: the OCP configures ingestion jobs and shows each run's quality flags; customers review evidence packs in the Investigation surface; quality checks flag schema drift and missing fields; mockups show layout direction and their labels show intent; acceptance uses the checklist; workflows C and D reuse the composer and are not illustrated.",
-      "expected": ["Replaces exclusion-led descriptions with the affirmative facts from the notes", "States mockup status once", "Keeps 'labels show intent' rather than reversing it into 'labels are not final copy'", "Keeps a remaining exclusion only where a designer would still expect the excluded behavior", "Adds no fact, owner, or date absent from the notes"]
+      "expected": ["Replaces exclusion-led descriptions with the affirmative facts from the notes", "States mockup status once", "Keeps 'labels show intent' rather than reversing it into 'labels are not final copy'", "Keeps a remaining exclusion only for a concrete reader consequence", "Adds no fact, owner, or date absent from the notes"]
     },
     {
       "id": "runbook-negatives-hold",
@@ -58,8 +58,32 @@
     {
       "id": "prose-handoff-contract",
       "skills": ["unslop", "writing-for-agents", "writing-for-humans"],
-      "prompt": "You will delegate a design-direction page to a documentation subagent and then its prose review to a reviewer; neither sees this conversation. Operator request: 'Convey the Operator Control Panel search experience through direction and examples. Make sure readers don't mistake the mockups for specs.' Notes: the OCP configures ingestion jobs and shows each run's quality flags; it does not supply customer evidence packs, which customers review in the Investigation surface; quality checks do not measure accuracy and flag schema drift and missing fields; mockups 1-3 are not specifications, show layout direction, and their labels show intent; acceptance uses the checklist, not the mockups. Write the authoring handoff and the review handoff.",
-      "expected": ["Carries the operator's reader outcome into both handoffs", "Gives boundaries as facts with their affirmative counterpart, such as the checklist governing acceptance", "Requires no disclaimer at every mockup and quotes no disclaimer sentence for verbatim reuse", "Asks the reviewer to check the prose against the reader outcome as well as the facts", "Names the writing skills each child loads itself"]
+      "prompt": "You will delegate a design-direction page to a documentation subagent and then its prose review to a reviewer; neither sees this conversation. Operator request: 'Convey the Operator Control Panel search experience through direction and examples. Make sure readers don't mistake the mockups for specs.' A proposed handoff also requests a section listing every capability the OCP does not provide, with no reader need given. Notes: the OCP configures ingestion jobs and shows each run's quality flags; it does not supply customer evidence packs, which customers review in the Investigation surface; quality checks do not measure accuracy and flag schema drift and missing fields; mockups 1-3 are not specifications, show layout direction, and their labels show intent; acceptance uses the checklist, not the mockups. Write the authoring handoff and the review handoff.",
+      "expected": ["Carries the operator's reader outcome into both handoffs", "Gives boundaries as facts with their affirmative counterpart, such as the checklist governing acceptance", "Does not dispatch the unsupported blanket exclusion section", "Requires no disclaimer at every mockup and quotes no disclaimer sentence for verbatim reuse", "Asks the reviewer to check the prose against the reader outcome as well as the facts", "Names the writing skills each child loads itself"]
+    },
+    {
+      "id": "reader-impact-paired-questions",
+      "skills": ["unslop", "writing-for-humans", "humanizer"],
+      "prompt": "Use these notes to answer four separate questions: a mail filter groups messages by sender and displays the groups; no study measured whether it saves users time. An archive retains messages for 30 days, after which they are deleted; it cannot recover older messages. Questions: how does the filter organize messages?; does it save time?; what does the archive retain?; can it recover a message from 60 days ago?",
+      "expected": ["Describes the filter without an irrelevant study disclaimer", "Names the missing measurement when asked about time savings", "Describes archive retention without a gratuitous exclusion", "Explains the retention limit when asked about recovery", "Does not claim affirmative descriptions are exhaustive or invent the converse of a negative"]
+    },
+    {
+      "id": "reader-impact-author-review-revision",
+      "skills": ["unslop", "writing-for-humans", "humanizer", "stop-slop"],
+      "prompt": "Author, review, then revise a short product description. Notes: some approved jobs can export CSV; the dashboard shows status. The operator requests cleanup of a draft that adds 'not an analytics platform' and an unsupported paragraph claiming all jobs export CSV. A reviewer proposes restoring the exclusion because it is implied rather than explicit. The draft is human-authored. Treat each role in sequence.",
+      "expected": ["Deletes the unsupported paragraph without replacing it with an irrelevant evidence-gap disclaimer", "Keeps some and can, without implying every job exports or a guarantee", "Drops the exclusion absent a concrete reader consequence even though it appeared in human prose", "Reviewer identifies a semantic or reader consequence for each proposed change, and does not require restoration merely for explicitness", "Revision satisfies the requested cleanup and does not broaden affirmative scope"]
+    },
+    {
+      "id": "literal-label-and-editable-heading",
+      "skills": ["unslop", "writing-for-humans"],
+      "prompt": "Clean up this UI documentation: the product button's exact label is `Start export`; docs quote it for users to match. The editable heading 'Unleash exports seamlessly' should become plain.",
+      "expected": ["Keeps the quoted button label exact while editing the ordinary heading"]
+    },
+    {
+      "id": "personal-overlay-artifact-routing",
+      "skills": ["unslop", "writing-for-humans"],
+      "prompt": "A workspace asks for a plain technical register for technical prose prepared for its operator. A separate personal voice skill applies to prose authored as that operator or when the operator explicitly selects its register. Prepare handoffs for four artifacts: neutral public documentation for finance analysts; a technical note addressed to the operator; a statement authored as the operator; and a neutral team document for which the operator explicitly selects the personal skill's register. Decide which handoffs require the personal skill and explain the selection.",
+      "expected": ["Does not select the personal overlay for neutral public documentation based on the generic technical register or requester's identity", "Does not select it merely because the technical note is addressed to the operator", "Selects it for the statement authored as the operator", "Selects it for the explicitly selected register while preserving neutral team authorship", "Carries applicable selections in each handoff without presenting an inferred register as an operator requirement"]
     },
     {
       "id": "voice-and-source",

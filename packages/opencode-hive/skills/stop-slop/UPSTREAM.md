@@ -9,3 +9,5 @@ A later oc-arkive policy change replaced both exceptions for keeping denials, th
 The 2026-10-10 integration of [phuryn/work-humanizer](https://github.com/phuryn/work-humanizer) (commit `819ac9925fffc20f12931cdf7a447db69163cbb2`, Pawel Huryn, MIT; notice in `LICENSE.workhumanizer`) added the crafted-line budget, the two-direction sentence-length rule, repeated openers, the shuffle test, pause-and-point lines including the colon reveal and the count before a list, restating and engagement closers, fragment stacks, invented metaphor labels, and the filler-transition list. This wording is adapted from that source. Its "keep the contrast only when readers really believe X" test is not adopted; contrasts keep the boundaries test in `writing-for-humans`.
 
 A full `humanizer` rewrite now loads this skill explicitly for its crafted-line budget and sentence-length band. The ownership paragraph says so; no rule in this skill changed.
+
+The reader-impact correction aligns the first example and relevance selection with the boundary owner. It retains the prohibition on cadence-driven list changes while removing unconditional retention of every item.

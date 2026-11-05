@@ -11,3 +11,5 @@ The 2026-10-10 integration of [phuryn/work-humanizer](https://github.com/phuryn/
 The ownership paragraph names `unslop` as the router after `writing-policy` was renamed to it. No other wording changed with the rename.
 
 An oc-arkive adaptation adds a context-sensitive technical clarity check to the existing finish pass and task-based structure for requested working product-alignment notes and structured brain dumps. The existing examples reference now illustrates source-supported actor, terminology, identity, comparison, retry, and architecture repairs. These apply the retained principles; they do not import the ASD-STE100 dictionary or compliance requirements.
+
+The reader-impact correction replaces the earlier expectation-only and source-negative rules with a concrete consequence test, while retaining necessary claim qualifiers and imported instruction wording, examples, exceptions, and normative force. It distinguishes editable drafts from evidence and actual literals from ordinary copy. Paired examples show how the question changes which evidence gaps matter. Review guidance applies the same test to proposed changes within the existing role bar.

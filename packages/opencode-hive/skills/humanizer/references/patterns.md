@@ -91,11 +91,11 @@ For example, "from X to Y" needs a meaningful scale. Keep distinct topics instea
 
 ## Uncertainty and source gaps
 
-Remove stacked modals such as "could potentially possibly" while retaining the meaningful qualifier. A historical inference remains an inference. Model-training disclaimers do not belong in the artifact, but a real evidence gap does.
+Remove stacked modals such as "could potentially possibly" while retaining the meaningful qualifier. A retained historical inference remains an inference. Apply the `writing-for-humans` reader-consequence test to evidence gaps.
 
-Words to watch: "as of [date]", "Up to my last training update", "based on available information", "not widely documented/available", and "While specific details are limited, the [subject] likely...". These can leak model meta or invent an absence and then fill it with a plausible story. Do not speculate into a gap you just declared. State the gap plainly, and state a date or figure only when the source supplies it.
+Words to watch: "as of [date]", "Up to my last training update", "based on available information", "not widely documented/available", and "While specific details are limited, the [subject] likely...". These can leak model meta or invent an absence and then fill it with a plausible story. Do not speculate into a gap; state a necessary gap plainly and use dates or figures the source supplies.
 
-Keep real source dates, time bounds, and explicitly supplied hypotheses with their uncertainty. This diagnostic does not authorize deleting an author's hypothesis merely because it is uncertain; it prevents an editor inventing one to fill missing evidence.
+Keep the uncertainty of retained dates, time bounds, and hypotheses. Uncertainty alone is not a reason to delete a relevant hypothesis or invent one to fill missing evidence.
 
 Before: "The service could potentially have failed during the deploy; the logs are unavailable."
 

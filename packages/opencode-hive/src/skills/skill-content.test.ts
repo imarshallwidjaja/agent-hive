@@ -98,9 +98,15 @@ describe('skill content', () => {
     expect(get('unslop')).toContain('does not authorize delegation');
     expect(get('writing-for-humans')).toContain('A rewrite adds nothing');
     expect(get('writing-for-humans')).toContain('This is not an absolute ban');
-    expect(get('writing-for-humans')).toContain('Stating what a thing covers preserves its scope');
-    expect(get('writing-for-humans')).toContain('A safety prohibition stays at each step where it applies');
+    expect(get('writing-for-humans')).toContain('without claiming exhaustive scope');
+    expect(get('writing-for-humans')).toContain('safety prohibitions at each applicable step');
     expect(get('writing-for-humans')).toContain('every remaining exclusion meeting the boundaries test');
+    expect(get('writing-for-humans')).toContain('concrete consequence for this reader');
+    expect(get('writing-for-humans')).toContain('never invent its converse');
+    expect(get('writing-for-humans')).toContain('prior presence or implied-but-not-explicit alone is insufficient');
+    expect(get('unslop')).toContain('check requested sections against the reader outcome before dispatch');
+    expect(get('unslop')).toContain("reviewer checks the prose against the reader outcome alongside factual fidelity within the role's finding bar");
+    for (const name of ['writing-for-humans', 'humanizer']) expect(get(name)).toContain('required wording, examples, exceptions, and normative force');
     expect(get('stop-slop')).toContain('never add, merge, or remove list items for cadence');
     expect(get('stop-slop')).toContain('boundaries test in `writing-for-humans`');
     expect(get('stop-slop')).not.toContain('denials are live constraints');
@@ -111,7 +117,7 @@ describe('skill content', () => {
     expect(get('humanizer')).toContain('a proposal must not become a promise');
     expect(get('humanizer')).toContain('never goes inside a file');
     expect(get('humanizer')).toContain('Write it fresh when the draft is AI-composed');
-    expect(get('humanizer')).toContain("When the text is the writer's own prose, keep their sentences");
+    expect(get('humanizer')).toContain('explicit light-edit or faithful-copy contract');
     expect(get('stop-slop')).toContain('at most one crafted, quotable line per piece');
     expect(get('stop-slop')).toContain('Uniformly short and choppy');
     expect(get('writing-for-humans')).toContain('Never reroute a removed dash into a semicolon');
@@ -123,12 +129,13 @@ describe('skill content', () => {
     const get = (name: string) => BUILTIN_SKILLS.find((entry) => entry.name === name)!.template;
     const unslop = get('unslop');
     for (const phrase of [
-      '**Concrete nouns.**', '**One reading.**', '**Enough words.**', "**The source's judgment.**",
-      'keeps its force, exceptions included', 'A short reply stays short and needs nothing further loaded',
+      '**Concrete nouns.**', '**One reading.**', '**Enough words.**', '**Meaning and authority.**',
+      'binding guards at their original force', 'A short reply stays short and needs nothing further loaded',
       'Routing is a load obligation', 'none applies to every turn',
       "It changes no role's authority, finding bar, verdict, or required output format",
       'A read-only reviewer names the defect and the direction of the repair',
-      'Availability alone selects no voice',
+      "instruction whose conditions apply to that artifact", 'requester\'s identity alone does not select an overlay',
+      'do not turn an inferred register into an operator requirement',
     ]) expect(unslop, phrase).toContain(phrase);
     for (const name of ['writing-for-humans', 'stop-slop', 'humanizer', 'writing-for-agents', 'pr-writing', 'stop-design-slop']) {
       expect(unslop, name).toContain(`\`${name}\``);

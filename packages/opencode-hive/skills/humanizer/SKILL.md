@@ -5,7 +5,7 @@ description: Use when existing prose reads as AI-written (promotional, vague, ov
 
 # Humanizer
 
-Make existing prose read like a specific person wrote it for a specific reader. Keep every fact, commitment, and caveat at the strength the writer gave it, and invent nothing. The patterns here are editing diagnostics, not evidence that a person used AI.
+Make existing prose read like a specific person wrote it for a specific reader. Select supported, relevant content using `writing-for-humans`; preserve the strength of retained claims and commitments, and invent nothing. The patterns here are editing diagnostics, not evidence that a person used AI.
 
 The evaluation behind this workflow (see [provenance](UPSTREAM.md)) reported three findings that shape it:
 
@@ -18,8 +18,8 @@ The evaluation behind this workflow (see [provenance](UPSTREAM.md)) reported thr
 - Do not invent personality, emotion, anecdotes, uncertainty, or factual errors.
 - Plain spoken voice from the register defaults below is allowed. Bolted-on personality is not: "Honestly,", "Quick heads-up", "Not bad.", or a joke or rhetorical question the writer didn't make. Readers spot an inserted casual pass as fast as AI polish.
 - No fake noise: no planted typos, forced slang, lowercase costume, "lol", or invented "I remember when" stories. Human texture comes from specifics and decisions.
-- Preserve factual claims, dates, names, and qualifications exactly. Do not invent a source, actor, purpose, number, or event to make a vague sentence more specific. If an actor, source, or detail is missing, retrieve it when authorized and necessary, ask, or leave the uncertainty explicit.
-- Protected text keeps its wording and is never recomposed: exact quotations, titles, proper names, code, public contracts, required schemas, imported agent instructions, and examples discussing a phrase.
+- Preserve the values and qualifications of retained claims. Do not invent a source, actor, purpose, number, or event to make a vague sentence more specific. If a necessary actor, source, or detail is missing, retrieve it when authorized, ask, or state the relevant uncertainty.
+- Protected text keeps its required wording: actual literals, exact quotations, identifiers, schema and protocol values, and UI strings quoted to match the product. Ordinary headings and UI copy are editable when in scope. Imported agent instructions keep their required wording, examples, exceptions, and normative force.
 
 Load with `writing-for-humans`. That skill owns drafting, the finish pass, the non-invention rule, and punctuation policy. `stop-slop` owns staging and cadence tells. A full rewrite (the rewrite, interview, and notes modes below) also loads `stop-slop`, whose crafted-line budget and sentence-length band final checks 3 and 4 apply; load it before step 5. A draft audit loads it only when staging or cadence tells appear. This skill owns the rewrite workflow for existing prose and the tells in [patterns](references/patterns.md): vocabulary, inflation and generic claims, register, attribution, hedge placement, doing the reader's work, formatting and labels, and chat residue and placeholders.
 
@@ -42,7 +42,7 @@ When the missing facts may already exist in authorized sources (the repository, 
 - Make it cheap: each question answerable in under a minute, and any can be skipped.
 - Ask about tone, audience, or format only when you cannot infer it.
 
-A delegated child that cannot ask returns the numbered questions, each quoting the line it would replace, to its parent in its terminal report, and does not invent answers. When nobody can answer, write the plainer version or cut, and name the gaps.
+A delegated child that cannot ask returns the numbered questions, each quoting the line it would replace, to its parent in its terminal report, and does not invent answers. When nobody can answer, write the plainer version or cut, and name gaps that matter to the reader's job.
 
 Compose from their words:
 
@@ -57,16 +57,16 @@ Notes already carry the writer's reasoning: their claims, the order they make th
 - **Their structure is the skeleton.** If they argue A because B, so C, the piece goes A, B, C.
 - **Their sentences stay whole where possible.** Edit only for clarity, grammar, and length.
 - **An AI draft, if there is one, is a checklist.** It may add only a point the notes confirm, placed where it fits their argument. Borrow none of its skeleton, transitions, or framing.
-- **The notes are the source for the fact audit.** Every fact, commitment, and caveat in them survives. A fact found only in the AI draft is optional: keep it where it supports the writer's argument and is accurate. Add nothing that is in neither.
+- **The notes are the source for the fact audit.** Select supported, relevant facts and commitments; apply the boundary rule to caveats. A fact found only in the AI draft needs independent support. Add nothing that is in neither.
 - **Ask only what the notes leave open.** If they cover the point, the example, and what the reader should do, write without asking.
 
 ## Rewrite
 
 1. **Read for the job.** Genre, reader, and what the reader must know or do afterwards. Decide where the point goes and commit: answer-first for replies, emails, chat, and announcements; evidence-first for explanations and arguments. A text that states its point in line 1 and builds to it again at the end has done both; cut one.
-2. **List the facts with their certainty.** Every number, name, date, claim, commitment, caveat, link, and call to action, with the qualifier attached to each ("could", "typically", "about", "helped", "the remaining piece"). This list survives intact.
-3. **Write it fresh when the draft is AI-composed.** Put the draft aside and write from the step 2 list the way this writer would write it for this reader: their speaker, their register, plain spoken sentences in normal word order. A patched AI draft still reads like one. Reuse the draft's exact words for names, the reader's own terms, and the wording of commitments and conditions. Every claim appears at the same strength, no stronger and no weaker. When the text is the writer's own prose, keep their sentences and edit in place, as the notes route does. Protected text is never recomposed.
-4. **Keep the claim, drop the formula.** A stock line (a generic moral, a value pitch, a gratitude formula, a vague benefit) still carries something the writer meant. Say that thing once, plainly, in their voice: "Those visits helped us get here" becomes "We couldn't have got here without your visits." Cut a stock line only when it repeats something already said.
-5. **Cut and fix, strongest first.** Delete filler, restatement, and hype, then fix tells in this order: staging, doing the reader's work, inflation, hedges, rhythm, punctuation and formatting, chat residue. Staging and rhythm tells are diagnosed with `stop-slop`, which a full rewrite has loaded. The rest are in [patterns](references/patterns.md). Cutting must not leave the text clipped: an unpadded draft comes out about as long as it went in. Voice, concrete detail, connective words, and the warmth a genre needs are not padding. Let sentences breathe: use the small words people use when they talk (so, and, but, just, then), and keep two ideas in two clauses rather than one clipped one.
+2. **Select facts with their certainty.** Identify supported content relevant to the reader's job, including commitments and attached qualifiers ("could", "typically", "about"). Apply the boundary rule to standalone caveats and gaps.
+3. **Write it fresh when the draft is AI-composed.** Put the draft aside and write from the selected content the way this writer would write it for this reader: their speaker, their register, plain spoken sentences in normal word order. Reuse names, the reader's terms, and required wording. Retained claims keep their strength. When the text is the writer's own prose, edit in place as the notes route does, subject to the requested cleanup and any explicit light-edit or faithful-copy contract. Protected text is never recomposed.
+4. **Keep the point, drop the formula.** State a relevant supported point once, plainly, in the writer's voice. Cut a stock line or paragraph when it is unsupported or irrelevant as well as when it repeats.
+5. **Cut and fix, strongest first.** Delete filler, restatement, and hype, then fix tells in this order: staging, doing the reader's work, inflation, hedges, rhythm, punctuation and formatting, chat residue. Staging and rhythm tells are diagnosed with `stop-slop`, which a full rewrite has loaded. The rest are in [patterns](references/patterns.md). Cutting must not leave the selected content clipped. Voice, concrete detail, connective words, and the warmth a genre needs are not padding. Let sentences breathe: use the small words people use when they talk (so, and, but, just, then), and keep two ideas in two clauses rather than one clipped one.
 6. **Run the final checks**, including the fact audit against the original.
 
 ### What you must not change
@@ -113,12 +113,12 @@ Calibrate before flagging. A clean human writer hits several patterns without a 
 
 ## Final checks
 
-1. **Fact audit.** Recomposing is where facts slip, so check sentence by sentence against the original, or against the writer's notes on the notes route. Every number, name, date, price, quote, condition, commitment, benefit, and caveat is present with the same value and certainty, and the speaker is unchanged. Watch the strength words: "can help" must not become "will", "might" must not become "would", "little" must not become "no", a proposal must not become a promise, and nothing gains "only", "every", "always", or "guaranteed". Leave implied what the draft left implied. Then check the other direction: the rewrite adds no fact, example, anecdote, reason, benefit, opinion, or detail the writer did not give. Plain voice is allowed; new content is not.
+1. **Fact audit.** Check the selected content against evidence, requirements, and the writer's stance, including whether omissions pass the reader-consequence test. Retained numbers, actors, conditions, commitments, and qualifiers keep their value and strength: "can help" must not become "will", a proposal must not become a promise, and no claim gains unsupported "only", "every", "always", or "guaranteed". Then check the other direction: add no unsupported fact, example, reason, benefit, or opinion.
 2. **Mechanical sweep.** Search the final text for em dashes, spaced en dashes, semicolons, and the word lists in [patterns](references/patterns.md) and `stop-slop`; eyes miss them. When code execution is available, run `python3 <base directory>/check.py -` with the text on stdin, or `python3 <base directory>/check.py <file>`, where the base directory is this skill's. Stdin writes no temporary file, so prefer it in read-only roles. Without code execution, search manually. A hit is a prompt to look, not a verdict.
 3. **Crafted lines:** one or none. `stop-slop` owns the budget.
 4. **Rhythm:** the sentence-length band and the openers, as `stop-slop` describes.
 5. **Read it aloud as the writer.** Anything they would not say gets plainer.
-6. **Length.** Shorter than a padded input; about the same as an unpadded one. Never cut a fact, the voice, or the warmth the genre needs to get there.
+6. **Length.** Let the selected content determine length. Preserve the voice and warmth the genre needs; cutting an irrelevant claim or paragraph may make the result much shorter.
 7. **Shorter option.** Leave the final text as it is. Cover each paragraph in turn and read the rest: would the reader miss a fact, a commitment, a decision, or the writer's point? A paragraph that fails is a cut candidate. Common candidates: an opening that states the point in general terms before the piece shows it; lines any similar piece would have (a general moral, a "more to do" close, a second thank-you); a part that says almost the same as another (keep the stronger); a second argument that could stand on its own. Never offer to cut the proof or the stakes: the examples, numbers, commitments, or a disclosure that makes the reader trust the piece. Count the candidates' words rather than guessing. When they add up to about a quarter of the text or more, offer the shorter option; a third or half is fine when those parts don't earn their place. Otherwise the answer is "none, it's already tight." Skip this check for pieces under about 100 words, for ordinary technical answers, reports, docs, plans, and status updates, and in a draft audit.
 
 ## What to return

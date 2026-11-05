@@ -1,14 +1,14 @@
 # Before and after
 
-These are constructed examples. A rewrite preserves the input's facts, scope, and speaker.
+These are constructed examples. A rewrite preserves the scope and speaker of supported, relevant claims.
 
 ## Throat-clearing and binary contrast
 
 **Before:** "Here's the thing: building products is hard. Not because the technology is complex. Because people are complex. Let that sink in."
 
-**After:** "Building products is hard because people are complex. Technology complexity is not the cause in this account."
+**After:** "Building products is hard because people are complex."
 
-The explanation and its denial remain. The staged reversal is gone.
+The explanation states the supplied reason; the denial has no stated reader consequence.
 
 ## Filler and reassurance
 

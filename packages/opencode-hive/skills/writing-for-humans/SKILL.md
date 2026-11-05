@@ -16,7 +16,7 @@ This is the generative discipline for software and product writing. Apply it whi
 3. **Keep subjects, verbs, and relationships explicit.** Name the actor when the actor matters. Say what depends on what, what runs when, and who owns which responsibility. Prefer verbs for actions.
 4. **Give enough context, then the point.** A reader who arrives mid-document should still understand why a statement matters. If an explanation would not land without a frame, supply a short one.
 5. **Use structure for navigation.** Headings, lists, and tables help when they match the information. Do not convert continuous reasoning into bullets, tiny paragraphs, or a template just to look organized.
-6. **Keep meaning intact.** Preserve hedges, scope, trade-offs, constraints, and causal explanation. Do not make a claim sound more certain because a shorter sentence would. Do not collapse distinct ideas into one slogan.
+6. **Keep meaning intact.** Preserve necessary qualifiers, scope, trade-offs, constraints, and causal explanation in relevant claims. Do not make a claim sound more certain because a shorter sentence would. Do not collapse distinct ideas into one slogan.
 7. **Match the job of the document.** A how-to should help a competent person do a job. An explanation should help someone understand why. Reference should state facts. Requirements should be testable statements of need, not designs, observations, or product principles.
 
 ## Cadence
@@ -35,21 +35,23 @@ Before delivering, run one loop: draft, audit, fix.
 2. Audit with three questions. What makes this read as machine-written? Is each thing introduced by what it is or does, with every remaining exclusion meeting the boundaries test? Does it state any fact, name, number, date, quote, or citation not in the source or conversation?
 3. Fix the hits, then check again. Do not narrate the audit unless asked.
 
-For technical and product prose, check the details relevant to the reader: who or what acts, the action and its object or version, conditions and prerequisites, both sides of a comparison, and what a result establishes. Make relationships explicit before compressing them. Preserve or resolve missing facts; do not invent an actor, condition, benefit, or authority to fill a gap.
+For technical and product prose, check the details relevant to the reader: who or what acts, the action and its object or version, conditions and prerequisites, both sides of a comparison, and what a result establishes. Make relationships explicit before compressing them. Resolve or state necessary missing facts; do not invent an actor, condition, benefit, or authority to fill a gap.
 
-A rewrite adds nothing that is not in the source or supplied by the user. Specificity comes from the source, not from the rewrite. If a sentence needs real detail to work, ask for it when necessary or write the plain version without it. Preserve all semantically distinct list items; rhythm is not a reason to add or delete one.
+A rewrite adds nothing that is not in the source or supplied by the user. Specificity comes from the source, not from the rewrite. If a sentence needs real detail to work, ask for it when necessary or write the plain version without it. Preserve relevant semantically distinct list items; rhythm alone is not a reason to add or delete one.
 
 Calibrate before cutting. Look for clusters of tells rather than single instances; one "however" or one short emphatic sentence proves nothing. Preserve specific detail, mixed feelings, unresolved tension, dated references, genuine asides, and varied sentence length. A user-supplied writing sample outranks these defaults.
 
 Em dash policy: limit them, and pick the substitute by context: a colon for a label then its description, a period for two complete thoughts, parentheses for a real aside, a comma for a light pause. Never reroute a removed dash into a semicolon or a colon reveal. In a rewrite of AI-composed prose, replace em dashes and spaced en dashes unless the writer's own writing uses them. Elsewhere a deliberate aside may keep one, and a user-supplied sample sets the frequency. This is not an absolute ban.
 
-Exact quotations, public contracts, code, titles, required output formats, and imported agent instructions retain their meaning and required wording. A historical claim labelled Inferred stays inferred after a prose edit.
+Exact quotations, actual literals, identifiers, schema and protocol values, and UI strings quoted to match the product retain their required wording. Ordinary headings and UI copy are editable when copy is in scope; preserve their meaning and commitments. Imported agent instructions keep their required wording, examples, exceptions, and normative force. A retained historical claim labelled Inferred stays inferred after a prose edit.
 
 ## Boundaries and alternatives
 
-Describe each thing by what it is, does, needs, or produces. Stating what a thing covers preserves its scope. When the source pairs a boundary with the affirmative fact behind it, such as which surface provides an excluded capability, state that fact. Mention an exclusion only when this reader would still expect the excluded behavior after reading the affirmative description, and then state it once, where the reader would act on that expectation. When the source supplies only the exclusion, keep it as written.
+Describe each thing by what it is, does, accepts, needs, or produces. A supported affirmative description may be sufficient without claiming exhaustive scope. For each standalone exclusion, identify the concrete consequence for this reader's action, decision, interpretation, or explicit question, grounded in the request, visible context, or actual contract, state, or behavior. Keep it where it matters; a hypothetical misunderstanding, prior presence, or extra explicitness alone is insufficient. If the source gives only a negative, keep it when necessary, omit it when irrelevant, or retrieve a supported positive when needed; never invent its converse.
 
-Some facts are negative by nature and keep their form: prohibitions and guards in instructions, MUST NOT requirements, contract non-guarantees, out-of-scope statements in requirements and plans, evidence gaps, and hypotheses not yet ruled out. A safety prohibition stays at each step where it applies. Collect open decisions and missing coverage, such as workflows without mockups, in one place, with an owner or date only when the source names one.
+Attached qualifiers stay when evidence requires their uncertainty, scope, or commitment. Preserve binding normative guards and their logical force, including safety prohibitions at each applicable step. Apply the same consequence test to non-guarantees, open decisions, missing coverage, evidence gaps, and unruled hypotheses. An unknown that bounds a retained expectation or live operational decision can matter; deleting an unsupported savings claim alone does not require narrating the missing evidence. Unsupported or irrelevant claims and whole paragraphs can go. When naming open decisions or missing coverage, give an owner or date only if the source does.
+
+Evidence, requirements, and human stance constrain meaning; a draft is candidate material even when human-authored, and repeated agent wording has no authority. Respect explicit light-edit, faithful-copy, and voice contracts. An affirmative rewrite must not broaden each, all, only, actors, guarantees, or verification level.
 
 Apply the same test to rejected alternatives: name a discarded option only when this reader would otherwise reopen it or misread the current state.
 
@@ -83,7 +85,7 @@ For requested working product-alignment notes or structured brain dumps, start w
 
 **Requirements.** Write one need per statement when the text is actually a requirement. Make it verifiable. Do not hide a design choice inside a requirement. Use MUST, SHOULD, and MAY only when the statement is normative; do not sprinkle them through ordinary prose.
 
-**Reviews.** Lead with the finding and its source location. Separate defects from preferences. The reviewer role owns its finding bar and verdict; writing guidance does not change either.
+**Reviews.** Lead with the finding and its source location. Separate defects from preferences. For proposed additions, restorations, or deletions, identify the concrete semantic or reader consequence; for additions or restorations, also identify the missing information. Sufficient supported affirmative scope clears a deletion lead; prior presence or implied-but-not-explicit alone is insufficient for restoration. Requested cleanup is an acceptance criterion under the reviewer's unchanged role bar and verdict.
 
 ## Examples and ownership
 

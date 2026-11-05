@@ -32,3 +32,7 @@ Deliberate policy changes:
 ## Draft audit and shorter option (2026-10-17)
 
 An oc-arkive change, not present in either source, adds a focused draft-audit mode for an agent's own draft before delivery, makes the full rewrite's dependency on `stop-slop` explicit (final checks 3 and 4 use its budget and band), and limits the shorter option to a writer's own long-form piece. Ordinary technical answers, reports, docs, plans, and status updates get none unless asked. The upstream shorter-option check is otherwise unchanged.
+
+## Reader-impact correction
+
+The upstream all-facts and all-caveats audit is adapted to select supported, relevant content before rewriting and audit that selection. The `writing-for-humans` boundary rule governs standalone exclusions and evidence gaps; retained claims keep their qualifications, imported instructions keep required wording, examples, exceptions, and force, and explicit faithful-copy and light-edit contracts remain binding. Interview and voice workflows stay in place.
