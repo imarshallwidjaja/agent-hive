@@ -79,7 +79,7 @@
         },
         {
           "id": "hive.repositories",
-          "name": "Tracked Repositories"
+          "name": "Repositories & Work"
         },
         {
           "id": "hive.worklogs",
@@ -100,7 +100,7 @@
       },
       {
         "view": "hive.repositories",
-        "contents": "No Hive workspace found.\n\nOpen a Hive workspace to view tracked repositories.\n\n[Refresh](command:hive.refresh)",
+        "contents": "No Hive workspace found.\n\nOpen a Hive workspace to view its repositories, retained checkouts, and workers.\n\n[Refresh](command:hive.refresh)",
         "when": "!hive.hasHiveRoot"
       },
       {
@@ -199,6 +199,28 @@
         "command": "hive.worklog.loadMore",
         "title": "Load More Worklog Entries",
         "icon": "$(fold-down)"
+      },
+      {
+        "command": "hive.repositories.openInNewWindow",
+        "title": "Open in New Window",
+        "icon": "$(empty-window)"
+      },
+      {
+        "command": "hive.repositories.openTerminal",
+        "title": "Open in Terminal",
+        "icon": "$(terminal)"
+      },
+      {
+        "command": "hive.repositories.copyPath",
+        "title": "Copy Path"
+      },
+      {
+        "command": "hive.repositories.copyBranch",
+        "title": "Copy Branch Name"
+      },
+      {
+        "command": "hive.repositories.copyCommit",
+        "title": "Copy Commit SHA"
       }
     ],
     "menus": {
@@ -244,11 +266,11 @@
         },
         {
           "command": "hive.openFile",
-          "when": "viewItem =~ /^background-job-/ || viewItem == tracked-repository || viewItem == background-jobs-state || viewItem == tracked-repositories-state"
+          "when": "viewItem =~ /^background-job-/ || viewItem == background-jobs-state"
         },
         {
           "command": "hive.copyToClipboard",
-          "when": "viewItem =~ /^background-job-/ || viewItem == tracked-repository"
+          "when": "viewItem =~ /^background-job-/"
         },
         {
           "command": "hive.feature.archive",
@@ -289,6 +311,41 @@
           "command": "hive.copyToClipboard",
           "when": "viewItem =~ /^worklog-(log|problem)/ || viewItem == feature-worklog",
           "group": "worklog@4"
+        },
+        {
+          "command": "hive.repositories.openInNewWindow",
+          "when": "view == hive.repositories && viewItem =~ /\\bopen\\b/",
+          "group": "inline@1"
+        },
+        {
+          "command": "hive.repositories.openTerminal",
+          "when": "view == hive.repositories && viewItem =~ /\\bopen\\b/",
+          "group": "inline@2"
+        },
+        {
+          "command": "hive.repositories.openInNewWindow",
+          "when": "view == hive.repositories && viewItem =~ /\\bopen\\b/",
+          "group": "navigation@1"
+        },
+        {
+          "command": "hive.repositories.openTerminal",
+          "when": "view == hive.repositories && viewItem =~ /\\bopen\\b/",
+          "group": "navigation@2"
+        },
+        {
+          "command": "hive.repositories.copyPath",
+          "when": "view == hive.repositories && viewItem =~ /\\bpath\\b/",
+          "group": "copy@1"
+        },
+        {
+          "command": "hive.repositories.copyBranch",
+          "when": "view == hive.repositories && viewItem =~ /\\bref\\b/",
+          "group": "copy@2"
+        },
+        {
+          "command": "hive.repositories.copyCommit",
+          "when": "view == hive.repositories && viewItem =~ /\\bcommit\\b/",
+          "group": "copy@3"
         }
       ],
       "commandPalette": [
@@ -331,6 +388,26 @@
         {
           "command": "hive.worklog.loadMore",
           "when": "resourceScheme == hive-worklog"
+        },
+        {
+          "command": "hive.repositories.openInNewWindow",
+          "when": "false"
+        },
+        {
+          "command": "hive.repositories.openTerminal",
+          "when": "false"
+        },
+        {
+          "command": "hive.repositories.copyPath",
+          "when": "false"
+        },
+        {
+          "command": "hive.repositories.copyBranch",
+          "when": "false"
+        },
+        {
+          "command": "hive.repositories.copyCommit",
+          "when": "false"
         }
       ],
       "editor/title": [

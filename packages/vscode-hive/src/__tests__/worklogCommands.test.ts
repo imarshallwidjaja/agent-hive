@@ -44,7 +44,7 @@ describe('worklog commands', () => {
 
   it('opens, selects, pins, and follows editor-title URIs without writing under .hive', async () => {
     const before = fs.readFileSync(path.join(root, '.hive', 'features', '01_checkout', 'worklog.json'), 'utf8');
-    expect(ui.treeViews.map(view => [view.id, view.description])).toEqual([['hive.worklogs', path.basename(root)]]);
+    expect(ui.treeViews.map(view => [view.id, view.description])).toEqual([['hive.worklogs', path.basename(root)], ['hive.repositories', undefined]]);
 
     await run('hive.worklog.open', 'feature:checkout');
     expect(shownQuery(0).get('key')).toBe('feature:checkout');
@@ -73,6 +73,19 @@ describe('worklog commands', () => {
     expect((state.get('hive.worklogs.viewer') as any).projects[root].pins).toEqual([]);
     expect(fs.readFileSync(path.join(root, '.hive', 'features', '01_checkout', 'worklog.json'), 'utf8')).toBe(before);
     expect(fs.existsSync(path.join(root, '.hive', 'sessions.json'))).toBe(false);
+  });
+
+  it('reads the project that placed a worker or retained checkout, not a .hive nested inside the checkout', async () => {
+    for (const checkout of [path.join(root, '.hive', '.worktrees', 'adhoc', 'run'), path.join(root, '.hive', 'checkouts', 'root', 'release')]) {
+      fs.mkdirSync(path.join(checkout, '.hive'), { recursive: true });
+      resetVscodeTestState();
+      ui.workspaceFolders = [{ uri: { fsPath: checkout } }];
+      activate({ subscriptions: [], workspaceState: { get: () => undefined, update: async () => {} } } as never);
+
+      expect(ui.treeViews.find(view => view.id === 'hive.worklogs')?.description, checkout).toBe(path.basename(root));
+      await run('hive.worklog.open', 'feature:checkout');
+      expect(shownQuery(0).get('project'), checkout).toBe(root);
+    }
   });
 
   it('ignores Load More for a worklog document from another project', async () => {

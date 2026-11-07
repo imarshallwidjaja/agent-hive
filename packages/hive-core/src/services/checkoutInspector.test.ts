@@ -58,7 +58,8 @@ describe('CheckoutInspector', () => {
 
     expect(projection.repositories).toHaveLength(1);
     const [root] = projection.repositories;
-    expect(root).toMatchObject({ id: 'root', path: repoPath, implicit: true });
+    expect(root).toMatchObject({ id: 'root', path: repoPath, implicit: true, head: { path: repoPath, ref: 'refs/heads/main' } });
+    expect(root).not.toHaveProperty('headError');
     expect(root!.checkouts.map((checkout) => checkout.id)).toEqual(['root/broken', 'root/feature', 'root/main']);
     const byId = new Map(root!.checkouts.map((checkout) => [checkout.id, checkout]));
     expect(byId.get('root/broken')?.error).toContain('Invalid JSON');
@@ -95,6 +96,35 @@ describe('CheckoutInspector', () => {
     const planted = (await inspector.listWorkers()).workers.find((worker) => worker.runId === 'legacy');
     expect(planted?.error).toContain('path contains a symlink');
     expect(JSON.stringify(planted)).not.toContain('do-not-read');
+
+    // A missing checkout keeps its recorded readiness, unconfirmed because HEAD cannot be read.
+    fs.rmSync(feature.path, { recursive: true, force: true });
+    expect(await inspector.inspectCheckout('root/feature')).toMatchObject({
+      head: null,
+      error: expect.stringContaining('missing'),
+      readiness: { state: 'ready', waitingFor: 'review', headMoved: null },
+    });
+  });
+
+  it('reads a repository configured at a subdirectory from the root of its Git checkout', async () => {
+    const repoPath = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hive-checkout-inspector-subdir-')));
+    tempDirs.push(repoPath);
+    await simpleGit().raw(['init', '-b', 'main', repoPath]);
+    const git = simpleGit(repoPath);
+    await git.raw(['config', 'user.email', 'test@example.com']);
+    await git.raw(['config', 'user.name', 'Test User']);
+    fs.mkdirSync(path.join(repoPath, 'pkg'));
+    fs.writeFileSync(path.join(repoPath, 'pkg', 'index.ts'), 'export {};\n');
+    fs.writeFileSync(path.join(repoPath, '.gitignore'), '.hive/\n');
+    await git.add(['.gitignore', 'pkg/index.ts']);
+    await git.commit('chore: base commit\n\nCreate the fixture history.');
+    const hiveDir = path.join(repoPath, '.hive');
+    const repositoryResolver = () => [{ id: 'app', path: path.join(repoPath, 'pkg'), root: repoPath }];
+    await new RetainedCheckoutService({ baseDir: repoPath, hiveDir, repositoryResolver }).register({ id: 'app/main' });
+
+    const [app] = (await new CheckoutInspector({ baseDir: repoPath, hiveDir, repositoryResolver }).inspectProject()).repositories;
+    expect(app).toMatchObject({ id: 'app', path: path.join(repoPath, 'pkg'), root: repoPath, head: { path: repoPath, ref: 'refs/heads/main' } });
+    expect(app!.checkouts).toEqual([expect.objectContaining({ id: 'app/main', record: expect.objectContaining({ path: repoPath }), onIntendedRef: true })]);
   });
 
   it('lists a targeted worker whose worktree is gone while its binding and branch remain, and flags a lost binding', async () => {
@@ -143,5 +173,10 @@ describe('CheckoutInspector', () => {
     expect(byRun.get('legacy')).toMatchObject({ path: legacy.path, branch: 'hive/adhoc/legacy', repoId: 'root' });
     expect(byRun.get('legacy')).not.toHaveProperty('error');
     expect(workers).toHaveLength(3);
+
+    // A configured repository whose checkout cannot be read keeps its node with the reason.
+    const missing = path.join(repoPath, 'missing');
+    const unreadable = await new CheckoutInspector({ baseDir: repoPath, hiveDir, repositoryResolver: () => [{ id: 'gone', path: missing, root: missing }] }).inspectProject();
+    expect(unreadable.repositories).toEqual([expect.objectContaining({ id: 'gone', head: null, headError: expect.any(String) })]);
   });
 });

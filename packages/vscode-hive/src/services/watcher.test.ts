@@ -49,4 +49,26 @@ describe('HiveWatcher', () => {
     ui.watchers[0].change({ fsPath: path.join(root, '.hive', 'features', '01_feature', 'plan.md') });
     expect(changes).toEqual(['refresh']);
   });
+
+  it('refreshes on placement and sidecar changes but not on files inside worker or retained checkouts', () => {
+    const root = '/workspace';
+    const hive = path.join(root, '.hive');
+    const changes: string[] = [];
+    new HiveWatcher(root, () => changes.push('refresh'));
+    for (const file of [
+      path.join(hive, '.worktrees', 'checkout', '01-api', 'src', 'index.ts'),
+      path.join(hive, '.worktrees', 'checkout', '01-api', 'repos', 'api', '.git'),
+      path.join(hive, '.worktrees', 'adhoc', 'run', 'node_modules', 'x', 'index.js'),
+      path.join(hive, 'checkouts', 'root', 'feature', 'README.md'),
+    ]) ui.watchers[0].change({ fsPath: file });
+    expect(changes).toEqual([]);
+    for (const file of [
+      path.join(hive, '.worktrees', 'checkout', '01-api'),
+      path.join(hive, '.worktrees', 'checkout', '01-api', 'workspace.json'),
+      path.join(hive, '.worktrees', 'adhoc', 'run.json'),
+      path.join(hive, 'checkouts', 'root', 'feature'),
+      path.join(hive, 'checkouts', 'root', 'feature.json'),
+    ]) ui.watchers[0].create({ fsPath: file });
+    expect(changes).toHaveLength(5);
+  });
 });

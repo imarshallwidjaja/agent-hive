@@ -1,11 +1,13 @@
 import * as vscode from 'vscode'
 import * as fs from 'fs'
 import * as path from 'path'
+import { detectContext } from 'hive-core'
 import { HiveWatcher, Launcher } from './services'
-import { BackgroundJobsProvider, HiveSidebarProvider, PlanCommentController, TrackedRepositoriesProvider } from './providers'
+import { BackgroundJobsProvider, HiveSidebarProvider, PlanCommentController, RepositoryWorkProvider } from './providers'
 
 import { archiveContext, isContextScope } from './providers/contextInspection.js'
 import { archiveBackgroundJobItem } from './providers/backgroundJobsProvider.js'
+import { copyLocation, openInNewWindow, openTerminal } from './providers/repositoryWorkProvider.js'
 import { SessionConstraintsProvider } from './providers/sessionConstraintsProvider.js'
 import { WorklogDocuments } from './providers/worklogDocuments.js'
 import type { WorklogDocumentView } from './providers/worklogDocuments.js'
@@ -15,6 +17,9 @@ import { describeFailure } from './providers/worklogPresentation.js'
 import { reviewTargetForDocument, findReviewCommentsPath } from './reviewRouting.js'
 
 function findHiveRoot(startPath: string): string | null {
+  // A worker or retained checkout that Hive placed may hold a .hive of its own; the project that holds the placement governs.
+  const detected = detectContext(startPath)
+  if (detected.isWorktree) return detected.projectRoot
   let current = startPath
   while (current !== path.dirname(current)) {
     if (fs.existsSync(path.join(current, '.hive'))) {
@@ -28,7 +33,7 @@ function findHiveRoot(startPath: string): string | null {
 class HiveExtension {
   private sidebarProvider: HiveSidebarProvider | null = null
   private backgroundJobsProvider: BackgroundJobsProvider | null = null
-  private trackedRepositoriesProvider: TrackedRepositoriesProvider | null = null
+  private repositoryWorkProvider: RepositoryWorkProvider | null = null
   private sessionConstraintsProvider: SessionConstraintsProvider | null = null
   private worklogsProvider: WorklogsProvider | null = null
   private worklogDocuments: WorklogDocuments | null = null
@@ -61,7 +66,7 @@ class HiveExtension {
 
     this.sidebarProvider = new HiveSidebarProvider(workspaceRoot)
     this.backgroundJobsProvider = new BackgroundJobsProvider(workspaceRoot)
-    this.trackedRepositoriesProvider = new TrackedRepositoriesProvider(workspaceRoot)
+    this.repositoryWorkProvider = new RepositoryWorkProvider(workspaceRoot)
     this.sessionConstraintsProvider = new SessionConstraintsProvider(workspaceRoot)
     this.context.subscriptions.push(
       this.sessionConstraintsProvider,
@@ -86,14 +91,15 @@ class HiveExtension {
 
     vscode.window.registerTreeDataProvider('hive.features', this.sidebarProvider)
     vscode.window.registerTreeDataProvider('hive.backgroundJobs', this.backgroundJobsProvider)
-    vscode.window.registerTreeDataProvider('hive.repositories', this.trackedRepositoriesProvider)
+    const repositoriesView = vscode.window.createTreeView('hive.repositories', { treeDataProvider: this.repositoryWorkProvider })
+    this.context.subscriptions.push(repositoriesView, ...this.repositoryWorkProvider.attach(repositoriesView))
     this.commentController.registerCommands(this.context)
     vscode.commands.executeCommand('setContext', 'hive.hasHiveRoot', true)
 
     this.hiveWatcher = new HiveWatcher(workspaceRoot, () => {
       this.sidebarProvider?.refresh()
       this.backgroundJobsProvider?.refresh()
-      this.trackedRepositoriesProvider?.refresh()
+      this.repositoryWorkProvider?.refresh()
       this.sessionConstraintsProvider?.refresh()
       this.worklogsProvider?.refresh()
       this.worklogDocuments?.refresh()
@@ -142,7 +148,7 @@ class HiveExtension {
         }
         this.sidebarProvider?.refresh()
         this.backgroundJobsProvider?.refresh()
-        this.trackedRepositoriesProvider?.refresh()
+        this.repositoryWorkProvider?.refresh()
         this.sessionConstraintsProvider?.refresh()
         this.worklogsProvider?.refresh()
         this.worklogDocuments?.refresh()
@@ -250,6 +256,12 @@ class HiveExtension {
           this.launcher?.openFile(filePath)
         }
       }),
+
+      vscode.commands.registerCommand('hive.repositories.openInNewWindow', openInNewWindow),
+      vscode.commands.registerCommand('hive.repositories.openTerminal', openTerminal),
+      vscode.commands.registerCommand('hive.repositories.copyPath', (item: unknown) => copyLocation(item, 'path')),
+      vscode.commands.registerCommand('hive.repositories.copyBranch', (item: unknown) => copyLocation(item, 'ref')),
+      vscode.commands.registerCommand('hive.repositories.copyCommit', (item: unknown) => copyLocation(item, 'commit')),
 
       vscode.commands.registerCommand('hive.openBackgroundJobInBoard', (owner: unknown, alias: unknown) => {
         this.launcher?.openBackgroundJobInBoard(owner, alias)

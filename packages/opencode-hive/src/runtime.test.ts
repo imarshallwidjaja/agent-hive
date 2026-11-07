@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, setSystemTime, spyOn } from 'bun:test';
+import { afterEach, describe, expect, it, mock, setSystemTime, spyOn } from 'bun:test';
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -358,6 +358,64 @@ describe('coordinated runtime hard cut', () => {
     // A child the runtime reports for a call Hive did not capture is never bound.
     await loaded.event!({ event: { type: 'message.part.updated', properties: { part: { type: 'tool', tool: 'task', sessionID: 'parent', callID: 'call-unseen', metadata: { sessionId: 'child-unseen' }, state: { input: { prompt: `Hive task: ${folder}` } } } } } } as any);
     expect(new SessionService(root).getGlobal('child-unseen')).toBeUndefined();
+  });
+
+  it('shows each dispatched child in the VS Code Repositories & Work view under the worker its own marker names', async () => {
+    const { root, sessions, hooks } = createRuntime();
+    git(root, ['init', '-b', 'main']);
+    git(root, ['config', 'user.email', 'test@example.com']);
+    git(root, ['config', 'user.name', 'Test']);
+    fs.writeFileSync(path.join(root, '.gitignore'), '.hive/\n');
+    git(root, ['add', '.']);
+    git(root, ['commit', '-m', 'test: base']);
+    const loaded = await hooks;
+    const parent = context('parent');
+    await loaded.tool!.hive_feature_create.execute({ name: 'feature-a' }, parent);
+    await loaded.tool!.hive_feature_select.execute({ feature: 'feature-a' }, parent);
+    const folder = await loaded.tool!.hive_task_create.execute({ name: 'build' }, parent);
+    // The worker is placed under the indexed directory name while the route, and so the child's record, names the
+    // logical one: the view must still join them.
+    await loaded.tool!.hive_worktree_create.execute({ feature: '01_feature-a', task: folder }, parent);
+    await loaded.tool!.hive_adhoc_worktree_create.execute({ runId: 'run-1' }, parent);
+    const dispatch = async (callID: string, child: string, prompt: string, background = false) => {
+      const output = { args: { subagent_type: 'forager-worker', prompt, background } };
+      await loaded['tool.execute.before']!({ tool: 'task', sessionID: 'parent', callID } as any, output);
+      sessions.set(child, { id: child, parentID: 'parent' });
+      await loaded['tool.execute.after']!({ tool: 'task', sessionID: 'parent', callID, args: output.args } as any, { title: 'task', output: `task_id: ${child}`, metadata: { sessionId: child } } as any);
+    };
+    const previousBackground = process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
+    process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
+    try {
+      await dispatch('call-task', 'child-task', `Hive task: ${folder}\nBuild it.`);
+      await dispatch('call-run', 'child-run', 'Hive run: run-1', true);
+      await dispatch('call-none', 'child-none', 'Continue.', true);
+    } finally {
+      if (previousBackground === undefined) delete process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
+      else process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = previousBackground;
+    }
+    const board = createHiveServices({ projectRoot: root, nativeObservationOwner: 'opencode-v1' }).backgroundJobService;
+    const runJob = board.listScoped({ projectRoot: root }).find((job) => job.callId === 'call-run')!;
+
+    // The view reads the files the plugin wrote; it shares no state with the runtime above.
+    const { vscodeTestDouble } = await import('../../vscode-hive/src/test/vscodeTestDouble.ts');
+    mock.module('vscode', () => vscodeTestDouble);
+    const { RepositoryWorkProvider } = await import('../../vscode-hive/src/providers/repositoryWorkProvider.ts');
+    const provider = new RepositoryWorkProvider(root);
+    const activity = new Map<string, string[]>();
+    const walk = async (element?: any): Promise<void> => {
+      for (const row of await provider.getChildren(element)) {
+        if (row.id.startsWith('worker:')) activity.set(String(row.label), (await provider.getChildren(row)).map((child: any) => String(child.label)));
+        else if (row.collapsibleState !== 0 && !row.id.endsWith('/other-branches')) await walk(row);
+      }
+    };
+    await walk();
+    expect([...activity.keys()].sort()).toEqual([folder, 'run-1'].sort());
+    expect(activity.get(folder)).toContain('Session child-task');
+    expect(activity.get('run-1')).toEqual(expect.arrayContaining(['Session child-run', `Background job ${runJob.alias}`]));
+    for (const [worker, rows] of activity) {
+      expect(rows.filter((label) => label.startsWith('Session ') || label.startsWith('Background job ')), worker)
+        .toHaveLength(worker === folder ? 1 : 2);
+    }
   });
 
   it('scopes a v1 launch row only to what its own dispatch bound when writing the child binding fails', async () => {

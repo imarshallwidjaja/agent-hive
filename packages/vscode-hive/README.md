@@ -70,8 +70,22 @@ Watches `.hive/` for changes and refreshes automatically.
 ### Background Jobs
 Viewer + limited operator archive tree for the background boards `.hive/background-jobs.json` (OpenCode v1) and `.hive/runtime/opencode-v2/background-jobs.json` (OpenCode v2). It shows scoped background job state written by `oc-arkive`, including runtime state and coordination metadata. Rows from the v2 board are marked `OpenCode v2`, and every row action (open, archive) targets only its own board; an unreadable board is reported without hiding the other. Use the inline **Archive Background Job** action on an archiveable job row to move it to the collapsed Ignored group without cancelling or killing any running process.
 
-### Tracked Repositories
-Viewer-only tree for the optional Hive-managed project-local repository manifest in `.hive/repositories.json`. It shows the project-relative repositories that `oc-arkive` uses for manifest-backed workspaces.
+### Repositories & Work
+
+One tree per configured repository (the project root counts as one when there is no `.hive/repositories.json`). Under each repository:
+
+- **The repository checkout**: its current branch and commit. When it is registered as a retained checkout, the row is named by the registered branch and shows that record's state.
+- **Retained checkouts** from `.hive/checkouts`, labelled by branch. The description gives the recorded readiness and the declared next destination, for example `Ready → develop`, `Waiting → develop`, `Changed since readiness → develop`, or `Retained` when no readiness was recorded, and how many workers are bound to it. A checkout that cannot be read shows `Unavailable`, and one on another branch shows `Off intended branch`, in place of its readiness. Expand a checkout for its bound workers, then the full waiting condition, readiness commit and time, purpose, HEAD, location, and its record file.
+- **Temporary workers** from `.hive/.worktrees`, nested under the retained checkout each was bound to. Workers with no declared target, or a target that is not a retained checkout in that repository, are listed under **Other workers / unresolved**; their destination is not guessed. A worker whose worktree was removed while its branch was kept stays listed. Expand a worker for its branch, location, target, start commit, task spec, latest report, and feature worklog.
+- **Other local branches**, collapsed, lists local branches that no Hive record represents. Branches are read from local refs only when you expand it; nothing is fetched.
+
+Records that cannot be read stay visible: an unreadable checkout record or worker keeps its row with the problem, entries with no configured repository appear under **Not in a configured repository**, and stray files under `.hive` appear under **Unreadable Hive entries**.
+
+Readiness is what a primary agent declared at a commit. It is not a verification result and does not say whether Git can merge the branch; when HEAD has moved past the declared commit the row says `Changed since readiness`. A worker shows session and background job records only when they name its exact task or ad-hoc run, with the host (OpenCode v1 or v2) and the time the record was last updated. These are recorded updates and board observations, not proof that a worker is running. When two placements share a task and the records do not say which one they belong to, the worker shows the activity as ambiguous. If a session or background job file cannot be read, activity shows as unknown.
+
+Git state is read when the view opens, when it becomes visible again, when the window regains focus, on **Hive: Refresh**, and when Hive records under `.hive` change. File changes inside worker and retained checkouts do not trigger a read. The view title shows when Git was last read.
+
+Selecting a row expands it. The inline actions **Open in New Window** and **Open in Terminal** open a checkout's directory; a window opened on a worker or retained checkout reads the Hive project that holds it; the context menu adds **Copy Path**, **Copy Branch Name**, and **Copy Commit SHA**. The view has no merge, rebase, delete, push, or cleanup actions; use `oc-arkive` for those.
 
 ## Usage
 
@@ -86,7 +100,7 @@ Viewer-only tree for the optional Hive-managed project-local repository manifest
 
 - **Document review**: inspect the feature plan and optional overview, with inline comments on both; unresolved plan comments block plan approval
 - **Sidebar visibility**: features, tasks, status, latest reports, and report history in one place
-- **Background visibility**: Background Jobs and Tracked Repositories views read Hive state without agentic control
+- **Background visibility**: Background Jobs and Repositories & Work views read Hive state without agentic control
 - **Worklogs**: read feature and session worklogs offline, pin them, and page through their history
 - **Operator archive**: Use the inline row actions to archive features and background jobs; right-click a context folder or document for **Archive Context**
 - **Inline comments**: discuss changes directly in `plan.md` and `overview.md`
@@ -97,8 +111,8 @@ Viewer-only tree for the optional Hive-managed project-local repository manifest
 | Contributed title | Command ID | Description |
 |-------------------|------------|-------------|
 | Hive: Refresh | `hive.refresh` | Refresh all four views, open worklog documents, and the constraints inspector |
-| Open File | `hive.openFile` | Open a file or repository path from the sidebar |
-| Copy ID | `hive.copyToClipboard` | Copy a background job alias or repository ID from the sidebar |
+| Open File | `hive.openFile` | Open a file or background job record from the sidebar |
+| Copy ID | `hive.copyToClipboard` | Copy a background job alias or worklog key from the sidebar |
 | Done Review | `hive.plan.doneReview` | Copy plan or overview review feedback to the clipboard |
 | Add Comment | `hive.comment.create` | Add an inline comment on a feature plan or overview |
 | Reply | `hive.comment.reply` | Reply to an existing comment |
@@ -116,6 +130,11 @@ Viewer-only tree for the optional Hive-managed project-local repository manifest
 | Pin Worklog | `hive.worklog.pin` | Keep a worklog in the Pinned group for this workspace |
 | Unpin Worklog | `hive.worklog.unpin` | Remove a worklog from the Pinned group |
 | Load More Worklog Entries | `hive.worklog.loadMore` | Show the next page of recent worklogs, history checkpoints, or task rows |
+| Open in New Window | `hive.repositories.openInNewWindow` | Open a repository, retained checkout, worker, or branch checkout in a new VS Code window |
+| Open in Terminal | `hive.repositories.openTerminal` | Start a terminal in a repository, retained checkout, worker, or branch checkout directory |
+| Copy Path | `hive.repositories.copyPath` | Copy the directory of a row in Repositories & Work |
+| Copy Branch Name | `hive.repositories.copyBranch` | Copy the branch name of a row in Repositories & Work |
+| Copy Commit SHA | `hive.repositories.copyCommit` | Copy the full commit SHA of a row in Repositories & Work |
 
 ### Tips
 
@@ -128,7 +147,7 @@ For the supported workflow, install [oc-arkive](https://www.npmjs.com/package/oc
 
 ## Scope: viewer + limited operator archive
 
-This extension is **viewer-first** with limited operator archive actions. It reads `.hive/` artifacts (features, plans, tasks, contexts, comments, worklogs, background jobs, and repository manifests) and surfaces them in the sidebar and review flow. Viewing and review actions include Refresh, Open File, Copy ID, Inspect Session Standing Constraints, Done Review, and inline comments.
+This extension is **viewer-first** with limited operator archive actions. It reads `.hive/` artifacts (features, plans, tasks, contexts, comments, worklogs, background jobs, repository manifests, retained checkout records, and worker placements) and surfaces them in the sidebar and review flow. Viewing and review actions include Refresh, Open File, Copy ID, the Repositories & Work open and copy actions, Inspect Session Standing Constraints, Done Review, and inline comments.
 
 Three explicit **operator archive** actions allow cleaning up stale state:
 - **Archive Context**: selectively archives confirmed durable, evidence, or reserved documents in the selected project or feature scope, using a captured context revision, actual content hashes, a required reason, and a confirmation warning when byte size differs from the listing or the document carries a last-managed-write warning.

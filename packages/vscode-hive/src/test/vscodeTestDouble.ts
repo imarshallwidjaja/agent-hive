@@ -27,6 +27,9 @@ export const vscodeTestState = {
   pickItems: [] as any[],
   warnings: [] as string[],
   commands: new Map<string, (...args: any[]) => unknown>(),
+  executed: [] as Array<{ id: string; args: any[] }>,
+  terminals: [] as any[],
+  windowStateListeners: new Set<(state: { focused: boolean }) => void>(),
   clipboard: [] as string[],
   activeTextEditor: undefined as any,
   workspaceFolders: undefined as any,
@@ -48,6 +51,7 @@ export function resetVscodeTestState(): void {
   vscodeTestState.contentProviders = new Map();
   vscodeTestState.openListeners = new Set();
   vscodeTestState.closeListeners = new Set();
+  vscodeTestState.windowStateListeners = new Set();
 }
 
 function listen<T>(listeners: Set<(value: T) => void>, listener: (value: T) => void) {
@@ -137,9 +141,30 @@ const window = {
     return vscodeTestState.activeTextEditor;
   },
   createTreeView(id: string, options: unknown) {
-    const view = { id, options, description: undefined as string | undefined, dispose() {} };
+    const visibilityListeners = new Set<(event: { visible: boolean }) => void>();
+    const view = {
+      id,
+      options,
+      description: undefined as string | undefined,
+      visible: true,
+      onDidChangeVisibility: (listener: (event: { visible: boolean }) => void) => listen(visibilityListeners, listener),
+      /** Test hook: the editor showing or hiding the view. */
+      setVisible(visible: boolean) {
+        view.visible = visible;
+        for (const listener of [...visibilityListeners]) listener({ visible });
+      },
+      dispose() {},
+    };
     vscodeTestState.treeViews.push(view);
     return view;
+  },
+  onDidChangeWindowState(listener: (state: { focused: boolean }) => void) {
+    return listen(vscodeTestState.windowStateListeners, listener);
+  },
+  createTerminal(options: unknown) {
+    const terminal = { options, shown: false, show() { terminal.shown = true; } };
+    vscodeTestState.terminals.push(terminal);
+    return terminal;
   },
   registerTreeDataProvider() {
     return { dispose() {} };
@@ -253,6 +278,7 @@ const commands = {
     return { dispose: () => vscodeTestState.commands.delete(id) };
   },
   async executeCommand(id: string, ...args: any[]) {
+    vscodeTestState.executed.push({ id, args });
     return vscodeTestState.commands.get(id)?.(...args);
   },
 };

@@ -33,6 +33,7 @@ import {
 import type { TargetBinding } from './workspaceManifest.js';
 import { listTargetedSidecars, TARGETED_BRANCH_NAMESPACE } from './targetedPlacement.js';
 import { assertNoSymlinkComponents, trustedGitCommonDirectory, validateExactWorktreeRegistration } from './worktreeLinkage.js';
+import { readWorktreeTargetIdentity } from './worktreeTarget.js';
 import type { WorktreeTargetIdentity } from './worktreeTarget.js';
 
 export interface CheckoutInspectorConfig {
@@ -77,9 +78,15 @@ export interface CheckoutWorkerView {
 
 export interface CheckoutRepositoryView {
   id: string;
+  /** The configured repository path, which may be a subdirectory of its Git checkout. */
   path: string;
+  /** Root of the Git checkout holding the repository: the path a registered retained checkout names. */
+  root: string;
   /** The implicit `root` repository of a project without a manifest. */
   implicit: boolean;
+  /** Live identity of the Git checkout at `root`; null when it could not be read (see `headError`). */
+  head: WorktreeTargetIdentity | null;
+  headError?: string;
   checkouts: RetainedCheckoutView[];
   workers: CheckoutWorkerView[];
 }
@@ -170,13 +177,16 @@ export class CheckoutInspector {
       ({ repoId, slug } = parseRetainedCheckoutId(id));
       const resolved = await resolveRetainedCheckout(this.context(repositories), id);
       const view: RetainedCheckoutView = { id, repoId, slug, record: resolved.record, head: null, onIntendedRef: null };
-      if (!resolved.present) return { ...view, error: `checkout is missing at ${resolved.record.path}` };
-      try {
-        const { identity, onIntendedRef } = await observeRetainedCheckout(resolved);
-        view.head = identity;
-        view.onIntendedRef = onIntendedRef;
-      } catch (error) {
-        view.error = message(error);
+      if (!resolved.present) {
+        view.error = `checkout is missing at ${resolved.record.path}`;
+      } else {
+        try {
+          const { identity, onIntendedRef } = await observeRetainedCheckout(resolved);
+          view.head = identity;
+          view.onIntendedRef = onIntendedRef;
+        } catch (error) {
+          view.error = message(error);
+        }
       }
       if (resolved.record.readiness) {
         view.readiness = { ...resolved.record.readiness, headMoved: view.head ? view.head.commit !== resolved.record.readiness.commit : null };
@@ -351,7 +361,13 @@ export class CheckoutInspector {
       projection.repositoryError = message(error);
     }
     for (const repository of repositories) {
-      projection.repositories.push({ id: repository.id, path: repository.path, implicit, checkouts: [], workers: [] });
+      const view: CheckoutRepositoryView = { id: repository.id, path: repository.path, root: repository.root, implicit, head: null, checkouts: [], workers: [] };
+      try {
+        view.head = await readWorktreeTargetIdentity(repository.root);
+      } catch (error) {
+        view.headError = message(error);
+      }
+      projection.repositories.push(view);
     }
     const byId = new Map(projection.repositories.map((repository) => [repository.id, repository]));
 
