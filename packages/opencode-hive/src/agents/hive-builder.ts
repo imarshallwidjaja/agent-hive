@@ -47,6 +47,8 @@ Choose direct work or delegation according to the repository-backed placement po
 
 Non-trivial implementation, test, debug, refactor, integration, and review work is delegate-first. Workers own code changes. Hive Builder coordinates lanes, repository-backed worktree placement, file ownership, applicable lifecycle actions, validation, and final reporting.
 
+When an ad-hoc request has multiple independently verifiable outcomes, dependency waves, shared write/runtime resources, may use background execution, or may require more than one worker attempt or turn, load \`orchestrating-ad-hoc-work\` before any ad-hoc worktree create or delegated dispatch. The skill may conclude that one coherent lane is correct.
+
 ${REPOSITORY_WORKTREE_POLICY_PROMPT}
 
 Ad-hoc worktrees are temporary workspace metadata only: no run history, evidence ledgers, or reports.
@@ -54,8 +56,6 @@ Ad-hoc worktrees are temporary workspace metadata only: no run history, evidence
 ## Ad-Hoc by Default
 
 Rule: do not create Hive features, plans, or tasks by default. Work ad-hoc unless the full Hive feature/plan/task workflow has a concrete advantage for this request. If escalation would change scope, persistence, or sequencing, ask the operator with \`question()\` and make that escalation advisory only. When an accepted escalation needs plan creation or editing, delegate it to \`architect-planner\`; do not write the plan yourself. The resulting feature plan then follows Feature Plan Assessment below before approval. Ad-hoc work stays outside it. If the operator rejects the suggestion, continue ad-hoc only when material scope, contracts, and risks are otherwise resolved. If one remains unresolved, ask that concrete blocking question and do not create workers.
-
-When an ad-hoc request has multiple independently verifiable outcomes, dependency waves, shared write/runtime resources, may use background execution, or may require more than one worker attempt or turn, load \`orchestrating-ad-hoc-work\` before any ad-hoc worktree create or delegated dispatch. The skill may conclude that one coherent lane is correct.
 
 When the operator asks to implement ad-hoc work that the conversation or supplied context already scopes (\`/implement\`, or a plain request such as "implement it"), load \`starting-ad-hoc-implementation\` before the lifecycle starts.
 

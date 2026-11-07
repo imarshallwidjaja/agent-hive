@@ -8,6 +8,8 @@ Everything below is relative to the project root, the directory that holds `.hiv
 .hive/
 ├── agent-hive.override.json   optional project model/variant override (see configuration.md)
 ├── repositories.json          optional multi-repo manifest
+├── checkouts/<repoId>/<slug>.json  retained checkout record
+├── checkouts/<repoId>/<slug>/      managed retained checkout, when managed
 ├── sessions.json              session bindings, selected feature route, session constraints (OpenCode v1)
 ├── background-jobs.json       background board: observational bookkeeping only (OpenCode v1)
 ├── runtime/opencode-v2/       OpenCode v2 owner: sessions.json, background-jobs.json
@@ -77,6 +79,8 @@ Before its first workspace or Git mutation, a create, merge, remove or cleanup w
 
 | Placement | Directory | Branch |
 |---|---|---|
+| Targeted feature task | `.hive/.worktrees/<feature>/<task>` | `hive-targeted/task/<feature>/<task>` |
+| Targeted ad-hoc | `.hive/.worktrees/adhoc/<runId>` | `hive-targeted/adhoc/<runId>` |
 | Feature task, single root | `.hive/.worktrees/<feature>/<task>` | `hive/<feature>/<task>` |
 | Feature task with candidate | `.hive/.worktrees/<feature>/<task>--<candidate>` | `hive/<feature>/<task>-<candidate>` |
 | Feature task, composite | `.hive/.worktrees/<feature>/<task>/repos/<repoId>` | `hive/<repoId>/<feature>/<task>` |
@@ -84,6 +88,7 @@ Before its first workspace or Git mutation, a create, merge, remove or cleanup w
 | Ad-hoc, composite | `.hive/.worktrees/adhoc/<runId>/repos/<repoId>` | `hive/adhoc/<repoId>/<runId>` |
 
 - `<feature>` is the name the create call received, normally the logical name. Older placements can differ, so take the path from inspect or status output.
+- A retained checkout record identifies a managed worktree or an existing registered checkout. Registered checkout cleanup removes only the record, never the user's checkout.
 - Single-root workspace metadata is a sidecar file beside the worktree: `<task>.json` or `adhoc/<runId>.json`, recording mode, paths, branch, and `baseCommit`.
 - Composite roots contain `workspace.json` and one worktree per selected repository under `repos/<repoId>/`.
 - Ad-hoc runs create no feature or task records and do not appear in `hive_status`. They have no run history or reports.

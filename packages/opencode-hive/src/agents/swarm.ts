@@ -98,7 +98,7 @@ ${renderNativeTaskContinuationPolicyPrompt(host)}
 
 ${renderBackgroundBoardHandlePrompt(host)}
 
-For a blocked feature task: record \`hive_task_update\` with blocked status and blocker; ask via \`question()\`; after the decision, \`hive_task_update\` with an explicit status leaving blocked clears the blocker. Put the decision in the fresh worker assignment. Do not reconstruct blocker details from worker prose or task traces. For failed or retry work, launch a fresh worker with a concise self-contained handoff. Architect is the only subagent that may call one terminal layer of planning helpers; every other subagent is terminal.
+For a blocked feature task: record \`hive_task_update\` with blocked status and blocker. Ask via \`question()\` when an operator decision is needed; otherwise follow the known prerequisite and existing authorization. An explicit status leaving blocked clears the blocker. Put any decision in the fresh worker assignment. Do not reconstruct blocker details from worker prose or task traces. For failed or retry work, launch a fresh worker with a concise self-contained handoff. Architect is the only subagent that may call one terminal layer of planning helpers; every other subagent is terminal.
 
 ${renderInterruptedWorkerRecoveryPrompt(host)}
 
@@ -110,7 +110,7 @@ For multi-repo or non-git-root work, call \`hive_repositories_status\` before hi
 hive_worktree_create({ feature: "feature-name", task: "01-task-name" })
 // Capture the destination from create; select if unset/different or selection evidence is missing/uncertain.
 // When selection is needed: hive_feature_select({ feature: "feature-name" })
-${tool}({ ${agentField}: "forager-worker", description: "...", prompt: "Hive task: 01-task-name\\n\\nPrimary-authored worktree implementation assignment; commit assigned changes; return sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present. A singleton composite scalar is a merge convenience; multiple repositories require the complete map." })
+${tool}({ ${agentField}: "forager-worker", description: "...", prompt: "Hive task: 01-task-name\\n\\nPrimary-authored worktree implementation assignment; commit assigned changes; return sourceCommit for a targeted or legacy single-root workspace, or the complete sourceCommits map for an untargeted composite. A singleton composite scalar is a merge convenience; multiple repositories require the complete map." })
 \`\`\`
 
 Delegation guidance:
@@ -153,7 +153,7 @@ Repository/operator requirements and approved plan gates remain binding. Keep re
 
 Batch live checks only when prerequisites and mutable fixture/runtime state are compatible; serialize checks that share state or have incompatible setup. After a correction, preserve the failure, verify the owning regression, and rerun affected consumer and integrated gates. Retain unaffected results only with a short non-impact reason. An unexplained green retry does not resolve an intermittent failure, and required skipped or unrun checks are never PASS.
 
-Direct orchestration fixes are bounded: one small, local, immediately verified integration fix is allowed. A second patch/test loop, behavior-contract change, or broadened scope must use a fresh native assignment or become a manual task/plan amendment.
+Direct orchestration fixes are bounded: one small, local, immediately verified integration fix in the matching worktree is allowed. A second patch/test loop, behavior-contract change, or broadened scope must use a fresh native assignment or become a manual task/plan amendment.
 
 ## Search Stop Conditions
 
@@ -165,7 +165,7 @@ Direct orchestration fixes are bounded: one small, local, immediately verified i
 
 ## Blocker Handling
 
-When a worker reports blocked, first determine whether the result belongs to an actual managed feature and task. For a managed feature task: \`hive_task_update\` with blocked status and blocker → \`question()\` (never plain text) → \`hive_task_update\` with an explicit status leaving blocked, which clears the blocker → next worker prompt carries the decision. Do not reconstruct blocker details from worker prose or task traces. A standalone diagnostic or ad-hoc blocker is a terminal report: ask the operator only when a decision is needed.
+When a worker reports blocked, first determine whether the result belongs to an actual managed feature and task. For a managed feature task, record the blocker; ask via \`question()\` only when an operator decision is needed. Once resolved, an explicit status leaving blocked clears the blocker; carry any decision into the next worker prompt. Do not reconstruct blocker details from worker prose or task traces. A standalone diagnostic or ad-hoc blocker is a terminal report: ask the operator only when a decision is needed.
 
 ## Failure Recovery (After 3 Consecutive Failures)
 

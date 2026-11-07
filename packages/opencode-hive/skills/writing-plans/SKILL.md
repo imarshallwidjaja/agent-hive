@@ -42,6 +42,8 @@ These rules apply to new plans and new amendments. They do not relax an approved
 
 ## Worker-Branch Task Granularity
 
+For new independent tracked-write tasks, choose one repository and an immediate retained-checkout target per task. In the Design Summary record each intended repository, branch, base, and target ID; use an existing retained instance by ID when suitable. Otherwise the primary executor establishes the planned retained instance matching the approved branch and base before dispatching workers. Planning does not create worktrees. Preserve existing approved or unsynced untargeted tasks without automatic plan rewrites.
+
 Numbered tasks are coordination boundaries, not module boundaries. Choose task boundaries before assigning dependencies: identify each outcome, required predecessor outputs or capability decisions, owned responsibility (with exact paths only where siblings meet), and verification. Keep tightly coupled implementation, tests, docs, and generated artifacts together when they share one outcome and owner. Reads, commands, and commits are steps inside a task; do not split by file or target a task count or parallel quota.
 
 When a task bundles independently verifiable capabilities with different prerequisites, consider separating those capabilities from shared lifecycle, packaging, or release integration. Split only when the handoff is concrete and the parallel work justifies the coordination cost. Use established contracts or explicitly owned predecessor outputs; do not invent speculative contracts to create parallel work. Keep the task coherent when separation would require workers to guess or repeatedly coordinate shared edits. A separate integration task must name the behavior it connects, exact shared paths it owns, and integration tests; it must not become a generic dumping ground for unfinished capability work.
@@ -93,6 +95,7 @@ Every plan uses this shape:
 ### 1. [Outcome-oriented title]
 **Depends on**: none
 **Repos**: [manifest repository IDs; MUST be present for manifest-backed tracked writes]
+**Hive target**: [repoId/slug for a new tracked-write task; omit this entire line for nontracked or report-only tasks]
 **Goal**: [Outcome, how it advances the feature goal, and what done looks like]
 **Responsibility**:
 - [Behavior, contracts, or artifacts this task owns]
@@ -113,7 +116,7 @@ Every plan uses this shape:
 - [Integrated acceptance gate record per Verification Planning; match any task-named integrated-only deferral]
 ```
 
-Always include **Depends on**. Use `none` for parallel starts or task numbers for explicit dependencies. For manifest-backed tracked writes, include **Repos** before task sync or worktree creation and prefer one repository per task unless a shared contract or coordinated change makes a multi-repository task coherent. For a plan-backed task with missing or incorrect repository metadata, amend the plan and require primary-owned reviewed approval/sync with `refreshPending: true` before worktree creation. For an incorrectly scoped manual task, require the orchestrator to automatically replace and cancel it only when no work has started and no existing task depends on it; the replacement must mirror incoming `dependsOn` and supply corrected `repos` via `hive_task_create(...)`. If work started or reverse dependents exist, require the orchestrator to retain the incorrect task as blocked with a structured blocker and escalate; do not rewrite dependencies.
+Always include **Depends on**. Use `none` for parallel starts or task numbers for explicit dependencies. Split new multi-repository tracked writes into single-repository tasks. Include **Repos** before task sync or worktree creation, and identify each new tracked-write target with `**Hive target**: <repoId>/<slug>`; ordinary `Target:` prose is not a selector. Omit the entire **Hive target** line for nontracked or report-only tasks; do not leave a blank placeholder. Legacy untargeted plans remain resumable. For a plan-backed task with missing or incorrect repository metadata, amend the plan and require primary-owned reviewed approval/sync with `refreshPending: true` before worktree creation. For an incorrectly scoped manual task, require the orchestrator to automatically replace and cancel it only when no work has started and no existing task depends on it; the replacement must mirror incoming `dependsOn` and supply corrected `repos` via `hive_task_create(...)`. If work started or reverse dependents exist, require the orchestrator to retain the incorrect task as blocked with a structured blocker and escalate; do not rewrite dependencies.
 
 Inside `## Tasks`, every `###` heading must be `### N. Title`. Put shared notes outside `## Tasks`. Patches adding unnumbered `###` headings there are rejected; approval is blocked by an existing orphan or an unreadable layout such as two Tasks sections. `hive_plan_write`, full `hive_plan_read`, and `hive_tasks_sync` report `unownedTaskHeadings` when present. Repair existing orphans with one `replace_section` on `["Tasks"]`, folding amendments into their owning task or moving shared notes outside the section.
 

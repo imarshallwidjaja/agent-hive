@@ -932,8 +932,8 @@ describe('Worker assignment contract', () => {
   });
 
   it('keeps source-pin authority and destination identity in the assignment', () => {
-    expect(WORKER_ASSIGNMENT_PROMPT).toContain('`sourceCommit` for a legacy single-root workspace, the complete `sourceCommits` map when persisted `repos` are present');
-    expect(WORKER_ASSIGNMENT_PROMPT).toContain("the inspected path, full ref, and commit, with the worker's checkpoint duty");
+    expect(WORKER_ASSIGNMENT_PROMPT).toContain('`sourceCommit` for targeted or legacy single-root workspaces, the complete `sourceCommits` map for untargeted composites');
+    expect(WORKER_ASSIGNMENT_PROMPT).toContain("the assigned immediate target and its inspected path, full ref, and commit, with the worker's checkpoint duty");
     expect(WORKER_ASSIGNMENT_PROMPT).toContain('label the retained HEAD observed when none exists');
   });
 
@@ -1703,7 +1703,7 @@ describe('Task report reliability', () => {
       'accepted, rejected, or deferred',
       'A clean review needs no report. Reviewers stay read-only',
       'After integration, or after target verification for a non-Git, report-only, or no-change result, append a closure report',
-      'the actual merge identity or verified target, integrated verification evidence, and remaining limits',
+      'the assigned destination and exact integrated commit or verified target, integrated verification evidence, and remaining limits',
       '`report.md` mirrors the latest successful report write; it is not a separately maintained synthesis',
     ]) {
       expect(TASK_REPORT_OWNERSHIP_PROMPT).toContain(requirement);
@@ -2382,13 +2382,25 @@ describe('Hive (Hybrid) prompt', () => {
       }
 
       expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('Pass only the returned repository IDs owned by the current lane');
-      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('use all returned IDs only for genuinely cross-repository work');
-      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('A legacy single-root worker returns the exact `sourceCommit` SHA');
-      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('a composite worker returns the complete `sourceCommits` map keyed by repository ID');
-      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('Use the map when persisted `repos` are present');
-      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('a singleton composite also accepts a matching scalar convenience at merge');
+      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('use multiple IDs only when resuming an existing untargeted composite run');
+      for (const prompt of [QUEEN_BEE_PROMPT, SWARM_BEE_PROMPT, HIVE_BUILDER_PROMPT]) {
+        expect(prompt).toContain('For a new manual tracked-write task, pass its resolved intended `target` to `hive_task_create`');
+        expect(prompt).toContain('with `repos` omitted or exactly the target repository');
+        expect(prompt).toContain('replacement carries the existing intended target unless an authorized correction changes it');
+        expect(prompt).toContain("resolve the parent's intended target before creating the tracked-write replacement");
+        expect(prompt).toContain('Do not force targets onto unchanged legacy tasks or non-Git/report-only tasks');
+      }
+      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('Material target conflicts go to the operator; announce routine unambiguous target choices');
+      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain("status: 'in_progress'` with pending-integration detail in `summary` or `report` and no blocker");
+      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('targeted or legacy single-root workspaces return the exact `sourceCommit` SHA');
+      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('untargeted composite workspaces return the complete `sourceCommits` map keyed by repository ID');
+      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('establish a retained work branch as the immediate target, one per coherent change');
+      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('`expectedTarget` for targeted or legacy single-root workspaces or complete `expectedTargets` map for untargeted composite workspaces');
+      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('Select the pin by inspected mode');
+      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('A singleton composite also accepts a matching scalar convenience at merge');
       expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('Pass the returned pin unchanged to the matching merge tool');
-      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('The primary owns the intended destination path');
+      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('confirms that the repository, path, and full symbolic ref (or detached null) returned by the inspection-shaped create result match it');
+      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('On mismatch, stop before dispatch and re-resolve the target or report the mismatch');
       expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('Every merge supplies the exact inspected `expectedTarget`');
       expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('Reconciliation uses a fresh worker session in the same clean, registered worktree');
       expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain("either set `status: 'blocked'` with a structured blocker");
@@ -2405,8 +2417,12 @@ describe('Hive (Hybrid) prompt', () => {
       expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('without deleting Hive state, dependencies, build output, or user files');
       expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('without relying on Git merge flags');
       expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('incoming-path collision state still blocks merge');
-      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('explicit operator request to continue specific existing uncommitted changes');
+      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('explicit continuation of specific existing uncommitted changes');
       expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('A dirty checkout alone does not justify direct checkout');
+      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('Choose from explicit instruction, existing saved target for continuation, explicit parent target, then isolation default');
+      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('Resume legacy untargeted plans and multi-repository workflows unchanged');
+      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('mark it done after verified integration into its assigned work branch');
+      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).not.toContain('a small mechanical edit on a clean checkout');
     });
 
     it('treats terminal tool responses as non-retriable for same parameters', () => {
@@ -2504,12 +2520,8 @@ describe('Hive (Hybrid) prompt', () => {
 });
 
 describe('Multi-repo planning guidance', () => {
-  it('teaches hive hybrid planners to prefer per-repo task boundaries on manifest-backed projects', () => {
-    expect(QUEEN_BEE_PROMPT).toContain('**Repos**:');
-    expect(QUEEN_BEE_PROMPT).toContain('each task with tracked writes MUST declare');
-    expect(QUEEN_BEE_PROMPT).toContain('before task sync or worktree creation');
-    expect(QUEEN_BEE_PROMPT).toContain('per-repo task');
-    expect(QUEEN_BEE_PROMPT).toContain('coupled multi-repo');
+  it('routes hybrid planning to the target selection owner', () => {
+    expect(QUEEN_BEE_PROMPT).toContain('Use `writing-plans` to select the repository and retained target');
     expect(QUEEN_BEE_PROMPT).toContain("automatically replace and cancel it only when no work has started and no existing task depends on it; the replacement mirrors incoming `dependsOn` and supplies corrected `repos` via `hive_task_create(...)`");
     expect(QUEEN_BEE_PROMPT).toContain('If work started or reverse dependents exist, retain the incorrect task as blocked with a structured blocker and escalate; do not rewrite dependencies');
   });
@@ -2725,12 +2737,8 @@ describe('Architect (Planner) prompt', () => {
     expect(QUEEN_BEE_PROMPT).toContain('No agent may silently skip required configured review targets');
   });
 
-  it('instructs planners to prefer per-repo task boundaries and use the `**Repos**:` annotation on manifest-backed projects', () => {
-    expect(ARCHITECT_BEE_PROMPT).toContain('**Repos**:');
-    expect(ARCHITECT_BEE_PROMPT).toContain('each task with tracked writes MUST declare');
-    expect(ARCHITECT_BEE_PROMPT).toContain('before task sync or worktree creation');
-    expect(ARCHITECT_BEE_PROMPT).toContain('Prefer one repo per task');
-    expect(ARCHITECT_BEE_PROMPT).toContain('coupled multi-repo');
+  it('routes planner target selection to writing-plans', () => {
+    expect(ARCHITECT_BEE_PROMPT).toContain('Use `writing-plans` to select the repository and retained target');
     expect(ARCHITECT_BEE_PROMPT).toContain("require the orchestrator to automatically replace and cancel it only when no work has started and no existing task depends on it; the replacement must mirror incoming `dependsOn` and supply corrected `repos` via `hive_task_create(...)`");
     expect(ARCHITECT_BEE_PROMPT).toContain('If work started or reverse dependents exist, require the orchestrator to retain the incorrect task as blocked with a structured blocker and escalate; do not rewrite dependencies');
   });
@@ -3032,9 +3040,9 @@ describe('Forager (Worker/Coder) prompt', () => {
   it('gives commit authority only to worktree implementation assignments', () => {
     expect(FORAGER_BEE_PROMPT).toContain('Hive git helpers do not auto-commit source');
     expect(FORAGER_BEE_PROMPT).toContain('A worktree implementation assignment explicitly authorizes committing the assigned changes');
-    expect(FORAGER_BEE_PROMPT).toContain('For a legacy single-root workspace, return the exact `sourceCommit` SHA');
-    expect(FORAGER_BEE_PROMPT).toContain('For a composite workspace, return the complete `sourceCommits` map keyed by persisted repository ID');
-    expect(FORAGER_BEE_PROMPT).toContain('Merge also accepts a matching scalar `sourceCommit` for exactly one persisted repository');
+    expect(FORAGER_BEE_PROMPT).toContain('for targeted or legacy single-root workspaces, return the exact `sourceCommit` SHA');
+    expect(FORAGER_BEE_PROMPT).toContain('for untargeted composites, return the complete `sourceCommits` map keyed by repository ID');
+    expect(FORAGER_BEE_PROMPT).toContain('Merge also accepts a matching scalar `sourceCommit` for a singleton composite');
     expect(FORAGER_BEE_PROMPT).toContain('In-place and diagnosis-only missions do not authorize commits');
     expect(FORAGER_BEE_PROMPT).not.toContain('proposed Conventional Commit subject and body');
   });
@@ -3497,7 +3505,7 @@ describe('README.md documentation', () => {
 
     it('documents VS Code background views as viewer-only surfaces', () => {
       expect(vscodeReadmeContent).toContain('Background Jobs');
-      expect(vscodeReadmeContent).toContain('Tracked Repositories');
+      expect(vscodeReadmeContent).toContain('Repositories & Work');
       expect(vscodeReadmeContent).toContain('does not start worktrees, commit changes, merge branches, cancel jobs, or reconcile jobs; archiving a background job is its only job mutation');
     });
 
@@ -3549,7 +3557,7 @@ describe('README.md documentation', () => {
       expect(hiveToolsContent).toContain('message');
       expect(hiveToolsContent).toContain('optional `repoIds`, optional absolute `sourceDirectory`');
       expect(hiveToolsContent).toContain('Use `sourceCommit` for a legacy single-root workspace');
-      expect(hiveToolsContent).toContain('When persisted `repos` are present, use `sourceCommits` as a complete map');
+      expect(hiveToolsContent).toContain('For an inspected untargeted composite workspace, use `sourceCommits` as a complete map');
       expect(hiveToolsContent).toContain('A singleton composite also accepts a matching scalar `sourceCommit` convenience');
       expect(hiveToolsContent).toContain('On creation, `repoIds` selects the repositories owned by the lane');
       expect(hiveToolsContent).toContain('later ad-hoc lifecycle calls pass the same `runId` and the same `sourceDirectory` or `repoIds` used at creation');

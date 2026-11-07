@@ -1760,6 +1760,32 @@ describe('skill content', () => {
     expect(dispatch).toContain('Explicit companion suffixes use the same procedure');
   });
 
+  it('keeps work-branch completion distinct from conditional onward delivery', () => {
+    const executing = readSkillTemplate('executing-plans');
+    const adhoc = readSkillTemplate('orchestrating-ad-hoc-work');
+    const planning = readSkillTemplate('writing-plans');
+    expect(executing).toContain('verified integration into its assigned work branch; record any onward delivery separately');
+    expect(planning).toContain('Preserve existing approved or unsynced untargeted tasks without automatic plan rewrites');
+    expect(planning).toContain('repository, branch, base, and target ID');
+    expect(planning).toContain('primary executor establishes the planned retained instance matching the approved branch and base before dispatching workers');
+    expect(planning).toContain('**Hive target**: [repoId/slug for a new tracked-write task; omit this entire line for nontracked or report-only tasks]');
+    expect(planning).toContain('Omit the entire **Hive target** line for nontracked or report-only tasks; do not leave a blank placeholder');
+    expect(planning).toContain('**Hive target**: <repoId>/<slug>');
+    expect(planning).toContain('ordinary `Target:` prose is not a selector');
+    expect(adhoc).toContain('targeted or legacy single-root workers return `sourceCommit`');
+    expect(adhoc).toContain('untargeted composite workers return the complete `sourceCommits` map');
+    expect(adhoc).toContain('from the pinned retained source commit');
+    expect(adhoc).toContain('without a second approval');
+    expect(adhoc).toContain('Hold no locks or unfinished merges during the wait');
+    expect(adhoc).toContain('recheck Git identities, prepare and reverify integration');
+    expect(adhoc).toContain('native completion no-poll rule does not forbid external state checks');
+    expect(adhoc).toContain('propose its cleanup to the operator unless already explicitly authorized');
+    expect(adhoc).toContain('A lane closes only after applicable terminal observation');
+    expect(adhoc).toContain('safe temporary worktree cleanup are recorded');
+    expect(adhoc).toContain('Any execution primary uses Closure for onward delivery');
+    expect(executing).toContain('For onward delivery, use the closure procedure');
+  });
+
   it('routes accepted review work without promoting optional feedback to automatic fixes', () => {
     const executing = BUILTIN_SKILLS.find((entry) => entry.name === 'executing-plans')!.template;
     const adhoc = BUILTIN_SKILLS.find((entry) => entry.name === 'orchestrating-ad-hoc-work')!.template;
@@ -1835,7 +1861,7 @@ describe('skill content', () => {
     expect(skill!.template).toContain('hive_worktree_create');
     expect(skill!.template).not.toContain('hive_existing_workspace_start');
     expect(skill!.template).toContain('In feature-task mode, pass each returned topology-aware pin unchanged');
-    expect(skill!.template).toContain('a singleton composite scalar is accepted');
+    expect(skill!.template).toContain('A singleton composite scalar is accepted');
     expect(skill!.template).toContain('In ad-hoc mode, return result state and its exact pin to `orchestrating-ad-hoc-work`');
     expect(skill!.template).toContain('hive_adhoc_worktree_merge');
     expect(skill!.template).toContain('Treat installs, builds, formatters, generators, and tests as mutations');
@@ -1854,12 +1880,49 @@ describe('skill content', () => {
     // One complete example per host: the raw reference holds both, and each host's rendering holds exactly one.
     expect(launches.match(/hive_feature_select\(\{ feature: "feature-name" \}\)/g)).toHaveLength(2);
     for (const host of [OPENCODE_V1_PROFILE, createHostProfile('opencode-v2')]) {
-      expect(renderHostMarkdown(launches, host, 'dispatching-parallel-agents/references/launch-examples.md').match(/hive_feature_select\(\{ feature: "feature-name" \}\)/g)).toHaveLength(1);
+      const rendered = renderHostMarkdown(launches, host, 'dispatching-parallel-agents/references/launch-examples.md');
+      expect(rendered.match(/hive_feature_select\(\{ feature: "feature-name" \}\)/g)).toHaveLength(1);
+      expect(rendered).toContain('Targeted single-repository worktree');
+      expect(rendered).toContain('return sourceCommit.');
+      expect(rendered).toContain('untargeted composite run');
+      expect(rendered).toContain('complete sourceCommits map keyed by repository ID');
+    }
+    for (const skill of BUILTIN_SKILLS) {
+      const dir = path.join(resolvePackagedSkillsDir(), skill.name, 'references');
+      if (!existsSync(dir)) continue;
+      for (const file of readdirSync(dir, { recursive: true, encoding: 'utf8' }).filter((name) => name.endsWith('.md'))) {
+        expect(readFileSync(path.join(dir, file), 'utf8'), `${skill.name}/${file}`).not.toContain('complete sourceCommits map when persisted repos are present');
+      }
     }
     expect(skill!.template).toContain('Batch independent Hive calls in one response/step');
     expect(skill!.template).toContain("same-call `cleanup: 'worktree+branch'`");
     expect(skill!.template).not.toContain('Only dispatch tasks that are runnable');
     expect(skill!.template).not.toContain('Proceed only after operator approval');
+  });
+
+  it('executes each delivered legacy composite launch preflight against saved selections', async () => {
+    const launches = readSkillReference('dispatching-parallel-agents', 'launch-examples.md');
+    for (const host of [OPENCODE_V1_PROFILE, createHostProfile('opencode-v2')]) {
+      const rendered = renderHostMarkdown(launches, host, 'dispatching-parallel-agents/references/launch-examples.md');
+      const section = rendered.split('## Ad-hoc launch with placement check')[1].split('## Diagnosis-only fan-out')[0];
+      const examples = [...section.matchAll(/```ts\n([\s\S]*?)```/g)].map((match) => match[1]);
+      expect(examples).toHaveLength(2);
+      for (const example of examples) {
+        const execute = new Function('lane', 'repositories', 'hive_repositories_status', 'hive_adhoc_worktree_create', 'task', 'subagent', 'hive_background_status', `return (async () => { ${example} })();`);
+        for (const repoIds of [['beta'], [], ['missing'], ['beta', 'beta']]) {
+          const created: unknown[] = [];
+          const repositories = [{ id: 'alpha' }, { id: 'beta' }, { id: 'gamma' }];
+          const run = () => execute({ runId: 'saved-run', repoIds }, repositories, () => ({ repositories }), (input: unknown) => created.push(input), () => ({}), () => ({}), () => ({}));
+          if (repoIds.length === 1 && repoIds[0] === 'beta') {
+            await run();
+            expect(created).toEqual([{ runId: 'saved-run', repoIds: ['beta'] }]);
+          } else {
+            await expect(run()).rejects.toThrow('Placement blocker');
+            expect(created).toEqual([]);
+          }
+        }
+      }
+    }
   });
 
   it('includes every native-required field in managed Forager examples', () => {
@@ -1988,8 +2051,8 @@ describe('skill content', () => {
     expect(skill!.template).toContain('Lane count never selects wait mode');
     expect(skill!.template).toContain('Every Forager lane, including report-only diagnosis');
     expect(skill!.template).toContain('The owning workflow determines placement; create the matching worktree before dispatch for tracked Git writes');
-    expect(skill!.template).toContain('Direct checkout work is unmanaged OpenCode work');
-    expect(skill!.template).toContain('one small, local, immediately verified integration fix');
+    expect(skill!.template).toContain('Independent tracked writes use an isolated worktree, including small integration fixes');
+    expect(skill!.template).not.toContain('one small, local, immediately verified integration fix');
     expect(skill!.template).toContain('There is no exact-one-read or exact-one-write quota');
     expect(skill!.template).toContain('one independently answerable question or one primary goal');
     expect(skill!.template).toContain('one owner, one expected output, and one verification/return contract');
@@ -2048,7 +2111,7 @@ describe('skill content', () => {
     // Launch mechanics are owned by dispatch, so the background skill carries no launch recipe.
     expect(launches).toContain('Blocking launch (gate-closed sessions):');
     expect(launches).toContain('Background launch (gate-open sessions):');
-    expect(launches).toContain('hive_adhoc_worktree_create({ repoIds })');
+    expect(launches).toContain('hive_adhoc_worktree_create({ runId: lane.runId, repoIds })');
     expect(launches).not.toContain('hive_adhoc_worktree_create({});');
     expect(launches).toContain("subagent_type: 'forager-worker'");
     expect(skill!.template).not.toContain('hive_adhoc_worktree_create');
@@ -2104,9 +2167,10 @@ describe('skill content', () => {
         expect(launch).toContain('requestedRepoIds.includes(id)');
         expect(launch).toContain('new Set(requestedRepoIds).size !== requestedRepoIds.length');
         expect(launch).toContain('requestedRepoIds.some((id) => !selectedRepoIds.includes(id))');
-        expect(launch).toContain('Placement blocker: lane.repoIds must exactly match repository status IDs');
+        expect(launch).toContain('Placement blocker: saved lane.repoIds must be nonempty, unique, and configured');
+        expect(launch).toContain('Hive run: ${lane.runId}');
         expect(launch).toContain('const repoIds = selectedRepoIds;');
-        expect(launch).toContain('hive_adhoc_worktree_create({ repoIds })');
+        expect(launch).toContain('hive_adhoc_worktree_create({ runId: lane.runId, repoIds })');
       }
       expect(example).toContain('background: true');
       // The launch stops where the board protocol starts; reconciliation is not duplicated here.

@@ -112,7 +112,7 @@ ${renderNativeTaskContinuationPolicyPrompt(host)}
 
 ${renderBackgroundBoardHandlePrompt(host)}
 
-For a blocked feature task: record \`hive_task_update\` with blocked status and blocker; ask via \`question()\`; after the decision, \`hive_task_update\` with an explicit status leaving blocked clears the blocker. Put the decision in the fresh worker prompt. Do not reconstruct blocker details from worker prose or task traces. For failed or retry work, launch a fresh worker with a concise self-contained handoff. Architect is the only subagent that may call one terminal layer of planning helpers; every other subagent is terminal.
+For a blocked feature task: record \`hive_task_update\` with blocked status and blocker. Ask via \`question()\` when an operator decision is needed; otherwise follow the known prerequisite and existing authorization. An explicit status leaving blocked clears the blocker. Put any decision in the fresh worker prompt. Do not reconstruct blocker details from worker prose or task traces. For failed or retry work, launch a fresh worker with a concise self-contained handoff. Architect is the only subagent that may call one terminal layer of planning helpers; every other subagent is terminal.
 
 ${TASK_REPORT_CONTRACT_PROMPT}
 
@@ -226,10 +226,7 @@ Each task declares dependencies with **Depends on**:
 - **Depends on**: none for no dependencies / parallel starts
 - **Depends on**: 1, 3 for explicit task-number dependencies
 
-For manifest-backed projects (where \`.hive/repositories.json\` defines project repositories), each task with tracked writes MUST declare which repos it touches with **Repos** before task sync or worktree creation:
-- **Repos**: api for single-repo tasks
-- **Repos**: api, web for coupled multi-repo tasks
-- Prefer per-repo task boundaries where practical; use coupled multi-repo tasks only when the change intrinsically spans repos (shared contracts, coordinated schema changes, cross-repo refactors). Do not co-locate independent single-repo changes into one task.
+Use \`writing-plans\` to select the repository and retained target for new tracked-write tasks. Existing untargeted tasks remain resumable without automatic rewrites.
 
 For a plan-backed task with missing or incorrect repository metadata, delegate the amendment to Architect and follow Approval and Task Sync with \`refreshPending: true\` before worktree creation. For an incorrectly scoped manual task, automatically replace and cancel it only when no work has started and no existing task depends on it; the replacement mirrors incoming \`dependsOn\` and supplies corrected \`repos\` via \`hive_task_create(...)\`. If work started or reverse dependents exist, retain the incorrect task as blocked with a structured blocker and escalate; do not rewrite dependencies.
 
@@ -281,7 +278,7 @@ Use \`hive_status()\` to see the single top-level \`tasks\` list, stored depende
 hive_worktree_create({ feature: "feature-name", task: "01-task-name" })
 // Capture the destination from create; select if unset/different or selection evidence is missing/uncertain.
 // When selection is needed: hive_feature_select({ feature: "feature-name" })
-${tool}({ ${agentField}: "forager-worker", description: "...", prompt: "Hive task: 01-task-name\\n\\nPrimary-authored worktree implementation assignment; commit assigned changes; return sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present. A singleton composite scalar is a merge convenience; multiple repositories require the complete map." })
+${tool}({ ${agentField}: "forager-worker", description: "...", prompt: "Hive task: 01-task-name\\n\\nPrimary-authored worktree implementation assignment; commit assigned changes; return sourceCommit for a targeted or legacy single-root workspace, or the complete sourceCommits map for an untargeted composite. A singleton composite scalar is a merge convenience; multiple repositories require the complete map." })
 \`\`\`
 
 Author the native Forager assignment yourself and pass the initial destination identity from the inspection-shaped create result; later checkpoints still apply. Worktree helpers do not auto-commit source or assign workers. See \`docs/HIVE-TOOLS.md\` for merge, cleanup, \`discard\`, and composite contracts.

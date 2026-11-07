@@ -62,7 +62,7 @@ For Hive Builder or unified Hive ad-hoc work, `orchestrating-ad-hoc-work` suppli
 
 ## Scheduling by Delegation Kind
 
-Choose direct work, delegation, or a worktree from the situation. There is no exact-one-read or exact-one-write quota. The cheap direct fix is one small, local, immediately verified integration fix. Direct checkout work is unmanaged OpenCode work, not a Hive worktree.
+Choose direct work or delegation under the primary's repository-backed placement policy. Independent tracked writes use an isolated worktree, including small integration fixes. There is no exact-one-read or exact-one-write quota.
 
 Read-only exploration and review lanes are the natural background candidates, and their verdicts can gate downstream decisions. Writing, change, and execution lanes are managed lanes: the owning workflow defines their boundaries, dependencies, verification, and integration, and this skill only chooses their wait mode. Prefer targeted tasks over broad ambiguous ones. The smallest meaningful delegation unit is one independently answerable question or one primary goal with one owner, one expected output, and one verification/return contract. Independently verifiable new work in feature-task mode needs a manual task or plan amendment first.
 

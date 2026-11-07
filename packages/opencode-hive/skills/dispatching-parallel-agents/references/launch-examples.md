@@ -6,7 +6,7 @@ Background observation and reconciliation have one example, in `background-deleg
 
 ## Feature-task launch
 
-Independent Forager worktrees may be created and dispatched under one parent. Capture each destination from the creation result, then dispatch with the task folder as the first prompt line.
+These feature tasks each have an explicit single-repository target. Confirm the creation result's repository, path, and ref match the intended target, then include its path, ref, and commit in the assignment before dispatch; the abbreviated examples use the placeholders shown.
 
 <!-- hive-host opencode-v1 -->
 OpenCode v1:
@@ -19,13 +19,13 @@ hive_worktree_create({ feature: "feature-name", task: "02-fix-batch-tests" })
 // When the route is unset/different or matching selection evidence is missing/uncertain:
 hive_feature_select({ feature: "feature-name" })
 // Issue independent task calls together; reuse this selection for both.
-task({ subagent_type: "forager-worker", description: "Fix abort tests", prompt: "Hive task: 01-fix-abort-tests\n\nImplement and commit assigned changes; return sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present.", background: true })
-task({ subagent_type: "forager-worker", description: "Fix batch tests", prompt: "Hive task: 02-fix-batch-tests\n\nImplement and commit assigned changes; return sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present.", background: true })
+task({ subagent_type: "forager-worker", description: "Fix abort tests", prompt: "Hive task: 01-fix-abort-tests\n\nTargeted single-repository worktree; destination: <path, ref, commit from create>. Implement and commit assigned changes; return sourceCommit.", background: true })
+task({ subagent_type: "forager-worker", description: "Fix batch tests", prompt: "Hive task: 02-fix-batch-tests\n\nTargeted single-repository worktree; destination: <path, ref, commit from create>. Implement and commit assigned changes; return sourceCommit.", background: true })
 
 // Blocking alternative, including every gate-closed session:
 hive_worktree_create({ feature: "feature-name", task: "03-fix-cleanup-tests" })
 // Capture the create result; reuse only a visible same-feature selection (see SKILL.md).
-await task({ subagent_type: "forager-worker", description: "Fix cleanup tests", prompt: "Hive task: 03-fix-cleanup-tests\n\nImplement and commit assigned changes; return sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present." })
+await task({ subagent_type: "forager-worker", description: "Fix cleanup tests", prompt: "Hive task: 03-fix-cleanup-tests\n\nTargeted single-repository worktree; destination: <path, ref, commit from create>. Implement and commit assigned changes; return sourceCommit." })
 ```
 <!-- /hive-host -->
 <!-- hive-host opencode-v2 -->
@@ -39,19 +39,40 @@ hive_worktree_create({ feature: "feature-name", task: "02-fix-batch-tests" })
 // When the route is unset/different or matching selection evidence is missing/uncertain:
 hive_feature_select({ feature: "feature-name" })
 // Issue independent task calls together; reuse this selection for both.
-subagent({ agent: "forager-worker", description: "Fix abort tests", prompt: "Hive task: 01-fix-abort-tests\n\nImplement and commit assigned changes; return sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present.", background: true })
-subagent({ agent: "forager-worker", description: "Fix batch tests", prompt: "Hive task: 02-fix-batch-tests\n\nImplement and commit assigned changes; return sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present.", background: true })
+subagent({ agent: "forager-worker", description: "Fix abort tests", prompt: "Hive task: 01-fix-abort-tests\n\nTargeted single-repository worktree; destination: <path, ref, commit from create>. Implement and commit assigned changes; return sourceCommit.", background: true })
+subagent({ agent: "forager-worker", description: "Fix batch tests", prompt: "Hive task: 02-fix-batch-tests\n\nTargeted single-repository worktree; destination: <path, ref, commit from create>. Implement and commit assigned changes; return sourceCommit.", background: true })
 
 // Blocking alternative, including every gate-closed session:
 hive_worktree_create({ feature: "feature-name", task: "03-fix-cleanup-tests" })
 // Capture the create result; reuse only a visible same-feature selection (see SKILL.md).
-await subagent({ agent: "forager-worker", description: "Fix cleanup tests", prompt: "Hive task: 03-fix-cleanup-tests\n\nImplement and commit assigned changes; return sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present." })
+await subagent({ agent: "forager-worker", description: "Fix cleanup tests", prompt: "Hive task: 03-fix-cleanup-tests\n\nTargeted single-repository worktree; destination: <path, ref, commit from create>. Implement and commit assigned changes; return sourceCommit." })
+```
+<!-- /hive-host -->
+
+## Targeted ad-hoc launch
+
+The placement policy identifies `target` and the inspected destination identity before this example. The worker starts at the target's current HEAD. To start from another branch's pinned source commit, explicitly supply `baseRef`. Confirm the returned destination before dispatch; the run ID is the Hive worktree run ID.
+
+<!-- hive-host opencode-v1 -->
+OpenCode v1:
+
+```ts
+hive_adhoc_worktree_create({ runId: lane.runId, target: lane.target });
+await task({ subagent_type: 'forager-worker', description: 'Implement the change', prompt: `Hive run: ${lane.runId}\n\nDestination: <confirmed path, ref, commit>. Implement and commit; return sourceCommit.` });
+```
+<!-- /hive-host -->
+<!-- hive-host opencode-v2 -->
+OpenCode v2:
+
+```ts
+hive_adhoc_worktree_create({ runId: lane.runId, target: lane.target });
+await subagent({ agent: 'forager-worker', description: 'Implement the change', prompt: `Hive run: ${lane.runId}\n\nDestination: <confirmed path, ref, commit>. Implement and commit; return sourceCommit.` });
 ```
 <!-- /hive-host -->
 
 ## Ad-hoc launch with placement check
 
-Placement starts from the repository status. A lane may name only repository IDs that status lists, each once, and the check stops the launch when they do not match exactly.
+Placement starts from repository status. These examples resume an existing untargeted composite run using the saved `runId` and `repoIds` from the existing lane; first inspect the saved run with `hive_adhoc_worktree_inspect` (or reuse its existing inspection) and confirm it still exists. If it is missing, stop rather than creating a fresh untargeted composite run. Include each inspected destination path, ref, and commit in the assignment. The saved selection must be nonempty and each ID must still be configured; core checks it against the run's owned selection. Do not widen it to all configured repositories.
 
 <!-- hive-host opencode-v1 -->
 `hive_repositories_status` returns as an ordinary direct tool call on this host, and the examples read it that way.
@@ -74,14 +95,14 @@ if (
   new Set(requestedRepoIds).size !== requestedRepoIds.length ||
   requestedRepoIds.some((id) => !selectedRepoIds.includes(id))
 ) {
-  throw new Error('Placement blocker: lane.repoIds must exactly match repository status IDs');
+  throw new Error('Placement blocker: saved lane.repoIds must be nonempty, unique, and configured');
 }
 const repoIds = selectedRepoIds;
-hive_adhoc_worktree_create({ repoIds });
+hive_adhoc_worktree_create({ runId: lane.runId, repoIds });
 await task({
   subagent_type: 'forager-worker',
   description: 'Implement the ad-hoc change',
-  prompt: 'Concrete work with done criteria; commit changes; return sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present.',
+  prompt: `Hive run: ${lane.runId}\n\nResume the untargeted composite run; destinations: <per-repository path, ref, commit from create>. Complete the assigned work and commit; return the complete sourceCommits map keyed by repository ID.`,
 });
 ```
 <!-- /hive-host -->
@@ -97,14 +118,14 @@ if (
   new Set(requestedRepoIds).size !== requestedRepoIds.length ||
   requestedRepoIds.some((id) => !selectedRepoIds.includes(id))
 ) {
-  throw new Error('Placement blocker: lane.repoIds must exactly match repository status IDs');
+  throw new Error('Placement blocker: saved lane.repoIds must be nonempty, unique, and configured');
 }
 const repoIds = selectedRepoIds;
-hive_adhoc_worktree_create({ repoIds });
+hive_adhoc_worktree_create({ runId: lane.runId, repoIds });
 await subagent({
   agent: 'forager-worker',
   description: 'Implement the ad-hoc change',
-  prompt: 'Concrete work with done criteria; commit changes; return sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present.',
+  prompt: `Hive run: ${lane.runId}\n\nResume the untargeted composite run; destinations: <per-repository path, ref, commit from create>. Complete the assigned work and commit; return the complete sourceCommits map keyed by repository ID.`,
 });
 ```
 <!-- /hive-host -->
@@ -125,14 +146,14 @@ if (
   new Set(requestedRepoIds).size !== requestedRepoIds.length ||
   requestedRepoIds.some((id) => !selectedRepoIds.includes(id))
 ) {
-  throw new Error('Placement blocker: lane.repoIds must exactly match repository status IDs');
+  throw new Error('Placement blocker: saved lane.repoIds must be nonempty, unique, and configured');
 }
 const repoIds = selectedRepoIds;
-hive_adhoc_worktree_create({ repoIds });
+hive_adhoc_worktree_create({ runId: lane.runId, repoIds });
 const { task_id } = task({
   subagent_type: 'forager-worker',
   description: 'Implement the independent ad-hoc change',
-  prompt: 'Concrete independent work with done criteria; commit changes; return sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present.',
+  prompt: `Hive run: ${lane.runId}\n\nResume the untargeted composite run; destinations: <per-repository path, ref, commit from create>. Complete the assigned work and commit; return the complete sourceCommits map keyed by repository ID.`,
   background: true,
 });
 hive_background_status({});
@@ -150,14 +171,14 @@ if (
   new Set(requestedRepoIds).size !== requestedRepoIds.length ||
   requestedRepoIds.some((id) => !selectedRepoIds.includes(id))
 ) {
-  throw new Error('Placement blocker: lane.repoIds must exactly match repository status IDs');
+  throw new Error('Placement blocker: saved lane.repoIds must be nonempty, unique, and configured');
 }
 const repoIds = selectedRepoIds;
-hive_adhoc_worktree_create({ repoIds });
+hive_adhoc_worktree_create({ runId: lane.runId, repoIds });
 const { sessionID } = subagent({
   agent: 'forager-worker',
   description: 'Implement the independent ad-hoc change',
-  prompt: 'Concrete independent work with done criteria; commit changes; return sourceCommit for a legacy single-root workspace or the complete sourceCommits map when persisted repos are present.',
+  prompt: `Hive run: ${lane.runId}\n\nResume the untargeted composite run; destinations: <per-repository path, ref, commit from create>. Complete the assigned work and commit; return the complete sourceCommits map keyed by repository ID.`,
   background: true,
 });
 hive_background_status({});
