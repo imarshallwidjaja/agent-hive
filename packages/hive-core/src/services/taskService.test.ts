@@ -1353,6 +1353,58 @@ No repository annotation.
       expect(info?.repoIds).toBeUndefined();
       expect(specContent).not.toContain("## Repositories");
     });
+
+    it("takes a target only from the opt-in Hive target annotation and keeps generic Target prose as description", () => {
+      const featureName = "targeted";
+      const featurePath = path.join(TEST_DIR, ".hive", "features", featureName);
+      setupFeature(featureName);
+      // Prose an existing plan may already carry, including a path-shaped and a mixed-case value.
+      const prosePlan = "# Plan\n\n## Tasks\n\n### 1. Release\n\nShip it.\n\n### 2. Tune\n\nTarget: src/app\n\n**Target**: `root/release`\n\nTarget: Linux/macOS\n\nTune it.\n";
+      fs.writeFileSync(path.join(featurePath, "plan.md"), prosePlan);
+      service.sync(featureName);
+      for (const folder of ["01-release", "02-tune"]) {
+        expect(service.getRawStatus(featureName, folder)).not.toHaveProperty("target");
+        expect(service.readSpec(featureName, folder)).not.toContain("## Target");
+      }
+      expect(service.readSpec(featureName, "02-tune")).toContain("Target: src/app\n\n**Target**: `root/release`\n\nTarget: Linux/macOS");
+      expect(service.getSpecFreshness(featureName).map(entry => entry.specStaleReason)).toEqual(["matches_plan", "matches_plan"]);
+      const tuneSpec = service.readSpec(featureName, "02-tune");
+
+      fs.rmSync(path.join(featurePath, "tasks"), { recursive: true });
+      fs.writeFileSync(path.join(featurePath, "plan.md"), prosePlan.replace("Ship it.", "Repos: root\n\n**Hive target**: `root/release`\n\nShip it."));
+      service.sync(featureName);
+      expect(service.getRawStatus(featureName, "01-release")).toMatchObject({ repoIds: ["root"], target: "root/release" });
+      expect(service.readSpec(featureName, "01-release")).toContain("## Repositories\n\n- root\n\n## Target\n\n- root/release\n");
+      expect(service.readSpec(featureName, "02-tune")).toBe(tuneSpec);
+
+      // Once the annotation is present, a value that is not one retained checkout ID is refused, never ignored.
+      const annotated = (line: string) => prosePlan.replace("Ship it.", `${line}\n\nShip it.`);
+      for (const [line, error] of [
+        ["Hive target: root/release extra", /Invalid retained checkout ID "root\/release extra"/],
+        ["**Hive target**:", /Invalid retained checkout ID ""/],
+        ["Hive target: Root/release", /Invalid retained checkout ID "Root\/release"/],
+        ["Hive target: src/app/main", /Invalid retained checkout ID "src\/app\/main"/],
+        ["Hive target: root/a\n\nHive target: root/b", /Hive target is given more than once/],
+        ["Repos: api\n\nHive target: root/release", /target root\/release works only in repository root, but Repos lists api/],
+      ] as const) {
+        fs.writeFileSync(path.join(featurePath, "plan.md"), annotated(line));
+        expect(() => service.sync(featureName)).toThrow(error);
+      }
+    });
+
+    it("stores a manual task target outside its metadata and renders it only when present", () => {
+      const featureName = "manual-target";
+      setupFeature(featureName);
+      const targeted = service.create(featureName, "Hotfix", undefined, { goal: "Fix it", target: "root/release" });
+      const plain = service.create(featureName, "Docs", undefined, { goal: "Write it" });
+
+      expect(service.getRawStatus(featureName, targeted)).toMatchObject({ target: "root/release", metadata: { goal: "Fix it" } });
+      expect(service.getRawStatus(featureName, targeted)?.metadata).not.toHaveProperty("target");
+      expect(service.readSpec(featureName, targeted)).toContain("## Target\n\n- root/release\n");
+      expect(service.readSpec(featureName, plain)).not.toContain("## Target");
+      expect(service.listStatusEntries(featureName).find(entry => entry.folder === targeted)).toMatchObject({ target: "root/release" });
+      expect(() => service.create(featureName, "Bad", undefined, { target: "root/release", repoIds: ["api"] })).toThrow(/works only in repository root/);
+    });
   });
 
   describe("sync() - dependency validation", () => {
@@ -3625,6 +3677,42 @@ Build.
 
       service.sync(featureName, { refreshTasks: ["02-build-api"], retainedWorktreeTasks: new Set(["03-ship"]) });
       expect(service.getRawStatus(featureName, "02-build-api")?.repoIds).toEqual(["web"]);
+
+      // A target change moves the integration destination and is guarded the same way.
+      writePlan(planV1.replace("**Repos**: api", "**Repos**: web\n\n**Hive target**: web/release"));
+      expect(() => service.sync(featureName, { refreshTasks: ["02-build-api"] })).toThrow(/change its target from \(none\) to web\/release, and its worktrees could not be inspected/);
+      service.sync(featureName, { refreshTasks: ["02-build-api"], retainedWorktreeTasks: new Set() });
+      expect(service.getRawStatus(featureName, "02-build-api")).toMatchObject({ repoIds: ["web"], target: "web/release" });
+    });
+
+    it("refuses a pending refresh that moves a task's target while a worker placement or binding for it may remain", () => {
+      const groupPath = path.join(TEST_DIR, ".hive", ".worktrees", featureName);
+      const retarget = (target: string) => writePlan(planV1.replace("**Repos**: api", `**Repos**: web\n\n**Hive target**: ${target}`));
+      retarget("web/a");
+      service.sync(featureName, { refreshPending: true });
+      expect(service.getRawStatus(featureName, "02-build-api")).toMatchObject({ target: "web/a" });
+
+      // Old callers pass no inventory; the task's placements are read from disk.
+      for (const leftover of ["02-build-api", "02-build-api--retry", "02-build-api.json"]) {
+        fs.mkdirSync(groupPath, { recursive: true });
+        if (leftover.endsWith(".json")) fs.writeFileSync(path.join(groupPath, leftover), "{}");
+        else fs.mkdirSync(path.join(groupPath, leftover));
+        retarget("web/b");
+        const before = tree();
+        expect(() => service.sync(featureName, { refreshPending: true })).toThrow(/Task sync rejected; no task files were changed\. "02-build-api" would change its target from web\/a to web\/b, and it has a retained worktree/);
+        expect(tree()).toEqual(before);
+        fs.rmSync(groupPath, { recursive: true });
+      }
+      // A worker directory that cannot be listed is not known to be empty.
+      fs.mkdirSync(path.dirname(groupPath), { recursive: true });
+      fs.writeFileSync(groupPath, "not a directory");
+      expect(() => service.sync(featureName, { refreshPending: true })).toThrow(/would change its target from web\/a to web\/b/);
+      // A caller inventory naming the task refuses even when the disk shows nothing.
+      fs.rmSync(groupPath);
+      expect(() => service.sync(featureName, { refreshPending: true, retainedWorktreeTasks: new Set(["02-build-api"]) })).toThrow(/retained worktree/);
+
+      expect(service.sync(featureName, { refreshPending: true }).kept).toContain("02-build-api");
+      expect(service.getRawStatus(featureName, "02-build-api")).toMatchObject({ target: "web/b" });
     });
 
     it("rejects an invalid stored graph from a selected refresh before writing the record or any task file", () => {

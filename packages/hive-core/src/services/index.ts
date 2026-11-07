@@ -142,6 +142,42 @@ export { ConfigService } from './configService.js';
 export type { LegacyRepositoryTopology } from './configService.js';
 export { RepositoryService } from './repositoryService.js';
 export { readCompositeWorkspaceManifest } from './workspaceManifest.js';
+export type { TargetBinding } from './workspaceManifest.js';
+export type { TargetBindingStatus } from './targetedPlacement.js';
+export {
+  IMPLICIT_ROOT_REPOSITORY_ID,
+  parseRetainedCheckoutId,
+  RetainedCheckoutError,
+} from './retainedCheckout.js';
+export type {
+  RetainedCheckoutErrorReason,
+  RetainedCheckoutOwnership,
+  RetainedCheckoutReadiness,
+  RetainedCheckoutRecord,
+} from './retainedCheckout.js';
+export { RetainedCheckoutService } from './retainedCheckoutService.js';
+export type {
+  CreateRetainedCheckoutInput,
+  RegisterRetainedCheckoutInput,
+  RetainedCheckoutCleanupInput,
+  RetainedCheckoutCleanupProposal,
+  RetainedCheckoutCleanupResult,
+  RetainedCheckoutReadinessInput,
+  RetainedCheckoutReference,
+  RetainedCheckoutReferenceScan,
+  RetainedCheckoutServiceConfig,
+  UnreadableReferenceSource,
+} from './retainedCheckoutService.js';
+export { CheckoutInspector } from './checkoutInspector.js';
+export type {
+  CheckoutInspectorConfig,
+  CheckoutLocalState,
+  CheckoutProjection,
+  CheckoutRepositoryView,
+  CheckoutWorkerView,
+  LocalBranchView,
+  RetainedCheckoutView,
+} from './checkoutInspector.js';
 export { RepositoryManifestService } from './repositoryManifestService.js';
 export type {
   RepositoryDiscoveryCandidate,

@@ -46,6 +46,8 @@ export interface ManualTaskMetadata {
   references?: string[];
   files?: string[];
   repoIds?: string[];
+  /** Retained checkout `<repoId>/<slug>` the task's worker integrates into. */
+  target?: string;
   reason?: string;
   source?: 'review' | 'operator' | 'ad_hoc';
   dependsOn?: string[];
@@ -82,6 +84,11 @@ export interface TaskStatus {
   baseCommit?: string;
   baseCommits?: Record<string, string>;
   repoIds?: string[];
+  /**
+   * Retained checkout `<repoId>/<slug>` the task's single worker integrates into. Absent for tasks that integrate
+   * into the project root or their composite repositories. With `repoIds`, they are exactly the target's repository.
+   */
+  target?: string;
   subtasks?: Subtask[];
   /**
    * Task dependencies expressed as task folder names (e.g., '01-setup', '02-core-api').
@@ -232,6 +239,7 @@ export interface TaskInfo {
   planTitle?: string;
   summary?: string;
   repoIds?: string[];
+  target?: string;
 }
 
 export type ContextRole = 'human' | 'scratchpad' | 'operational' | 'durable' | 'evidence';

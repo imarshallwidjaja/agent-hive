@@ -242,7 +242,7 @@ async function commitChangedPaths(git: SimpleGit, commit: string): Promise<strin
  * Whether `ancestor` is reachable from or equal to `descendant`. Git errors
  * propagate: an unreadable relationship is not a negative one.
  */
-async function isAncestorOrEqual(git: SimpleGit, ancestor: string, descendant: string): Promise<boolean> {
+export async function isAncestorOrEqual(git: SimpleGit, ancestor: string, descendant: string): Promise<boolean> {
   const output = (await git.raw(['rev-list', '--count', `${descendant}..${ancestor}`])).trim();
   if (!/^\d+$/.test(output)) {
     throw new Error(`Unable to read whether ${ancestor} is contained in ${descendant}: unexpected rev-list output ${JSON.stringify(output)}`);

@@ -10,6 +10,11 @@ import { RepositoryService } from './repositoryService.js';
 import type { AdhocMergeOptions, AdhocMergeResult, AdhocMergeStrategy, AdhocWorktreeConfig } from "./adhocWorktreeService";
 import { WorktreeLinkageError } from "./worktreeOutcome";
 import { readWorktreeTargetIdentity } from './worktreeTarget.js';
+import { RetainedCheckoutService } from './retainedCheckoutService.js';
+import { CheckoutInspector } from './checkoutInspector.js';
+import { readSingleWorkspaceMetadata } from './workspaceManifest.js';
+import { WorktreeOperationRecoveryService } from './worktreeOperation.js';
+import { WorktreeService } from './worktreeService.js';
 
 interface AdhocFixture {
   repoPath: string;
@@ -244,7 +249,8 @@ describe("AdhocWorktreeService.create", () => {
     await fs.writeFile(external, 'preserve me\n');
     await fs.symlink(external, `${workspacePath}.json`);
 
-    await expect(fixture.service.create({ runId })).rejects.toThrow(/metadata symlink/);
+    // Refused while checking the run for a binding, before Git runs.
+    await expect(fixture.service.create({ runId })).rejects.toThrow(/path contains a symlink/);
 
     expect(await fs.readFile(external, 'utf8')).toBe('preserve me\n');
     expect(await pathExists(workspacePath)).toBe(false);
@@ -3393,5 +3399,355 @@ describe("AdhocWorktreeService repository operation locks", () => {
     expect(await branchExists(originGit, 'hive/adhoc/api/api-run')).toBe(false);
     expect(await pathExists(path.join(fixture.hiveDir, '.worktrees', 'adhoc', 'api-run'))).toBe(false);
     expect(await holderMerge).toMatchObject({ success: true, merged: true });
+  }, 30_000);
+});
+
+describe('AdhocWorktreeService targeted runs', () => {
+  async function targetedFixture() {
+    const fixture = await createFixture();
+    const core = new CoreAdhocWorktreeService({ baseDir: fixture.repoPath, hiveDir: fixture.hiveDir });
+    const checkouts = new RetainedCheckoutService({ baseDir: fixture.repoPath, hiveDir: fixture.hiveDir });
+    const checkoutPath = (slug: string) => path.join(fixture.hiveDir, 'checkouts', 'root', slug);
+    const commitIn = async (cwd: string, file: string): Promise<string> => {
+      await fs.writeFile(path.join(cwd, file), `${file}\n`, 'utf-8');
+      const git = simpleGit(cwd);
+      await git.add([file]);
+      await git.commit(testCommitMessage(`feat: add ${file}`));
+      return (await git.revparse(['HEAD'])).trim();
+    };
+    return { ...fixture, core, checkouts, checkoutPath, commitIn };
+  }
+
+  it('integrates runs into two retained checkouts of one repository independently and leaves the root unchanged', async () => {
+    const fx = await targetedFixture();
+    const root = await readWorktreeTargetIdentity(fx.repoPath);
+    await fx.checkouts.create({ id: 'root/alpha', branch: 'alpha', baseRef: 'main' });
+    await fx.checkouts.create({ id: 'root/beta', branch: 'beta', baseRef: 'main' });
+
+    for (const slug of ['alpha', 'beta']) {
+      const created = await fx.core.create({ runId: `to-${slug}`, target: `root/${slug}` });
+      expect(created).toMatchObject({ mode: 'adhoc-targeted', repoId: 'root', baseCommit: root.commit, targetBinding: { id: `root/${slug}`, path: fx.checkoutPath(slug), ref: `refs/heads/${slug}` } });
+      // Hosts that predate targeted runs refuse the sidecar rather than misread it as a root run.
+      await expect(readSingleWorkspaceMetadata(path.join(fx.hiveDir, '.worktrees', 'adhoc', `to-${slug}.json`))).rejects.toThrow('Invalid single workspace metadata');
+      const sourceCommit = await fx.commitIn(created.path, `${slug}.txt`);
+      const inspected = (await fx.core.inspect(`to-${slug}`))!;
+      expect(inspected.targetBinding?.status).toBe('ok');
+      expect(inspected.target).toEqual({ path: fx.checkoutPath(slug), ref: `refs/heads/${slug}`, commit: root.commit });
+      const merged = await fx.core.merge(`to-${slug}`, 'squash', mergeMessage, { historyIntent: 'rewrite-private', sourceCommit, expectedTarget: inspected.target!, cleanup: 'worktree+branch' });
+      expect(merged).toMatchObject({ success: true, merged: true, cleanup: { outcome: 'complete' } });
+    }
+
+    expect(await pathExists(path.join(fx.checkoutPath('alpha'), 'alpha.txt'))).toBe(true);
+    expect(await pathExists(path.join(fx.checkoutPath('alpha'), 'beta.txt'))).toBe(false);
+    expect(await pathExists(path.join(fx.checkoutPath('beta'), 'beta.txt'))).toBe(true);
+    expect(await readWorktreeTargetIdentity(fx.repoPath)).toEqual(root);
+  }, 30_000);
+
+  it('refuses a target that switched branch even when the caller passes a freshly inspected identity', async () => {
+    const fx = await targetedFixture();
+    await fx.checkouts.create({ id: 'root/alpha', branch: 'alpha', baseRef: 'main' });
+    const run = await fx.core.create({ runId: 'drift', target: 'root/alpha' });
+    const sourceCommit = await fx.commitIn(run.path, 'drift.txt');
+    await simpleGit(fx.checkoutPath('alpha')).raw(['switch', '-c', 'elsewhere']);
+
+    const inspected = (await fx.core.inspect('drift'))!;
+    expect(inspected.targetBinding).toMatchObject({ id: 'root/alpha', ref: 'refs/heads/alpha', status: 'ref_changed' });
+    expect(inspected.target?.ref).toBe('refs/heads/elsewhere');
+    const refused = await fx.core.merge('drift', 'squash', mergeMessage, { historyIntent: 'rewrite-private', sourceCommit, expectedTarget: inspected.target! });
+    expect(refused).toMatchObject({ success: false, reasonCode: 'TARGET_MISMATCH', mutation: 'none' });
+    // A root-shaped expectation cannot redirect the run either.
+    const rootRedirect = await fx.core.merge('drift', 'squash', mergeMessage, { historyIntent: 'rewrite-private', sourceCommit, expectedTarget: await readWorktreeTargetIdentity(fx.repoPath) });
+    expect(rootRedirect).toMatchObject({ success: false, reasonCode: 'TARGET_MISMATCH' });
+
+    await simpleGit(fx.checkoutPath('alpha')).raw(['switch', 'alpha']);
+    const restored = (await fx.core.inspect('drift'))!;
+    expect(restored.targetBinding?.status).toBe('ok');
+    expect(await fx.core.merge('drift', 'squash', mergeMessage, { historyIntent: 'rewrite-private', sourceCommit, expectedTarget: restored.target! })).toMatchObject({ success: true, merged: true });
+  });
+
+  it('starts at an explicit retained source commit and leaves the retained source branch untouched', async () => {
+    const fx = await targetedFixture();
+    await fx.checkouts.create({ id: 'root/feature', branch: 'feature', baseRef: 'main' });
+    await fx.checkouts.create({ id: 'root/release', branch: 'release', baseRef: 'main' });
+    await fx.commitIn(fx.checkoutPath('release'), 'release-only.txt');
+    const featureTip = await fx.commitIn(fx.checkoutPath('feature'), 'feature.txt');
+    const featureBefore = await readWorktreeTargetIdentity(fx.checkoutPath('feature'));
+
+    // The source pin need not descend from the target.
+    const run = await fx.core.create({ runId: 'promote', target: 'root/release', baseRef: featureTip });
+    expect(run).toMatchObject({ baseCommit: featureTip, commit: featureTip });
+    const inspected = (await fx.core.inspect('promote'))!;
+    const merged = await fx.core.merge('promote', 'merge', mergeMessage, { historyIntent: 'preserve-source', sourceCommit: featureTip, expectedTarget: inspected.target!, cleanup: 'worktree+branch' });
+    expect(merged).toMatchObject({ success: true, merged: true, cleanup: { outcome: 'complete' } });
+    expect(gitIsAncestor(fx.repoPath, featureTip, 'release')).toBe(true);
+    expect(await readWorktreeTargetIdentity(fx.checkoutPath('feature'))).toEqual(featureBefore);
+    expect((await simpleGit(fx.checkoutPath('feature')).raw(['status', '--porcelain'])).trim()).toBe('');
+
+    await expect(fx.core.create({ runId: 'bad-base', target: 'root/release', baseRef: '--output=x' })).rejects.toThrow('Invalid baseRef');
+    await expect(fx.core.create({ runId: 'no-target', baseRef: featureTip })).rejects.toThrow('baseRef applies only to a targeted run');
+    await expect(fx.core.create({ runId: 'wrong-repo', target: 'root/release', repoIds: ['api'] })).rejects.toThrow('repoIds must be omitted or exactly [root]');
+  }, 30_000);
+
+  it('cleans up a targeted run against its bound target, not the branch the root has checked out', async () => {
+    const fx = await targetedFixture();
+    await fx.checkouts.create({ id: 'root/alpha', branch: 'alpha', baseRef: 'main' });
+    const integrated = await fx.core.create({ runId: 'integrated', target: 'root/alpha' });
+    const sourceCommit = await fx.commitIn(integrated.path, 'kept.txt');
+    const inspected = (await fx.core.inspect('integrated'))!;
+    expect(await fx.core.merge('integrated', 'merge', mergeMessage, { historyIntent: 'preserve-source', sourceCommit, expectedTarget: inspected.target! })).toMatchObject({ success: true, merged: true });
+    // The root branch never received the commit; the bound target did, so the branch may go.
+    expect(gitIsAncestor(fx.repoPath, sourceCommit, 'main')).toBe(false);
+    expect((await fx.core.cleanup('integrated', true)).cleanup).toMatchObject({ outcome: 'complete', branchDeletion: { status: 'succeeded' } });
+
+    const pending = await fx.core.create({ runId: 'pending', target: 'root/alpha' });
+    expect(pending.branch).toBe('hive-targeted/adhoc/pending');
+    const unmerged = await fx.commitIn(pending.path, 'unmerged.txt');
+    await fx.repoGit.raw(['merge', '--ff-only', 'hive-targeted/adhoc/pending']);
+    // Containment in the root's branch is not containment in the bound target, however often cleanup is repeated:
+    // the binding survives the removed worktree while the branch remains.
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const kept = await fx.core.cleanup('pending', true);
+      expect(kept.cleanup.branchDeletion).toMatchObject({ status: 'failed' });
+      expect(kept.cleanup.branchDeletion.error).toContain('not in its bound target root/alpha');
+      expect(await branchExists(fx.repoGit, 'hive-targeted/adhoc/pending')).toBe(true);
+      expect(await pathExists(path.join(fx.hiveDir, '.worktrees', 'adhoc', 'pending.json'))).toBe(true);
+    }
+    expect(await fx.core.get('pending')).toBeNull();
+    expect((await fx.core.cleanup('pending', true, { discard: true })).cleanup).toMatchObject({ outcome: 'complete', branchDeletion: { status: 'succeeded' } });
+    expect(await pathExists(path.join(fx.hiveDir, '.worktrees', 'adhoc', 'pending.json'))).toBe(false);
+    expect(gitIsAncestor(fx.repoPath, unmerged, 'main')).toBe(true);
+  }, 30_000);
+
+  it('keeps the binding of a creation Git interrupted, through recovery and repeated cleanup', async () => {
+    const fx = await targetedFixture();
+    await fx.checkouts.create({ id: 'root/alpha', branch: 'alpha', baseRef: 'main' });
+    const hooks = await fs.mkdtemp(path.join(os.tmpdir(), 'hive-targeted-hooks-'));
+    tempDirs.push(hooks);
+    await fs.writeFile(path.join(hooks, 'post-checkout'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+    await fx.repoGit.raw(['config', 'core.hooksPath', hooks]);
+    const sidecar = path.join(fx.hiveDir, '.worktrees', 'adhoc', 'hooked.json');
+
+    await expect(fx.core.create({ runId: 'hooked', target: 'root/alpha' })).rejects.toThrow(/Git left a worktree or branch, so its metadata .* is kept/);
+    await fx.repoGit.raw(['config', '--unset', 'core.hooksPath']);
+    expect(JSON.parse(await fs.readFile(sidecar, 'utf-8'))).toMatchObject({ mode: 'adhoc-targeted', branch: 'hive-targeted/adhoc/hooked', target: { id: 'root/alpha' } });
+    expect(await branchExists(fx.repoGit, 'hive-targeted/adhoc/hooked')).toBe(true);
+    await expect(fx.core.cleanup('hooked', true)).rejects.toThrow(/interrupted/i);
+
+    const recovery = new WorktreeOperationRecoveryService({ baseDir: fx.repoPath, hiveDir: fx.hiveDir });
+    const [pending] = await recovery.list();
+    expect(pending).toMatchObject({ marker: { kind: 'create', subject: { type: 'adhoc', runId: 'hooked' } }, recovery: { available: true } });
+    await recovery.recover({ operationId: pending!.operationId, markerDigest: pending!.markerDigest, observedStateDigest: pending!.observedStateDigest, mutatorsStopped: true });
+
+    // The interrupted placement is a targeted run, never a legacy one.
+    expect(await fx.core.get('hooked')).toMatchObject({ mode: 'adhoc-targeted', targetBinding: { id: 'root/alpha' } });
+    expect((await fx.core.cleanup('hooked', true)).cleanup).toMatchObject({ outcome: 'complete', branchDeletion: { status: 'succeeded' } });
+    expect(await pathExists(sidecar)).toBe(false);
+    expect((await fx.core.cleanup('hooked', true)).cleanup).toMatchObject({ worktreeRemoval: { status: 'already_absent' } });
+    expect(await branchExists(fx.repoGit, 'hive-targeted/adhoc/hooked')).toBe(false);
+  });
+
+  it('refuses a targeted branch whose sidecar is missing or malformed instead of treating it as a legacy run', async () => {
+    const fx = await targetedFixture();
+    await fx.checkouts.create({ id: 'root/alpha', branch: 'alpha', baseRef: 'main' });
+    const run = await fx.core.create({ runId: 'lost', target: 'root/alpha' });
+    const sourceCommit = await fx.commitIn(run.path, 'lost.txt');
+    // The root's branch contains the source; the bound target does not.
+    await fx.repoGit.raw(['merge', '--ff-only', 'hive-targeted/adhoc/lost']);
+    const sidecar = path.join(fx.hiveDir, '.worktrees', 'adhoc', 'lost.json');
+    const binding = await fs.readFile(sidecar, 'utf-8');
+    const expectedTarget = await readWorktreeTargetIdentity(fx.repoPath);
+
+    for (const damage of [() => fs.rm(sidecar), () => fs.writeFile(sidecar, '{')]) {
+      await damage();
+      const missing = /its metadata .* is missing|Invalid JSON in workspace metadata/;
+      await expect(fx.core.get('lost')).rejects.toThrow(missing);
+      await expect(fx.core.inspect('lost')).rejects.toThrow(missing);
+      await expect(fx.core.cleanup('lost', true)).rejects.toThrow(missing);
+      await expect(fx.core.merge('lost', 'merge', mergeMessage, { historyIntent: 'preserve-source', sourceCommit, expectedTarget })).rejects.toThrow(missing);
+      expect(await branchExists(fx.repoGit, 'hive-targeted/adhoc/lost')).toBe(true);
+      expect(await pathExists(run.path)).toBe(true);
+    }
+
+    await fs.writeFile(sidecar, binding);
+    expect(await fx.core.get('lost')).toMatchObject({ mode: 'adhoc-targeted', commit: sourceCommit });
+
+    // A legacy run that never had a sidecar keeps working without one.
+    const legacy = await fx.core.create({ runId: 'plain' });
+    await fs.rm(path.join(fx.hiveDir, '.worktrees', 'adhoc', 'plain.json'), { force: true });
+    expect(await fx.core.get('plain')).toMatchObject({ mode: 'adhoc-single', branch: 'hive/adhoc/plain', path: legacy.path });
+    expect((await fx.core.cleanup('plain', true)).cleanup).toMatchObject({ outcome: 'complete' });
+  });
+
+  it('reuses a targeted run only for the same starting intent', async () => {
+    const fx = await targetedFixture();
+    await fx.checkouts.create({ id: 'root/alpha', branch: 'alpha', baseRef: 'main' });
+    await fx.checkouts.create({ id: 'root/feature', branch: 'feature', baseRef: 'main' });
+    const featureTip = await fx.commitIn(fx.checkoutPath('feature'), 'feature.txt');
+
+    const atHead = await fx.core.create({ runId: 'at-head', target: 'root/alpha' });
+    expect(await fx.core.create({ runId: 'at-head', target: 'root/alpha' })).toEqual(atHead);
+    await expect(fx.core.create({ runId: 'at-head', target: 'root/alpha', baseRef: featureTip }))
+      .rejects.toThrow(`started at its target's HEAD, ${atHead.baseCommit}; baseRef "${featureTip}" now resolves to ${featureTip}`);
+
+    const pinned = await fx.core.create({ runId: 'pinned', target: 'root/alpha', baseRef: 'feature' });
+    expect(pinned.baseCommit).toBe(featureTip);
+    expect(await fx.core.create({ runId: 'pinned', target: 'root/alpha', baseRef: featureTip })).toEqual(pinned);
+    await expect(fx.core.create({ runId: 'pinned', target: 'root/alpha' })).rejects.toThrow('a request without baseRef starts at the target\'s HEAD');
+    // The named branch moved since the run was created.
+    const moved = await fx.commitIn(fx.checkoutPath('feature'), 'later.txt');
+    await expect(fx.core.create({ runId: 'pinned', target: 'root/alpha', baseRef: 'feature' }))
+      .rejects.toThrow(`started at baseRef "feature", ${featureTip}; baseRef "feature" now resolves to ${moved}`);
+    // A run switched off its branch is not reused either.
+    await simpleGit(pinned.path).raw(['switch', '-c', 'elsewhere']);
+    await expect(fx.core.create({ runId: 'pinned', target: 'root/alpha', baseRef: featureTip })).rejects.toThrow('current branch does not match');
+  });
+
+  it('refuses to reinterpret a retained targeted run as an untargeted one, in a root or a manifest project', async () => {
+    const root = await targetedFixture();
+    await root.checkouts.create({ id: 'root/alpha', branch: 'alpha', baseRef: 'main' });
+    const composite = await createCompositeFixture();
+    await new RetainedCheckoutService({ baseDir: composite.baseDir, hiveDir: composite.hiveDir, repositoryResolver: () => composite.repos })
+      .create({ id: 'api/release', branch: 'release', baseRef: 'main' });
+    const cases = [
+      { hiveDir: root.hiveDir, service: root.core, git: root.repoGit, target: 'root/alpha', untargeted: {} },
+      { hiveDir: composite.hiveDir, service: composite.service, git: composite.apiGit, target: 'api/release', untargeted: { repoIds: ['api', 'web'] } },
+    ];
+    for (const { hiveDir, service, git, target, untargeted } of cases) {
+      const run = await service.create({ runId: 'kept', target });
+      await root.commitIn(run.path, 'kept.txt');
+      // Worktree-only cleanup keeps the unmerged branch and with it the binding.
+      expect((await service.cleanup('kept', false)).cleanup).toMatchObject({ worktreeRemoval: { status: 'succeeded' } });
+      const sidecar = path.join(hiveDir, '.worktrees', 'adhoc', 'kept.json');
+      const binding = await fs.readFile(sidecar);
+      const tip = (await git.revparse(['refs/heads/hive-targeted/adhoc/kept'])).trim();
+
+      await expect(service.create({ runId: 'kept', ...untargeted })).rejects.toThrow(`Ad-hoc run kept is bound to retained checkout ${target}`);
+      expect(await fs.readFile(sidecar)).toEqual(binding);
+      expect((await git.revparse(['refs/heads/hive-targeted/adhoc/kept'])).trim()).toBe(tip);
+      expect(await pathExists(run.path)).toBe(false);
+      expect((await git.raw(['branch', '--list', 'hive/adhoc/*'])).trim()).toBe('');
+      expect(await service.get('kept')).toBeNull();
+    }
+  }, 30_000);
+
+  it('keeps an existing composite run working beside a matching targeted branch name in a repository it does not own', async () => {
+    const fx = await createCompositeFixture();
+    const created = await fx.service.create({ runId: 'legacy-run', repoIds: ['api'] });
+    // A branch that predates targeted runs in a repository the run never selected.
+    await fx.webGit.raw(['branch', 'hive-targeted/adhoc/legacy-run']);
+    const unrelatedTip = (await fx.webGit.revparse(['refs/heads/hive-targeted/adhoc/legacy-run'])).trim();
+    const apiTarget = await readWorktreeTargetIdentity(fx.repos[0]!.path);
+
+    expect(await fx.service.get('legacy-run')).toMatchObject({ mode: 'adhoc-composite', repos: { api: { commit: created.repos!.api.commit } } });
+    expect(await fx.service.inspect('legacy-run')).toMatchObject({ mode: 'adhoc-composite', repos: { api: { target: apiTarget } } });
+    expect(await fx.service.create({ runId: 'legacy-run', repoIds: ['api'] })).toMatchObject({ mode: 'adhoc-composite' });
+    expect((await fx.service.cleanup('legacy-run', true)).cleanup).toMatchObject({ outcome: 'complete' });
+    expect((await fx.webGit.revparse(['refs/heads/hive-targeted/adhoc/legacy-run'])).trim()).toBe(unrelatedTip);
+    expect(await readWorktreeTargetIdentity(fx.repos[0]!.path)).toEqual(apiTarget);
+  });
+
+  it('keeps a sidecarless root run working after the project declares the root and another repository holding a matching targeted branch', async () => {
+    const fx = await targetedFixture();
+    const old = await fx.core.create({ runId: 'old-run' });
+    // A run created before single sidecars existed.
+    await fs.rm(path.join(fx.hiveDir, '.worktrees', 'adhoc', 'old-run.json'));
+    const sourceCommit = await fx.commitIn(old.path, 'old.txt');
+    const { repoPath: libPath, repoGit: libGit } = await createTempRepo();
+    await libGit.raw(['branch', 'hive-targeted/adhoc/old-run']);
+    const unrelatedTip = (await libGit.revparse(['refs/heads/hive-targeted/adhoc/old-run'])).trim();
+    const repositories = [{ id: 'app', path: fx.repoPath, root: fx.repoPath }, { id: 'lib', path: libPath, root: libPath }];
+    const service = new CoreAdhocWorktreeService({ baseDir: fx.repoPath, hiveDir: fx.hiveDir, repositoryResolver: () => repositories });
+
+    expect(await service.get('old-run')).toMatchObject({ mode: 'adhoc-single', branch: 'hive/adhoc/old-run', path: old.path, commit: sourceCommit });
+    const inspected = (await service.inspect('old-run'))!;
+    expect(await service.merge('old-run', 'merge', mergeMessage, { historyIntent: 'preserve-source', sourceCommit, expectedTarget: inspected.target!, cleanup: 'worktree+branch' }))
+      .toMatchObject({ success: true, merged: true, cleanup: { outcome: 'complete' } });
+    expect(gitIsAncestor(fx.repoPath, sourceCommit, 'main')).toBe(true);
+    expect((await libGit.revparse(['refs/heads/hive-targeted/adhoc/old-run'])).trim()).toBe(unrelatedTip);
+    // Without a worker of its own at the placement, the run ID still meets that branch as a lost binding.
+    await expect(service.create({ runId: 'old-run', repoIds: ['app'] })).rejects.toThrow(/exists in repository lib, but its metadata .* is missing/);
+  });
+
+  it('stays out of task listing and cleanup, also beside the task worktrees of a feature named adhoc', async () => {
+    const fx = await targetedFixture();
+    await fx.checkouts.create({ id: 'root/alpha', branch: 'alpha', baseRef: 'main' });
+    const run = await fx.core.create({ runId: 'beside-tasks', target: 'root/alpha' });
+    const plain = await fx.core.create({ runId: 'plain-run' });
+    // A run created before single sidecars existed, with no task record of that name.
+    const sidecarlessRun = await fx.core.create({ runId: 'old-run' });
+    await fs.rm(path.join(fx.hiveDir, '.worktrees', 'adhoc', 'old-run.json'));
+    const tasks = new WorktreeService({ baseDir: fx.repoPath, hiveDir: fx.hiveDir });
+    expect(await tasks.list()).toEqual({ worktrees: [], errors: [] });
+    expect((await tasks.cleanup()).removed).toEqual([]);
+
+    // Task worktrees of a feature whose logical name is adhoc share the runs' directory.
+    const writeTaskStatus = async (task: string, status: object) => {
+      const taskPath = path.join(fx.hiveDir, 'features', 'adhoc', 'tasks', task);
+      await fs.mkdir(taskPath, { recursive: true });
+      await fs.writeFile(path.join(taskPath, 'status.json'), JSON.stringify({ origin: 'plan', ...status }));
+    };
+    await writeTaskStatus('01-recorded', { status: 'pending' });
+    await writeTaskStatus('02-old-task', { status: 'pending' });
+    const recorded = await tasks.create('adhoc', '01-recorded');
+    const oldTask = await tasks.create('adhoc', '02-old-task');
+    // A task worktree from before single sidecars: those releases recorded its base commit in the task status.
+    await fs.rm(path.join(fx.hiveDir, '.worktrees', 'adhoc', '02-old-task.json'));
+    await writeTaskStatus('02-old-task', { status: 'in_progress', baseCommit: oldTask.commit });
+    // A task worktree from before single sidecars whose status records no base commit. A sidecarless run named 03-ship
+    // beside this task record would leave exactly these bytes (path, branch, registration), so nothing on disk says which
+    // owns it.
+    await writeTaskStatus('03-ship', { status: 'pending' });
+    const unbasedTask = await tasks.create('adhoc', '03-ship');
+    const unbasedSidecar = path.join(fx.hiveDir, '.worktrees', 'adhoc', '03-ship.json');
+    await fs.rm(unbasedSidecar);
+    await writeTaskStatus('03-ship', { status: 'in_progress' });
+    const unbasedStatusPath = path.join(fx.hiveDir, 'features', 'adhoc', 'tasks', '03-ship', 'status.json');
+    const unbasedStatus = await fs.readFile(unbasedStatusPath, 'utf8');
+    const ambiguous = { path: unbasedTask.path, reason: expect.stringContaining('could be ad-hoc run 03-ship or the worktree of task adhoc/03-ship') };
+    // A sidecarless run whose ID reads as a candidate of the based task 02-old-task. Its path and branch
+    // (hive/adhoc/02-old-task--blue) differ from that candidate's (hive/adhoc/02-old-task-blue), so the task's base
+    // commit says nothing about it.
+    const candidateShapedRun = await fx.core.create({ runId: '02-old-task--blue' });
+    await fs.rm(path.join(fx.hiveDir, '.worktrees', 'adhoc', '02-old-task--blue.json'));
+    const candidateShaped = { path: candidateShapedRun.path, reason: expect.stringContaining('could be ad-hoc run 02-old-task--blue or the worktree of task adhoc/02-old-task (candidate blue)') };
+    // A task candidate whose sidecar names it stays the task's.
+    const recordedCandidate = await tasks.create('adhoc', '01-recorded', undefined, 'green');
+
+    // Listings, which nobody pointed at the entry, report its owner as unknown and leave it alone.
+    for (const selector of [undefined, 'adhoc']) {
+      const listed = await tasks.list(selector);
+      expect(listed.errors).toEqual([candidateShaped, ambiguous]);
+      expect(listed.worktrees.map((worktree) => [worktree.feature, worktree.step, worktree.path])).toEqual([
+        ['adhoc', '01-recorded', recorded.path],
+        ['adhoc', '01-recorded', recordedCandidate.path],
+        ['adhoc', '02-old-task', oldTask.path],
+      ]);
+      expect((await tasks.cleanup(selector)).removed).toEqual([]);
+    }
+    // A call that names the task keeps its legacy behavior: Git registration and branch guards, then the placement.
+    const legacy = { path: unbasedTask.path, branch: 'hive/adhoc/03-ship', commit: unbasedTask.commit, feature: 'adhoc', step: '03-ship', mode: 'legacy' as const };
+    expect(await tasks.get('adhoc', '03-ship')).toEqual(legacy);
+    expect(await tasks.inspect('adhoc', '03-ship')).toMatchObject(legacy);
+    expect(await tasks.create('adhoc', '03-ship')).toEqual(legacy);
+    expect(await fs.readFile(unbasedStatusPath, 'utf8')).toBe(unbasedStatus);
+    expect(await pathExists(unbasedSidecar)).toBe(false);
+    // Metadata that names a run still refuses a call naming a task.
+    const declaredRun = tasks.get('adhoc', 'plain-run');
+    await expect(declaredRun).rejects.toBeInstanceOf(WorktreeLinkageError);
+    await expect(declaredRun).rejects.toThrow(`${plain.path} is an ad-hoc run, not a worktree of task adhoc/plain-run`);
+    for (const [runId, created] of [['beside-tasks', run], ['plain-run', plain], ['old-run', sidecarlessRun], ['02-old-task--blue', candidateShapedRun]] as const) {
+      expect(await fx.core.get(runId)).toMatchObject({ path: created.path });
+    }
+    const { workers, errors } = await new CheckoutInspector({ baseDir: fx.repoPath, hiveDir: fx.hiveDir }).listWorkers();
+    expect(workers.map(({ kind, feature, task, candidate, runId }) => ({ kind, feature, task, candidate, runId }))).toEqual([
+      { kind: 'task', feature: 'adhoc', task: '01-recorded', candidate: undefined, runId: undefined },
+      { kind: 'task', feature: 'adhoc', task: '01-recorded', candidate: 'green', runId: undefined },
+      { kind: 'task', feature: 'adhoc', task: '02-old-task', candidate: undefined, runId: undefined },
+      { kind: 'adhoc', feature: undefined, task: undefined, candidate: undefined, runId: 'beside-tasks' },
+      { kind: 'adhoc', feature: undefined, task: undefined, candidate: undefined, runId: 'old-run' },
+      { kind: 'adhoc', feature: undefined, task: undefined, candidate: undefined, runId: 'plain-run' },
+    ]);
+    expect(workers.every((worker) => worker.error === undefined)).toBe(true);
+    expect(errors).toEqual([candidateShaped, ambiguous]);
   }, 30_000);
 });

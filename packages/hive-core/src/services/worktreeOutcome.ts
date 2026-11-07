@@ -7,6 +7,7 @@
  * `retryable` is always derived so the hard invariant holds everywhere:
  * a retryable result never reports a durable mutation.
  */
+import type { SimpleGit } from 'simple-git';
 
 export type WorktreeOperationPhase =
   | 'validation'
@@ -450,6 +451,25 @@ export function buildThrownCleanupOutcome(
 
 export function cleanupStepDone(step: CleanupStepOutcome): boolean {
   return step.status === 'succeeded' || step.status === 'already_absent';
+}
+
+/**
+ * Compare-and-delete one local branch at the commit the caller pinned. Without
+ * a pin the branch is reported already absent, so a repeated cleanup still
+ * describes reality; a branch still checked out anywhere is refused.
+ */
+export async function deleteBranchStep(git: SimpleGit, branchName: string, expectedOldOid: string | undefined): Promise<CleanupStepOutcome> {
+  if (!expectedOldOid) return { status: 'already_absent' };
+  try {
+    const checkedOut = (await git.raw(['worktree', 'list', '--porcelain']))
+      .split('\n')
+      .some((line) => line === `branch refs/heads/${branchName}`);
+    if (checkedOut) return { status: 'failed', error: `Refusing to delete checked-out branch ${branchName}` };
+    await git.raw(['update-ref', '-d', `refs/heads/${branchName}`, expectedOldOid]);
+    return { status: 'succeeded' };
+  } catch (error: unknown) {
+    return { status: 'failed', error: (error as Error).message || 'branch compare-and-delete failed' };
+  }
 }
 
 export function buildNotRequestedCleanupOutcome(): WorktreeCleanupOutcome {

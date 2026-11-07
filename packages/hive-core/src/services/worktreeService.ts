@@ -2,14 +2,34 @@ import * as fs from "fs/promises";
 import * as path from "path";
 import simpleGit, { SimpleGit } from "simple-git";
 import type { ResolvedRepository, TaskStatus } from "../types.js";
-import { readJson, resolveFeatureDirectoryName } from "../utils/paths.js";
+import { acquireLock, readJson, resolveFeatureDirectoryName } from "../utils/paths.js";
 import { projectRootsMatch } from '../utils/repositoryConfig.js';
 import { validateStoredTaskStatus } from './taskService.js';
 import type {
   TaskWorkspaceManifest as WorkspaceManifest,
   SingleWorkspaceMetadata,
 } from './workspaceManifest.js';
-import { readCompositeWorkspaceManifest, readSingleWorkspaceMetadata, writeWorkspaceJsonAtomic } from './workspaceManifest.js';
+import {
+  adhocGroupEntryOwner,
+  readCompositeWorkspaceManifest,
+  readSingleWorkspaceMetadata,
+  readTargetedWorkspaceMetadata,
+  resolveWorkerTaskStatusPath,
+  writeWorkspaceJsonAtomic,
+} from './workspaceManifest.js';
+import type { AdhocGroupEntryOwner, TargetBinding } from './workspaceManifest.js';
+import { parseRetainedCheckoutId, projectRepositories } from './retainedCheckout.js';
+import type { RetainedCheckoutContext } from './retainedCheckout.js';
+import {
+  createTargetedPlacement,
+  inspectTargetBinding,
+  mergeTargetedPlacement,
+  readTargetedPlacement,
+  removeTargetedPlacement,
+  targetedRepositoryPath,
+  targetedTaskBranch,
+} from './targetedPlacement.js';
+import type { TargetBindingStatus, TargetedPlacement, TargetedPlacementSpec } from './targetedPlacement.js';
 import {
   buildCleanupOutcome,
   buildNotRequestedCleanupOutcome,
@@ -19,6 +39,7 @@ import {
   CleanupActionError,
   cleanupFacts,
   cleanupStepDone,
+  deleteBranchStep,
   classifyThrownWorktreeError,
   classifyWorktreeOutcome,
   combineRepoCleanupOutcomes,
@@ -75,7 +96,7 @@ import type {
   WorktreeRepositoryMergeResult,
 } from './worktreeOutcome.js';
 
-export type WorktreeMode = 'legacy' | 'composite';
+export type WorktreeMode = 'legacy' | 'composite' | 'targeted';
 
 export interface WorktreeRepoInfo {
   path: string;
@@ -99,6 +120,10 @@ export interface WorktreeInfo {
   baseCommit?: string;
   clean?: boolean;
   candidate?: string;
+  /** Targeted tasks: the repository the single worktree belongs to. */
+  repoId?: string;
+  /** Targeted tasks: the retained checkout frozen as the integration target; inspection adds how the live checkout relates to it. */
+  targetBinding?: TargetBinding & { status?: TargetBindingStatus; detail?: string };
   target?: WorktreeTargetIdentity | null;
   comparison?: WorktreeTargetComparison;
   /** Interrupted operations or pre-native lock files guarding this workspace or its repositories; inspection only. */
@@ -274,6 +299,8 @@ interface RepositorySelection {
 
 interface WorkspaceRepositorySelection extends RepositorySelection {
   manifest: WorkspaceManifest | null;
+  /** Whether the workspace is a targeted worker; its placement is reread by the operation. */
+  targeted: boolean;
 }
 
 interface CreateRepositorySelection extends RepositorySelection {
@@ -341,11 +368,113 @@ export class WorktreeService {
 
   /** The repositories an operation on this task workspace touches: its persisted composite selection, or the single root. */
   private async selectWorkspaceRepositories(feature: string, step: string, attemptSlot?: string): Promise<WorkspaceRepositorySelection> {
+    const targetedPath = await targetedRepositoryPath(this.checkoutContext(), this.targetedSpec(feature, step, attemptSlot));
+    if (targetedPath !== null) return { manifest: null, targeted: true, repositoryPaths: [targetedPath] };
     const manifest = await this.readWorkspaceManifest(feature, step, attemptSlot);
     return {
       manifest,
+      targeted: false,
       repositoryPaths: this.workspaceRepositoryPaths(manifest, this.getWorktreePath(feature, step, attemptSlot)),
     };
+  }
+
+  private checkoutContext(): RetainedCheckoutContext {
+    return { hiveDir: this.config.hiveDir, repositories: projectRepositories(this.config.baseDir, this.resolveRepositories()) };
+  }
+
+  private targetedSpec(feature: string, step: string, attemptSlot?: string): TargetedPlacementSpec {
+    return {
+      mode: 'targeted',
+      worktreePath: this.getWorktreePath(feature, step, attemptSlot),
+      metadataPath: this.getSingleMetadataPath(feature, step, attemptSlot),
+      branch: targetedTaskBranch(feature, this.worktreeBranchStep(step, attemptSlot)),
+      owner: { feature, task: step, ...(attemptSlot !== undefined ? { candidate: attemptSlot } : {}) },
+      untargeted: { repositoryPath: this.config.baseDir, branch: this.getLegacyBranchName(feature, step, attemptSlot) },
+    };
+  }
+
+  private targetedInfo(feature: string, step: string, placement: TargetedPlacement, commit: string, attemptSlot?: string): WorktreeInfo {
+    const { metadata } = placement;
+    return {
+      path: metadata.worktreePath,
+      branch: metadata.branch,
+      commit,
+      feature,
+      step,
+      mode: 'targeted',
+      baseCommit: metadata.baseCommit,
+      repoId: metadata.repoId,
+      targetBinding: { ...metadata.target },
+      ...(attemptSlot !== undefined ? { candidate: attemptSlot } : {}),
+    };
+  }
+
+  private async readTargetedTask(feature: string, step: string, attemptSlot?: string): Promise<{ placement: TargetedPlacement; info: WorktreeInfo | null } | null> {
+    const placement = await readTargetedPlacement(this.checkoutContext(), this.targetedSpec(feature, step, attemptSlot));
+    if (!placement) return null;
+    if (!placement.present) return { placement, info: null };
+    const commit = (await this.getGit(placement.metadata.worktreePath).revparse(['HEAD'])).trim();
+    return { placement, info: this.targetedInfo(feature, step, placement, commit, attemptSlot) };
+  }
+
+  /**
+   * The retained checkout a task's status declares as its integration target; null when the status is missing or
+   * names none. A status that exists but cannot be read, or names a malformed target, is refused: it may be the
+   * record of a targeted task, so no untargeted path may stand in for it.
+   */
+  private async readTaskTarget(feature: string, step: string): Promise<{ target: string; repoIds?: string[] } | null> {
+    const statusPath = await this.getStepStatusPath(feature, step);
+    let status: TaskStatus | null;
+    try {
+      status = readJson<TaskStatus>(statusPath);
+      if (status === null) return null;
+      validateStoredTaskStatus(status, step);
+      if (status.target !== undefined) parseRetainedCheckoutId(status.target);
+    } catch (error) {
+      throw new Error(`Task ${feature}/${step} has no readable task status at ${statusPath}: ${(error as Error).message}`);
+    }
+    return status.target !== undefined ? { target: status.target, ...(status.repoIds ? { repoIds: status.repoIds } : {}) } : null;
+  }
+
+  /** Refuse a targeted worker whose task status no longer names the retained checkout it is bound to. */
+  private async assertTaskTargetMatches(feature: string, step: string, placement: TargetedPlacement | null): Promise<void> {
+    const declared = (await this.readTaskTarget(feature, step))?.target ?? null;
+    const bound = placement?.metadata.target.id ?? null;
+    if (declared !== bound) {
+      throw new WorktreeTopologyMismatchError(
+        `Task ${feature}/${step} declares target ${declared ?? '(none)'}, but its worker ${bound === null ? 'has no targeted metadata' : `is bound to ${bound}`}`,
+      );
+    }
+  }
+
+  private async createTargeted(feature: string, step: string, target: { target: string; repoIds?: string[] }, baseRef: string | undefined, attemptSlot?: string): Promise<WorktreeInfo> {
+    const { repoId } = parseRetainedCheckoutId(target.target);
+    if (target.repoIds && (target.repoIds.length !== 1 || target.repoIds[0] !== repoId)) {
+      throw new WorktreeTopologyMismatchError(`Task ${step} targets ${target.target}, so its Repos must be omitted or exactly ${repoId}`);
+    }
+    const select = async (): Promise<RepositorySelection> => {
+      const repository = this.checkoutContext().repositories.find((candidate) => candidate.id === repoId);
+      if (!repository) throw new WorktreeTopologyMismatchError(`Task ${step} targets ${target.target}, whose repository ${repoId} this project does not configure`);
+      return { repositoryPaths: [repository.path] };
+    };
+    // Task sync rewrites a target under the task's status lock, after checking that no worker placement or binding
+    // exists; the binding is published under that lock once the status still declares the target read before.
+    const bind = async (publish: () => Promise<void>) => {
+      const release = await acquireLock(await this.getStepStatusPath(feature, step), { staleLockTTL: Number.POSITIVE_INFINITY });
+      try {
+        const declared = (await this.readTaskTarget(feature, step))?.target ?? null;
+        if (declared !== target.target) {
+          throw new WorktreeTopologyMismatchError(`Task ${feature}/${step} now declares target ${declared ?? '(none)'}, not ${target.target}; inspect the task and create its worker again`);
+        }
+        await publish();
+      } finally {
+        release();
+      }
+    };
+    return this.mutate('create', { feature, step, attemptSlot }, select, async (_selection, guard) => {
+      const created = await createTargetedPlacement(guard, this.checkoutContext(), this.targetedSpec(feature, step, attemptSlot), target.target, baseRef, bind);
+      return this.targetedInfo(feature, step, created, created.commit, attemptSlot);
+    });
   }
 
   /** Read-only: skips the optional index refresh so inspection takes no index.lock. */
@@ -452,6 +581,14 @@ export class WorktreeService {
     return path.join(this.config.hiveDir, ".worktrees");
   }
 
+  /**
+   * Who owns an entry of `.hive/.worktrees/<feature>/`. Only the `adhoc` group is shared, with ad-hoc runs; task listing
+   * and cleanup act on an entry there only when `adhocGroupEntryOwner` shows it is a task's.
+   */
+  private async groupEntryOwner(feature: string, entry: string): Promise<AdhocGroupEntryOwner> {
+    return feature === 'adhoc' ? adhocGroupEntryOwner(this.config.baseDir, this.config.hiveDir, entry) : { owner: 'task' };
+  }
+
   private normalizeAttemptSlot(attemptSlot?: string): string | undefined {
     if (attemptSlot === undefined) return undefined;
     if (!attemptSlot.trim() || attemptSlot !== attemptSlot.trim()
@@ -506,15 +643,7 @@ export class WorktreeService {
 
   private async getStepStatusPath(feature: string, step: string): Promise<string> {
     const featureDir = resolveFeatureDirectoryName(this.config.baseDir, feature);
-    const featurePath = path.join(this.config.hiveDir, "features", featureDir);
-
-    const tasksPath = path.join(featurePath, "tasks", step, "status.json");
-    try {
-      await fs.access(tasksPath);
-      return tasksPath;
-    } catch {}
-
-    return path.join(featurePath, "execution", step, "status.json");
+    return resolveWorkerTaskStatusPath(path.join(this.config.hiveDir, "features", featureDir), step);
   }
 
   private getLegacyBranchName(feature: string, step: string, attemptSlot?: string): string {
@@ -581,6 +710,10 @@ export class WorktreeService {
   }
 
   async create(feature: string, step: string, baseBranch?: string, attemptSlot?: string): Promise<WorktreeInfo> {
+    const target = await this.readTaskTarget(feature, step);
+    if (target) return this.createTargeted(feature, step, target, baseBranch, attemptSlot);
+    const bound = await readTargetedPlacement(this.checkoutContext(), this.targetedSpec(feature, step, attemptSlot));
+    if (bound) await this.assertTaskTargetMatches(feature, step, bound);
     const composite = await this.isCompositeTask(feature, step);
     if (!composite) {
       const statusPath = await this.getStepStatusPath(feature, step);
@@ -669,7 +802,7 @@ export class WorktreeService {
       const removed = await git.raw(['worktree', 'remove', worktreePath]).then(() => true).catch(() => false);
       if (removed) {
         const pruned = await git.raw(['worktree', 'prune']).then(() => true).catch(() => false);
-        if (cleanupStepDone(await this.deleteBranchStep(git, branchName, commit)) && pruned) guard.markOutcomeKnown();
+        if (cleanupStepDone(await deleteBranchStep(git, branchName, commit)) && pruned) guard.markOutcomeKnown();
       }
       throw error;
     }
@@ -824,7 +957,7 @@ export class WorktreeService {
         const removed = await created.git.raw(["worktree", "remove", this.getRepoWorktreePath(feature, step, created.repoId, attemptSlot)])
           .then(() => true).catch(() => false);
         const pruned = await created.git.raw(["worktree", "prune"]).then(() => true).catch(() => false);
-        const branchDeleted = removed && cleanupStepDone(await this.deleteBranchStep(created.git, created.branchName, created.commit));
+        const branchDeleted = removed && cleanupStepDone(await deleteBranchStep(created.git, created.branchName, created.commit));
         if (!pruned || !branchDeleted) rolledBack = false;
       }
       await this.removeEmptyWorkspaceRoot(compositeRoot);
@@ -841,6 +974,8 @@ export class WorktreeService {
   }
 
   async get(feature: string, step: string, attemptSlot?: string): Promise<WorktreeInfo | null> {
+    const targeted = await this.readTargetedTask(feature, step, attemptSlot);
+    if (targeted) return targeted.info;
     const manifest = await this.readWorkspaceManifest(feature, step, attemptSlot);
     if (manifest) {
       const compositeRoot = this.getCompositeRoot(feature, step, attemptSlot);
@@ -882,6 +1017,12 @@ export class WorktreeService {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
       throw error;
     }
+    // A caller naming this task keeps the earlier legacy behavior: a sidecarless run and task of the adhoc feature leave
+    // the same path and branch, so only metadata that names a run refuses the placement.
+    const owner = await this.groupEntryOwner(feature, this.worktreeDirectoryName(step, attemptSlot));
+    if (owner.owner === 'adhoc' && owner.declared) {
+      throw new WorktreeLinkageError(`Worktree linkage preflight failed: ${worktreePath} is an ad-hoc run, not a worktree of task ${feature}/${step}`);
+    }
     this.workspaceRepositoryPaths(null, worktreePath);
     await this.validateExactWorktreeRegistration(worktreePath, this.config.baseDir, 'legacy');
     await this.validateWorktreeBranch(worktreePath, branchName, 'legacy');
@@ -917,7 +1058,12 @@ export class WorktreeService {
       const info = await this.get(feature, step, attemptSlot);
       if (!info) return null;
       if (pending.length > 0) info.pendingOperations = pending;
-      if (info.repos) {
+      if (info.targetBinding) {
+        info.clean = await this.isCompletelyClean(this.getGit(info.path));
+        const { binding, status, detail, target, comparison } = await inspectTargetBinding(this.checkoutContext(), info.targetBinding, info.commit);
+        info.targetBinding = { ...binding, status, ...(detail !== undefined ? { detail } : {}) };
+        Object.assign(info, { target, comparison });
+      } else if (info.repos) {
         const trustedById = this.trustedRepositoriesForManifest(manifest!);
         for (const [repoId, repo] of Object.entries(info.repos)) {
           repo.clean = await this.isCompletelyClean(this.getGit(repo.path));
@@ -1045,7 +1191,9 @@ export class WorktreeService {
 
     let base = baseCommit;
     if (!base) {
-      base = (await readSingleWorkspaceMetadata(this.getSingleMetadataPath(feature, step, attemptSlot)))?.baseCommit;
+      const metadataPath = this.getSingleMetadataPath(feature, step, attemptSlot);
+      base = (await readTargetedWorkspaceMetadata(metadataPath))?.baseCommit
+        ?? (await readSingleWorkspaceMetadata(metadataPath))?.baseCommit;
     }
     if (!base) {
       try {
@@ -1171,7 +1319,12 @@ export class WorktreeService {
       'remove',
       { feature, step, attemptSlot },
       () => this.selectWorkspaceRepositories(feature, step, attemptSlot),
-      async ({ manifest }, guard) => {
+      async ({ manifest, targeted }, guard) => {
+        if (targeted) {
+          const placement = await readTargetedPlacement(this.checkoutContext(), this.targetedSpec(feature, step, attemptSlot));
+          if (!placement) throw new WorktreeTopologyMismatchError(`Task ${step} is no longer a targeted worker`);
+          return mergeCleanupResult(await removeTargetedPlacement(guard, this.targetedSpec(feature, step, attemptSlot), placement, deleteBranch, { discard: options.discard === true }));
+        }
         if (manifest) {
           return this.removeComposite(guard, feature, step, manifest, deleteBranch, options, attemptSlot);
         }
@@ -1214,7 +1367,7 @@ export class WorktreeService {
         ? branchPreparationError
           ? { status: 'failed', error: branchPreparationError }
           : cleanupStepDone(worktreeRemoval)
-          ? await this.deleteBranchStep(git, branchName, pinnedBranchCommit)
+          ? await deleteBranchStep(git, branchName, pinnedBranchCommit)
           : { status: 'not_attempted' }
         : { status: 'not_requested' },
     });
@@ -1347,6 +1500,14 @@ export class WorktreeService {
 
         for (const entry of steps) {
           const entryPath = path.join(featurePath, entry);
+          // Sidecar files sit beside their placements and are no placement to attribute.
+          if ((await fs.lstat(entryPath).catch(() => null))?.isFile()) continue;
+          const owner = await this.groupEntryOwner(feat, entry);
+          if (owner.owner === 'adhoc') continue;
+          if (owner.owner === 'unknown') {
+            results.errors.push({ path: entryPath, reason: owner.reason });
+            continue;
+          }
           try {
             const entryStat = await fs.lstat(entryPath).catch((error: NodeJS.ErrnoException) => {
               if (error.code === 'ENOENT') return null;
@@ -1393,6 +1554,7 @@ export class WorktreeService {
       const steps = await fs.readdir(featurePath).catch(() => []);
 
       for (const entry of steps) {
+        if ((await this.groupEntryOwner(feat, entry)).owner !== 'task') continue;
         const { step, attemptSlot } = this.parseWorktreeStepDirectory(entry);
         const worktreePath = path.join(featurePath, entry);
         const stepStat = await fs.lstat(worktreePath).catch(() => null);
@@ -1400,6 +1562,15 @@ export class WorktreeService {
         if (stepStat?.isSymbolicLink()) throw new WorktreeLinkageError(`Worktree linkage preflight failed: path contains a symlink (${worktreePath})`);
         if (!stepStat?.isDirectory()) continue;
 
+        const targeted = await readTargetedPlacement(this.checkoutContext(), this.targetedSpec(feat, step, attemptSlot));
+        if (targeted) {
+          const stale = !targeted.present || !(await this.getGit(worktreePath).revparse(['HEAD']).then(() => true, () => false));
+          if (stale) {
+            const outcome = await removeTargetedPlacement(guard, this.targetedSpec(feat, step, attemptSlot), targeted, false);
+            if (cleanupStepDone(outcome.worktreeRemoval) && await this.isPathAbsent(worktreePath)) removed.push(worktreePath);
+          }
+          continue;
+        }
         const manifest = await this.readWorkspaceManifest(feat, step, attemptSlot);
         if (manifest) {
           const trustedById = this.trustedRepositoriesForManifest(manifest);
@@ -1537,7 +1708,12 @@ export class WorktreeService {
         'merge',
         { feature, step, attemptSlot },
         () => this.selectWorkspaceRepositories(feature, step, attemptSlot),
-        ({ manifest }, guard) => this.mergeUnlocked(guard, feature, step, manifest, policy, message, options, attemptSlot),
+        async ({ manifest, targeted }, guard) => {
+          if (targeted) return this.mergeTargeted(guard, feature, step, policy, message, options, attemptSlot);
+          // An unreadable status keeps the untargeted merge it always had; a declared target never falls back to it.
+          if (await this.readTaskTarget(feature, step).catch(() => null)) await this.assertTaskTargetMatches(feature, step, null);
+          return this.mergeUnlocked(guard, feature, step, manifest, policy, message, options, attemptSlot);
+        },
         isMutationOutcomeKnown,
       );
     } catch (error) {
@@ -1549,6 +1725,47 @@ export class WorktreeService {
       }
       return mergeFailure(policy.strategy, reasonCode, message, { partial: false });
     }
+  }
+
+  private async mergeTargeted(
+    guard: WorktreeMutationGuard,
+    feature: string,
+    step: string,
+    policy: IntegrationPolicy,
+    message: string | undefined,
+    options: MergeOptions,
+    attemptSlot?: string,
+  ): Promise<MergeResult> {
+    const { strategy } = policy;
+    if (strategy === 'rebase' && message?.trim()) {
+      return mergeFailure(strategy, 'MESSAGE_NOT_ALLOWED_FOR_REBASE', 'Custom merge message is not supported for rebase strategy');
+    }
+    if (options.expectedTargets !== undefined || options.sourceCommits !== undefined) {
+      return mergeFailure(strategy, 'INVALID_ARGUMENTS', 'A targeted task takes expectedTarget and sourceCommit, not per-repository maps', { partial: false });
+    }
+    if (options.expectedTarget === undefined) return mergeFailure(strategy, 'INVALID_ARGUMENTS', 'expectedTarget or expectedTargets is required', { partial: false });
+    const spec = this.targetedSpec(feature, step, attemptSlot);
+    let placement: TargetedPlacement | null;
+    try {
+      placement = await readTargetedPlacement(this.checkoutContext(), spec);
+      if (placement) await this.assertTaskTargetMatches(feature, step, placement);
+    } catch (error) {
+      return mergeFailure(strategy, classifyThrownWorktreeError(error) ?? 'WORKTREE_LOOKUP_FAILED', error instanceof Error ? error.message : String(error), { partial: false });
+    }
+    if (!placement) return mergeFailure(strategy, 'WORKSPACE_TOPOLOGY_MISMATCH', `Task ${step} is no longer a targeted worker`, { partial: false });
+    const result = await mergeTargetedPlacement({
+      guard,
+      context: this.checkoutContext(),
+      spec,
+      placement,
+      policy,
+      message,
+      preserveConflicts: options.preserveConflicts ?? false,
+      cleanupMode: options.cleanup ?? 'none',
+      ...(options.sourceCommit !== undefined ? { sourceCommit: options.sourceCommit } : {}),
+      expectedTarget: options.expectedTarget,
+    });
+    return { ...result, strategy };
   }
 
   private async mergeUnlocked(
@@ -1973,7 +2190,7 @@ export class WorktreeService {
         ? branchPreparationError
           ? { status: 'failed', error: branchPreparationError }
           : cleanupStepDone(worktreeRemoval)
-          ? await this.deleteBranchStep(repoGit, branchName, pinnedBranchCommit)
+          ? await deleteBranchStep(repoGit, branchName, pinnedBranchCommit)
           : { status: 'not_attempted' }
         : { status: 'not_requested' },
     });
@@ -2013,24 +2230,6 @@ export class WorktreeService {
     } catch (error: unknown) {
       const err = error as { message?: string };
       return { status: 'failed', error: err.message || 'worktree prune failed' };
-    }
-  }
-
-  /**
-   * Delete one branch. Reports already_absent when the branch is already gone
-   * so a partially repeated cleanup still describes reality.
-   */
-  private async deleteBranchStep(git: SimpleGit, branchName: string, expectedOldOid?: string): Promise<CleanupStepOutcome> {
-    if (!expectedOldOid) return { status: 'already_absent' };
-    try {
-      const checkedOut = (await git.raw(['worktree', 'list', '--porcelain']))
-        .split('\n')
-        .some((line) => line === `branch refs/heads/${branchName}`);
-      if (checkedOut) return { status: 'failed', error: `Refusing to delete checked-out branch ${branchName}` };
-      await git.raw(['update-ref', '-d', `refs/heads/${branchName}`, expectedOldOid]);
-      return { status: 'succeeded' };
-    } catch (error: unknown) {
-      return { status: 'failed', error: (error as Error).message || 'branch compare-and-delete failed' };
     }
   }
 

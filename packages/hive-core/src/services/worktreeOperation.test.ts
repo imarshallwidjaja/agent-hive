@@ -20,6 +20,9 @@ import {
   WorktreeOperationRecoveryRequiredError,
 } from './worktreeOutcome';
 import { readWorktreeTargetIdentity } from './worktreeTarget';
+import { CheckoutInspector } from './checkoutInspector';
+import { RetainedCheckoutService } from './retainedCheckoutService';
+import { RepositoryService } from './repositoryService';
 
 const mergeMessage = 'feat: integrate guarded work\n\nIntegrate the ad-hoc change the guard tests commit.';
 const tempDirs: string[] = [];
@@ -730,6 +733,155 @@ describe('worktree operation guard', () => {
     expect((await recovery.list())[0]!.observedStateDigest).toBe(pending!.observedStateDigest);
     expect(markerFiles(hiveDir).map((name) => fs.readFileSync(path.join(hiveDir, '.locks', 'operations', name), 'utf8'))).toEqual(markersBefore);
   });
+
+  /** Run `script` in a host, kill it once `started` appears, and leave the blocked Git hook waiting for `release`. */
+  async function killHostWhenStarted(script: string, started: string): Promise<void> {
+    const host = Bun.spawn([process.execPath, '-e', script], { stdout: 'ignore', stderr: 'ignore' });
+    try {
+      await waitFor(() => fs.existsSync(started), 'the Git hook to start');
+    } finally {
+      host.kill('SIGKILL');
+      await host.exited;
+    }
+  }
+
+  /** A repository-local hook that blocks while `control` exists and `release` does not; `match` filters reference-transaction input. */
+  async function installBlockingHook(fx: { git: SimpleGit }, name: string, match?: string) {
+    const control = tempDir('hive-hook-control-');
+    const started = path.join(control, 'started');
+    const release = path.join(control, 'release');
+    const hooks = path.join(control, 'hooks');
+    fs.mkdirSync(hooks);
+    const guard = match ? `[ "$1" = prepared ] || exit 0\ngrep -q '${match}' || exit 0\n` : '';
+    fs.writeFileSync(path.join(hooks, name), `#!/bin/sh\n${guard}: > '${started}'\nwhile [ ! -f '${release}' ] && [ -d '${control}' ]; do sleep 0.05; done\n`, { mode: 0o755 });
+    await fx.git.raw(['config', 'core.hooksPath', hooks]);
+    return { started, release: () => fs.writeFileSync(release, ''), remove: () => fx.git.raw(['config', '--unset', 'core.hooksPath']) };
+  }
+
+  const checkoutServicePath = path.join(import.meta.dir, 'retainedCheckoutService.ts');
+
+  it('observes a retained checkout interrupted before its record is written or after its worktree is removed', async () => {
+    const fx = await createFixture();
+    const checkouts = new RetainedCheckoutService({ baseDir: fx.repoPath, hiveDir: fx.hiveDir });
+    const inspector = new CheckoutInspector({ baseDir: fx.repoPath, hiveDir: fx.hiveDir });
+    const placement = path.join(fx.hiveDir, 'checkouts', 'root', 'feature');
+    const host = (call: string) => `
+      import { RetainedCheckoutService } from ${JSON.stringify(checkoutServicePath)};
+      await new RetainedCheckoutService({ baseDir: ${JSON.stringify(fx.repoPath)}, hiveDir: ${JSON.stringify(fx.hiveDir)} }).${call};
+    `;
+
+    // Creation stops after Git checked out the placement and before the record exists.
+    const checkoutHook = await installBlockingHook(fx, 'post-checkout');
+    await killHostWhenStarted(host(`create({ id: 'root/feature', branch: 'feat/x', baseRef: 'main' })`), checkoutHook.started);
+    checkoutHook.release();
+    await checkoutHook.remove();
+    const [created] = await fx.recovery.list();
+    expect(created).toMatchObject({
+      state: 'interrupted',
+      marker: { kind: 'create', subject: { type: 'checkout', id: 'root/feature' }, workspacePath: placement, repositories: [{ sourceBranch: 'feat/x' }] },
+      observed: { workspace: { workspacePath: placement, present: true } },
+      recovery: { available: true },
+    });
+    await expect(checkouts.create({ id: 'root/feature', branch: 'feat/x', baseRef: 'main' })).rejects.toBeInstanceOf(WorktreeOperationRecoveryRequiredError);
+    await fx.recovery.recover(recoveryRequest(created!));
+    // The placement without a record stays visible and blocks a second creation instead of being adopted.
+    expect((await inspector.inspectProject()).errors).toEqual([{ path: placement, reason: 'placement has no retained checkout record' }]);
+    await expect(checkouts.create({ id: 'root/feature', branch: 'feat/x', baseRef: 'main' })).rejects.toThrow('exists without a record');
+
+    // Cleanup stops after the worktree is removed and before the record is.
+    await fx.git.raw(['worktree', 'remove', placement]);
+    await fx.git.raw(['branch', '-D', 'feat/x']);
+    const record = await checkouts.create({ id: 'root/feature', branch: 'feat/x', baseRef: 'main' });
+    const refHook = await installBlockingHook(fx, 'reference-transaction', 'refs/heads/feat/x$');
+    const expected = JSON.stringify(await readWorktreeTargetIdentity(record.path));
+    await killHostWhenStarted(host(`cleanup('root/feature', { expected: ${expected}, deleteBranch: { discard: true, commit: ${JSON.stringify(record.created.commit)} } })`), refHook.started);
+    try {
+      // The orphaned Git child still holds the branch lock; the record names the branch, so recovery sees it and waits.
+      const [blocked] = await fx.recovery.list();
+      expect(blocked!.marker!.repositories[0]).toMatchObject({ sourceBranch: 'feat/x' });
+      expect(blocked!.observed.repositories[0]!.activeGitState).toContain('repository:refs/heads/feat/x.lock');
+      expect((await refusal(fx.recovery.recover(recoveryRequest(blocked!)))).reason).toBe('git_operation_active');
+    } finally {
+      refHook.release();
+    }
+    await waitFor(() => !fs.existsSync(path.join(fx.repoPath, '.git', 'refs', 'heads', 'feat', 'x.lock')), 'the orphaned branch deletion to finish');
+    await refHook.remove();
+    const [cleaned] = await fx.recovery.list();
+    expect(cleaned).toMatchObject({ marker: { kind: 'cleanup', subject: { type: 'checkout', id: 'root/feature' } }, observed: { workspace: { present: false } }, recovery: { available: true } });
+    await fx.recovery.recover(recoveryRequest(cleaned!));
+    expect((await inspector.inspectCheckout('root/feature')).error).toContain('missing');
+    expect(await checkouts.cleanup('root/feature', { expected: null })).toMatchObject({ worktreeRemoved: false, recordRemoved: true });
+  }, 60_000);
+
+  it('observes a targeted merge interrupted inside its retained checkout through the checkout, not the repository root', async () => {
+    const fx = await createFixture();
+    const record = await new RetainedCheckoutService({ baseDir: fx.repoPath, hiveDir: fx.hiveDir }).create({ id: 'root/alpha', branch: 'alpha', baseRef: 'main' });
+    await fx.service.create({ runId: 'targeted', target: 'root/alpha' });
+    const sourceCommit = await commitInRun(fx.service, 'targeted', 'feature.txt');
+    const expectedTarget = (await fx.service.inspect('targeted'))!.target!;
+    const hook = await installBlockingHook(fx, 'pre-commit');
+    await killHostWhenStarted(`
+      import { AdhocWorktreeService } from ${JSON.stringify(servicePath)};
+      await new AdhocWorktreeService({ baseDir: ${JSON.stringify(fx.repoPath)}, hiveDir: ${JSON.stringify(fx.hiveDir)} })
+        .merge('targeted', 'squash', ${JSON.stringify(mergeMessage)}, { historyIntent: 'rewrite-private', sourceCommit: ${JSON.stringify(sourceCommit)}, expectedTarget: ${JSON.stringify(expectedTarget)} });
+    `, hook.started);
+
+    let pending: PendingWorktreeOperation;
+    try {
+      pending = (await fx.service.inspect('targeted'))!.pendingOperations![0]!;
+      expect(pending.marker!.repositories[0]).toMatchObject({ repositoryPath: fx.repoPath, targetPath: record.path, sourceCommit, expectedTarget });
+      expect(pending.observed.repositories[0]!.target).toEqual(expectedTarget);
+      expect(pending.observed.repositories[0]!.activeGitState).toContain('target:SQUASH_MSG');
+      expect(pending.recovery).toEqual({ available: true });
+      expect((await refusal(fx.recovery.recover(recoveryRequest(pending)))).reason).toBe('git_operation_active');
+    } finally {
+      hook.release();
+    }
+    await waitFor(() => !fs.existsSync(path.join(fx.repoPath, '.git', 'worktrees', 'alpha', 'SQUASH_MSG')), 'the orphaned commit to finish');
+    await hook.remove();
+    await fx.recovery.recover(recoveryRequest((await fx.recovery.list())[0]!));
+    expect(markerFiles(fx.hiveDir)).toEqual([]);
+    expect(await readWorktreeTargetIdentity(fx.repoPath)).toMatchObject({ ref: 'refs/heads/main' });
+  }, 60_000);
+
+  it('trusts the checkout root of a repository configured as a subdirectory as an interrupted merge destination', async () => {
+    const projectRoot = tempDir('hive-operation-subdir-');
+    const repoRoot = path.join(projectRoot, 'app-repo');
+    fs.mkdirSync(path.join(repoRoot, 'pkg'), { recursive: true });
+    await simpleGit().raw(['init', '-b', 'main', repoRoot]);
+    const git = simpleGit(repoRoot);
+    await git.raw(['config', 'user.email', 'test@example.com']);
+    await git.raw(['config', 'user.name', 'Test User']);
+    fs.writeFileSync(path.join(repoRoot, 'pkg', 'index.txt'), 'base\n');
+    await git.add(['pkg/index.txt']);
+    await git.commit('chore: base commit\n\nCreate the fixture history.');
+    const repositories = new RepositoryService(projectRoot).resolveManifest([{ id: 'app', path: 'app-repo/pkg' }]);
+    const hiveDir = path.join(projectRoot, '.hive');
+    await new RetainedCheckoutService({ baseDir: projectRoot, hiveDir, repositoryResolver: () => repositories }).register({ id: 'app/main' });
+    const service = new AdhocWorktreeService({ baseDir: projectRoot, hiveDir, repositoryResolver: () => repositories });
+    await service.create({ runId: 'sub', target: 'app/main' });
+    const sourceCommit = await commitInRun(service, 'sub', 'pkg/worker.txt');
+    const expectedTarget = (await service.inspect('sub'))!.target!;
+    const hook = await installBlockingHook({ git }, 'pre-commit');
+    await killHostWhenStarted(`
+      import { AdhocWorktreeService } from ${JSON.stringify(servicePath)};
+      await new AdhocWorktreeService({ baseDir: ${JSON.stringify(projectRoot)}, hiveDir: ${JSON.stringify(hiveDir)}, repositoryResolver: () => ${JSON.stringify(repositories)} })
+        .merge('sub', 'squash', ${JSON.stringify(mergeMessage)}, { historyIntent: 'rewrite-private', sourceCommit: ${JSON.stringify(sourceCommit)}, expectedTarget: ${JSON.stringify(expectedTarget)} });
+    `, hook.started);
+
+    const recovery = new WorktreeOperationRecoveryService({ baseDir: projectRoot, hiveDir, repositoryResolver: () => repositories });
+    try {
+      const [pending] = await recovery.list();
+      expect(pending).toMatchObject({ marker: { repositories: [{ targetPath: repoRoot }] }, recovery: { available: true } });
+      expect(pending!.observed.repositories[0]!.target).toEqual(expectedTarget);
+    } finally {
+      hook.release();
+    }
+    await waitFor(() => !fs.existsSync(path.join(repoRoot, '.git', 'SQUASH_MSG')), 'the orphaned commit to finish');
+    await hook.remove();
+    await recovery.recover(recoveryRequest((await recovery.list())[0]!));
+    expect(markerFiles(hiveDir)).toEqual([]);
+  }, 60_000);
 });
 
 describe('worktree operation finalization', () => {

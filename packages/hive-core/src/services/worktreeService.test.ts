@@ -13,6 +13,8 @@ import { repositoryResourceName, trustedGitCommonDirectory, WorktreeOperationRec
 import { RepositoryService } from './repositoryService.js';
 import { inspectTargetMergeEligibility } from './worktreeIntegration.js';
 import { readWorktreeTargetIdentity } from './worktreeTarget.js';
+import { RetainedCheckoutService } from './retainedCheckoutService.js';
+import { TaskService } from './taskService.js';
 
 interface TestFixture {
   repoPath: string;
@@ -4543,4 +4545,188 @@ describe("WorktreeService repository operation locks", () => {
     expect(await branchExists(fx.api.git, `hive/api/${fx.feature}/01-api-task`)).toBe(owned.includes('api'));
     expect(await branchExists(fx.web.git, `hive/web/${fx.feature}/01-api-task`)).toBe(owned.includes('web'));
   }, 30_000);
+});
+
+describe('WorktreeService targeted tasks', () => {
+  it('creates a task worker bound to a retained checkout of one manifest repository and integrates into it', async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
+    const repositories = Object.entries(fx.repos).map(([id, repository]) => ({ id, path: repository.path, root: repository.path }));
+    const hiveDir = path.join(fx.projectRoot, '.hive');
+    await new RetainedCheckoutService({ baseDir: fx.projectRoot, hiveDir, repositoryResolver: () => repositories })
+      .create({ id: 'api/release', branch: 'release', baseRef: 'HEAD' });
+    const checkoutPath = path.join(hiveDir, 'checkouts', 'api', 'release');
+    await fs.writeFile(
+      path.join(fx.projectRoot, '.hive', 'features', `01_${fx.feature}`, 'tasks', fx.task, 'status.json'),
+      JSON.stringify({ status: 'pending', origin: 'plan', repoIds: ['api'], target: 'api/release' }),
+    );
+    const apiRoot = await readWorktreeTargetIdentity(fx.repos.api.path);
+
+    const created = await fx.service.create(fx.feature, fx.task);
+    expect(created).toMatchObject({
+      mode: 'targeted',
+      repoId: 'api',
+      branch: `hive-targeted/task/${fx.feature}/${fx.task}`,
+      baseCommit: apiRoot.commit,
+      targetBinding: { id: 'api/release', path: checkoutPath, ref: 'refs/heads/release' },
+    });
+    expect((await fx.service.list(fx.feature)).worktrees.map((worktree) => worktree.mode)).toEqual(['targeted']);
+    await expect(fx.service.cleanup(fx.feature)).resolves.toMatchObject({ removed: [] });
+
+    await fs.writeFile(path.join(created.path, 'release.txt'), 'release\n');
+    const workerGit = simpleGit(created.path);
+    await workerGit.add(['release.txt']);
+    await workerGit.commit(testCommitMessage('feat: add release note'));
+    const sourceCommit = (await workerGit.revparse(['HEAD'])).trim();
+    const inspected = (await fx.service.inspect(fx.feature, fx.task))!;
+    expect(inspected.targetBinding?.status).toBe('ok');
+
+    const merged = await fx.service.merge(fx.feature, fx.task, 'squash', mergeMessage, { historyIntent: 'rewrite-private', sourceCommit, expectedTarget: inspected.target!, cleanup: 'worktree+branch' });
+    expect(merged).toMatchObject({ success: true, merged: true, cleanup: { outcome: 'complete' } });
+    expect(await pathExists(path.join(checkoutPath, 'release.txt'))).toBe(true);
+    expect(await readWorktreeTargetIdentity(fx.repos.api.path)).toEqual(apiRoot);
+    expect(await fx.service.get(fx.feature, fx.task)).toBeNull();
+  });
+
+  async function targetedTaskFixture() {
+    const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
+    const repositories = Object.entries(fx.repos).map(([id, repository]) => ({ id, path: repository.path, root: repository.path }));
+    const hiveDir = path.join(fx.projectRoot, '.hive');
+    await new RetainedCheckoutService({ baseDir: fx.projectRoot, hiveDir, repositoryResolver: () => repositories })
+      .create({ id: 'api/release', branch: 'release', baseRef: 'HEAD' });
+    const statusPath = path.join(fx.projectRoot, '.hive', 'features', `01_${fx.feature}`, 'tasks', fx.task, 'status.json');
+    const writeStatus = (status: unknown) => fs.writeFile(statusPath, typeof status === 'string' ? status : JSON.stringify(status));
+    return { ...fx, hiveDir, writeStatus };
+  }
+
+  it('refuses to create any worker when the task status that could name a target is unreadable or malformed', async () => {
+    const fx = await targetedTaskFixture();
+    const placement = path.join(fx.hiveDir, '.worktrees', fx.feature, fx.task);
+    for (const [status, error] of [
+      ['{', /has no readable task status/],
+      [{ status: 'pending', origin: 'plan', repoIds: ['api'], target: 42 }, /target must be a retained checkout ID/],
+      [{ status: 'pending', origin: 'plan', repoIds: ['api'], target: 'API/release' }, /Invalid retained checkout ID "API\/release"/],
+      [{ status: 'unknown', repoIds: ['api'], target: 'api/release' }, /corrupt status file/],
+    ] as const) {
+      await fx.writeStatus(status);
+      // The manifest project's composite path would otherwise accept the task's repositories.
+      await expect(fx.service.create(fx.feature, fx.task)).rejects.toThrow(error);
+      expect(await pathExists(placement)).toBe(false);
+    }
+    await fx.writeStatus({ status: 'pending', origin: 'plan', repoIds: ['api', 'web-ui'] });
+    const composite = await fx.service.create(fx.feature, fx.task);
+    expect(composite).toMatchObject({ mode: 'composite' });
+    // A target declared after an untargeted worker exists never integrates through that worker's destinations.
+    await fx.writeStatus({ status: 'pending', origin: 'plan', repoIds: ['api'], target: 'api/release' });
+    const inspected = (await fx.service.inspect(fx.feature, fx.task))!;
+    const expectedTargets = Object.fromEntries(Object.entries(inspected.repos!).map(([id, repo]) => [id, repo.target!]));
+    const sourceCommits = Object.fromEntries(Object.entries(inspected.repos!).map(([id, repo]) => [id, repo.commit]));
+    expect(await fx.service.merge(fx.feature, fx.task, 'merge', mergeMessage, { historyIntent: 'preserve-source', sourceCommits, expectedTargets }))
+      .toMatchObject({ success: false, reasonCode: 'WORKSPACE_TOPOLOGY_MISMATCH', error: expect.stringContaining('declares target api/release, but its worker has no targeted metadata') });
+  });
+
+  /** A plan-backed targeted task: a sync that retargets it and a reader of its stored target and worker binding. */
+  async function retargetableTaskFixture() {
+    const fx = await targetedTaskFixture();
+    const repositories = Object.entries(fx.repos).map(([id, repository]) => ({ id, path: repository.path, root: repository.path }));
+    await new RetainedCheckoutService({ baseDir: fx.projectRoot, hiveDir: fx.hiveDir, repositoryResolver: () => repositories })
+      .create({ id: 'api/next', branch: 'next', baseRef: 'HEAD' });
+    const featurePath = path.join(fx.hiveDir, 'features', `01_${fx.feature}`);
+    const writePlan = (target: string) => fsSync.writeFileSync(path.join(featurePath, 'plan.md'), `# Plan\n\n## Tasks\n\n### 1. Multi task\n\n**Repos**: api\n\n**Hive target**: ${target}\n\nShip it.\n`);
+    const tasks = new TaskService(fx.projectRoot);
+    writePlan('api/release');
+    tasks.sync(fx.feature, { refreshPending: true });
+    const sidecar = path.join(fx.hiveDir, '.worktrees', fx.feature, `${fx.task}.json`);
+    const state = async () => ({
+      declared: tasks.getRawStatus(fx.feature, fx.task)?.target,
+      bound: await fs.readFile(sidecar, 'utf-8').then((raw) => JSON.parse(raw).target.id as string, () => null),
+    });
+    return { ...fx, repositories, tasks, writePlan, state, retarget: () => {
+      writePlan('api/next');
+      return tasks.sync(fx.feature, { refreshPending: true });
+    } };
+  }
+
+  it('refuses to bind a worker to the target a concurrent task sync just replaced', async () => {
+    const fx = await retargetableTaskFixture();
+    const service = new CoreWorktreeService({ baseDir: fx.projectRoot, hiveDir: fx.hiveDir, repositoryResolver: { resolveRepositories: () => fx.repositories } });
+    const commonDirectory = (service as any).trustedGitCommonDirectory.bind(service);
+    let synced: ReturnType<typeof fx.retarget> | undefined;
+    // The worker read the stored target before its operation locks; the sync lands while it waits for them.
+    const spy = spyOn(service as any, 'trustedGitCommonDirectory').mockImplementation(async (repositoryPath: unknown) => {
+      synced ??= fx.retarget();
+      return commonDirectory(repositoryPath);
+    });
+    try {
+      await expect(service.create(fx.feature, fx.task)).rejects.toThrow(`Task ${fx.feature}/${fx.task} now declares target api/next, not api/release`);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(synced).toMatchObject({ refreshed: [fx.task] });
+    expect(await fx.state()).toEqual({ declared: 'api/next', bound: null });
+    expect(await pathExists(path.join(fx.hiveDir, '.worktrees', fx.feature, fx.task))).toBe(false);
+    expect(await branchExists(fx.repos.api.git, `hive-targeted/task/${fx.feature}/${fx.task}`)).toBe(false);
+    // Nothing is left to recover: the next create binds the current target.
+    expect(await service.create(fx.feature, fx.task)).toMatchObject({ targetBinding: { id: 'api/next' } });
+  }, 30_000);
+
+  it('keeps a task target that a worker bound while a concurrent task sync was deciding to replace it', async () => {
+    const fx = await retargetableTaskFixture();
+    const coreModule = path.join(import.meta.dir, 'worktreeService.ts');
+    // The worker runs in another process, between the sync's checks and its task writes.
+    const deriveSync = (fx.tasks as any).deriveSync.bind(fx.tasks);
+    const spy = spyOn(fx.tasks as any, 'deriveSync').mockImplementation((...args: unknown[]) => {
+      const derived = deriveSync(...args);
+      const worker = spawnSync(process.execPath, ['-e', `
+        const { WorktreeService } = await import(${JSON.stringify(coreModule)});
+        const repositories = ${JSON.stringify(fx.repositories)};
+        await new WorktreeService({ baseDir: ${JSON.stringify(fx.projectRoot)}, hiveDir: ${JSON.stringify(fx.hiveDir)}, repositoryResolver: { resolveRepositories: () => repositories } })
+          .create(${JSON.stringify(fx.feature)}, ${JSON.stringify(fx.task)});
+      `], { encoding: 'utf-8' });
+      expect(worker.stderr).toBe('');
+      expect(worker.status).toBe(0);
+      return derived;
+    });
+    let synced: ReturnType<typeof fx.retarget>;
+    try {
+      synced = fx.retarget();
+    } finally {
+      spy.mockRestore();
+    }
+    expect(synced).toMatchObject({ skipped: [fx.task] });
+    expect(synced.refreshed).toBeUndefined();
+    expect(await fx.state()).toEqual({ declared: 'api/release', bound: 'api/release' });
+    expect(fx.tasks.getPlanSyncStatus(fx.feature).state).toBe('incomplete');
+  }, 30_000);
+
+  it('refuses to retarget a task whose worker was created through its indexed feature name', async () => {
+    const fx = await retargetableTaskFixture();
+    const indexed = `01_${fx.feature}`;
+    const created = await fx.service.create(indexed, fx.task);
+    expect(created).toMatchObject({ path: path.join(fx.hiveDir, '.worktrees', indexed, fx.task), targetBinding: { id: 'api/release' } });
+
+    // Sync names the feature by its logical name; the worker's placement is under the indexed one.
+    expect(() => fx.retarget()).toThrow(/Task sync rejected; no task files were changed\. "01-multi-task" would change its target from api\/release to api\/next/);
+    expect(fx.tasks.getRawStatus(fx.feature, fx.task)?.target).toBe('api/release');
+    expect(await fx.service.get(indexed, fx.task)).toMatchObject({ targetBinding: { id: 'api/release' } });
+  }, 30_000);
+
+  it('refuses a targeted worker whose task status no longer names its binding', async () => {
+    const fx = await targetedTaskFixture();
+    await fx.writeStatus({ status: 'pending', origin: 'plan', repoIds: ['api'], target: 'api/release' });
+    const created = await fx.service.create(fx.feature, fx.task);
+    const inspected = (await fx.service.inspect(fx.feature, fx.task))!;
+    const merge = () => fx.service.merge(fx.feature, fx.task, 'merge', mergeMessage, { historyIntent: 'preserve-source', sourceCommit: created.commit, expectedTarget: inspected.target! });
+
+    await fx.writeStatus({ status: 'pending', origin: 'plan', repoIds: ['api'] });
+    await expect(fx.service.create(fx.feature, fx.task)).rejects.toThrow('declares target (none), but its worker is bound to api/release');
+    expect(await merge()).toMatchObject({ success: false, reasonCode: 'WORKSPACE_TOPOLOGY_MISMATCH', error: expect.stringContaining('is bound to api/release') });
+    await fx.writeStatus({ status: 'pending', origin: 'plan', repoIds: ['api'], target: 'api/other' });
+    await expect(fx.service.create(fx.feature, fx.task)).rejects.toThrow('already targets api/release, not api/other');
+    expect(await merge()).toMatchObject({ success: false, error: expect.stringContaining('declares target api/other') });
+    await fx.writeStatus('{');
+    expect(await merge()).toMatchObject({ success: false, error: expect.stringContaining('has no readable task status') });
+
+    await fx.writeStatus({ status: 'pending', origin: 'plan', repoIds: ['api'], target: 'api/release' });
+    expect(await merge()).toMatchObject({ success: true, reasonCode: 'ALREADY_INTEGRATED' });
+  });
 });

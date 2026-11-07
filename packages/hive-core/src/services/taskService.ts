@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import {
+  getHivePath,
   getTasksPath,
   getTaskPath,
   getTaskStatusPath,
@@ -23,7 +24,10 @@ import {
   readText,
   writeText,
   fileExists,
+  FEATURE_NAME_PATTERN,
+  listFeatureDirectories,
   LockOptions,
+  resolveFeatureDirectoryName,
 } from '../utils/paths.js';
 import {
   TaskStatus,
@@ -40,7 +44,9 @@ import {
 } from '../types.js';
 import { getPlanContentHash } from './planService.js';
 import { RepositoryService } from './repositoryService.js';
+import { parseRetainedCheckoutId } from './retainedCheckout.js';
 import { SubtaskService } from './subtaskService.js';
+import { resolveWorkerTaskStatusPath } from './workspaceManifest.js';
 import {
   findUnfinishedDependencyViolation,
   type DependencyGraphViolation,
@@ -144,6 +150,8 @@ interface ParsedTask {
   /** Raw dependency numbers parsed from plan. null = not specified (use implicit), [] = explicit none */
   dependsOnNumbers: number[] | null;
   repoIds: string[] | null;
+  /** Retained checkout ID from a `Hive target:` annotation, or null. */
+  target: string | null;
 }
 
 /** Stored dependencies and spec text compiled from the plan for one task. */
@@ -172,7 +180,9 @@ export interface SyncOptions {
   expectedContentHash?: string;
   /**
    * Task folders that have a retained worktree, from the caller's inspection, or 'unknown' (the default) when it
-   * was not inspected. A selected task whose repositories change is rejected unless it is known to have none.
+   * was not inspected. A selected task whose repositories or target change is rejected unless it is known to have
+   * none. Any refreshed task, selected or pending, is also rejected for such a change while a worker placement or
+   * binding for it remains under `.hive/.worktrees`.
    */
   retainedWorktreeTasks?: ReadonlySet<string> | 'unknown';
 }
@@ -301,6 +311,37 @@ const TASK_STATUSES: ReadonlySet<string> = new Set([
   'pending', 'in_progress', 'done', 'cancelled', 'blocked', 'failed', 'partial',
 ]);
 
+/**
+ * Whether a task may still have a worker placement or binding sidecar, read without Git. Workers are placed under
+ * `.hive/.worktrees/<name>/` by the feature name their caller passed, so every name that resolves to the feature's
+ * directory is searched. A name or listing that cannot be read counts as present.
+ */
+function mayHaveWorkerPlacement(projectRoot: string, featureName: string, folder: string): boolean {
+  let groups: Set<string>;
+  try {
+    const directoryName = resolveFeatureDirectoryName(projectRoot, featureName);
+    groups = new Set([featureName, directoryName]);
+    const logicalName = listFeatureDirectories(projectRoot).find((entry) => entry.directoryName === directoryName)?.logicalName;
+    if (logicalName !== undefined && FEATURE_NAME_PATTERN.test(logicalName) && resolveFeatureDirectoryName(projectRoot, logicalName) === directoryName) {
+      groups.add(logicalName);
+    }
+  } catch {
+    return true;
+  }
+  return [...groups].some((group) => {
+    let names: string[];
+    try {
+      names = fs.readdirSync(path.join(getHivePath(projectRoot), '.worktrees', group));
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code !== 'ENOENT';
+    }
+    return names.some((name) => {
+      const entry = name.endsWith('.json') ? name.slice(0, -'.json'.length) : name;
+      return entry === folder || entry.startsWith(`${folder}--`);
+    });
+  });
+}
+
 /** The first stored field that readers consume and that has the wrong shape; absent fields are valid. */
 function storedStatusFieldProblem(status: TaskStatus): string | null {
   if (status.origin !== undefined && status.origin !== 'plan' && status.origin !== 'manual') {
@@ -315,6 +356,7 @@ function storedStatusFieldProblem(status: TaskStatus): string | null {
     && (typeof status.blocker !== 'object' || status.blocker === null || typeof status.blocker.reason !== 'string')) {
     return 'blocker must be an object with a string reason';
   }
+  if (status.target !== undefined && typeof status.target !== 'string') return 'target must be a retained checkout ID';
   return null;
 }
 
@@ -342,31 +384,48 @@ function listTaskFolders(tasksPath: string): string[] {
  */
 export function readTaskStatusEntries(tasksPath: string, guard: (target: string) => void = () => {}): TaskStatusEntry[] {
   guard(tasksPath);
-  return listTaskFolders(tasksPath).map((folder): TaskStatusEntry => {
-    const identity = { folder, name: folder.replace(/^\d+-/, '') };
-    const statusPath = path.join(tasksPath, folder, 'status.json');
-    try {
-      guard(statusPath);
-      const status = readJson<TaskStatus>(statusPath);
-      if (!status) {
-        if (!fileExists(statusPath)) return { ...identity, status: null, integrity: { reason: 'status_missing' } };
-        throw new Error(`Task '${folder}' has a corrupt status file`);
-      }
-      validateStoredTaskStatus(status, folder);
-      return {
-        ...identity,
-        status: status.status,
-        origin: status.origin,
-        planTitle: status.planTitle,
-        summary: status.summary,
-        repoIds: status.repoIds,
-        dependsOn: status.dependsOn ?? [],
-        ...(status.blocker ? { blocker: status.blocker } : {}),
-      };
-    } catch (error) {
-      return { ...identity, status: null, integrity: { reason: 'status_unreadable', error: error instanceof Error ? error.message : String(error) } };
-    }
+  return listTaskFolders(tasksPath).map((folder) => readTaskStatusEntry(folder, path.join(tasksPath, folder, 'status.json'), guard));
+}
+
+/**
+ * Every task folder of a feature directory, in the modern `tasks/` or the legacy `execution/` layout, each with the
+ * status file a task worker reads for it (`resolveWorkerTaskStatusPath`), so a folder in both layouts is read once.
+ * `guard` runs as in `readTaskStatusEntries`.
+ */
+export function readWorkerTaskStatusEntries(featurePath: string, guard: (target: string) => void = () => {}): Array<{ statusPath: string; entry: TaskStatusEntry }> {
+  const layouts = ['tasks', 'execution'].map((layout) => path.join(featurePath, layout));
+  layouts.forEach(guard);
+  const folders = [...new Set(layouts.flatMap(listTaskFolders))].sort();
+  return folders.map((folder) => {
+    const statusPath = resolveWorkerTaskStatusPath(featurePath, folder);
+    return { statusPath, entry: readTaskStatusEntry(folder, statusPath, guard) };
   });
+}
+
+function readTaskStatusEntry(folder: string, statusPath: string, guard: (target: string) => void): TaskStatusEntry {
+  const identity = { folder, name: folder.replace(/^\d+-/, '') };
+  try {
+    guard(statusPath);
+    const status = readJson<TaskStatus>(statusPath);
+    if (!status) {
+      if (!fileExists(statusPath)) return { ...identity, status: null, integrity: { reason: 'status_missing' } };
+      throw new Error(`Task '${folder}' has a corrupt status file`);
+    }
+    validateStoredTaskStatus(status, folder);
+    return {
+      ...identity,
+      status: status.status,
+      origin: status.origin,
+      planTitle: status.planTitle,
+      summary: status.summary,
+      repoIds: status.repoIds,
+      ...(status.target !== undefined ? { target: status.target } : {}),
+      dependsOn: status.dependsOn ?? [],
+      ...(status.blocker ? { blocker: status.blocker } : {}),
+    };
+  } catch (error) {
+    return { ...identity, status: null, integrity: { reason: 'status_unreadable', error: error instanceof Error ? error.message : String(error) } };
+  }
 }
 
 export class TaskService {
@@ -602,13 +661,20 @@ export class TaskService {
       let fromPlan = false;
       const refresh = (task: ParsedTask, isSelected: boolean) => {
         const built = this.buildPlanTaskSpec(featureName, task, planTasks, planContent);
-        if (isSelected && !sameList(status.repoIds, task.repoIds ?? undefined)
-          && (retainedWorktrees === 'unknown' || retainedWorktrees.has(folder))) {
+        const placementChange = !sameList(status.repoIds, task.repoIds ?? undefined)
+          ? `change repositories from ${status.repoIds?.join(', ') ?? '(project root)'} to ${task.repoIds?.join(', ') ?? '(project root)'}`
+          : (status.target ?? null) !== task.target
+            ? `change its target from ${status.target ?? '(none)'} to ${task.target ?? '(none)'}`
+            : null;
+        // Every refresh that moves a task's placement needs its worker known to be absent: a selected task's caller
+        // inventory must exist and exclude it, and no placement or binding for it may remain on disk.
+        const uninspected = isSelected && retainedWorktrees === 'unknown';
+        if (placementChange && (uninspected || (retainedWorktrees !== 'unknown' && retainedWorktrees.has(folder))
+          || mayHaveWorkerPlacement(this.projectRoot, featureName, folder))) {
           throw new Error(
-            `refreshTasks rejected; no task files were changed. "${folder}" would change repositories from ` +
-            `${status.repoIds?.join(', ') ?? '(project root)'} to ${task.repoIds?.join(', ') ?? '(project root)'}, and ` +
-            (retainedWorktrees === 'unknown' ? 'its worktrees could not be inspected. ' : 'it has a retained worktree whose placement keeps the old repositories. ') +
-            'Integrate or clean up that worktree first, or keep the task\'s Repos line unchanged.',
+            `${isSelected ? 'refreshTasks' : 'Task sync'} rejected; no task files were changed. "${folder}" would ${placementChange}, and ` +
+            (uninspected ? 'its worktrees could not be inspected. ' : 'it has a retained worktree whose placement keeps the old repositories and target. ') +
+            'Integrate or clean up that worktree first, or keep the task\'s Repos and Hive target lines unchanged.',
           );
         }
         refreshes.push({ task, built, selected: isSelected });
@@ -713,6 +779,7 @@ export class TaskService {
       const matches = status.planTitle === task.name
         && sameList(status.dependsOn ?? [], built.dependsOn)
         && sameList(status.repoIds, task.repoIds ?? undefined)
+        && (status.target ?? null) === task.target
         && readText(getTaskSpecPath(this.projectRoot, featureName, task.folder)) === built.spec;
       if (!matches) drift.add(task.folder);
     }
@@ -796,8 +863,10 @@ export class TaskService {
 
     const dependsOn = metadata?.dependsOn ?? [];
     const repoIds = metadata?.repoIds;
+    const target = metadata?.target;
     this.validateManualTaskDependsOn(featureName, folder, dependsOn);
     this.validateRepoIds(repoIds, 'manual task metadata');
+    this.validateTarget(target, repoIds, 'manual task metadata');
 
     const collision = existingFolders.find(f => {
       const match = f.match(/^(\d+)-/);
@@ -819,7 +888,8 @@ export class TaskService {
       planTitle: name,
       dependsOn,
       ...(repoIds !== undefined ? { repoIds } : {}),
-      ...(metadata ? { metadata: { ...metadata, dependsOn: undefined, repoIds: undefined } } : {}),
+      ...(target !== undefined ? { target } : {}),
+      ...(metadata ? { metadata: { ...metadata, dependsOn: undefined, repoIds: undefined, target: undefined } } : {}),
     };
     writeJson(getTaskStatusPath(this.projectRoot, featureName, folder), status);
 
@@ -841,6 +911,7 @@ export class TaskService {
       planTitle: task.name,
       dependsOn,
       ...(task.repoIds !== null ? { repoIds: task.repoIds } : {}),
+      ...(task.target !== null ? { target: task.target } : {}),
     };
     writeJsonAtomicDurable(getTaskStatusPath(this.projectRoot, featureName, task.folder), status);
     writeAtomicDurable(getTaskSpecPath(this.projectRoot, featureName, task.folder), spec);
@@ -848,9 +919,11 @@ export class TaskService {
   }
 
   /**
-   * Rewrites only the plan-owned fields (title, dependencies, repositories) and spec of an existing plan task, under
-   * the same status lock as update(). Eligibility is rechecked on the locked record, so a concurrent status change
-   * is kept and a task that became finished is not reopened: such a task is skipped and false is returned.
+   * Rewrites only the plan-owned fields (title, dependencies, repositories, target) and spec of an existing plan task,
+   * under the same status lock as update(). Eligibility is rechecked on the locked record, so a concurrent status
+   * change is kept and a task that became finished is not reopened: such a task is skipped and false is returned. A
+   * worker binds its target under this lock too, so a placement change is skipped when a worker placement or binding
+   * for the task appeared after sync checked for one.
    */
   private refreshPlanTask(featureName: string, task: ParsedTask, { dependsOn, spec }: PlanTaskBuild, selected: boolean): boolean {
     const statusPath = getTaskStatusPath(this.projectRoot, featureName, task.folder);
@@ -862,9 +935,13 @@ export class TaskService {
         && current.origin !== 'manual'
         && (selected ? UNFINISHED_STATUSES.has(current.status) : current.status === 'pending');
       if (!eligible) return false;
+      const movesPlacement = !sameList(current.repoIds, task.repoIds ?? undefined) || (current.target ?? null) !== task.target;
+      if (movesPlacement && mayHaveWorkerPlacement(this.projectRoot, featureName, task.folder)) return false;
       const updated: TaskStatus = { ...current, planTitle: task.name, dependsOn };
       if (task.repoIds !== null) updated.repoIds = task.repoIds;
       else delete updated.repoIds;
+      if (task.target !== null) updated.target = task.target;
+      else delete updated.target;
       writeAtomicDurable(getTaskSpecPath(this.projectRoot, featureName, task.folder), spec);
       writeJsonAtomicDurable(statusPath, updated);
       return true;
@@ -899,6 +976,7 @@ export class TaskService {
       task,
       dependsOn,
       repoIds: task.repoIds ?? undefined,
+      target: task.target ?? undefined,
       allTasks,
       planContent,
     });
@@ -967,10 +1045,11 @@ export class TaskService {
     task: { folder: string; name: string; order: number; description?: string };
     dependsOn: string[];
     repoIds?: string[];
+    target?: string;
     allTasks: Array<{ folder: string; name: string; order: number }>;
     planContent?: string | null;
   }): string {
-    const { featureName, task, dependsOn, repoIds, allTasks, planContent } = params;
+    const { featureName, task, dependsOn, repoIds, target, allTasks, planContent } = params;
 
     const getTaskType = (planSection: string | null, taskName: string): string | null => {
       if (!planSection) {
@@ -1026,6 +1105,10 @@ export class TaskService {
       for (const repoId of repoIds) {
         specLines.push(`- ${repoId}`);
       }
+    }
+
+    if (target !== undefined) {
+      specLines.push('', '## Target', '', `- ${target}`);
     }
 
     specLines.push('', '## Plan Section', '');
@@ -1441,6 +1524,7 @@ export class TaskService {
       planTitle: status.planTitle,
       summary: status.summary,
       repoIds: status.repoIds,
+      ...(status.target !== undefined ? { target: status.target } : {}),
     };
   }
 
@@ -1611,6 +1695,23 @@ export class TaskService {
   }
 
   /**
+   * A task target is one retained checkout ID; with repositories, they are exactly the target's repository. Whether
+   * the checkout exists is checked when its worker is created.
+   */
+  private validateTarget(target: string | undefined, repoIds: string[] | undefined, context: string): void {
+    if (target === undefined) return;
+    let repoId: string;
+    try {
+      ({ repoId } = parseRetainedCheckoutId(target));
+    } catch (error) {
+      throw new Error(`Invalid target in ${context}: ${(error as Error).message}`);
+    }
+    if (repoIds !== undefined && (repoIds.length !== 1 || repoIds[0] !== repoId)) {
+      throw new Error(`Invalid target in ${context}: target ${target} works only in repository ${repoId}, but Repos lists ${repoIds.join(', ')}`);
+    }
+  }
+
+  /**
    * Read plan.md for parsing with CRLF normalized to LF, so line-oriented matching, section
    * extraction, and generated specs treat CRLF plans like LF ones. Lone CR characters are
    * content, not line endings: keeping them leaves line numbers aligned with the saved file.
@@ -1636,6 +1737,9 @@ export class TaskService {
     // Strips markdown formatting (**, *, etc.) and captures the value
     const dependsOnRegex = /^\s*\*{0,2}Depends\s+on\*{0,2}\s*:\s*(.+)$/i;
     const reposRegex = /^\s*\*{0,2}Repos\*{0,2}\s*:\s*(.*)$/i;
+    // Only the opt-in `Hive target` annotation names a target, so ordinary prose such as "Target: src/app" stays
+    // description. Once present, its value must be one retained checkout ID.
+    const targetRegex = /^\s*\*{0,2}Hive\s+target\*{0,2}\s*:(.*)$/i;
     let fence: FenceState | null = null;
     const nestedFences: FenceState[] = [];
     
@@ -1678,6 +1782,7 @@ export class TaskService {
           description: '',
           dependsOnNumbers: null,  // null = not specified, use implicit
           repoIds: null,
+          target: null,
         };
         descriptionLines = [];
       } else if (currentTask) {
@@ -1712,6 +1817,13 @@ export class TaskService {
             this.validateRepoIds(repoIds, `plan.md task ${currentTask.order} ("${currentTask.name}")`);
             currentTask.repoIds = repoIds;
           }
+          const targetMatch = line.match(targetRegex);
+          if (targetMatch) {
+            if (currentTask.target !== null) {
+              throw new Error(`Invalid target in plan.md task ${currentTask.order} ("${currentTask.name}"): Hive target is given more than once`);
+            }
+            currentTask.target = targetMatch[1]!.trim().replace(/^`([^`]*)`$/, '$1');
+          }
           descriptionLines.push(line);
         }
       }
@@ -1723,6 +1835,9 @@ export class TaskService {
       tasks.push(currentTask);
     }
 
+    for (const task of tasks) {
+      this.validateTarget(task.target ?? undefined, task.repoIds ?? undefined, `plan.md task ${task.order} ("${task.name}")`);
+    }
     return tasks;
   }
 
@@ -1833,6 +1948,10 @@ export class TaskService {
         lines.push(`- ${repoId}`);
       }
       lines.push('');
+    }
+
+    if (metadata?.target !== undefined) {
+      lines.push('## Target', '', `- ${metadata.target}`, '');
     }
 
     if (metadata?.goal) {

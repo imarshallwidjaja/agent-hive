@@ -17,6 +17,7 @@ import {
   CleanupActionError,
   cleanupFacts,
   cleanupStepDone,
+  deleteBranchStep,
   classifyThrownWorktreeError,
   classifyWorktreeOutcome,
   combineRepoCleanupOutcomes,
@@ -36,6 +37,19 @@ import {
 } from './worktreeOperation.js';
 import type { PendingWorktreeOperation, WorktreeMutationGuard, WorktreeOperationKind } from './worktreeOperation.js';
 import { assertNoSymlinkComponents, validateExactWorktreeRegistration } from './worktreeLinkage.js';
+import { parseRetainedCheckoutId, projectRepositories } from './retainedCheckout.js';
+import type { RetainedCheckoutContext } from './retainedCheckout.js';
+import {
+  createTargetedPlacement,
+  inspectTargetBinding,
+  mergeTargetedPlacement,
+  readTargetedPlacement,
+  removeTargetedPlacement,
+  targetedRepositoryPath,
+  targetedRunBranch,
+} from './targetedPlacement.js';
+import type { TargetBindingStatus, TargetedPlacement, TargetedPlacementSpec } from './targetedPlacement.js';
+import type { TargetBinding } from './workspaceManifest.js';
 import {
   inspectWorktreeTarget,
   readWorktreeTargetIdentity,
@@ -88,6 +102,14 @@ export interface AdhocCreateOptions {
   runId?: string;
   /** Required in manifest mode to select composite repositories; omit for a single-root project. */
   repoIds?: string[];
+  /**
+   * Retained checkout `<repoId>/<slug>` the run integrates into. The run is one
+   * worktree in that repository, bound to the checkout's path and branch. With
+   * `repoIds`, they must be exactly that repository.
+   */
+  target?: string;
+  /** Targeted runs only: commit-ish to start from instead of the target's HEAD, resolved once to a commit. */
+  baseRef?: string;
 }
 
 export interface AdhocCreateTarget {
@@ -104,7 +126,7 @@ export interface AdhocWorktreeRepoInfo {
   comparison?: WorktreeTargetComparison;
 }
 
-export type AdhocWorktreeMode = 'adhoc-single' | 'adhoc-composite';
+export type AdhocWorktreeMode = 'adhoc-single' | 'adhoc-composite' | 'adhoc-targeted';
 
 export interface AdhocWorktreeInfo {
   runId: string;
@@ -120,6 +142,10 @@ export interface AdhocWorktreeInfo {
   baseCommits?: Record<string, string>;
   baseCommit?: string;
   clean?: boolean;
+  /** Targeted runs: the repository the run's single worktree belongs to. */
+  repoId?: string;
+  /** Targeted runs: the retained checkout frozen as the integration target; inspection adds how the live checkout relates to it. */
+  targetBinding?: TargetBinding & { status?: TargetBindingStatus; detail?: string };
   target?: WorktreeTargetIdentity | null;
   comparison?: WorktreeTargetComparison;
   /** Interrupted operations or pre-native lock files guarding this run or its repositories; inspection only. */
@@ -266,6 +292,8 @@ interface RepositorySelection {
 
 interface RunRepositorySelection extends RepositorySelection {
   manifest: AdhocCompositeManifest | null;
+  /** Whether the run is a targeted worker; its placement is reread by the operation. */
+  targeted: boolean;
 }
 
 interface CreateRepositorySelection extends RepositorySelection {
@@ -351,10 +379,49 @@ export class AdhocWorktreeService {
     });
   }
 
-  /** The repositories an operation on this run touches: its persisted composite selection, or the single root. */
+  /** The repositories an operation on this run touches: its target's repository, its persisted composite selection, or the single root. */
   private async selectRunRepositories(runId: string): Promise<RunRepositorySelection> {
+    const targetedPath = await targetedRepositoryPath(this.checkoutContext(), this.targetedSpec(runId));
+    if (targetedPath !== null) return { manifest: null, targeted: true, repositoryPaths: [targetedPath] };
     const manifest = await this.readCompositeManifest(runId);
-    return { manifest, repositoryPaths: this.workspaceRepositoryPaths(manifest, this.getWorktreePath(runId)) };
+    return { manifest, targeted: false, repositoryPaths: this.workspaceRepositoryPaths(manifest, this.getWorktreePath(runId)) };
+  }
+
+  private checkoutContext(): RetainedCheckoutContext {
+    return { hiveDir: this.config.hiveDir, repositories: projectRepositories(this.config.baseDir, this.resolveRepositories()) };
+  }
+
+  private targetedSpec(runId: string): TargetedPlacementSpec {
+    return {
+      mode: 'adhoc-targeted',
+      worktreePath: this.getWorktreePath(runId),
+      metadataPath: this.getSingleMetadataPath(runId),
+      branch: targetedRunBranch(runId),
+      owner: { runId },
+      untargeted: { repositoryPath: this.config.baseDir, branch: this.getBranchName(runId) },
+    };
+  }
+
+  private targetedInfo(runId: string, placement: TargetedPlacement, commit: string): AdhocWorktreeInfo {
+    const { metadata } = placement;
+    return {
+      runId,
+      path: metadata.worktreePath,
+      branch: metadata.branch,
+      commit,
+      baseCommit: metadata.baseCommit,
+      mode: 'adhoc-targeted',
+      repoId: metadata.repoId,
+      targetBinding: { ...metadata.target },
+    };
+  }
+
+  private async readTargetedRun(runId: string): Promise<{ placement: TargetedPlacement; info: AdhocWorktreeInfo | null } | null> {
+    const placement = await readTargetedPlacement(this.checkoutContext(), this.targetedSpec(runId));
+    if (!placement) return null;
+    if (!placement.present) return { placement, info: null };
+    const commit = (await this.getGit(placement.metadata.worktreePath).revparse(['HEAD'])).trim();
+    return { placement, info: this.targetedInfo(runId, placement, commit) };
   }
 
   /** Read-only: skips the optional index refresh so inspection takes no index.lock. */
@@ -683,9 +750,19 @@ export class AdhocWorktreeService {
     }
 
     const repoIds = options.repoIds?.length ? options.repoIds : undefined;
+    if (options.target !== undefined) return this.createTargeted(runId, options.target, repoIds, options.baseRef);
+    if (options.baseRef !== undefined) throw new Error('baseRef applies only to a targeted run; pass target as well');
     const selectRepositories = async (): Promise<CreateRepositorySelection> => {
-      const manifest = explicit && repoIds ? await this.readCompositeManifest(runId) : null;
       const resolved = this.resolveRepositories();
+      // A run's binding outlives its worktree while its branch remains; that run stays targeted.
+      const context = { hiveDir: this.config.hiveDir, repositories: projectRepositories(this.config.baseDir, resolved) };
+      const bound = await readTargetedPlacement(context, this.targetedSpec(runId));
+      if (bound) {
+        throw new WorktreeTopologyMismatchError(
+          `Ad-hoc run ${runId} is bound to retained checkout ${bound.metadata.target.id}; pass that target to reuse it, or clean the run up before creating another with this ID.`,
+        );
+      }
+      const manifest = explicit && repoIds ? await this.readCompositeManifest(runId) : null;
       if (resolved?.length && !repoIds) {
         throw new WorktreeTopologyMismatchError('Ad-hoc worktree creation in a manifest-backed project requires repoIds; select the declared repositories for this run.');
       }
@@ -717,6 +794,22 @@ export class AdhocWorktreeService {
     return this.mutateRun('create', runId, selectRepositories, ({ repositories, manifest }, guard) => repositories
       ? this.createComposite(guard, runId, repositories, manifest)
       : this.createSingle(guard, runId, explicit));
+  }
+
+  private async createTargeted(runId: string, targetId: string, repoIds: string[] | undefined, baseRef: string | undefined): Promise<AdhocWorktreeInfo> {
+    const { repoId } = parseRetainedCheckoutId(targetId);
+    if (repoIds && (repoIds.length !== 1 || repoIds[0] !== repoId)) {
+      throw new WorktreeTopologyMismatchError(`A run targeting ${targetId} works in repository ${repoId} only; repoIds must be omitted or exactly [${repoId}]`);
+    }
+    const select = async (): Promise<RepositorySelection> => {
+      const repository = this.checkoutContext().repositories.find((candidate) => candidate.id === repoId);
+      if (!repository) throw new WorktreeTopologyMismatchError(`Target ${targetId} names repository ${repoId}, which this project does not configure`);
+      return { repositoryPaths: [repository.path] };
+    };
+    return this.mutateRun('create', runId, select, async (_selection, guard) => {
+      const created = await createTargetedPlacement(guard, this.checkoutContext(), this.targetedSpec(runId), targetId, baseRef);
+      return this.targetedInfo(runId, created, created.commit);
+    });
   }
 
   private async createSingle(
@@ -788,7 +881,7 @@ export class AdhocWorktreeService {
       const removed = await git.raw(['worktree', 'remove', worktreePath]).then(() => true).catch(() => false);
       if (removed) {
         const pruned = await git.raw(['worktree', 'prune']).then(() => true).catch(() => false);
-        if (cleanupStepDone(await this.deleteBranchStep(git, branchName, commit)) && pruned) guard.markOutcomeKnown();
+        if (cleanupStepDone(await deleteBranchStep(git, branchName, commit)) && pruned) guard.markOutcomeKnown();
       }
       throw error;
     }
@@ -933,7 +1026,7 @@ export class AdhocWorktreeService {
         const repoWtPath = this.getCompositeRepoPath(runId, created.repoId);
         const removed = await created.git.raw(['worktree', 'remove', repoWtPath]).then(() => true).catch(() => false);
         const pruned = await created.git.raw(['worktree', 'prune']).then(() => true).catch(() => false);
-        const branchDeleted = removed && cleanupStepDone(await this.deleteBranchStep(created.git, created.branchName, created.commit));
+        const branchDeleted = removed && cleanupStepDone(await deleteBranchStep(created.git, created.branchName, created.commit));
         if (!pruned || !branchDeleted) rolledBack = false;
       }
       await this.removeEmptyWorkspaceRoot(compositeRoot);
@@ -945,6 +1038,8 @@ export class AdhocWorktreeService {
   async get(runId: string): Promise<AdhocWorktreeInfo | null> {
     this.assertSafeRunId(runId);
 
+    const targeted = await this.readTargetedRun(runId);
+    if (targeted) return targeted.info;
     const manifest = await this.readCompositeManifest(runId);
     if (manifest) return this.refreshCompositeInfo(manifest);
 
@@ -982,7 +1077,12 @@ export class AdhocWorktreeService {
       const info = await this.get(runId);
       if (!info) return null;
       if (pending.length > 0) info.pendingOperations = pending;
-      if (info.repos) {
+      if (info.targetBinding) {
+        info.clean = await this.isCompletelyClean(this.getGit(info.path));
+        const { binding, status, detail, target, comparison } = await inspectTargetBinding(this.checkoutContext(), info.targetBinding, info.commit);
+        info.targetBinding = { ...binding, status, ...(detail !== undefined ? { detail } : {}) };
+        Object.assign(info, { target, comparison });
+      } else if (info.repos) {
         const trustedById = this.trustedRepositoriesForManifest(manifest!);
         for (const [repoId, repo] of Object.entries(info.repos)) {
           repo.clean = await this.isCompletelyClean(this.getGit(repo.path));
@@ -1015,9 +1115,48 @@ export class AdhocWorktreeService {
       'merge',
       runId,
       () => this.selectRunRepositories(runId),
-      ({ manifest }, guard) => this.mergeUnlocked(guard, runId, manifest, resolved.policy, message, options),
+      ({ manifest, targeted }, guard) => targeted
+        ? this.mergeTargeted(guard, runId, resolved.policy, message, options)
+        : this.mergeUnlocked(guard, runId, manifest, resolved.policy, message, options),
       isMutationOutcomeKnown,
     );
+  }
+
+  private async mergeTargeted(
+    guard: WorktreeMutationGuard,
+    runId: string,
+    policy: IntegrationPolicy,
+    message: string | undefined,
+    options: AdhocMergeOptions,
+  ): Promise<AdhocMergeResult> {
+    const { strategy } = policy;
+    if (strategy === 'rebase' && message?.trim()) {
+      return mergeFailure(strategy, 'MESSAGE_NOT_ALLOWED_FOR_REBASE', 'Custom merge message is not supported for rebase strategy');
+    }
+    if (options.expectedTargets !== undefined || options.sourceCommits !== undefined) {
+      return mergeFailure(strategy, 'INVALID_ARGUMENTS', 'A targeted run takes expectedTarget and sourceCommit, not per-repository maps');
+    }
+    if (options.expectedTarget === undefined) return mergeFailure(strategy, 'INVALID_ARGUMENTS', 'expectedTarget or expectedTargets is required');
+    let placement: TargetedPlacement | null;
+    try {
+      placement = await readTargetedPlacement(this.checkoutContext(), this.targetedSpec(runId));
+    } catch (error) {
+      return mergeFailure(strategy, classifyThrownWorktreeError(error) ?? 'WORKTREE_LOOKUP_FAILED', error instanceof Error ? error.message : String(error));
+    }
+    if (!placement) return mergeFailure(strategy, 'WORKSPACE_TOPOLOGY_MISMATCH', `Ad-hoc run ${runId} is no longer a targeted run`);
+    const result = await mergeTargetedPlacement({
+      guard,
+      context: this.checkoutContext(),
+      spec: this.targetedSpec(runId),
+      placement,
+      policy,
+      message,
+      preserveConflicts: options.preserveConflicts ?? false,
+      cleanupMode: options.cleanup ?? 'none',
+      ...(options.sourceCommit !== undefined ? { sourceCommit: options.sourceCommit } : {}),
+      expectedTarget: options.expectedTarget,
+    });
+    return { ...result, strategy };
   }
 
   private async mergeUnlocked(
@@ -1457,7 +1596,7 @@ export class AdhocWorktreeService {
         ? branchPreparationError
           ? { status: 'failed', error: branchPreparationError }
           : cleanupStepDone(worktreeRemoval)
-          ? await this.deleteBranchStep(repoGit, branchName, pinnedBranchCommit)
+          ? await deleteBranchStep(repoGit, branchName, pinnedBranchCommit)
           : { status: 'not_attempted' }
         : { status: 'not_requested' },
     });
@@ -1517,20 +1656,6 @@ export class AdhocWorktreeService {
       const message = (error as Error).message;
       if (/unknown revision|ambiguous argument|Needed a single revision/.test(message)) return undefined;
       throw error;
-    }
-  }
-
-  private async deleteBranchStep(git: SimpleGit, branchName: string, expectedOldOid?: string): Promise<CleanupStepOutcome> {
-    if (!expectedOldOid) return { status: 'already_absent' };
-    try {
-      const checkedOut = (await git.raw(['worktree', 'list', '--porcelain']))
-        .split('\n')
-        .some((line) => line === `branch refs/heads/${branchName}`);
-      if (checkedOut) return { status: 'failed', error: `Refusing to delete checked-out branch ${branchName}` };
-      await git.raw(['update-ref', '-d', `refs/heads/${branchName}`, expectedOldOid]);
-      return { status: 'succeeded' };
-    } catch (error: unknown) {
-      return { status: 'failed', error: (error as Error).message || 'branch compare-and-delete failed' };
     }
   }
 
@@ -1640,9 +1765,17 @@ export class AdhocWorktreeService {
       'cleanup',
       runId,
       () => this.selectRunRepositories(runId),
-      ({ manifest }, guard) => manifest
-        ? this.cleanupComposite(guard, manifest, deleteBranch, options)
-        : this.cleanupSingle(guard, runId, deleteBranch, options),
+      async ({ manifest, targeted }, guard) => {
+        if (targeted) {
+          const placement = await readTargetedPlacement(this.checkoutContext(), this.targetedSpec(runId));
+          if (!placement) throw new WorktreeTopologyMismatchError(`Ad-hoc run ${runId} is no longer a targeted run`);
+          const outcome = await removeTargetedPlacement(guard, this.targetedSpec(runId), placement, deleteBranch, { discard: options.discard === true });
+          return cleanupResultFromOutcome(outcome, outcome.outcome === 'complete' ? undefined : 'CLEANUP_FAILED');
+        }
+        return manifest
+          ? this.cleanupComposite(guard, manifest, deleteBranch, options)
+          : this.cleanupSingle(guard, runId, deleteBranch, options);
+      },
     );
   }
 
@@ -1682,7 +1815,7 @@ export class AdhocWorktreeService {
         ? branchPreparationError
           ? { status: 'failed', error: branchPreparationError }
           : cleanupStepDone(worktreeRemoval)
-          ? await this.deleteBranchStep(git, branchName, pinnedBranchCommit)
+          ? await deleteBranchStep(git, branchName, pinnedBranchCommit)
           : { status: 'not_attempted' }
         : { status: 'not_requested' },
     });

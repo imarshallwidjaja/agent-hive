@@ -12,7 +12,15 @@
  */
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import simpleGit from 'simple-git';
 import { WorktreeLinkageError } from './worktreeOutcome.js';
+
+/** A trusted repository's canonical Git common directory: the identity its locks protect and its linked worktrees point back to. */
+export async function trustedGitCommonDirectory(repositoryPath: string, git = simpleGit(repositoryPath)): Promise<string> {
+  const raw = (await git.raw(['rev-parse', '--git-common-dir'])).trim();
+  if (!raw) throw new WorktreeLinkageError(`Worktree linkage preflight failed: trusted repository has no Git common directory (${repositoryPath})`);
+  return fs.realpath(path.isAbsolute(raw) ? raw : path.resolve(repositoryPath, raw));
+}
 
 function isContained(root: string, candidate: string): boolean {
   const relative = path.relative(root, candidate);

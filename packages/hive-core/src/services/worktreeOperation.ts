@@ -37,9 +37,10 @@ import {
   WorktreeSelectionChangedError,
 } from './worktreeOutcome.js';
 import type { WorktreeFinalizationFailure } from './worktreeOutcome.js';
-import { assertNoSymlinkComponents, validateExactWorktreeRegistration } from './worktreeLinkage.js';
+import { assertNoSymlinkComponents, trustedGitCommonDirectory, validateExactWorktreeRegistration } from './worktreeLinkage.js';
 import { readWorktreeTargetIdentity } from './worktreeTarget.js';
 import type { WorktreeTargetIdentity } from './worktreeTarget.js';
+import { getCheckoutsRoot, isRetainedCheckoutPlacement } from './retainedCheckout.js';
 
 const WORKTREE_OPERATION_PROTOCOL = 'hive-worktree-operation/v1';
 /** Namespace of operation lock resources; pre-native hosts created `<name>.lock` files here. */
@@ -58,6 +59,7 @@ export type WorktreeOperationKind = 'create' | 'merge' | 'remove' | 'cleanup';
 export type WorktreeOperationSubject =
   | { type: 'task'; feature: string; task: string; candidate?: string }
   | { type: 'adhoc'; runId: string }
+  | { type: 'checkout'; id: string }
   | { type: 'project'; feature?: string };
 
 export interface WorktreeOperationRepositoryRecord {
@@ -70,6 +72,8 @@ export interface WorktreeOperationRepositoryRecord {
   sourceCommit?: string;
   /** Destination identity the operation was checked against, when known. */
   expectedTarget?: WorktreeTargetIdentity;
+  /** Destination checkout when it is not the repository path itself: a retained checkout the operation integrates into. */
+  targetPath?: string;
 }
 
 /** The one current pending record of an operation, written once per protected resource. */
@@ -88,6 +92,7 @@ export interface WorktreeOperationMarker {
 
 export interface ObservedRepositoryState {
   repositoryPath: string;
+  /** Identity of the destination: the declared target checkout when there is one, otherwise the repository path. */
   target: WorktreeTargetIdentity | null;
   targetError?: string;
   source: { worktreePath: string; present: boolean; branch: string | null; commit: string | null } | null;
@@ -200,11 +205,7 @@ export function worktreeOperationLocalPaths(hiveDir: string): string[] {
   return [path.join(hiveDir, OPERATION_LOCK_NAMESPACE), getLockAnchorDirectory(hiveDir)];
 }
 
-export async function trustedGitCommonDirectory(repositoryPath: string, git = simpleGit(repositoryPath)): Promise<string> {
-  const raw = (await git.raw(['rev-parse', '--git-common-dir'])).trim();
-  if (!raw) throw new WorktreeLinkageError(`Worktree linkage preflight failed: trusted repository has no Git common directory (${repositoryPath})`);
-  return fs.promises.realpath(path.isAbsolute(raw) ? raw : path.resolve(repositoryPath, raw));
-}
+export { trustedGitCommonDirectory };
 
 function selectionKey(repositoryPaths: string[]): string[] {
   return [...new Set(repositoryPaths.map((repositoryPath) => path.resolve(repositoryPath)))].sort();
@@ -368,9 +369,11 @@ function recordTrust(hiveDir: string, repositoryPaths: string[], commonDirectory
   };
 }
 
+/** A worker placement `.hive/.worktrees/<group>/<entry>` or a managed retained checkout placement. */
 function isWorkspacePlacement(hiveDir: string, workspacePath: string): boolean {
   const relative = path.relative(path.resolve(hiveDir, '.worktrees'), path.resolve(workspacePath));
-  return relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative) && relative.split(path.sep).length === 2;
+  return (relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative) && relative.split(path.sep).length === 2)
+    || isRetainedCheckoutPlacement(hiveDir, workspacePath);
 }
 
 /**
@@ -426,7 +429,13 @@ async function requireLinkedToAny(checkout: string, commonDirectories: string[])
 /** Checkouts Git may be run in to observe a record's resources, each already shown to be what the record claims. */
 interface ObservationPlan {
   workspace: { workspacePath: string; present: boolean; checkouts: Array<{ label: string; cwd: string }> } | null;
-  repositories: Array<{ repositoryPath: string; sourceBranch?: string; source: { worktreePath: string; linked: boolean } | null }>;
+  repositories: Array<{
+    repositoryPath: string;
+    sourceBranch?: string;
+    source: { worktreePath: string; linked: boolean } | null;
+    /** A declared destination checkout, already shown to be the repository itself or its linked retained checkout. */
+    target?: { path: string; linked: boolean };
+  }>;
 }
 
 /**
@@ -485,6 +494,7 @@ async function planMarkerObservation(marker: WorktreeOperationMarker, trust: Rec
   for (const repository of marker.repositories) {
     requireCanonicalPath('repository', repository.repositoryPath);
     if (repository.sourceWorktreePath !== undefined) requireCanonicalPath('source checkout', repository.sourceWorktreePath);
+    if (repository.targetPath !== undefined) requireCanonicalPath('target checkout', repository.targetPath);
   }
   const repositories: ObservationPlan['repositories'] = [];
   for (const repository of marker.repositories) {
@@ -510,7 +520,8 @@ async function planMarkerObservation(marker: WorktreeOperationMarker, trust: Rec
       }
       source = { worktreePath: sourceWorktreePath, linked };
     }
-    repositories.push({ repositoryPath: repository.repositoryPath, ...(sourceBranch !== undefined ? { sourceBranch } : {}), source });
+    const target = repository.targetPath === undefined ? undefined : await planTargetCheckout(repository, trust);
+    repositories.push({ repositoryPath: repository.repositoryPath, ...(sourceBranch !== undefined ? { sourceBranch } : {}), source, ...(target ? { target } : {}) });
   }
   const commonDirectories = (await Promise.all(marker.repositories.map((repository) => trust.commonDirectory(repository.repositoryPath))))
     .filter((directory): directory is string => directory !== null);
@@ -518,6 +529,31 @@ async function planMarkerObservation(marker: WorktreeOperationMarker, trust: Rec
     workspace: marker.workspacePath === null ? null : await planWorkspace(marker.workspacePath, commonDirectories, trust),
     repositories,
   };
+}
+
+/**
+ * Check a declared destination checkout: the trusted repository path itself or
+ * the root of the Git checkout holding it (a manifest repository may name a
+ * subdirectory), or a managed retained checkout placement that, when present,
+ * is a linked worktree of that repository.
+ */
+async function planTargetCheckout(repository: WorktreeOperationRepositoryRecord, trust: RecordTrust): Promise<{ path: string; linked: boolean }> {
+  const targetPath = repository.targetPath!;
+  if (path.resolve(targetPath) === path.resolve(repository.repositoryPath)) return { path: targetPath, linked: true };
+  const checkoutRoot = await simpleGit(repository.repositoryPath).revparse(['--show-toplevel'])
+    .then((root) => fs.promises.realpath(root.trim()), () => null);
+  if (checkoutRoot === path.resolve(targetPath)) return { path: targetPath, linked: true };
+  if (!isRetainedCheckoutPlacement(trust.hiveDir, targetPath)) {
+    throw new UntrustedDeclarationError(`target checkout ${targetPath} is neither its repository nor a retained checkout of this project`);
+  }
+  const commonDirectory = await trust.commonDirectory(repository.repositoryPath);
+  if (commonDirectory === null) throw new UntrustedDeclarationError(`repository ${repository.repositoryPath} has no readable Git common directory, so target checkout ${targetPath} cannot be checked`);
+  await requireLinkage(`target checkout ${targetPath}`, () => assertNoSymlinkComponents(path.parse(targetPath).root, targetPath, true));
+  const linked = (await lstatOrNull(path.join(targetPath, '.git'))) !== null;
+  if (linked) {
+    await requireLinkage(`target checkout ${targetPath}`, () => validateExactWorktreeRegistration(targetPath, async () => commonDirectory, repository.repoId ?? repository.repositoryPath));
+  }
+  return { path: targetPath, linked };
 }
 
 /** Plan an observation, or return why the record cannot be trusted. Never throws for an untrusted declaration. */
@@ -596,6 +632,11 @@ async function gitStatePresent(cwd: string, names: string[]): Promise<string[]> 
   return present;
 }
 
+/** Stopped or running Git operations in one checkout (merge, rebase, cherry-pick, index or HEAD locks). */
+export function activeCheckoutGitState(checkoutPath: string): Promise<string[]> {
+  return gitStatePresent(checkoutPath, WORKTREE_GIT_STATE);
+}
+
 function isDirectory(target: string): boolean {
   try {
     return fs.lstatSync(target).isDirectory();
@@ -622,10 +663,21 @@ async function observeRepository(record: ObservationPlan['repositories'][number]
   const activeGitState: string[] = [];
   let target: WorktreeTargetIdentity | null = null;
   let targetError: string | undefined;
-  try {
-    target = await readWorktreeTargetIdentity(record.repositoryPath);
-  } catch (error) {
-    targetError = (error as Error).message;
+  if (record.target && !record.target.linked) {
+    targetError = `target checkout ${record.target.path} is not present`;
+  } else {
+    try {
+      target = await readWorktreeTargetIdentity(record.target?.path ?? record.repositoryPath);
+    } catch (error) {
+      targetError = (error as Error).message;
+    }
+  }
+  if (record.target?.linked && path.resolve(record.target.path) !== path.resolve(record.repositoryPath)) {
+    try {
+      for (const name of await gitStatePresent(record.target.path, WORKTREE_GIT_STATE)) activeGitState.push(`target:${name}`);
+    } catch (error) {
+      activeGitState.push(`target:unreadable (${(error as Error).message.split('\n')[0]})`);
+    }
   }
   try {
     const repositoryState = [...WORKTREE_GIT_STATE, ...REPOSITORY_GIT_STATE, ...(record.sourceBranch ? [`refs/heads/${record.sourceBranch}.lock`] : [])];
@@ -1150,15 +1202,16 @@ export class WorktreeOperationRecoveryService {
         // A repository that cannot be read cannot be identified; its records stay unrecoverable.
       }
     }
-    const root = this.worktreesRoot();
-    for (const group of isDirectory(root) ? fs.readdirSync(root) : []) {
-      const groupPath = path.join(root, group);
-      if (!isDirectory(groupPath)) continue;
-      for (const entry of fs.readdirSync(groupPath)) {
-        const workspacePath = path.join(groupPath, entry);
-        if (!isDirectory(workspacePath)) continue;
-        const name = workspaceResourceName(workspacePath);
-        refs.set(name, { name, workspacePath: path.resolve(workspacePath) });
+    for (const root of [this.worktreesRoot(), getCheckoutsRoot(this.config.hiveDir)]) {
+      for (const group of isDirectory(root) ? fs.readdirSync(root) : []) {
+        const groupPath = path.join(root, group);
+        if (!isDirectory(groupPath)) continue;
+        for (const entry of fs.readdirSync(groupPath)) {
+          const workspacePath = path.join(groupPath, entry);
+          if (!isDirectory(workspacePath)) continue;
+          const name = workspaceResourceName(workspacePath);
+          refs.set(name, { name, workspacePath: path.resolve(workspacePath) });
+        }
       }
     }
     return refs;
