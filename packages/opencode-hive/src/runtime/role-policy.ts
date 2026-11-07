@@ -29,13 +29,16 @@ export const ROUTING_BASES = [
 ] as const satisfies readonly CustomAgentBase[];
 
 const READ_TOOLS = ['hive_context_read', 'hive_constraints_read', 'hive_plan_read', 'hive_status', 'hive_repositories_status', 'hive_git_snapshot',
-  'hive_worklog_list', 'hive_worklog_read'];
+  'hive_worklog_list', 'hive_worklog_read', 'hive_checkouts_list'];
 const WORKLOG_RECORD = 'hive_worklog_record';
 const CONTEXT_WRITES = ['hive_context_write', 'hive_context_append', 'hive_context_edit'];
 const CONSTRAINT_MUTATIONS = ['hive_constraints_add', 'hive_constraints_edit', 'hive_constraints_clear'];
 const REVIEW_TOOLS = [...READ_TOOLS, ...CONTEXT_WRITES];
 const TASK_TRACE_TOOLS = ['hive_task_trace', 'hive_task_trace_content'];
-const INSPECTION_TOOLS = ['hive_worktree_inspect', 'hive_adhoc_worktree_inspect'];
+// Checkout inspection takes the same operation locks as worktree inspection when it reads a cleanup proposal.
+const INSPECTION_TOOLS = ['hive_worktree_inspect', 'hive_adhoc_worktree_inspect', 'hive_checkout_inspect'];
+/** Retained checkout mutations; only the executing primaries (Hive, Swarm, Hive Builder) hold them. */
+const CHECKOUT_MUTATIONS = ['hive_checkout_create', 'hive_checkout_register', 'hive_checkout_readiness', 'hive_checkout_cleanup'];
 const BACKGROUND_TOOLS = ['hive_background_status', 'hive_background_reconcile', 'hive_background_reconcile_batch', 'hive_background_cancel'];
 /** Acknowledges an interrupted worktree operation; every primary that can create or clean up a placement holds it. */
 const WORKTREE_RECOVERY = 'hive_worktree_recover';
@@ -47,7 +50,7 @@ export const PRIMARY_ONLY_TOOLS = [
   'question', 'hive_feature_complete', 'hive_feature_select',
   'hive_plan_approve', 'hive_tasks_sync', 'hive_task_create',
   'hive_worktree_merge', 'hive_worktree_cleanup',
-  'hive_adhoc_worktree_create', 'hive_adhoc_worktree_merge', 'hive_adhoc_worktree_cleanup', WORKTREE_RECOVERY,
+  'hive_adhoc_worktree_create', 'hive_adhoc_worktree_merge', 'hive_adhoc_worktree_cleanup', WORKTREE_RECOVERY, ...CHECKOUT_MUTATIONS,
   ...CONSTRAINT_MUTATIONS, 'hive_context_archive', ...BACKGROUND_TOOLS, WORKLOG_RECORD,
 ];
 

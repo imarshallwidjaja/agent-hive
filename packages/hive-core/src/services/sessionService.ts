@@ -34,12 +34,15 @@ export class SessionContinuityError extends Error {
 
 /**
  * Fields whose absence is meaningful state: an explicit `undefined` in a patch
- * clears them instead of being ignored as "not supplied".
+ * clears them instead of being ignored as "not supplied". A child's task and
+ * ad-hoc run association is one assignment, so binding one clears the other.
  */
 const CLEARABLE_SESSION_FIELDS = new Set<keyof SessionInfo>([
   'directiveRecoveryState',
   'standingConstraints',
   'standingConstraintEntries',
+  'taskFolder',
+  'adHocRunId',
 ]);
 
 export class SessionService {

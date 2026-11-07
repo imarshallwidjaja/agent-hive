@@ -36,6 +36,7 @@ function harness(enabled = true) {
     isEnabled: () => enabled,
     runtimeId: 'runtime',
     getSession: id => sessions.get(id),
+    getBoundChild: ({ childSessionId }) => sessions.get(childSessionId),
     warn: warning => warnings.push(warning),
   });
   return { service, sessions, warnings, adapter };
@@ -78,6 +79,21 @@ describe('background job adapter observation', () => {
       runtimeState: 'running',
       scope: { parentSessionId: 'parent' },
     });
+  });
+
+  it('scopes a launch to the feature, task or run that the child binding for this parent names, and to nothing otherwise', async () => {
+    const { adapter, service, sessions } = harness();
+    // The parent's route moved on after dispatch; the child's binding keeps the route the dispatch captured.
+    sessions.set('parent', { ...session('parent'), featureName: 'beta' });
+    sessions.set('task-a', { ...session('task-a'), parentSessionId: 'parent', featureName: 'alpha', taskFolder: '01-build' });
+    sessions.set('task-b', { ...session('task-b'), parentSessionId: 'parent', featureName: null, adHocRunId: 'run-1' });
+    sessions.set('task-c', { ...session('task-c'), parentSessionId: 'other-parent', featureName: 'alpha', taskFolder: '01-build' });
+    for (const task of ['task-a', 'task-b', 'task-c', 'task-d']) await register(adapter, 'parent', `call-${task}`, task);
+    expect(service.resolve('task-a')?.scope).toEqual({ projectRoot: TEST_DIR, parentSessionId: 'parent', primaryAgent: 'hive-master', feature: 'alpha', task: '01-build' });
+    expect(service.resolve('task-b')?.scope).toEqual({ projectRoot: TEST_DIR, parentSessionId: 'parent', primaryAgent: 'hive-master', adHocRunId: 'run-1' });
+    for (const task of ['task-c', 'task-d']) {
+      expect(service.resolve(task)?.scope, task).toEqual({ projectRoot: TEST_DIR, parentSessionId: 'parent', primaryAgent: 'hive-master' });
+    }
   });
 
   it('does not register blocking task returns on the background board', async () => {
@@ -464,6 +480,8 @@ describe('background job adapter observation', () => {
     const parent = session('parent');
     parent.featureName = 'feature-at-dispatch';
     sessions.set('parent', parent);
+    // The dispatch bound the child to the route it captured.
+    sessions.set('task-a', { ...session('task-a'), parentSessionId: 'parent', featureName: 'feature-at-dispatch' });
     await adapter['tool.execute.before']({ tool: 'task', sessionID: 'parent', callID: 'call-a' }, {
       args: { subagent_type: 'forager-worker', background: true },
     });

@@ -56,4 +56,23 @@ describe('detection', () => {
     expect(result.projectRoot).toBe('/repo');
   });
 
+  it('maps a retained checkout and its subdirectories to the project that holds it, with no feature or task', () => {
+    for (const cwd of ['/repo/.hive/checkouts/root/release', '/repo/.hive/checkouts/api/release-2/src/lib', 'C:\\repo\\.hive\\checkouts\\root\\main']) {
+      const result = detectContext(cwd);
+      const root = cwd.startsWith('C:') ? 'C:/repo' : '/repo';
+      expect(result, cwd).toEqual({ projectRoot: root, feature: null, task: null, isWorktree: true, mainProjectRoot: root });
+    }
+    // The first checkout segment owns the path, even when the checkout's own tracked files repeat the layout.
+    expect(detectContext('/repo/.hive/checkouts/root/release/.hive/.worktrees/demo/01-task').projectRoot).toBe('/repo');
+    expect(detectContext('/repo/.hive/checkouts/root/release/.hive/checkouts/root/other').projectRoot).toBe('/repo');
+  });
+
+  it('leaves non-checkout paths under .hive/checkouts and ordinary project paths as they were', () => {
+    for (const cwd of ['/repo/.hive/checkouts/root', '/repo/.hive/checkouts/Root/release', '/repo/.hive/checkouts/root/..', '/repo/src/app']) {
+      expect(detectContext(cwd), cwd).toEqual({ projectRoot: cwd, feature: null, task: null, isWorktree: false, mainProjectRoot: null });
+    }
+    // A task worktree keeps its feature and task; a checkout segment inside it does not move the project root.
+    expect(detectContext('/repo/.hive/.worktrees/demo/01-task/.hive/checkouts/root/release')).toMatchObject({ projectRoot: '/repo', feature: 'demo', task: '01-task' });
+  });
+
 });

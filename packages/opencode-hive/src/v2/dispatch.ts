@@ -5,7 +5,8 @@ import { Tool } from '@opencode/schema/tool';
 import type { Plugin } from '@opencode/plugin/effect';
 import type { SessionInfo } from 'hive-core';
 import type { HiveServices } from '../runtime/hive-services.js';
-import { childRouteRecord, composeDispatchPrompt } from '../task-brief.js';
+import { boundChildScope } from '../background/backgroundJobAdapter.js';
+import { childAssociation, childRouteRecord, composeDispatchPrompt, provenChildBinding, resolveAssignment, sameChildRoute, type ChildRoute } from '../task-brief.js';
 import type { BackgroundLaunch, V2BackgroundLifecycle } from './background.js';
 import type { VerifiedReadAccess } from './client.js';
 import type { HiveAuthority } from './registration.js';
@@ -22,7 +23,6 @@ class ChildBindingRefused {
 }
 
 type SubagentInput = { agent: string; description?: string; prompt: string; model?: string; sessionID?: string; background?: boolean };
-type ChildRoute = ReturnType<typeof childRouteRecord>;
 
 /**
  * Children reserved by an unfinished call of this activation, with the route that call binds. A continuation reserves
@@ -54,7 +54,9 @@ type Admissions = Map<string, { route: ChildRoute; calls: Set<string> }>;
  *   unchanged.
  * - A barrier on the progress update the host awaits before it admits the child's prompt: Hive reads the child from
  *   the host again, requires that its parent is this call's session and that no other parent owns its binding, and
- *   binds the child to the captured route. If a step fails, the call fails and the child is never prompted.
+ *   binds the child to the captured route, with its task or run association beside it. If a step fails, the call
+ *   fails and the child is never prompted, except that a child already bound to the captured route still runs when
+ *   only its new association cannot be recorded; Hive warns, and the launch row names no task or run it cannot prove.
  * - For a background launch, the board row, recorded at the barrier so a fast child cannot finish before its row
  *   exists. When the call then ends without returning normally, that row is marked uncertain. The board is never read
  *   to decide whether a dispatch may run.
@@ -127,7 +129,7 @@ function dispatchSubagent(
   /** Another unfinished local call holds the child on a different route. */
   const heldElsewhere = (child: string, route: ChildRoute) => {
     const held = admissions.get(child);
-    return held !== undefined && !sameRoute(held.route, route);
+    return held !== undefined && !sameChildRoute(held.route, route);
   };
 
   const admit = (child: string, route: ChildRoute) => {
@@ -160,7 +162,7 @@ function dispatchSubagent(
     if (managed && !switching) yield* confirmModel(child, session.model);
     if (heldElsewhere(child, route)) return yield* refuse(running(child));
     admit(child, route);
-    if (stored === undefined || !sameRoute(stored, route) || switching) {
+    if (stored === undefined || !sameChildRoute(stored, route) || switching) {
       const state = yield* hostActivity(child);
       if (state.unknown !== undefined) {
         return yield* refuse(`Hive could not confirm that child session ${child} is idle (${state.unknown}). Adopting an unbound child or changing its route, constraints or agent needs an idle child, so Hive did not overwrite its binding and ${NOT_CONTINUED}.`);
@@ -173,23 +175,25 @@ function dispatchSubagent(
     if (managed && args.model !== undefined) {
       return yield* Effect.fail(new Tool.Error({ message: `Hive manages the model of agent ${args.agent}, so this subagent call may not set model (it set ${JSON.stringify(args.model)}); the host was not called. Repeat the call without model: the agent runs on its effective configured model and variant, or inherits its parent's model when it has none. The operator changes that model in native agent configuration or agent_hive.json.` }));
     }
-    const snapshot = yield* Effect.try({
+    const captured = yield* Effect.try({
       try: () => services.captureRoute(parent),
       catch: (error) => new Tool.Error({ message: `Hive could not capture the dispatch route of session ${parent}: ${describe(error)}` }),
     });
+    const snapshot = { ...captured, assignment: yield* Effect.promise(() => resolveAssignment(services, captured, args.prompt)) };
     const prompt = composeDispatchPrompt({
       sources: { projectRoot: services.projectRoot, taskService: services.taskService, contextService: services.contextService },
       snapshot,
       prompt: args.prompt,
       foragerDispatch: target.kind === 'role' && target.role === 'forager-worker',
     });
-    const feature = snapshot.hasFeatureRoute && typeof snapshot.featureName === 'string' ? snapshot.featureName : undefined;
     const route = childRouteRecord(snapshot, parent, args.agent);
 
     if (args.sessionID !== undefined) {
       yield* preflight(args.sessionID, route).pipe(Effect.mapError((refusal) => new Tool.Error({ message: refusal.message })));
     }
 
+    // The child's binding once bound; the board row takes its feature, task and run from it.
+    let binding: SessionInfo | undefined;
     const bind = (child: string) => Effect.gen(function* () {
       yield* confirmParent(child, NOT_PROMPTED);
       const stored = yield* ownBinding(child, NOT_PROMPTED);
@@ -197,11 +201,25 @@ function dispatchSubagent(
         if (heldElsewhere(child, route)) return yield* refuse(`Child session ${child} is already admitted to another dispatch with a different route; Hive did not bind it and ${NOT_PROMPTED}.`);
         admit(child, route);
       }
-      if (stored === undefined || !sameRoute(stored, route)) {
-        yield* Effect.try({
-          try: () => services.sessionService.trackGlobal(child, route),
+      // The association is observation written beside the route; it takes no part in admission or the preflight. A
+      // child already bound to this route needs no write to run, so failing to record only its new association is
+      // reported and does not stop it; its launch row is then scoped by what the binding read before the write proves.
+      const association = childAssociation(snapshot);
+      const write = () => services.sessionService.trackGlobal(child, { ...route, ...association });
+      if (stored === undefined || !sameChildRoute(stored, route)) {
+        binding = yield* Effect.try({
+          try: write,
           catch: (error) => new ChildBindingRefused(`Hive could not bind child session ${child} to its dispatch route (${describe(error)}); ${NOT_PROMPTED}.`),
         });
+      } else if (stored.taskFolder === association.taskFolder && stored.adHocRunId === association.adHocRunId) {
+        binding = stored;
+      } else {
+        try {
+          binding = write();
+        } catch (error) {
+          binding = provenChildBinding(stored, route, association);
+          console.warn(`[hive:routing] Hive could not record the task or run association of child session ${child} (${describe(error)}); the child runs on its unchanged route. Before the write its stored binding named ${describeAssociation(stored)}; whether the failed write changed it is unknown, and Hive scopes this call's launch to neither that nor the new task or run.`);
+        }
       }
       bound = child;
       background.launchBound(parent, child);
@@ -214,7 +232,7 @@ function dispatchSubagent(
       agent: args.agent,
       description: args.description,
       primaryAgent: toolContext.agent,
-      feature,
+      ...boundChildScope(binding),
     });
 
     // The progress update carrying the child's session is the last step before the host prompts the child.
@@ -248,9 +266,8 @@ function dispatchSubagent(
   }).pipe(Effect.ensuring(release));
 }
 
-/** Whether the stored child binding already carries every field of the route a new call captured. */
-function sameRoute(stored: SessionInfo | ChildRoute, route: ChildRoute): boolean {
-  return (Object.keys(route) as Array<keyof ChildRoute>).every((key) => JSON.stringify(stored[key]) === JSON.stringify(route[key]));
+function describeAssociation(binding: SessionInfo): string {
+  return binding.taskFolder ? `task ${binding.taskFolder}` : binding.adHocRunId ? `run ${binding.adHocRunId}` : 'no task or run';
 }
 
 /**

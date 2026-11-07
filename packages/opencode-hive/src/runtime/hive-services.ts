@@ -3,12 +3,14 @@ import * as path from 'node:path';
 import {
   AdhocWorktreeService,
   BackgroundJobService,
+  CheckoutInspector,
   ConfigService,
   ContextService,
   FeatureConstraintService,
   FeatureService,
   PlanService,
   RepositoryManifestService,
+  RetainedCheckoutService,
   SessionService,
   TaskService,
   WorklogService,
@@ -30,12 +32,20 @@ export type HiveInvocation = { sessionID?: string; agent?: string; signal?: Abor
 
 export type ConstraintRegister = { entries: StandingConstraintEntry[]; revision: number; constraints: string };
 
+/** The one task of the selected feature, or the one ad-hoc run of this project, that an authored assignment names. */
+export type AssignmentBinding = { taskFolder: string } | { adHocRunId: string };
+
 export type RouteSnapshot = {
   projectRoot: string;
   hasFeatureRoute: boolean;
   featureName?: string | null;
   sessionConstraints: ConstraintRegister;
   featureConstraints?: ConstraintRegister;
+  /**
+   * Set by the dispatch that captured the route, from its assignment's first line: the task or run a marker names,
+   * absent when the assignment has no marker or one Hive cannot resolve.
+   */
+  assignment?: AssignmentBinding;
 };
 
 export type ConstraintTarget =
@@ -92,6 +102,9 @@ export function createHiveServices(options: { projectRoot: string; detectedFeatu
     hiveDir: path.join(projectRoot, '.hive'),
     repositoryResolver: { resolveRepositories: repositoryResolver },
   });
+  const checkoutConfig = { baseDir: projectRoot, hiveDir: path.join(projectRoot, '.hive'), repositoryResolver: { resolveRepositories: repositoryResolver } };
+  const retainedCheckoutService = new RetainedCheckoutService(checkoutConfig);
+  const checkoutInspector = new CheckoutInspector(checkoutConfig);
 
   const liveFeatures = (): string[] => featureService.list().filter((name) => {
     const status = featureService.get(name)?.status;
@@ -189,6 +202,8 @@ export function createHiveServices(options: { projectRoot: string; detectedFeatu
     worklogService,
     worktreeService,
     worktreeRecoveryService,
+    retainedCheckoutService,
+    checkoutInspector,
     configFallbackWarning,
     hasManifest,
     repositoryResolver,

@@ -37,6 +37,8 @@ export interface BackgroundJobAdapterOptions {
   isEnabled: () => boolean;
   runtimeId?: string;
   getSession?: (sessionId: string) => SessionInfo | undefined;
+  /** The child binding the launching call itself confirmed; it names the launch row's feature, task and run. */
+  getBoundChild?: (launch: { childSessionId: string; parentSessionId: string; callId?: string }) => SessionInfo | undefined;
   parseLifecycleEvent?: (input: unknown, output: unknown, context?: TaskLifecycleContext) => ParsedTaskLifecycleEvent | undefined;
   warn?: (message: string) => void;
 }
@@ -67,6 +69,19 @@ export interface BoardObserverOptions {
   service: BackgroundJobService;
   runtimeId?: string;
   warn: (message: string) => void;
+}
+
+/**
+ * The feature, task and run a launch row names: those of the child binding its launching call wrote from the route it
+ * captured, or, when that write failed, what the stored binding proves (`provenChildBinding`). A child without such a
+ * binding names none; the parent's route at some later moment is never used.
+ */
+export function boundChildScope(child: SessionInfo | undefined): { feature?: string; task?: string; adHocRunId?: string } {
+  return {
+    ...(typeof child?.featureName === 'string' ? { feature: child.featureName } : {}),
+    ...(child?.taskFolder ? { task: child.taskFolder } : {}),
+    ...(child?.adHocRunId ? { adHocRunId: child.adHocRunId } : {}),
+  };
 }
 
 export function classifyRuntimeEpochStaleJobs(input: {
@@ -240,7 +255,6 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
         lifecycleContextByCall.set(key, {
           args: stagedArgs,
           agentName: typeof session?.agent === 'string' ? session.agent : undefined,
-          featureLabel: typeof session?.featureName === 'string' ? session.featureName : undefined,
         });
       }
     },
@@ -322,7 +336,6 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
     return {
       args: staged?.args ?? record.args,
       agentName: staged?.agentName,
-      featureLabel: staged?.featureLabel,
     };
   }
 
@@ -347,6 +360,8 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
       }
 
       try {
+        // Only the child binding this call confirmed for this parent names its feature, task or run; nothing is inferred.
+        const child = options.getBoundChild?.({ childSessionId: event.taskId, parentSessionId: event.parentSessionId, callId: event.callId });
         options.service.registerLaunch({
           taskId: event.taskId,
           sessionId: event.taskId,
@@ -358,7 +373,7 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
             projectRoot: options.projectRoot,
             parentSessionId: event.parentSessionId,
             primaryAgent: event.agentName,
-            feature: event.featureLabel,
+            ...boundChildScope(child?.parentSessionId === event.parentSessionId ? child : undefined),
           },
         });
       } catch (error) {

@@ -44,6 +44,9 @@ export type BackgroundLaunch = {
   description?: string;
   primaryAgent?: string;
   feature?: string;
+  /** The task or ad-hoc run the child's Hive binding names, when it names one. */
+  task?: string;
+  adHocRunId?: string;
 };
 
 /** How many early completion notifications (seen before their launch row) are held; older ones are dropped. */
@@ -125,7 +128,11 @@ export function createV2BackgroundLifecycle(input: { projectRoot: string; servic
         agentName: launch.agent,
         description: launch.description,
         runtimeId,
-        scope: { projectRoot, parentSessionId: launch.parentSessionID, primaryAgent: launch.primaryAgent, feature: launch.feature },
+        scope: {
+          projectRoot, parentSessionId: launch.parentSessionID, primaryAgent: launch.primaryAgent, feature: launch.feature,
+          ...(launch.task ? { task: launch.task } : {}),
+          ...(launch.adHocRunId ? { adHocRunId: launch.adHocRunId } : {}),
+        },
       }).alias;
     } catch (error) {
       warn(`[hive:background] failed to record background launch ${launch.childSessionID}: ${describe(error)}`);

@@ -93,17 +93,23 @@ const ORDINARY_OPERATION_SIGNATURES = [
   'hive_plan_read(feature?:string, mode?:full|outline)',
   'hive_plan_approve(feature?:string, expectedRevision?:string, sync?:boolean, refreshPending?:boolean, refreshTasks?:string[])',
   'hive_tasks_sync(feature?:string, refreshPending?:boolean)',
-  'hive_task_create(name:string, order?:number, feature?:string, description?:string, goal?:string, acceptanceCriteria?:string[], references?:string[], files?:string[], dependsOn?:string[], reason?:string, source?:string, repos?:string[])',
+  'hive_task_create(name:string, order?:number, feature?:string, description?:string, goal?:string, acceptanceCriteria?:string[], references?:string[], files?:string[], dependsOn?:string[], reason?:string, source?:string, repos?:string[], target?:string)',
   'hive_task_update(task:string, status?:pending|in_progress|done|cancelled|blocked|failed|partial, summary?:string, blocker?:{reason:string, options?:string[], recommendation?:string, context?:string}|null, report?:string, handoff?:string, feature?:string)',
   'hive_worktree_create(feature?:string, task:string, baseRef?:string, repoIds?:string[], candidate?:string)',
   'hive_worktree_inspect(feature?:string, task:string, repoIds?:string[], candidate?:string)',
   'hive_worktree_merge(feature?:string, task:string, repoIds?:string[], candidate?:string, historyIntent:preserve-source|rewrite-private, strategy?:merge|squash|rebase, message?:string, preserveConflicts?:boolean, cleanup?:none|worktree|worktree+branch, sourceCommit?:string, sourceCommits?:record<string>, expectedTarget?:{path:string, ref:string|null, commit:string}, expectedTargets?:record<{path:string, ref:string|null, commit:string}>)',
   'hive_worktree_cleanup(feature?:string, task:string, repoIds?:string[], candidate?:string, deleteBranch?:boolean, discard?:boolean)',
-  'hive_adhoc_worktree_create(runId?:string, repoIds?:string[], sourceDirectory?:string)',
+  'hive_adhoc_worktree_create(runId?:string, repoIds?:string[], sourceDirectory?:string, target?:string, baseRef?:string)',
   'hive_adhoc_worktree_inspect(runId:string, repoIds?:string[], sourceDirectory?:string)',
   'hive_adhoc_worktree_merge(runId:string, repoIds?:string[], sourceDirectory?:string, historyIntent:preserve-source|rewrite-private, strategy?:merge|squash|rebase, message?:string, preserveConflicts?:boolean, cleanup?:none|worktree|worktree+branch, sourceCommit?:string, sourceCommits?:record<string>, expectedTarget?:{path:string, ref:string|null, commit:string}, expectedTargets?:record<{path:string, ref:string|null, commit:string}>)',
   'hive_adhoc_worktree_cleanup(runId:string, repoIds?:string[], sourceDirectory?:string, deleteBranch?:boolean, discard?:boolean)',
   'hive_worktree_recover(operationId?:string, markerDigest?:string, observedStateDigest?:string, mutatorsStopped?:boolean, sourceDirectory?:string)',
+  'hive_checkouts_list()',
+  'hive_checkout_inspect(id:string, local?:boolean, cleanup?:boolean)',
+  'hive_checkout_create(id:string, branch:string, baseRef?:string, purpose?:string)',
+  'hive_checkout_register(id:string, purpose?:string)',
+  'hive_checkout_readiness(id:string, expectedTarget:{path:string, ref:string|null, commit:string}, readiness:{state:ready|not_ready, nextTarget?:string, waitingFor?:string}|null)',
+  'hive_checkout_cleanup(id:string, expectedTarget:{path:string, ref:string|null, commit:string}|null, removeIgnored?:boolean, deleteBranch?:{containedIn:string}|{discard:true, commit:string})',
   'hive_context_read(name?:string, scope?:feature|project, feature?:string, view?:summary|catalog, query?:string, limit?:number, cursor?:string, maxBytes?:number, scanChars?:boolean)',
   'hive_context_write(name:string, content:string, kind?:durable|evidence, task?:string, expectedRevision?:number, expectedContentHash?:string, scope?:feature|project, feature?:string)',
   'hive_context_append(name:string, content:string, section?:string, task?:string, expectedRevision:number, expectedContentHash:string, scope?:feature|project, feature?:string)',
@@ -126,7 +132,7 @@ const NATIVE_TRACE_AND_BACKGROUND_TOOLS = [
 ];
 
 describe('ordinary Hive operation arguments', () => {
-  it('registers the 35 ordinary operations after the trace and background tools, with their argument shapes', async () => {
+  it('registers the 42 ordinary operations after the trace and background tools, with their argument shapes', async () => {
     const { hooks } = await createRuntime();
     const registered = Object.entries(hooks.tool as Record<string, { args: any }>);
     const ordinary = registered.filter(([name]) => !NATIVE_TRACE_AND_BACKGROUND_TOOLS.includes(name));
@@ -165,10 +171,16 @@ const DESCRIBED_FIELDS: Record<string, string[]> = {
   hive_worktree_create: ['baseRef', 'repoIds', 'candidate'],
   hive_worktree_inspect: ['repoIds', 'candidate'],
   hive_worktree_cleanup: ['repoIds', 'candidate', 'deleteBranch', 'discard'],
-  hive_adhoc_worktree_create: ['runId', 'repoIds', 'sourceDirectory'],
+  hive_task_create: ['target'],
+  hive_adhoc_worktree_create: ['runId', 'repoIds', 'sourceDirectory', 'target', 'baseRef'],
   hive_adhoc_worktree_inspect: ['repoIds', 'sourceDirectory'],
   hive_adhoc_worktree_cleanup: ['repoIds', 'sourceDirectory', 'deleteBranch', 'discard'],
   hive_worktree_recover: ['operationId', 'markerDigest', 'observedStateDigest', 'mutatorsStopped', 'sourceDirectory'],
+  hive_checkout_inspect: ['id', 'local', 'cleanup'],
+  hive_checkout_create: ['id', 'branch', 'baseRef', 'purpose'],
+  hive_checkout_register: ['id', 'purpose'],
+  hive_checkout_readiness: ['id', 'expectedTarget', 'readiness'],
+  hive_checkout_cleanup: ['id', 'expectedTarget', 'removeIgnored', 'deleteBranch'],
   hive_context_read: ['name', 'scope', 'view', 'query', 'limit', 'cursor', 'maxBytes', 'scanChars'],
   hive_context_write: ['content', 'kind', 'task', 'expectedRevision', 'expectedContentHash', 'scope'],
   hive_context_append: ['content', 'section', 'task', 'expectedRevision', 'expectedContentHash', 'scope'],
@@ -433,6 +445,122 @@ describe('ordinary Hive operation results', () => {
     const failed = await callJson('hive_task_update', { feature: 'partial', task: '01-first', report: 'The report.', handoff: 'Next.' });
     expect(failed).toMatchObject({ success: false, reason: 'task_update_persistence_failed', failedStage: 'handoff', reportHistoryWritten: true, handoffWritten: false });
     expect(fs.readFileSync(failed.reportPath, 'utf8')).toBe('The report.');
+  });
+});
+
+// The operator journey through retained checkouts, from tool arguments to Git: core owns the mutators' edge cases, so
+// these cases pin what the tools pass, return and refuse.
+describe('retained checkout operations', () => {
+  const gitIn = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8', stdio: 'pipe' }).trim();
+  const commit = (cwd: string, file: string) => {
+    fs.writeFileSync(path.join(cwd, file), `${file}\n`);
+    gitIn(cwd, 'add', '.');
+    gitIn(cwd, 'commit', '-m', `test: ${file}`);
+    return gitIn(cwd, 'rev-parse', 'HEAD');
+  };
+
+  it('binds ad-hoc and task workers to the retained checkout they name and integrates only there', async () => {
+    const { root, call, callJson, failure } = await createRuntime();
+    const base = gitIn(root, 'rev-parse', 'HEAD');
+    const release = await callJson('hive_checkout_create', { id: 'root/release', branch: 'release', baseRef: 'main', purpose: 'Release line' });
+    const next = await callJson('hive_checkout_create', { id: 'root/next', branch: 'next', baseRef: 'main' });
+    expect(release).toMatchObject({ success: true, checkout: { id: 'root/release', ownership: 'managed', ref: 'refs/heads/release', path: path.join(root, '.hive', 'checkouts', 'root', 'release') } });
+    expect(await callJson('hive_checkout_create', { id: 'root/release', branch: 'release', baseRef: 'main' })).toEqual(release);
+    const listed = await callJson('hive_checkouts_list', {});
+    expect(listed.repositories).toEqual([expect.objectContaining({ id: 'root', path: root, implicit: true })]);
+    expect(listed.repositories[0].checkouts.map((view: any) => [view.id, view.onIntendedRef, view.head.commit])).toEqual([['root/next', true, base], ['root/release', true, base]]);
+
+    // A foreign source cannot carry a target; the active root spelled as sourceDirectory is the project itself.
+    const foreign = fs.realpathSync(fs.mkdtempSync(`/tmp/hive-tools-foreign-${process.pid}-`));
+    roots.push(foreign);
+    expect(await failure('hive_adhoc_worktree_create', { runId: 'run', sourceDirectory: foreign, target: 'root/release' })).toContain('cannot be combined with a foreign sourceDirectory');
+    expect(await failure('hive_adhoc_worktree_create', { runId: 'run', baseRef: base })).toContain('baseRef applies only to a targeted run');
+    const run = await callJson('hive_adhoc_worktree_create', { runId: 'run', sourceDirectory: root, target: 'root/release', baseRef: base });
+    expect(run).toMatchObject({
+      mode: 'adhoc-targeted', repoId: 'root', branch: 'hive-targeted/adhoc/run', baseCommit: base,
+      targetBinding: { id: 'root/release', path: release.checkout.path, ref: 'refs/heads/release', status: 'ok' },
+      target: { path: release.checkout.path, ref: 'refs/heads/release', commit: base },
+    });
+    expect(run).not.toHaveProperty('repos');
+    const work = commit(run.path, 'run.txt');
+    const merged = await callJson('hive_adhoc_worktree_merge', {
+      runId: 'run', historyIntent: 'preserve-source', message: 'feat: run work\n\nIntegrate the run.', sourceCommit: work,
+      expectedTarget: (await callJson('hive_adhoc_worktree_inspect', { runId: 'run' })).target,
+    });
+    expect(merged).toMatchObject({ success: true, merged: true });
+    expect(gitIn(release.checkout.path, 'merge-base', '--is-ancestor', work, 'HEAD')).toBe('');
+    expect(gitIn(root, 'rev-parse', 'HEAD')).toBe(base);
+
+    await callJson('hive_feature_create', { name: 'ship' });
+    expect(await failure('hive_task_create', { feature: 'ship', name: 'bad', target: 'root/next', repos: ['api'] })).toContain('works only in repository root');
+    expect(await call('hive_task_create', { feature: 'ship', name: 'work', target: 'root/next' })).toBe('01-work');
+    expect((await callJson('hive_status', { feature: 'ship' })).tasks[0]).toMatchObject({ folder: '01-work', target: 'root/next' });
+    const task = await callJson('hive_worktree_create', { feature: 'ship', task: '01-work' });
+    expect(task).toMatchObject({ mode: 'targeted', targetBinding: { id: 'root/next', status: 'ok' }, target: { path: next.checkout.path, ref: 'refs/heads/next' } });
+
+    // A targeted task that also lists its one repository is still one worktree: it takes the scalar pin and target.
+    expect(await call('hive_task_create', { feature: 'ship', name: 'listed', target: 'root/next', repos: ['root'] })).toBe('02-listed');
+    const listedTask = await callJson('hive_worktree_create', { feature: 'ship', task: '02-listed', repoIds: ['root'] });
+    expect(listedTask).toMatchObject({ mode: 'targeted', targetBinding: { id: 'root/next', status: 'ok' }, target: { path: next.checkout.path, ref: 'refs/heads/next', commit: base } });
+    expect(listedTask).not.toHaveProperty('repos');
+    const listedWork = commit(listedTask.path, 'listed.txt');
+    expect(await callJson('hive_worktree_merge', {
+      feature: 'ship', task: '02-listed', repoIds: ['root'], historyIntent: 'preserve-source', message: 'feat: listed work\n\nIntegrate the listed task.',
+      sourceCommit: listedWork, expectedTarget: listedTask.target,
+    })).toMatchObject({ success: true, merged: true });
+    expect(gitIn(next.checkout.path, 'merge-base', '--is-ancestor', listedWork, 'HEAD')).toBe('');
+    expect(gitIn(root, 'rev-parse', 'HEAD')).toBe(base);
+
+    // A binding is frozen: once its checkout leaves the bound branch, merge refuses before any mutation.
+    const nextHead = gitIn(next.checkout.path, 'rev-parse', 'HEAD');
+    gitIn(next.checkout.path, 'checkout', '-b', 'elsewhere');
+    expect((await callJson('hive_worktree_inspect', { feature: 'ship', task: '01-work' })).targetBinding).toMatchObject({ id: 'root/next', status: 'ref_changed' });
+    const stale = await callJson('hive_worktree_merge', { feature: 'ship', task: '01-work', historyIntent: 'preserve-source', expectedTarget: task.target });
+    expect(stale).toMatchObject({ success: false, reasonCode: 'TARGET_MISMATCH', mutation: 'none' });
+    expect(gitIn(next.checkout.path, 'rev-parse', 'HEAD')).toBe(nextHead);
+  });
+
+  it('pins readiness to an inspected commit and cleans up only an unreferenced checkout at the proposed identity', async () => {
+    const { root, callJson } = await createRuntime();
+    const created = await callJson('hive_checkout_create', { id: 'root/release', branch: 'release', baseRef: 'main' });
+    const head = (await callJson('hive_checkout_inspect', { id: 'root/release' })).checkout.head;
+    expect(head).toEqual({ path: created.checkout.path, ref: 'refs/heads/release', commit: gitIn(root, 'rev-parse', 'HEAD') });
+
+    const readiness = { state: 'ready', waitingFor: 'release review' };
+    expect(await callJson('hive_checkout_readiness', { id: 'root/release', expectedTarget: { ...head, commit: '0'.repeat(40) }, readiness }))
+      .toMatchObject({ success: false, reason: 'binding_mismatch' });
+    expect(await callJson('hive_checkout_readiness', { id: 'root/release', expectedTarget: head, readiness }))
+      .toMatchObject({ success: true, checkout: { readiness: { state: 'ready', commit: head.commit, waitingFor: 'release review' } } });
+    commit(created.checkout.path, 'later.txt');
+    const moved = (await callJson('hive_checkout_inspect', { id: 'root/release' })).checkout;
+    expect(moved.readiness).toMatchObject({ commit: head.commit, headMoved: true });
+    const cleared = await callJson('hive_checkout_readiness', { id: 'root/release', expectedTarget: moved.head, readiness: null });
+    expect(cleared.checkout).not.toHaveProperty('readiness');
+
+    // A worker bound to the checkout keeps it until the worker and its branch are gone.
+    await callJson('hive_adhoc_worktree_create', { runId: 'run', target: 'root/release' });
+    const referenced = await callJson('hive_checkout_inspect', { id: 'root/release', local: true, cleanup: true });
+    expect(referenced.local).toEqual({ tracked: [], untracked: [], ignored: [], truncated: false });
+    expect(referenced.cleanup.references).toEqual([expect.objectContaining({ kind: 'worker', runId: 'run' })]);
+    expect(await callJson('hive_checkout_cleanup', { id: 'root/release', expectedTarget: referenced.cleanup.identity }))
+      .toMatchObject({ success: false, reason: 'referenced' });
+    expect(await callJson('hive_adhoc_worktree_cleanup', { runId: 'run', deleteBranch: true, discard: true })).toMatchObject({ worktreeRemoved: true, branchDeleted: true });
+
+    const proposal = (await callJson('hive_checkout_inspect', { id: 'root/release', cleanup: true })).cleanup;
+    expect(proposal).toMatchObject({ references: [], unreadableReferences: [], blockers: [], identity: moved.head });
+    expect(await callJson('hive_checkout_cleanup', { id: 'root/release', expectedTarget: proposal.identity }))
+      .toEqual({ success: true, id: 'root/release', ownership: 'managed', worktreeRemoved: true, branchDeleted: false, recordRemoved: true });
+    expect(fs.existsSync(created.checkout.path)).toBe(false);
+    expect(gitIn(root, 'rev-parse', 'refs/heads/release')).toBe(moved.head.commit);
+
+    // A registered checkout is the project's own: cleanup forgets the record and leaves the checkout alone.
+    const registered = await callJson('hive_checkout_register', { id: 'root/main' });
+    expect(registered).toMatchObject({ success: true, checkout: { ownership: 'registered', path: root, ref: 'refs/heads/main' } });
+    const own = (await callJson('hive_checkout_inspect', { id: 'root/main', cleanup: true })).cleanup;
+    expect(await callJson('hive_checkout_cleanup', { id: 'root/main', expectedTarget: own.identity }))
+      .toMatchObject({ success: true, ownership: 'registered', worktreeRemoved: false, recordRemoved: true });
+    expect((await callJson('hive_checkouts_list', {})).repositories[0].checkouts).toEqual([]);
+    expect(await callJson('hive_checkout_inspect', { id: 'root/main', cleanup: true })).toMatchObject({ success: false, reason: 'not_found' });
   });
 });
 

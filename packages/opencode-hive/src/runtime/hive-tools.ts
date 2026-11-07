@@ -5,6 +5,7 @@ import {
   ContextMutationError,
   NATIVE_OBSERVATION_OWNERS,
   PlanApprovalError,
+  RetainedCheckoutError,
   TASK_HANDOFF_MAX_BYTES,
   TaskSyncError,
   TaskUpdatePersistenceError,
@@ -21,6 +22,7 @@ import {
   WORKLOG_SUMMARY_MAX_BYTES,
   WORKLOG_TITLE_MAX_BYTES,
   WorklogError,
+  WorktreeOperationRecoveryRequiredError,
   WorktreeRecoveryRefusedError,
   canonicalProjectRoot,
   computeRunnableAndBlocked,
@@ -33,6 +35,7 @@ import {
   type PlanApprovalResult,
   type PlanSyncStatus,
   type PlanUnownedTaskHeading,
+  type RetainedCheckoutRecord,
   type TaskSpecFreshness,
   type WorklogRef,
   type WorktreeTargetIdentity,
@@ -118,11 +121,11 @@ const mergeOptionArgs = {
   cleanup: z.enum(['none', 'worktree', 'worktree+branch']).optional()
     .describe("Default 'none'. Removes the worktree (and branch) in the same call once integration succeeds. When integration succeeded but cleanup did not complete, the result is CLEANUP_FAILED with action cleanup_only: repeat only the cleanup, not the merge."),
   sourceCommit: z.string().optional()
-    .describe('Full source commit SHA for a legacy single-root workspace; a singleton composite also accepts it for its one repository. Cannot be combined with sourceCommits. A value that differs from the currently inspected source commit is rejected before any mutation. Omitted, the API selects the currently inspected source: that is what is observed now and does not show it was verified, so pass the verified pin a worker returned unchanged.'),
+    .describe('Full source commit SHA for a workspace whose inspection has no `repos`: a legacy single-root workspace or a targeted worker (mode targeted or adhoc-targeted, even when the task lists repoIds). A singleton composite also accepts it for its one repository. Cannot be combined with sourceCommits. A value that differs from the currently inspected source commit is rejected before any mutation. Omitted, the API selects the currently inspected source: that is what is observed now and does not show it was verified, so pass the verified pin a worker returned unchanged.'),
   sourceCommits: z.record(z.string(), z.string()).optional()
-    .describe('Source commits for a composite workspace, keyed by repository ID. Keys must exactly match every inspected repository and each value must equal that repository\'s current source commit. Rejected for a legacy single-root workspace and together with sourceCommit. Omitted, the currently inspected source commits are selected (observed, not verified).'),
+    .describe('Source commits for a composite workspace (its inspection lists `repos`), keyed by repository ID. Keys must exactly match every inspected repository and each value must equal that repository\'s current source commit. Rejected for a legacy single-root or targeted workspace and together with sourceCommit. Omitted, the currently inspected source commits are selected (observed, not verified).'),
   expectedTarget: targetIdentitySchema.optional()
-    .describe('Destination identity copied unchanged from the inspect result `target`, for a legacy single-root workspace or a singleton composite. Exactly one of expectedTarget and expectedTargets is required; neither, both, or the wrong form for the workspace returns INVALID_ARGUMENTS with no mutation. A destination that no longer matches returns TARGET_MISMATCH, also with no mutation: inspect again instead of retrying.'),
+    .describe('Destination identity copied unchanged from the inspect result `target`, for a workspace whose inspection has a top-level `target` (legacy single-root or targeted; a targeted worker\'s target is the retained checkout its binding froze, not the project root) or a singleton composite. Exactly one of expectedTarget and expectedTargets is required; neither, both, or the wrong form for the workspace returns INVALID_ARGUMENTS with no mutation. A destination that no longer matches, including a targeted binding whose checkout changed branch or record, returns TARGET_MISMATCH, also with no mutation: inspect again instead of retrying.'),
   expectedTargets: z.record(z.string(), targetIdentitySchema).optional()
     .describe('Destination identities for a composite workspace, keyed by repository ID and copied unchanged from the inspect result `repos[repoId].target`. Keys must exactly match every candidate repository. See expectedTarget for the exactly-one rule and TARGET_MISMATCH.'),
 };
@@ -156,6 +159,32 @@ const adhocSourceDirectoryArg = {
   sourceDirectory: z.string().optional()
     .describe('Absolute path of the foreign checkout the run was created from; pass the same path on every later call for that run, and omit it for the active project root. Cannot be combined with repoIds.'),
 };
+
+const checkoutIdArg = z.string()
+  .describe("Retained checkout ID `<repoId>/<slug>`, each part lowercase letters, digits, '.', '_' or '-'. A project without a repository manifest has the one repository `root`.");
+
+/**
+ * Runs one retained checkout call. A refusal the checkout service classifies becomes `success: false` with its reason,
+ * and an interrupted worktree operation guarding the repository becomes OPERATION_RECOVERY_REQUIRED with whether this
+ * call had begun mutating. Any other error, such as an invalid branch, propagates as a tool error.
+ */
+async function checkoutCall(run: () => Promise<object>): Promise<unknown> {
+  try {
+    return { success: true, ...await run() };
+  } catch (error) {
+    if (error instanceof RetainedCheckoutError) return { success: false, reason: error.reason, error: error.message };
+    if (error instanceof WorktreeOperationRecoveryRequiredError) {
+      return { success: false, reason: error.reasonCode, mutation: error.mutation, operationIds: error.operationIds, error: error.message };
+    }
+    throw error;
+  }
+}
+
+/** A stored checkout record as `checkout`, with any finalization failure the operation guard attached beside it. */
+function checkoutRecord(result: RetainedCheckoutRecord & { finalization?: unknown }): object {
+  const { finalization, ...checkout } = result;
+  return { checkout, ...(finalization !== undefined ? { finalization } : {}) };
+}
 
 // Worklog arguments mirror the hive-core contract (docs/WORKLOG.md). Zod checks shapes only; core enforces the UTF-8,
 // count and range limits named here and reports them as WorklogError reasons.
@@ -315,14 +344,15 @@ function createNamedContextReader(services: HiveServices) {
 }
 
 /**
- * The 35 ordinary Hive operations, keyed by tool name in registration order. Trace and background tools stay with
+ * The 42 ordinary Hive operations, keyed by tool name in registration order. Trace and background tools stay with
  * their own owners. Each operation takes the caller's identity explicitly and resolves feature or session state
  * only through the services it needs.
  */
 export function createHiveOperations(services: HiveServices): Record<string, HiveOperation> {
   const {
     projectRoot, featureService, planService, taskService, sessionService, featureConstraintService, contextService,
-    repositoryManifestService, worktreeService, worktreeRecoveryService, worklogService, nativeObservationOwner, configFallbackWarning, hasManifest,
+    repositoryManifestService, worktreeService, worktreeRecoveryService, retainedCheckoutService, checkoutInspector,
+    worklogService, nativeObservationOwner, configFallbackWarning, hasManifest,
     repositoryResolver, adhocService, requireFeature, contextScope, constraintTarget, resolveWorklogRef, readConstraints,
     assertTaskRepoIds,
   } = services;
@@ -483,6 +513,8 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
         description: z.string().optional(), goal: z.string().optional(), acceptanceCriteria: z.array(z.string()).optional(),
         references: z.array(z.string()).optional(), files: z.array(z.string()).optional(), dependsOn: z.array(z.string()).optional(),
         reason: z.string().optional(), source: z.string().optional(), repos: z.array(z.string()).optional(),
+        target: z.string().optional()
+          .describe('Retained checkout `<repoId>/<slug>` the task\'s single worker integrates into, as a plan task\'s `Hive target` line declares it. With repos, they must be exactly that repository. Omitted, the worker integrates into the project root or its composite repositories as before. Whether the checkout exists is checked when the worker is created.'),
       },
       output: 'text',
       execute: ({ name, order, feature, repos, ...metadata }, invocation) => taskService.create(requireFeature(feature, invocation), name, order, { ...metadata, repoIds: repos } as any),
@@ -511,8 +543,8 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
       },
     }),
     hive_worktree_create: operation({
-      description: 'Create a task worktree without changing task state and return its initial inspection, including source cleanliness and destination identity/comparison; later checkpoints still require hive_worktree_inspect. An existing worktree for the same task and candidate is reused and inspected again, so the result reflects its current state. With finalization the result is the create result without that inspection. ' + FINALIZATION_NOTE,
-      args: { feature: z.string().optional(), task: z.string(), baseRef: z.string().optional().describe('Ref the new worktree branch starts from; omitted, the current HEAD of the destination checkout.'), ...taskRepoIdsArgs, ...candidateArg },
+      description: 'Create a task worktree without changing task state and return its initial inspection, including source cleanliness and destination identity/comparison; later checkpoints still require hive_worktree_inspect. A task with a target gets one worktree bound to that retained checkout (mode targeted): its destination is the checkout, not the project root, and the binding stays fixed until cleanup. An existing worktree for the same task and candidate is reused and inspected again, so the result reflects its current state. With finalization the result is the create result without that inspection. ' + FINALIZATION_NOTE,
+      args: { feature: z.string().optional(), task: z.string(), baseRef: z.string().optional().describe('Ref the new worktree branch starts from; omitted, the current HEAD of the destination checkout (the retained checkout for a task with a target).'), ...taskRepoIdsArgs, ...candidateArg },
       execute: async ({ feature, task, baseRef, repoIds, candidate }, invocation) => {
         const selected = requireFeature(feature, invocation);
         assertTaskRepoIds(selected, task, repoIds);
@@ -561,11 +593,13 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
       },
     }),
     hive_adhoc_worktree_create: operation({
-      description: 'Create the matching ad-hoc Hive worktree and return its initial inspection, including source cleanliness and destination identity/comparison; later checkpoints still require hive_adhoc_worktree_inspect. An absolute sourceDirectory resolving to the active project root is treated as omitted; foreign sourceDirectory cannot be combined with repoIds. Calling it again with an existing runId reuses that run and inspects it again. With finalization the result is the create result without that inspection. ' + FINALIZATION_NOTE,
+      description: 'Create the matching ad-hoc Hive worktree and return its initial inspection, including source cleanliness and destination identity/comparison; later checkpoints still require hive_adhoc_worktree_inspect. An absolute sourceDirectory resolving to the active project root is treated as omitted; foreign sourceDirectory cannot be combined with repoIds or target. With target the run is one worktree bound to that retained checkout (mode adhoc-targeted): its destination is the checkout, not the project root, and the binding stays fixed until cleanup. Calling it again with an existing runId reuses that run and inspects it again. With finalization the result is the create result without that inspection. ' + FINALIZATION_NOTE,
       args: {
         runId: z.string().optional().describe('Run identifier and branch suffix: [A-Za-z0-9][A-Za-z0-9._-]{0,127}. Generated when omitted; the returned runId locates the run on every later call.'),
-        repoIds: z.array(z.string()).optional().describe('Repositories owned by this run. A manifest-backed project needs a nonempty selection here; later calls pass the same selection. Cannot be combined with a foreign sourceDirectory.'),
+        repoIds: z.array(z.string()).optional().describe('Repositories owned by this run. A manifest-backed project needs a nonempty selection here unless target is given; later calls pass the same selection. With target, omit it or pass exactly the target\'s repository. Cannot be combined with a foreign sourceDirectory.'),
         sourceDirectory: z.string().optional().describe('Absolute path of a foreign checkout to work from. An absolute path resolving to the active project root is treated as omitted.'),
+        target: z.string().optional().describe('Retained checkout `<repoId>/<slug>` the run integrates into, chosen by the caller; Hive never picks one. The run works in that checkout\'s repository only. A runId already bound to another target, or created without one, is refused.'),
+        baseRef: z.string().optional().describe('With target only: commit-ish the run starts from instead of the target\'s current HEAD, resolved once to a commit, for example a commit of another retained checkout whose work this run builds on.'),
       },
       execute: async ({ sourceDirectory, ...options }) => {
         let normalizedSourceDirectory = sourceDirectory;
@@ -574,6 +608,7 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
           const resolvedSourceDirectory = canonicalProjectRoot(sourceDirectory);
           normalizedSourceDirectory = projectRootsMatch(resolvedSourceDirectory, projectRoot) ? undefined : resolvedSourceDirectory;
         }
+        if (normalizedSourceDirectory && options.target !== undefined) throw new Error('target names a retained checkout of the active project and cannot be combined with a foreign sourceDirectory');
         let repoIds = options.repoIds;
         if (!normalizedSourceDirectory && repoIds?.length === 1) {
           const status = repositoryManifestService.getStatus();
@@ -644,6 +679,74 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
           return { success: false, reason: error.reason, error: error.message, ...(error.current ? { current: error.current } : {}) };
         }
       },
+    }),
+    hive_checkouts_list: operation({
+      description: 'List each repository of the project with its retained checkouts and the temporary task and ad-hoc workers placed in it. A retained checkout `<repoId>/<slug>` is a long-lived branch checkout that targeted workers integrate into. Each checkout shows its live head, whether it is on its intended branch, and any declared readiness with headMoved; a worker shows its target only when it was created with one. It reads records and read-only Git, never fetches and writes nothing. A problem with one entry is reported on that entry or in errors, not as a failed call.',
+      args: {},
+      execute: () => checkoutInspector.inspectProject(),
+    }),
+    hive_checkout_inspect: operation({
+      description: 'Inspect one retained checkout: its record, live head and readiness as `checkout`, where a record that cannot be resolved is reported in checkout.error. local: true adds its modified, untracked and ignored paths. cleanup: true adds the cleanup proposal: references from unfinished tasks, targeted workers and next-target declarations, unreadable sources, pending operations, blockers, and `identity`. The proposal is a second read, so cleanup.identity can differ from checkout.head when the checkout moved in between: pass cleanup.identity unchanged as expectedTarget to hive_checkout_cleanup. A local or cleanup read the checkout service refuses, such as one for an unrecorded ID, returns success: false with reason.',
+      args: {
+        id: checkoutIdArg,
+        local: z.boolean().optional().describe('Add `local`: read-only status paths, capped per kind, with a summarized entry for a wholly untracked or ignored directory.'),
+        cleanup: z.boolean().optional().describe('Add `cleanup`, the proposal hive_checkout_cleanup acts on.'),
+      },
+      execute: ({ id, local, cleanup }) => checkoutCall(async () => ({
+        checkout: await checkoutInspector.inspectCheckout(id),
+        ...(local ? { local: await checkoutInspector.inspectCheckoutLocalState(id) } : {}),
+        ...(cleanup ? { cleanup: await retainedCheckoutService.inspectCleanup(id) } : {}),
+      })),
+    }),
+    hive_checkout_create: operation({
+      description: 'Create a managed retained checkout: a linked worktree at .hive/checkouts/<repoId>/<slug> on a new branch from baseRef, or on an existing branch that is checked out nowhere else when baseRef is omitted. Workers integrate into it only when a caller names it as their target (hive_task_create target, a plan task\'s `Hive target` line, or hive_adhoc_worktree_create target). Repeating the same request returns the existing checkout; anything else already at that ID, path or branch is refused, never overwritten. Returns { success: true, checkout }. A refusal the checkout service classifies returns success: false with reason; other invalid requests are tool errors. Reason OPERATION_RECOVERY_REQUIRED means an interrupted worktree operation guards the repository, with mutation unknown when this call had begun changing it: inspect pendingOperations with hive_worktree_recover instead of repeating the call. ' + FINALIZATION_NOTE,
+      args: {
+        id: checkoutIdArg,
+        branch: z.string().describe('Local branch to check out, short (`release/1.2`) or full (`refs/heads/release/1.2`).'),
+        baseRef: z.string().optional().describe('Commit-ish a new branch starts from, resolved once to a commit. Required for a branch that does not exist; rejected for one that does.'),
+        purpose: z.string().optional().describe('Descriptive text stored on the record. A repeated request that names a purpose must name the stored one.'),
+      },
+      execute: ({ id, branch, baseRef, purpose }) => checkoutCall(async () => checkoutRecord(await retainedCheckoutService.create({ id, branch, baseRef, purpose }))),
+    }),
+    hive_checkout_register: operation({
+      description: 'Record a checkout the project already configures (the project root, or a manifest repository\'s checkout) as a retained checkout at the branch it has checked out now, so workers can target it. Hive never creates, moves or removes a registered checkout or its branch; cleanup removes only the record. A detached HEAD is refused. Repeating the same registration returns it. Returns { success: true, checkout }; failures follow hive_checkout_create. ' + FINALIZATION_NOTE,
+      args: {
+        id: checkoutIdArg,
+        purpose: z.string().optional().describe('Descriptive text stored on the record. A repeated request that names a purpose must name the stored one.'),
+      },
+      execute: ({ id, purpose }) => checkoutCall(async () => checkoutRecord(await retainedCheckoutService.register({ id, purpose }))),
+    }),
+    hive_checkout_readiness: operation({
+      description: 'Declare, replace or clear (readiness: null) whether the work in a retained checkout is ready at its current commit, optionally naming the next retained checkout in the same repository it should integrate into and what it waits for. A declaration is a statement pinned to the commit of expectedTarget: Hive runs no verification of the work and gates nothing with it, and inspection reports headMoved once the checkout moves past that commit. The checkout must still be exactly expectedTarget; a moved checkout returns success: false with reason binding_mismatch, so inspect again. Returns { success: true, checkout }. ' + FINALIZATION_NOTE,
+      args: {
+        id: checkoutIdArg,
+        expectedTarget: targetIdentitySchema.describe('The checkout\'s live identity, copied unchanged from `head` in hive_checkouts_list or hive_checkout_inspect.'),
+        readiness: z.object({
+          state: z.enum(['ready', 'not_ready']),
+          nextTarget: z.string().optional().describe('Another retained checkout ID in the same repository that this work should integrate into next.'),
+          waitingFor: z.string().optional().describe('What the work is waiting for, in your words.'),
+        }).nullable().describe('The declaration to record; null clears it.'),
+      },
+      execute: ({ id, expectedTarget, readiness }) => checkoutCall(async () => checkoutRecord(
+        await retainedCheckoutService.setReadiness(id, expectedTarget as WorktreeTargetIdentity, readiness),
+      )),
+    }),
+    hive_checkout_cleanup: operation({
+      description: 'Remove a retained checkout after reading its proposal with hive_checkout_inspect cleanup: true. It is refused while an unfinished task, a targeted worker (even one whose worktree is gone but whose branch remains) or another checkout\'s next-target declaration references it, or while a source that could reference it cannot be read. A registered checkout only loses its record. A managed checkout must be exactly expectedTarget, on its intended branch, with no Git operation in progress and no modified or untracked files; ignored content goes only with removeIgnored. Its worktree and record are removed and its branch kept unless deleteBranch says otherwise. Refusals return success: false with reason and change nothing; check worktreeRemoved, branchDeleted and recordRemoved on success. ' + FINALIZATION_NOTE,
+      args: {
+        id: checkoutIdArg,
+        expectedTarget: targetIdentitySchema.nullable().describe('cleanup.identity from the proposal, copied unchanged; null only when the proposal found the managed checkout missing.'),
+        removeIgnored: z.boolean().optional().describe('Authorizes removing ignored content, such as dependencies or build output, inside a managed checkout.'),
+        deleteBranch: z.union([
+          z.object({ containedIn: z.string().describe('A surviving retained checkout in the same repository, on its intended branch, whose branch contains this branch\'s tip.') }),
+          z.object({ discard: z.literal(true), commit: z.string().describe('The branch tip to discard, deleted only while the branch is still exactly there.') }),
+        ]).optional().describe('Managed checkouts only. Omitted, the branch is kept.'),
+      },
+      execute: ({ id, expectedTarget, removeIgnored, deleteBranch }) => checkoutCall(() => retainedCheckoutService.cleanup(id, {
+        expected: expectedTarget as WorktreeTargetIdentity | null,
+        removeIgnored,
+        deleteBranch: deleteBranch as { containedIn: string } | { discard: true; commit: string } | undefined,
+      })),
     }),
     hive_context_read: operation({
       description: 'Read managed project or feature context. Without name it lists: the summary view (default) or the durable catalog. With name it returns one exact document in chunks, with the revision and file.contentHash that later mutations require; every chunk carries the whole-file hash. Follow nextCursor until complete is true before relying on the whole document or replacing it with hive_context_write; for hive_context_edit, read until you have the passage and enough surrounding text. A cursor that no longer matches the document, revision or content fails as stale_context_cursor: restart the read.',

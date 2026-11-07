@@ -45,7 +45,7 @@ The config hook intentionally mutates these OpenCode fields:
 
 ### OpenCode v2
 
-The same package loads through its `server` entry on v1 and its synchronous `effect` entry on v2. On v2 it registers all **42 Hive tools** and **14 commands**, dedicated and unified modes, custom agents, packaged skills, native dispatch and background observation, and the forensic and recovery tools. Qualification ran against stock v1.18.30 and v2.0.26 with scripted model providers, which establishes wiring rather than real-model judgment. On both hosts it loaded a package already installed with plain npm; host-side registry resolution at first use was not part of it.
+The same package loads through its `server` entry on v1 and its synchronous `effect` entry on v2. On v2 it registers every Hive tool and all **14 commands**, dedicated and unified modes, custom agents, packaged skills, native dispatch and background observation, and the forensic and recovery tools. Qualification ran against stock v1.18.30 and v2.0.26 with scripted model providers, which establishes wiring rather than real-model judgment. On both hosts it loaded a package already installed with plain npm; host-side registry resolution at first use was not part of it.
 
 Install the released package with npm into a dedicated directory that the v2 host can read:
 
@@ -217,13 +217,13 @@ When an operator explicitly requires a skill, include the exact name in the assi
 
 The role authority below is the same on both hosts; the enforcement mechanism differs.
 
-On v1, Hive registers ordered OpenCode `agent.permission` rules: `'hive_*': 'deny'` first, then each role's exact allows. Agent rules override global `{"*":"allow"}`. Custom variants inherit their base role. `experimental.primary_tools` adds child-session denials for integration/cleanup, ad-hoc creation, feature routing/completion, approval/sync/task creation, constraint mutation, context archive, parent-owned background tools, Worklog recording, and `question`. Worklog recording also checks the role and live parent in its executor.
+On v1, Hive registers ordered OpenCode `agent.permission` rules: `'hive_*': 'deny'` first, then each role's exact allows. Agent rules override global `{"*":"allow"}`. Custom variants inherit their base role. `experimental.primary_tools` adds child-session denials for integration/cleanup, ad-hoc creation, retained checkout changes, feature routing/completion, approval/sync/task creation, constraint mutation, context archive, parent-owned background tools, Worklog recording, and `question`. Worklog recording also checks the role and live parent in its executor.
 
 On v2, your native permission rules decide which tools are visible, and Hive does not rewrite them. Every Hive executor and the native `execute.before` hook check the agent's base role and the session's actual parent before any effect, as described under [OpenCode v2](#opencode-v2). A visible tool can therefore still be refused.
 
 On both hosts, Architect keeps feature creation, repository registration, and bounded planning-helper delegation as a child and hands primary-only requests back to its parent.
 
-All Hive roles can read context, constraints, plans, status, repository scope, Git snapshots, and Worklogs. Scout adds repository discovery. Forager adds context write/append, feature/ad-hoc inspection, recovery traces, assigned feature-worktree creation, and its own report/handoff update. Helper's Hive tools are limited to state/worktree/trace inspection. Reviewers and advisors add authorized context write/append. Hive, Swarm, and Builder have the full Hive set; Architect has planning and primary-control tools; review primaries have metadata/context, inspection/trace, constraints, routing/background, and authorized ad-hoc review placement/cleanup. Hive grants Worklog recording to primary sessions of the full primaries, Architect, and the review primaries. An unmanaged agent that is neither a Hive role nor a custom variant of one keeps its native permission for Hive tools, so it can record from a primary session; its child sessions are refused, as are native `general`/`explore`. The [complete access matrix](docs/HIVE-TOOLS.md#agent-tool-access) names every grant and native boundary.
+All Hive roles can read context, constraints, plans, status, repository scope, Git snapshots, Worklogs, and the retained checkout list. Scout adds repository discovery. Forager adds context write/append, feature/ad-hoc/checkout inspection, recovery traces, assigned feature-worktree creation, and its own report/handoff update. Helper's Hive tools are limited to state/worktree/trace inspection. Reviewers and advisors add authorized context write/append. Hive, Swarm, and Builder have the full Hive set, including retained checkout changes; Architect has planning and primary-control tools; review primaries have metadata/context, inspection/trace, constraints, routing/background, and authorized ad-hoc review placement/cleanup. Hive grants Worklog recording to primary sessions of the full primaries, Architect, and the review primaries. An unmanaged agent that is neither a Hive role nor a custom variant of one keeps its native permission for Hive tools, so it can record from a primary session; its child sessions are refused, as are native `general`/`explore`. The [complete access matrix](docs/HIVE-TOOLS.md#agent-tool-access) names every grant and native boundary.
 
 Native `general`/`explore` have no Hive tools, recursion, or questions. Helper/reviewer role-specific Hive-tool denials and native edit denial are enforced, while shell and research integrations remain available under operator permissions. Their inspection-only scope for shell and external effects is instruction-bound, an operator-accepted risk; these capabilities must not substitute for denied Hive operations. Use Helper first for session-trace retrieval; it returns evidence and mutation requests to the primary. Changes take effect after the OpenCode host reloads; on v1, use fresh child sessions so OpenCode applies the creation-time primary-tool denials.
 
@@ -303,6 +303,29 @@ Feature escalation is advisory. If the operator rejects it, continue ad-hoc only
 Forager is an execution role. Use a matching worktree for tracked Git writes; non-Git or report-only work follows the direct-work exceptions. Standalone diagnosis, experiments, and verify-only runs go to `forager-investigator` ([Experiments](../../docs/OPERATOR-GUIDE.md#experiments)). A source-based judgment needs no placement; a run that changes source uses a disposable placement that is cleaned up instead of merged; runtime-only work names its URL or environment. Direct foreground OpenCode work is unmanaged OpenCode work, not a Hive worktree.
 
 Native `general` is an ordinary delegation with ordinary tools only; it cannot delegate or ask questions. Native helpers retain bounded operational permissions.
+
+### Retained Checkouts
+
+A retained checkout `<repoId>/<slug>` is a long-lived branch checkout, such as a release line beside `main`, that temporary workers integrate into instead of the project root. A project without a repository manifest has the one repository `root`.
+
+| Tool | Description |
+|------|-------------|
+| `hive_checkouts_list` | Every repository with its retained checkouts and task and ad-hoc workers; read-only |
+| `hive_checkout_inspect` | One checkout; optionally its local paths and the cleanup proposal |
+| `hive_checkout_create` | Create a managed checkout at `.hive/checkouts/<repoId>/<slug>` on a new or existing branch |
+| `hive_checkout_register` | Record a checkout the project already configures, which Hive never removes |
+| `hive_checkout_readiness` | Declare or clear readiness pinned to the checkout's current commit; it gates nothing |
+| `hive_checkout_cleanup` | Remove an unreferenced checkout at the identity its cleanup proposal returned |
+
+Workers bind to a retained checkout only when the caller names it: `target` on `hive_task_create`, a plan task's `**Hive target**: <repoId>/<slug>` line, or `target` (optionally with `baseRef`) on `hive_adhoc_worktree_create`. A targeted worker's inspection reports the checkout as its `target`, merges take the scalar `sourceCommit` and `expectedTarget`, and a binding whose checkout changed branch cannot merge. For example, a run that builds on the release line and lands on a hotfix line:
+
+```text
+hive_checkout_create({ id: "root/release", branch: "release", baseRef: "main" })
+hive_checkout_create({ id: "root/hotfix", branch: "hotfix", baseRef: "main" })
+hive_adhoc_worktree_create({ runId: "fix-login", target: "root/hotfix", baseRef: "release" })
+```
+
+Only Hive, Swarm and Hive Builder primary sessions change retained checkouts. See [Hive Tools](docs/HIVE-TOOLS.md#retained-checkouts-6-tools) for results, refusals and cleanup rules.
 
 ### Background Orchestration
 
@@ -386,6 +409,8 @@ Primaries perform single direct reads themselves: one `hive_status`, one worktre
 ## Task Prompts & Observability
 
 For an explicitly selected feature, a Forager assignment whose first non-empty line is `Hive task: <task-folder>` for an existing task receives a bounded path-only Hive task brief after the route snapshot. It points to the current spec and plan section, direct dependencies' successor handoffs, and the durable feature-context catalog; workers read those records as needed. Eligible unbound dispatches receive a notice; fallback and explicit-null routes get neither brief nor notice, and other roles get no brief. No context documents, catalog bodies, or completed-task summaries are injected. Agents can search durable-file catalogs and read named files with `hive_context_read`; evidence files remain readable by name. `taskService` does not include completed-task summaries in `spec.md` ([task service](../hive-core/src/services/taskService.ts)).
+
+The same first line, `Hive task: <task-folder>` or `Hive run: <runId>` for an ad-hoc run with a worktree in this project, associates the child session with that task or run in its session record once the host reports the dispatched child. A line Hive cannot resolve associates nothing, and a later dispatch to the same child replaces or clears the association ([details](docs/HIVE-TOOLS.md#child-session-association)).
 
 ### Observability
 

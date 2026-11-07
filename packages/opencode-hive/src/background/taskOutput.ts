@@ -28,7 +28,6 @@ export interface ParsedTaskLifecycleEvent {
   };
   parentSessionId: string;
   agentName?: string;
-  featureLabel?: string;
   callId?: string;
   messageId?: string;
   status?: ParsedTaskStatusOutput;
@@ -37,7 +36,6 @@ export interface ParsedTaskLifecycleEvent {
 export interface TaskLifecycleContext {
   args?: Record<string, unknown>;
   agentName?: string;
-  featureLabel?: string;
   messageId?: string;
 }
 
@@ -143,7 +141,6 @@ export function parseTaskLifecycleEvent(input: unknown, output: unknown, context
       }),
       parentSessionId,
       agentName,
-      featureLabel: context.featureLabel,
       callId: readString(input, 'callID'),
       messageId,
     });
@@ -163,7 +160,6 @@ export function parseTaskLifecycleEvent(input: unknown, output: unknown, context
       }),
       parentSessionId,
       agentName,
-      featureLabel: context.featureLabel,
       callId: readString(input, 'callID'),
       messageId,
       status,

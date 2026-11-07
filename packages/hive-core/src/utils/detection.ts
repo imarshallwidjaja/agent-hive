@@ -2,6 +2,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { getFeaturesPath, getFeaturePath, listFeatureDirectories, readJson, normalizePath } from './paths.js';
 import type { FeatureJson } from '../types.js';
+import { isValidRepositoryId } from './repositoryIds.js';
 
 function toLogicalFeatureName(featureName: string): string {
   const match = featureName.match(/^\d+[_-](.+)$/);
@@ -26,6 +27,18 @@ export function detectContext(cwd: string): DetectionResult {
   };
 
   const normalizedCwd = normalizePath(cwd);
+  // A retained checkout `.hive/checkouts/<repoId>/<slug>` belongs to the project that holds it; it names no feature
+  // or task. The first such segment wins, so tracked content inside a checkout cannot move the project root.
+  const checkoutMatch = normalizedCwd.match(/^(.+?)\/\.hive\/checkouts\/([^/]+)\/([^/]+)(?:\/|$)/);
+  const worktreeIndex = normalizedCwd.indexOf('/.hive/.worktrees/');
+  if (checkoutMatch && isValidRepositoryId(checkoutMatch[2]) && isValidRepositoryId(checkoutMatch[3])
+    && (worktreeIndex === -1 || checkoutMatch[1].length < worktreeIndex)) {
+    result.mainProjectRoot = checkoutMatch[1];
+    result.isWorktree = true;
+    result.projectRoot = checkoutMatch[1];
+    return result;
+  }
+
   const worktreeMatch = normalizedCwd.match(/(.+)\/\.hive\/\.worktrees\/([^/]+)\/([^/]+)/);
   if (worktreeMatch) {
     result.mainProjectRoot = worktreeMatch[1];

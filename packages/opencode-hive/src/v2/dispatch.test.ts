@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it, spyOn } from 'bun:test';
+import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { Effect, Exit, Fiber, Scope, Stream } from 'effect';
@@ -188,6 +189,14 @@ const completion = (parent: string, child: string, state = 'completed', inboxID 
   data: { sessionID: parent, inboxID, item: { type: 'synthetic', delivery: 'steer', payload: { text: `<subagent sessionID="${child}" state="${state}">\nresult\n</subagent>`, metadata: { source: 'subagent', childID: child, agent: 'forager-worker', state } } } },
 });
 
+const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, stdio: 'pipe' });
+
+/** The task or run a child's Hive binding names. */
+const association = (services: HiveServices, child: string) => {
+  const bound = services.sessionService.getGlobal(child);
+  return { taskFolder: bound?.taskFolder, adHocRunId: bound?.adHocRunId };
+};
+
 const failureMessage = (exit: Exit.Exit<unknown, unknown>) => {
   if (Exit.isSuccess(exit)) return undefined;
   const reason = exit.cause.reasons.find((entry: any) => entry._tag === 'Fail') as any;
@@ -354,6 +363,151 @@ describe('v2 native dispatch', () => {
 
     await host.call('parent', { agent: 'forager-worker', prompt: 'Foreground.' }, 'call-fg');
     expect(services.backgroundJobService.listScoped({ projectRoot: root })).toHaveLength(1);
+  });
+
+  it('associates a foreground or background child with the task or run its marker names, and scopes the launch row to that binding', async () => {
+    const { root, services, host } = await setup();
+    git(root, 'init', '-b', 'main');
+    fs.writeFileSync(path.join(root, '.gitignore'), '.hive/\n');
+    git(root, 'add', '.');
+    git(root, '-c', 'user.email=test@example.com', '-c', 'user.name=Test', 'commit', '-m', 'test: base');
+    await services.adhocService().create({ runId: 'run-1' });
+    services.sessionService.setFeatureRoute('parent', 'alpha');
+    const calls = [
+      { agent: 'forager-worker', prompt: 'Hive task: 01-build' },
+      { agent: 'forager-worker', prompt: 'Hive task: 01-build', background: true },
+      { agent: 'scout-researcher', prompt: 'Hive run: run-1' },
+      { agent: 'scout-researcher', prompt: 'Hive run: run-1', background: true },
+      { agent: 'scout-researcher', prompt: 'Hive run: no-such-run', background: true },
+    ];
+    for (const [index, input] of calls.entries()) expect(Exit.isSuccess(await host.call('parent', input, `call-${index}`))).toBe(true);
+    expect([1, 2, 3, 4, 5].map((n) => association(services, `child-${n}`))).toEqual([
+      { taskFolder: '01-build', adHocRunId: undefined },
+      { taskFolder: '01-build', adHocRunId: undefined },
+      { taskFolder: undefined, adHocRunId: 'run-1' },
+      { taskFolder: undefined, adHocRunId: 'run-1' },
+      { taskFolder: undefined, adHocRunId: undefined },
+    ]);
+    const scope = { projectRoot: root, parentSessionId: 'parent', primaryAgent: 'swarm-orchestrator', feature: 'alpha' };
+    expect(services.backgroundJobService.resolve('child-2')?.scope).toEqual({ ...scope, task: '01-build' });
+    expect(services.backgroundJobService.resolve('child-4')?.scope).toEqual({ ...scope, adHocRunId: 'run-1' });
+    expect(services.backgroundJobService.resolve('child-5')?.scope).toEqual(scope);
+  });
+
+  it('writes the association of a continued child without changing what its continuation needs', async () => {
+    const context = await setup({ features: ['alpha', 'beta'] });
+    const { services, host } = context;
+    services.sessionService.setFeatureRoute('parent', 'alpha');
+    // A child bound before associations existed: the same route and agent, but no task or run.
+    expect(Exit.isSuccess(await host.call('parent', { agent: 'forager-worker', prompt: 'Go.' }, 'call-first'))).toBe(true);
+    const child = host.admissions.at(-1)!.child;
+    services.adhocService = () => ({ get: async (runId: string) => (runId === 'run-1' ? { runId } : null) }) as any;
+    const continued = (prompt: string, callID: string, background?: boolean) => host.call('parent', { agent: 'forager-worker', prompt, sessionID: child, background }, callID);
+
+    // With no activity reader, a same-route continuation still runs: adding, replacing and clearing an association
+    // reads nothing from the server.
+    host.activityState.error = new Error('no server configured');
+    expect(Exit.isSuccess(await continued('Hive task: 01-build', 'call-task'))).toBe(true);
+    expect(association(services, child)).toEqual({ taskFolder: '01-build', adHocRunId: undefined });
+    expect(Exit.isSuccess(await continued('Hive run: run-1', 'call-run', true))).toBe(true);
+    expect(association(services, child)).toEqual({ taskFolder: undefined, adHocRunId: 'run-1' });
+    expect(services.backgroundJobService.resolve(child)?.scope).toMatchObject({ feature: 'alpha', adHocRunId: 'run-1' });
+    expect(Exit.isSuccess(await continued('Hive task: 09-missing', 'call-invalid'))).toBe(true);
+    expect(association(services, child)).toEqual({ taskFolder: undefined, adHocRunId: undefined });
+    expect(Exit.isSuccess(await continued('Hive task: 01-build', 'call-again'))).toBe(true);
+    // A marker without an ID is invalid and clears the association, like one Hive cannot resolve.
+    expect(Exit.isSuccess(await continued('Hive run:  \t\nContinue.', 'call-blank'))).toBe(true);
+    expect(association(services, child)).toEqual({ taskFolder: undefined, adHocRunId: undefined });
+    expect(Exit.isSuccess(await continued('Hive task: 01-build', 'call-restore'))).toBe(true);
+    // Without a marker a continuation clears the association, even on the same route.
+    expect(Exit.isSuccess(await continued('Continue.', 'call-same-route'))).toBe(true);
+    expect(association(services, child)).toEqual({ taskFolder: undefined, adHocRunId: undefined });
+    expect(Exit.isSuccess(await continued('Hive task: 01-build', 'call-restore-again'))).toBe(true);
+    expect(host.activityState.reads).toBe(0);
+
+    // A route change still needs the host to report the child idle, as before; it then writes the cleared association.
+    services.sessionService.setFeatureRoute('parent', 'beta');
+    expect(failureMessage(await continued('Continue.', 'call-unknown'))).toContain('could not confirm that child session');
+    expect(association(services, child)).toEqual({ taskFolder: '01-build', adHocRunId: undefined });
+    host.activityState.error = undefined;
+    expect(Exit.isSuccess(await continued('Continue.', 'call-route-change'))).toBe(true);
+    expect(services.sessionService.getGlobal(child)?.featureName).toBe('beta');
+    expect(association(services, child)).toEqual({ taskFolder: undefined, adHocRunId: undefined });
+  });
+
+  it('runs a same-route child whose new association cannot be written, recording its launch with no task or run; a route the child does not hold yet still needs its binding written', async () => {
+    const context = await setup({ features: ['alpha', 'beta'] });
+    const { root, services, host } = context;
+    services.sessionService.setFeatureRoute('parent', 'alpha');
+    services.adhocService = () => ({ get: async (runId: string) => (runId === 'run-1' ? { runId } : null) }) as any;
+    const tasked = await dispatchedChild(context);
+    expect(Exit.isSuccess(await host.call('parent', { agent: 'forager-worker', prompt: 'Go.' }, 'call-plain'))).toBe(true);
+    const plain = host.admissions.at(-1)!.child;
+    const track = services.sessionService.trackGlobal;
+    services.sessionService.trackGlobal = () => { throw new Error('EACCES: permission denied, open sessions.json'); };
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    // No server activity reader: none of these continuations may need one.
+    host.activityState.error = new Error('no server configured');
+    const continued = (child: string, prompt: string, callID: string) => host.call('parent', { agent: 'forager-worker', prompt, sessionID: child, background: true }, callID);
+    const row = (callID: string) => services.backgroundJobService.listScoped({ projectRoot: root }).find((job) => job.callId === callID);
+    const scope = { projectRoot: root, parentSessionId: 'parent', primaryAgent: 'swarm-orchestrator', feature: 'alpha' };
+    try {
+      for (const [child, prompt, callID, stored] of [
+        [plain, 'Hive task: 01-build', 'call-add', { taskFolder: undefined, adHocRunId: undefined }],
+        [tasked, 'Hive run: run-1', 'call-replace', { taskFolder: '01-build', adHocRunId: undefined }],
+        [tasked, 'Hive task: 09-missing', 'call-clear', { taskFolder: '01-build', adHocRunId: undefined }],
+        [tasked, 'Hive task: ', 'call-blank', { taskFolder: '01-build', adHocRunId: undefined }],
+        // After the failed write of run-1, an unmarked continuation carries no association either, so its launch does
+        // not name the task the store still holds from the dispatch before.
+        [tasked, 'Continue.', 'call-continue', { taskFolder: '01-build', adHocRunId: undefined }],
+      ] as const) {
+        const admitted = host.admissions.length;
+        expect(Exit.isSuccess(await continued(child, prompt, callID)), prompt).toBe(true);
+        expect(host.admissions.slice(admitted).map((admission) => admission.child), prompt).toEqual([child]);
+        // The store keeps what an earlier dispatch wrote; this launch is recorded with no task or run.
+        expect(association(services, child), prompt).toEqual(stored);
+        expect(row(callID)?.scope, prompt).toEqual(scope);
+      }
+      expect(warn.mock.calls.map(([message]) => String(message))).toEqual([
+        expect.stringContaining(`could not record the task or run association of child session ${plain}`),
+        expect.stringContaining(`stored binding named task 01-build`),
+        expect.stringContaining(`stored binding named task 01-build`),
+        expect.stringContaining(`stored binding named task 01-build`),
+        expect.stringContaining(`stored binding named task 01-build`),
+      ]);
+      expect(warn.mock.calls.every(([message]) => String(message).includes('EACCES'))).toBe(true);
+      expect(host.activityState.reads).toBe(0);
+
+      // A write that publishes and then fails (for example while releasing its lock) leaves the store changed, so
+      // neither the warning nor the launch may treat the binding read before the write as current.
+      services.sessionService.trackGlobal = (...args) => {
+        track.apply(services.sessionService, args);
+        throw new Error('EIO: i/o error, close sessions.json.lock');
+      };
+      warn.mockClear();
+      const admittedBeforePublished = host.admissions.length;
+      expect(Exit.isSuccess(await continued(tasked, 'Hive run: run-1', 'call-published'))).toBe(true);
+      expect(host.admissions.slice(admittedBeforePublished).map((admission) => admission.child)).toEqual([tasked]);
+      expect(association(services, tasked)).toEqual({ taskFolder: undefined, adHocRunId: 'run-1' });
+      expect(row('call-published')?.scope).toEqual(scope);
+      expect(warn).toHaveBeenCalledTimes(1);
+      const [published] = warn.mock.calls.map(([message]) => String(message));
+      expect(published).toContain('EIO');
+      expect(published).not.toContain('still names');
+      services.sessionService.trackGlobal = () => { throw new Error('EACCES: permission denied, open sessions.json'); };
+
+      // A route change and a new child still fail when their binding cannot be written, and are never prompted.
+      host.activityState.error = undefined;
+      services.sessionService.setFeatureRoute('parent', 'beta');
+      const admitted = host.admissions.length;
+      expect(failureMessage(await continued(tasked, 'Continue.', 'call-route-change'))).toContain(`Hive could not bind child session ${tasked} to its dispatch route (EACCES`);
+      expect(failureMessage(await host.call('parent', { agent: 'forager-worker', prompt: 'Hive task: 01-build' }, 'call-new'))).toContain('Hive could not bind child session child-3 to its dispatch route (EACCES');
+      expect(host.admissions).toHaveLength(admitted);
+      expect(services.sessionService.getGlobal(tasked)?.featureName).toBe('alpha');
+    } finally {
+      warn.mockRestore();
+      services.sessionService.trackGlobal = track;
+    }
   });
 
   it('marks a recorded launch uncertain when the call fails or is interrupted after binding', async () => {

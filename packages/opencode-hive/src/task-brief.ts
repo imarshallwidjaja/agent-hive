@@ -7,11 +7,12 @@ import {
   getTaskSpecPath,
   type ContextService,
   type PlanSyncStatus,
+  type SessionInfo,
   type TaskStatusEntry,
   type TaskService,
   type TaskSpecFreshness,
 } from 'hive-core';
-import type { RouteSnapshot } from './runtime/hive-services.js';
+import type { AssignmentBinding, RouteSnapshot } from './runtime/hive-services.js';
 
 export const TASK_BRIEF_MAX_BYTES = 2048;
 
@@ -25,7 +26,7 @@ const HIVE_BLOCK_MARKERS = [
   '<!-- hive-route-snapshot:start -->',
   '<!-- hive-route-snapshot:end -->',
 ];
-const TASK_BINDING = /^Hive task: (.+)$/;
+const ASSIGNMENT_MARKER = /^Hive (task|run):(.*)$/;
 
 /**
  * Matches a generated brief block and its separator, like the route snapshot block.
@@ -91,6 +92,18 @@ function fitVariable(render: (variable: string) => string[], variable: string): 
 
 function firstNonEmptyLine(prompt: string): string | undefined {
   return prompt.split(/\r?\n/).map((line) => line.trim()).find((line) => line.length > 0);
+}
+
+/**
+ * The exact-case `Hive task: <folder>` or `Hive run: <runId>` marker that opens the prompt's first non-empty line.
+ * `id` is undefined when that line opens with a marker but names no ID in that form, such as a marker followed only
+ * by whitespace.
+ */
+function assignmentMarker(prompt: string): { kind: 'task' | 'run'; id: string | undefined } | undefined {
+  const match = firstNonEmptyLine(prompt)?.match(ASSIGNMENT_MARKER);
+  if (!match) return undefined;
+  const rest = match[2]!;
+  return { kind: match[1] as 'task' | 'run', id: rest.length > 1 && rest.startsWith(' ') ? rest.slice(1) : undefined };
 }
 
 function composeBoundLines(sources: TaskBriefSources, featureName: string, tasks: Map<string, TaskStatusEntry>, folder: string): string[] {
@@ -205,6 +218,11 @@ function routeFooter(snapshot: RouteSnapshot, separated: boolean): string {
   ].join('\n');
 }
 
+/** The parent's authored prompt without the blocks an earlier dispatch generated. */
+function authoredPrompt(prompt: unknown): string {
+  return typeof prompt === 'string' ? prompt.replace(ROUTE_SNAPSHOT_BLOCK, '').replace(TASK_BRIEF_BLOCK, '') : '';
+}
+
 /**
  * The prompt a native subagent call delivers: the parent's authored prompt without earlier generated blocks, the
  * route snapshot footer, then, for a Forager dispatch (built-in or custom-derived) on a selected feature route, the
@@ -212,14 +230,44 @@ function routeFooter(snapshot: RouteSnapshot, separated: boolean): string {
  */
 export function composeDispatchPrompt(input: { sources: TaskBriefSources; snapshot: RouteSnapshot; prompt: unknown; foragerDispatch: boolean }): string {
   const { sources, snapshot, foragerDispatch } = input;
-  const authored = typeof input.prompt === 'string' ? input.prompt.replace(ROUTE_SNAPSHOT_BLOCK, '').replace(TASK_BRIEF_BLOCK, '') : '';
+  const authored = authoredPrompt(input.prompt);
   const brief = foragerDispatch && snapshot.hasFeatureRoute && typeof snapshot.featureName === 'string'
     ? `\n\n${composeTaskBrief(sources, snapshot.featureName, authored)}`
     : '';
   return `${authored}${routeFooter(snapshot, authored.length > 0)}${brief}`;
 }
 
-/** The session record that binds a child to the route its parent captured at dispatch. */
+/**
+ * What the assignment's first non-empty line binds the child to, for viewers: `Hive task: <folder>` names a task of
+ * the feature the parent explicitly selected, and `Hive run: <runId>` an ad-hoc run of this project whose worktree
+ * Hive can read. An assignment without a marker, or with one Hive cannot resolve (one that names no ID, a task of a
+ * feature that was only detected, or an unreadable task list or run), binds nothing and resolves to `undefined`. The
+ * association is never guessed from the route, the directory, the prose or an earlier dispatch. Never throws.
+ */
+export async function resolveAssignment(
+  services: { taskService: Pick<TaskService, 'listStatusEntries'>; adhocService: () => { get(runId: string): Promise<unknown> } },
+  snapshot: RouteSnapshot,
+  prompt: unknown,
+): Promise<AssignmentBinding | undefined> {
+  const marker = assignmentMarker(authoredPrompt(prompt));
+  if (marker?.id === undefined) return undefined;
+  const { kind, id } = marker;
+  try {
+    if (kind === 'task' && snapshot.hasFeatureRoute && typeof snapshot.featureName === 'string'
+      && services.taskService.listStatusEntries(snapshot.featureName).some((entry) => entry.folder === id)) {
+      return { taskFolder: id };
+    }
+    if (kind === 'run' && (await services.adhocService().get(id)) !== null) return { adHocRunId: id };
+  } catch {
+    // An unreadable task list or run binds nothing.
+  }
+  return undefined;
+}
+
+/**
+ * The session record that binds a child to the route its parent captured at dispatch. It holds only the route that
+ * continuation admission compares; the task or run association is written beside it (see `childAssociation`).
+ */
 export function childRouteRecord(snapshot: RouteSnapshot, parentSessionId: string, agent?: string) {
   return {
     parentSessionId,
@@ -232,17 +280,58 @@ export function childRouteRecord(snapshot: RouteSnapshot, parentSessionId: strin
   };
 }
 
+export type ChildRoute = ReturnType<typeof childRouteRecord>;
+
+/** Whether a stored child binding already carries every field of the route a new dispatch captured. */
+export function sameChildRoute(stored: SessionInfo | ChildRoute, route: ChildRoute): boolean {
+  return (Object.keys(route) as Array<keyof ChildRoute>).every((key) => JSON.stringify(stored[key]) === JSON.stringify(route[key]));
+}
+
+/**
+ * What a child's binding, read before a dispatch's own binding write failed, proves for that dispatch. The failed
+ * write may or may not have replaced it in the store, so it counts only as what was observed before the write. It
+ * proves this dispatch's route only when it already equals the captured route, and a task or run only where it
+ * equals the association this dispatch meant to write. Otherwise it proves nothing, so a launch row scoped from the
+ * result never names an earlier dispatch's task or run.
+ */
+export function provenChildBinding(
+  stored: SessionInfo | undefined,
+  route: ChildRoute,
+  association: ReturnType<typeof childAssociation>,
+): SessionInfo | undefined {
+  if (stored === undefined || !sameChildRoute(stored, route)) return undefined;
+  return {
+    ...stored,
+    taskFolder: stored.taskFolder === association.taskFolder ? stored.taskFolder : undefined,
+    adHocRunId: stored.adHocRunId === association.adHocRunId ? stored.adHocRunId : undefined,
+  };
+}
+
+/**
+ * The task or run association a dispatch writes into its child's binding, with both keys so that an undefined one
+ * clears. It comes only from this dispatch's own marker: a resolved marker names the task or run, and a marker it
+ * could not resolve, or no marker, clears it. It is observation for viewers and never decides whether a dispatch may
+ * run.
+ */
+export function childAssociation(snapshot: RouteSnapshot): { taskFolder: string | undefined; adHocRunId: string | undefined } {
+  const { assignment } = snapshot;
+  return {
+    taskFolder: assignment !== undefined && 'taskFolder' in assignment ? assignment.taskFolder : undefined,
+    adHocRunId: assignment !== undefined && 'adHocRunId' in assignment ? assignment.adHocRunId : undefined,
+  };
+}
+
 /**
  * Builds the task brief block for an eligible Forager dispatch whose route has a selected feature.
  * `authoredPrompt` must already exclude generated route-snapshot and brief blocks. Never throws.
  */
 export function composeTaskBrief(sources: TaskBriefSources, featureName: string, authoredPrompt: string): string {
   try {
-    const binding = firstNonEmptyLine(authoredPrompt)?.match(TASK_BINDING);
-    if (!binding) {
+    const marker = assignmentMarker(authoredPrompt);
+    if (marker?.kind !== 'task' || marker.id === undefined) {
       return cappedBlock([`No Hive task binding: the first line was not "Hive task: <folder>" for a task in feature ${inline(featureName)}; no task brief attached.`]);
     }
-    const folder = binding[1]!;
+    const folder = marker.id;
     const tasks = new Map(sources.taskService.listStatusEntries(featureName).map((task) => [task.folder, task]));
     if (!tasks.has(folder)) {
       return cappedBlock([fitMessage('No Hive task binding: "', inline(folder), `" is not a task in feature ${inline(featureName)}; no task brief attached.`)]);

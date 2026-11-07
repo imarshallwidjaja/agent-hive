@@ -3,6 +3,7 @@ import {
   canonicalProjectRoot,
   detectContext,
   getNativeSessionsPath,
+  type SessionInfo,
 } from 'hive-core';
 import { prepareNativeHiveSkills } from './skills/native-materializer.js';
 import { createBackgroundJobAdapter } from './background/backgroundJobAdapter.js';
@@ -16,7 +17,7 @@ import { HIVE_COMMANDS } from './commands/registry.js';
 import { hiveCommandRenderers } from './commands/renderers.js';
 import type { HiveCommandAgentDescriptor, HiveCommandContext } from './commands/types.js';
 import { createTaskTraceTools, injectTaskTraceHint, isDirectChildSession, TASK_TRACE_SUMMARIZER_AGENT, TASK_TRACE_SUMMARIZER_PROMPT } from './task-trace.js';
-import { childRouteRecord, composeDispatchPrompt } from './task-brief.js';
+import { childAssociation, childRouteRecord, composeDispatchPrompt, provenChildBinding, resolveAssignment } from './task-brief.js';
 import { createHiveServices, type RouteSnapshot } from './runtime/hive-services.js';
 import { createHiveOperations, presentHiveResult } from './runtime/hive-tools.js';
 import { buildRoleCatalog, createCommandContext as createSharedCommandContext } from './runtime/role-catalog.js';
@@ -53,6 +54,8 @@ const plugin: Plugin = async (ctx) => {
   const runtimeSessionAgents = new Map<string, string>();
   const runtimeTaskChildren = new Set<string>();
   const dispatchSnapshots = new Map<string, RouteSnapshot>();
+  // The child binding each captured task call wrote, or what the stored binding proves when its write failed.
+  const confirmedChildren = new Map<string, SessionInfo>();
   const ephemeralSessionIDs = new Set<string>();
   const taskTraceConfig = configService.get().taskTraceSummarizer ?? {};
   const configFallbackWarning = services.configFallbackWarning;
@@ -76,6 +79,10 @@ const plugin: Plugin = async (ctx) => {
     isEnabled: isBackgroundSubagentsExperimentEnabled,
     runtimeId,
     getSession: (sessionId) => sessionService.getGlobal(sessionId),
+    getBoundChild: ({ childSessionId, parentSessionId, callId }) => {
+      const confirmed = callId === undefined ? undefined : confirmedChildren.get(`${parentSessionId}\0${callId}`);
+      return confirmed?.sessionId === childSessionId ? confirmed : undefined;
+    },
   });
 
   const bindChildSnapshot = (binding: { parent: string; call: string; child: string; agent?: string }): void => {
@@ -87,7 +94,26 @@ const plugin: Plugin = async (ctx) => {
     if (existing?.parentSessionId !== undefined && existing.parentSessionId !== binding.parent) {
       throw new Error('existing child snapshot parent cannot change');
     }
-    sessionService.trackGlobal(binding.child, childRouteRecord(snapshot, binding.parent, binding.agent));
+    const stored = existing?.parentSessionId === binding.parent ? existing : undefined;
+    const route = childRouteRecord(snapshot, binding.parent, binding.agent);
+    const association = childAssociation(snapshot);
+    try {
+      confirmedChildren.set(key, sessionService.trackGlobal(binding.child, { ...route, ...association }));
+    } catch (error) {
+      // An earlier write of this call still stands; otherwise the launch row gets only what the old binding proves.
+      const proven = confirmedChildren.has(key) ? undefined : provenChildBinding(stored, route, association);
+      if (proven) confirmedChildren.set(key, proven);
+      throw error;
+    }
+  };
+
+  // V1 reports a failed child binding and lets the native task call continue.
+  const bindReportedChild = (binding: { parent: string; call: string; child: string; agent?: string }): void => {
+    try {
+      bindChildSnapshot(binding);
+    } catch (error) {
+      console.warn(`[hive:routing] could not bind child session ${binding.child} to the route call ${binding.call} captured (${(error as Error).message}); whether this attempt changed the stored binding is unknown, and a launch row of this call names only the feature, task or run that the binding read before the attempt proves for the call.`);
+    }
   };
 
   // Permissions decide v1 access for most tools; the few that stamp shared authorship also check the caller's role
@@ -140,10 +166,7 @@ const plugin: Plugin = async (ctx) => {
     command: buildHiveCommandMap(hiveCommandRenderers, createCommandContext),
     event: async (input) => {
       const binding = taskChildBinding(input.event);
-      if (binding) {
-        try { bindChildSnapshot(binding); }
-        catch (error) { console.warn(`[hive:routing] child snapshot conflict for ${binding.child}: ${(error as Error).message}`); }
-      }
+      if (binding) bindReportedChild(binding);
       await backgroundAdapter.event(input);
     },
     'chat.message': (async (input, output) => {
@@ -176,7 +199,8 @@ const plugin: Plugin = async (ctx) => {
     },
     'tool.execute.before': async (input, output) => {
       if (input.tool === 'task' && input.sessionID && input.callID) {
-        const snapshot = services.captureRoute(input.sessionID);
+        const captured = services.captureRoute(input.sessionID);
+        const snapshot = { ...captured, assignment: await resolveAssignment(services, captured, output.args?.prompt) };
         dispatchSnapshots.set(`${input.sessionID}\0${input.callID}`, snapshot);
         const agent = output.args?.subagent_type;
         const foragerDispatch = typeof agent === 'string'
@@ -187,18 +211,20 @@ const plugin: Plugin = async (ctx) => {
     },
     'tool.execute.after': async (input, output) => {
       try {
-        await backgroundAdapter['tool.execute.after'](input, output);
+        // The child is bound first, so a background launch row takes its feature, task and run from the binding this
+        // call confirmed.
         const child = input.tool === 'task' ? (output?.metadata as any)?.sessionId : undefined;
         if (typeof child === 'string' && input.callID) {
           const binding = { type: 'message.part.updated', properties: { part: { type: 'tool', tool: 'task', sessionID: input.sessionID, callID: input.callID, metadata: { sessionId: child }, state: { input: input.args } } } };
           const parsed = taskChildBinding(binding);
-          if (parsed) {
-            try { bindChildSnapshot(parsed); }
-            catch (error) { console.warn(`[hive:routing] child snapshot conflict for ${parsed.child}: ${(error as Error).message}`); }
-          }
+          if (parsed) bindReportedChild(parsed);
         }
+        await backgroundAdapter['tool.execute.after'](input, output);
       } finally {
-        if (input.tool === 'task' && input.callID) dispatchSnapshots.delete(`${input.sessionID}\0${input.callID}`);
+        if (input.tool === 'task' && input.callID) {
+          dispatchSnapshots.delete(`${input.sessionID}\0${input.callID}`);
+          confirmedChildren.delete(`${input.sessionID}\0${input.callID}`);
+        }
       }
     },
     config: async (opencodeConfig) => {

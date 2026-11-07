@@ -214,8 +214,8 @@ function denied(exit: Exit.Exit<unknown, unknown>): string | undefined {
 }
 
 describe('v2 tool registration', () => {
-  it('registers all 42 Hive tools once, with an explicit Code Mode flag from the selected transport', async () => {
-    expect(HIVE_TOOL_NAMES).toHaveLength(42);
+  it('registers all 48 Hive tools once, with an explicit Code Mode flag from the selected transport', async () => {
+    expect(HIVE_TOOL_NAMES).toHaveLength(48);
     for (const transport of ['codemode', 'direct'] as const) {
       const host = await activate({ readTransport: transport });
       const tools = host.tools();
@@ -338,6 +338,18 @@ describe('v2 project placement', () => {
     const status = await host.execute('hive_status', {}, primary);
     expect((status as Exit.Success<any>).value.output).toMatchObject({ feature: { name: 'demo' } });
   });
+
+  it('maps a session in a retained checkout back to the main checkout without inventing a feature', async () => {
+    const checkout = path.join('.hive', 'checkouts', 'root', 'release');
+    const host = await activate({}, undefined, { directory: path.join(checkout, 'pkg'), projectDirectory: checkout, seed: seedManifest });
+    const repositories = await host.execute('hive_repositories_status', {}, primary);
+    expect((repositories as Exit.Success<any>).value.output).toMatchObject({ mode: 'manifest', repositories: [{ id: 'root' }] });
+    expect(Exit.isSuccess(await host.execute('hive_feature_create', { name: 'one' }, primary))).toBe(true);
+    expect(Exit.isSuccess(await host.execute('hive_feature_create', { name: 'two' }, primary))).toBe(true);
+    expect(fs.existsSync(path.join(host.root, checkout, '.hive'))).toBe(false);
+    // With two live features and no selection, nothing names one: the checkout path is not a feature route.
+    expect(denied(await host.execute('hive_status', {}, primary))).toContain('Feature is required');
+  });
 });
 
 describe('v2 execution guards', () => {
@@ -416,6 +428,16 @@ describe('v2 execution guards', () => {
     ['hive-helper', 'child', 'hive_worklog_record', {}, false],
     ['general', 'child', 'hive_worklog_record', {}, false],
     ['build', 'child', 'hive_worklog_record', {}, false],
+    // Retained checkouts: every Hive role lists them and inspection follows worktree inspection; who changes them is
+    // pinned under a global allow below.
+    ['scout-researcher', 'child', 'hive_checkouts_list', {}, true],
+    ['security-scout', 'child', 'hive_checkouts_list', {}, true],
+    ['forager-worker', 'child', 'hive_checkout_inspect', {}, true],
+    ['hive-helper', 'child', 'hive_checkout_inspect', {}, true],
+    ['scout-researcher', 'child', 'hive_checkout_inspect', {}, false],
+    ['general', 'child', 'hive_checkouts_list', {}, false],
+    ['build', 'primary', 'hive_checkout_create', {}, true],
+    ['build', 'child', 'hive_checkout_cleanup', {}, false],
   ];
 
   it.each(cases)('%s in a %s session calling %s', async (agent, sessionID, tool, input, allowed) => {
@@ -427,6 +449,22 @@ describe('v2 execution guards', () => {
       const executorDenied = denied(exit);
       if (!allowed) expect(executorDenied).toBe(hook);
     }
+  });
+
+  it('keeps retained checkout changes with executing primary sessions under a user global allow', async () => {
+    const host = await activate({}, { customAgents: { 'release-builder': { baseAgent: 'forager-worker', description: 'Release work.' } } });
+    host.useAgentConfig({ permissions: [{ action: '*', resource: '*', effect: 'allow' }] });
+    const mutations = ['hive_checkout_create', 'hive_checkout_register', 'hive_checkout_readiness', 'hive_checkout_cleanup'];
+    for (const tool of mutations) {
+      for (const agent of ['hive-master', 'swarm-orchestrator', 'hive-builder']) {
+        expect(denied(await host.before({ tool, sessionID: 'primary', agent, input: {} })), `${agent} ${tool}`).toBeUndefined();
+        expect(denied(await host.before({ tool, sessionID: 'child', agent, input: {} })), `child ${agent} ${tool}`).toBeDefined();
+      }
+      for (const agent of ['architect-planner', 'dash-reviewer', 'forager-worker', 'release-builder', 'general']) {
+        expect(denied(await host.before({ tool, sessionID: 'primary', agent, input: {} })), `${agent} ${tool}`).toBeDefined();
+      }
+    }
+    expect(denied(await host.before({ tool: 'hive_checkout_inspect', sessionID: 'child', agent: 'release-builder', input: {} }))).toBeUndefined();
   });
 
   it('lets both review primaries dispatch Investigators and their derivatives but not implementation Foragers, under a user global allow', async () => {

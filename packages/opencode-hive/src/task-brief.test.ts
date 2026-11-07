@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { ContextService, FeatureService, PlanService, TaskService, getFeaturePath } from 'hive-core';
-import { childRouteRecord, composeDispatchPrompt, composeTaskBrief, TASK_BRIEF_BLOCK, TASK_BRIEF_MAX_BYTES, type TaskBriefSources } from './task-brief.js';
+import { childAssociation, childRouteRecord, composeDispatchPrompt, composeTaskBrief, resolveAssignment, TASK_BRIEF_BLOCK, TASK_BRIEF_MAX_BYTES, type TaskBriefSources } from './task-brief.js';
 
 const roots: string[] = [];
 
@@ -293,5 +293,47 @@ describe('dispatch prompt composition shared by both hosts', () => {
     const unrouted = childRouteRecord(snapshot({ hasFeatureRoute: false, sessionConstraints: { entries: [], revision: 0, constraints: '' } }), 'parent');
     expect(unrouted.featureName).toBeUndefined();
     expect(unrouted.standingConstraints).toBeUndefined();
+  });
+
+  it('associates a child only with the task or run its first line names and Hive knows', async () => {
+    const services = {
+      taskService: { listStatusEntries: (feature: string) => (feature === 'alpha' ? [{ folder: '01-a' }] : []) as any },
+      adhocService: () => ({ get: async (runId: string) => (runId === 'run-1' ? { runId } : null) }),
+    };
+    const resolve = (prompt: unknown, overrides: Parameters<typeof snapshot>[0] = {}) => resolveAssignment(services, snapshot(overrides), prompt);
+    expect(await resolve('\n  Hive task: 01-a  \nBuild.')).toEqual({ taskFolder: '01-a' });
+    expect(await resolve(composeDispatchPrompt({ sources: stubSources(), snapshot: snapshot(), prompt: 'Hive run: run-1', foragerDispatch: false }))).toEqual({ adHocRunId: 'run-1' });
+    // A marker Hive cannot resolve binds nothing, like an assignment without one.
+    for (const [prompt, overrides] of [
+      ['Hive task: 02-missing', {}],
+      ['Hive run: run-2', {}],
+      // A task binding needs a feature the parent selected; a detected or sole live feature, or explicit null, is not one.
+      ['Hive task: 01-a', { hasFeatureRoute: false }],
+      ['Hive task: 01-a', { featureName: null }],
+      // A marker that names no ID in the `Marker: <id>` form binds nothing, however the line is padded.
+      ['Hive task: ', {}],
+      ['Hive task:', {}],
+      ['\n  Hive run: \t \nContinue.', {}],
+      ['Hive task:01-a', {}],
+      // Only the first line counts, and the marker is exact-case.
+      ['Build it.\nHive task: 01-a', {}],
+      ['Continue.', {}],
+      ['hive task: 01-a', {}],
+      ['HIVE RUN: run-1', {}],
+      [undefined, {}],
+    ] as const) {
+      expect(await resolve(prompt, overrides), String(JSON.stringify(prompt))).toBeUndefined();
+    }
+    const failing = { taskService: { listStatusEntries: () => { throw new Error('unreadable'); } }, adhocService: () => ({ get: async () => { throw new Error('bad run'); } }) };
+    expect(await resolveAssignment(failing, snapshot(), 'Hive task: 01-a')).toBeUndefined();
+    expect(await resolveAssignment(failing, snapshot(), 'Hive run: run-1')).toBeUndefined();
+
+    // The admission route never carries the association.
+    expect(Object.keys(childRouteRecord({ ...snapshot(), assignment: { taskFolder: '01-a' } }, 'parent'))).not.toContain('taskFolder');
+    const association = (assignment: Parameters<typeof childAssociation>[0]['assignment']) => childAssociation({ ...snapshot(), assignment });
+    // A resolved marker names one kind and clears the other; no resolved marker clears both.
+    expect(association({ adHocRunId: 'run-1' })).toEqual({ taskFolder: undefined, adHocRunId: 'run-1' });
+    expect(association({ taskFolder: '01-b' })).toEqual({ taskFolder: '01-b', adHocRunId: undefined });
+    expect(association(undefined)).toEqual({ taskFolder: undefined, adHocRunId: undefined });
   });
 });

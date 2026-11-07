@@ -29,8 +29,8 @@ Each piece of Hive state has one owning tool. If that tool is not exposed to you
 
 | Set | Tools | Roles |
 |---|---|---|
-| R | `hive_status`, `hive_plan_read`, `hive_context_read`, `hive_constraints_read`, `hive_repositories_status`, `hive_git_snapshot`, `hive_worklog_list`, `hive_worklog_read` | Every Hive role except the hidden trace summarizer |
-| I | `hive_worktree_inspect`, `hive_adhoc_worktree_inspect` | Primaries, Architect, Forager, Investigator, Hive Helper, review primaries |
+| R | `hive_status`, `hive_plan_read`, `hive_context_read`, `hive_constraints_read`, `hive_repositories_status`, `hive_git_snapshot`, `hive_worklog_list`, `hive_worklog_read`, `hive_checkouts_list` | Every Hive role except the hidden trace summarizer |
+| I | `hive_worktree_inspect`, `hive_adhoc_worktree_inspect`, `hive_checkout_inspect` | Primaries, Architect, Forager, Investigator, Hive Helper, review primaries |
 | T | `hive_task_trace`, `hive_task_trace_content` | Primaries, Architect, Forager, Hive Helper, review primaries (not Investigator) |
 | Discover | `hive_repositories_discover` | Primaries, Architect, Scout |
 <!-- hive-host opencode-v1 -->
@@ -60,6 +60,10 @@ Roles: **P** = full primaries (`hive-master`, `swarm-orchestrator`, `hive-builde
 | `hive_adhoc_worktree_create` | Ad-hoc worktree, branch, sidecar or `workspace.json` | P, A, RP | yes |
 | `hive_adhoc_worktree_merge` | Destination branch (integration commit) | P | yes |
 | `hive_adhoc_worktree_cleanup` | Removes ad-hoc worktree, optionally its branch | P, A, RP | yes |
+| `hive_checkout_create` | New managed retained checkout at `.hive/checkouts/<repoId>/<slug>`, its branch when `baseRef` creates one, and its record `.hive/checkouts/<repoId>/<slug>.json` | P | yes |
+| `hive_checkout_register` | The record `.hive/checkouts/<repoId>/<slug>.json` for a checkout the project already has; never that checkout or its branch | P | yes |
+| `hive_checkout_readiness` | The readiness declaration in that record | P | yes |
+| `hive_checkout_cleanup` | Removes the record; for a managed checkout also its worktree and, when `deleteBranch` asks, its branch | P | yes |
 | `hive_worktree_recover` | Removes the pending markers in `.hive/.locks/operations/`, or the legacy `.hive/.operation-locks/` file, of one acknowledged interrupted worktree operation; runs no mutating Git command; reads Git state | P, A, RP | yes |
 | `hive_repositories_update` | `.hive/repositories.json` | P, A, Ac | |
 | `hive_context_write`, `hive_context_append`, `hive_context_edit` | `context/<name>.md`, `context/index.json` (feature or project); edit changes one exact passage of an existing file | P, A, Ac, RP, F, Rev | |
