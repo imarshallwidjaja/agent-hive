@@ -1,7 +1,7 @@
 import * as fsSync from 'fs';
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { resolveFeatureDirectoryName, writeJsonAtomicDurable } from '../utils/paths.js';
+import { FeatureResolutionError, resolveExistingFeaturePath, resolveFeatureDirectoryName, writeJsonAtomicDurable } from '../utils/paths.js';
 import { assertNoSymlinkComponents } from './worktreeLinkage.js';
 
 export interface WorkspaceManifestEntry {
@@ -309,6 +309,12 @@ export async function adhocGroupEntryOwner(projectRoot: string, hiveDir: string,
   if (mode === 'adhoc-single' || mode === 'adhoc-composite' || mode === 'adhoc-targeted') return { owner: 'adhoc', declared: true };
   let featurePath: string;
   try {
+    // Unreadable or ambiguous metadata could hide the adhoc feature's task records, so only an absent feature falls through.
+    try {
+      resolveExistingFeaturePath(projectRoot, 'adhoc');
+    } catch (error) {
+      if (!(error instanceof FeatureResolutionError) || error.reason !== 'not_found') throw error;
+    }
     featurePath = path.join(hiveDir, 'features', resolveFeatureDirectoryName(projectRoot, 'adhoc'));
   } catch (error) {
     return unknown(`feature adhoc cannot be resolved (${(error as Error).message})`);

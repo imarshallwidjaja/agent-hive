@@ -3750,4 +3750,25 @@ describe('AdhocWorktreeService targeted runs', () => {
     expect(workers.every((worker) => worker.error === undefined)).toBe(true);
     expect(errors).toEqual([candidateShaped, ambiguous]);
   }, 30_000);
+
+  it('leaves a sidecarless entry unknown while a feature named adhoc has unreadable or ambiguous metadata', async () => {
+    const fx = await targetedFixture();
+    const run = await fx.core.create({ runId: 'old-run' });
+    await fs.rm(path.join(fx.hiveDir, '.worktrees', 'adhoc', 'old-run.json'));
+    const tasks = new WorktreeService({ baseDir: fx.repoPath, hiveDir: fx.hiveDir });
+    expect(await tasks.list()).toEqual({ worktrees: [], errors: [] });
+
+    // Either metadata could hide a task record of this name, so listings and cleanup leave the entry alone.
+    const featuresPath = path.join(fx.hiveDir, 'features');
+    await fs.mkdir(path.join(featuresPath, '01_adhoc'), { recursive: true });
+    await fs.writeFile(path.join(featuresPath, '01_adhoc', 'feature.json'), '{broken');
+    expect(await tasks.list()).toEqual({ worktrees: [], errors: [{ path: run.path, reason: expect.stringContaining("unreadable metadata in '01_adhoc'") }] });
+    expect((await tasks.cleanup()).removed).toEqual([]);
+
+    await fs.writeFile(path.join(featuresPath, '01_adhoc', 'feature.json'), JSON.stringify({ name: 'adhoc', status: 'planning' }));
+    await fs.mkdir(path.join(featuresPath, '02_adhoc'));
+    await fs.writeFile(path.join(featuresPath, '02_adhoc', 'feature.json'), JSON.stringify({ name: 'adhoc', status: 'planning' }));
+    expect((await tasks.list()).errors).toEqual([{ path: run.path, reason: expect.stringContaining("multiple entries named 'adhoc'") }]);
+    expect(await fx.core.get('old-run')).toMatchObject({ path: run.path });
+  }, 30_000);
 });

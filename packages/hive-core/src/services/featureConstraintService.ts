@@ -1,13 +1,10 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { FeatureJson } from '../types.js';
 import {
   acquireLockSync,
-  FEATURE_NAME_PATTERN,
   fileExists,
-  getFeaturesPath,
-  listFeatureDirectories,
   readJson,
+  resolveExistingFeaturePath,
   writeJsonAtomic,
 } from '../utils/paths.js';
 import {
@@ -17,21 +14,6 @@ import {
   readConstraintRegister,
 } from './constraintRegister.js';
 import type { ConstraintRegister } from './constraintRegister.js';
-
-export function resolveExistingFeaturePath(projectRoot: string, featureName: string): string {
-  const matches = listFeatureDirectories(projectRoot).filter((entry) => {
-    const feature = readJson<FeatureJson>(path.join(getFeaturesPath(projectRoot), entry.directoryName, 'feature.json'));
-    return typeof feature?.name === 'string'
-      && FEATURE_NAME_PATTERN.test(feature.name)
-      && (entry.directoryName === featureName || feature.name === featureName);
-  });
-  if (matches.length !== 1) {
-    throw new Error(matches.length === 0
-      ? `Feature '${featureName}' not found`
-      : `Feature namespace contains multiple entries named '${featureName}'`);
-  }
-  return path.join(getFeaturesPath(projectRoot), matches[0]!.directoryName);
-}
 
 export class FeatureConstraintService {
   constructor(private readonly projectRoot: string) {}

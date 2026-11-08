@@ -3707,8 +3707,14 @@ Build.
       fs.mkdirSync(path.dirname(groupPath), { recursive: true });
       fs.writeFileSync(groupPath, "not a directory");
       expect(() => service.sync(featureName, { refreshPending: true })).toThrow(/would change its target from web\/a to web\/b/);
-      // A caller inventory naming the task refuses even when the disk shows nothing.
       fs.rmSync(groupPath);
+      // Feature metadata that cannot be read could hide the name a placement was created under.
+      const metadataPath = path.join(TEST_DIR, ".hive", "features", featureName, "feature.json");
+      const metadata = fs.readFileSync(metadataPath, "utf8");
+      fs.writeFileSync(metadataPath, "{broken");
+      expect(() => service.sync(featureName, { refreshPending: true })).toThrow(/would change its target from web\/a to web\/b/);
+      fs.writeFileSync(metadataPath, metadata);
+      // A caller inventory naming the task refuses even when the disk shows nothing.
       expect(() => service.sync(featureName, { refreshPending: true, retainedWorktreeTasks: new Set(["02-build-api"]) })).toThrow(/retained worktree/);
 
       expect(service.sync(featureName, { refreshPending: true }).kept).toContain("02-build-api");

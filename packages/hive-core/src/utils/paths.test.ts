@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeAll, afterAll, spyOn } from "bun:test";
+import { describe, expect, it, beforeAll, beforeEach, afterAll, spyOn } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
 import {
@@ -19,9 +19,13 @@ import {
   getHivePath,
   getProjectContextPath,
   getFeaturePath,
+  FeatureResolutionError,
   LegacyLockError,
+  listFeatureDirectories,
   probeLock,
+  resolveExistingFeaturePath,
 } from "./paths";
+import type { FeatureResolutionFailure } from "./paths";
 import { isNativeLockHeld, resolveLockAnchor, windowsBackend } from "./nativeLock";
 import {
   NATIVE_OBSERVATION_OWNERS,
@@ -699,6 +703,106 @@ describe("Atomic + Locked JSON Utilities", () => {
     it("returns the project-level context namespace", () => {
       expect(getProjectContextPath("/my/project")).toBe(path.join("/my/project", ".hive", "context"));
     });
+  });
+});
+
+describe("resolveExistingFeaturePath", () => {
+  const projectRoot = path.join(TEST_DIR, "feature-resolution");
+  const featuresPath = path.join(projectRoot, ".hive", "features");
+
+  function writeFeature(directoryName: string, metadata: string | Record<string, unknown> | null): string {
+    const directory = path.join(featuresPath, directoryName);
+    fs.mkdirSync(directory, { recursive: true });
+    if (metadata !== null) {
+      fs.writeFileSync(path.join(directory, "feature.json"), typeof metadata === "string" ? metadata : JSON.stringify(metadata));
+    }
+    return directory;
+  }
+
+  function expectRefusal(featureName: string, reason: FeatureResolutionFailure): FeatureResolutionError {
+    try {
+      resolveExistingFeaturePath(projectRoot, featureName);
+    } catch (error) {
+      expect(error).toBeInstanceOf(FeatureResolutionError);
+      expect((error as FeatureResolutionError).reason).toBe(reason);
+      return error as FeatureResolutionError;
+    }
+    throw new Error(`Expected '${featureName}' to be refused as ${reason}`);
+  }
+
+  beforeEach(() => {
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+    fs.mkdirSync(featuresPath, { recursive: true });
+  });
+
+  afterAll(() => {
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+  });
+
+  it("resolves a feature by its logical name or its exact indexed directory alias", () => {
+    const indexed = writeFeature("03_checkout", { name: "checkout", status: "planning" });
+    const legacy = writeFeature("legacy", { name: "legacy", status: "planning" });
+
+    expect(resolveExistingFeaturePath(projectRoot, "checkout")).toBe(indexed);
+    expect(resolveExistingFeaturePath(projectRoot, "03_checkout")).toBe(indexed);
+    expect(resolveExistingFeaturePath(projectRoot, "legacy")).toBe(legacy);
+  });
+
+  it("takes the logical name from metadata, not from the directory name", () => {
+    writeFeature("04_old-name", { name: "renamed", status: "planning" });
+
+    expect(resolveExistingFeaturePath(projectRoot, "renamed")).toBe(path.join(featuresPath, "04_old-name"));
+    expectRefusal("old-name", "not_found");
+  });
+
+  it("refuses unknown, invalid, and metadata-less names without creating anything", () => {
+    writeFeature("05_phantom", null);
+    const before = fs.readdirSync(projectRoot, { recursive: true });
+
+    for (const name of ["missing", "phantom", "05_phantom", "../escape", ""]) {
+      expect(expectRefusal(name, "not_found").message).toBe(`Feature '${name}' not found`);
+    }
+    expect(fs.readdirSync(projectRoot, { recursive: true })).toEqual(before);
+
+    fs.rmSync(path.join(projectRoot, ".hive"), { recursive: true });
+    expectRefusal("missing", "not_found");
+    expect(fs.readdirSync(projectRoot)).toEqual([]);
+  });
+
+  it("keeps healthy features resolvable and listable beside a corrupt sibling", () => {
+    const healthy = writeFeature("01_healthy", { name: "healthy", status: "planning" });
+    writeFeature("02_corrupt", "{broken");
+
+    expect(resolveExistingFeaturePath(projectRoot, "healthy")).toBe(healthy);
+    expect(listFeatureDirectories(projectRoot)).toEqual([
+      { directoryName: "01_healthy", logicalName: "healthy", index: 1 },
+      { directoryName: "02_corrupt", logicalName: "corrupt", index: 2 },
+    ]);
+  });
+
+  it.each([
+    ["corrupt JSON", "{broken"],
+    ["a non-object", "[]"],
+    ["an invalid name", JSON.stringify({ name: "../escape" })],
+  ])("refuses a candidate directory with %s and leaves it unchanged", (_label, stored) => {
+    writeFeature("01_checkout", { name: "checkout", status: "planning" });
+    const corrupt = writeFeature("02_checkout", stored);
+
+    const refusal = expectRefusal("checkout", "unreadable");
+    expect(refusal.directories).toEqual(["02_checkout"]);
+    expectRefusal("02_checkout", "unreadable");
+    expect(fs.readFileSync(path.join(corrupt, "feature.json"), "utf-8")).toBe(stored);
+  });
+
+  it("refuses duplicate logical names and a logical-name/directory-alias collision", () => {
+    writeFeature("01_checkout", { name: "checkout", status: "planning" });
+    writeFeature("02_checkout", { name: "checkout", status: "planning" });
+    expect(expectRefusal("checkout", "ambiguous").directories.sort()).toEqual(["01_checkout", "02_checkout"]);
+
+    writeFeature("03_alpha", { name: "beta", status: "planning" });
+    writeFeature("beta", { name: "gamma", status: "planning" });
+    expect(expectRefusal("beta", "ambiguous").message).toContain("multiple entries");
+    expect(resolveExistingFeaturePath(projectRoot, "gamma")).toBe(path.join(featuresPath, "beta"));
   });
 });
 

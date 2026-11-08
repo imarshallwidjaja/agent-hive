@@ -7,6 +7,7 @@ import {
   ConfigService,
   ContextService,
   FeatureConstraintService,
+  FeatureResolutionError,
   FeatureService,
   PlanService,
   RepositoryManifestService,
@@ -106,8 +107,15 @@ export function createHiveServices(options: { projectRoot: string; detectedFeatu
   const retainedCheckoutService = new RetainedCheckoutService(checkoutConfig);
   const checkoutInspector = new CheckoutInspector(checkoutConfig);
 
+  // A listed feature whose metadata is unreadable or whose name is ambiguous is never the sole-live fallback.
   const liveFeatures = (): string[] => featureService.list().filter((name) => {
-    const status = featureService.get(name)?.status;
+    let status: string | undefined;
+    try {
+      status = featureService.get(name)?.status;
+    } catch (error) {
+      if (error instanceof FeatureResolutionError) return false;
+      throw error;
+    }
     return status === 'planning' || status === 'approved' || status === 'executing';
   });
   const resolveFeature = (explicit: string | undefined, invocation?: HiveInvocation): string | null => {

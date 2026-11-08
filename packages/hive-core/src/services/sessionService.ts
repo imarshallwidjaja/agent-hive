@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { ensureDir, fileExists, readJson, writeJson, acquireLockSync, writeJsonAtomic, syncFile, syncDirectory } from '../utils/paths.js';
+import { ensureDir, fileExists, readJson, writeJson, acquireLockSync, writeJsonAtomic, syncFile, syncDirectory, resolveExistingFeaturePath } from '../utils/paths.js';
 import {
   assertNativeObservationOwner,
   DEFAULT_NATIVE_OBSERVATION_OWNER,
@@ -19,7 +19,6 @@ import {
   readConstraintRegister,
 } from './constraintRegister.js';
 import type { ConstraintRegister } from './constraintRegister.js';
-import { resolveExistingFeaturePath } from './featureConstraintService.js';
 
 export const STANDING_CONSTRAINTS_MAX_CHARS = CONSTRAINTS_MAX_CHARS;
 export const LEGACY_STANDING_CONSTRAINT_ID = LEGACY_CONSTRAINT_ID;

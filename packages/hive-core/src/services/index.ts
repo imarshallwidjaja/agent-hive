@@ -1,4 +1,5 @@
-export { FeatureService, FEATURE_NAME_PATTERN, assertValidFeatureName } from './featureService.js';
+export { FeatureService, FeatureWriteUncertainError, FEATURE_NAME_PATTERN, assertValidFeatureName } from './featureService.js';
+export type { FeaturePublication, FeatureWriteFailures } from './featureService.js';
 export { FeatureConstraintService } from './featureConstraintService.js';
 export {
   CONSTRAINTS_MAX_CHARS,

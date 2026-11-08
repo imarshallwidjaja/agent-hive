@@ -25,8 +25,10 @@ import {
   writeText,
   fileExists,
   FEATURE_NAME_PATTERN,
+  FeatureResolutionError,
   listFeatureDirectories,
   LockOptions,
+  resolveExistingFeaturePath,
   resolveFeatureDirectoryName,
 } from '../utils/paths.js';
 import {
@@ -314,9 +316,15 @@ const TASK_STATUSES: ReadonlySet<string> = new Set([
 /**
  * Whether a task may still have a worker placement or binding sidecar, read without Git. Workers are placed under
  * `.hive/.worktrees/<name>/` by the feature name their caller passed, so every name that resolves to the feature's
- * directory is searched. A name or listing that cannot be read counts as present.
+ * directory is searched. A name or listing that cannot be read counts as present, and so does a feature whose
+ * metadata is unreadable or ambiguous, because it could hide the name a placement was created under.
  */
 function mayHaveWorkerPlacement(projectRoot: string, featureName: string, folder: string): boolean {
+  try {
+    resolveExistingFeaturePath(projectRoot, featureName);
+  } catch (error) {
+    if (!(error instanceof FeatureResolutionError) || error.reason !== 'not_found') return true;
+  }
   let groups: Set<string>;
   try {
     const directoryName = resolveFeatureDirectoryName(projectRoot, featureName);

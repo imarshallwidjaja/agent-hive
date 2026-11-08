@@ -68,23 +68,70 @@ function parseIndexedFeatureDirectoryName(directoryName: string): { index: numbe
   };
 }
 
+/** Outcome of reading one feature directory's `feature.json`; `unreadable` is never repaired or overwritten. */
+export type FeatureMetadataRead =
+  | { state: 'valid'; feature: FeatureJson }
+  | { state: 'missing' }
+  | { state: 'unreadable'; reason: string };
+
+/**
+ * Read a feature directory's metadata without throwing. Valid metadata is a JSON object, read from a regular
+ * file, whose `name` matches `FEATURE_NAME_PATTERN`; every other field, including unknown legacy ones, is kept.
+ */
+export function readFeatureMetadata(featureDirectoryPath: string): FeatureMetadataRead {
+  const featureJsonPath = path.join(featureDirectoryPath, FEATURE_FILE);
+  let parsed: unknown;
+  try {
+    if (!fs.lstatSync(featureJsonPath).isFile()) {
+      return { state: 'unreadable', reason: `${FEATURE_FILE} is not a regular file` };
+    }
+    parsed = JSON.parse(fs.readFileSync(featureJsonPath, 'utf-8'));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { state: 'missing' };
+    return { state: 'unreadable', reason: (error as Error).message };
+  }
+  if (
+    parsed === null
+    || typeof parsed !== 'object'
+    || Array.isArray(parsed)
+    || typeof (parsed as { name?: unknown }).name !== 'string'
+    || !FEATURE_NAME_PATTERN.test((parsed as { name: string }).name)
+  ) {
+    return { state: 'unreadable', reason: `${FEATURE_FILE} has no valid feature name` };
+  }
+  return { state: 'valid', feature: parsed as FeatureJson };
+}
+
+/**
+ * Real directories under `.hive/features`. Dot-prefixed names cannot be features; feature creation stages
+ * its directory under one before publishing it.
+ */
+function readFeatureDirectoryNames(featuresPath: string): string[] {
+  try {
+    return fs.readdirSync(featuresPath, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
+      .map((entry) => entry.name);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw error;
+  }
+}
+
+/**
+ * Every feature directory, for enumeration. A directory whose metadata is missing or unreadable is still
+ * listed under the name its directory implies, so one corrupt sibling never hides the others; resolve a
+ * specific feature with `resolveExistingFeaturePath`, which refuses unreadable metadata.
+ */
 export function listFeatureDirectories(projectRoot: string): FeatureDirectoryInfo[] {
   const featuresPath = getFeaturesPath(projectRoot);
-  if (!fs.existsSync(featuresPath)) {
-    return [];
-  }
-
-  return fs.readdirSync(featuresPath, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => {
-      const directoryName = entry.name;
+  return readFeatureDirectoryNames(featuresPath)
+    .map((directoryName) => {
       const parsed = parseIndexedFeatureDirectoryName(directoryName);
-      const featureJsonPath = path.join(featuresPath, directoryName, FEATURE_FILE);
-      const featureJson = readJson<FeatureJson>(featureJsonPath);
+      const metadata = readFeatureMetadata(path.join(featuresPath, directoryName));
 
       return {
         directoryName,
-        logicalName: featureJson?.name || parsed?.logicalName || directoryName,
+        logicalName: metadata.state === 'valid' ? metadata.feature.name : parsed?.logicalName || directoryName,
         index: parsed?.index ?? null,
       };
     })
@@ -111,6 +158,72 @@ export function resolveFeatureDirectoryName(projectRoot: string, featureName: st
 
   const match = listFeatureDirectories(projectRoot).find((entry) => entry.logicalName === featureName);
   return match?.directoryName || featureName;
+}
+
+export type FeatureResolutionFailure = 'not_found' | 'ambiguous' | 'unreadable';
+
+/** Why `resolveExistingFeaturePath` refused a name; `directories` names the feature directories involved. */
+export class FeatureResolutionError extends Error {
+  constructor(
+    readonly reason: FeatureResolutionFailure,
+    readonly featureName: string,
+    message: string,
+    readonly directories: string[] = [],
+  ) {
+    super(message);
+    this.name = 'FeatureResolutionError';
+  }
+}
+
+/**
+ * Directory of the one existing, metadata-backed feature that `featureName` names: by the logical name in its
+ * `feature.json`, or by its exact directory name (an indexed alias such as `03_checkout`). Reads only; it creates
+ * nothing and takes no lock, so callers resolve before any write or lock side effect.
+ *
+ * Throws `FeatureResolutionError`:
+ * - `unreadable` when a directory that could hold the feature (named `featureName` or `NN_featureName`) has
+ *   metadata that exists but cannot be read; unrelated corrupt siblings do not affect the lookup.
+ * - `not_found` when no directory with valid metadata matches, including invalid names and directories
+ *   without `feature.json`.
+ * - `ambiguous` when more than one directory matches, whether by logical name or by directory alias.
+ */
+export function resolveExistingFeaturePath(projectRoot: string, featureName: string): string {
+  const notFound = () => new FeatureResolutionError('not_found', featureName, `Feature '${featureName}' not found`);
+  if (!FEATURE_NAME_PATTERN.test(featureName)) throw notFound();
+
+  const featuresPath = getFeaturesPath(projectRoot);
+  const matches: string[] = [];
+  const unreadable: string[] = [];
+  for (const directoryName of readFeatureDirectoryNames(featuresPath)) {
+    const metadata = readFeatureMetadata(path.join(featuresPath, directoryName));
+    if (metadata.state === 'valid') {
+      if (metadata.feature.name === featureName || directoryName === featureName) matches.push(directoryName);
+    } else if (
+      metadata.state === 'unreadable'
+      && (directoryName === featureName || parseIndexedFeatureDirectoryName(directoryName)?.logicalName === featureName)
+    ) {
+      unreadable.push(directoryName);
+    }
+  }
+
+  if (unreadable.length > 0) {
+    throw new FeatureResolutionError(
+      'unreadable',
+      featureName,
+      `Feature '${featureName}' cannot be resolved: unreadable metadata in ${unreadable.map((name) => `'${name}'`).join(', ')}`,
+      unreadable,
+    );
+  }
+  if (matches.length === 0) throw notFound();
+  if (matches.length > 1) {
+    throw new FeatureResolutionError(
+      'ambiguous',
+      featureName,
+      `Feature namespace contains multiple entries named '${featureName}'`,
+      matches,
+    );
+  }
+  return path.join(featuresPath, matches[0]!);
 }
 
 export function getNextIndexedFeatureDirectoryName(projectRoot: string, featureName: string): string {

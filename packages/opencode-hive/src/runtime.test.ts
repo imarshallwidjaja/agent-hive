@@ -595,6 +595,32 @@ describe('coordinated runtime hard cut', () => {
     expect(JSON.parse(await loaded.tool!.hive_plan_read.execute({}, context('child-detected-b', 'forager-worker'))).content).toBe('# Detected B\n');
   });
 
+  it('falls back to the sole healthy live feature beside corrupt and ambiguous siblings, which still fail by name', async () => {
+    const { root, hooks } = createRuntime();
+    const loaded = await hooks;
+    const caller = context('unset-beside-corrupt');
+    await loaded.tool!.hive_feature_create.execute({ name: 'healthy' }, caller);
+    await loaded.tool!.hive_plan_write.execute({ feature: 'healthy', content: '# Healthy\n' }, caller);
+    const featuresPath = path.join(root, '.hive', 'features');
+    fs.mkdirSync(path.join(featuresPath, '02_broken'));
+    fs.writeFileSync(path.join(featuresPath, '02_broken', 'feature.json'), '{broken');
+    for (const directory of ['03_twin', '04_twin']) {
+      fs.mkdirSync(path.join(featuresPath, directory));
+      fs.writeFileSync(path.join(featuresPath, directory, 'feature.json'), JSON.stringify({ name: 'twin', status: 'planning' }));
+    }
+
+    expect(JSON.parse(await loaded.tool!.hive_status.execute({}, caller)).feature.name).toBe('healthy');
+    expect(JSON.parse(await loaded.tool!.hive_plan_read.execute({}, caller)).content).toBe('# Healthy\n');
+    const output = { args: { subagent_type: 'forager-worker', prompt: 'Run.' } };
+    await loaded['tool.execute.before']!({ tool: 'task', sessionID: 'unset-beside-corrupt', callID: 'healthy-fallback' } as any, output);
+    expect(output.args.prompt).toContain('"featureRoute":{"selected":false,"feature":"healthy"}');
+
+    await expect(loaded.tool!.hive_status.execute({ feature: 'broken' }, caller)).rejects.toThrow('unreadable metadata');
+    await expect(loaded.tool!.hive_status.execute({ feature: 'twin' }, caller)).rejects.toThrow("multiple entries named 'twin'");
+    await expect(loaded.tool!.hive_feature_select.execute({ feature: 'broken' }, caller)).rejects.toThrow('unreadable metadata');
+    expect(fs.readFileSync(path.join(featuresPath, '02_broken', 'feature.json'), 'utf8')).toBe('{broken');
+  });
+
   it('replaces stale route snapshots idempotently while preserving authored comments', async () => {
     const { hooks } = createRuntime();
     const loaded = await hooks;
