@@ -374,6 +374,18 @@ describe('RepositoryWorkProvider', () => {
     expect(unknownLog.description).toStartWith('Unknown: ');
     expect(unknownLog.command).toBeUndefined();
     expect(snapshot(testRoot)).toEqual(before);
+
+    // A session in the indexed spelling would match the indexed placement, but the logical placement of the same task
+    // cannot be resolved and may be the same binding, so neither placement is given the session.
+    writeJson('.hive/sessions.json', { sessions: [{ sessionId: 'ses_indexed', featureName: '01_checkout', taskFolder: '01-api', startedAt: recent, lastActiveAt: recent }] });
+    const sessionsBefore = snapshot(testRoot);
+    const aliases = await render(new RepositoryWorkProvider(testRoot, fakeInspector(projection(placement('checkout'), placement('01_checkout'), quiet))));
+    expect(aliases).toContain('    01-api | activity ambiguous · hive/01_checkout/01-api');
+    expect(aliases).toContain('    01-api | activity unknown · hive/checkout/01-api');
+    expect(aliases).toContain('    quiet | no recorded activity · hive/adhoc/quiet');
+    expect(aliases.some(line => line.includes('ses_indexed'))).toBe(false);
+    expect(snapshot(testRoot)).toEqual(sessionsBefore);
+    expect(fs.readFileSync(path.join(testRoot, '.hive', 'features', '01_checkout', 'feature.json'), 'utf8')).toBe('{ broken');
   });
 
   it('keeps stable row IDs across refreshes, never returns a snapshot a refresh overtook, and lists branches only on expansion', async () => {

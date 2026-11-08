@@ -189,7 +189,7 @@ export class RepositoryWorkProvider implements vscode.TreeDataProvider<WorkItem>
     const featureOf = featureResolver(this.projectRoot)
     const placements = new Map<string, Set<string>>()
     for (const worker of allWorkers(projection)) {
-      const key = bindingKey(worker, featureOf)
+      const key = bindingKey(worker, featureOf) ?? (worker.kind === 'task' && worker.task ? unresolvedTaskKey(worker.task) : null)
       if (key) placements.set(key, (placements.get(key) ?? new Set()).add(placementOf(this.projectRoot, worker)))
     }
     return { projection, activity, placements, featureOf, observedAt: new Date().toISOString() }
@@ -462,7 +462,7 @@ function workerLabel(worker: CheckoutWorkerView): string {
 interface WorkerActivity {
   sessions: OwnedSession[]
   jobs: OwnedJob[]
-  /** Other placements sharing this worker's task or run binding; non-empty means records cannot be attributed. */
+  /** Other placements that share, or cannot be ruled out from sharing, this worker's binding; non-empty means records cannot be attributed. */
   ambiguousWith: string[]
   unreadable: string[]
   /** Feature names (this worker's, or those of records naming its task) that could not be resolved, with the cause. */
@@ -483,7 +483,8 @@ function workerActivity(worker: CheckoutWorkerView, context: BuildContext): Work
     return { sessions: [], jobs: [], ambiguousWith: [], unreadable: activity.unreadable, unresolved }
   }
   const own = placementOf(context.projectRoot, worker)
-  const ambiguousWith = [...(placements.get(key) ?? [])].filter(placement => placement !== own)
+  const unresolvedPeers = worker.kind === 'task' && worker.task ? placements.get(unresolvedTaskKey(worker.task)) ?? [] : []
+  const ambiguousWith = [...(placements.get(key) ?? []), ...unresolvedPeers].filter(placement => placement !== own)
   const feature = directoryOf(worker.feature)
   // A record resolves its feature only once its task matches, so a failure affects only workers of that task.
   const sessionMatches = worker.kind === 'task'
@@ -515,7 +516,7 @@ function describeActivity(activity: WorkerActivity): string {
 function activityRows(parentId: string, activity: WorkerActivity): WorkItem[] {
   if (activity.ambiguousWith.length > 0) {
     const row = detail(parentId, 'activity', 'Activity', 'Ambiguous: sessions and jobs for this task are not attributed')
-    row.tooltip = `Another placement shares this task binding, and records do not name the placement:\n${activity.ambiguousWith.join('\n')}`
+    row.tooltip = `Another placement shares this task binding, or names this task under a feature that could not be resolved, and records do not name the placement:\n${activity.ambiguousWith.join('\n')}`
     row.iconPath = new vscode.ThemeIcon('question')
     return [row]
   }
@@ -605,6 +606,11 @@ function bindingKey(worker: CheckoutWorkerView, featureOf: FeatureResolver): str
   if (worker.kind === 'adhoc') return worker.runId ? `run:${worker.runId}` : null
   const feature = featureOf(worker.feature)?.directory
   return feature && worker.task ? `task:${feature}/${worker.task}` : null
+}
+
+/** Placements of a task whose feature did not resolve; any of them may be the same binding as a resolved one. */
+function unresolvedTaskKey(task: string): string {
+  return `task?:${task}`
 }
 
 /**
