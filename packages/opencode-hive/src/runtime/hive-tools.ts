@@ -335,7 +335,9 @@ function createNamedContextReader(services: HiveServices) {
       const nextOffset = result.complete ? undefined : result.range.endByte;
       const payload = nextOffset === undefined ? undefined : JSON.stringify({ v: 1, n: name, k: scopeKey, r: result.revision, s: result.snapshot, h: result.file.contentHash, o: nextOffset });
       const nextCursor = payload === undefined ? undefined : Buffer.from(JSON.stringify({ payload, mac: createHmac('sha256', cursorSecret).update(payload).digest('hex') })).toString('base64url');
-      const output = { ...result, ...(nextCursor ? { nextCursor } : {}) };
+      // Keep file, and so its content, last: the guard fields and cursor appear before a long body.
+      const { file, ...guard } = result;
+      const output = { ...guard, ...(nextCursor ? { nextCursor } : {}), file };
       const excess = Buffer.byteLength(json(output), 'utf8') - budget;
       if (excess <= 0) return output;
       chunkBudget -= excess;
@@ -751,7 +753,7 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
       })),
     }),
     hive_context_read: operation({
-      description: 'Read managed project or feature context. Without name it lists: the summary view (default) or the durable catalog. With name it returns one exact document in chunks, with the revision and file.contentHash that later mutations require; every chunk carries the whole-file hash. Follow nextCursor until complete is true before relying on the whole document or replacing it with hive_context_write; for hive_context_edit, read until you have the passage and enough surrounding text. A cursor that no longer matches the document, revision or content fails as stale_context_cursor: restart the read.',
+      description: 'Read managed project or feature context. Without name it lists: the summary view (default) or the durable catalog. With name it returns one exact document in chunks, with the revision and file.contentHash that later mutations require. file.contentHash is the 64-character lowercase hexadecimal whole-file hash, the same on every chunk and listed before file.content; copy it verbatim into expectedContentHash (the top-level snapshot is not that hash). Follow nextCursor until complete is true before relying on the whole document or replacing it with hive_context_write; for hive_context_edit, stop once you have seen the passage and enough surrounding text. nextCursor is opaque: copy it unchanged and do not decode or rebuild it. A cursor that no longer matches the document, revision or content fails as stale_context_cursor: restart the read.',
       args: {
         name: z.string().optional().describe('Reads that document in chunks (cursor, maxBytes). Cannot be combined with view, query, limit or scanChars.'),
         scope: contextScopeArg,
@@ -779,18 +781,23 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
       },
     }),
     hive_context_write: operation({
-      description: 'Create a missing context file, or replace one whole document. Create: omit expectedRevision and expectedContentHash; an existing name fails with context_already_exists. Replace: both come from your own read of the complete current document (finish its chunks first), and a stale pair is rejected as a changed context: read again before retrying. To change one passage without reproducing the rest, use hive_context_edit. On context_index_invalid or context_reconciliation_required, stop managed mutations and report the error; this tool does not repair control files.',
+      description: 'Create a missing context file, or replace one whole document. Create: omit expectedRevision and expectedContentHash; an existing name fails with context_already_exists. Replace: both come from your own read of the complete current document (finish its chunks first). Supplying only one of the two is refused, as is a malformed or stale pair, and none of these refusals writes anything; read the complete document again and rebuild the replacement from that read rather than resending the earlier body with the new hash. To change one passage without reproducing the rest, use hive_context_edit. On context_index_invalid or context_reconciliation_required, stop managed mutations and report the error; this tool does not repair control files.',
       args: {
         name: z.string(),
         content: z.string().describe('The whole document. A durable file needs frontmatter description and read_when (project scope also owner and review_after).'),
         kind: z.enum(['durable', 'evidence']).optional().describe("Default 'durable', listed in the catalog. 'evidence' holds raw logs and historical verification and is omitted from the catalog but readable by name. Reserved names (overview, draft, execution-decisions) reject kind."),
         task: z.string().optional().describe('Feature scope only: associates the file with a task as a relevance hint, not a filter or authority.'),
         expectedRevision: z.number().optional().describe('The revision from the read. Supply it with expectedContentHash to replace; omit both to create.'),
-        expectedContentHash: z.string().optional().describe("The named read's file.contentHash, required with expectedRevision."),
+        expectedContentHash: z.string().optional().describe("Required with expectedRevision: 64 lowercase hexadecimal characters copied verbatim from the named read's file.contentHash (not snapshot); a malformed or mismatched value writes nothing and needs a fresh named read, not a retry."),
         scope: contextScopeArg,
         feature: z.string().optional(),
       },
       execute: ({ name, content, kind, task, expectedRevision, expectedContentHash, scope, feature }, invocation) => {
+        // One guard alone selects neither mode: refuse it before create could publish a document the caller meant to replace.
+        if ((expectedRevision === undefined) !== (expectedContentHash === undefined)) {
+          const [sent, missing] = expectedRevision === undefined ? ['expectedContentHash', 'expectedRevision'] : ['expectedRevision', 'expectedContentHash'];
+          throw new ContextMutationError('context_precondition_required', `${sent} was supplied without ${missing}. Nothing was written. To create a missing document, omit both; to replace one, pass the revision and file.contentHash from a fresh named hive_context_read of the complete document, and rebuild the replacement content from that read instead of resending content prepared from an earlier one.`, { field: missing });
+        }
         const resolved = contextScope(scope, feature, invocation, task);
         return expectedRevision === undefined
           ? contextService.create(resolved, name, content, { kind, task })
@@ -805,20 +812,20 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
         section: z.string().optional().describe('Optional heading the block is appended under.'),
         task: z.string().optional().describe('Feature scope only: associates the file with a task as a relevance hint, not a filter or authority.'),
         expectedRevision: z.number().describe('The revision from the read.'),
-        expectedContentHash: z.string().describe("The named read's file.contentHash."),
+        expectedContentHash: z.string().describe("64 lowercase hexadecimal characters copied verbatim from the named read's file.contentHash (not snapshot); a malformed or mismatched value writes nothing and needs a fresh named read, not a retry."),
         scope: contextScopeArg,
         feature: z.string().optional(),
       },
       execute: ({ name, content, section, task, expectedRevision, expectedContentHash, scope, feature }, invocation) => contextService.append(contextScope(scope, feature, invocation, task), name, content, expectedRevision, expectedContentHash, { section, task }),
     }),
     hive_context_edit: operation({
-      description: 'Replace one exact passage of an existing context file, keeping every other byte. Take revision and file.contentHash from your own named read, continued until it shows the whole passage and enough surrounding text to justify the change; unrelated chunks need not be read. The hash covers the whole file, so the guards refuse a changed document, but a partial read does not verify text you did not see. oldText must occur exactly once, byte for byte (whitespace, CRLF, Unicode): context_edit_no_match and context_edit_ambiguous mean re-read and copy a longer exact passage; identical text fails context_edit_no_change. Empty newText deletes the passage; the result keeps its kind and task and a durable file still needs valid metadata. A call refused before publication (invalid or oversized text, a stale revision or hash, no match, an ambiguous match, identical text, invalid metadata) writes nothing. An error while publishing can leave the document or index uncertain: the prior bytes are restored, or a pending marker remains and managed mutations then report context_reconciliation_required. After any error or unknown result, read the document and confirm whether the edit applied before retrying, and do not assume a same-argument retry is safe: after success it fails stale_revision, and seeing newText does not prove this call applied it. On context_index_invalid or context_reconciliation_required, stop managed mutations and report the error.',
+      description: 'Replace one exact passage of an existing context file, keeping every other byte. Take revision and file.contentHash from your own named read, continued until it shows the whole passage and enough surrounding text to justify the change; unrelated chunks need not be read. The hash covers the whole file, so the guards refuse a changed document, but a partial read does not verify text you did not see. oldText must occur exactly once, byte for byte (whitespace, CRLF, Unicode): context_edit_no_match and context_edit_ambiguous mean re-read and copy a longer exact passage; identical text fails context_edit_no_change. Empty newText deletes the passage; the result keeps its kind and task and a durable file still needs valid metadata. A call refused before publication (invalid or oversized text, a stale revision or hash, no match, an ambiguous match, identical text, invalid metadata) writes nothing. A malformed or mismatched expectedContentHash is refused the same way; make a fresh named read and rebuild the edit from what it shows, since the passage may have changed, rather than repeating the same arguments or swapping in only the new hash. An error while publishing can leave the document or index uncertain: the prior bytes are restored, or a pending marker remains and managed mutations then report context_reconciliation_required. After any error or unknown result, read the document and confirm whether the edit applied before retrying, and do not assume a same-argument retry is safe: after success it fails stale_revision, and seeing newText does not prove this call applied it. On context_index_invalid or context_reconciliation_required, stop managed mutations and report the error.',
       args: {
         name: z.string().describe('An existing context document.'),
         oldText: z.string().describe('Nonempty literal text copied exactly from your read; must match exactly once. Replacement patterns such as $& are not interpreted.'),
         newText: z.string().describe('Literal replacement text; empty deletes the passage.'),
         expectedRevision: z.number().describe('The revision from your named read.'),
-        expectedContentHash: z.string().describe("The named read's file.contentHash (whole-file SHA-256)."),
+        expectedContentHash: z.string().describe("The whole-file SHA-256: 64 lowercase hexadecimal characters copied verbatim from the named read's file.contentHash (not snapshot); a malformed or mismatched value writes nothing and needs a fresh named read, not a retry."),
         scope: contextScopeArg,
         feature: z.string().optional().describe('Feature scope only: the feature for this call alone. Omitted, the selected route, detected feature worktree or sole live feature applies. Project scope forbids it.'),
       },
@@ -830,7 +837,7 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
         names: z.array(z.string()),
         reason: z.string().describe('Nonblank; recorded with the archive.'),
         expectedRevision: z.number().describe('The current context revision.'),
-        expectedContentHashes: z.record(z.string(), z.string()).describe('Content hash for every name in names, from a named read of each.'),
+        expectedContentHashes: z.record(z.string(), z.string()).describe("For every name in names, 64 lowercase hexadecimal characters copied verbatim from that document's named-read file.contentHash (not snapshot); a malformed or mismatched value writes nothing and needs a fresh named read, not a retry."),
         scope: contextScopeArg,
         feature: z.string().optional(),
       },

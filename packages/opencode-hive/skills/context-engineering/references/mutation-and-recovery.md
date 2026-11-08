@@ -43,7 +43,7 @@ hive_context_read({ name: "auth-decisions" })
 hive_context_read({ name: "auth-decisions", cursor: nextCursor, maxBytes: 16384 })
 ```
 
-Pass `nextCursor` unchanged until `complete: true`. Do not invent byte offsets. A named-read cursor that is oversized, malformed, expired after a plugin restart, or bound to another recipient or document fails as `stale_context_cursor`; start a new named read without a cursor.
+Pass `nextCursor` unchanged until `complete: true`; it is opaque, so do not decode or rebuild it. Do not invent byte offsets. Each chunk lists `file.contentHash` (64 lowercase hexadecimal characters, the same on every chunk) before `file.content`; that value, not the top-level `snapshot`, is the mutation guard. A named-read cursor that is oversized, malformed, expired after a plugin restart, or bound to another recipient or document fails as `stale_context_cursor`; start a new named read without a cursor.
 
 ## Write calls
 
@@ -88,7 +88,9 @@ Omit revision and hash only when creating a missing file.
 
 | Result | Meaning | Next step |
 |---|---|---|
-| `stale_revision`, `stale_content` | The document or its store changed after your read. | Read again; edit only if the passage still needs the change. |
+| `stale_revision` | The store changed after your read. | Read again; edit only if the passage still needs the change. |
+| `stale_content` | The well-formed `expectedContentHash` does not match the current bytes: the file changed after your read, or the value was not copied exactly from `file.contentHash`. The message does not reveal the current hash. | Make a fresh named read and rebuild the change from it (every chunk for a whole-document replacement, the passage for an edit); edit only if the passage still needs the change. |
+| `context_precondition_required` | A guard was unusable, and the message says which: a hash string that is not 64 lowercase hex characters, a missing or invalid `expectedRevision`, or a `hive_context_write` call with only one of the two guards. A missing or non-string required hash is rejected earlier by the host's argument validation. | Act on what the message says. For a hash, make a fresh named read and rebuild the change from it; do not pad, trim, or retry the rejected value, and do not resend content from the earlier read under the new hash. |
 | `context_edit_no_match` | `oldText` does not occur byte for byte; the message names CRLF line endings when the document has them. | Re-read and copy the passage exactly. |
 | `context_edit_ambiguous` | `oldText` occurs more than once; overlapping occurrences count. | Copy enough surrounding text to match one passage. |
 | `context_edit_no_change` | `oldText` and `newText` are identical. | Nothing to do. |

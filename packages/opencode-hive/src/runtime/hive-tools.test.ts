@@ -435,6 +435,111 @@ describe('ordinary Hive operation results', () => {
     expect(await failure('hive_context_read', { feature: 'guarded', name: 'notes', cursor: 'invalid' })).toBe('The named-read cursor is invalid, expired, or belongs to another document.');
   });
 
+  it('lists the named-read guard before the body and pages the same chunks under the same budget', async () => {
+    const { call, callJson } = await createRuntime();
+    await callJson('hive_feature_create', { name: 'ordered' });
+    const content = `---\ndescription: Style.\nread_when: Always.\n---\nTone: formal\n${'Body line with filler text.\n'.repeat(1300)}Tail: unchanged\n`;
+    await callJson('hive_context_write', { feature: 'ordered', name: 'style-guide', content });
+    let raw = await call('hive_context_read', { feature: 'ordered', name: 'style-guide' });
+    const first = JSON.parse(raw);
+    expect(Object.keys(first)).toEqual(['scope', 'revision', 'snapshot', 'range', 'complete', 'nextCursor', 'file']);
+    expect(Object.keys(first.file).at(-1)).toBe('content');
+    expect(raw.indexOf('"contentHash"')).toBeLessThan(raw.indexOf('"content":'));
+    expect(raw.indexOf('"nextCursor"')).toBeLessThan(raw.indexOf('"content":'));
+    let reconstructed = '';
+    for (let page = JSON.parse(raw); ; page = JSON.parse(raw)) {
+      expect(Buffer.byteLength(raw, 'utf8')).toBeLessThanOrEqual(16 * 1024);
+      expect(page.file.contentHash).toBe(first.file.contentHash);
+      expect(page.range.startByte).toBe(Buffer.byteLength(reconstructed, 'utf8'));
+      reconstructed += page.file.content;
+      if (page.complete) {
+        expect(page.nextCursor).toBeUndefined();
+        break;
+      }
+      raw = await call('hive_context_read', { feature: 'ordered', name: 'style-guide', cursor: page.nextCursor });
+    }
+    expect(reconstructed).toBe(content);
+  });
+
+  it('returns a self-contained hash-guard refusal through the tool error and changes nothing until a fresh read', async () => {
+    const { root, hooks, callJson, failure } = await createRuntime();
+    await callJson('hive_feature_create', { name: 'retained' });
+    const content = `---\ndescription: Style.\nread_when: Always.\n---\nTone: formal\n${'Body line with filler text.\n'.repeat(1300)}Tail: unchanged\n`;
+    await callJson('hive_context_write', { feature: 'retained', name: 'style-guide', content });
+    const contextDir = path.join(root, '.hive', 'features', fs.readdirSync(path.join(root, '.hive', 'features'))[0]!, 'context');
+    const stored = () => ({ document: fs.readFileSync(path.join(contextDir, 'style-guide.md')), index: fs.readFileSync(path.join(contextDir, 'index.json')) });
+    const before = stored();
+    const read = await callJson('hive_context_read', { feature: 'retained', name: 'style-guide' });
+    expect(read.complete).toBe(false);
+    const hash: string = read.file.contentHash;
+    // The paid-case value: a 63-character copy with a short span transposed and one character dropped.
+    const retained = `${hash.slice(0, 23)}${hash[24]}${hash[23]}${hash.slice(26)}`;
+    const edit = { feature: 'retained', name: 'style-guide', oldText: 'Tone: formal', newText: 'Tone: plain', expectedRevision: read.revision };
+    // The registered schema accepts the string, so the service, not generic validation, explains the refusal.
+    expect(z.object((hooks.tool as any).hive_context_edit.args).safeParse({ ...edit, expectedContentHash: retained }).success).toBe(true);
+    const malformed = "expectedContentHash must be exactly 64 lowercase hexadecimal characters; received 63 characters. Nothing was written. Do not pad, trim or otherwise repair the rejected value. Make a fresh named hive_context_read and rebuild the intended change from it (every chunk for a whole-document replacement; the passage and enough surrounding text for a bounded edit), then pass that read's revision and file.contentHash. Do not resend content built from the earlier read under the new hash.";
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      expect(await failure('hive_context_edit', { ...edit, expectedContentHash: retained })).toBe(malformed);
+      expect(stored()).toEqual(before);
+    }
+    expect(await failure('hive_context_edit', { ...edit, expectedContentHash: hash.toUpperCase() })).toContain('received 64 characters that are not all lowercase hexadecimal (0-9, a-f)');
+    const mistyped = `${hash.slice(0, -1)}${hash.endsWith('0') ? '1' : '0'}`;
+    const mismatch = await failure('hive_context_edit', { ...edit, expectedContentHash: mistyped });
+    expect(mismatch).toContain('the file changed after it was read, or the value was not copied exactly from file.contentHash');
+    expect(mismatch).toContain('Nothing was written.');
+    expect(mismatch).not.toContain(hash);
+    expect(stored()).toEqual(before);
+
+    const fresh = await callJson('hive_context_read', { feature: 'retained', name: 'style-guide' });
+    const applied = await callJson('hive_context_edit', { ...edit, expectedRevision: fresh.revision, expectedContentHash: fresh.file.contentHash });
+    expect(applied.revision).toBe(read.revision + 1);
+    expect(fs.readFileSync(path.join(contextDir, 'style-guide.md'), 'utf8')).toBe(content.replace('Tone: formal', 'Tone: plain'));
+  });
+
+  it('describes every context hash guard as the verbatim file.contentHash without a schema pattern', async () => {
+    const { hooks } = await createRuntime();
+    const tools = hooks.tool as Record<string, { description: string; args: any }>;
+    for (const [name, field] of [['hive_context_write', 'expectedContentHash'], ['hive_context_append', 'expectedContentHash'], ['hive_context_edit', 'expectedContentHash'], ['hive_context_archive', 'expectedContentHashes']] as const) {
+      const property = (z.toJSONSchema(z.object(tools[name]!.args)) as any).properties[field];
+      const guard = field === 'expectedContentHashes' ? property.additionalProperties : property;
+      expect(guard.type, name).toBe('string');
+      for (const refinement of ['pattern', 'minLength', 'maxLength', 'format']) expect(guard, name).not.toHaveProperty(refinement);
+      expect(property.description, name).toContain('64 lowercase hexadecimal characters copied verbatim from');
+      expect(property.description, name).toContain('file.contentHash (not snapshot)');
+      expect(property.description, name).toContain('needs a fresh named read, not a retry');
+    }
+    const read = tools.hive_context_read!.description;
+    expect(read).toContain('the same on every chunk and listed before file.content; copy it verbatim into expectedContentHash (the top-level snapshot is not that hash)');
+    expect(read).toContain('for hive_context_edit, stop once you have seen the passage and enough surrounding text');
+    expect(read).toContain('nextCursor is opaque: copy it unchanged and do not decode or rebuild it');
+    expect(tools.hive_context_edit!.description).toContain('A malformed or mismatched expectedContentHash is refused the same way; make a fresh named read and rebuild the edit from what it shows');
+    expect(tools.hive_context_write!.description).toContain('Supplying only one of the two is refused, as is a malformed or stale pair, and none of these refusals writes anything');
+  });
+
+  it('refuses a half-specified write guard before choosing create or replace', async () => {
+    const { root, callJson, failure } = await createRuntime();
+    await callJson('hive_feature_create', { name: 'modes' });
+    const content = '---\ndescription: Style.\nread_when: Always.\n---\nTone: formal\n';
+    const created = await callJson('hive_context_write', { feature: 'modes', name: 'kept', content });
+    const retired = await callJson('hive_context_write', { feature: 'modes', name: 'retired', content });
+    await callJson('hive_context_archive', { feature: 'modes', names: ['retired'], reason: 'superseded', expectedRevision: retired.revision, expectedContentHashes: { retired: retired.file.contentHash } });
+    const contextDir = path.join(root, '.hive', 'features', fs.readdirSync(path.join(root, '.hive', 'features'))[0]!, 'context');
+    const stored = () => ({ names: fs.readdirSync(contextDir).sort(), index: fs.readFileSync(path.join(contextDir, 'index.json')), kept: fs.readFileSync(path.join(contextDir, 'kept.md')) });
+    const before = stored();
+    expect(before.names).not.toContain('retired.md');
+    const hashOnly = 'expectedContentHash was supplied without expectedRevision. Nothing was written. To create a missing document, omit both; to replace one, pass the revision and file.contentHash from a fresh named hive_context_read of the complete document, and rebuild the replacement content from that read instead of resending content prepared from an earlier one.';
+    // A hash alone must not fall through to create, whether the name is absent, archived, or present.
+    for (const name of ['absent', 'retired', 'kept']) {
+      expect(await failure('hive_context_write', { feature: 'modes', name, content, expectedContentHash: created.file.contentHash })).toBe(hashOnly);
+      expect(await failure('hive_context_write', { feature: 'modes', name, content, expectedContentHash: 'malformed' })).toBe(hashOnly);
+      expect(await failure('hive_context_write', { feature: 'modes', name, content, expectedRevision: created.revision }))
+        .toBe('expectedRevision was supplied without expectedContentHash. Nothing was written. To create a missing document, omit both; to replace one, pass the revision and file.contentHash from a fresh named hive_context_read of the complete document, and rebuild the replacement content from that read instead of resending content prepared from an earlier one.');
+      expect(stored()).toEqual(before);
+    }
+    // Omitting both still creates, and a refused call left nothing behind that would block it.
+    expect((await callJson('hive_context_write', { feature: 'modes', name: 'absent', content })).file.contentHash).toMatch(/^[a-f0-9]{64}$/);
+  });
+
   it('reports a failed handoff write with the report already in history', async () => {
     const { root, callJson } = await createRuntime();
     await callJson('hive_feature_create', { name: 'partial' });

@@ -498,7 +498,7 @@ describe('ContextService managed context', () => {
     const read = service.readContent('hash-guard', 'notes');
     expect(read?.file.contentHash).toMatch(/^[a-f0-9]{64}$/);
 
-    expect(() => service.replace('hash-guard', 'notes', durable('two'), created.revision, '')).toThrow('hash');
+    expect(() => service.replace('hash-guard', 'notes', durable('two'), created.revision, '')).toThrow('expectedContentHash must be exactly 64 lowercase hexadecimal characters');
     fs.appendFileSync(path.join(TEST_DIR, '.hive/features/hash-guard/context/notes.md'), '\nexternal');
     expect(() => service.replace(
       'hash-guard',
@@ -506,7 +506,7 @@ describe('ContextService managed context', () => {
       durable('two'),
       created.revision,
       read!.file.contentHash,
-    )).toThrow('content changed');
+    )).toThrow('the file changed after it was read');
     expect(service.read('hash-guard', 'notes')).toContain('external');
   });
 
@@ -1137,24 +1137,54 @@ describe('ContextService managed context', () => {
 
   it('reconstructs exact hashes and UTF-8 bytes from bounded named chunks', () => {
     setupFeature('chunks');
+    const readChunks = (name: string) => {
+      let offset = 0;
+      let reconstructed = '';
+      let expectedHash = '';
+      let revision = -1;
+      do {
+        const read = service.readContent('chunks', name, { offset, maxBytes: 1024 })!;
+        const serialized = JSON.stringify(read);
+        expect(Buffer.byteLength(serialized, 'utf8')).toBeLessThanOrEqual(1024);
+        // The guard precedes the body: file is the last envelope key, and content the last file key.
+        expect(Object.keys(read)).toEqual(['scope', 'revision', 'snapshot', 'range', 'complete', 'file']);
+        expect(Object.keys(read.file).indexOf('contentHash')).toBe(1);
+        expect(Object.keys(read.file).at(-1)).toBe('content');
+        expect(serialized.indexOf('"contentHash"')).toBeLessThan(serialized.indexOf('"content":'));
+        expect(read.range.startByte).toBe(offset);
+        // Each chunk's text re-encodes to exactly the byte range it reports, so no character is dropped.
+        expect(Buffer.byteLength(read.file.content, 'utf8')).toBe(read.range.endByte - read.range.startByte);
+        reconstructed += read.file.content;
+        expectedHash ||= read.file.contentHash!;
+        revision = read.revision;
+        expect(read.file.contentHash).toBe(expectedHash);
+        if (read.complete) break;
+        expect(read.range.endByte).toBeGreaterThan(offset);
+        offset = read.range.endByte;
+      } while (true);
+      return { content: reconstructed, hash: expectedHash, revision };
+    };
     const content = `${'quoted "\\\n'.repeat(700)}😀tail`;
     service.create('chunks', 'raw', content, { kind: 'evidence' });
-    let offset = 0;
-    let reconstructed = '';
-    let expectedHash = '';
-    do {
-      const read = service.readContent('chunks', 'raw', { offset, maxBytes: 1024 })!;
-      expect(Buffer.byteLength(JSON.stringify(read), 'utf8')).toBeLessThanOrEqual(1024);
-      reconstructed += read.file.content;
-      expectedHash ||= read.file.contentHash!;
-      expect(read.file.contentHash).toBe(expectedHash);
-      if (read.complete) break;
-      expect(read.range.endByte).toBeGreaterThan(offset);
-      expect(read.range.startByte).toBe(offset);
-      offset = read.range.endByte;
-    } while (true);
-    expect(reconstructed).toBe(content);
-    expect(expectedHash).toBe(createHash('sha256').update(Buffer.from(content)).digest('hex'));
+    const raw = readChunks('raw');
+    expect(raw.content).toBe(content);
+    expect(raw.hash).toBe(createHash('sha256').update(Buffer.from(content)).digest('hex'));
+
+    // A leading BOM and a later U+FEFF that starts a chunk are document bytes, not decoder framing.
+    const bom = '\uFEFF';
+    const marked = `${bom}${'line\n'.repeat(400)}${bom}after\n${'more\n'.repeat(400)}`;
+    service.create('chunks', 'marked', marked, { kind: 'evidence' });
+    expect(service.readContent('chunks', 'marked')!.file.content).toBe(marked);
+    const laterMark = Buffer.byteLength(marked.slice(0, marked.indexOf(bom, 1)), 'utf8');
+    const fromMark = service.readContent('chunks', 'marked', { offset: laterMark })!;
+    expect(fromMark.file.content).toBe(marked.slice(marked.indexOf(bom, 1)));
+    expect(service.readContent('chunks', 'marked', { offset: laterMark, maxBytes: 1024 })!.file.content.startsWith(`${bom}after`)).toBe(true);
+    const chunked = readChunks('marked');
+    expect(chunked.content).toBe(marked);
+    expect(chunked.hash).toBe(createHash('sha256').update(Buffer.from(marked)).digest('hex'));
+    // A whole-document replacement built from the complete read keeps both marks.
+    service.replace('chunks', 'marked', chunked.content.replace('after', 'later'), chunked.revision, chunked.hash);
+    expect(fs.readFileSync(path.join(TEST_DIR, '.hive/features/chunks/context/marked.md')).equals(Buffer.from(marked.replace('after', 'later'), 'utf8'))).toBe(true);
 
     service.create('chunks', 'empty', '', { kind: 'evidence' });
     expect(service.readContent('chunks', 'empty')).toMatchObject({ complete: true, range: { startByte: 0, endByte: 0, totalBytes: 0 }, file: { content: '' } });
@@ -1285,7 +1315,7 @@ describe('ContextService managed context', () => {
     for (const revision of [undefined, null, -1, created.revision - 1]) {
       expect(() => invoke(revision, created.file.contentHash)).toThrow();
     }
-    expect(() => invoke(created.revision, undefined)).toThrow('hash');
+    expect(() => invoke(created.revision, undefined)).toThrow(/expectedContentHash must be exactly 64 lowercase hexadecimal characters|Expected content hashes are required/);
     fs.writeFileSync(path.join(contextPath, 'notes.md'), 'external edit');
     expect(() => invoke(created.revision, created.file.contentHash)).toThrow();
     expect(fs.readFileSync(path.join(contextPath, 'notes.md'), 'utf8')).toBe('external edit');
@@ -1422,6 +1452,15 @@ describe('ContextService managed context', () => {
     expect(service.read('append', 'learnings')).toBe(
       `${original}\n\n<!-- appended 2026-09-07T01:02:03.000Z -->\n### Tests\n\nnew finding\n`,
     );
+
+    // A leading BOM is a document byte: the append keeps the prior bytes as a prefix and hashes what it wrote.
+    const marked = Buffer.from('\uFEFFraw\r\nline\n', 'utf8');
+    const evidence = service.create('append', 'log', marked.toString('utf8'), { kind: 'evidence' });
+    const appended = service.append('append', 'log', 'more', evidence.revision, evidence.file.contentHash);
+    const written = fs.readFileSync(path.join(TEST_DIR, '.hive', 'features', 'append', 'context', 'log.md'));
+    expect(written.subarray(0, marked.length).equals(marked)).toBe(true);
+    expect(written.equals(Buffer.concat([marked, Buffer.from('\n<!-- appended 2026-09-07T01:02:03.000Z -->\nmore\n', 'utf8')]))).toBe(true);
+    expect(appended.file.contentHash).toBe(createHash('sha256').update(written).digest('hex'));
   });
 
   it('reports over-limit durable context as a soft warning without rejecting bounded growth', () => {
@@ -1609,6 +1648,8 @@ describe('ContextService guarded exact-text edit', () => {
     expect(reasonOf(action)).toBe(reason);
     expect(snapshot(contextPath, name)).toEqual(before);
   };
+  // Both hash refusals end with the same recovery: rebuild from a fresh read rather than swap in the new hash.
+  const hashRecovery = "Make a fresh named hive_context_read and rebuild the intended change from it (every chunk for a whole-document replacement; the passage and enough surrounding text for a bounded edit), then pass that read's revision and file.contentHash. Do not resend content built from the earlier read under the new hash.";
 
   beforeEach(() => {
     cleanup();
@@ -1725,6 +1766,67 @@ describe('ContextService guarded exact-text edit', () => {
     expectRefusedWithoutPublication('stale_content', () => service.edit(featureName, 'notes', 'not present', 'x', applied.revision, applied.file.contentHash));
     expectRefusedWithoutPublication('context_precondition_required', () => service.edit(featureName, 'notes', 'beta', 'x', applied.revision, 'not-a-hash'));
     expectRefusedWithoutPublication('context_precondition_required', () => service.edit(featureName, 'notes', 'beta', 'x', -1, applied.file.contentHash));
+    // Edit preflight and the shared mutation guard both name the field and what arrived.
+    expect(() => service.edit(featureName, 'notes', 'beta', 'x', -1, applied.file.contentHash))
+      .toThrow('expectedRevision must be a nonnegative safe integer, the revision from a fresh named hive_context_read; received -1. Nothing was written.');
+    expect(() => service.append(featureName, 'notes', 'x', undefined as unknown as number, applied.file.contentHash)).toThrow('expectedRevision must be a nonnegative safe integer');
+    expect(() => service.append(featureName, 'notes', 'x', undefined as unknown as number, applied.file.contentHash)).toThrow('; it is missing. Nothing was written.');
+  });
+
+  it('refuses a malformed hash guard with a self-contained recovery message and writes nothing', () => {
+    const original = durable(`Tone: formal\n${'Body line with filler text.\n'.repeat(1300)}Tail: unchanged\n`);
+    service.create(featureName, 'style-guide', original);
+    const read = service.readContent(featureName, 'style-guide')!;
+    const hash = read.file.contentHash!;
+    // The reproduced paid-case value: 63 characters, a short span transposed and one character dropped.
+    const retained = `${hash.slice(0, 23)}${hash[24]}${hash[23]}${hash.slice(26)}`;
+    expect(retained).toHaveLength(63);
+    const messageOf = (action: () => unknown) => {
+      try { action(); } catch (error) { return { reason: (error as { reason?: string }).reason, message: (error as Error).message, details: (error as { details?: unknown }).details }; }
+      throw new Error('expected a refusal');
+    };
+    const edit = (guard: unknown) => () => service.edit(featureName, 'style-guide', 'Tone: formal', 'Tone: plain', read.revision, guard as string);
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      expectRefusedWithoutPublication('context_precondition_required', edit(retained), 'style-guide');
+      const refused = messageOf(edit(retained));
+      expect(refused.message).toContain('expectedContentHash must be exactly 64 lowercase hexadecimal characters; received 63 characters.');
+      expect(refused.message).toContain('Nothing was written.');
+      expect(refused.message).toContain('Do not pad, trim or otherwise repair the rejected value.');
+      expect(refused.message).toContain(hashRecovery);
+      expect(refused.message).not.toContain(hash);
+    }
+    expect(messageOf(edit(undefined)).message).toContain('expectedContentHash must be exactly 64 lowercase hexadecimal characters; it is missing.');
+    expect(messageOf(edit(42)).message).toContain('; it has type number.');
+    expect(messageOf(edit(hash.toUpperCase())).message).toContain('received 64 characters that are not all lowercase hexadecimal (0-9, a-f)');
+    expectRefusedWithoutPublication('context_precondition_required', edit(hash.toUpperCase()), 'style-guide');
+    expectRefusedWithoutPublication('context_precondition_required', () => service.append(featureName, 'style-guide', 'x', read.revision, retained), 'style-guide');
+    expectRefusedWithoutPublication('context_precondition_required', () => service.replace(featureName, 'style-guide', original, read.revision, retained), 'style-guide');
+    const archived = messageOf(() => service.archiveSelected(featureName, ['style-guide'], 'r', read.revision, { 'style-guide': retained }));
+    expect(archived).toMatchObject({ reason: 'context_precondition_required' });
+    expect(archived.message).toContain('expectedContentHashes["style-guide"] must be exactly 64 lowercase hexadecimal characters; received 63 characters.');
+
+    // A fresh read supplies a usable guard; the bounded edit applies and keeps the unread tail.
+    const fresh = service.readContent(featureName, 'style-guide')!;
+    expect(fresh.file.content).not.toContain('Tail: unchanged');
+    const applied = service.edit(featureName, 'style-guide', 'Tone: formal', 'Tone: plain', fresh.revision, fresh.file.contentHash!);
+    expect(applied.revision).toBe(read.revision + 1);
+    expect(service.read(featureName, 'style-guide')).toBe(original.replace('Tone: formal', 'Tone: plain'));
+  });
+
+  it('refuses a well-formed mismatched hash without blaming only a changed file or revealing the current hash', () => {
+    service.create(featureName, 'notes', durable('alpha beta'));
+    const read = service.readContent(featureName, 'notes')!;
+    const hash = read.file.contentHash!;
+    const mistyped = `${hash.slice(0, -1)}${hash.endsWith('0') ? '1' : '0'}`;
+    expectRefusedWithoutPublication('stale_content', () => service.edit(featureName, 'notes', 'alpha', 'gamma', read.revision, mistyped));
+    let refused: { message: string; details: Record<string, unknown> } | undefined;
+    try { service.edit(featureName, 'notes', 'alpha', 'gamma', read.revision, mistyped); } catch (error) { refused = error as typeof refused; }
+    expect(refused!.message).toContain('expectedContentHash does not match the current content of context "notes"');
+    expect(refused!.message).toContain('the file changed after it was read, or the value was not copied exactly from file.contentHash');
+    expect(refused!.message).toContain('Nothing was written.');
+    expect(refused!.message).toContain(hashRecovery);
+    expect(refused!.message).not.toContain(hash);
+    expect(JSON.stringify(refused!.details)).not.toContain(hash);
   });
 
   it('refuses unsafe, missing, invalid, and blocked targets without creating or changing storage', () => {
@@ -1748,6 +1850,7 @@ describe('ContextService guarded exact-text edit', () => {
     const invalid = Buffer.concat([Buffer.from('raw '), Buffer.from([0xe2, 0x82]), Buffer.from(' tail')]);
     fs.writeFileSync(path.join(contextPath, 'invalid.md'), invalid);
     expectRefusedWithoutPublication('context_invalid_utf8', () => service.edit(featureName, 'invalid', ' tail', 'x', created.revision, sha(invalid)), 'invalid');
+    expectRefusedWithoutPublication('context_invalid_utf8', () => service.append(featureName, 'invalid', 'x', created.revision, sha(invalid)), 'invalid');
 
     const indexPath = path.join(contextPath, 'index.json');
     const index = fs.readFileSync(indexPath);

@@ -58,6 +58,8 @@ const PENDING_MARKER_NAME = '.managed-mutation-pending.json';
 const INDEX_NAME = 'index.json';
 const FEATURE_CONTEXT_DIRECTORY = 'context';
 const CREATE_CONTEXT = Symbol('create-context');
+// Shared by both hash refusals: a new hash vouches only for the read that produced it, so the change is rebuilt from that read.
+const HASH_GUARD_RECOVERY = 'Make a fresh named hive_context_read and rebuild the intended change from it (every chunk for a whole-document replacement; the passage and enough surrounding text for a bounded edit), then pass that read\'s revision and file.contentHash. Do not resend content built from the earlier read under the new hash.';
 
 export type ContextMutationErrorReason =
   | 'context_already_exists'
@@ -359,8 +361,9 @@ export class ContextService {
     return this.mutate(featureName, expectedRevision, (control, resolved) => {
       const inventory = this.buildInventory(resolved, control);
       for (const file of inventory.files) {
-        this.assertExpectedHash(expectedContentHashes[file.name]);
-        this.requireCurrentContent(this.contentPath(resolved, file.name), file.name, expectedContentHashes[file.name]!);
+        const field = `expectedContentHashes[${JSON.stringify(file.name)}]`;
+        this.assertExpectedHash(expectedContentHashes[file.name], field);
+        this.requireCurrentContent(this.contentPath(resolved, file.name), file.name, expectedContentHashes[file.name]!, field);
       }
       if (inventory.files.length === 0) return { archived: [], archivePath: '' };
       const moves = this.prepareArchiveMoves(resolved, inventory.files.map(file => file.name), true);
@@ -539,9 +542,9 @@ export class ContextService {
     if (indexed?.lastManagedContentHash && indexed.lastManagedContentHash !== streamed.hash) {
       metadataFields.warnings = [...(metadataFields.warnings ?? []), 'Content bytes differ from the last managed write.'];
     }
-    const baseFile: ContextFile = {
+    // The guard fields precede the body so a caller sees file.contentHash before a long content string.
+    const fileFields: Omit<ContextFile, 'content'> = {
       name,
-      content: streamed.content,
       contentHash: streamed.hash,
       bytes: before.size,
       createdAt: indexed?.createdAt ?? before.birthtime.toISOString(),
@@ -553,15 +556,15 @@ export class ContextService {
       ...metadataFields,
     };
     let end = streamed.end;
-    let result = this.contentEnvelope(resolved, control, baseFile, offset, end, before.size);
+    let result = this.contentEnvelope(resolved, control, { ...fileFields, content: streamed.content }, offset, end, before.size);
     while (Buffer.byteLength(JSON.stringify(result), 'utf8') > maxBytes && end > offset) {
       end = offset + Math.floor((end - offset) * 0.8);
       while (end > offset && streamed.raw[end - offset] !== undefined && (streamed.raw[end - offset]! & 0xc0) === 0x80) end -= 1;
       const raw = streamed.raw.subarray(0, end - offset);
       let content: string;
-      try { content = new TextDecoder('utf-8', { fatal: true }).decode(raw); }
+      try { content = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(raw); }
       catch { continue; }
-      result = this.contentEnvelope(resolved, control, { ...baseFile, content }, offset, end, before.size);
+      result = this.contentEnvelope(resolved, control, { ...fileFields, content }, offset, end, before.size);
     }
     if (end === offset && offset < before.size) {
       throw new ContextMutationError('context_response_too_large', 'The named-read response envelope leaves no room for content at maxBytes.');
@@ -741,7 +744,8 @@ export class ContextService {
       const filePath = this.contentPath(resolved, name);
       const priorBuffer = this.requireCurrentContent(filePath, name, expectedContentHash);
       let prior: string;
-      try { prior = new TextDecoder('utf-8', { fatal: true }).decode(priorBuffer); }
+      // ignoreBOM keeps a leading U+FEFF: prior is rewritten in full, so a dropped mark would change the prefix bytes.
+      try { prior = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(priorBuffer); }
       catch { throw new ContextMutationError('context_invalid_utf8', `Context "${name}" is not valid UTF-8.`); }
       const existing = control.index.entries[name];
       const kind = this.resolveMutableKind(name, existing?.kind);
@@ -773,9 +777,7 @@ export class ContextService {
     this.assertEditOperand(oldText, 'oldText');
     this.assertEditOperand(newText, 'newText');
     if (oldText.length === 0) throw new ContextMutationError('invalid_argument', 'oldText must not be empty. Copy the exact passage to replace from your own named read.');
-    if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
-      throw new ContextMutationError('context_precondition_required', 'Read the current revision before mutating existing context.');
-    }
+    this.assertExpectedRevision(expectedRevision);
     this.assertExpectedHash(expectedContentHash);
     // Read-only preflight so a missing target never creates the context namespace.
     const preflight = this.resolveScope(scope, 'mutation');
@@ -830,10 +832,11 @@ export class ContextService {
       throw new ContextMutationError('context_precondition_required', 'Expected content hashes are required for every archived context.');
     }
     const normalized = this.normalizeArchiveNames(names);
-    for (const name of normalized) this.assertExpectedHash(expectedContentHashes[name]);
+    const hashField = (name: string) => `expectedContentHashes[${JSON.stringify(name)}]`;
+    for (const name of normalized) this.assertExpectedHash(expectedContentHashes[name], hashField(name));
     return this.mutate(scope, expectedRevision, (control, resolved) => {
       for (const name of normalized) {
-        this.requireCurrentContent(this.contentPath(resolved, name), name, expectedContentHashes[name]!);
+        this.requireCurrentContent(this.contentPath(resolved, name), name, expectedContentHashes[name]!, hashField(name));
       }
       const moves = this.prepareArchiveMoves(resolved, normalized, false);
       const nextEntries = { ...control.index.entries };
@@ -1174,13 +1177,12 @@ export class ContextService {
   }
 
   private contentEnvelope(resolved: ResolvedScope, control: ControlState, file: ContextFile, startByte: number, endByte: number, totalBytes: number): ContextContentRead {
-    return { scope: resolved.scope, revision: control.index.revision, snapshot: sha256(`${control.indexDigest}\n${control.index.revision}\n${control.classificationState}`), file, range: { startByte, endByte, totalBytes }, complete: endByte >= totalBytes };
+    // file stays last so its content string ends the response; every other field precedes it.
+    return { scope: resolved.scope, revision: control.index.revision, snapshot: sha256(`${control.indexDigest}\n${control.index.revision}\n${control.classificationState}`), range: { startByte, endByte, totalBytes }, complete: endByte >= totalBytes, file };
   }
 
   private mutate<T>(scope: string | ContextScope, expectedRevision: number | typeof CREATE_CONTEXT, mutation: (control: ControlState, resolved: ResolvedScope) => T): T {
-    if (expectedRevision !== CREATE_CONTEXT && (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0)) {
-      throw new ContextMutationError('context_precondition_required', 'Read the current revision before mutating existing context.');
-    }
+    if (expectedRevision !== CREATE_CONTEXT) this.assertExpectedRevision(expectedRevision);
     const resolved = this.resolveScope(scope, 'mutation');
     this.assertNamespaceSafe(resolved.contextPath);
     ensureDir(resolved.contextPath);
@@ -1340,7 +1342,8 @@ export class ContextService {
     let bounded = raw.subarray(0, end - offset);
     let content: string;
     while (true) {
-      try { content = new TextDecoder('utf-8', { fatal: true }).decode(bounded); break; }
+      // ignoreBOM keeps a U+FEFF that opens the chunk; range and hash count it, so content must too.
+      try { content = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bounded); break; }
       catch {
         if (bounded.length === 0) throw new ContextMutationError('context_invalid_utf8', 'Context chunk could not be decoded.');
         bounded = bounded.subarray(0, bounded.length - 1);
@@ -1390,15 +1393,33 @@ export class ContextService {
     if (!stat.isFile()) throw new ContextMutationError('context_not_found', `Context "${name}" is not a regular file.`, { name });
   }
 
-  private assertExpectedHash(hash: string | undefined): void {
-    if (!hash || !/^[a-f0-9]{64}$/.test(hash)) throw new ContextMutationError('context_precondition_required', 'A valid expected content hash from a named context read is required.');
+  /**
+   * Hosts surface only Error.message to the model, so the message itself carries the recovery: what the guard
+   * requires, what arrived, that nothing was written, and that the change is rebuilt from a fresh named read.
+   */
+  private assertExpectedHash(hash: unknown, field = 'expectedContentHash'): void {
+    if (typeof hash === 'string' && /^[a-f0-9]{64}$/.test(hash)) return;
+    const received = hash === undefined || hash === null ? 'it is missing'
+      : typeof hash !== 'string' ? `it has type ${typeof hash}`
+        : hash.length !== 64 ? `received ${hash.length} characters`
+          : 'received 64 characters that are not all lowercase hexadecimal (0-9, a-f)';
+    throw new ContextMutationError('context_precondition_required', `${field} must be exactly 64 lowercase hexadecimal characters; ${received}. Nothing was written. Do not pad, trim or otherwise repair the rejected value. ${HASH_GUARD_RECOVERY}`, { field });
   }
 
-  private requireCurrentContent(filePath: string, name: string, expectedHash: string): Buffer {
+  private assertExpectedRevision(revision: unknown): void {
+    if (Number.isSafeInteger(revision) && (revision as number) >= 0) return;
+    const received = revision === undefined || revision === null ? 'it is missing'
+      : typeof revision !== 'number' ? `it has type ${typeof revision}`
+        : `received ${revision}`;
+    throw new ContextMutationError('context_precondition_required', `expectedRevision must be a nonnegative safe integer, the revision from a fresh named hive_context_read; ${received}. Nothing was written.`, { field: 'expectedRevision' });
+  }
+
+  private requireCurrentContent(filePath: string, name: string, expectedHash: string, field = 'expectedContentHash'): Buffer {
     const prior = this.readFileBuffer(filePath);
     if (prior === null) throw new ContextMutationError('context_not_found', `Context "${name}" does not exist.`, { name });
-    const actual = sha256(prior);
-    if (actual !== expectedHash) throw new ContextMutationError('stale_content', `Context "${name}" content changed after it was read.`, { name, expectedContentHash: expectedHash, contentHash: actual });
+    if (sha256(prior) !== expectedHash) {
+      throw new ContextMutationError('stale_content', `${field} does not match the current content of context "${name}": the file changed after it was read, or the value was not copied exactly from file.contentHash. Nothing was written. ${HASH_GUARD_RECOVERY}`, { name, field });
+    }
     return prior;
   }
 
