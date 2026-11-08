@@ -36,3 +36,10 @@ gistpad/
 .claude/
 .sisyphus/
 .opencode/
+!/.opencode/
+/.opencode/*
+!/.opencode/skills/
+/.opencode/skills/*
+!/.opencode/skills/agent-hive-verification/
+/.opencode/skills/agent-hive-verification/*
+!/.opencode/skills/agent-hive-verification/SKILL.md

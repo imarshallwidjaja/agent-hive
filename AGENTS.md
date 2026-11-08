@@ -6,6 +6,8 @@
 
 ## Build & Test Commands
 
+For Agent Hive component, installed-host, instruction-contract, packaging, or exercise-harness verification, load the project skill `agent-hive-verification` and confirm the loaded copy is from the candidate worktree. If native discovery or candidate identity cannot be confirmed, read `.opencode/skills/agent-hive-verification/SKILL.md` as guidance and report that it was not natively loaded.
+
 ```bash
 # Build all packages
 bun run build
