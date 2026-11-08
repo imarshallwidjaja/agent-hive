@@ -14,6 +14,7 @@ import type {
 import {
   CheckoutInspector,
   FEATURE_NAME_PATTERN,
+  FeatureResolutionError,
   NATIVE_OBSERVATION_OWNERS,
   RepositoryService,
   canonicalProjectRoot,
@@ -25,7 +26,9 @@ import {
   getTaskSpecPath,
   getWorklogKey,
   isBackgroundJobArchived,
+  listFeatureDirectories,
   readJson,
+  resolveExistingFeaturePath,
   resolveFeatureDirectoryName,
 } from 'hive-core'
 import { describeAge, formatTimestamp } from './worklogPresentation.js'
@@ -626,13 +629,41 @@ function featureResolver(projectRoot: string): FeatureResolver {
   }
 }
 
+/**
+ * The directory a name joins on. Unreadable or ambiguous metadata could hide which feature a logical name means, so
+ * such a name has no directory and its records stay unattributed. A name that is exactly the directory whose metadata
+ * is unreadable identifies that directory only while no other directory claims the name, by readable metadata or by
+ * its indexed spelling; the unreadable metadata itself is never consulted. Only a name no metadata-backed feature
+ * claims keeps the legacy lookup.
+ */
 function resolveFeature(projectRoot: string, name: string): FeatureIdentity | null {
   if (!FEATURE_NAME_PATTERN.test(name)) return null
   let directory: string
   try {
-    directory = resolveFeatureDirectoryName(projectRoot, name)
+    directory = path.basename(resolveExistingFeaturePath(projectRoot, name))
   } catch (error) {
-    return { directory: null, logicalName: null, error: message(error) }
+    const exactUnreadable = error instanceof FeatureResolutionError && error.reason === 'unreadable'
+      && error.directories.length === 1 && error.directories[0] === name
+    if (exactUnreadable) {
+      let claimants: string[]
+      try {
+        claimants = listFeatureDirectories(projectRoot)
+          .filter(entry => entry.directoryName !== name && entry.logicalName === name)
+          .map(entry => entry.directoryName)
+      } catch (scanError) {
+        return { directory: null, logicalName: null, error: `${message(error)}; ${message(scanError)}` }
+      }
+      if (claimants.length === 0) return { directory: name, logicalName: null, error: message(error) }
+      return { directory: null, logicalName: null, error: `${message(error)}; '${name}' is also claimed by ${claimants.map(claimant => `'${claimant}'`).join(', ')}` }
+    }
+    if (!(error instanceof FeatureResolutionError) || error.reason !== 'not_found') {
+      return { directory: null, logicalName: null, error: message(error) }
+    }
+    try {
+      directory = resolveFeatureDirectoryName(projectRoot, name)
+    } catch (fallbackError) {
+      return { directory: null, logicalName: null, error: message(fallbackError) }
+    }
   }
   try {
     const logical = readJson<FeatureJson>(path.join(getFeaturesPath(projectRoot), directory, 'feature.json'))?.name

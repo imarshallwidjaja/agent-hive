@@ -1772,18 +1772,43 @@ describe('coordinated runtime hard cut', () => {
     const written = JSON.parse(await loaded.tool!.hive_plan_write.execute({ content: '# Plan\n\n## Tasks\n\n### 1. Setup\n\nSetup.\n' }, caller));
     const reviewed = JSON.parse(await loaded.tool!.hive_plan_read.execute({}, caller));
     const write = fs.writeFileSync;
+    // The metadata owner writes a temporary file and renames it over feature.json.
     const failure = spyOn(fs, 'writeFileSync').mockImplementation((...args: Parameters<typeof fs.writeFileSync>) => {
-      if (args[0] === path.join(path.dirname(written.path), 'feature.json')) throw new Error('Injected metadata write failure');
+      if (String(args[0]).startsWith(`${path.join(path.dirname(written.path), 'feature.json')}.tmp.`)) throw new Error('Injected metadata write failure');
       return write(...args);
     });
     try {
       const result = JSON.parse(await loaded.tool!.hive_plan_approve.execute({ sync: true, expectedRevision: reviewed.revision }, caller));
-      expect(result).toMatchObject({ approval: { success: false, reason: 'feature_metadata_write_failed', stage: 'feature_metadata', approvalPersisted: true, revision: expect.any(String) }, sync: { success: false, skipped: true, reason: 'approval_failed' } });
+      expect(result).toMatchObject({ approval: { success: false, reason: 'feature_metadata_write_failed', stage: 'feature_metadata', approvalPersisted: true, revision: expect.any(String), metadataPublication: 'unknown' }, sync: { success: false, skipped: true, reason: 'approval_failed' } });
       expect(new PlanService(root).isApproved('approval-partial')).toBe(true);
       expect(JSON.parse(await loaded.tool!.hive_status.execute({}, caller)).tasks).toEqual([]);
     } finally {
       failure.mockRestore();
     }
+  });
+
+  it('refuses plan and task mutations for a feature that does not resolve, and sync of plan content its approval does not cover', async () => {
+    const { root, hooks } = createRuntime();
+    const loaded = await hooks;
+    const caller = context('feature-integrity');
+    const plan = '# Plan\n\n## Tasks\n\n### 1. Setup\n\nSetup.\n';
+    const ghost = path.join(root, '.hive', 'features', 'ghost');
+
+    await expect(loaded.tool!.hive_plan_write.execute({ feature: 'ghost', content: plan }, caller)).rejects.toThrow("Feature 'ghost' not found");
+    await expect(loaded.tool!.hive_tasks_sync.execute({ feature: 'ghost' }, caller)).rejects.toThrow("Task sync rejected; no task files were changed. Feature 'ghost' not found");
+    await expect(loaded.tool!.hive_task_create.execute({ feature: 'ghost', name: 'manual' }, caller)).rejects.toThrow("Feature 'ghost' not found");
+    expect(JSON.parse(await loaded.tool!.hive_plan_approve.execute({ feature: 'ghost', sync: true, expectedRevision: 'any' }, caller)))
+      .toMatchObject({ approval: { success: false, reason: 'feature_unresolved', stage: 'validation', approvalPersisted: false }, sync: { skipped: true } });
+    expect(fs.existsSync(ghost)).toBe(false);
+
+    await loaded.tool!.hive_feature_create.execute({ name: 'approved-edit' }, caller);
+    const written = JSON.parse(await loaded.tool!.hive_plan_write.execute({ feature: 'approved-edit', content: plan }, caller));
+    const reviewed = JSON.parse(await loaded.tool!.hive_plan_read.execute({ feature: 'approved-edit' }, caller));
+    expect(JSON.parse(await loaded.tool!.hive_plan_approve.execute({ feature: 'approved-edit', expectedRevision: reviewed.revision }, caller))).toMatchObject({ success: true });
+    fs.writeFileSync(written.path, plan.replace('Setup.', 'Edited outside the plan tools.'));
+    expect(JSON.parse(await loaded.tool!.hive_plan_read.execute({ feature: 'approved-edit' }, caller)).status).toBe('planning');
+    await expect(loaded.tool!.hive_tasks_sync.execute({ feature: 'approved-edit' }, caller)).rejects.toThrow(/plan\.md changed after its recorded approval/);
+    expect(JSON.parse(await loaded.tool!.hive_status.execute({ feature: 'approved-edit' }, caller)).tasks).toEqual([]);
   });
 
   it('detects plan writes, patches, and comments across the approve-to-sync boundary', async () => {
@@ -1869,6 +1894,45 @@ describe('coordinated runtime hard cut', () => {
     expect(unreadable.blocked).toEqual({ '02-build': ['01-setup'] });
   });
 
+  it('reports plan approval as unknown, keeping the lifecycle and every task visible, when the APPROVED marker cannot be read', async () => {
+    const { hooks } = createRuntime();
+    const loaded = await hooks;
+    const caller = context('approval-unreadable');
+    await loaded.tool!.hive_feature_create.execute({ name: 'approval-unreadable' }, caller);
+    await loaded.tool!.hive_feature_select.execute({ feature: 'approval-unreadable' }, caller);
+    const written = JSON.parse(await loaded.tool!.hive_plan_write.execute({ content: '# Plan\n\n## Tasks\n\n### 1. Setup\n\nSetup.\n\n### 2. Build\n\nBuild.\n' }, caller));
+    await loaded.tool!.hive_plan_approve.execute({}, caller);
+    await loaded.tool!.hive_tasks_sync.execute({}, caller);
+    const markerPath = path.join(path.dirname(written.path), 'APPROVED');
+    const marker = fs.readFileSync(markerPath, 'utf8');
+    const taskView = (entries: any[]) => entries.map(({ folder, status, specStaleReason }) => ({ folder, status, specStaleReason }));
+    const expectUnknownApproval = (status: any, error: RegExp) => {
+      expect(status.feature).toMatchObject({ name: 'approval-unreadable', status: 'approved', hasPlan: true, planApproved: null, commentCount: 0 });
+      expect(status.feature.planApprovalError).toMatch(error);
+      expect(taskView(status.tasks)).toEqual([
+        { folder: '01-setup', status: 'pending', specStaleReason: 'matches_plan' },
+        { folder: '02-build', status: 'pending', specStaleReason: 'matches_plan' },
+      ]);
+      expect(status.runnable).toEqual(['01-setup']);
+      expect(status).not.toHaveProperty('specFreshnessError');
+    };
+
+    fs.rmSync(markerPath);
+    fs.mkdirSync(markerPath);
+    expectUnknownApproval(JSON.parse(await loaded.tool!.hive_status.execute({}, caller)), /EISDIR/);
+
+    fs.rmdirSync(markerPath);
+    fs.writeFileSync(markerPath, marker);
+    fs.chmodSync(markerPath, 0o000);
+    try {
+      expectUnknownApproval(JSON.parse(await loaded.tool!.hive_status.execute({}, caller)), /EACCES/);
+    } finally {
+      fs.chmodSync(markerPath, 0o644);
+    }
+    const restored = JSON.parse(await loaded.tool!.hive_status.execute({}, caller));
+    expect(restored.feature).toEqual({ name: 'approval-unreadable', status: 'approved', hasPlan: true, planApproved: true, commentCount: 0 });
+  });
+
   it('reports one task list with heading integrity, blockers, spec freshness, and successor handoffs', async () => {
     const { hooks } = createRuntime();
     const loaded = await hooks;
@@ -1896,6 +1960,7 @@ describe('coordinated runtime hard cut', () => {
     }, caller);
     await loaded.tool!.hive_plan_approve.execute({}, caller);
     expect(JSON.parse(await loaded.tool!.hive_tasks_sync.execute({}, caller)).created).toEqual(['01-setup', '02-build']);
+    expect(JSON.parse(await loaded.tool!.hive_status.execute({}, caller)).feature).toMatchObject({ status: 'approved', planApproved: true });
 
     const handoff = JSON.parse(await loaded.tool!.hive_task_update.execute({ task: '01-setup', handoff: 'Build reads the amendment.' }, caller));
     expect(handoff.status).toBe('pending');
@@ -1916,7 +1981,8 @@ describe('coordinated runtime hard cut', () => {
       { folder: '01-setup', dependsOn: [], specStale: false, specStaleReason: 'matches_plan', hasHandoff: true },
       { folder: '02-build', dependsOn: ['01-setup'], specStale: true, specStaleReason: 'differs_from_plan', hasHandoff: false },
     ]);
-    expect(status.feature).toEqual({ name: 'task-state', status: 'approved', hasPlan: true, commentCount: 0 });
+    // The lifecycle status stays approved, but the approval no longer covers the plan edited outside the plan tools.
+    expect(status.feature).toEqual({ name: 'task-state', status: 'approved', hasPlan: true, planApproved: false, commentCount: 0 });
     expect(status).not.toHaveProperty('specFreshnessError');
     expect(status.runnable).toEqual(['01-setup']);
     expect(status.blocked).toEqual({ '02-build': ['01-setup'] });

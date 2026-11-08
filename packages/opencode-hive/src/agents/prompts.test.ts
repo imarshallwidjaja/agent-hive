@@ -1692,6 +1692,18 @@ describe('Task report reliability', () => {
     expect(FORAGER_BEE_PROMPT).not.toContain('A no-change outcome returns no commit or pin');
   });
 
+  it('has the primary record a dispatched task as in progress without inferring liveness from launches or worktrees', () => {
+    for (const requirement of [
+      'only `hive_task_update` writes it: neither dispatch nor worktree creation records that work started',
+      "When you dispatch a worker for a pending managed feature task, record `status: 'in_progress'` immediately before the launch",
+      "A launch that fails or returns no confirmation leaves the worker's state unknown",
+      'set the task back to `pending` only after establishing that no worker started',
+      'A retained worktree or binding is history, not evidence that a worker is running',
+    ]) {
+      expect(TASK_REPORT_OWNERSHIP_PROMPT).toContain(requirement);
+    }
+  });
+
   it('keeps primaries from retranscribing reports and records reviews and closure as decisions', () => {
     for (const requirement of [
       'a file at the path proves nothing by itself',

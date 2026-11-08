@@ -748,6 +748,29 @@ describe("resolveExistingFeaturePath", () => {
     expect(resolveExistingFeaturePath(projectRoot, "legacy")).toBe(legacy);
   });
 
+  it("keeps name-keyed paths on the directory resolution returns, and the legacy lookup only for refused names", () => {
+    writeFeature("checkout", null);
+    const indexed = writeFeature("03_checkout", { name: "checkout", status: "planning" });
+    const legacy = writeFeature("legacy", { name: "legacy", status: "planning" });
+    for (const name of ["checkout", "03_checkout", "legacy"]) {
+      expect(getFeaturePath(projectRoot, name)).toBe(resolveExistingFeaturePath(projectRoot, name));
+    }
+    expect(getFeaturePath(projectRoot, "checkout")).toBe(indexed);
+    expect(getFeaturePath(projectRoot, "legacy")).toBe(legacy);
+
+    // Names resolution refuses keep the earlier lookup, which reads use: an exact directory, a listed logical
+    // name, or the bare name.
+    const phantom = writeFeature("phantom", null);
+    const orphan = writeFeature("05_orphan", null);
+    expectRefusal("phantom", "not_found");
+    expect(getFeaturePath(projectRoot, "phantom")).toBe(phantom);
+    expect(getFeaturePath(projectRoot, "orphan")).toBe(orphan);
+    expect(getFeaturePath(projectRoot, "missing")).toBe(path.join(featuresPath, "missing"));
+    writeFeature("07_checkout", { name: "checkout", status: "planning" });
+    expectRefusal("checkout", "ambiguous");
+    expect(getFeaturePath(projectRoot, "checkout")).toBe(path.join(featuresPath, "checkout"));
+  });
+
   it("takes the logical name from metadata, not from the directory name", () => {
     writeFeature("04_old-name", { name: "renamed", status: "planning" });
 

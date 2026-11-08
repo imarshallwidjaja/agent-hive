@@ -33,8 +33,8 @@ import {
   type AdhocMergeOptions,
   type MergeOptions,
   type PlanApprovalResult,
+  type PlanReadResult,
   type PlanSyncStatus,
-  type PlanUnownedTaskHeading,
   type RetainedCheckoutRecord,
   type TaskSpecFreshness,
   type WorklogRef,
@@ -435,12 +435,12 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
       },
     }),
     hive_plan_approve: operation({
-      description: `Approve the plan with explicit persistence-stage outcomes. With sync: true it also syncs tasks against exactly the plan content it approved, requires the reviewed expectedRevision, returns separate { approval, sync } outcomes, and rechecks approval after sync; the two are sequential, not one transaction. Inspect approvalPersisted and the failure reason/stage before retrying: an approval that persisted while only a plain sync failed is retried with hive_tasks_sync, while a failed refreshTasks sync, approval_superseded_during_sync or approval_verification_failed means read and review the current plan before approving and syncing again (an unchanged approval is idempotent). A validation rejection writes nothing. ${PLAN_SYNC_RESULT}`,
+      description: `Approve the plan with explicit persistence-stage outcomes. The approval records the hash of the content it approved, so an edit made outside the plan tools leaves the plan unapproved; an archived feature stays archived. A feature that does not resolve fails with reason feature_unresolved, and a failed feature metadata write reports metadataPublication (applied, matches or unknown); read the feature before retrying. With sync: true it also syncs tasks against exactly the plan content it approved, requires the reviewed expectedRevision, returns separate { approval, sync } outcomes, and rechecks approval after sync; the two are sequential, not one transaction. Inspect approvalPersisted and the failure reason/stage before retrying: an approval that persisted while only a plain sync failed is retried with hive_tasks_sync, while a failed refreshTasks sync, approval_superseded_during_sync or approval_verification_failed means read and review the current plan before approving and syncing again (an unchanged approval is idempotent). A validation rejection writes nothing. ${PLAN_SYNC_RESULT}`,
       args: {
         feature: z.string().optional(),
         expectedRevision: z.string().optional().describe('Plan revision from hive_plan_read that was reviewed. Guards content, comments and approval state. Required when sync is true.'),
         sync: z.boolean().optional().describe('true also runs task sync after approval (same logic as hive_tasks_sync) and returns { approval, sync }; omitted or false returns the approval outcome alone and does not sync.'),
-        refreshPending: z.boolean().optional().describe('Valid only with sync: true (otherwise refresh_pending_requires_sync). Pending plan tasks take their title, dependencies, repositories and spec from the current plan.'),
+        refreshPending: z.boolean().optional().describe('Valid only with sync: true (otherwise refresh_pending_requires_sync). Pending plan tasks take their title, dependencies, repositories and spec from the current plan; one that differs while a worker placement or binding may still hold it rejects the sync instead.'),
         refreshTasks: z.array(z.string()).optional().describe('Valid only with sync: true (otherwise refresh_tasks_requires_sync): a nonempty list of unfinished plan task folders (pending, in_progress, blocked, failed or partial) to refresh from the approved plan by folder identity, keeping their status, blocker, timestamps, reports and handoff. Selecting a task attests that no assignment for it is still running and that its changed scope was reconciled; Hive does not infer either. Manual, done, cancelled, unknown or retitled folders are rejected before approval, and a repository change is rejected while the task has a retained or uninspectable worktree.'),
       },
       execute: async ({ feature, expectedRevision, sync, refreshPending, refreshTasks }, invocation) => {
@@ -466,7 +466,7 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
           approval = planService.approve(selected, expectedRevision);
         } catch (error) {
           const failed = error instanceof PlanApprovalError
-            ? { success: false, reason: error.reason, stage: error.stage, approvalPersisted: error.approvalPersisted, ...(error.revision ? { revision: error.revision } : {}), error: error.message }
+            ? { success: false, reason: error.reason, stage: error.stage, approvalPersisted: error.approvalPersisted, ...(error.revision ? { revision: error.revision } : {}), ...(error.metadataPublication ? { metadataPublication: error.metadataPublication } : {}), error: error.message }
             : { success: false, reason: 'plan_approval_failed', stage: 'validation', approvalPersisted: planService.isApproved(selected), error: error instanceof Error ? error.message : String(error) };
           return withPlanSync(sync === true ? { approval: failed, sync: skippedSync } : failed);
         }
@@ -496,10 +496,10 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
       },
     }),
     hive_tasks_sync: operation({
-      description: `Sync tasks from the numbered headings under ## Tasks of the approved plan. Manual tasks and plan tasks whose current status is not pending (cancelled included) are kept with their files, whether or not the plan still lists them. A pending plan task no longer in the plan is removed with its task folder only when it has no execution history; one with a recorded start, reports or a handoff rejects the sync. Sync never recreates a task folder whose status file is missing, and never creates a new folder beside started or finished work whose heading was retitled. A rejected sync writes nothing; a filesystem failure partway through reports the stage, the changes already applied, and the task action it was cut off inside (its files may be partly written), none of which are rolled back. Started tasks are refreshed only through hive_plan_approve with refreshTasks. ${PLAN_SYNC_RESULT}`,
+      description: `Sync tasks from the numbered headings under ## Tasks of the approved plan. When the plan's approval recorded a content hash and plan.md no longer has that content, the sync is rejected; approve the current plan again. Manual tasks and plan tasks whose current status is not pending (cancelled included) are kept with their files, whether or not the plan still lists them. A pending plan task no longer in the plan is removed with its task folder only when it has no execution history and no worker placement or binding may remain for it; otherwise the sync is rejected. refreshPending does not rewrite a pending task that a worker placement or binding may still hold; once its assignment is terminal, select it in hive_plan_approve refreshTasks. Sync never recreates a task folder whose status file is missing, and never creates a new folder beside started or finished work whose heading was retitled. A rejected sync writes nothing; a filesystem failure partway through reports the stage, the changes already applied, and the task action it was cut off inside (its files may be partly written), none of which are rolled back. Started tasks are refreshed only through hive_plan_approve with refreshTasks. ${PLAN_SYNC_RESULT}`,
       args: {
         feature: z.string().optional(),
-        refreshPending: z.boolean().optional().describe('Pending plan tasks still in the plan take their title, dependencies, repositories and spec from the current plan; default false keeps them as stored.'),
+        refreshPending: z.boolean().optional().describe('Pending plan tasks still in the plan take their title, dependencies, repositories and spec from the current plan; one that differs while a worker placement or binding may still hold it rejects the sync instead. Default false keeps them as stored.'),
       },
       execute: ({ feature, refreshPending }, invocation) => {
         const selected = requireFeature(feature, invocation);
@@ -507,7 +507,7 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
       },
     }),
     hive_task_create: operation({
-      description: 'Create an append-only manual task. Dependencies need only reference existing tasks.',
+      description: 'Create an append-only manual task. Dependencies need only reference existing tasks. The order is allocated under the feature\'s task-sync lock, and the task folder appears only with its status.json and spec.md. An error saying the task was created names the folder it published before flushing it or releasing the lock failed: read hive_status and do not create the task again. An error saying publishing the task reported a failure means its folder may or may not exist: read hive_status, and create the task again only if no such folder is listed. Any other error created nothing.',
       args: {
         name: z.string(), order: z.number().optional(), feature: z.string().optional(),
         description: z.string().optional(), goal: z.string().optional(), acceptanceCriteria: z.array(z.string()).optional(),
@@ -915,15 +915,22 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
         const tasks = taskService.listStatusEntries(selected);
         const { worktrees, errors: worktreeErrors } = await worktreeService.list(selected);
         const info = featureService.get(selected);
+        // Approval is a projection of the plan read; a damaged APPROVED marker or plan makes it unknown, never hides tasks.
+        let plan: PlanReadResult | null = null;
+        let planApprovalError: string | undefined;
+        try {
+          plan = planService.read(selected);
+        } catch (error) {
+          planApprovalError = error instanceof Error ? error.message : String(error);
+        }
         let freshness = new Map<string, TaskSpecFreshness>();
         let specFreshnessError: string | undefined;
-        let unownedTaskHeadings: PlanUnownedTaskHeading[] | undefined;
         try {
-          unownedTaskHeadings = planService.read(selected)?.unownedTaskHeadings;
           freshness = new Map(taskService.getSpecFreshness(selected).map((entry) => [entry.folder, entry]));
         } catch (error) {
           specFreshnessError = error instanceof Error ? error.message : String(error);
         }
+        const unownedTaskHeadings = plan?.unownedTaskHeadings;
         const projectedTasks = tasks.map(task => {
           return {
             ...task,
@@ -933,8 +940,17 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
           };
         });
         const graph = computeRunnableAndBlocked(projectedTasks.filter(task => task.status !== null));
+        const hasPlan = fs.existsSync(getPlanPath(projectRoot, selected));
         return {
-          feature: info ? { name: info.name, status: info.status, hasPlan: fs.existsSync(getPlanPath(projectRoot, selected)), commentCount: planService.getComments(selected).length } : null,
+          // status is the feature lifecycle; planApproved is whether an approval covers the current plan.md, null when unknown.
+          feature: info ? {
+            name: info.name,
+            status: info.status,
+            hasPlan,
+            planApproved: planApprovalError !== undefined ? null : plan?.status === 'approved',
+            ...(planApprovalError !== undefined ? { planApprovalError } : {}),
+            commentCount: planService.getComments(selected).length,
+          } : null,
           tasks: projectedTasks,
           runnable: graph.runnable,
           blocked: graph.blocked,

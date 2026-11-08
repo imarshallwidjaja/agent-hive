@@ -10,6 +10,7 @@ import {
   getTaskHandoffPath,
   getTaskPath,
   listFeatureDirectories,
+  PlanService,
   probeLock,
   WorklogService,
   getWorklogKey,
@@ -97,17 +98,25 @@ class FeatureItem extends vscode.TreeItem {
   }
 }
 
+/** Whether an approval covers the current plan.md, or why that could not be read. */
+type PlanApprovalView = { approved: boolean } | { approved: null; error: string }
+
+/** Shows whether an approval covers the current plan.md; the feature row shows the feature's lifecycle status. */
 class PlanItem extends vscode.TreeItem {
   constructor(
     public readonly featureName: string,
     public readonly planPath: string,
-    public readonly featureStatus: string,
+    public readonly approval: PlanApprovalView,
     public readonly commentCount: number
   ) {
     super('Plan', vscode.TreeItemCollapsibleState.None)
 
-    this.description = commentCount > 0 ? `${commentCount} comment(s)` : ''
-    this.contextValue = featureStatus === 'planning' ? 'plan-draft' : 'plan-approved'
+    const state = approval.approved === null ? 'Approval unknown' : approval.approved ? 'Approved' : 'Not approved'
+    this.description = [state, commentCount > 0 ? `${commentCount} comment(s)` : ''].filter(Boolean).join(' · ')
+    this.tooltip = approval.approved === null
+      ? `Plan approval could not be read: ${approval.error}`
+      : approval.approved ? 'An approval covers the current plan.md.' : 'No approval covers the current plan.md.'
+    this.contextValue = approval.approved === null ? 'plan-approval-unknown' : approval.approved ? 'plan-approved' : 'plan-draft'
     this.iconPath = new vscode.ThemeIcon('file-text')
     this.command = {
       command: 'vscode.open',
@@ -574,13 +583,17 @@ export class HiveSidebarProvider implements vscode.TreeDataProvider<SidebarItem>
     const featurePath = getFeaturePath(this.workspaceRoot, featureName)
     const items: SidebarItem[] = []
 
-    const featureJsonPath = path.join(featurePath, 'feature.json')
-    const feature: FeatureJson = JSON.parse(fs.readFileSync(featureJsonPath, 'utf-8'))
-
     const planPath = path.join(featurePath, 'plan.md')
     if (fs.existsSync(planPath)) {
       const commentCount = this.getReviewCommentCount(featureName, 'plan')
-      items.push(new PlanItem(featureName, planPath, feature.status, commentCount))
+      // Approval is a projection of the plan; an unreadable marker makes it unknown without hiding the other children.
+      let approval: PlanApprovalView
+      try {
+        approval = { approved: new PlanService(this.workspaceRoot).isApproved(featureName) }
+      } catch (error) {
+        approval = { approved: null, error: error instanceof Error ? error.message : String(error) }
+      }
+      items.push(new PlanItem(featureName, planPath, approval, commentCount))
     }
 
     items.push(new FeatureWorklogItem(this.workspaceRoot, featureName))

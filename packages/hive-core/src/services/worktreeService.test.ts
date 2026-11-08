@@ -4631,6 +4631,8 @@ describe('WorktreeService targeted tasks', () => {
     await new RetainedCheckoutService({ baseDir: fx.projectRoot, hiveDir: fx.hiveDir, repositoryResolver: () => repositories })
       .create({ id: 'api/next', branch: 'next', baseRef: 'HEAD' });
     const featurePath = path.join(fx.hiveDir, 'features', `01_${fx.feature}`);
+    // Task sync refuses a feature directory without metadata, so give the fixture a real feature.
+    fsSync.writeFileSync(path.join(featurePath, 'feature.json'), JSON.stringify({ name: fx.feature, status: 'executing', createdAt: '2026-01-01T00:00:00.000Z' }));
     const writePlan = (target: string) => fsSync.writeFileSync(path.join(featurePath, 'plan.md'), `# Plan\n\n## Tasks\n\n### 1. Multi task\n\n**Repos**: api\n\n**Hive target**: ${target}\n\nShip it.\n`);
     const tasks = new TaskService(fx.projectRoot);
     writePlan('api/release');

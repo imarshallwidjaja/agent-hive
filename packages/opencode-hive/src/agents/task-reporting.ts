@@ -23,6 +23,8 @@ Keep the task records distinct. \`handoff.md\` holds bounded forward notes for t
 
 export const TASK_REPORT_OWNERSHIP_PROMPT = `## Task Report Ownership
 
+Task status is the execution record, and only \`hive_task_update\` writes it: neither dispatch nor worktree creation records that work started. When you dispatch a worker for a pending managed feature task, record \`status: 'in_progress'\` immediately before the launch, so task sync and status readers know an assignment may hold the task. A launch that fails or returns no confirmation leaves the worker's state unknown: inspect the native lifecycle evidence, keep \`in_progress\` for the retry or recovery, and set the task back to \`pending\` only after establishing that no worker started. A retained worktree or binding is history, not evidence that a worker is running.
+
 A bound implementation Forager publishes its own report and successor handoff for its feature task and returns the numbered \`reportPath\`. When its result returns:
 - Read the cited report. Check its content, evidence, and candidate against the Task Report Contract and the returned pin; a file at the path proves nothing by itself. Worker reports are attributed evidence and never prove integrated acceptance.
 - Record status and a compact \`summary\` with \`hive_task_update\`. Do not retranscribe the worker's report or replace it with a shorter recap. When the worker had no metadata authority, persist the substantive narrative it returned as an attributed report yourself, and only for an actual feature task.

@@ -4,6 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import simpleGit, { type SimpleGit } from 'simple-git';
 import { AdhocWorktreeService } from './adhocWorktreeService';
+import { FeatureService } from './featureService';
 import { RetainedCheckoutError } from './retainedCheckout';
 import { RetainedCheckoutService } from './retainedCheckoutService';
 import { RepositoryService } from './repositoryService';
@@ -109,6 +110,7 @@ describe('RetainedCheckoutService', () => {
     await fx.checkouts.create({ id: 'root/release', branch: 'release', baseRef: 'main' });
     const placement = path.join(fx.hiveDir, 'checkouts', 'root', 'feature');
 
+    new FeatureService(fx.repoPath).create('demo');
     new TaskService(fx.repoPath).create('demo', 'Ship it', undefined, { target: 'root/feature' });
     await fx.adhoc.create({ runId: 'bound', target: 'root/feature' });
     await fx.checkouts.setReadiness('root/release', await readWorktreeTargetIdentity(path.join(fx.hiveDir, 'checkouts', 'root', 'release')), { state: 'ready', nextTarget: 'root/feature' });

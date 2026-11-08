@@ -149,9 +149,32 @@ export function listFeatureDirectories(projectRoot: string): FeatureDirectoryInf
     });
 }
 
+/**
+ * Directory name the name-keyed path helpers (`getFeaturePath` and the paths built on it) use for `featureName`.
+ * Whenever `resolveExistingFeaturePath` resolves the name, this is the directory it returns, so a writer that
+ * resolves first and then builds paths from the name reaches that feature, never a metadata-less directory that
+ * merely has the name. Only names it refuses fall back to the legacy lookup: an existing directory with that exact
+ * name, then a listed directory whose logical name matches, then the name itself.
+ */
 export function resolveFeatureDirectoryName(projectRoot: string, featureName: string): string {
   assertValidFeatureName(featureName);
   const directPath = path.join(getFeaturesPath(projectRoot), featureName);
+  // A metadata-backed directory with the exact name is what resolution returns, or the name is ambiguous. Like the
+  // resolution scan, this never follows a link in place of a directory.
+  let directIsDirectory = false;
+  try {
+    directIsDirectory = fs.lstatSync(directPath).isDirectory();
+  } catch {
+    // Absent or unreadable: resolution below decides.
+  }
+  if (directIsDirectory && readFeatureMetadata(directPath).state === 'valid') {
+    return featureName;
+  }
+  try {
+    return path.basename(resolveExistingFeaturePath(projectRoot, featureName));
+  } catch (error) {
+    if (!(error instanceof FeatureResolutionError)) throw error;
+  }
   if (fs.existsSync(directPath)) {
     return featureName;
   }

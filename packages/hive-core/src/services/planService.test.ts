@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import * as fs from 'fs';
 import * as path from 'path';
+import { spawn } from 'node:child_process';
 import { PlanApprovalError, PlanService } from './planService';
 import { ReviewService } from './reviewService';
 import { acquireLockSync, LegacyLockError } from '../utils/paths';
@@ -133,6 +134,245 @@ describe('PlanService', () => {
     expect(service.isApproved(featureName)).toBe(false);
   });
 
+  it('refuses plan mutations for an unknown, ambiguous or unreadable feature before any lock or write', () => {
+    const featuresPath = path.join(TEST_DIR, '.hive', 'features');
+    for (const directory of ['01_twin', '02_twin']) {
+      fs.mkdirSync(path.join(featuresPath, directory), { recursive: true });
+      fs.writeFileSync(path.join(featuresPath, directory, 'feature.json'), JSON.stringify({ name: 'twin', status: 'planning', createdAt: '2026-01-01T00:00:00.000Z' }));
+    }
+    fs.mkdirSync(path.join(featuresPath, 'broken'), { recursive: true });
+    fs.writeFileSync(path.join(featuresPath, 'broken', 'feature.json'), '{ not json');
+    const snapshot = () => fs.readdirSync(path.join(TEST_DIR, '.hive'), { recursive: true }).map(String).sort();
+    const before = snapshot();
+
+    for (const [featureName, reason] of [['ghost', 'not_found'], ['twin', 'ambiguous'], ['broken', 'unreadable']] as const) {
+      const unresolved = expect.objectContaining({ name: 'FeatureResolutionError', reason });
+      expect(() => service.write(featureName, '# Plan\n')).toThrow(unresolved);
+      expect(() => service.patch(featureName, 'any', [{ type: 'replace_section', headingPath: ['Plan'], content: '# Plan\n' }])).toThrow(unresolved);
+      expect(() => service.addComment(featureName, { line: 1, body: 'Comment.', replies: [] })).toThrow(unresolved);
+      expect(() => service.clearComments(featureName)).toThrow(unresolved);
+      expect(() => service.revokeApproval(featureName)).toThrow(unresolved);
+      try {
+        service.approve(featureName, 'any');
+        throw new Error('Expected an unresolved feature');
+      } catch (error) {
+        expect(error).toBeInstanceOf(PlanApprovalError);
+        expect(error).toMatchObject({ reason: 'feature_unresolved', stage: 'validation', approvalPersisted: false });
+      }
+    }
+    // Reads of an absent feature keep their absent results.
+    expect(service.read('ghost')).toBeNull();
+    expect(service.isApproved('ghost')).toBe(false);
+    expect(service.getComments('ghost')).toEqual([]);
+    expect(snapshot()).toEqual(before);
+  });
+
+  it('writes, comments on and approves the metadata-backed feature, never a metadata-less directory that has its name', () => {
+    const featuresPath = path.join(TEST_DIR, '.hive', 'features');
+    fs.mkdirSync(path.join(featuresPath, 'collide'), { recursive: true });
+    fs.writeFileSync(path.join(featuresPath, 'collide', 'plan.md'), '# Ghost plan\n');
+    const real = path.join(featuresPath, '02_collide');
+    fs.mkdirSync(real, { recursive: true });
+    fs.writeFileSync(path.join(real, 'feature.json'), JSON.stringify({ name: 'collide', status: 'planning', createdAt: '2026-01-01T00:00:00.000Z' }));
+    const ghost = () => fs.readdirSync(path.join(featuresPath, 'collide'), { recursive: true }).map(String).sort()
+      .map((entry) => `${entry}=${fs.readFileSync(path.join(featuresPath, 'collide', entry), 'utf8')}`);
+    const before = ghost();
+
+    writePatchablePlan(service, 'collide');
+    service.addComment('collide', { line: 1, body: 'Resolved.', replies: [] });
+    service.clearComments('collide');
+    const approval = service.approve('collide', service.read('collide')!.revision);
+
+    expect(fs.readFileSync(path.join(real, 'plan.md'), 'utf8')).toContain('### 1. First Task');
+    expect(fs.readFileSync(path.join(real, 'APPROVED'), 'utf8')).toContain(`Content-SHA256: ${approval.contentHash}\n`);
+    expect(JSON.parse(fs.readFileSync(path.join(real, 'feature.json'), 'utf8')).status).toBe('approved');
+    expect(ghost()).toEqual(before);
+  });
+
+  it('binds a new approval to the plan content it approved and keeps legacy markers readable', () => {
+    const featureName = 'content-bound-approval';
+    const featurePath = setupFeature(featureName);
+    writePatchablePlan(service, featureName);
+    const reviewed = service.read(featureName)!;
+    service.approve(featureName, reviewed.revision);
+    const approved = service.read(featureName)!;
+    const marker = fs.readFileSync(path.join(featurePath, 'APPROVED'), 'utf8');
+    expect(marker).toMatch(/^Approved at \S+\nContent-SHA256: [a-f0-9]{64}\n$/);
+    expect(marker).toContain(`Content-SHA256: ${reviewed.contentHash}\n`);
+
+    // An edit made outside the plan tools leaves the marker in place, but it no longer approves the plan.
+    const original = fs.readFileSync(path.join(featurePath, 'plan.md'), 'utf8');
+    fs.writeFileSync(path.join(featurePath, 'plan.md'), `${original}\nOut-of-band edit.\n`);
+    const edited = service.read(featureName)!;
+    expect(service.isApproved(featureName)).toBe(false);
+    expect(edited.status).toBe('planning');
+    expect(() => service.approve(featureName, reviewed.revision)).toThrow(/Stale plan revision/);
+    expect(() => service.approve(featureName, approved.revision)).toThrow(/Stale plan revision/);
+    expect(fs.readFileSync(path.join(featurePath, 'APPROVED'), 'utf8')).toBe(marker);
+
+    // Restoring the approved bytes restores the approval; approving the edit stamps the new content.
+    fs.writeFileSync(path.join(featurePath, 'plan.md'), original);
+    expect(service.read(featureName)).toEqual(approved);
+    fs.writeFileSync(path.join(featurePath, 'plan.md'), `${original}\nOut-of-band edit.\n`);
+    expect(service.approve(featureName, edited.revision)).toMatchObject({ success: true, contentHash: edited.contentHash });
+    expect(service.approve(featureName, edited.revision)).toMatchObject({ alreadyApproved: true });
+    expect(fs.readFileSync(path.join(featurePath, 'APPROVED'), 'utf8')).toContain(`Content-SHA256: ${edited.contentHash}\n`);
+
+    // A marker written by an older host has no content line and approves whatever plan.md holds, until an explicit
+    // approval restamps it with the content it approves; a later out-of-band edit then leaves the plan unapproved.
+    fs.writeFileSync(path.join(featurePath, 'APPROVED'), 'Approved at 2025-01-01T00:00:00.000Z\n');
+    fs.writeFileSync(path.join(featurePath, 'plan.md'), `${original}\nAnother edit.\n`);
+    expect(service.isApproved(featureName)).toBe(true);
+    const legacy = service.read(featureName)!;
+    expect(legacy.status).toBe('approved');
+    expect(service.approve(featureName, legacy.revision)).toMatchObject({ alreadyApproved: true, revision: legacy.revision });
+    expect(fs.readFileSync(path.join(featurePath, 'APPROVED'), 'utf8')).toMatch(new RegExp(`^Approved at \\S+\\nContent-SHA256: ${legacy.contentHash}\\n$`));
+    expect(service.read(featureName)).toEqual(legacy);
+    fs.writeFileSync(path.join(featurePath, 'plan.md'), `${original}\nEdit after restamping.\n`);
+    expect(service.isApproved(featureName)).toBe(false);
+    expect(service.read(featureName)!.status).toBe('planning');
+  });
+
+  it('approves only the two marker forms Hive has written, never other bytes, and approving again replaces them', () => {
+    const featureName = 'malformed-approval';
+    const featurePath = setupFeature(featureName);
+    writePatchablePlan(service, featureName);
+    const { contentHash } = service.read(featureName)!;
+    const markerPath = path.join(featurePath, 'APPROVED');
+    const malformed = {
+      'space before the colon': `Approved at 2026-01-01T00:00:00.000Z\nContent-SHA256 : ${contentHash}\n`,
+      'lowercase field': `Approved at 2026-01-01T00:00:00.000Z\ncontent-sha256: ${contentHash}\n`,
+      'two spaces after the colon': `Approved at 2026-01-01T00:00:00.000Z\nContent-SHA256:  ${contentHash}\n`,
+      'trailing text': `Approved at 2026-01-01T00:00:00.000Z\nContent-SHA256: ${contentHash} extra\n`,
+      'truncated hash': `Approved at 2026-01-01T00:00:00.000Z\nContent-SHA256: ${contentHash.slice(0, 40)}\n`,
+      'truncated field name': 'Approved at 2026-01-01T00:00:00.000Z\nContent-SH',
+      'corrupt hash': `Approved at 2026-01-01T00:00:00.000Z\nContent-SHA256: ${'z'.repeat(64)}\n`,
+      'uppercase hash': `Approved at 2026-01-01T00:00:00.000Z\nContent-SHA256: ${contentHash.toUpperCase()}\n`,
+      'two content lines': `Approved at 2026-01-01T00:00:00.000Z\nContent-SHA256: ${contentHash}\nContent-SHA256: ${contentHash}\n`,
+      'empty hash': 'Approved at 2026-01-01T00:00:00.000Z\nContent-SHA256:\n',
+      'missing separator': `Approved at 2026-01-01T00:00:00.000Z\nContentSHA256: ${contentHash}\n`,
+      'underscore separator': `Approved at 2026-01-01T00:00:00.000Z\nContent_SHA256: ${contentHash}\n`,
+      'misspelled Conten': `Approved at 2026-01-01T00:00:00.000Z\nConten-SHA256: ${contentHash}\n`,
+      'misspelled Contnet': `Approved at 2026-01-01T00:00:00.000Z\nContnet-SHA256: ${contentHash}\n`,
+      'bare SHA256 field': `Approved at 2026-01-01T00:00:00.000Z\nSHA256: ${contentHash}\n`,
+      'extra line after the stamp': `Approved at 2026-01-01T00:00:00.000Z\nContent-SHA256: ${contentHash}\nApproved-By: someone\n`,
+      'extra line after a legacy stamp': 'Approved at 2026-01-01T00:00:00.000Z\nNote: kept\n',
+      'empty file': '',
+      'unknown text': 'approved\n',
+      'raw date with no prefix': '2026-01-01',
+      'legacy line without its newline': 'Approved at 2026-01-01T00:00:00.000Z',
+      'legacy line with a non-ISO timestamp': 'Approved at yesterday\n',
+      'CRLF legacy line': 'Approved at 2026-01-01T00:00:00.000Z\r\n',
+      'legacy line with an impossible date': 'Approved at 2026-02-30T00:00:00.000Z\n',
+      'legacy line with an out-of-range month': 'Approved at 2026-13-01T00:00:00.000Z\n',
+      'legacy line with hour 24': 'Approved at 2026-01-01T24:00:00.000Z\n',
+      'stamp with an impossible date': `Approved at 2026-02-30T00:00:00.000Z\nContent-SHA256: ${contentHash}\n`,
+    };
+    for (const [label, marker] of Object.entries(malformed)) {
+      fs.writeFileSync(markerPath, marker);
+      expect({ label, approved: service.isApproved(featureName) }).toEqual({ label, approved: false });
+      expect({ label, status: service.read(featureName)!.status }).toEqual({ label, status: 'planning' });
+    }
+
+    const unapproved = service.read(featureName)!;
+    expect(service.approve(featureName, unapproved.revision)).toMatchObject({ success: true, contentHash });
+    expect(service.approve(featureName, unapproved.revision).alreadyApproved).toBe(true);
+    expect(fs.readFileSync(markerPath, 'utf8')).toMatch(new RegExp(`^Approved at \\S+\\nContent-SHA256: ${contentHash}\\n$`));
+    expect(service.isApproved(featureName)).toBe(true);
+  });
+
+  it('flushes the approval marker before the rename publishes it, so a crash cannot leave an empty marker', () => {
+    const featureName = 'durable-approval';
+    const featurePath = setupFeature(featureName);
+    writePatchablePlan(service, featureName);
+    const markerPath = path.join(featurePath, 'APPROVED');
+    const events: string[] = [];
+    const descriptors = new Map<number, string>();
+    const open = fs.openSync;
+    const fsync = fs.fsyncSync;
+    const rename = fs.renameSync;
+    const spies = [
+      spyOn(fs, 'openSync').mockImplementation(((target: fs.PathLike, ...rest: unknown[]) => {
+        const descriptor = (open as (...args: unknown[]) => number)(target, ...rest);
+        descriptors.set(descriptor, String(target));
+        return descriptor;
+      }) as typeof fs.openSync),
+      spyOn(fs, 'fsyncSync').mockImplementation(((descriptor: number) => {
+        events.push(`fsync:${descriptors.get(descriptor)}`);
+        return fsync(descriptor);
+      }) as typeof fs.fsyncSync),
+      spyOn(fs, 'renameSync').mockImplementation(((from: fs.PathLike, to: fs.PathLike) => {
+        events.push(`rename:${String(from)}->${String(to)}`);
+        return rename(from, to);
+      }) as typeof fs.renameSync),
+    ];
+    try {
+      service.approve(featureName, service.read(featureName)!.revision);
+    } finally {
+      for (const spy of spies) spy.mockRestore();
+    }
+    const published = events.findIndex((event) => event.startsWith(`rename:${markerPath}.tmp.`) && event.endsWith(`->${markerPath}`));
+    const flushed = events.findIndex((event) => event.startsWith(`fsync:${markerPath}.tmp.`));
+    expect(flushed).toBeGreaterThanOrEqual(0);
+    expect(published).toBeGreaterThan(flushed);
+    expect(events.indexOf(`fsync:${featurePath}`, published)).toBeGreaterThan(published);
+  });
+
+  it('edits and approves an archived feature plan without reactivating it or changing its archive fields', () => {
+    const featureName = 'archived-plan';
+    const featurePath = setupFeature(featureName);
+    writePatchablePlan(service, featureName);
+    const archived = { name: featureName, status: 'archived', createdAt: '2026-01-01T00:00:00.000Z', archivedAt: '2026-02-01T00:00:00.000Z', archiveReason: 'Paused.', legacyField: 'kept' };
+    fs.writeFileSync(path.join(featurePath, 'feature.json'), JSON.stringify(archived));
+    const metadata = () => JSON.parse(fs.readFileSync(path.join(featurePath, 'feature.json'), 'utf8'));
+
+    const patched = service.patch(featureName, service.read(featureName)!.revision, [{
+      type: 'replace_section',
+      headingPath: ['Design Summary'],
+      content: '## Design Summary\n\nArchived edit.\n',
+    }]);
+    const approval = service.approve(featureName, patched.revision);
+    expect(approval).toMatchObject({ success: true, contentHash: patched.contentHash });
+    expect(service.read(featureName)!.status).toBe('approved');
+    expect(fs.readFileSync(path.join(featurePath, 'APPROVED'), 'utf8')).toContain(`Content-SHA256: ${patched.contentHash}\n`);
+    expect(metadata()).toEqual(archived);
+
+    service.write(featureName, '# Plan\n\n## Tasks\n\n### 1. Only\n\nWork.\n');
+    expect(service.isApproved(featureName)).toBe(false);
+    expect(metadata()).toEqual(archived);
+  });
+
+  it('records approval and revocation in feature.json under its lock, keeping another writer\'s fields', async () => {
+    const featureName = 'metadata-owner';
+    const featurePath = setupFeature(featureName);
+    writePatchablePlan(service, featureName);
+    const featureJson = path.join(featurePath, 'feature.json');
+    const stored = JSON.parse(fs.readFileSync(featureJson, 'utf8'));
+    fs.writeFileSync(featureJson, JSON.stringify({ ...stored, legacyField: 'kept' }));
+    const metadata = () => JSON.parse(fs.readFileSync(featureJson, 'utf8'));
+
+    // Another process holds the feature.json lock across its own read-modify-write; approval must wait for it and
+    // then apply its change to what that writer stored.
+    const child = spawn(process.execPath, ['-e', `
+      import * as fs from 'fs';
+      import { acquireLockSync } from ${JSON.stringify(new URL('../utils/paths.ts', import.meta.url).href)};
+      const release = acquireLockSync(process.env.FEATURE_JSON);
+      const feature = JSON.parse(fs.readFileSync(process.env.FEATURE_JSON, 'utf8'));
+      console.log('locked');
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      fs.writeFileSync(process.env.FEATURE_JSON, JSON.stringify({ ...feature, sessionId: 'session-1' }));
+      release();
+    `], { env: { ...process.env, FEATURE_JSON: featureJson } });
+    const exited = new Promise<number | null>((resolve) => child.on('exit', resolve));
+    await new Promise<void>((resolve) => child.stdout.on('data', (chunk) => { if (String(chunk).includes('locked')) resolve(); }));
+
+    service.approve(featureName, service.read(featureName)!.revision);
+    expect(await exited).toBe(0);
+    expect(metadata()).toEqual({ ...stored, legacyField: 'kept', sessionId: 'session-1', status: 'approved', approvedAt: expect.any(String) });
+    service.revokeApproval(featureName);
+    expect(metadata()).toEqual({ ...stored, legacyField: 'kept', sessionId: 'session-1', status: 'planning' });
+  });
+
   it('read returns a deterministic revision and content hash', () => {
     const featureName = 'read-revision';
     setupFeature(featureName);
@@ -196,8 +436,9 @@ describe('PlanService', () => {
       expect(error).toMatchObject({ reason: 'stale_revision', stage: 'validation', approvalPersisted: false });
     }
     const write = fs.writeFileSync;
+    // The metadata owner writes a temporary file and renames it over feature.json.
     const failure = spyOn(fs, 'writeFileSync').mockImplementation((...args: Parameters<typeof fs.writeFileSync>) => {
-      if (args[0] === path.join(featurePath, 'feature.json')) throw new Error('Injected metadata write failure');
+      if (String(args[0]).startsWith(`${path.join(featurePath, 'feature.json')}.tmp.`)) throw new Error('Injected metadata write failure');
       return write(...args);
     });
     try {
@@ -205,7 +446,7 @@ describe('PlanService', () => {
       throw new Error('Expected metadata write failure');
     } catch (error) {
       expect(error).toBeInstanceOf(PlanApprovalError);
-      expect(error).toMatchObject({ reason: 'feature_metadata_write_failed', stage: 'feature_metadata', approvalPersisted: true, revision: service.read(featureName)!.revision });
+      expect(error).toMatchObject({ reason: 'feature_metadata_write_failed', stage: 'feature_metadata', approvalPersisted: true, revision: service.read(featureName)!.revision, metadataPublication: 'unknown' });
       expect(fs.readFileSync(path.join(featurePath, 'APPROVED'), 'utf8')).toStartWith('Approved at ');
       expect(JSON.parse(fs.readFileSync(path.join(featurePath, 'feature.json'), 'utf8')).status).toBe('planning');
     } finally {

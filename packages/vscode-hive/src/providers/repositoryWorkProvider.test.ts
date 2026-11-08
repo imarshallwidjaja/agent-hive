@@ -388,6 +388,41 @@ describe('RepositoryWorkProvider', () => {
     expect(fs.readFileSync(path.join(testRoot, '.hive', 'features', '01_checkout', 'feature.json'), 'utf8')).toBe('{ broken');
   });
 
+  it('never attributes activity to an unreadable exact-name directory while another feature claims that name', async () => {
+    // A legacy directory named exactly `checkout` has unreadable metadata, and `02_checkout` is the feature named `checkout`.
+    fs.mkdirSync(path.join(testRoot, '.hive', 'features', 'checkout'), { recursive: true });
+    fs.writeFileSync(path.join(testRoot, '.hive', 'features', 'checkout', 'feature.json'), '{ broken');
+    writeJson('.hive/features/02_checkout/feature.json', { name: 'checkout', status: 'executing', createdAt: '2026-11-01T10:00:00.000Z' });
+    const placement = (feature: string) => worker({ feature, task: '01-api', repoId: 'root', path: path.join(testRoot, '.hive', '.worktrees', feature, '01-api'), branch: `hive/${feature}/01-api` });
+    const projection = (...workers: CheckoutWorkerView[]): CheckoutProjection => ({
+      repositories: [{ id: 'root', path: testRoot, root: testRoot, implicit: false, head: null, headError: 'unborn', checkouts: [], workers }],
+      unassigned: { checkouts: [], workers: [] },
+      errors: [],
+    });
+    const recent = new Date(Date.now() - 5 * 60_000).toISOString();
+    writeJson('.hive/sessions.json', { sessions: [{ sessionId: 'ses_logical', featureName: 'checkout', taskFolder: '01-api', startedAt: recent, lastActiveAt: recent }] });
+    const before = snapshot(testRoot);
+
+    // `checkout` may mean either directory, so its placement is unresolved and the indexed placement of the same task
+    // cannot be told apart from it; the session naming `checkout` goes to neither.
+    const both = await render(new RepositoryWorkProvider(testRoot, fakeInspector(projection(placement('checkout'), placement('02_checkout')))));
+    expect(both).toContain('    01-api | activity unknown · hive/checkout/01-api');
+    expect(both).toContain('      Activity | Unknown: feature "checkout" metadata unreadable');
+    expect(both).toContain('    01-api | activity ambiguous · hive/02_checkout/01-api');
+    expect(both.some(line => line.includes('ses_logical'))).toBe(false);
+
+    // Alone, the exact-name placement is still unresolved rather than taking the logical session.
+    const alone = await render(new RepositoryWorkProvider(testRoot, fakeInspector(projection(placement('checkout')))));
+    expect(alone).toContain('    01-api | activity unknown · hive/checkout/01-api');
+    expect(alone.some(line => line.includes('ses_logical'))).toBe(false);
+    expect(snapshot(testRoot)).toEqual(before);
+
+    // With no other claimant, the name can mean only the exact directory, so the association is kept.
+    fs.rmSync(path.join(testRoot, '.hive', 'features', '02_checkout'), { recursive: true });
+    const sole = await render(new RepositoryWorkProvider(testRoot, fakeInspector(projection(placement('checkout')))));
+    expect(sole).toContain('    01-api | last session update 5 min ago · hive/checkout/01-api');
+  });
+
   it('keeps stable row IDs across refreshes, never returns a snapshot a refresh overtook, and lists branches only on expansion', async () => {
     const first = projectionWith('first');
     const second = projectionWith('second');

@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { randomBytes } from 'crypto';
 import {
   getHivePath,
   getTasksPath,
@@ -7,15 +8,10 @@ import {
   getTaskStatusPath,
   getTaskSpecPath,
   getTaskHandoffPath,
-  getSubtasksPath,
-  getSubtaskPath,
-  getSubtaskStatusPath,
-  getSubtaskSpecPath,
   getPlanPath,
   getTaskSyncPath,
   ensureDir,
   readJson,
-  writeJson,
   writeJsonAtomic,
   writeJsonAtomicDurable,
   writeAtomicDurable,
@@ -39,12 +35,11 @@ import {
   TaskInfo,
   Subtask,
   SubtaskType,
-  SubtaskStatus,
   ManualTaskMetadata,
   PlanSyncStatus,
   TaskSyncCheckpoint,
 } from '../types.js';
-import { getPlanContentHash } from './planService.js';
+import { getPlanContentHash, readPlanApprovalMarker } from './planService.js';
 import { RepositoryService } from './repositoryService.js';
 import { parseRetainedCheckoutId } from './retainedCheckout.js';
 import { SubtaskService } from './subtaskService.js';
@@ -178,13 +173,20 @@ export interface SyncOptions {
    * that its changed scope has been reconciled; sync does not infer either from task status.
    */
   refreshTasks?: string[];
-  /** Raw plan.md content hash the caller reviewed and approved; a different plan rejects the sync before any write. */
+  /**
+   * Raw plan.md content hash the caller reviewed and approved; a different plan rejects the sync before any write.
+   * Omitted, a content-stamped APPROVED marker supplies it, so plan content changed after its approval is never
+   * synced as approved; a marker with a malformed content line rejects the sync, and a legacy marker or no marker
+   * leaves the content unchecked.
+   */
   expectedContentHash?: string;
   /**
    * Task folders that have a retained worktree, from the caller's inspection, or 'unknown' (the default) when it
    * was not inspected. A selected task whose repositories or target change is rejected unless it is known to have
    * none. Any refreshed task, selected or pending, is also rejected for such a change while a worker placement or
-   * binding for it remains under `.hive/.worktrees`.
+   * binding for it remains under `.hive/.worktrees`. A pending task that this set names, or that may have such a
+   * placement or binding, is never removed, and `refreshPending` does not rewrite it: a worker may still hold it,
+   * so only selecting it in `refreshTasks` refreshes it.
    */
   retainedWorktreeTasks?: ReadonlySet<string> | 'unknown';
 }
@@ -234,6 +236,60 @@ export class TaskSyncError extends Error {
   }
 }
 
+/**
+ * The failures behind a `TaskCreateUncertainError`. `publishFailure` is the publishing rename's own error, after which
+ * the folder may or may not exist; `writeFailure` is a failed flush after the rename published it; `releaseFailure`
+ * is a failed task-sync lock release, alone or after either of the others.
+ */
+export type TaskCreateFailures =
+  | { publishFailure: unknown; writeFailure?: undefined; releaseFailure?: unknown }
+  | { publishFailure?: undefined; writeFailure: unknown; releaseFailure?: unknown }
+  | { publishFailure?: undefined; writeFailure?: undefined; releaseFailure: unknown };
+
+/**
+ * A manual task create that failed once it had attempted to publish `folder` at `taskPath`. With `publishFailure` the
+ * publishing rename itself reported an error, so `publication` is `'unknown'`: a rename can take effect and still
+ * report failure, and the folder may exist until the feature's tasks are read. Otherwise the rename published the
+ * folder with its status.json and spec.md (`publication: 'published'`) and then flushing the tasks directory failed
+ * (`writeFailure`, so the folder may not survive a crash), releasing the task-sync lock failed (`releaseFailure`), or
+ * both. `cause` is the first present. Nothing is rolled back, and the folder's files may have changed after
+ * publication. Read the feature's tasks for their current state before continuing; repeating the create while the
+ * folder exists would allocate another folder. Any other error from `create` published nothing.
+ */
+export class TaskCreateUncertainError extends Error {
+  readonly publication: 'published' | 'unknown';
+  readonly publishFailure?: unknown;
+  readonly writeFailure?: unknown;
+  readonly releaseFailure?: unknown;
+
+  constructor(
+    readonly featureName: string,
+    readonly folder: string,
+    readonly taskPath: string,
+    failures: TaskCreateFailures,
+  ) {
+    const { publishFailure, writeFailure, releaseFailure } = failures;
+    const describe = (failure: unknown) => (failure instanceof Error ? failure.message : String(failure));
+    const release = releaseFailure !== undefined ? `releasing the task-sync lock failed (${describe(releaseFailure)})` : undefined;
+    const message = publishFailure !== undefined
+      ? `Publishing task '${folder}' of feature '${featureName}' at ${taskPath} reported a failure (${describe(publishFailure)})`
+        + `${release !== undefined ? `, and ${release}` : ''}. The rename may have taken effect, so the task may exist until`
+        + ` the feature's tasks are read; read them for its current state before continuing, and do not create it again`
+        + ` unless that read shows no '${folder}' folder.`
+      : `Task '${folder}' of feature '${featureName}' was created at ${taskPath}, but `
+        + [writeFailure !== undefined ? `flushing the tasks directory failed (${describe(writeFailure)})` : undefined, release]
+          .filter((part) => part !== undefined).join(', and ')
+        + `. The task exists${writeFailure !== undefined ? ' and may not survive a crash' : ''}, and its files may have changed since it was published;`
+        + ` read the feature's tasks for their current state before continuing and do not create it again.`;
+    super(message, { cause: publishFailure !== undefined ? publishFailure : writeFailure !== undefined ? writeFailure : releaseFailure });
+    this.name = 'TaskCreateUncertainError';
+    this.publication = publishFailure !== undefined ? 'unknown' : 'published';
+    this.publishFailure = publishFailure;
+    this.writeFailure = writeFailure;
+    this.releaseFailure = releaseFailure;
+  }
+}
+
 const UNFINISHED_STATUSES: ReadonlySet<string> = new Set(['pending', 'in_progress', 'blocked', 'failed', 'partial']);
 /** Statuses whose plan task folder holds started or finished work that a renamed heading must not replace. */
 const REPLACEMENT_PROTECTED_STATUSES: ReadonlySet<string> = new Set(['in_progress', 'blocked', 'failed', 'partial', 'done']);
@@ -255,7 +311,7 @@ const INTERRUPTED_ACTIONS: Record<TaskSyncAction, { verb: string; files: string 
   remove: { verb: 'removing', files: 'its task folder may be partly or fully deleted' },
   create: {
     verb: 'creating',
-    files: 'its folder, status.json and spec.md may be missing, partly written or complete; a retry with refreshPending: true rewrites a pending plan task\'s files',
+    files: 'its folder appears only with both status.json and spec.md written, so it is either absent, and a retry creates it, or complete but possibly not yet durable; a leftover tasks/.<folder>.creating-* staging directory is never read as a task',
   },
   refresh: { verb: 'refreshing', files: 'spec.md and status.json may each hold the old or the new content' },
 };
@@ -376,11 +432,12 @@ export function validateStoredTaskStatus(status: TaskStatus | null, taskFolder: 
   if (problem) throw new Error(`Task '${taskFolder}' has a corrupt status file: ${problem}.`);
 }
 
+/** Task folders under `tasksPath`. Dot-prefixed names are never tasks: task creation stages its folder under one. */
 function listTaskFolders(tasksPath: string): string[] {
   if (!fileExists(tasksPath)) return [];
 
   return fs.readdirSync(tasksPath, { withFileTypes: true })
-    .filter(d => d.isDirectory())
+    .filter(d => d.isDirectory() && !d.name.startsWith('.'))
     .map(d => d.name)
     .sort();
 }
@@ -470,6 +527,12 @@ export class TaskService {
     } catch (error) {
       fail('validation', `refreshTasks rejected; no task files were changed. ${validationMessage(error)}`);
     }
+    // Taking the sync lock creates the feature directory, so the feature must resolve first.
+    try {
+      resolveExistingFeaturePath(this.projectRoot, featureName);
+    } catch (error) {
+      fail('validation', `Task sync rejected; no task files were changed. ${validationMessage(error)}`, error);
+    }
     const planPath = getPlanPath(this.projectRoot, featureName);
     if (!fileExists(planPath)) fail('validation', `No plan.md found for feature '${featureName}'`);
 
@@ -483,6 +546,24 @@ export class TaskService {
         fail('validation',
           'Task sync rejected; no task files were changed. plan.md changed after the content this sync was asked to apply '
           + `(expected content hash ${options.expectedContentHash}, current ${contentHash}). Read and review the current plan before approving and syncing again.`);
+      }
+      if (options.expectedContentHash === undefined) {
+        let approval: ReturnType<typeof readPlanApprovalMarker>;
+        try {
+          approval = readPlanApprovalMarker(this.projectRoot, featureName);
+        } catch (error) {
+          return fail('validation', `Task sync rejected; no task files were changed. The APPROVED marker cannot be read: ${validationMessage(error)}`, error);
+        }
+        if (approval.state === 'stamped' && approval.contentHash !== contentHash) {
+          fail('validation',
+            'Task sync rejected; no task files were changed. plan.md changed after its recorded approval '
+            + `(approved content hash ${approval.contentHash}, current ${contentHash}), so the approval no longer covers it. Read and review the current plan, then approve and sync it again.`);
+        }
+        if (approval.state === 'invalid') {
+          fail('validation',
+            'Task sync rejected; no task files were changed. The APPROVED marker is not a marker form Hive writes, so it approves no plan content. '
+            + 'Read and review the current plan, then approve and sync it again.');
+        }
       }
       const planContent = rawPlan.replace(/\r\n/g, '\n');
 
@@ -667,6 +748,9 @@ export class TaskService {
       }
       let dependsOn = status.dependsOn;
       let fromPlan = false;
+      // A placement or binding is history, not proof a worker runs; unknown placement state counts as present.
+      const mayHoldWorker = () => (retainedWorktrees !== 'unknown' && retainedWorktrees.has(folder))
+        || mayHaveWorkerPlacement(this.projectRoot, featureName, folder);
       const refresh = (task: ParsedTask, isSelected: boolean) => {
         const built = this.buildPlanTaskSpec(featureName, task, planTasks, planContent);
         const placementChange = !sameList(status.repoIds, task.repoIds ?? undefined)
@@ -677,12 +761,22 @@ export class TaskService {
         // Every refresh that moves a task's placement needs its worker known to be absent: a selected task's caller
         // inventory must exist and exclude it, and no placement or binding for it may remain on disk.
         const uninspected = isSelected && retainedWorktrees === 'unknown';
-        if (placementChange && (uninspected || (retainedWorktrees !== 'unknown' && retainedWorktrees.has(folder))
-          || mayHaveWorkerPlacement(this.projectRoot, featureName, folder))) {
+        if (placementChange && (uninspected || mayHoldWorker())) {
           throw new Error(
             `${isSelected ? 'refreshTasks' : 'Task sync'} rejected; no task files were changed. "${folder}" would ${placementChange}, and ` +
             (uninspected ? 'its worktrees could not be inspected. ' : 'it has a retained worktree whose placement keeps the old repositories and target. ') +
             'Integrate or clean up that worktree first, or keep the task\'s Repos and Hive target lines unchanged.',
+          );
+        }
+        // refreshPending rewrites only pending tasks no worker can hold. Selecting the task attests that its
+        // assignment is terminal, so a same-placement refresh stays available through refreshTasks.
+        if (!isSelected && mayHoldWorker()) {
+          if (this.recordMatchesPlanTask(featureName, folder, status, task, built)) return;
+          throw new Error(
+            `Task sync rejected; no task files were changed. Pending plan task "${folder}" differs from plan.md, but a worker placement or binding ` +
+            'for it may remain under .hive/.worktrees, so a worker may still be using its spec and refreshPending does not rewrite it. ' +
+            'If a worker was dispatched, record the task as in_progress. Once no assignment for it is running, refresh it by naming it in refreshTasks ' +
+            'through hive_plan_approve, or integrate or clean up its worktree, then sync again.',
           );
         }
         refreshes.push({ task, built, selected: isSelected });
@@ -702,6 +796,13 @@ export class TaskService {
           throw new Error(
             `Task sync rejected; no task files were changed. Pending plan task "${folder}" has no heading in plan.md but retains ${history}; ` +
             'sync does not delete task history. Restore its plan heading, or cancel it with hive_task_update to keep it as a retained record, then sync again.',
+          );
+        }
+        if (mayHoldWorker()) {
+          throw new Error(
+            `Task sync rejected; no task files were changed. Pending plan task "${folder}" has no heading in plan.md, but a worker placement or binding ` +
+            'for it may remain under .hive/.worktrees, so a worker may still be using it; sync does not delete it. Restore its plan heading, ' +
+            'integrate or clean up its worktree once no assignment for it is running, or cancel it with hive_task_update to keep it as a retained record, then sync again.',
           );
         }
         removals.push(folder);
@@ -784,12 +885,7 @@ export class TaskService {
       }
       if (status.origin === 'manual' || !UNFINISHED_STATUSES.has(status.status)) continue;
       const built = this.buildPlanTaskSpec(featureName, task, planTasks, planContent);
-      const matches = status.planTitle === task.name
-        && sameList(status.dependsOn ?? [], built.dependsOn)
-        && sameList(status.repoIds, task.repoIds ?? undefined)
-        && (status.target ?? null) === task.target
-        && readText(getTaskSpecPath(this.projectRoot, featureName, task.folder)) === built.spec;
-      if (!matches) drift.add(task.folder);
+      if (!this.recordMatchesPlanTask(featureName, task.folder, status, task, built)) drift.add(task.folder);
     }
     for (const { folder, status } of records) {
       if (!status) drift.add(folder);
@@ -801,6 +897,15 @@ export class TaskService {
       : []));
     if (violation) drift.add(violation.kind === 'cycle' ? violation.path[0]! : violation.source);
     return [...drift].sort();
+  }
+
+  /** Whether a task record already holds every plan-owned field and the spec the current plan generates for it. */
+  private recordMatchesPlanTask(featureName: string, folder: string, status: TaskStatus, task: ParsedTask, built: PlanTaskBuild): boolean {
+    return status.planTitle === task.name
+      && sameList(status.dependsOn ?? [], built.dependsOn)
+      && sameList(status.repoIds, task.repoIds ?? undefined)
+      && (status.target ?? null) === task.target
+      && readText(getTaskSpecPath(this.projectRoot, featureName, folder)) === built.spec;
   }
 
   /** What execution history a task folder retains, or null when it has none. */
@@ -842,8 +947,45 @@ export class TaskService {
    * Create a manual task with auto-incrementing index.
    * Folder format: "01-task-name", "02-task-name", etc.
    * Index ensures alphabetical sort = chronological order.
+   *
+   * The feature must resolve before anything is written. The order is allocated and the folder published under the
+   * feature's task-sync lock, so concurrent creations and syncs never take the same number, and the folder appears
+   * only with its status.json and spec.md. A failure after the folder is published, flushing it or releasing the
+   * lock, throws `TaskCreateUncertainError` naming the created folder, and so does a publishing rename that reported
+   * an error, with `publication: 'unknown'`; every other failure published nothing.
    */
   create(featureName: string, name: string, order?: number, metadata?: ManualTaskMetadata): string {
+    resolveExistingFeaturePath(this.projectRoot, featureName);
+    const release = acquireLockSync(getTaskSyncPath(this.projectRoot, featureName), { staleLockTTL: Number.POSITIVE_INFINITY });
+    let created: { folder: string; taskPath: string };
+    try {
+      created = this.createManualTaskUnlocked(featureName, name, order, metadata);
+    } catch (error) {
+      try {
+        release();
+      } catch (releaseFailure) {
+        // A failed release adds to an uncertain create; after any other error nothing was published to report.
+        if (error instanceof TaskCreateUncertainError) {
+          throw new TaskCreateUncertainError(featureName, error.folder, error.taskPath, error.publishFailure !== undefined
+            ? { publishFailure: error.publishFailure, releaseFailure }
+            : { writeFailure: error.writeFailure, releaseFailure });
+        }
+      }
+      throw error;
+    }
+    try {
+      release();
+    } catch (releaseFailure) {
+      throw new TaskCreateUncertainError(featureName, created.folder, created.taskPath, { releaseFailure });
+    }
+    return created.folder;
+  }
+
+  /**
+   * Allocates and publishes the folder; the caller holds the task-sync lock. The tasks path is fixed before the
+   * publishing rename, so nothing after it rereads the feature, and a failure after it is `TaskCreateUncertainError`.
+   */
+  private createManualTaskUnlocked(featureName: string, name: string, order?: number, metadata?: ManualTaskMetadata): { folder: string; taskPath: string } {
     const existingFolders = this.listFolders(featureName);
     const nextOrder = this.getNextOrder(existingFolders);
 
@@ -887,9 +1029,6 @@ export class TaskService {
       );
     }
 
-    const taskPath = getTaskPath(this.projectRoot, featureName, folder);
-    ensureDir(taskPath);
-
     const status: TaskStatus = {
       status: 'pending',
       origin: 'manual',
@@ -899,20 +1038,25 @@ export class TaskService {
       ...(target !== undefined ? { target } : {}),
       ...(metadata ? { metadata: { ...metadata, dependsOn: undefined, repoIds: undefined, target: undefined } } : {}),
     };
-    writeJson(getTaskStatusPath(this.projectRoot, featureName, folder), status);
-
     const specContent = this.buildManualTaskSpec(featureName, folder, name, dependsOn, metadata);
-    writeText(getTaskSpecPath(this.projectRoot, featureName, folder), specContent);
+    const tasksPath = getTasksPath(this.projectRoot, featureName);
+    const taskPath = path.join(tasksPath, folder);
+    const published = this.publishTaskFolder(tasksPath, folder, status, specContent,
+      (publishFailure) => new TaskCreateUncertainError(featureName, folder, taskPath, { publishFailure }));
+    if (!published) {
+      throw new Error(`Task folder collision: "${folder}" already exists.`);
+    }
+    try {
+      syncDirectory(tasksPath);
+    } catch (writeFailure) {
+      throw new TaskCreateUncertainError(featureName, folder, taskPath, { writeFailure });
+    }
 
-    return folder;
+    return { folder, taskPath };
   }
 
   /** Creates a new plan task folder; false, writing nothing, when the folder appeared after sync derived it. */
   private createFromPlan(featureName: string, task: ParsedTask, { dependsOn, spec }: PlanTaskBuild): boolean {
-    const taskPath = getTaskPath(this.projectRoot, featureName, task.folder);
-    if (fileExists(taskPath)) return false;
-    ensureDir(taskPath);
-
     const status: TaskStatus = {
       status: 'pending',
       origin: 'plan',
@@ -921,8 +1065,47 @@ export class TaskService {
       ...(task.repoIds !== null ? { repoIds: task.repoIds } : {}),
       ...(task.target !== null ? { target: task.target } : {}),
     };
-    writeJsonAtomicDurable(getTaskStatusPath(this.projectRoot, featureName, task.folder), status);
-    writeAtomicDurable(getTaskSpecPath(this.projectRoot, featureName, task.folder), spec);
+    const tasksPath = getTasksPath(this.projectRoot, featureName);
+    if (!this.publishTaskFolder(tasksPath, task.folder, status, spec)) return false;
+    syncDirectory(tasksPath);
+    return true;
+  }
+
+  /**
+   * Publish a new task folder with its status.json and spec.md in one rename, so readers never see the folder without
+   * both. Returns false, writing nothing, when the folder already exists; callers hold the task-sync lock and flush
+   * the tasks directory after a publication. A failure before the rename removes the dot-prefixed staging directory,
+   * which task listings never read, and throws its own error. An error from the rename itself does not show the folder
+   * is absent, since a rename can take effect and still report failure; `renameFailed` lets a caller report that as
+   * an uncertain publication instead of an error that published nothing.
+   */
+  private publishTaskFolder(
+    tasksPath: string,
+    folder: string,
+    status: TaskStatus,
+    spec: string,
+    renameFailed: (error: unknown) => unknown = (error) => error,
+  ): boolean {
+    const taskPath = path.join(tasksPath, folder);
+    if (fileExists(taskPath)) return false;
+    ensureDir(tasksPath);
+    const stagingPath = path.join(tasksPath, `.${folder}.creating-${process.pid}-${randomBytes(4).toString('hex')}`);
+    fs.mkdirSync(stagingPath);
+    let renameAttempted = false;
+    try {
+      writeJsonAtomicDurable(path.join(stagingPath, 'status.json'), status);
+      writeAtomicDurable(path.join(stagingPath, 'spec.md'), spec);
+      renameAttempted = true;
+      fs.renameSync(stagingPath, taskPath);
+    } catch (error) {
+      try {
+        // After a rename that took effect the staging path is gone and this removes nothing.
+        fs.rmSync(stagingPath, { recursive: true, force: true });
+      } catch {
+        // A leftover staging directory is never listed as a task; keep the original failure.
+      }
+      throw renameAttempted ? renameFailed(error) : error;
+    }
     return true;
   }
 
@@ -931,7 +1114,8 @@ export class TaskService {
    * under the same status lock as update(). Eligibility is rechecked on the locked record, so a concurrent status
    * change is kept and a task that became finished is not reopened: such a task is skipped and false is returned. A
    * worker binds its target under this lock too, so a placement change is skipped when a worker placement or binding
-   * for the task appeared after sync checked for one.
+   * for the task appeared after sync checked for one, and so is any unselected refresh, which refreshPending never
+   * applies to a task a worker may hold.
    */
   private refreshPlanTask(featureName: string, task: ParsedTask, { dependsOn, spec }: PlanTaskBuild, selected: boolean): boolean {
     const statusPath = getTaskStatusPath(this.projectRoot, featureName, task.folder);
@@ -944,7 +1128,7 @@ export class TaskService {
         && (selected ? UNFINISHED_STATUSES.has(current.status) : current.status === 'pending');
       if (!eligible) return false;
       const movesPlacement = !sameList(current.repoIds, task.repoIds ?? undefined) || (current.target ?? null) !== task.target;
-      if (movesPlacement && mayHaveWorkerPlacement(this.projectRoot, featureName, task.folder)) return false;
+      if ((movesPlacement || !selected) && mayHaveWorkerPlacement(this.projectRoot, featureName, task.folder)) return false;
       const updated: TaskStatus = { ...current, planTitle: task.name, dependsOn };
       if (task.repoIds !== null) updated.repoIds = task.repoIds;
       else delete updated.repoIds;
@@ -958,7 +1142,10 @@ export class TaskService {
     }
   }
 
-  /** Removes a pending plan task without history under its status lock; false when its record changed meanwhile. */
+  /**
+   * Removes a pending plan task without history under its status lock; false when its record changed meanwhile or a
+   * worker placement or binding for it appeared.
+   */
   private removePendingPlanTask(featureName: string, folder: string): boolean {
     const statusPath = getTaskStatusPath(this.projectRoot, featureName, folder);
     if (!fileExists(statusPath)) return false;
@@ -966,7 +1153,8 @@ export class TaskService {
     try {
       const current = this.readValidatedTaskStatus(statusPath, folder);
       if (!current || current.origin === 'manual' || current.status !== 'pending'
-        || this.describeExecutionHistory(featureName, folder, current)) {
+        || this.describeExecutionHistory(featureName, folder, current)
+        || mayHaveWorkerPlacement(this.projectRoot, featureName, folder)) {
         return false;
       }
       fs.rmSync(getTaskPath(this.projectRoot, featureName, folder), { recursive: true });
@@ -1300,6 +1488,7 @@ export class TaskService {
   }
 
   writeSpec(featureName: string, taskFolder: string, content: string): string {
+    resolveExistingFeaturePath(this.projectRoot, featureName);
     const specPath = getTaskSpecPath(this.projectRoot, featureName, taskFolder);
     writeText(specPath, content);
     return specPath;
@@ -1327,6 +1516,8 @@ export class TaskService {
     lockOptions?: LockOptions
   ): TaskUpdateResult {
     this.validateUpdate(updates);
+    // An ambiguous or unreadable feature name could route the write into the wrong feature directory.
+    resolveExistingFeaturePath(this.projectRoot, featureName);
     const statusPath = getTaskStatusPath(this.projectRoot, featureName, taskFolder);
 
     // Guard before lock acquisition to avoid creating missing task folders
@@ -1849,37 +2040,9 @@ export class TaskService {
     return tasks;
   }
 
+  /** Creates a subtask through SubtaskService, keeping this method's manual-task folder slug. */
   createSubtask(featureName: string, taskFolder: string, name: string, type?: SubtaskType): Subtask {
-    const subtasksPath = getSubtasksPath(this.projectRoot, featureName, taskFolder);
-    ensureDir(subtasksPath);
-
-    const existingFolders = this.listSubtaskFolders(featureName, taskFolder);
-    const taskOrder = parseInt(taskFolder.split('-')[0], 10);
-    const nextOrder = existingFolders.length + 1;
-    const subtaskId = `${taskOrder}.${nextOrder}`;
-    const folderName = `${nextOrder}-${this.slugify(name)}`;
-    const subtaskPath = getSubtaskPath(this.projectRoot, featureName, taskFolder, folderName);
-
-    ensureDir(subtaskPath);
-
-    const subtaskStatus: SubtaskStatus = {
-      status: 'pending',
-      type,
-      createdAt: new Date().toISOString(),
-    };
-    writeJson(getSubtaskStatusPath(this.projectRoot, featureName, taskFolder, folderName), subtaskStatus);
-
-    const specContent = `# Subtask: ${name}\n\n**Type:** ${type || 'custom'}\n**ID:** ${subtaskId}\n\n## Instructions\n\n_Add detailed instructions here_\n`;
-    writeText(getSubtaskSpecPath(this.projectRoot, featureName, taskFolder, folderName), specContent);
-
-    return {
-      id: subtaskId,
-      name,
-      folder: folderName,
-      status: 'pending',
-      type,
-      createdAt: subtaskStatus.createdAt,
-    };
+    return this.subtaskService.createWithFolderSlug(featureName, taskFolder, name, type, this.slugify(name));
   }
 
   updateSubtask(featureName: string, taskFolder: string, subtaskId: string, status: TaskStatusType): Subtask {
@@ -1912,16 +2075,6 @@ export class TaskService {
 
   readSubtaskReport(featureName: string, taskFolder: string, subtaskId: string): string | null {
     return this.subtaskService.readReport(featureName, taskFolder, subtaskId);
-  }
-
-  private listSubtaskFolders(featureName: string, taskFolder: string): string[] {
-    const subtasksPath = getSubtasksPath(this.projectRoot, featureName, taskFolder);
-    if (!fileExists(subtasksPath)) return [];
-
-    return fs.readdirSync(subtasksPath, { withFileTypes: true })
-      .filter(d => d.isDirectory())
-      .map(d => d.name)
-      .sort();
   }
 
   private buildManualTaskSpec(

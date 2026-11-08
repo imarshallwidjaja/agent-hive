@@ -2,13 +2,14 @@ import { describe, expect, it, beforeEach, afterEach, spyOn } from "bun:test";
 import * as fs from "fs";
 import * as path from "path";
 import { spawn } from "node:child_process";
-import { TaskService, TaskSyncError, TaskUpdatePersistenceError, TASK_STATUS_SCHEMA_VERSION } from "./taskService";
+import { TaskCreateUncertainError, TaskService, TaskSyncError, TaskUpdatePersistenceError, TASK_STATUS_SCHEMA_VERSION } from "./taskService";
 import { PlanService } from "./planService";
 import { SubtaskService } from "./subtaskService";
 import { TaskUpdatePersistenceError as PublicTaskUpdatePersistenceError } from "../index";
 import type { TaskUpdateInput as PublicTaskUpdateInput, TaskUpdateResult as PublicTaskUpdateResult } from "../index";
 import { TaskStatus } from "../types";
 import { acquireLockSync, getLockPath, readJson } from "../utils/paths";
+import { resolveLockAnchor } from "../utils/nativeLock";
 
 const TEST_DIR = "/tmp/hive-core-taskservice-test-" + process.pid;
 const PROJECT_ROOT = TEST_DIR;
@@ -153,6 +154,366 @@ describe("TaskService", () => {
     const publicSubtasks = new SubtaskService(PROJECT_ROOT);
     expect(publicSubtasks.create(featureName, "02-subtask-api", "API / UI").folder).toBe("1-api--ui");
     expect(publicSubtasks.create(featureName, "02-subtask-api", "Hello_World").folder).toBe("2-helloworld");
+  });
+
+  describe("feature and task namespace integrity", () => {
+    const runChildren = (script: string, envs: Array<Record<string, string>>): Promise<string[]> => Promise.all(envs.map(env => {
+      const child = spawn(process.execPath, ["-e", script], { env: { ...process.env, PROJECT_ROOT, ...env } });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.setEncoding("utf8");
+      child.stderr.setEncoding("utf8");
+      child.stdout.on("data", chunk => { stdout += chunk; });
+      child.stderr.on("data", chunk => { stderr += chunk; });
+      return new Promise<string>((resolve, reject) => {
+        child.on("error", reject);
+        child.on("exit", code => code === 0 ? resolve(stdout.trim()) : reject(new Error(stderr || `child exited with code ${code}`)));
+      });
+    }));
+    const serviceModule = (name: string) => JSON.stringify(new URL(`./${name}.ts`, import.meta.url).href);
+
+    it("refuses task writes for an unknown, ambiguous or unreadable feature before any lock or directory is created", () => {
+      const featuresPath = path.join(TEST_DIR, ".hive", "features");
+      for (const directory of ["01_twin", "02_twin"]) {
+        fs.mkdirSync(path.join(featuresPath, directory, "tasks", "01-test-task"), { recursive: true });
+        fs.writeFileSync(path.join(featuresPath, directory, "feature.json"), JSON.stringify({ name: "twin", status: "executing", createdAt: "2026-01-01T00:00:00.000Z" }));
+        fs.writeFileSync(path.join(featuresPath, directory, "plan.md"), "# Plan\n\n## Tasks\n\n### 1. Test Task\n\nWork.\n");
+        fs.writeFileSync(path.join(featuresPath, directory, "tasks", "01-test-task", "status.json"), JSON.stringify({ status: "pending", origin: "plan" }));
+      }
+      setupFeature("broken");
+      setupTask("broken", "01-test-task");
+      fs.writeFileSync(path.join(featuresPath, "broken", "feature.json"), "{ not json");
+      // An existing subtask in each candidate directory, which a write that skipped resolution would change.
+      for (const directory of ["01_twin", "02_twin", "broken"]) {
+        const subtaskPath = path.join(featuresPath, directory, "tasks", "01-test-task", "subtasks", "1-sub");
+        fs.mkdirSync(subtaskPath, { recursive: true });
+        fs.writeFileSync(path.join(subtaskPath, "status.json"), JSON.stringify({ status: "pending" }));
+      }
+      const snapshot = () => fs.readdirSync(path.join(TEST_DIR, ".hive"), { recursive: true }).map(String).sort()
+        .map(entry => {
+          const target = path.join(TEST_DIR, ".hive", entry);
+          return fs.statSync(target).isFile() ? `${entry}=${fs.readFileSync(target, "utf8")}` : entry;
+        });
+      const before = snapshot();
+      const subtasks = new SubtaskService(PROJECT_ROOT);
+
+      for (const [featureName, reason] of [["ghost", "not_found"], ["twin", "ambiguous"], ["broken", "unreadable"]] as const) {
+        const unresolved = expect.objectContaining({ name: "FeatureResolutionError", reason });
+        expect(() => service.create(featureName, "manual")).toThrow(unresolved);
+        expect(() => service.update(featureName, "01-test-task", { status: "in_progress" })).toThrow(unresolved);
+        expect(() => service.writeSpec(featureName, "01-test-task", "Rewritten.\n")).toThrow(unresolved);
+        expect(() => service.createSubtask(featureName, "01-test-task", "Sub")).toThrow(unresolved);
+        expect(() => subtasks.create(featureName, "01-test-task", "Sub")).toThrow(unresolved);
+        expect(() => service.updateSubtask(featureName, "01-test-task", "1.1", "done")).toThrow(unresolved);
+        expect(() => subtasks.writeSpec(featureName, "01-test-task", "1.1", "Rewritten.\n")).toThrow(unresolved);
+        expect(() => subtasks.writeReport(featureName, "01-test-task", "1.1", "Report.\n")).toThrow(unresolved);
+        expect(() => subtasks.delete(featureName, "01-test-task", "1.1")).toThrow(unresolved);
+        try {
+          service.sync(featureName);
+          throw new Error("Expected an unresolved feature");
+        } catch (error) {
+          expect(error).toBeInstanceOf(TaskSyncError);
+          expect(error).toMatchObject({ stage: "validation", applied: { removed: [], created: [], refreshed: [] }, cause: unresolved });
+          expect((error as Error).message).toStartWith("Task sync rejected; no task files were changed.");
+        }
+      }
+      expect(service.listStatusEntries("ghost")).toEqual([]);
+      expect(service.getPlanSyncStatus("ghost").state).toBe("unknown");
+      expect(snapshot()).toEqual(before);
+    });
+
+    it("writes tasks and subtasks into the metadata-backed feature, never a metadata-less directory that has its name", () => {
+      const featuresPath = path.join(TEST_DIR, ".hive", "features");
+      // A leftover directory named like the feature, without feature.json, holding its own task and subtask.
+      const ghostTask = path.join(featuresPath, "collide", "tasks", "01-manual");
+      fs.mkdirSync(path.join(ghostTask, "subtasks", "1-sub"), { recursive: true });
+      fs.writeFileSync(path.join(ghostTask, "status.json"), JSON.stringify({ status: "pending", origin: "manual", planTitle: "Ghost" }));
+      fs.writeFileSync(path.join(ghostTask, "subtasks", "1-sub", "status.json"), JSON.stringify({ status: "pending" }));
+      fs.mkdirSync(path.join(featuresPath, "03_collide"), { recursive: true });
+      fs.writeFileSync(path.join(featuresPath, "03_collide", "feature.json"), JSON.stringify({ name: "collide", status: "executing", createdAt: "2026-01-01T00:00:00.000Z" }));
+      const ghost = () => fs.readdirSync(path.join(featuresPath, "collide"), { recursive: true }).map(String).sort()
+        .map(entry => {
+          const target = path.join(featuresPath, "collide", entry);
+          return fs.statSync(target).isFile() ? `${entry}=${fs.readFileSync(target, "utf8")}` : entry;
+        });
+      const before = ghost();
+
+      expect(service.create("collide", "manual")).toBe("01-manual");
+      service.update("collide", "01-manual", { status: "in_progress" });
+      service.writeSpec("collide", "01-manual", "Rewritten.\n");
+      const subtask = service.createSubtask("collide", "01-manual", "Sub");
+      expect(subtask).toMatchObject({ id: "1.1", folder: "1-sub" });
+      const subtasks = new SubtaskService(PROJECT_ROOT);
+      subtasks.update("collide", "01-manual", "1.1", "done");
+      subtasks.writeSpec("collide", "01-manual", "1.1", "Sub spec.\n");
+      subtasks.writeReport("collide", "01-manual", "1.1", "Sub report.\n");
+
+      const realTask = path.join(featuresPath, "03_collide", "tasks", "01-manual");
+      expect(readJson<TaskStatus>(path.join(realTask, "status.json"))).toMatchObject({ status: "in_progress", origin: "manual", planTitle: "manual" });
+      expect(fs.readFileSync(path.join(realTask, "spec.md"), "utf8")).toBe("Rewritten.\n");
+      expect(fs.readdirSync(path.join(realTask, "subtasks", "1-sub")).sort()).toEqual(["report.md", "spec.md", "status.json"]);
+      expect(service.getSubtask("collide", "01-manual", "1.1")).toMatchObject({ status: "done" });
+      subtasks.delete("collide", "01-manual", "1.1");
+      expect(fs.readdirSync(path.join(realTask, "subtasks"))).toEqual([]);
+      expect(ghost()).toEqual(before);
+    });
+
+    it("refuses a subtask for a missing task without creating its folders", () => {
+      setupFeature("subtask-missing");
+      const taskPath = path.join(TEST_DIR, ".hive", "features", "subtask-missing", "tasks", "01-ghost");
+      expect(() => service.createSubtask("subtask-missing", "01-ghost", "Sub")).toThrow("Task '01-ghost' not found");
+      expect(fs.existsSync(taskPath)).toBe(false);
+    });
+
+    it("never reuses a deleted subtask's number, and concurrent creations take distinct numbers", async () => {
+      const featureName = "subtask-numbers";
+      setupFeature(featureName);
+      setupTask(featureName, "03-api");
+      const ids = ["One", "Two", "Three"].map(name => service.createSubtask(featureName, "03-api", name).id);
+      expect(ids).toEqual(["3.1", "3.2", "3.3"]);
+      service.deleteSubtask(featureName, "03-api", "3.2");
+      expect(service.createSubtask(featureName, "03-api", "Four")).toMatchObject({ id: "3.4", folder: "4-four" });
+      expect(service.getSubtask(featureName, "03-api", "3.3")).toMatchObject({ folder: "3-three" });
+
+      const created = await runChildren(`
+        import { SubtaskService } from ${serviceModule("subtaskService")};
+        console.log(new SubtaskService(process.env.PROJECT_ROOT).create(process.env.FEATURE, "03-api", process.env.NAME).id);
+      `, ["a", "b", "c", "d"].map(name => ({ FEATURE: featureName, NAME: `child ${name}` })));
+      expect(created.sort()).toEqual(["3.5", "3.6", "3.7", "3.8"]);
+      expect(service.listSubtasks(featureName, "03-api").map(subtask => subtask.id)).toEqual(["3.1", "3.3", "3.4", "3.5", "3.6", "3.7", "3.8"]);
+    });
+
+    it("allocates distinct manual task orders across concurrent creations", async () => {
+      const featureName = "manual-orders";
+      setupFeature(featureName);
+      const folders = await runChildren(`
+        import { TaskService } from ${serviceModule("taskService")};
+        console.log(new TaskService(process.env.PROJECT_ROOT).create(process.env.FEATURE, process.env.NAME));
+      `, ["a", "b", "c", "d"].map(name => ({ FEATURE: featureName, NAME: `manual ${name}` })));
+
+      expect(folders.map(folder => folder.slice(0, 3)).sort()).toEqual(["01-", "02-", "03-", "04-"]);
+      expect(service.listStatusEntries(featureName).map(entry => entry.status)).toEqual(["pending", "pending", "pending", "pending"]);
+    });
+
+    it("publishes a manual task only with its status and spec, so a failed first status write leaves no folder", () => {
+      const featureName = "manual-staging";
+      setupFeature(featureName);
+      const tasksPath = path.join(TEST_DIR, ".hive", "features", featureName, "tasks");
+      const rename = fs.renameSync;
+      const failing = spyOn(fs, "renameSync").mockImplementation((from: fs.PathLike, to: fs.PathLike) => {
+        if (path.basename(String(to)) === "status.json" && path.basename(path.dirname(String(to))).startsWith(".01-manual.creating-")) {
+          throw new Error("Injected status write failure");
+        }
+        return rename(from, to);
+      });
+      try {
+        expect(() => service.create(featureName, "manual")).toThrow("Injected status write failure");
+      } finally {
+        failing.mockRestore();
+      }
+      expect(fs.existsSync(tasksPath) ? fs.readdirSync(tasksPath) : []).toEqual([]);
+
+      expect(service.create(featureName, "manual")).toBe("01-manual");
+      expect(fs.readdirSync(path.join(tasksPath, "01-manual")).sort()).toEqual(["spec.md", "status.json"]);
+    });
+
+    const captureFailure = (run: () => unknown, restore: () => void): unknown => {
+      try {
+        run();
+      } catch (error) {
+        return error;
+      } finally {
+        restore();
+      }
+      throw new Error("Expected the call to fail");
+    };
+
+    /** Fail the first close of the descriptor that holds the lock on `resource`, as a failed release would. */
+    const failLockReleaseOn = (resource: string): (() => void) => {
+      const anchorPath = resolveLockAnchor(resource).anchorPath;
+      const originalOpen = fs.openSync;
+      const originalClose = fs.closeSync;
+      let lockDescriptor: number | undefined;
+      const openSpy = spyOn(fs, "openSync").mockImplementation(((target: fs.PathLike, ...rest: unknown[]) => {
+        const descriptor = (originalOpen as (...args: unknown[]) => number)(target, ...rest);
+        if (lockDescriptor === undefined && String(target) === anchorPath) lockDescriptor = descriptor;
+        return descriptor;
+      }) as typeof fs.openSync);
+      const closeSpy = spyOn(fs, "closeSync").mockImplementation(((descriptor: number) => {
+        originalClose(descriptor);
+        if (descriptor !== lockDescriptor) return;
+        lockDescriptor = -1;
+        throw Object.assign(new Error("EIO: lock close failed"), { code: "EIO" });
+      }) as typeof fs.closeSync);
+      return () => {
+        openSpy.mockRestore();
+        closeSpy.mockRestore();
+      };
+    };
+
+    it("reports a publishing rename that threw as an uncertain create, whether or not it took effect, and a staging failure as nothing created", () => {
+      const featureName = "manual-rename";
+      setupFeature(featureName);
+      const tasksPath = path.join(TEST_DIR, ".hive", "features", featureName, "tasks");
+      const originalRename = fs.renameSync;
+      const failPublishingRename = (publish: boolean) => {
+        const spy = spyOn(fs, "renameSync").mockImplementation(((from: fs.PathLike, to: fs.PathLike) => {
+          if (path.dirname(String(to)) !== tasksPath) return originalRename(from, to);
+          if (publish) originalRename(from, to);
+          throw Object.assign(new Error("EIO: rename reported failure"), { code: "EIO" });
+        }) as typeof fs.renameSync);
+        return () => spy.mockRestore();
+      };
+      const expectUncertain = (failure: unknown, folder: string) => {
+        expect(failure).toBeInstanceOf(TaskCreateUncertainError);
+        expect(failure).toMatchObject({
+          featureName, folder, taskPath: path.join(tasksPath, folder), publication: "unknown",
+          publishFailure: { message: "EIO: rename reported failure" }, cause: { message: "EIO: rename reported failure" },
+        });
+        expect((failure as TaskCreateUncertainError).writeFailure).toBeUndefined();
+        expect((failure as TaskCreateUncertainError).releaseFailure).toBeUndefined();
+        const message = (failure as Error).message;
+        expect(message).toContain("may exist until the feature's tasks are read");
+        expect(message).not.toContain("was created");
+        expect(message).not.toContain("The task exists");
+      };
+
+      // The rename published the folder and then threw: the error cannot claim either outcome.
+      expectUncertain(captureFailure(() => service.create(featureName, "manual"), failPublishingRename(true)), "01-manual");
+      expect(service.listStatusEntries(featureName).map(entry => [entry.folder, entry.status])).toEqual([["01-manual", "pending"]]);
+      expect(fs.readdirSync(tasksPath)).toEqual(["01-manual"]);
+
+      // The rename threw without taking effect: the same uncertain report, the staging directory removed, and the
+      // order still free, so the read the error asks for finds no folder and a create then takes the same number.
+      expectUncertain(captureFailure(() => service.create(featureName, "second"), failPublishingRename(false)), "02-second");
+      expect(fs.readdirSync(tasksPath)).toEqual(["01-manual"]);
+      expect(service.create(featureName, "second")).toBe("02-second");
+
+      // A failure while staging, before the rename, published nothing and keeps its own error.
+      const originalWrite = fs.writeFileSync;
+      const writeSpy = spyOn(fs, "writeFileSync").mockImplementation(((target: fs.PathOrFileDescriptor, ...rest: unknown[]) => {
+        if (String(target).includes(`${path.sep}.03-third.creating-`)) throw Object.assign(new Error("ENOSPC: staging write failed"), { code: "ENOSPC" });
+        return (originalWrite as (...args: unknown[]) => void)(target, ...rest);
+      }) as typeof fs.writeFileSync);
+      const staged = captureFailure(() => service.create(featureName, "third"), () => writeSpy.mockRestore());
+      expect(staged).not.toBeInstanceOf(TaskCreateUncertainError);
+      expect((staged as Error).message).toBe("ENOSPC: staging write failed");
+      expect(fs.readdirSync(tasksPath).sort()).toEqual(["01-manual", "02-second"]);
+    });
+
+    it("reports a manual task whose tasks-directory flush failed after publication as created, naming its folder", () => {
+      const featureName = "manual-flush";
+      setupFeature(featureName);
+      const tasksPath = path.join(TEST_DIR, ".hive", "features", featureName, "tasks");
+      const taskPath = path.join(tasksPath, "01-manual");
+      const originalRename = fs.renameSync;
+      const originalFsync = fs.fsyncSync;
+      let published = false;
+      const renameSpy = spyOn(fs, "renameSync").mockImplementation(((from: fs.PathLike, to: fs.PathLike) => {
+        originalRename(from, to);
+        if (String(to) === taskPath) published = true;
+      }) as typeof fs.renameSync);
+      const fsyncSpy = spyOn(fs, "fsyncSync").mockImplementation(((descriptor: number) => {
+        if (published) throw new Error("EIO: flush failed");
+        return originalFsync(descriptor);
+      }) as typeof fs.fsyncSync);
+
+      const failure = captureFailure(() => service.create(featureName, "manual"), () => {
+        renameSpy.mockRestore();
+        fsyncSpy.mockRestore();
+      });
+
+      expect(failure).toBeInstanceOf(TaskCreateUncertainError);
+      expect(failure).toMatchObject({ featureName, folder: "01-manual", taskPath, publication: "published", writeFailure: { message: "EIO: flush failed" }, cause: { message: "EIO: flush failed" } });
+      expect((failure as TaskCreateUncertainError).releaseFailure).toBeUndefined();
+      expect((failure as Error).message).toContain("may not survive a crash");
+      expect((failure as Error).message).toContain("do not create it again");
+      expect(fs.readdirSync(taskPath).sort()).toEqual(["spec.md", "status.json"]);
+      expect(service.listStatusEntries(featureName).map(entry => [entry.folder, entry.status])).toEqual([["01-manual", "pending"]]);
+      // The lock was released: the next creation proceeds and takes the next order.
+      expect(service.create(featureName, "second")).toBe("02-second");
+    });
+
+    it("never reports a published manual task as an ordinary error when the feature cannot be read again after publication", () => {
+      const featureName = "manual-reread";
+      setupFeature(featureName);
+      const featuresPath = path.join(TEST_DIR, ".hive", "features");
+      const featurePath = path.join(featuresPath, featureName);
+      const tasksPath = path.join(featurePath, "tasks");
+      const originalRename = fs.renameSync;
+      const originalReaddir = fs.readdirSync;
+      const originalLstat = fs.lstatSync;
+      const originalFsync = fs.fsyncSync;
+      let published: string | undefined;
+      let failFlush = false;
+      const injectAfterPublication = () => {
+        const renameSpy = spyOn(fs, "renameSync").mockImplementation(((from: fs.PathLike, to: fs.PathLike) => {
+          originalRename(from, to);
+          if (path.dirname(String(to)) === tasksPath) published = String(to);
+        }) as typeof fs.renameSync);
+        // Once the folder is published, rescanning the feature namespace fails with an ordinary I/O error.
+        const readdirSpy = spyOn(fs, "readdirSync").mockImplementation(((target: fs.PathLike, ...rest: unknown[]) => {
+          if (published !== undefined && String(target) === featuresPath) throw Object.assign(new Error("EIO: features unreadable"), { code: "EIO" });
+          return (originalReaddir as (...args: unknown[]) => unknown)(target, ...rest);
+        }) as typeof fs.readdirSync);
+        const lstatSpy = spyOn(fs, "lstatSync").mockImplementation(((target: fs.PathLike, ...rest: unknown[]) => {
+          if (published !== undefined && String(target) === featurePath) throw Object.assign(new Error("EIO: feature unreadable"), { code: "EIO" });
+          return (originalLstat as (...args: unknown[]) => unknown)(target, ...rest);
+        }) as typeof fs.lstatSync);
+        const fsyncSpy = spyOn(fs, "fsyncSync").mockImplementation(((descriptor: number) => {
+          if (failFlush && published !== undefined) throw new Error("EIO: flush failed");
+          return originalFsync(descriptor);
+        }) as typeof fs.fsyncSync);
+        return () => {
+          renameSpy.mockRestore();
+          readdirSpy.mockRestore();
+          lstatSpy.mockRestore();
+          fsyncSpy.mockRestore();
+        };
+      };
+
+      // The created folder's path is fixed before publication, so nothing after it rereads the feature.
+      let restore = injectAfterPublication();
+      try {
+        expect(service.create(featureName, "manual")).toBe("01-manual");
+      } finally {
+        restore();
+      }
+      expect(published).toBe(path.join(tasksPath, "01-manual"));
+
+      // A later failure after publication is still reported as a created task at the path fixed before publication.
+      published = undefined;
+      failFlush = true;
+      const failure = captureFailure(() => service.create(featureName, "second"), injectAfterPublication());
+      expect(failure).toBeInstanceOf(TaskCreateUncertainError);
+      expect(failure).toMatchObject({ featureName, folder: "02-second", taskPath: path.join(tasksPath, "02-second"), writeFailure: { message: "EIO: flush failed" } });
+      const message = (failure as Error).message;
+      expect(message).toContain("do not create it again");
+      expect(message).toContain("current");
+      expect(message).not.toMatch(/\bretry\b/i);
+      expect(service.listStatusEntries(featureName).map(entry => entry.folder)).toEqual(["01-manual", "02-second"]);
+    });
+
+    it("reports a manual task whose lock release failed after publication as created, and keeps a pre-publication error unchanged", () => {
+      const featureName = "manual-release";
+      setupFeature(featureName);
+      const syncPath = path.join(TEST_DIR, ".hive", "features", featureName, "task-sync.json");
+      const tasksPath = path.join(TEST_DIR, ".hive", "features", featureName, "tasks");
+
+      const failure = captureFailure(() => service.create(featureName, "manual"), failLockReleaseOn(syncPath));
+      expect(failure).toBeInstanceOf(TaskCreateUncertainError);
+      expect(failure).toMatchObject({ folder: "01-manual", taskPath: path.join(tasksPath, "01-manual"), publication: "published", releaseFailure: { message: "EIO: lock close failed" }, cause: { message: "EIO: lock close failed" } });
+      expect((failure as TaskCreateUncertainError).writeFailure).toBeUndefined();
+      expect((failure as Error).message).toContain("releasing the task-sync lock failed");
+      expect((failure as Error).message).not.toContain("crash");
+      expect(service.listStatusEntries(featureName).map(entry => entry.folder)).toEqual(["01-manual"]);
+
+      // A rejection before publication wrote nothing, so its own error is reported, not the failed release.
+      const rejected = captureFailure(() => service.create(featureName, "skipped", 5), failLockReleaseOn(syncPath));
+      expect(rejected).not.toBeInstanceOf(TaskCreateUncertainError);
+      expect((rejected as Error).message).toContain("Manual tasks are append-only");
+      expect(fs.readdirSync(tasksPath)).toEqual(["01-manual"]);
+    });
   });
 
   describe("update", () => {
@@ -3708,17 +4069,87 @@ Build.
       fs.writeFileSync(groupPath, "not a directory");
       expect(() => service.sync(featureName, { refreshPending: true })).toThrow(/would change its target from web\/a to web\/b/);
       fs.rmSync(groupPath);
-      // Feature metadata that cannot be read could hide the name a placement was created under.
+      // Feature metadata that cannot be read could hide the name a placement was created under, so sync refuses the
+      // feature before deriving anything.
       const metadataPath = path.join(TEST_DIR, ".hive", "features", featureName, "feature.json");
       const metadata = fs.readFileSync(metadataPath, "utf8");
       fs.writeFileSync(metadataPath, "{broken");
-      expect(() => service.sync(featureName, { refreshPending: true })).toThrow(/would change its target from web\/a to web\/b/);
+      const unreadable = tree();
+      expect(() => service.sync(featureName, { refreshPending: true })).toThrow(/Task sync rejected; no task files were changed\. Feature 'sync-status' cannot be resolved: unreadable metadata/);
+      expect(tree()).toEqual(unreadable);
       fs.writeFileSync(metadataPath, metadata);
       // A caller inventory naming the task refuses even when the disk shows nothing.
       expect(() => service.sync(featureName, { refreshPending: true, retainedWorktreeTasks: new Set(["02-build-api"]) })).toThrow(/retained worktree/);
 
       expect(service.sync(featureName, { refreshPending: true }).kept).toContain("02-build-api");
       expect(service.getRawStatus(featureName, "02-build-api")).toMatchObject({ target: "web/b" });
+    });
+
+    it("neither rewrites nor removes a pending task a worker may hold, and refreshes it only when selected", () => {
+      const groupPath = path.join(TEST_DIR, ".hive", ".worktrees", featureName);
+      fs.mkdirSync(path.join(groupPath, "01-setup"), { recursive: true });
+      const changed = planV1.replace("Setup.", "Setup changed.");
+      writePlan(changed);
+      const before = tree();
+
+      // A dispatched worker may still be reading the spec, so refreshPending refuses instead of rewriting it.
+      expect(() => service.sync(featureName, { refreshPending: true }))
+        .toThrow(/Pending plan task "01-setup" differs from plan\.md, but a worker placement or binding for it may remain .*refresh it by naming it in refreshTasks/);
+      expect(tree()).toEqual(before);
+      // A caller inventory naming the task refuses the same way when nothing remains on disk.
+      fs.rmSync(path.join(groupPath, "01-setup"), { recursive: true });
+      expect(() => service.sync(featureName, { refreshPending: true, retainedWorktreeTasks: new Set(["01-setup"]) })).toThrow(/"01-setup" differs from plan\.md/);
+      fs.mkdirSync(path.join(groupPath, "01-setup.json"), { recursive: true });
+
+      // A record that already matches the plan needs no rewrite, so its placement does not block the sync.
+      writePlan(planV1.replace("Ship.", "Ship changed."));
+      expect(service.sync(featureName, { refreshPending: true })).toMatchObject({ refreshed: ["02-build-api", "03-ship"] });
+      expect(service.getPlanSyncStatus(featureName)).toEqual({ state: "current" });
+
+      // Selecting the task attests that its assignment is terminal; a same-placement spec refresh is then applied.
+      writePlan(changed.replace("Ship.", "Ship changed."));
+      expect(service.sync(featureName, { refreshTasks: ["01-setup"], retainedWorktreeTasks: new Set(["01-setup"]) }).refreshed).toEqual(["01-setup"]);
+      expect(fs.readFileSync(path.join(taskPath("01-setup"), "spec.md"), "utf8")).toContain("Setup changed.");
+      expect(service.getPlanSyncStatus(featureName)).toEqual({ state: "current" });
+
+      // A pending task the plan dropped is kept while a placement may remain, or while its group cannot be listed.
+      writePlan(planV1.replace(/### 1\. Setup[\s\S]*?(?=### 2\.)/, "").replace("**Depends on**: 1\n\nShip.", "**Depends on**: none\n\nShip."));
+      const dropped = tree();
+      expect(() => service.sync(featureName, { refreshPending: true })).toThrow(/Pending plan task "01-setup" has no heading in plan\.md, but a worker placement or binding for it may remain/);
+      fs.rmSync(groupPath, { recursive: true });
+      fs.writeFileSync(groupPath, "not a directory");
+      expect(() => service.sync(featureName, { refreshPending: true })).toThrow(/"01-setup" has no heading in plan\.md, but a worker placement/);
+      expect(tree()).toEqual(dropped);
+      fs.rmSync(groupPath);
+      expect(service.sync(featureName, { refreshPending: true }).removed).toEqual(["01-setup"]);
+    });
+
+    it("skips a pending refresh or removal when a worker placement appears after sync checked for one", () => {
+      const placement = path.join(TEST_DIR, ".hive", ".worktrees", featureName, "02-build-api");
+      for (const [helper, plan] of [
+        ["refreshPlanTask", planV1.replace("Build.", "Build changed.")],
+        ["removePendingPlanTask", planV1.replace(/### 2\. Build api[\s\S]*?(?=### 3\.)/, "")],
+      ] as const) {
+        writePlan(plan);
+        const original = (service as any)[helper];
+        const appearing = spyOn(service as any, helper).mockImplementation(function (this: TaskService, ...args: any[]) {
+          fs.mkdirSync(placement, { recursive: true });
+          return original.apply(this, args);
+        });
+        let result;
+        try {
+          result = service.sync(featureName, { refreshPending: true });
+        } finally {
+          appearing.mockRestore();
+          fs.rmSync(path.dirname(placement), { recursive: true });
+        }
+        expect(result.skipped).toEqual(["02-build-api"]);
+        expect(service.getRawStatus(featureName, "02-build-api")).toMatchObject({ status: "pending", planTitle: "Build api" });
+        expect(fs.readFileSync(path.join(taskPath("02-build-api"), "spec.md"), "utf8")).not.toContain("Build changed.");
+        expect(readRecord()).toMatchObject({ state: "incomplete" });
+        writePlan(planV1);
+        service.sync(featureName, { refreshPending: true });
+      }
     });
 
     it("rejects an invalid stored graph from a selected refresh before writing the record or any task file", () => {
@@ -3827,9 +4258,22 @@ Build.
         expect(service.getPlanSyncStatus(featureName).state).toBe("incomplete");
       });
 
-      it("names a created task whose spec write failed after its status was published, and a refresh retry repairs it", () => {
+      it.each([
+        ["its staged status write", "status.json"],
+        ["its staged spec write", "spec.md"],
+        ["the rename that publishes its folder", null],
+      ] as const)("leaves no visible task folder when %s fails while creating a task, and a plain retry creates it", (_label, stagedFile) => {
         writePlan(`${planV1}\n### 4. Docs\n\n**Depends on**: none\n\nDocs.\n`);
-        const failing = failRenameOnto(path.join(taskPath("04-docs"), "spec.md"));
+        const tasksPath = path.join(featurePath(), "tasks");
+        const rename = fs.renameSync;
+        const failing = spyOn(fs, "renameSync").mockImplementation((from: fs.PathLike, to: fs.PathLike) => {
+          const target = String(to);
+          const staged = path.dirname(target).startsWith(path.join(tasksPath, ".04-docs.creating-"));
+          if (stagedFile === null ? target === taskPath("04-docs") : staged && path.basename(target) === stagedFile) {
+            throw new Error("Injected task creation failure");
+          }
+          return rename(from, to);
+        });
         let error: TaskSyncError;
         try {
           error = syncFailure();
@@ -3837,15 +4281,27 @@ Build.
           failing.mockRestore();
         }
 
-        expect(fs.existsSync(path.join(taskPath("04-docs"), "status.json"))).toBe(true);
-        expect(fs.existsSync(path.join(taskPath("04-docs"), "spec.md"))).toBe(false);
+        expect(fs.readdirSync(tasksPath).sort()).toEqual(["01-setup", "02-build-api", "03-ship"]);
         expect(error).toMatchObject({ stage: "tasks", applied: nothing, interrupted: { action: "create", folder: "04-docs" } });
-        expect(error.message).toMatch(/Interrupted while creating 04-docs.*status\.json and spec\.md may be missing, partly written or complete.*refreshPending: true/);
+        expect(error.message).toMatch(/Injected task creation failure.*Interrupted while creating 04-docs.*either absent, and a retry creates it, or complete/);
+        expect(service.listStatusEntries(featureName).map(entry => entry.folder)).toEqual(["01-setup", "02-build-api", "03-ship"]);
         expect(service.getPlanSyncStatus(featureName)).toEqual({ state: "incomplete", hint: expect.stringContaining("04-docs") });
 
-        service.sync(featureName, { refreshPending: true });
-        expect(fs.existsSync(path.join(taskPath("04-docs"), "spec.md"))).toBe(true);
+        expect(service.sync(featureName).created).toEqual(["04-docs"]);
+        expect(service.getRawStatus(featureName, "04-docs")).toMatchObject({ status: "pending", origin: "plan", planTitle: "Docs" });
+        expect(fs.readFileSync(path.join(taskPath("04-docs"), "spec.md"), "utf8")).toContain("Docs.");
         expect(service.getPlanSyncStatus(featureName)).toEqual({ state: "current" });
+      });
+
+      it("never lists a leftover staging directory as a task", () => {
+        const staging = path.join(featurePath(), "tasks", ".04-docs.creating-1-abcd");
+        fs.mkdirSync(staging);
+        fs.writeFileSync(path.join(staging, "status.json"), JSON.stringify({ status: "pending", origin: "plan", planTitle: "Docs" }));
+
+        expect(service.listStatusEntries(featureName).map(entry => entry.folder)).toEqual(["01-setup", "02-build-api", "03-ship"]);
+        expect(service.getSpecFreshness(featureName).map(entry => entry.folder)).toEqual(["01-setup", "02-build-api", "03-ship"]);
+        expect(service.sync(featureName)).toMatchObject({ created: [], removed: [] });
+        expect(fs.existsSync(staging)).toBe(true);
       });
 
       // Directory fsync is a no-op on Windows, so these post-rename failures cannot occur there.
@@ -3886,6 +4342,23 @@ Build.
           interrupted: { action: "refresh", folder: "03-ship" },
         });
         expect(error.message).toMatch(/Injected directory flush failure.*Applied before the failure and not rolled back: refreshed 01-setup, 02-build-api\. Interrupted while refreshing 03-ship/);
+      });
+
+      it.skipIf(process.platform === "win32")("names a created task whose folder was published complete before the directory flush failed", () => {
+        writePlan(`${planV1}\n### 4. Docs\n\n**Depends on**: none\n\nDocs.\n`);
+        const restore = failDirectoryFlush(path.join(featurePath(), "tasks"), [1]);
+        let error: TaskSyncError;
+        try {
+          error = syncFailure();
+        } finally {
+          restore();
+        }
+
+        expect(error).toMatchObject({ stage: "tasks", applied: nothing, interrupted: { action: "create", folder: "04-docs" } });
+        expect(service.getRawStatus(featureName, "04-docs")).toMatchObject({ status: "pending", planTitle: "Docs" });
+        expect(fs.readFileSync(path.join(taskPath("04-docs"), "spec.md"), "utf8")).toContain("Docs.");
+        expect(service.sync(featureName)).toMatchObject({ created: [], removed: [] });
+        expect(service.getPlanSyncStatus(featureName)).toEqual({ state: "current" });
       });
 
       // Each case fails one step of replacing the start record with the reconciled record, then refuses every later
@@ -4048,8 +4521,28 @@ Build.
 
       writePlan(planV1.replace("# Plan", "# Plan\n\nNew shared contract."));
       expect(service.getPlanSyncStatus(featureName).state).toBe("changed");
+      // The approval covers only the content it stamped, so standalone sync refuses the edited plan until it is
+      // approved again (or the approval is revoked, leaving an unapproved plan that sync treats as before).
+      const edited = tree();
+      expect(() => service.sync(featureName)).toThrow(/plan\.md changed after its recorded approval .*Read and review the current plan, then approve and sync it again/);
+      expect(tree()).toEqual(edited);
+      // A damaged content line approves nothing, so it is refused rather than read as a legacy approval.
+      const approvedPath = path.join(featurePath(), "APPROVED");
+      const stamped = fs.readFileSync(approvedPath, "utf8");
+      fs.writeFileSync(approvedPath, stamped.replace("Content-SHA256: ", "Content-SHA256 : "));
+      const damaged = tree();
+      expect(() => service.sync(featureName)).toThrow(/APPROVED marker is not a marker form Hive writes, so it approves no plan content/);
+      expect(tree()).toEqual(damaged);
+      // A legacy marker approves any content, so one whose timestamp no writer could produce is refused too.
+      fs.writeFileSync(approvedPath, "Approved at 2026-02-30T00:00:00.000Z\n");
+      const impossibleDate = tree();
+      expect(() => service.sync(featureName)).toThrow(/APPROVED marker is not a marker form Hive writes, so it approves no plan content/);
+      expect(tree()).toEqual(impossibleDate);
+      plans.clearComments(featureName);
+      plans.approve(featureName);
       service.sync(featureName);
       expect(service.getPlanSyncStatus(featureName)).toEqual({ state: "current" });
+      plans.revokeApproval(featureName);
 
       // Raw bytes are the identity: a CRLF rewrite is a content change even though it parses identically.
       writePlan(planV1.replace("# Plan", "# Plan\n\nNew shared contract.").replace(/\n/g, "\r\n"));

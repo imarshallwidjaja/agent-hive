@@ -8,7 +8,8 @@ export {
 export type { ConstraintRegister } from './constraintRegister.js';
 export { PlanService, PlanApprovalError, getPlanContentHash } from './planService.js';
 export type { PlanApprovalResult, PlanApprovalStage, PlanApprovalFailureReason } from './planService.js';
-export { TaskService, TaskSyncError, TaskUpdatePersistenceError, TASK_HANDOFF_MAX_BYTES } from './taskService.js';
+export type { TaskCreateFailures } from './taskService.js';
+export { TaskService, TaskCreateUncertainError, TaskSyncError, TaskUpdatePersistenceError, TASK_HANDOFF_MAX_BYTES } from './taskService.js';
 export type {
   SyncOptions,
   TaskSyncAction,

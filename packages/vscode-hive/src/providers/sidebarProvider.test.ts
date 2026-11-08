@@ -268,6 +268,75 @@ describe('HiveSidebarProvider', () => {
     expect((notesItem as any)?.description).toBe('Durable · 8 bytes');
   });
 
+  it('shows plan approval from the plan itself, separate from the feature lifecycle status', async () => {
+    const featureService = new FeatureService(testRoot);
+    const planService = new PlanService(testRoot);
+    featureService.create('plan-state');
+    planService.write('plan-state', '# Plan\n');
+    planService.approve('plan-state');
+    featureService.archive('plan-state', 'Paused.');
+    const featurePath = path.join(testRoot, '.hive', 'features', '01_plan-state');
+    const planRow = async () => {
+      const provider = new HiveSidebarProvider(testRoot);
+      const roots = await provider.getChildren();
+      const group = roots.find(item => 'groupName' in item && item.groupName === 'Archived')!;
+      const feature = (await provider.getChildren(group)).find((item: any) => item.name === 'plan-state')!;
+      expect((feature as any).description).toStartWith('Archived');
+      return (await provider.getChildren(feature)).find(item => item.label === 'Plan') as any;
+    };
+
+    // An archived feature keeps its lifecycle status while its plan is approved.
+    expect(await planRow()).toMatchObject({ description: 'Approved', contextValue: 'plan-approved' });
+
+    // An edit outside the plan tools leaves the marker but not the approval.
+    fs.writeFileSync(path.join(featurePath, 'plan.md'), '# Plan\n\nEdited.\n');
+    planService.addComment('plan-state', { line: 1, body: 'Why?', replies: [] });
+    expect(await planRow()).toMatchObject({ description: 'Not approved · 1 comment(s)', contextValue: 'plan-draft' });
+    expect(fs.existsSync(path.join(featurePath, 'APPROVED'))).toBe(true);
+  });
+
+  it('shows plan approval as unknown and keeps every feature child when the APPROVED marker cannot be read', async () => {
+    const featureService = new FeatureService(testRoot);
+    const planService = new PlanService(testRoot);
+    featureService.create('marker-state');
+    planService.write('marker-state', '# Plan\n\n## Tasks\n\n### 1. Setup\n\nSetup.\n');
+    planService.approve('marker-state');
+    new hiveCore.TaskService(testRoot).sync('marker-state');
+    const markerPath = path.join(testRoot, '.hive', 'features', '01_marker-state', 'APPROVED');
+    const marker = fs.readFileSync(markerPath, 'utf8');
+    const featureChildren = async () => {
+      const provider = new HiveSidebarProvider(testRoot);
+      const roots = await provider.getChildren();
+      const groups = roots.filter(item => 'groupName' in item);
+      const features = (await Promise.all(groups.map(group => provider.getChildren(group)))).flat();
+      const feature = features.find((item: any) => item.name === 'marker-state')!;
+      const children = await provider.getChildren(feature);
+      const tasks = await provider.getChildren(children.find(item => item.label === 'Tasks'));
+      return { children, tasks };
+    };
+    const expectUnknownApproval = async (error: RegExp) => {
+      const { children, tasks } = await featureChildren();
+      expect(children.map(child => child.label)).toEqual(['Plan', 'Worklog', 'Context', 'Tasks']);
+      expect(children[0]).toMatchObject({ description: 'Approval unknown', contextValue: 'plan-approval-unknown' });
+      expect(String(children[0].tooltip)).toMatch(error);
+      expect(tasks.map((task: any) => task.folder)).toEqual(['01-setup']);
+    };
+
+    fs.rmSync(markerPath);
+    fs.mkdirSync(markerPath);
+    await expectUnknownApproval(/EISDIR/);
+
+    fs.rmdirSync(markerPath);
+    fs.writeFileSync(markerPath, marker);
+    fs.chmodSync(markerPath, 0o000);
+    try {
+      await expectUnknownApproval(/EACCES/);
+    } finally {
+      fs.chmodSync(markerPath, 0o644);
+    }
+    expect((await featureChildren()).children[0]).toMatchObject({ description: 'Approved', contextValue: 'plan-approved' });
+  });
+
   it('lists a project context root with project governance and keeps the ninth note unwarned', async () => {
     const service = new hiveCore.ContextService(testRoot);
     const project = { type: 'project' } as const;

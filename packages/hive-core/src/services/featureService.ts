@@ -202,9 +202,8 @@ export class FeatureService {
   }
 
   /**
-   * FeatureService's locked writer of an existing feature's `feature.json`. Plan approval and revocation in
-   * `PlanService` still write `feature.json` directly, without this lock, until they move to this method. The
-   * feature is resolved before any lock or write, so an unknown or unreadable feature fails without side effects.
+   * The locked writer of an existing feature's `feature.json`; plan approval and revocation in `PlanService` record
+   * their status changes through it too. The feature is resolved before any lock or write, so an unknown or unreadable feature fails without side effects.
    * Under the `feature.json` lock the stored metadata is re-read, passed to `mutate` (unknown legacy fields
    * included) and durably replaced, so writers that use this method in any process never lose each other's
    * fields. `mutate` may throw to abort without writing; it may not rename the feature or move a completed feature

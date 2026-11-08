@@ -557,9 +557,9 @@ function resolveFeature(projectRoot: string, featureName: string): ResolvedFeatu
     });
   }
 
-  // `getFeaturePath` returns an existing `features/<name>` as it is. Otherwise it scans every sibling's
-  // feature.json through unguarded reads, and that scan can only land on the unique match found above. Ask the
-  // canonical resolver only when it can land elsewhere, so a sibling's metadata is never read through it.
+  // `getFeaturePath` returns a metadata-backed `features/<name>` as it is. Otherwise it resolves through sibling
+  // metadata, and that can only land on the unique match found above. Ask the canonical resolver only when an alias
+  // exists and it can land elsewhere, so without one a sibling's metadata is never read through it.
   if (aliasStat) {
     const canonical = getFeaturePath(projectRoot, featureName);
     if (path.resolve(canonical) !== path.resolve(matches[0]!.directoryPath)) {

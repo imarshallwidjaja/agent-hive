@@ -1,18 +1,17 @@
 import {
   getPlanPath,
   getFeaturePath,
-  getFeatureJsonPath,
   getApprovedPath,
-  readJson,
-  writeJson,
   readText,
   writeText,
+  writeAtomicDurable,
   fileExists,
   acquireLockSync,
+  FeatureResolutionError,
   LegacyLockError,
+  resolveExistingFeaturePath,
 } from '../utils/paths.js';
 import type {
-  FeatureJson,
   PlanComment,
   PlanHeadingOutline,
   PlanPatchOperation,
@@ -33,6 +32,7 @@ import {
 import * as fs from 'fs';
 import * as path from 'path';
 import { createHash } from 'crypto';
+import { FeatureService, FeatureWriteUncertainError, type FeaturePublication } from './featureService.js';
 import { ReviewService } from './reviewService.js';
 
 interface ParsedHeading extends PlanHeadingOutline {
@@ -51,6 +51,7 @@ export interface PlanApprovalResult {
 
 export type PlanApprovalStage = 'validation' | 'approval_marker' | 'feature_metadata';
 export type PlanApprovalFailureReason =
+  | 'feature_unresolved'
   | 'plan_missing'
   | 'stale_revision'
   | 'unresolved_comments'
@@ -61,22 +62,70 @@ export type PlanApprovalFailureReason =
   | 'feature_metadata_write_failed';
 
 export class PlanApprovalError extends Error {
+  /**
+   * Set when the feature metadata write failed after it may have become visible: the `FeatureWriteUncertainError`
+   * publication, with its read-back caveats. Read the feature before retrying.
+   */
+  public readonly metadataPublication?: FeaturePublication;
+
   constructor(
     message: string,
     public readonly reason: PlanApprovalFailureReason,
     public readonly stage: PlanApprovalStage,
     public readonly approvalPersisted: boolean,
     public readonly revision?: string,
-    options?: { cause: unknown },
+    options?: { cause: unknown; metadataPublication?: FeaturePublication },
   ) {
-    super(message, options);
+    super(message, options === undefined ? undefined : { cause: options.cause });
     this.name = 'PlanApprovalError';
+    if (options?.metadataPublication !== undefined) this.metadataPublication = options.metadataPublication;
   }
 }
 
 /** SHA-256 of the raw plan.md bytes as read, CRLF included; plan revisions and task sync records share it. */
 export function getPlanContentHash(content: string): string {
   return createHash('sha256').update(content).digest('hex');
+}
+
+/** The shape of the `Date.toISOString()` timestamp every Hive approval writer has recorded. */
+const APPROVED_TIMESTAMP = String.raw`(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z)`;
+/** The whole marker current approval writes. */
+const STAMPED_APPROVAL_MARKER = new RegExp(`^Approved at ${APPROVED_TIMESTAMP}\\nContent-SHA256: ([0-9a-f]{64})\\n$`);
+/** The whole marker every release before content stamping wrote, and the only older form Hive ever produced. */
+const LEGACY_APPROVAL_MARKER = new RegExp(`^Approved at ${APPROVED_TIMESTAMP}\\n$`);
+
+/** True only for a timestamp `Date.toISOString()` could have produced; impossible dates and rollovers fail the roundtrip. */
+function isWrittenTimestamp(timestamp: string): boolean {
+  const time = Date.parse(timestamp);
+  return !Number.isNaN(time) && new Date(time).toISOString() === timestamp;
+}
+
+/**
+ * What a feature's APPROVED marker records, judged on its whole bytes. Approval writes exactly
+ * `Approved at <timestamp>\nContent-SHA256: <hash>\n` (`stamped`); such an approval covers only the plan content it
+ * names, so an edit made outside the plan tools leaves the plan unapproved. Exactly `Approved at <timestamp>\n` is
+ * what older hosts wrote (`legacy`) and still approves whatever plan.md holds, until an explicit approval restamps it.
+ * Anything else, an empty file included, is `invalid` and approves nothing. Bytes that happen to equal a legacy
+ * marker read as one; no reader can tell a damaged file that matches a supported form from a genuine marker.
+ */
+export type PlanApprovalMarker =
+  | { state: 'absent' }
+  | { state: 'legacy' }
+  | { state: 'stamped'; contentHash: string }
+  | { state: 'invalid' };
+
+/** Read the APPROVED marker without writing anything. */
+export function readPlanApprovalMarker(projectRoot: string, featureName: string): PlanApprovalMarker {
+  const text = readText(getApprovedPath(projectRoot, featureName));
+  if (text === null) return { state: 'absent' };
+  const stamp = text.match(STAMPED_APPROVAL_MARKER);
+  if (stamp) return isWrittenTimestamp(stamp[1]!) ? { state: 'stamped', contentHash: stamp[2]! } : { state: 'invalid' };
+  const legacy = text.match(LEGACY_APPROVAL_MARKER);
+  return legacy && isWrittenTimestamp(legacy[1]!) ? { state: 'legacy' } : { state: 'invalid' };
+}
+
+function approvalCovers(marker: PlanApprovalMarker, contentHash: string): boolean {
+  return marker.state === 'legacy' || (marker.state === 'stamped' && marker.contentHash === contentHash);
 }
 
 function getRevision(contentHash: string, comments: PlanComment[], isApproved: boolean): string {
@@ -401,8 +450,11 @@ function assertNoNewUnownedTaskHeadings(before: string, after: string): void {
 
 export class PlanService {
   private reviewService: ReviewService;
+  private readonly featureService: FeatureService;
 
-  constructor(private projectRoot: string) {}
+  constructor(private projectRoot: string) {
+    this.featureService = new FeatureService(projectRoot);
+  }
 
   private getReviewService(): ReviewService {
     if (!this.reviewService) {
@@ -412,7 +464,15 @@ export class PlanService {
     return this.reviewService;
   }
 
+  /**
+   * Run a plan-state mutation under the feature's plan lock. The feature is resolved first, because taking the lock
+   * creates the feature directory: an unknown, unreadable or ambiguous feature throws `FeatureResolutionError` with
+   * nothing written. Completed features refuse every mutation; archived ones stay editable and stay archived. The
+   * completed check is an admission check: completion does not take the plan lock, so a mutation admitted just
+   * before it may finish afterwards.
+   */
   private withPlanStateLock<T>(featureName: string, fn: () => T): T {
+    resolveExistingFeaturePath(this.projectRoot, featureName);
     const releaseLock = acquirePlanPatchLock(this.projectRoot, featureName);
     try {
       this.assertFeatureMutable(featureName);
@@ -423,12 +483,15 @@ export class PlanService {
   }
 
   private assertFeatureMutable(featureName: string): void {
-    const feature = readJson<FeatureJson>(getFeatureJsonPath(this.projectRoot, featureName));
-    if (feature?.status === 'completed') {
+    if (this.featureService.get(featureName)?.status === 'completed') {
       throw new Error(`Feature '${featureName}' is completed and cannot be modified`);
     }
   }
 
+  /**
+   * Replace plan.md whole, without a revision guard. Like `patch`, it clears every plan comment and revokes approval:
+   * comments anchor to lines of the text they reviewed, and no comment carries over to replaced content.
+   */
   write(featureName: string, content: string): PlanWriteResult {
     return this.withPlanStateLock(featureName, () => {
       const planPath = getPlanPath(this.projectRoot, featureName);
@@ -451,8 +514,8 @@ export class PlanService {
     if (content === null) return null;
 
     const comments = this.getComments(featureName);
-    const isApproved = this.isApproved(featureName);
     const contentHash = getPlanContentHash(content);
+    const isApproved = this.isApprovedFor(featureName, contentHash);
     const revision = getRevision(contentHash, comments, isApproved);
     const base = {
       status: isApproved ? 'approved' as const : 'planning' as const,
@@ -480,9 +543,7 @@ export class PlanService {
     operations: PlanPatchOperation[],
     validateContent?: (content: string) => string | null,
   ): PlanPatchResult {
-    const releaseLock = acquirePlanPatchLock(this.projectRoot, featureName);
-    try {
-      this.assertFeatureMutable(featureName);
+    return this.withPlanStateLock(featureName, () => {
       const planPath = getPlanPath(this.projectRoot, featureName);
       const content = readText(planPath);
 
@@ -491,7 +552,7 @@ export class PlanService {
       }
 
       const currentContentHash = getPlanContentHash(content);
-      const currentRevision = getRevision(currentContentHash, this.getComments(featureName), this.isApproved(featureName));
+      const currentRevision = getRevision(currentContentHash, this.getComments(featureName), this.isApprovedFor(featureName, currentContentHash));
       if (expectedRevision !== currentRevision) {
         throw new Error(`Stale plan revision: expected ${expectedRevision}, current ${currentRevision}`);
       }
@@ -591,7 +652,8 @@ export class PlanService {
       if (preWriteContent === null) {
         throw new Error(`No plan.md found for feature '${featureName}'`);
       }
-      const preWriteRevision = getRevision(getPlanContentHash(preWriteContent), this.getComments(featureName), this.isApproved(featureName));
+      const preWriteContentHash = getPlanContentHash(preWriteContent);
+      const preWriteRevision = getRevision(preWriteContentHash, this.getComments(featureName), this.isApprovedFor(featureName, preWriteContentHash));
       if (expectedRevision !== preWriteRevision) {
         throw new Error(`Stale plan revision: expected ${expectedRevision}, current ${preWriteRevision}`);
       }
@@ -607,9 +669,7 @@ export class PlanService {
         contentHash: nextContentHash,
         changedSections,
       };
-    } finally {
-      releaseLock();
-    }
+    });
   }
 
   approve(featureName: string, expectedRevision?: string): PlanApprovalResult {
@@ -654,31 +714,57 @@ export class PlanService {
         const alreadyApproved = current.status === 'approved';
         const timestamp = new Date().toISOString();
         revision = getRevision(current.contentHash, current.comments, true);
-        if (!alreadyApproved) {
+        const marker = readPlanApprovalMarker(this.projectRoot, featureName);
+        // A legacy marker already approves this content but would keep approving any later edit, so explicit
+        // approval restamps it; the revision is unchanged because the plan stays approved.
+        if (marker.state !== 'stamped' || marker.contentHash !== current.contentHash) {
           progress.stage = 'approval_marker';
-          fs.writeFileSync(getApprovedPath(this.projectRoot, featureName), `Approved at ${timestamp}\n`);
+          // Flushed before the rename publishes it, so a crash cannot leave an empty or partial marker in its place.
+          writeAtomicDurable(getApprovedPath(this.projectRoot, featureName), `Approved at ${timestamp}\nContent-SHA256: ${current.contentHash}\n`);
         }
 
         progress.stage = 'feature_metadata';
-        const featurePath = getFeatureJsonPath(this.projectRoot, featureName);
-        const feature = readJson<FeatureJson>(featurePath);
-        if (feature && (!alreadyApproved || feature.status !== 'approved')) {
-          feature.status = 'approved';
-          feature.approvedAt = timestamp;
-          writeJson(featurePath, feature);
+        // An archived feature keeps its status and archive fields: approving its plan does not reactivate it.
+        const feature = this.featureService.get(featureName);
+        if (feature && feature.status !== 'archived' && (!alreadyApproved || feature.status !== 'approved')) {
+          this.featureService.updateMetadata(featureName, (stored) => {
+            if (stored.status === 'archived') return;
+            stored.status = 'approved';
+            stored.approvedAt = timestamp;
+          });
         }
         return { success: true, feature: featureName, approvalPersisted: true, revision, contentHash: current.contentHash, ...(alreadyApproved ? { alreadyApproved: true as const } : {}) };
       });
     } catch (error) {
       if (error instanceof PlanApprovalError) throw error;
+      const message = error instanceof Error ? error.message : String(error);
+      if (progress.stage === 'validation' && error instanceof FeatureResolutionError) {
+        // No feature was identified, so there is no approval state to report.
+        throw new PlanApprovalError(message, 'feature_unresolved', 'validation', false, undefined, { cause: error });
+      }
       const reason = progress.stage === 'approval_marker' ? 'approval_marker_write_failed'
         : progress.stage === 'feature_metadata' ? 'feature_metadata_write_failed' : 'plan_approval_failed';
-      throw new PlanApprovalError(error instanceof Error ? error.message : String(error), reason, progress.stage, this.isApproved(featureName), revision, { cause: error });
+      throw new PlanApprovalError(message, reason, progress.stage, this.isApproved(featureName), revision, {
+        cause: error,
+        ...(error instanceof FeatureWriteUncertainError ? { metadataPublication: error.publication } : {}),
+      });
     }
   }
 
+  /**
+   * Whether an approval covers the current plan.md: a legacy marker always does, a stamped marker only while plan.md
+   * still has the content it approved, and an invalid marker never does. Reads only.
+   */
   isApproved(featureName: string): boolean {
-    return fileExists(getApprovedPath(this.projectRoot, featureName));
+    const marker = readPlanApprovalMarker(this.projectRoot, featureName);
+    if (marker.state !== 'stamped') return marker.state === 'legacy';
+    const content = readText(getPlanPath(this.projectRoot, featureName));
+    return content !== null && marker.contentHash === getPlanContentHash(content);
+  }
+
+  /** Whether an approval covers plan content with this hash, for callers that already read the plan. */
+  private isApprovedFor(featureName: string, contentHash: string): boolean {
+    return approvalCovers(readPlanApprovalMarker(this.projectRoot, featureName), contentHash);
   }
 
   revokeApproval(featureName: string): void {
@@ -691,13 +777,13 @@ export class PlanService {
       fs.unlinkSync(approvedPath);
     }
 
-    // Also update feature.json for backwards compatibility
-    const featurePath = getFeatureJsonPath(this.projectRoot, featureName);
-    const feature = readJson<FeatureJson>(featurePath);
-    if (feature && feature.status === 'approved') {
-      feature.status = 'planning';
-      delete feature.approvedAt;
-      writeJson(featurePath, feature);
+    // feature.json mirrors approval only while the feature is approved; other statuses, archived included, stay.
+    if (this.featureService.get(featureName)?.status === 'approved') {
+      this.featureService.updateMetadata(featureName, (stored) => {
+        if (stored.status !== 'approved') return;
+        stored.status = 'planning';
+        delete stored.approvedAt;
+      });
     }
   }
 

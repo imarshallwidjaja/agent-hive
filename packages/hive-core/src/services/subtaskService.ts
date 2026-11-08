@@ -5,12 +5,15 @@ import {
   getSubtaskStatusPath,
   getSubtaskSpecPath,
   getSubtaskReportPath,
+  getTaskStatusPath,
+  acquireLockSync,
   ensureDir,
   readJson,
   writeJson,
   readText,
   writeText,
   fileExists,
+  resolveExistingFeaturePath,
 } from '../utils/paths.js';
 import { Subtask, SubtaskType, SubtaskStatus, TaskStatusType } from '../types.js';
 
@@ -18,40 +21,62 @@ export class SubtaskService {
   constructor(private projectRoot: string) {}
 
   create(featureName: string, taskFolder: string, name: string, type?: SubtaskType): Subtask {
-    const subtasksPath = getSubtasksPath(this.projectRoot, featureName, taskFolder);
-    ensureDir(subtasksPath);
+    return this.createWithFolderSlug(featureName, taskFolder, name, type, this.slugify(name));
+  }
 
-    const existingFolders = this.listFolders(featureName, taskFolder);
-    const taskOrder = parseInt(taskFolder.split('-')[0], 10);
-    const nextOrder = existingFolders.length + 1;
-    const subtaskId = `${taskOrder}.${nextOrder}`;
-    const folderName = `${nextOrder}-${this.slugify(name)}`;
-    const subtaskPath = getSubtaskPath(this.projectRoot, featureName, taskFolder, folderName);
+  /**
+   * Create a subtask whose folder is `<order>-<folderSlug>`, for callers with their own slug rules. The feature and
+   * task must exist before anything is written. The order is one past the highest existing numeric prefix, allocated
+   * under the task's status lock, so a deleted subtask's number is never reused and concurrent creations differ.
+   */
+  createWithFolderSlug(featureName: string, taskFolder: string, name: string, type: SubtaskType | undefined, folderSlug: string): Subtask {
+    resolveExistingFeaturePath(this.projectRoot, featureName);
+    const taskStatusPath = getTaskStatusPath(this.projectRoot, featureName, taskFolder);
+    // Checked before the lock, whose acquisition would create the missing task directory.
+    if (!fileExists(taskStatusPath)) {
+      throw new Error(`Task '${taskFolder}' not found`);
+    }
+    const release = acquireLockSync(taskStatusPath, { staleLockTTL: Number.POSITIVE_INFINITY });
+    try {
+      if (!fileExists(taskStatusPath)) {
+        throw new Error(`Task '${taskFolder}' not found`);
+      }
+      ensureDir(getSubtasksPath(this.projectRoot, featureName, taskFolder));
 
-    ensureDir(subtaskPath);
+      const taskOrder = parseInt(taskFolder.split('-')[0], 10);
+      const nextOrder = this.listFolders(featureName, taskFolder)
+        .map((folder) => parseInt(folder, 10))
+        .filter((order) => !Number.isNaN(order))
+        .reduce((max, order) => Math.max(max, order), 0) + 1;
+      const subtaskId = `${taskOrder}.${nextOrder}`;
+      const folderName = `${nextOrder}-${folderSlug}`;
+      fs.mkdirSync(getSubtaskPath(this.projectRoot, featureName, taskFolder, folderName));
 
-    const subtaskStatus: SubtaskStatus = {
-      status: 'pending',
-      type,
-      createdAt: new Date().toISOString(),
-    };
-    writeJson(getSubtaskStatusPath(this.projectRoot, featureName, taskFolder, folderName), subtaskStatus);
+      const subtaskStatus: SubtaskStatus = {
+        status: 'pending',
+        type,
+        createdAt: new Date().toISOString(),
+      };
+      writeJson(getSubtaskStatusPath(this.projectRoot, featureName, taskFolder, folderName), subtaskStatus);
 
-    const specContent = `# Subtask: ${name}\n\n**Type:** ${type || 'custom'}\n**ID:** ${subtaskId}\n\n## Instructions\n\n_Add detailed instructions here_\n`;
-    writeText(getSubtaskSpecPath(this.projectRoot, featureName, taskFolder, folderName), specContent);
+      const specContent = `# Subtask: ${name}\n\n**Type:** ${type || 'custom'}\n**ID:** ${subtaskId}\n\n## Instructions\n\n_Add detailed instructions here_\n`;
+      writeText(getSubtaskSpecPath(this.projectRoot, featureName, taskFolder, folderName), specContent);
 
-    return {
-      id: subtaskId,
-      name,
-      folder: folderName,
-      status: 'pending',
-      type,
-      createdAt: subtaskStatus.createdAt,
-    };
+      return {
+        id: subtaskId,
+        name,
+        folder: folderName,
+        status: 'pending',
+        type,
+        createdAt: subtaskStatus.createdAt,
+      };
+    } finally {
+      release();
+    }
   }
 
   update(featureName: string, taskFolder: string, subtaskId: string, status: TaskStatusType): Subtask {
-    const subtaskFolder = this.findFolder(featureName, taskFolder, subtaskId);
+    const subtaskFolder = this.findFolderForWrite(featureName, taskFolder, subtaskId);
     if (!subtaskFolder) {
       throw new Error(`Subtask '${subtaskId}' not found in task '${taskFolder}'`);
     }
@@ -127,7 +152,7 @@ export class SubtaskService {
   }
 
   writeSpec(featureName: string, taskFolder: string, subtaskId: string, content: string): string {
-    const subtaskFolder = this.findFolder(featureName, taskFolder, subtaskId);
+    const subtaskFolder = this.findFolderForWrite(featureName, taskFolder, subtaskId);
     if (!subtaskFolder) {
       throw new Error(`Subtask '${subtaskId}' not found in task '${taskFolder}'`);
     }
@@ -138,7 +163,7 @@ export class SubtaskService {
   }
 
   writeReport(featureName: string, taskFolder: string, subtaskId: string, content: string): string {
-    const subtaskFolder = this.findFolder(featureName, taskFolder, subtaskId);
+    const subtaskFolder = this.findFolderForWrite(featureName, taskFolder, subtaskId);
     if (!subtaskFolder) {
       throw new Error(`Subtask '${subtaskId}' not found in task '${taskFolder}'`);
     }
@@ -165,7 +190,7 @@ export class SubtaskService {
   }
 
   delete(featureName: string, taskFolder: string, subtaskId: string): void {
-    const subtaskFolder = this.findFolder(featureName, taskFolder, subtaskId);
+    const subtaskFolder = this.findFolderForWrite(featureName, taskFolder, subtaskId);
     if (!subtaskFolder) {
       throw new Error(`Subtask '${subtaskId}' not found in task '${taskFolder}'`);
     }
@@ -184,6 +209,15 @@ export class SubtaskService {
       .filter(d => d.isDirectory())
       .map(d => d.name)
       .sort();
+  }
+
+  /**
+   * The subtask folder a mutation writes, found only after the feature resolves: an unknown, ambiguous or unreadable
+   * feature name throws `FeatureResolutionError` before any write, and the folder lies in the resolved feature.
+   */
+  private findFolderForWrite(featureName: string, taskFolder: string, subtaskId: string): string | null {
+    resolveExistingFeaturePath(this.projectRoot, featureName);
+    return this.findFolder(featureName, taskFolder, subtaskId);
   }
 
   private findFolder(featureName: string, taskFolder: string, subtaskId: string): string | null {

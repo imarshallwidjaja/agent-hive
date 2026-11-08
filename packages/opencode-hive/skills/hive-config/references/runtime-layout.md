@@ -56,9 +56,10 @@ Before its first workspace or Git mutation, a create, merge, remove or cleanup w
 ## Features
 
 - Tools address features by **logical name** (`[A-Za-z0-9][A-Za-z0-9_-]*`). New directories are `<NN>_<name>` with a zero-padded index one above the current maximum.
-- Resolution: an exact directory-name match wins; otherwise the directory whose `feature.json` `name` (or the suffix after `NN_` / `NN-`) equals the logical name. Older unprefixed directories stay readable.
-- Feature statuses: `planning`, `approved`, `executing`, `completed`, `archived`. A completed feature cannot be reopened.
+- Resolution: a name selects the one directory with a valid `feature.json` whose `name` equals it, or whose directory name equals it exactly (an indexed alias such as `03_checkout`). Writes refuse a name that matches no such directory, matches more than one, or has a candidate directory with unreadable metadata. Only such refused names, for reads, fall back to an exact directory-name match, then the suffix after `NN_` / `NN-`; a leftover directory with the feature's name but no `feature.json` never takes writes from the indexed feature. Older unprefixed directories stay readable.
+- Feature statuses: `planning`, `approved`, `executing`, `completed`, `archived`. A completed feature cannot be reopened. The status is the feature lifecycle, not plan approval: `hive_status` reports `feature.planApproved` separately.
 - Approval writes `APPROVED` before updating `feature.json`, so a marker can exist while `feature.json` still says `planning` after a failed write. `hive_plan_approve` reports this through `approvalPersisted` and `stage`; the fix is a retry through the tool, not an edit.
+- A marker that is exactly `Approved at <timestamp>` and a `Content-SHA256: <hash>` line approves only that plan content; one that is exactly the `Approved at <timestamp>` line comes from an older host and approves any content until the next approval restamps it; any other bytes, an empty file included, approve nothing. A marker that exists therefore does not show the current plan is approved: `hive_plan_read` `status` does.
 
 ## Tasks
 

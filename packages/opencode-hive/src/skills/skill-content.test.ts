@@ -1807,6 +1807,7 @@ describe('skill content', () => {
     const executing = BUILTIN_SKILLS.find((entry) => entry.name === 'executing-plans')!.template;
     const context = BUILTIN_SKILLS.find((entry) => entry.name === 'context-engineering')!.template;
     expect(executing).toContain("read the report it published and record status and a compact summary under the primary prompt's Task Report Ownership rules");
+    expect(executing).toContain("Record a pending task `in_progress` immediately before its launch, and handle a failed or unconfirmed launch, under the primary prompt's Task Report Ownership rules");
     expect(executing).toContain("follow the primary prompt's Interrupted Worker Recovery rules; a failed run does not fail the task");
     expect(executing).not.toContain('record its summary and terminal report');
     expect(context).toContain('Task reports and `handoff.md` are task records, not managed context. Do not copy report history into context.');
