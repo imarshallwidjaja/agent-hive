@@ -406,6 +406,13 @@ function mayHaveWorkerPlacement(projectRoot: string, featureName: string, folder
   });
 }
 
+/** Why a new task record is refused for a folder that a worker placement or binding already claims. */
+function newTaskOverPlacementMessage(operation: string, folder: string): string {
+  return `${operation} rejected; no task files were changed. Task "${folder}" has no record under tasks/, but a worker placement or binding ` +
+    'for it remains under .hive/.worktrees, placed from a record such as a legacy execution/ one, so a new task record would take over ' +
+    'the identity that worker was placed from. Integrate or clean up that worktree once no assignment for it is running, then try again.';
+}
+
 /** The first stored field that readers consume and that has the wrong shape; absent fields are valid. */
 function storedStatusFieldProblem(status: TaskStatus): string | null {
   if (status.origin !== undefined && status.origin !== 'plan' && status.origin !== 'manual') {
@@ -504,8 +511,8 @@ export class TaskService {
   }
 
   /**
-   * Reconcile task records with the current plan. Syncs of one feature are serialized by the task-sync.json lock;
-   * every action is derived and the resulting stored graph validated before anything is written. task-sync.json
+   * Reconcile task records with the current plan. Syncs of one feature are serialized with each other, with manual
+   * task creation and with worker placement claims by the task-sync.json lock; every action is derived and the resulting stored graph validated before anything is written. task-sync.json
    * durably records `incomplete` before the first task write, and is replaced by `reconciled` only after the plan is
    * unchanged and every unfinished plan task matches it; a skipped task or a failure before that replacement leaves it
    * `incomplete`, and an error reported by the replacement itself is settled by reading the record back.
@@ -828,6 +835,12 @@ export class TaskService {
           `create a replacement beside started or finished work: restore the heading title that produces "${replaced.folder}", or give the new task its own number.`,
         );
       }
+      // A worker placed from a record this sync does not list, such as a legacy execution/ record, would have a new
+      // task record take over its identity. A worker's claim holds this sync's lock, so the check cannot race one.
+      if ((retainedWorktrees !== 'unknown' && retainedWorktrees.has(planTask.folder))
+        || mayHaveWorkerPlacement(this.projectRoot, featureName, planTask.folder)) {
+        throw new Error(newTaskOverPlacementMessage('Task sync', planTask.folder));
+      }
       const built = this.buildPlanTaskSpec(featureName, planTask, planTasks, planContent);
       creates.push({ task: planTask, built });
       proposed.push({ folder: planTask.folder, status: 'pending', origin: 'plan', dependsOn: built.dependsOn, fromPlan: true });
@@ -1027,6 +1040,9 @@ export class TaskService {
         `Task folder collision: order ${resolvedOrder} already exists as "${collision}". ` +
         `Choose a different order number or omit to auto-increment.`
       );
+    }
+    if (mayHaveWorkerPlacement(this.projectRoot, featureName, folder)) {
+      throw new Error(newTaskOverPlacementMessage('Manual task creation', folder));
     }
 
     const status: TaskStatus = {

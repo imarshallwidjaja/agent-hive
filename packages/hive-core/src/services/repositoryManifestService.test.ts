@@ -394,6 +394,30 @@ describe('RepositoryManifestService', () => {
       } finally {
         cleanup.mockRestore();
       }
+
+      // A later update retries the removal while the local manifest still holds the migrated topology.
+      initGitRepo(path.join(projectRoot, 'docs'));
+      const retried = new RepositoryManifestService(projectRoot).add([{ id: 'docs', path: './docs' }]);
+      expect(retried.legacyCleanup).toBe('removed');
+      expect(JSON.parse(fs.readFileSync(configPath, 'utf-8'))).toEqual({});
+    });
+  });
+
+  it('does not retry legacy cleanup once the local manifest no longer holds the migrated topology', () => {
+    withTempEnvironment((projectRoot, configPath) => {
+      initGitRepo(path.join(projectRoot, 'api'));
+      initGitRepo(path.join(projectRoot, 'web'));
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+      const legacy = JSON.stringify({ repositoryRoot: projectRoot, repositories: [{ id: 'api', path: './api' }] });
+      fs.writeFileSync(configPath, legacy);
+      fs.mkdirSync(path.join(projectRoot, '.hive'), { recursive: true });
+      // The user replaced the migrated entry in the local manifest; the global config is no longer its source.
+      fs.writeFileSync(path.join(projectRoot, '.hive', 'repositories.json'), JSON.stringify({ schemaVersion: 1, repositories: [{ id: 'web', path: './web' }] }));
+
+      const result = new RepositoryManifestService(projectRoot).add([{ id: 'api', path: './api' }]);
+
+      expect(result.legacyCleanup).toBeUndefined();
+      expect(fs.readFileSync(configPath, 'utf-8')).toBe(legacy);
     });
   });
 

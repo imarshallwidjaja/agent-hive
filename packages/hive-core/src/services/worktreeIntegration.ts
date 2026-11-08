@@ -8,6 +8,7 @@ import {
   buildSkippedCleanupOutcome,
   buildThrownCleanupOutcome,
   classifyWorktreeOutcome,
+  readBranchOid,
   toMergeCleanupBlock,
 } from './worktreeOutcome.js';
 import type {
@@ -67,6 +68,47 @@ export function resolveIntegrationPolicy(
 }
 
 /**
+ * Rebase replays source commits one at a time, so a preserved conflict would
+ * leave earlier picks applied under an open cherry-pick. That combination is
+ * refused before any lock or Git read.
+ */
+export function rebasePreserveConflictsFailure(policy: IntegrationPolicy, preserveConflicts: boolean | undefined): string | null {
+  if (policy.strategy !== 'rebase' || preserveConflicts !== true) return null;
+  return "strategy 'rebase' cannot preserve conflicts: a conflict would leave earlier replayed commits applied under an open cherry-pick. Use strategy 'squash' (rewrite-private) or a normal merge (preserve-source) with preserveConflicts, or rebase without preserveConflicts";
+}
+
+/**
+ * Pin a branch for compare-and-delete cleanup. Returns undefined only when the
+ * exact branch ref is missing. Without `discard`, refuses a branch holding
+ * commits the target checkout's HEAD does not contain; every Git failure
+ * propagates instead of reading as an absent branch.
+ */
+export async function prepareBranchDeletion(
+  git: SimpleGit,
+  branchName: string,
+  discard: boolean,
+  refusalGuidance: string,
+): Promise<string | undefined> {
+  const expected = await readBranchOid(git, branchName);
+  if (expected === null) return undefined;
+  if (discard) return expected;
+  let targetHead: string;
+  try {
+    targetHead = (await git.revparse(['--verify', 'HEAD^{commit}'])).trim();
+  } catch (error) {
+    throw new Error(`Refusing to delete branch ${branchName}: the target HEAD could not be resolved (${error instanceof Error ? error.message : String(error)}).${refusalGuidance}`, { cause: error });
+  }
+  const output = (await git.raw(['rev-list', '--count', `${targetHead}..${expected}`])).trim();
+  if (!/^\d+$/.test(output)) {
+    throw new Error(`Refusing to delete branch ${branchName}: unexpected rev-list output ${JSON.stringify(output)}.${refusalGuidance}`);
+  }
+  if (Number(output) > 0) {
+    throw new Error(`Refusing to delete branch ${branchName}: ${output} unmerged commits would be discarded.${refusalGuidance}`);
+  }
+  return expected;
+}
+
+/**
  * The integration work the pinned source requires, classified once and shared
  * by composite preflight and execution:
  * - contained: the source is already an ancestor of (or equal to) the target.
@@ -100,7 +142,7 @@ export type CompletedIntegration =
 
 type TargetMergeEligibility =
   | TargetMergeCandidates
-  | { reasonCode: 'TARGET_DIRTY' | 'TARGET_RECONCILIATION_REQUIRED' | 'GIT_OPERATION_IN_PROGRESS'; error: string };
+  | { reasonCode: 'INVALID_ARGUMENTS' | 'TARGET_DIRTY' | 'TARGET_RECONCILIATION_REQUIRED' | 'GIT_OPERATION_IN_PROGRESS'; error: string };
 
 const gitOperationStates = [
   { name: 'MERGE_HEAD', label: 'merge' },
@@ -486,6 +528,17 @@ export async function inspectTargetMergeEligibility(options: {
     ?? await classifyIntegrationWork(targetGit, targetCommit, sourceCommit, policy);
   if (candidates.workKind === 'contained' || candidates.workKind === 'private-content-noop') return candidates;
 
+  if (policy.strategy === 'rebase') {
+    // Rebase replays commits one by one; a merge commit in the range cannot be replayed.
+    const mergeCommit = (await targetGit.raw(['rev-list', '--merges', '--max-count=1', `${topologyTargetCommit}..${sourceCommit}`])).trim();
+    if (mergeCommit) {
+      return {
+        reasonCode: 'INVALID_ARGUMENTS',
+        error: `strategy 'rebase' needs a linear replay range, but ${topologyTargetCommit}..${sourceCommit} contains merge commit ${mergeCommit}. Use strategy 'squash' (rewrite-private) or a normal merge (preserve-source)`,
+      };
+    }
+  }
+
   const pathBounded = await isPathBoundedTopology(targetGit, topologyTargetCommit, sourceCommit, policy.strategy);
   const localDataPath = pathBounded
     ? null
@@ -561,12 +614,16 @@ export async function integrateWorktreeRepository(options: {
     readCommitMessage,
   } = options;
   const { strategy } = policy;
+  // Rollback may touch the target only after this operation published its
+  // markers and began changing it; a failure before that leaves the target as found.
+  let mutationBegun = false;
   const beginMutation = async (): Promise<void> => {
     try {
       await options.beforeMutation();
     } catch (error) {
       throw new BeforeMutationFailure(error);
     }
+    mutationBegun = true;
   };
   let startingHead: string | undefined;
   let targetRoot: string | undefined;
@@ -699,6 +756,29 @@ export async function integrateWorktreeRepository(options: {
     });
   };
 
+  // The source's changes are already in the target, as on a retry after an
+  // earlier squash of the same source landed beside independent target work.
+  // `merge --squash` still leaves SQUASH_MSG and AUTO_MERGE; with the index
+  // equal to HEAD, a mixed reset to HEAD removes them without changing a file.
+  const clearEmptySquash = async (): Promise<WorktreeIntegrationResult | null> => {
+    let failure: string | undefined;
+    try {
+      if ((await targetGit.raw(['status', '--porcelain=v1', '-z', '--untracked-files=no'])).length > 0) {
+        failure = 'the squash staged nothing but left tracked changes';
+      } else {
+        await targetGit.raw(['reset', '--quiet']);
+        const squashMessage = await resolveGitPath(targetGit, targetRoot!, 'SQUASH_MSG');
+        if (await fs.access(squashMessage).then(() => true, () => false)) failure = 'SQUASH_MSG remained after reset';
+      }
+    } catch (error) {
+      failure = error instanceof Error ? error.message : String(error);
+    }
+    if (failure) {
+      return integrationFailure('ROLLBACK_FAILED', `Squash of ${sourceCommit} staged no changes, but its operation state could not be cleared: ${failure}`, { mutation: 'unknown' });
+    }
+    return targetIdentityFailure(operationTarget!, 'POST_INTEGRATION_VERIFICATION_FAILED', 'POST_INTEGRATION_VERIFICATION_FAILED', 'unknown');
+  };
+
   try {
     targetRoot = await fs.realpath(path.resolve((await targetGit.raw(['rev-parse', '--show-toplevel'])).trim()));
     const branches = await targetGit.branch();
@@ -782,6 +862,11 @@ export async function integrateWorktreeRepository(options: {
             observedTarget: stagedTargetFailure.observedTarget,
           },
         );
+      }
+      if ((await targetGit.raw(['diff', '--cached', '--name-only', '-z'])).length === 0) {
+        const residueFailure = await clearEmptySquash();
+        if (residueFailure) return residueFailure;
+        return noOpResult(operationCompletion, await cleanupAfterProof(expectedTarget, operationCompletion));
       }
       await targetGit.commit(commitMessage!);
       finalHead = (await targetGit.revparse(['HEAD'])).trim();
@@ -917,6 +1002,8 @@ export async function integrateWorktreeRepository(options: {
   } catch (error: unknown) {
     if (error instanceof BeforeMutationFailure) throw error.cause;
     const message = (error as { message?: string }).message;
+    // A read that failed before the first mutation changed nothing, so there is nothing to abort or reset.
+    if (!mutationBegun) return integrationFailure('GIT_OPERATION_FAILED', message || 'Merge failed');
     const conflicts = await activeConflictFiles(targetGit);
     const isConflict = conflicts.length > 0;
     const preserveConflictState = isConflict && preserveConflicts;

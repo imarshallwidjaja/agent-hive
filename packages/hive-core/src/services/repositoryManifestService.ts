@@ -211,6 +211,7 @@ export class RepositoryManifestService {
       let currentRepositories: RepositoryConfig[];
       if (fs.existsSync(this.configPath)) {
         currentRepositories = this.readLocalManifest();
+        legacy = this.migratedLegacyTopology(currentRepositories);
       } else {
         const stored = this.configService.readLegacyRepositoryTopology();
         legacy = stored && projectRootsMatch(stored.repositoryRoot, this.projectRoot) ? stored : undefined;
@@ -253,6 +254,25 @@ export class RepositoryManifestService {
     const status = this.getStatus();
     if (status.error) throw new Error(status.error);
     return this.repositoryService.resolveManifest(status.repositories);
+  }
+
+  /**
+   * The legacy topology an earlier migration copied into the local manifest
+   * but could not remove from the global config, so a later update retries
+   * that removal. It qualifies only when the local manifest still begins with
+   * exactly the legacy repositories, as the migration wrote it; an unreadable
+   * config or a changed manifest leaves the global config untouched.
+   */
+  private migratedLegacyTopology(localRepositories: RepositoryConfig[]): LegacyRepositoryTopology | undefined {
+    let stored: LegacyRepositoryTopology | null;
+    try {
+      stored = this.configService.readLegacyRepositoryTopology();
+    } catch {
+      return undefined;
+    }
+    if (!stored || !projectRootsMatch(stored.repositoryRoot, this.projectRoot)) return undefined;
+    const migrated = localRepositories.slice(0, stored.repositories.length);
+    return JSON.stringify(migrated) === JSON.stringify(stored.repositories) ? stored : undefined;
   }
 
   private readLocalManifest(): RepositoryConfig[] {

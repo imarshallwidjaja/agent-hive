@@ -26,6 +26,7 @@ export type {
 export { SubtaskService } from './subtaskService.js';
 export { WorktreeService, createWorktreeService } from './worktreeService.js';
 export type {
+  BulkCleanupFailure,
   WorktreeInfo,
   WorktreeListError,
   WorktreeListResult,

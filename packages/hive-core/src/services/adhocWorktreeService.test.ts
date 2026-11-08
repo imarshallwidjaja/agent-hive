@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { spawnSync } from "child_process";
+import * as fsSync from "fs";
 import * as fs from "fs/promises";
 import * as os from "os";
 import * as path from "path";
@@ -8,7 +9,7 @@ import type { ResolvedRepository } from "../types";
 import { AdhocWorktreeService as CoreAdhocWorktreeService } from "./adhocWorktreeService";
 import { RepositoryService } from './repositoryService.js';
 import type { AdhocMergeOptions, AdhocMergeResult, AdhocMergeStrategy, AdhocWorktreeConfig } from "./adhocWorktreeService";
-import { WorktreeLinkageError } from "./worktreeOutcome";
+import { WorktreeLinkageError, WorktreeOperationRecoveryRequiredError } from "./worktreeOutcome";
 import { readWorktreeTargetIdentity } from './worktreeTarget.js';
 import { RetainedCheckoutService } from './retainedCheckoutService.js';
 import { CheckoutInspector } from './checkoutInspector.js';
@@ -1813,6 +1814,18 @@ describe("AdhocWorktreeService.merge", () => {
     }
     expect(responses.some((response) => response.retryable)).toBe(true);
   });
+
+  it('refuses a rebase that would preserve conflicts before taking any lock', async () => {
+    const fixture = await createFixture();
+    const created = await fixture.service.create({ runId: 'rebase-preserve' });
+    const result = await fixture.service.merge(created.runId, 'rebase', undefined, {
+      historyIntent: 'rewrite-private',
+      preserveConflicts: true,
+      expectedTarget: await readWorktreeTargetIdentity(fixture.repoPath),
+    });
+    expect(result).toMatchObject({ success: false, reasonCode: 'INVALID_ARGUMENTS', mutation: 'none', retryable: false, action: 'correct_arguments' });
+    expect(await fs.readdir(path.join(fixture.hiveDir, '.locks', 'operations'))).toEqual([]);
+  });
 });
 
 // ------------------------------ Composite (Task 02) ------------------------------
@@ -1965,6 +1978,416 @@ describe("AdhocWorktreeService composite create", () => {
 
     await expect(fixture.service.get(created.runId)).resolves.toBeNull();
   });
+
+  it('keeps the manifest of a create it cannot fully roll back, reports both failures, and lets ad-hoc cleanup remove the rest', async () => {
+    const fixture = await createCompositeFixture();
+    const [api, web] = fixture.repos;
+    const workspacePath = path.join(fixture.hiveDir, '.worktrees', 'adhoc', 'interrupted-run');
+    const manifestPath = path.join(workspacePath, 'workspace.json');
+    const manifestAtAdd: boolean[] = [];
+    const getGit = (fixture.service as any).getGit.bind(fixture.service);
+    const gitSpy = spyOn(fixture.service as any, 'getGit').mockImplementation((cwd?: string) => {
+      const git = getGit(cwd);
+      return new Proxy(git, {
+        get(target, key) {
+          if (key !== 'raw') return Reflect.get(target, key);
+          return (args: string[]) => {
+            if (args[0] === 'worktree' && args[1] === 'add') {
+              manifestAtAdd.push(fsSync.existsSync(manifestPath));
+              if (cwd === web!.path) return Promise.reject(new Error('simulated web add failure'));
+            }
+            if (args[0] === 'worktree' && args[1] === 'remove' && cwd === api!.path) return Promise.reject(new Error('simulated api removal failure'));
+            return target.raw(args);
+          };
+        },
+      });
+    });
+    let failure: unknown;
+    try {
+      failure = await fixture.service.create({ runId: 'interrupted-run', repoIds: ['api', 'web'] }).catch((error) => error);
+    } finally {
+      gitSpy.mockRestore();
+    }
+
+    expect(manifestAtAdd).toEqual([true, true]);
+    expect(failure).toBeInstanceOf(WorktreeOperationRecoveryRequiredError);
+    expect((failure as Error).message).toMatch(/simulated web add failure; rollback left worktree .*repos\/api/);
+    expect(await pathExists(manifestPath)).toBe(true);
+    expect(await branchExists(fixture.webGit, 'hive/adhoc/web/interrupted-run')).toBe(false);
+
+    const recovery = new WorktreeOperationRecoveryService({ baseDir: fixture.baseDir, hiveDir: fixture.hiveDir, repositoryResolver: () => fixture.repos });
+    const [pending] = await recovery.list();
+    await recovery.recover({ operationId: pending!.operationId, markerDigest: pending!.markerDigest, observedStateDigest: pending!.observedStateDigest, mutatorsStopped: true });
+    expect((await fixture.service.cleanup('interrupted-run', true)).cleanup.outcome).toBe('complete');
+    expect(await pathExists(workspacePath)).toBe(false);
+    expect(await branchExists(fixture.apiGit, 'hive/adhoc/api/interrupted-run')).toBe(false);
+
+    // An empty placement, as an interrupted create or root removal leaves, holds nothing to preserve.
+    await fs.mkdir(workspacePath, { recursive: true });
+    expect((await fixture.service.create({ runId: 'interrupted-run', repoIds: ['api', 'web'] })).mode).toBe('adhoc-composite');
+  }, 30_000);
+});
+
+describe("AdhocWorktreeService composite create branch ownership", () => {
+  it('keeps a run branch another Git client creates mid-create and rolls back only the branches it made', async () => {
+    const fixture = await createCompositeFixture();
+    const [, web] = fixture.repos;
+    const webBranch = 'hive/adhoc/web/raced-run';
+    const webBase = (await fixture.webGit.revparse(['HEAD'])).trim();
+    let raced = false;
+    const getGit = (fixture.service as any).getGit.bind(fixture.service);
+    // Git clients outside Hive take no Hive lock, so a branch the preflight saw absent can appear before Hive creates it.
+    const gitSpy = spyOn(fixture.service as any, 'getGit').mockImplementation((cwd?: string) => {
+      const git = getGit(cwd);
+      return new Proxy(git, {
+        get(target, key) {
+          if (key !== 'raw') return Reflect.get(target, key);
+          return (args: string[]) => {
+            const creates = (args[0] === 'worktree' && args[1] === 'add') || (args[0] === 'update-ref' && args.includes(`refs/heads/${webBranch}`));
+            if (raced || !creates || cwd !== web!.path) return target.raw(args);
+            raced = true;
+            return target.raw(['branch', webBranch, webBase]).then(() => target.raw(args));
+          };
+        },
+      });
+    });
+    let failure: unknown;
+    try {
+      failure = await fixture.service.create({ runId: 'raced-run', repoIds: ['api', 'web'] }).catch((error) => error);
+    } finally {
+      gitSpy.mockRestore();
+    }
+
+    expect(raced).toBe(true);
+    expect((await fixture.webGit.raw(['rev-parse', `refs/heads/${webBranch}`])).trim()).toBe(webBase);
+    expect(await branchExists(fixture.apiGit, 'hive/adhoc/api/raced-run')).toBe(false);
+    expect(failure).toBeInstanceOf(WorktreeOperationRecoveryRequiredError);
+    expect((failure as Error).message).toMatch(new RegExp(`branch ${webBranch} in repository web .*was kept`));
+  }, 30_000);
+
+  it('keeps a same-branch checkout another Git client attached at a repository placement until it is gone, rolling back the repositories it attached', async () => {
+    const fixture = await createCompositeFixture();
+    const [, web] = fixture.repos;
+    const webBranch = 'hive/adhoc/web/foreign-run';
+    let placement: string | undefined;
+    const getGit = (fixture.service as any).getGit.bind(fixture.service);
+    // Another Git client attaches its own clean checkout of the branch this create just made, with an ignored payload,
+    // where this create's add was going: placement, registration and branch all look like the run's own.
+    const gitSpy = spyOn(fixture.service as any, 'getGit').mockImplementation((cwd?: string) => {
+      const git = getGit(cwd);
+      return new Proxy(git, {
+        get(target, key) {
+          if (key !== 'raw') return Reflect.get(target, key);
+          return (args: string[]) => {
+            if (placement !== undefined || args[0] !== 'worktree' || args[1] !== 'add' || cwd !== web!.path) return target.raw(args);
+            const taken = args[args.indexOf('--') + 1]!;
+            placement = taken;
+            return target.raw(['worktree', 'add', '--', taken, args[args.indexOf('--') + 2]!])
+              .then(async () => {
+                await fs.appendFile(path.join(web!.path, '.git', 'info', 'exclude'), 'payload.local\n');
+                await fs.writeFile(path.join(taken, 'payload.local'), 'foreign ignored payload\n');
+              })
+              .then(() => target.raw(args));
+          };
+        },
+      });
+    });
+    let failure: unknown;
+    try {
+      failure = await fixture.service.create({ runId: 'foreign-run', repoIds: ['api', 'web'] }).catch((error) => error);
+    } finally {
+      gitSpy.mockRestore();
+    }
+
+    const workspacePath = path.join(fixture.hiveDir, '.worktrees', 'adhoc', 'foreign-run');
+    const manifestPath = path.join(workspacePath, 'workspace.json');
+    const foreignKept = async () => {
+      expect(await fs.readFile(path.join(placement!, 'payload.local'), 'utf-8')).toBe('foreign ignored payload\n');
+      expect((await simpleGit(placement!).revparse(['--abbrev-ref', 'HEAD'])).trim()).toBe(webBranch);
+      expect(await fixture.webGit.raw(['worktree', 'list', '--porcelain'])).toContain(`worktree ${await fs.realpath(placement!)}\n`);
+    };
+    expect(placement).toBe(path.join(workspacePath, 'repos', 'web'));
+    await foreignKept();
+    expect(await pathExists(path.join(workspacePath, 'repos', 'api'))).toBe(false);
+    expect(await branchExists(fixture.apiGit, 'hive/adhoc/api/foreign-run')).toBe(false);
+    expect(JSON.parse(await fs.readFile(manifestPath, 'utf-8')).createUnconfirmed).toBe(true);
+    expect(failure).toBeInstanceOf(WorktreeOperationRecoveryRequiredError);
+    expect((failure as Error).message).toMatch(/rollback left worktree .*repos\/web, which this create cannot show it attached, branch hive\/adhoc\/web\/foreign-run/);
+
+    // Acknowledging the operation clears its markers, not the doubt about whose checkout this is.
+    const recovery = new WorktreeOperationRecoveryService({ baseDir: fixture.baseDir, hiveDir: fixture.hiveDir, repositoryResolver: () => fixture.repos });
+    for (const pending of await recovery.list()) {
+      await recovery.recover({ operationId: pending.operationId, markerDigest: pending.markerDigest, observedStateDigest: pending.observedStateDigest, mutatorsStopped: true });
+    }
+    const destinations = Object.fromEntries(await Promise.all(fixture.repos.map(async (repo) => [repo.id, await readWorktreeTargetIdentity(repo.path)] as const)));
+    const refused = await fixture.service.merge('foreign-run', 'merge', mergeMessage, { historyIntent: 'preserve-source', expectedTargets: destinations });
+    expect(refused).toMatchObject({ success: false, merged: false, reasonCode: 'CREATE_UNCONFIRMED', mutation: 'none', action: 'manual_recovery' });
+    expect(refused.error).toMatch(/workspace\.json\).* is not integrated.*hive_adhoc_worktree_cleanup/);
+    for (const repo of fixture.repos) expect(await readWorktreeTargetIdentity(repo.path)).toEqual(destinations[repo.id]);
+    const kept = await fixture.service.cleanup('foreign-run', true);
+    expect(kept.cleanup.failures).toContainEqual(expect.objectContaining({ repoId: 'web', cause: expect.stringMatching(/Refusing to remove worktree .*repos\/web, which holds changed, untracked or ignored files: .*createUnconfirmed/) }));
+    await foreignKept();
+    await expect(fixture.service.create({ runId: 'foreign-run', repoIds: ['api', 'web'] })).rejects.toThrow(/never confirmed it \(createUnconfirmed in .*workspace\.json\).*hive_adhoc_worktree_cleanup/);
+
+    // Once its owner removes that checkout, cleanup finishes and the run can be created again.
+    await fixture.webGit.raw(['worktree', 'remove', placement!]);
+    expect((await fixture.service.cleanup('foreign-run', true)).cleanup.outcome).toBe('complete');
+    expect(await pathExists(workspacePath)).toBe(false);
+    expect(await branchExists(fixture.webGit, webBranch)).toBe(false);
+    await fixture.service.create({ runId: 'foreign-run', repoIds: ['api', 'web'] });
+    expect(JSON.parse(await fs.readFile(manifestPath, 'utf-8')).createUnconfirmed).toBeUndefined();
+  }, 30_000);
+
+  it('keeps an unconfirmed run root and manifest while its worker branches remain', async () => {
+    const fixture = await createCompositeFixture();
+    const created = await fixture.service.create({ runId: 'kept-run', repoIds: ['api', 'web'] });
+    const manifestPath = path.join(created.path, 'workspace.json');
+    const branches = { api: 'hive/adhoc/api/kept-run', web: 'hive/adhoc/web/kept-run' };
+    const gits = { api: fixture.apiGit, web: fixture.webGit };
+    const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf-8'));
+    await fs.writeFile(manifestPath, JSON.stringify({ ...manifest, createUnconfirmed: true }));
+
+    // Worktree-only cleanup removes the empty checkouts but keeps the root and its unconfirmed manifest beside the
+    // branches, and reports the kept root instead of a complete removal.
+    const removed = await fixture.service.cleanup('kept-run');
+    expect(removed).toMatchObject({ worktreeRemoved: false, reasonCode: 'CLEANUP_FAILED' });
+    expect(removed.cleanup.outcome).toBe('partial');
+    expect(removed.cleanup.failures).toContainEqual(expect.objectContaining({ step: 'composite-root', cause: expect.stringMatching(/while worker branches remain: hive\/adhoc\/api\/kept-run in repository api, hive\/adhoc\/web\/kept-run in repository web\. .*hive_adhoc_worktree_cleanup/) }));
+    expect(JSON.parse(await fs.readFile(manifestPath, 'utf-8')).createUnconfirmed).toBe(true);
+    expect([await pathExists(created.repos!.api.path), await pathExists(created.repos!.web.path)]).toEqual([false, false]);
+    await expect(fixture.service.create({ runId: 'kept-run', repoIds: ['api', 'web'] })).rejects.toThrow(/never confirmed it \(createUnconfirmed in .*workspace\.json\)/);
+
+    // Another Git client attaches both branches again and leaves an ignored payload in one: the run still reads as
+    // unconfirmed, merge refuses it, and cleanup keeps the payload with the manifest.
+    for (const repoId of ['api', 'web'] as const) await gits[repoId].raw(['worktree', 'add', '--', created.repos![repoId].path, branches[repoId]]);
+    const webRepo = fixture.repos.find((repo) => repo.id === 'web')!;
+    await fs.appendFile(path.join(webRepo.path, '.git', 'info', 'exclude'), 'payload.local\n');
+    await fs.writeFile(path.join(created.repos!.web.path, 'payload.local'), 'foreign ignored payload\n');
+    expect((await fixture.service.inspect('kept-run'))?.createUnconfirmed).toBe(true);
+    const destinations = Object.fromEntries(await Promise.all(fixture.repos.map(async (repo) => [repo.id, await readWorktreeTargetIdentity(repo.path)] as const)));
+    const refused = await fixture.service.merge('kept-run', 'merge', mergeMessage, { historyIntent: 'preserve-source', expectedTargets: destinations });
+    expect(refused).toMatchObject({ success: false, merged: false, reasonCode: 'CREATE_UNCONFIRMED', mutation: 'none' });
+    const kept = await fixture.service.cleanup('kept-run', true);
+    expect(kept.cleanup.outcome).not.toBe('complete');
+    expect(await fs.readFile(path.join(created.repos!.web.path, 'payload.local'), 'utf-8')).toBe('foreign ignored payload\n');
+    expect(JSON.parse(await fs.readFile(manifestPath, 'utf-8')).createUnconfirmed).toBe(true);
+
+    // Once that checkout is gone, cleanup with branch deletion retires every branch and removes the run.
+    await fixture.webGit.raw(['worktree', 'remove', '--force', created.repos!.web.path]);
+    expect((await fixture.service.cleanup('kept-run', true)).cleanup.outcome).toBe('complete');
+    expect(await pathExists(created.path)).toBe(false);
+    expect([await branchExists(fixture.apiGit, branches.api), await branchExists(fixture.webGit, branches.web)]).toEqual([false, false]);
+  }, 30_000);
+});
+
+describe("AdhocWorktreeService single create rollback", () => {
+  it('keeps an owned placement whose metadata failure rollback would delete ignored files, and removes a clean one', async () => {
+    const { repoPath, repoGit } = await createTempRepo();
+    const hiveDir = path.join(repoPath, '.hive');
+    const service = new AdhocWorktreeService({ baseDir: repoPath, hiveDir });
+    const getGit = (service as any).getGit.bind(service);
+    const originalRename = fsSync.renameSync;
+    const run = async (runId: string, plantIgnored: boolean, afterRename = false): Promise<unknown> => {
+      const placement = path.join(hiveDir, '.worktrees', 'adhoc', runId);
+      const gitSpy = spyOn(service as any, 'getGit').mockImplementation((cwd?: string) => {
+        const git = getGit(cwd);
+        return new Proxy(git, {
+          get(target, key) {
+            if (key !== 'raw') return Reflect.get(target, key);
+            return (args: string[]) => args[0] === 'worktree' && args[1] === 'add' && plantIgnored
+              ? target.raw(args).then(async () => {
+                await fs.mkdir(path.join(placement, '.hive'), { recursive: true });
+                await fs.writeFile(path.join(placement, '.hive', 'payload.local'), 'ignored work\n');
+              })
+              : target.raw(args);
+          },
+        });
+      });
+      // Only the write that confirms the create, after its own worktree add, fails: before its rename, or, with
+      // `afterRename`, in the directory flush once the rename published the confirmed record.
+      let failed = false;
+      let flushPending = false;
+      const renameSpy = spyOn(fsSync, 'renameSync').mockImplementation(((from: fsSync.PathLike, to: fsSync.PathLike) => {
+        if (String(to) === `${placement}.json` && !failed && !fsSync.readFileSync(from, 'utf-8').includes('"createUnconfirmed"')) {
+          failed = true;
+          if (!afterRename) throw Object.assign(new Error('simulated metadata write failure'), { code: 'EIO' });
+          flushPending = true;
+        }
+        return originalRename(from, to);
+      }) as typeof fsSync.renameSync);
+      const originalFsync = fsSync.fsyncSync;
+      const fsyncSpy = spyOn(fsSync, 'fsyncSync').mockImplementation(((descriptor: number) => {
+        if (flushPending) {
+          flushPending = false;
+          throw Object.assign(new Error('simulated metadata write failure'), { code: 'EIO' });
+        }
+        return originalFsync(descriptor);
+      }) as typeof fsSync.fsyncSync);
+      try {
+        return await service.create({ runId }).catch((error) => error);
+      } finally {
+        fsyncSpy.mockRestore();
+        renameSpy.mockRestore();
+        gitSpy.mockRestore();
+      }
+    };
+
+    const clean = await run('clean-run', false);
+    expect((clean as Error).message).toMatch(/simulated metadata write failure/);
+    expect(clean).not.toBeInstanceOf(WorktreeOperationRecoveryRequiredError);
+    expect(await pathExists(path.join(hiveDir, '.worktrees', 'adhoc', 'clean-run'))).toBe(false);
+    expect(await pathExists(path.join(hiveDir, '.worktrees', 'adhoc', 'clean-run.json'))).toBe(false);
+    expect(await branchExists(repoGit, 'hive/adhoc/clean-run')).toBe(false);
+
+    const ignored = await run('ignored-run', true);
+    expect(ignored).toBeInstanceOf(WorktreeOperationRecoveryRequiredError);
+    expect((ignored as Error).message).toMatch(/simulated metadata write failure; rollback left worktree .*ignored-run, which holds changed, untracked or ignored files/);
+    expect(await fs.readFile(path.join(hiveDir, '.worktrees', 'adhoc', 'ignored-run', '.hive', 'payload.local'), 'utf-8')).toBe('ignored work\n');
+    expect(await branchExists(repoGit, 'hive/adhoc/ignored-run')).toBe(true);
+    // The confirming write failed, so the record still says the create never confirmed the placement.
+    expect(JSON.parse(await fs.readFile(path.join(hiveDir, '.worktrees', 'adhoc', 'ignored-run.json'), 'utf-8')).createUnconfirmed).toBe(true);
+
+    // A rename that published the confirmed record before the flush failed is put back too, so after the operation is
+    // acknowledged cleanup still keeps the ignored files.
+    const recovery = new WorktreeOperationRecoveryService({ baseDir: repoPath, hiveDir });
+    const acknowledge = async () => {
+      for (const pending of await recovery.list()) {
+        await recovery.recover({ operationId: pending.operationId, markerDigest: pending.markerDigest, observedStateDigest: pending.observedStateDigest, mutatorsStopped: true });
+      }
+    };
+    await acknowledge();
+    const flushed = await run('flushed-run', true, true);
+    expect(flushed).toBeInstanceOf(WorktreeOperationRecoveryRequiredError);
+    expect((flushed as Error).message).toMatch(/simulated metadata write failure; rollback left worktree .*flushed-run, which holds changed, untracked or ignored files/);
+    expect(JSON.parse(await fs.readFile(path.join(hiveDir, '.worktrees', 'adhoc', 'flushed-run.json'), 'utf-8')).createUnconfirmed).toBe(true);
+    await acknowledge();
+    const kept = await service.cleanup('flushed-run', true);
+    expect(kept.cleanup.worktreeRemoval).toMatchObject({ status: 'failed', error: expect.stringMatching(/createUnconfirmed/) });
+    expect(await fs.readFile(path.join(hiveDir, '.worktrees', 'adhoc', 'flushed-run', '.hive', 'payload.local'), 'utf-8')).toBe('ignored work\n');
+  }, 30_000);
+
+  it('keeps a same-branch checkout another Git client attached before the run add through recovery, cleanup and create until it is gone', async () => {
+    const { repoPath, repoGit } = await createTempRepo();
+    const hiveDir = path.join(repoPath, '.hive');
+    const service = new AdhocWorktreeService({ baseDir: repoPath, hiveDir });
+    const placement = path.join(hiveDir, '.worktrees', 'adhoc', 'raced-run');
+    const metadataPath = `${placement}.json`;
+    const branch = 'hive/adhoc/raced-run';
+    const getGit = (service as any).getGit.bind(service);
+    let attached = false;
+    // Just before the run's `worktree add -b`, another Git client creates the run branch with its own checkout at the
+    // placement and leaves an ignored payload in it.
+    const gitSpy = spyOn(service as any, 'getGit').mockImplementation((cwd?: string) => {
+      const git = getGit(cwd);
+      return new Proxy(git, {
+        get(target, key) {
+          if (key !== 'raw') return Reflect.get(target, key);
+          return (args: string[]) => {
+            if (attached || args[0] !== 'worktree' || args[1] !== 'add') return target.raw(args);
+            attached = true;
+            return target.raw(['worktree', 'add', '-b', branch, '--', placement, 'HEAD'])
+              .then(async () => {
+                await fs.appendFile(path.join(repoPath, '.git', 'info', 'exclude'), 'payload.local\n');
+                await fs.writeFile(path.join(placement, 'payload.local'), 'foreign ignored payload\n');
+              })
+              .then(() => target.raw(args));
+          };
+        },
+      });
+    });
+    let failure: unknown;
+    try {
+      failure = await service.create({ runId: 'raced-run' }).catch((error) => error);
+    } finally {
+      gitSpy.mockRestore();
+    }
+    const foreignKept = async () => {
+      expect(await fs.readFile(path.join(placement, 'payload.local'), 'utf-8')).toBe('foreign ignored payload\n');
+      expect(await repoGit.raw(['worktree', 'list', '--porcelain'])).toContain(`worktree ${await fs.realpath(placement)}\n`);
+    };
+    expect(attached).toBe(true);
+    await foreignKept();
+    expect(failure).toBeInstanceOf(WorktreeOperationRecoveryRequiredError);
+    expect((failure as Error).message).toMatch(/its metadata .*raced-run\.json is kept unconfirmed/);
+    expect(JSON.parse(await fs.readFile(metadataPath, 'utf-8'))).toMatchObject({ branch, createUnconfirmed: true });
+
+    const recovery = new WorktreeOperationRecoveryService({ baseDir: repoPath, hiveDir });
+    const pending = await recovery.list();
+    expect(pending).toHaveLength(1);
+    await recovery.recover({ operationId: pending[0]!.operationId, markerDigest: pending[0]!.markerDigest, observedStateDigest: pending[0]!.observedStateDigest, mutatorsStopped: true });
+    // Inspection shows the doubt, and merge with no pin, which would take the inspected source, refuses the foreign
+    // client's commit before touching the destination.
+    const foreignGit = simpleGit(placement);
+    await fs.writeFile(path.join(placement, 'foreign.txt'), 'foreign work\n');
+    await foreignGit.add('foreign.txt');
+    await foreignGit.commit(testCommitMessage('feat: foreign work'));
+    expect(await service.inspect('raced-run')).toMatchObject({ path: placement, branch, createUnconfirmed: true });
+    const destination = await readWorktreeTargetIdentity(repoPath);
+    const refused = await service.merge('raced-run', 'merge', mergeMessage, { historyIntent: 'preserve-source', expectedTarget: destination });
+    expect(refused).toMatchObject({ success: false, merged: false, reasonCode: 'CREATE_UNCONFIRMED', mutation: 'none', retryable: false, action: 'manual_recovery' });
+    expect(refused.error).toMatch(/raced-run\.json\).* is not integrated/);
+    expect(await readWorktreeTargetIdentity(repoPath)).toEqual(destination);
+    expect(await pathExists(path.join(repoPath, 'foreign.txt'))).toBe(false);
+    await foreignGit.raw(['reset', '--hard', 'HEAD~1']);
+    const kept = await service.cleanup('raced-run', true);
+    expect(kept.cleanup.worktreeRemoval).toMatchObject({ status: 'failed', error: expect.stringMatching(/Refusing to remove worktree .*raced-run, which holds changed, untracked or ignored files: .*createUnconfirmed/) });
+    await foreignKept();
+    await expect(service.create({ runId: 'raced-run' })).rejects.toThrow(/never confirmed it \(createUnconfirmed in .*raced-run\.json\)/);
+
+    // Once its owner removes that checkout, cleanup finishes, the run is created again, and a confirmed run's
+    // ignored output is still cleanup's to delete.
+    await repoGit.raw(['worktree', 'remove', placement]);
+    expect((await service.cleanup('raced-run', true)).cleanup.outcome).toBe('complete');
+    expect([await pathExists(metadataPath), await branchExists(repoGit, branch)]).toEqual([false, false]);
+    await service.create({ runId: 'raced-run' });
+    expect(JSON.parse(await fs.readFile(metadataPath, 'utf-8')).createUnconfirmed).toBeUndefined();
+    await fs.writeFile(path.join(placement, 'payload.local'), 'generated output\n');
+    expect((await service.cleanup('raced-run', true)).cleanup.outcome).toBe('complete');
+    expect(await pathExists(placement)).toBe(false);
+  }, 30_000);
+});
+
+describe("AdhocWorktreeService unconfirmed single run cleanup", () => {
+  it('keeps an unconfirmed record while the run branch remains, so a checkout another client attaches to it later stays protected', async () => {
+    const { repoPath, repoGit } = await createTempRepo();
+    const hiveDir = path.join(repoPath, '.hive');
+    const service = new AdhocWorktreeService({ baseDir: repoPath, hiveDir });
+    const created = await service.create({ runId: 'kept-run' });
+    const placement = created.path;
+    const metadataPath = `${placement}.json`;
+    const branch = 'hive/adhoc/kept-run';
+    // A create that stopped after its own add and before confirming it leaves the record unconfirmed.
+    const record = JSON.parse(await fs.readFile(metadataPath, 'utf-8'));
+    await fs.writeFile(metadataPath, JSON.stringify({ ...record, createUnconfirmed: true }));
+
+    // Worktree-only cleanup removes the empty checkout; while the branch remains, so does the unconfirmed record,
+    // also when cleanup runs again with the checkout already absent.
+    for (const expected of ['succeeded', 'already_absent'] as const) {
+      const removed = await service.cleanup('kept-run');
+      expect(removed.cleanup.worktreeRemoval.status).toBe(expected);
+      expect(await pathExists(placement)).toBe(false);
+      expect(await branchExists(repoGit, branch)).toBe(true);
+      expect(JSON.parse(await fs.readFile(metadataPath, 'utf-8')).createUnconfirmed).toBe(true);
+    }
+
+    // Another Git client attaches the branch at the placement and leaves an ignored payload: the run is still shown as
+    // unconfirmed, is not integrated, and cleanup keeps the payload.
+    await repoGit.raw(['worktree', 'add', '--', placement, branch]);
+    await fs.appendFile(path.join(repoPath, '.git', 'info', 'exclude'), 'payload.local\n');
+    await fs.writeFile(path.join(placement, 'payload.local'), 'foreign ignored payload\n');
+    expect((await service.inspect('kept-run'))?.createUnconfirmed).toBe(true);
+    const refused = await service.merge('kept-run', 'merge', mergeMessage, { historyIntent: 'preserve-source' });
+    expect(refused).toMatchObject({ success: false, reasonCode: 'CREATE_UNCONFIRMED', mutation: 'none' });
+    const kept = await service.cleanup('kept-run', true);
+    expect(kept.cleanup.worktreeRemoval).toMatchObject({ status: 'failed', error: expect.stringMatching(/createUnconfirmed/) });
+    expect(await fs.readFile(path.join(placement, 'payload.local'), 'utf-8')).toBe('foreign ignored payload\n');
+    expect(await branchExists(repoGit, branch)).toBe(true);
+    expect(await pathExists(metadataPath)).toBe(true);
+
+    await repoGit.raw(['worktree', 'remove', '--force', placement]);
+    expect((await service.cleanup('kept-run', true)).cleanup.outcome).toBe('complete');
+    expect([await pathExists(metadataPath), await branchExists(repoGit, branch)]).toEqual([false, false]);
+  }, 30_000);
 });
 
 describe("AdhocWorktreeService composite merge", () => {
@@ -3462,6 +3885,16 @@ describe('AdhocWorktreeService targeted runs', () => {
     await simpleGit(fx.checkoutPath('alpha')).raw(['switch', 'alpha']);
     const restored = (await fx.core.inspect('drift'))!;
     expect(restored.targetBinding?.status).toBe('ok');
+    // A sidecar its create never confirmed is shown by inspection and never integrated.
+    const sidecarPath = `${run.path}.json`;
+    const sidecar = await fs.readFile(sidecarPath, 'utf-8');
+    await fs.writeFile(sidecarPath, JSON.stringify({ ...JSON.parse(sidecar), createUnconfirmed: true }));
+    expect((await fx.core.inspect('drift'))?.createUnconfirmed).toBe(true);
+    const unconfirmed = await fx.core.merge('drift', 'squash', mergeMessage, { historyIntent: 'rewrite-private', sourceCommit, expectedTarget: restored.target! });
+    expect(unconfirmed).toMatchObject({ success: false, merged: false, reasonCode: 'CREATE_UNCONFIRMED', mutation: 'none', action: 'manual_recovery' });
+    expect(unconfirmed.error).toMatch(/is not integrated.*hive_adhoc_worktree_cleanup/);
+    expect(await readWorktreeTargetIdentity(fx.checkoutPath('alpha'))).toEqual(restored.target);
+    await fs.writeFile(sidecarPath, sidecar);
     expect(await fx.core.merge('drift', 'squash', mergeMessage, { historyIntent: 'rewrite-private', sourceCommit, expectedTarget: restored.target! })).toMatchObject({ success: true, merged: true });
   });
 

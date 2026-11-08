@@ -1,7 +1,7 @@
 import * as fsSync from 'fs';
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { FeatureResolutionError, resolveExistingFeaturePath, resolveFeatureDirectoryName, writeJsonAtomicDurable } from '../utils/paths.js';
+import { FeatureResolutionError, resolveExistingFeaturePath, resolveFeatureDirectoryName, writeAtomicDurable, writeJsonAtomicDurable } from '../utils/paths.js';
 import { assertNoSymlinkComponents } from './worktreeLinkage.js';
 
 export interface WorkspaceManifestEntry {
@@ -12,7 +12,120 @@ export interface WorkspaceManifestEntry {
   commit: string;
 }
 
-interface WorkspaceManifestBase {
+/**
+ * `createUnconfirmed: true` marks a workspace record a create published before
+ * its Git work and has not yet confirmed: until its own `worktree add` succeeded
+ * and was validated, a checkout at the placement may be another Git client's.
+ * Cleanup then removes only an empty checkout and create refuses to reuse one.
+ * Absent means confirmed, as in records from before the field; any other value
+ * is refused.
+ */
+export interface CreateConfirmation {
+  createUnconfirmed?: true;
+}
+
+/**
+ * Why a placement whose record a create published and never confirmed cannot
+ * be used as `use` says (`reused`, `integrated`), or null for a confirmed
+ * record: its checkout may be another Git client's, so treating it as this
+ * owner's worker would hand that checkout, or its commits, to the caller.
+ */
+export function createUnconfirmedRefusal(record: CreateConfirmation | null, placement: string, recordPath: string, cleanupTool: string, use: 'reused' | 'integrated'): string | null {
+  if (record?.createUnconfirmed !== true) return null;
+  return `${placement} was left by a create that never confirmed it (createUnconfirmed in ${recordPath}), so its checkout may belong to another Git client and is not ${use}. `
+    + `Acknowledge any pending operation with hive_worktree_recover, then run ${cleanupTool}: it removes checkouts that are gone or empty and keeps a populated one, which you inspect and remove or keep yourself, `
+    + 'and it keeps this record until the worker branches are deleted too. Create again once the record is gone.';
+}
+
+/** Refuse to reuse a placement a create never confirmed; see `createUnconfirmedRefusal`. */
+export function assertCreateConfirmed(record: CreateConfirmation | null, placement: string, recordPath: string, cleanupTool: string): void {
+  const refusal = createUnconfirmedRefusal(record, placement, recordPath, cleanupTool, 'reused');
+  if (refusal !== null) throw new Error(refusal);
+}
+
+/**
+ * The confirming write of a create failed. The create's own `worktree add` was
+ * validated, so ownership was shown; what failed is publication, and the
+ * atomic rename may already have made the confirmed bytes visible before the
+ * directory flush failed. `recordUnresolved` is false once the unconfirmed
+ * record was written back durably; true when that write failed too, so the
+ * record may read as confirmed.
+ */
+export class WorkspaceRecordConfirmationError extends Error {
+  readonly recordPath: string;
+  readonly recordUnresolved: boolean;
+
+  constructor(recordPath: string, cause: unknown, restoreError: unknown) {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    super(restoreError === undefined
+      ? message
+      : `${message}; putting createUnconfirmed back in ${recordPath} also failed (${restoreError instanceof Error ? restoreError.message : String(restoreError)})`, { cause });
+    this.name = 'WorkspaceRecordConfirmationError';
+    this.recordPath = recordPath;
+    this.recordUnresolved = restoreError !== undefined;
+  }
+}
+
+/**
+ * Publish a create's confirmed record, `record` without `createUnconfirmed`.
+ * On failure the unconfirmed record is written back before the error is
+ * thrown, so a rollback that keeps a checkout leaves a record that still
+ * protects it. Throws `WorkspaceRecordConfirmationError`.
+ */
+export async function confirmWorkspaceRecord(filePath: string, record: object): Promise<void> {
+  try {
+    await writeWorkspaceJsonAtomic(filePath, record);
+  } catch (error) {
+    let restoreError: unknown;
+    try {
+      await writeWorkspaceJsonAtomic(filePath, { ...record, createUnconfirmed: true });
+    } catch (writeError) {
+      restoreError = writeError;
+    }
+    throw new WorkspaceRecordConfirmationError(filePath, error, restoreError);
+  }
+}
+
+/**
+ * What a create that keeps leftovers reports about a record its failed
+ * confirmation could not put back: the record may read as confirmed, and
+ * acknowledging the operation would then let cleanup treat a kept checkout as
+ * Hive's. No Hive tool repairs a workspace record, so the note asks the agent
+ * to keep the state and hand it to the operator. Empty for any other failure.
+ */
+export function unresolvedRecordNote(error: unknown): string {
+  if (!(error instanceof WorkspaceRecordConfirmationError) || !error.recordUnresolved) return '';
+  return `. The workspace record ${error.recordPath} is unresolved: it may read as confirmed, and recovery does not read workspace records. `
+    + 'Do not acknowledge the operation: keep the record and the kept checkout as they are and report both to the operator, '
+    + 'whose separately authorized repair (setting createUnconfirmed: true in the record, or removing the checkout) must come first';
+}
+
+/** A workspace record's exact bytes, or null when it does not exist, so a failed create can put it back. */
+export async function readWorkspaceRecordBytes(filePath: string): Promise<Buffer | null> {
+  return fs.readFile(filePath).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  });
+}
+
+/**
+ * Put a workspace record back as a create found it: its prior bytes, or no
+ * file. Returns whether the record now is as it was; a record that already is,
+ * as after a write that failed before it published, needs no write.
+ */
+export async function restoreWorkspaceRecord(filePath: string, prior: Buffer | null): Promise<boolean> {
+  try {
+    const current = await readWorkspaceRecordBytes(filePath);
+    if (prior === null ? current === null : current !== null && current.equals(prior)) return true;
+    if (prior === null) await fs.unlink(filePath);
+    else writeAtomicDurable(filePath, prior);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+interface WorkspaceManifestBase extends CreateConfirmation {
   schemaVersion: 1;
   repos: Record<string, WorkspaceManifestEntry>;
   baseCommits: Record<string, string>;
@@ -32,7 +145,7 @@ export interface AdhocWorkspaceManifest extends WorkspaceManifestBase {
 
 export type CompositeWorkspaceManifest = TaskWorkspaceManifest | AdhocWorkspaceManifest;
 
-export interface SingleWorkspaceMetadata {
+export interface SingleWorkspaceMetadata extends CreateConfirmation {
   schemaVersion: 1;
   mode: 'single' | 'adhoc-single';
   worktreePath: string;
@@ -64,7 +177,7 @@ export interface TargetBinding {
  * modes are unknown to hosts that predate targeted workers, whose metadata
  * readers therefore refuse the placement instead of misreading it.
  */
-export interface TargetedWorkspaceMetadata {
+export interface TargetedWorkspaceMetadata extends CreateConfirmation {
   schemaVersion: 1;
   mode: 'targeted' | 'adhoc-targeted';
   repoId: string;
@@ -88,6 +201,10 @@ const FULL_COMMIT = /^[0-9a-f]{40,64}$/;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isValidCreateConfirmation(record: CreateConfirmation): boolean {
+  return record.createUnconfirmed === undefined || record.createUnconfirmed === true;
 }
 
 function isSafeRepositoryId(id: string): boolean {
@@ -133,6 +250,7 @@ export function parseCompositeWorkspaceManifest(value: unknown, manifestPath: st
   if (
     manifest.schemaVersion !== 1
     || (manifest.mode !== 'composite' && manifest.mode !== 'adhoc-composite')
+    || !isValidCreateConfirmation(manifest)
   ) {
     throw new Error(`Invalid composite workspace manifest: ${manifestPath}`);
   }
@@ -181,6 +299,7 @@ export async function readSingleWorkspaceMetadata(metadataPath: string): Promise
     || typeof value.repositoryPath !== 'string'
     || typeof value.branch !== 'string'
     || typeof value.baseCommit !== 'string'
+    || !isValidCreateConfirmation(value)
   ) {
     throw new Error(`Invalid single workspace metadata: ${metadataPath}`);
   }
@@ -215,6 +334,7 @@ export function parseTargetedWorkspaceMetadata(value: unknown, metadataPath: str
     || !isTargetBinding(metadata.target)
     || !metadata.target.id.startsWith(`${metadata.repoId}/`)
     || typeof metadata.createdAt !== 'string'
+    || !isValidCreateConfirmation(metadata)
     || (metadata.mode === 'targeted'
       ? typeof metadata.feature !== 'string' || typeof metadata.task !== 'string' || !optionalString(metadata.candidate)
       : typeof metadata.runId !== 'string')
@@ -339,12 +459,74 @@ export async function adhocGroupEntryOwner(projectRoot: string, hiveDir: string,
   return unknown('neither has workspace metadata, and the task status records no worker base commit');
 }
 
-export async function writeWorkspaceJsonAtomic(filePath: string, value: unknown): Promise<void> {
-  try {
-    const finalStat = await fs.lstat(filePath).catch((error: NodeJS.ErrnoException) => {
-      if (error.code === 'ENOENT') return null;
-      throw error;
+/**
+ * Remove a composite workspace root once its repository checkouts are gone: an
+ * empty root, or one holding only an empty `repos/` and `workspace.json`. Any
+ * other entry refuses. The manifest is set aside while the directory is
+ * removed and restored when that removal fails, so a root that stays keeps it.
+ */
+export async function removeEmptyCompositeWorkspaceRoot(workspaceRoot: string): Promise<void> {
+  const reposPath = path.join(workspaceRoot, 'repos');
+  const remaining = await fs.readdir(reposPath).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  });
+  if (remaining.length > 0) throw new Error(`Composite workspace still contains repositories: ${remaining.join(', ')}`);
+  const entries = await fs.readdir(workspaceRoot).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  });
+  if (entries === null) return;
+  if (entries.length === 0) {
+    await fs.rmdir(workspaceRoot).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== 'ENOENT') throw error;
     });
+    return;
+  }
+  const unexpected = entries.filter((entry) => entry !== 'repos' && entry !== 'workspace.json');
+  if (unexpected.length > 0) throw new Error(`Composite workspace contains unexpected entries: ${unexpected.join(', ')}`);
+  await fs.rmdir(reposPath).catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== 'ENOENT') throw error;
+  });
+  const manifestPath = path.join(workspaceRoot, 'workspace.json');
+  const heldManifestPath = `${workspaceRoot}.workspace.json.cleanup-${process.pid}-${Date.now()}`;
+  let manifestHeld = false;
+  await fs.rename(manifestPath, heldManifestPath).then(() => {
+    manifestHeld = true;
+  }).catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== 'ENOENT') throw error;
+  });
+  try {
+    await fs.rmdir(workspaceRoot);
+  } catch (error) {
+    if (manifestHeld) {
+      await fs.rename(heldManifestPath, manifestPath).catch((restoreError: unknown) => {
+        throw new Error(`Composite root removal failed and manifest restore failed: ${(error as Error).message}; ${(restoreError as Error).message}`);
+      });
+    }
+    throw error;
+  }
+  if (manifestHeld) {
+    await fs.unlink(heldManifestPath).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== 'ENOENT') throw error;
+    });
+  }
+}
+
+export async function writeWorkspaceJsonAtomic(filePath: string, value: unknown): Promise<void> {
+  writeWorkspaceJsonAtomicSync(filePath, value);
+}
+
+/** `writeWorkspaceJsonAtomic` without an await, for a record published under a lock that is never held across one. */
+export function writeWorkspaceJsonAtomicSync(filePath: string, value: unknown): void {
+  try {
+    let finalStat: fsSync.Stats | null;
+    try {
+      finalStat = fsSync.lstatSync(filePath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      finalStat = null;
+    }
     if (finalStat?.isSymbolicLink()) {
       throw new Error(`Refusing to replace workspace metadata symlink: ${filePath}`);
     }

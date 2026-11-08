@@ -7,7 +7,9 @@
  * `retryable` is always derived so the hard invariant holds everywhere:
  * a retryable result never reports a durable mutation.
  */
-import type { SimpleGit } from 'simple-git';
+import * as fs from 'fs/promises';
+import * as path from 'path';
+import simpleGit, { type SimpleGit } from 'simple-git';
 
 export type WorktreeOperationPhase =
   | 'validation'
@@ -27,6 +29,7 @@ export type WorktreeReasonCode =
   | 'WORKTREE_LINKAGE_INVALID'
   | 'WORKSPACE_TOPOLOGY_MISMATCH'
   | 'WORKTREE_LOOKUP_FAILED'
+  | 'CREATE_UNCONFIRMED'
   | 'SOURCE_BRANCH_MISSING'
   | 'TARGET_MISMATCH'
   | 'TARGET_DIRTY'
@@ -141,6 +144,9 @@ const WORKTREE_OUTCOME_TABLE: Record<WorktreeReasonCode, WorktreeOutcomeRule> = 
   WORKTREE_LINKAGE_INVALID: { phase: 'preflight', mutation: 'none', retryable: false, action: 'start_fresh_run' },
   WORKSPACE_TOPOLOGY_MISMATCH: { phase: 'preflight', mutation: 'none', retryable: false, action: 'start_fresh_run' },
   WORKTREE_LOOKUP_FAILED: { phase: 'preflight', mutation: 'none', retryable: true, action: 'inspect_state' },
+  // The worker's record says its create never confirmed the checkout, which may be another Git client's: an operator
+  // decides what it is before cleanup and a fresh create; no repeat of the merge can succeed.
+  CREATE_UNCONFIRMED: { phase: 'preflight', mutation: 'none', retryable: false, action: 'manual_recovery' },
   SOURCE_BRANCH_MISSING: { phase: 'preflight', mutation: 'none', retryable: false, action: 'inspect_state' },
   TARGET_MISMATCH: { phase: 'preflight', mutation: 'none', retryable: false, action: 'inspect_state' },
   TARGET_DIRTY: { phase: 'preflight', mutation: 'none', retryable: true, action: 'clean_target' },
@@ -226,12 +232,15 @@ export class WorktreeOperationRecoveryRequiredError extends Error {
   readonly reasonCode: WorktreeReasonCode = 'OPERATION_RECOVERY_REQUIRED';
   readonly mutation: WorktreeMutationState;
   readonly operationIds: string[];
+  /** When this operation itself retained its markers: the marker files still present. */
+  readonly retainedMarkers?: string[];
 
-  constructor(message: string, options: { mutation: WorktreeMutationState; operationIds: string[]; cause?: unknown }) {
+  constructor(message: string, options: { mutation: WorktreeMutationState; operationIds: string[]; retainedMarkers?: string[]; cause?: unknown }) {
     super(message, options.cause === undefined ? undefined : { cause: options.cause });
     this.name = 'WorktreeOperationRecoveryRequiredError';
     this.mutation = options.mutation;
     this.operationIds = options.operationIds;
+    if (options.retainedMarkers !== undefined) this.retainedMarkers = options.retainedMarkers;
   }
 }
 
@@ -282,16 +291,39 @@ export class WorktreeOperationFinalizationError<T = unknown> extends Error {
 
 /**
  * Report a mutation result together with its failed finalization. A classified
- * result becomes non-retryable once the operation began mutating, because a
- * repeat would be refused while markers remain or could repeat applied work;
- * its reason, mutation state, per-repository results and cleanup are kept.
+ * result, and each of its per-repository results, becomes non-retryable once
+ * the operation began mutating, because a repeat would be refused while
+ * markers remain or could repeat applied work; reasons, mutation states,
+ * per-repository results and cleanup are otherwise kept.
  */
 export function withFinalizationFailure<T extends object>(
   result: T,
   finalization: WorktreeFinalizationFailure,
 ): T & { finalization: WorktreeFinalizationFailure } {
-  const began = finalization.markers !== 'not_published';
-  return { ...result, ...(began && 'retryable' in result ? { retryable: false } : {}), finalization };
+  if (finalization.markers === 'not_published') return { ...result, finalization };
+  const repos = (result as { repos?: unknown }).repos;
+  return {
+    ...result,
+    ...('retryable' in result ? { retryable: false } : {}),
+    ...(repos !== null && typeof repos === 'object'
+      ? {
+        repos: Object.fromEntries(Object.entries(repos).map(([repoId, repo]) => [
+          repoId,
+          repo !== null && typeof repo === 'object' && 'retryable' in repo ? { ...repo, retryable: false } : repo,
+        ])),
+      }
+      : {}),
+    finalization,
+  };
+}
+
+/**
+ * The finalization block of an operation that threw after it began mutating
+ * and kept its markers, naming the operation to inspect and acknowledge.
+ */
+export function retainedMarkerFinalization(error: WorktreeOperationRecoveryRequiredError): WorktreeFinalizationFailure | undefined {
+  if (error.mutation === 'none' || error.retainedMarkers === undefined || error.operationIds.length !== 1) return undefined;
+  return { operationId: error.operationIds[0], markers: 'retained', retainedMarkers: error.retainedMarkers, action: 'manual_recovery' };
 }
 
 /**
@@ -470,6 +502,166 @@ export async function deleteBranchStep(git: SimpleGit, branchName: string, expec
   } catch (error: unknown) {
     return { status: 'failed', error: (error as Error).message || 'branch compare-and-delete failed' };
   }
+}
+
+export async function pruneWorktreesStep(git: SimpleGit): Promise<CleanupStepOutcome> {
+  try {
+    await git.raw(['worktree', 'prune']);
+    return { status: 'succeeded' };
+  } catch (error: unknown) {
+    return { status: 'failed', error: (error as Error).message || 'worktree prune failed' };
+  }
+}
+
+/**
+ * The commit an exact local branch ref names, or null when that exact ref does
+ * not exist. Git errors propagate: an unreadable ref is not an absent one.
+ */
+export async function readBranchOid(git: SimpleGit, branchName: string): Promise<string | null> {
+  const ref = `refs/heads/${branchName}`;
+  // for-each-ref also lists refs below a matching prefix, so only an exact refname counts.
+  const output = await git.raw(['for-each-ref', '--format=%(objectname) %(refname)', ref]);
+  for (const line of output.split('\n')) {
+    const separator = line.indexOf(' ');
+    if (separator > 0 && line.slice(separator + 1) === ref) return line.slice(0, separator);
+  }
+  return null;
+}
+
+/**
+ * Create a branch at `commit` in one ref transaction that fails when the branch
+ * already exists. Hive's operation locks do not bind other Git clients, so a
+ * branch a preflight saw absent can exist by the time it is created; only a
+ * branch this call created belongs to the operation's rollback. Returns null
+ * once the branch is created, otherwise the failure. After a failure the
+ * branch is never the operation's to delete: `kept` describes a branch that is
+ * now present, or cannot be read, and so stays.
+ */
+export async function createBranchExclusively(
+  git: SimpleGit,
+  branchName: string,
+  commit: string,
+  repoId?: string,
+): Promise<{ error: string; kept: string | null } | null> {
+  try {
+    await git.raw(['update-ref', '-m', 'hive: create worktree branch', `refs/heads/${branchName}`, commit, '']);
+    return null;
+  } catch (error) {
+    const present = await readBranchOid(git, branchName).then((tip) => tip !== null, () => true);
+    return {
+      error: (error as Error).message,
+      kept: present
+        ? `branch ${branchName}${repoId === undefined ? '' : ` in repository ${repoId}`} exists after its creation failed and was kept, because this create cannot show that it made the branch`
+        : null,
+    };
+  }
+}
+
+/**
+ * Remove the worktree at `worktreePath` only while it is a checkout that loses
+ * nothing: registered on `branch`, at `tip` when one is given, with no
+ * changed, untracked or ignored files, since `git worktree remove` deletes
+ * ignored files. Never forces. Returns null once removed, otherwise what stays.
+ */
+async function removeAttachedPlacement(git: SimpleGit, worktreePath: string, branch: { name: string; tip?: string }): Promise<string | null> {
+  const at = branch.tip === undefined ? '' : ` at ${branch.tip}`;
+  try {
+    const real = await fs.realpath(worktreePath);
+    const registered = (await git.raw(['worktree', 'list', '--porcelain'])).split(/\n(?=worktree )/).some((entry) => {
+      const lines = entry.trim().split('\n');
+      const listed = lines[0]?.startsWith('worktree ') ? lines[0].slice('worktree '.length) : undefined;
+      return listed !== undefined
+        && (listed === real || path.resolve(listed) === path.resolve(worktreePath))
+        && (branch.tip === undefined || lines.includes(`HEAD ${branch.tip}`))
+        && lines.includes(`branch refs/heads/${branch.name}`);
+    });
+    if (!registered) return `worktree ${worktreePath}, which is not registered on branch ${branch.name}${at}`;
+    const placement = simpleGit(worktreePath);
+    if (await fs.realpath((await placement.revparse(['--show-toplevel'])).trim()) !== real) {
+      return `worktree ${worktreePath}, which is not the top of its own checkout`;
+    }
+    const status = await placement.raw(['--no-optional-locks', 'status', '--porcelain=v1', '--ignored', '--untracked-files=all']);
+    if (status.trim() !== '') return `worktree ${worktreePath}, which holds changed, untracked or ignored files`;
+    await git.raw(['worktree', 'remove', worktreePath]);
+    return null;
+  } catch {
+    return `worktree ${worktreePath}`;
+  }
+}
+
+/**
+ * The cleanup step for a worktree whose record a create never confirmed
+ * (`createUnconfirmed`). The checkout may be another Git client's, so unlike a
+ * confirmed worker, whose ignored dependencies and build output cleanup may
+ * delete, it is removed only when it loses nothing.
+ */
+export async function removeUnconfirmedWorktreeStep(git: SimpleGit, worktreePath: string, branchName: string): Promise<CleanupStepOutcome> {
+  const present = await fs.lstat(worktreePath).then(() => true, (error: NodeJS.ErrnoException) => error.code !== 'ENOENT');
+  if (!present) return { status: 'already_absent' };
+  const kept = await removeAttachedPlacement(git, worktreePath, { name: branchName });
+  if (kept === null) return { status: 'succeeded' };
+  return {
+    status: 'failed',
+    error: `Refusing to remove ${kept}: the create that recorded it never confirmed the checkout as Hive's (createUnconfirmed), so it may be another Git client's. `
+      + 'Inspect it, then remove it yourself or keep it; cleanup finishes once it is gone or empty.',
+  };
+}
+
+/**
+ * Why a composite workspace whose manifest a create never confirmed keeps its
+ * root and manifest once its checkouts are gone, or null when it need not.
+ * While a worker branch remains, or cannot be read, a checkout another Git
+ * client attaches to it under the root must still read as unconfirmed, not as
+ * a placement without a manifest.
+ */
+export async function unconfirmedCompositeRetention(
+  workspaceRoot: string,
+  manifestPath: string,
+  branches: Array<{ repoId: string; git: SimpleGit; name: string }>,
+  cleanupTool: string,
+): Promise<string | null> {
+  const remaining: string[] = [];
+  for (const { repoId, git, name } of branches) {
+    if (await readBranchOid(git, name).then((tip) => tip !== null, () => true)) remaining.push(`${name} in repository ${repoId}`);
+  }
+  if (remaining.length === 0) return null;
+  return `Kept ${workspaceRoot} with its manifest ${manifestPath}, which a create never confirmed (createUnconfirmed), while worker branches remain: ${remaining.join(', ')}. `
+    + `A checkout attached to one of them later still reads as unconfirmed. Inspect those branches, then delete them with ${cleanupTool} and branch deletion, or remove them yourself; cleanup then removes the workspace.`;
+}
+
+/**
+ * Undo one repository of a failed create: the worktree it added at
+ * `worktreePath`, that worktree's registration, and the branch when this
+ * create made it. `attached` says this create's own `worktree add`
+ * succeeded. Without it, a checkout at the placement may be another Git
+ * client's, since owning the branch does not make the path this create's, so
+ * the placement, its registration and the branch all stay. A created branch
+ * is compare-deleted at the commit it was created at, so one that moved since
+ * stays; a branch the create only attached must still be at `tip`. Returns
+ * what remains, empty when the repository is back as the create found it.
+ */
+export async function rollbackFailedCreate(
+  git: SimpleGit,
+  worktreePath: string,
+  branch: { name: string; tip: string; created: boolean },
+  attached: boolean,
+  repoId?: string,
+): Promise<string[]> {
+  const where = repoId === undefined ? '' : ` in repository ${repoId}`;
+  const keptBranch = branch.created ? [`branch ${branch.name}${where}`] : [];
+  const present = await fs.lstat(worktreePath).then(() => true, (error: NodeJS.ErrnoException) => error.code !== 'ENOENT');
+  if (present) {
+    const kept = attached
+      ? await removeAttachedPlacement(git, worktreePath, branch)
+      : `worktree ${worktreePath}, which this create cannot show it attached`;
+    if (kept !== null) return [kept, ...keptBranch];
+  }
+  // Prune drops only registrations whose checkout is missing, such as one a failed add left behind.
+  if (!cleanupStepDone(await pruneWorktreesStep(git))) return [`a worktree registration${where}`, ...keptBranch];
+  const tip = await readBranchOid(git, branch.name).catch(() => undefined);
+  if (!branch.created) return tip === branch.tip ? [] : [`branch ${branch.name}${where}, which is no longer at its retained commit ${branch.tip}`];
+  const deleted = tip === null || (tip === branch.tip && cleanupStepDone(await deleteBranchStep(git, branch.name, tip)));
+  return deleted ? [] : [`branch ${branch.name}${where}`];
 }
 
 export function buildNotRequestedCleanupOutcome(): WorktreeCleanupOutcome {

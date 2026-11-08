@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { spawnSync } from "child_process";
+import { createHash } from "crypto";
 import * as fsSync from "fs";
 import * as fs from "fs/promises";
 import * as os from "os";
@@ -7,7 +8,7 @@ import * as path from "path";
 import simpleGit, { type SimpleGit } from "simple-git";
 import type { ResolvedRepository } from "../types";
 import { WorktreeService as CoreWorktreeService } from "./worktreeService";
-import type { MergeOptions, MergeResult, WorktreeConfig } from "./worktreeService";
+import type { BulkCleanupFailure, MergeOptions, MergeResult, WorktreeConfig } from "./worktreeService";
 import { WorktreeLinkageError, WorktreeOperationRecoveryRequiredError } from "./worktreeOutcome";
 import { repositoryResourceName, trustedGitCommonDirectory, WorktreeOperationRecoveryService } from './worktreeOperation.js';
 import { RepositoryService } from './repositoryService.js';
@@ -15,6 +16,7 @@ import { inspectTargetMergeEligibility } from './worktreeIntegration.js';
 import { readWorktreeTargetIdentity } from './worktreeTarget.js';
 import { RetainedCheckoutService } from './retainedCheckoutService.js';
 import { TaskService } from './taskService.js';
+import { probeLock } from '../utils/paths.js';
 
 interface TestFixture {
   repoPath: string;
@@ -872,7 +874,7 @@ describe("WorktreeService merge and commit messages", () => {
     expect(await fs.readFile(preservedPath, 'utf-8')).toBe('preserved\n');
   });
 
-  it('refuses a nonlinear rebase range with local data before the first pick', async () => {
+  it('refuses a nonlinear rebase range as an argument error before topology, local data or any mutation', async () => {
     const fixture = await createFixture();
     const worktreeGit = simpleGit(fixture.worktreePath);
     const sourceBranch = (await worktreeGit.branch()).current;
@@ -893,11 +895,16 @@ describe("WorktreeService merge and commit messages", () => {
 
     expect(result).toMatchObject({
       success: false,
-      reasonCode: 'TARGET_RECONCILIATION_REQUIRED',
+      reasonCode: 'INVALID_ARGUMENTS',
+      phase: 'validation',
       mutation: 'none',
       retryable: false,
-      action: 'reconcile_target',
+      action: 'correct_arguments',
+      error: expect.stringMatching(/linear replay range.*strategy 'squash'.*normal merge/),
     });
+    expect(await pathExists(path.join(fixture.repoPath, '.hive', '.locks', 'operations'))
+      ? fsSync.readdirSync(path.join(fixture.repoPath, '.hive', '.locks', 'operations'))
+      : []).toEqual([]);
     expect((await fixture.repoGit.revparse(['HEAD'])).trim()).toBe(beforeHead);
     expect(await pathExists(path.join(fixture.repoPath, 'main-source.txt'))).toBe(false);
     expect(await pathExists(path.join(fixture.repoPath, 'side.txt'))).toBe(false);
@@ -2946,7 +2953,50 @@ describe("WorktreeService composite workspaces", () => {
     expect(await pathExists(wt.path)).toBe(true);
   });
 
-  it('recovers an interrupted project-wide cleanup whose markers name its sources, and refuses sources outside a linked placement', async () => {
+  it('removes each stale workspace under its own workspace lock, so a record guarding only that workspace keeps it', async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
+    const stale = await fx.service.create(fx.feature, fx.task);
+    await fs.rm(stale.repos!['web-ui'].path, { recursive: true, force: true });
+    // A lock file a pre-native host left for this workspace alone names no repository.
+    const legacyLock = path.join(fx.projectRoot, '.hive', '.operation-locks', `workspace-${createHash('sha256').update(stale.path).digest('hex')}.lock`);
+    fsSync.mkdirSync(path.dirname(legacyLock), { recursive: true });
+    fsSync.writeFileSync(legacyLock, JSON.stringify({ pid: 3858212 }));
+
+    await expect(fx.service.cleanup(fx.feature)).rejects.toBeInstanceOf(WorktreeOperationRecoveryRequiredError);
+    expect(await pathExists(stale.repos!.api.path)).toBe(true);
+    expect(await pathExists(path.join(stale.path, 'workspace.json'))).toBe(true);
+
+    fsSync.unlinkSync(legacyLock);
+    expect(await fx.service.cleanup(fx.feature)).toEqual({ removed: [stale.path], pruned: true });
+    expect(await pathExists(stale.path)).toBe(false);
+  }, 30_000);
+
+  it('reports the workspaces a bulk cleanup already removed when a later removal throws', async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api'] });
+    const stale = [await fx.service.create(fx.feature, fx.task), await fx.service.create(fx.feature, '02-other-task')];
+    for (const workspace of stale) await fs.rm(workspace.repos!.api.path, { recursive: true, force: true });
+    const removeIfStale = (fx.service as any).removeIfStale.bind(fx.service);
+    let calls = 0;
+    const spy = spyOn(fx.service as any, 'removeIfStale').mockImplementation((...args: unknown[]) => {
+      calls += 1;
+      return calls === 1 ? removeIfStale(...args) : Promise.reject(new Error('simulated second removal failure'));
+    });
+    let failure: unknown;
+    try {
+      failure = await fx.service.cleanup(fx.feature).catch((error) => error);
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(calls).toBe(2);
+    const removedBeforeFailure = (failure as BulkCleanupFailure).removedBeforeFailure;
+    expect(removedBeforeFailure).toHaveLength(1);
+    expect(await pathExists(removedBeforeFailure[0]!)).toBe(false);
+    expect(await pathExists(stale.map((workspace) => workspace.path).find((workspacePath) => workspacePath !== removedBeforeFailure[0])!)).toBe(true);
+    expect((failure as Error).message).toContain(`simulated second removal failure; this cleanup had already removed ${removedBeforeFailure[0]}`);
+  }, 30_000);
+
+  it('recovers an interrupted bulk cleanup whose markers name the workspace and its sources, and refuses sources outside a linked placement', async () => {
     const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
     const repositories = Object.entries(fx.repos).map(([id, repo]) => ({ id, path: repo.path, root: repo.path }));
     const hiveDir = path.join(fx.projectRoot, '.hive');
@@ -2968,14 +3018,15 @@ describe("WorktreeService composite workspaces", () => {
     } finally {
       unlinkSpy.mockRestore();
     }
-    expect(cleaned).toMatchObject({ removed: [stale.path], pruned: true, finalization: { markers: 'retained', action: 'manual_recovery' } });
+    // The removal whose markers stayed ends the cleanup before the prune, so nothing else runs behind the retained record.
+    expect(cleaned).toMatchObject({ removed: [stale.path], pruned: false, finalization: { markers: 'retained', action: 'manual_recovery' } });
     const operationId = cleaned.finalization!.operationId!;
 
-    // A project-wide cleanup records no workspace; its sources are the stale workspace's checkouts.
+    // Each stale workspace is removed as its own operation, recording that workspace and its checkouts.
     const [entry] = await recovery.list();
     expect(entry).toMatchObject({
       operationId,
-      marker: { kind: 'cleanup', subject: { type: 'project', feature: fx.feature }, workspacePath: null },
+      marker: { kind: 'cleanup', subject: { type: 'task', feature: fx.feature, task: fx.task }, workspacePath: stale.path },
       recovery: { available: true },
     });
     expect(entry!.marker!.repositories.map((repository) => repository.sourceWorktreePath)).toEqual([stale.repos!.api.path, stale.repos!['web-ui'].path]);
@@ -4286,11 +4337,16 @@ describe("WorktreeService repository operation locks", () => {
       error: expect.stringContaining("host lost the integration"),
     });
     expect(interrupted.partial).toBeUndefined();
+    // The result names the operation whose retained markers now guard the workspace.
+    expect(interrupted.finalization).toMatchObject({ markers: "retained", action: "manual_recovery" });
+    expect(interrupted.finalization!.retainedMarkers).toHaveLength(2);
 
     const refused = await fx.service.merge(fx.feature, fx.task, "squash", mergeMessage, { historyIntent: 'rewrite-private' });
     expect(refused).toMatchObject({ success: false, reasonCode: "OPERATION_RECOVERY_REQUIRED", mutation: "none", retryable: false, partial: false });
+    expect(refused.finalization).toBeUndefined();
     const inspected = await fx.service.inspect(fx.feature, fx.task);
     expect(inspected?.pendingOperations).toEqual([expect.objectContaining({
+      operationId: interrupted.finalization!.operationId,
       state: "interrupted",
       marker: expect.objectContaining({ kind: "merge", subject: { type: "task", feature: fx.feature, task: fx.task } }),
     })]);
@@ -4547,6 +4603,886 @@ describe("WorktreeService repository operation locks", () => {
   }, 30_000);
 });
 
+function operationMarkers(repoPath: string): string[] {
+  const directory = path.join(repoPath, '.hive', '.locks', 'operations');
+  return fsSync.existsSync(directory) ? fsSync.readdirSync(directory) : [];
+}
+
+/**
+ * Make the atomic rename of one metadata file fail, as a full disk would. With `confirming`, only the first write
+ * that confirms a create fails: the one without `createUnconfirmed`, after the create's own worktree add.
+ */
+function failMetadataWrite(metadataPath: string, options: { confirming?: boolean } = {}): { mockRestore(): void } {
+  const originalRename = fsSync.renameSync;
+  let failed = false;
+  return spyOn(fsSync, 'renameSync').mockImplementation(((from: fsSync.PathLike, to: fsSync.PathLike) => {
+    const selected = !options.confirming || (!failed && !fsSync.readFileSync(from, 'utf-8').includes('"createUnconfirmed"'));
+    if (String(to) === metadataPath && selected) {
+      failed = true;
+      throw Object.assign(new Error('simulated metadata write failure'), { code: 'EIO' });
+    }
+    return originalRename(from, to);
+  }) as typeof fsSync.renameSync);
+}
+
+/**
+ * Make the first write that confirms a create at `metadataPath` fail after its rename published the confirmed bytes,
+ * as a directory flush failure would. With `restoreFails`, the write that puts `createUnconfirmed` back fails too.
+ */
+function failMetadataFlushAfterRename(metadataPath: string, options: { restoreFails?: boolean } = {}): { mockRestore(): void } {
+  const originalRename = fsSync.renameSync;
+  const originalFsync = fsSync.fsyncSync;
+  let armed = false;
+  let flushFailed = false;
+  const renameSpy = spyOn(fsSync, 'renameSync').mockImplementation(((from: fsSync.PathLike, to: fsSync.PathLike) => {
+    if (String(to) === metadataPath) {
+      const confirming = !fsSync.readFileSync(from, 'utf-8').includes('"createUnconfirmed"');
+      if (confirming && !flushFailed) armed = true;
+      else if (!confirming && flushFailed && options.restoreFails) throw Object.assign(new Error('simulated restore failure'), { code: 'EIO' });
+    }
+    return originalRename(from, to);
+  }) as typeof fsSync.renameSync);
+  const fsyncSpy = spyOn(fsSync, 'fsyncSync').mockImplementation(((descriptor: number) => {
+    if (armed) {
+      armed = false;
+      flushFailed = true;
+      throw Object.assign(new Error('simulated directory flush failure'), { code: 'EIO' });
+    }
+    return originalFsync(descriptor);
+  }) as typeof fsSync.fsyncSync);
+  return { mockRestore: () => { fsyncSpy.mockRestore(); renameSpy.mockRestore(); } };
+}
+
+/** Acknowledge every pending worktree operation, as an operator does once its processes are known to have stopped. */
+async function acknowledgePendingOperations(recovery: WorktreeOperationRecoveryService): Promise<void> {
+  const pending = await recovery.list();
+  expect(pending.length).toBeGreaterThan(0);
+  for (const entry of pending) {
+    await recovery.recover({ operationId: entry.operationId, markerDigest: entry.markerDigest, observedStateDigest: entry.observedStateDigest, mutatorsStopped: true });
+  }
+}
+
+/** Hide `file` from Git in `repositoryPath` and every worktree of it, so a checkout holding it has only ignored content. */
+async function ignoreInRepository(repositoryPath: string, file: string): Promise<void> {
+  await fs.appendFile(path.join(repositoryPath, '.git', 'info', 'exclude'), `${file}\n`);
+}
+
+describe("WorktreeService lifecycle integrity", () => {
+  const feature = 'test-feature';
+  const task = '01-test-task';
+  const branch = `hive/${feature}/${task}`;
+
+  /** Route one service's Git calls through `intercept`, which may handle a raw call or return undefined to run it. */
+  function interceptGit(
+    service: CoreWorktreeService,
+    intercept: (cwd: string | undefined, args: string[], git: SimpleGit) => Promise<unknown> | undefined,
+  ): { mockRestore(): void } {
+    const getGit = (service as any).getGit.bind(service);
+    return spyOn(service as any, 'getGit').mockImplementation((cwd?: string) => {
+      const git = getGit(cwd);
+      return new Proxy(git, {
+        get(target, key) {
+          if (key !== 'raw') return Reflect.get(target, key);
+          return (args: string[]) => intercept(cwd, args, target) ?? target.raw(args);
+        },
+      });
+    });
+  }
+
+  it('reattaches a retained task branch with its baseline and never deletes it when the create fails', async () => {
+    const { repoPath, repoGit } = await createTempRepo();
+    const service = new WorktreeService({ baseDir: repoPath, hiveDir: path.join(repoPath, '.hive') });
+    const created = await service.create(feature, task);
+    const metadataPath = `${created.path}.json`;
+    const worktreeGit = simpleGit(created.path);
+    await fs.writeFile(path.join(created.path, 'task-work.txt'), 'unique task work\n');
+    await worktreeGit.add('-A');
+    await worktreeGit.commit(testCommitMessage('feat: unique task work'));
+    const tip = (await worktreeGit.revparse(['HEAD'])).trim();
+    expect((await service.remove(feature, task)).cleanup.outcome).toBe('complete');
+    // The branch stays, so its baseline record stays with it.
+    expect(JSON.parse(await fs.readFile(metadataPath, 'utf8')).baseCommit).toBe(created.commit);
+    const retainedRecord = await fs.readFile(metadataPath, 'utf8');
+    await fs.writeFile(path.join(repoPath, 'target.txt'), 'destination moved\n');
+    await repoGit.add('target.txt');
+    await repoGit.commit(testCommitMessage('feat: advance the destination'));
+
+    for (const fault of ['unconfirmed', 'confirming', 'add'] as const) {
+      const spy = fault === 'add'
+        ? interceptGit(service, (_cwd, args) => args[0] === 'worktree' && args[1] === 'add' ? Promise.reject(new Error('simulated add failure')) : undefined)
+        : failMetadataWrite(metadataPath, { confirming: fault === 'confirming' });
+      try {
+        await expect(service.create(feature, task)).rejects.toThrow(fault === 'add' ? /simulated add failure/ : /simulated metadata write failure/);
+      } finally {
+        spy.mockRestore();
+      }
+      // The retained branch and its unique commit survive, the verified rollback leaves nothing to recover, and the
+      // record the create found, with the branch's baseline, is back as it was.
+      expect((await repoGit.raw(['rev-parse', `refs/heads/${branch}`])).trim()).toBe(tip);
+      expect(await pathExists(created.path)).toBe(false);
+      expect(operationMarkers(repoPath)).toEqual([]);
+      expect(await fs.readFile(metadataPath, 'utf8')).toBe(retainedRecord);
+    }
+
+    const reattached = await service.create(feature, task);
+    expect(reattached.commit).toBe(tip);
+    expect((await service.get(feature, task))?.baseCommit).toBe(created.commit);
+    expect((await service.getDiff(feature, task)).filesChanged).toEqual(['task-work.txt']);
+
+    // Without a surviving record, the baseline is the fork point with the destination, never the retained tip.
+    expect((await service.remove(feature, task)).cleanup.outcome).toBe('complete');
+    await fs.unlink(metadataPath);
+    await service.create(feature, task);
+    expect((await service.get(feature, task))?.baseCommit).toBe(created.commit);
+
+    // A record that describes another workspace refuses the reattachment before any effect.
+    expect((await service.remove(feature, task)).cleanup.outcome).toBe('complete');
+    const record = JSON.parse(await fs.readFile(metadataPath, 'utf8'));
+    await fs.writeFile(metadataPath, JSON.stringify({ ...record, task: '02-other-task' }));
+    await expect(service.create(feature, task)).rejects.toThrow(/Cannot reattach retained task branch .* describes a different workspace/);
+    expect(operationMarkers(repoPath)).toEqual([]);
+    expect((await repoGit.raw(['rev-parse', `refs/heads/${branch}`])).trim()).toBe(tip);
+  }, 30_000);
+
+  it('removes only the branch a failed fresh create made, without falling back to another checkout', async () => {
+    const { repoPath, repoGit } = await createTempRepo();
+    const service = new WorktreeService({ baseDir: repoPath, hiveDir: path.join(repoPath, '.hive') });
+    const adds: string[][] = [];
+    // The create makes the branch itself, then only attaches it; a failed attach leaves the branch this create made.
+    const spy = interceptGit(service, (_cwd, args) => {
+      if (args[0] !== 'worktree' || args[1] !== 'add') return undefined;
+      adds.push(args);
+      return Promise.reject(new Error('simulated checkout failure'));
+    });
+    try {
+      await expect(service.create(feature, task)).rejects.toThrow(/simulated checkout failure/);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(adds).toHaveLength(1);
+    expect(adds[0]).not.toContain('-b');
+    expect(await branchExists(repoGit, branch)).toBe(false);
+    expect(operationMarkers(repoPath)).toEqual([]);
+
+    const metadataPath = path.join(repoPath, '.hive', '.worktrees', feature, `${task}.json`);
+    const failure = failMetadataWrite(metadataPath, { confirming: true });
+    try {
+      await expect(service.create(feature, task)).rejects.toThrow(/simulated metadata write failure/);
+    } finally {
+      failure.mockRestore();
+    }
+    expect(await branchExists(repoGit, branch)).toBe(false);
+    expect(await pathExists(metadataPath)).toBe(false);
+    expect(operationMarkers(repoPath)).toEqual([]);
+    expect((await service.create(feature, task)).branch).toBe(branch);
+    expect(JSON.parse(await fs.readFile(metadataPath, 'utf8')).createUnconfirmed).toBeUndefined();
+  });
+
+  /**
+   * Create `branchName` at `commit` as another Git client would, outside Hive's locks, just before the first call that
+   * creates that branch: the exclusive ref creation, or a `worktree add`.
+   */
+  function raceBranchCreation(service: CoreWorktreeService, repositoryPath: string | undefined, branchName: string, commit: string): { raced(): boolean; mockRestore(): void } {
+    let raced = false;
+    const spy = interceptGit(service, (cwd, args, git) => {
+      const creates = (args[0] === 'worktree' && args[1] === 'add') || (args[0] === 'update-ref' && args.includes(`refs/heads/${branchName}`));
+      if (raced || !creates || (repositoryPath !== undefined && cwd !== repositoryPath)) return undefined;
+      raced = true;
+      return git.raw(['branch', branchName, commit]).then(() => git.raw(args));
+    });
+    return { raced: () => raced, mockRestore: () => spy.mockRestore() };
+  }
+
+  it('keeps a task branch another Git client creates after the preflight saw it absent', async () => {
+    const { repoPath, repoGit } = await createTempRepo();
+    const service = new WorktreeService({ baseDir: repoPath, hiveDir: path.join(repoPath, '.hive') });
+    const base = (await repoGit.revparse(['HEAD'])).trim();
+    const race = raceBranchCreation(service, undefined, branch, base);
+    let failure: unknown;
+    try {
+      failure = await service.create(feature, task).catch((error) => error);
+    } finally {
+      race.mockRestore();
+    }
+
+    expect(race.raced()).toBe(true);
+    // The branch is at the very commit this create would have used, yet it is not this create's to delete.
+    expect((await repoGit.raw(['rev-parse', `refs/heads/${branch}`])).trim()).toBe(base);
+    expect(failure).toBeInstanceOf(WorktreeOperationRecoveryRequiredError);
+    expect((failure as Error).message).toMatch(new RegExp(`branch ${branch} .*was kept`));
+    expect(await pathExists(path.join(repoPath, '.hive', '.worktrees', feature, task))).toBe(false);
+    expect(operationMarkers(repoPath)).not.toEqual([]);
+  });
+
+  it('keeps a composite repository branch another Git client creates mid-create and rolls back only the branches it made', async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
+    const web = fx.repos['web-ui'];
+    const webBranch = `hive/web-ui/${fx.feature}/${fx.task}`;
+    const webBase = (await web.git.revparse(['HEAD'])).trim();
+    const race = raceBranchCreation(fx.service, web.path, webBranch, webBase);
+    let failure: unknown;
+    try {
+      failure = await fx.service.create(fx.feature, fx.task).catch((error) => error);
+    } finally {
+      race.mockRestore();
+    }
+
+    expect(race.raced()).toBe(true);
+    expect((await web.git.raw(['rev-parse', `refs/heads/${webBranch}`])).trim()).toBe(webBase);
+    expect(await branchExists(fx.repos.api.git, `hive/api/${fx.feature}/${fx.task}`)).toBe(false);
+    expect(await pathExists(path.join(fx.service.getWorktreePath(fx.feature, fx.task), 'repos', 'api'))).toBe(false);
+    expect(failure).toBeInstanceOf(WorktreeOperationRecoveryRequiredError);
+    expect((failure as Error).message).toMatch(new RegExp(`branch ${webBranch} in repository web-ui .*was kept`));
+  }, 30_000);
+
+  /**
+   * Just before this create's `worktree add` in `repositoryPath`, another Git client attaches its own clean checkout of
+   * the very branch the create just made at the placement and leaves an ignored payload in it, so the create's add
+   * fails because the path is taken. Placement, registration and branch then all look like the create's own.
+   */
+  function attachForeignCheckoutBeforeAdd(service: CoreWorktreeService, repositoryPath: string, routedCwd: string | undefined): { placement(): string | undefined; mockRestore(): void } {
+    let placement: string | undefined;
+    const spy = interceptGit(service, (cwd, args, git) => {
+      if (placement !== undefined || args[0] !== 'worktree' || args[1] !== 'add' || cwd !== routedCwd) return undefined;
+      placement = args[args.indexOf('--') + 1]!;
+      const target = placement;
+      return git.raw(['worktree', 'add', '--', target, args[args.indexOf('--') + 2]!])
+        .then(async () => {
+          await ignoreInRepository(repositoryPath, 'payload.local');
+          await fs.writeFile(path.join(target, 'payload.local'), 'foreign ignored payload\n');
+        })
+        .then(() => git.raw(args));
+    });
+    return { placement: () => placement, mockRestore: () => spy.mockRestore() };
+  }
+
+  async function expectForeignCheckoutKept(repoGit: SimpleGit, placement: string, checkedOut: string): Promise<void> {
+    expect(await fs.readFile(path.join(placement, 'payload.local'), 'utf-8')).toBe('foreign ignored payload\n');
+    expect((await simpleGit(placement).revparse(['--abbrev-ref', 'HEAD'])).trim()).toBe(checkedOut);
+    expect(await repoGit.raw(['worktree', 'list', '--porcelain'])).toContain(`worktree ${await fs.realpath(placement)}\n`);
+  }
+
+  it('keeps a same-branch checkout another Git client attached at the placement through recovery, cleanup and create until it is gone', async () => {
+    const { repoPath, repoGit } = await createTempRepo();
+    const hiveDir = path.join(repoPath, '.hive');
+    const service = new WorktreeService({ baseDir: repoPath, hiveDir });
+    const foreign = attachForeignCheckoutBeforeAdd(service, repoPath, undefined);
+    let failure: unknown;
+    try {
+      failure = await service.create(feature, task).catch((error) => error);
+    } finally {
+      foreign.mockRestore();
+    }
+
+    const placement = foreign.placement()!;
+    const metadataPath = `${placement}.json`;
+    expect(placement).toBe(path.join(hiveDir, '.worktrees', feature, task));
+    await expectForeignCheckoutKept(repoGit, placement, branch);
+    // The branch is this create's, but the placement is not shown to be, so the markers guard both for recovery.
+    expect(failure).toBeInstanceOf(WorktreeOperationRecoveryRequiredError);
+    expect((failure as Error).message).toMatch(/rollback left worktree .*01-test-task, which this create cannot show it attached/);
+    expect(JSON.parse(await fs.readFile(metadataPath, 'utf-8'))).toMatchObject({ branch, createUnconfirmed: true });
+
+    // Acknowledging the operation clears its markers, not the doubt: cleanup keeps the checkout, its ignored payload
+    // and its registration, and create will not hand it out as the task's worker.
+    await acknowledgePendingOperations(new WorktreeOperationRecoveryService({ baseDir: repoPath, hiveDir }));
+    expect(operationMarkers(repoPath)).toEqual([]);
+
+    // Inspection still shows the doubt, and merge refuses to integrate the foreign client's commit even with the
+    // source pin and target the inspection supplies.
+    const foreignGit = simpleGit(placement);
+    await fs.writeFile(path.join(placement, 'foreign.txt'), 'foreign work\n');
+    await foreignGit.add('foreign.txt');
+    await foreignGit.commit(testCommitMessage('feat: foreign work'));
+    const inspected = await service.inspect(feature, task);
+    expect(inspected).toMatchObject({ path: placement, branch, createUnconfirmed: true });
+    const destination = (await repoGit.revparse(['HEAD'])).trim();
+    const refused = await service.merge(feature, task, 'merge', mergeMessage, { historyIntent: 'preserve-source', sourceCommit: inspected!.commit, expectedTarget: inspected!.target! });
+    expect(refused).toMatchObject({ success: false, merged: false, reasonCode: 'CREATE_UNCONFIRMED', phase: 'preflight', mutation: 'none', retryable: false, action: 'manual_recovery' });
+    expect(refused.error).toMatch(/never confirmed it \(createUnconfirmed in .*01-test-task\.json\).* is not integrated/);
+    expect((await repoGit.revparse(['HEAD'])).trim()).toBe(destination);
+    expect(await pathExists(path.join(repoPath, 'foreign.txt'))).toBe(false);
+    expect(operationMarkers(repoPath)).toEqual([]);
+    await foreignGit.raw(['reset', '--hard', 'HEAD~1']);
+
+    const kept = await service.remove(feature, task, true);
+    expect(kept.cleanup.worktreeRemoval).toMatchObject({ status: 'failed', error: expect.stringMatching(/Refusing to remove worktree .*01-test-task, which holds changed, untracked or ignored files: .*createUnconfirmed/) });
+    expect(kept.branchDeleted).toBe(false);
+    await expectForeignCheckoutKept(repoGit, placement, branch);
+    await expect(service.create(feature, task)).rejects.toThrow(/was left by a create that never confirmed it \(createUnconfirmed in .*01-test-task\.json\)/);
+    await expectForeignCheckoutKept(repoGit, placement, branch);
+
+    // Once its owner removes that checkout, cleanup finishes and create starts over with a confirmed worker.
+    await repoGit.raw(['worktree', 'remove', placement]);
+    expect((await service.remove(feature, task, true)).cleanup.outcome).toBe('complete');
+    expect(await pathExists(metadataPath)).toBe(false);
+    expect(await branchExists(repoGit, branch)).toBe(false);
+    const created = await service.create(feature, task);
+    expect(JSON.parse(await fs.readFile(metadataPath, 'utf-8')).createUnconfirmed).toBeUndefined();
+    // A confirmed worker's ignored dependencies and build output remain cleanup's to delete.
+    await fs.writeFile(path.join(created.path, 'payload.local'), 'generated output\n');
+    expect((await service.remove(feature, task, true)).cleanup.outcome).toBe('complete');
+    expect(await pathExists(created.path)).toBe(false);
+  });
+
+  for (const fault of ['before its rename', 'after its rename published it'] as const) {
+    it(`keeps an owned placement whose rollback would delete ignored files when the confirming write fails ${fault}`, async () => {
+      const { repoPath, repoGit } = await createTempRepo();
+      const hiveDir = path.join(repoPath, '.hive');
+      const service = new WorktreeService({ baseDir: repoPath, hiveDir });
+      const placement = path.join(hiveDir, '.worktrees', feature, task);
+      const payload = path.join(placement, '.hive', 'payload.local');
+      const add = interceptGit(service, (_cwd, args, git) => args[0] === 'worktree' && args[1] === 'add'
+        ? git.raw(args).then(() => fs.mkdir(path.join(placement, '.hive'), { recursive: true }))
+          .then(() => fs.writeFile(payload, 'ignored work\n'))
+        : undefined);
+      const metadata = fault === 'before its rename'
+        ? failMetadataWrite(`${placement}.json`, { confirming: true })
+        : failMetadataFlushAfterRename(`${placement}.json`);
+      let failure: unknown;
+      try {
+        failure = await service.create(feature, task).catch((error) => error);
+      } finally {
+        metadata.mockRestore();
+        add.mockRestore();
+      }
+
+      expect(failure).toBeInstanceOf(WorktreeOperationRecoveryRequiredError);
+      expect((failure as Error).message).toMatch(/simulated (metadata write|directory flush) failure; rollback left worktree .*01-test-task, which holds changed, untracked or ignored files/);
+      expect((failure as Error).message).not.toMatch(/unresolved/);
+      expect(await fs.readFile(payload, 'utf-8')).toBe('ignored work\n');
+      expect(await branchExists(repoGit, branch)).toBe(true);
+      expect(operationMarkers(repoPath)).not.toEqual([]);
+      // Whether or not the rename published the confirmed record, the record again says the create never confirmed
+      // the placement, so acknowledging the operation does not let cleanup delete the ignored files.
+      expect(JSON.parse(await fs.readFile(`${placement}.json`, 'utf-8')).createUnconfirmed).toBe(true);
+      await acknowledgePendingOperations(new WorktreeOperationRecoveryService({ baseDir: repoPath, hiveDir }));
+      const kept = await service.remove(feature, task, true);
+      expect(kept.cleanup.worktreeRemoval).toMatchObject({ status: 'failed', error: expect.stringMatching(/createUnconfirmed/) });
+      expect(await fs.readFile(payload, 'utf-8')).toBe('ignored work\n');
+      expect(await branchExists(repoGit, branch)).toBe(true);
+
+      await fs.rm(path.join(placement, '.hive'), { recursive: true });
+      expect((await service.remove(feature, task, true)).cleanup.outcome).toBe('complete');
+      expect([await pathExists(placement), await pathExists(`${placement}.json`), await branchExists(repoGit, branch)]).toEqual([false, false, false]);
+    });
+  }
+
+  it('names a record it cannot put back to createUnconfirmed as unresolved and keeps the markers', async () => {
+    const { repoPath, repoGit } = await createTempRepo();
+    const service = new WorktreeService({ baseDir: repoPath, hiveDir: path.join(repoPath, '.hive') });
+    const placement = path.join(repoPath, '.hive', '.worktrees', feature, task);
+    const add = interceptGit(service, (_cwd, args, git) => args[0] === 'worktree' && args[1] === 'add'
+      ? git.raw(args).then(() => fs.mkdir(path.join(placement, '.hive'), { recursive: true }))
+        .then(() => fs.writeFile(path.join(placement, '.hive', 'payload.local'), 'ignored work\n'))
+      : undefined);
+    const metadata = failMetadataFlushAfterRename(`${placement}.json`, { restoreFails: true });
+    let failure: unknown;
+    try {
+      failure = await service.create(feature, task).catch((error) => error);
+    } finally {
+      metadata.mockRestore();
+      add.mockRestore();
+    }
+
+    expect(failure).toBeInstanceOf(WorktreeOperationRecoveryRequiredError);
+    expect((failure as Error).message).toMatch(/simulated directory flush failure; putting createUnconfirmed back in .*01-test-task\.json also failed .*simulated restore failure.*; rollback left worktree .*The workspace record .*01-test-task\.json is unresolved: it may read as confirmed, and recovery does not read workspace records\. Do not acknowledge the operation: keep the record and the kept checkout as they are and report both to the operator/);
+    // The agent is not told to repair the record itself.
+    expect((failure as Error).message).not.toMatch(/set createUnconfirmed: true in it or remove the kept checkout yourself/);
+    // The record reads as confirmed; only the retained markers still refuse every later mutation.
+    expect(JSON.parse(await fs.readFile(`${placement}.json`, 'utf-8')).createUnconfirmed).toBeUndefined();
+    expect(operationMarkers(repoPath)).not.toEqual([]);
+    await expect(service.remove(feature, task, true)).rejects.toThrow(WorktreeOperationRecoveryRequiredError);
+    expect(await fs.readFile(path.join(placement, '.hive', 'payload.local'), 'utf-8')).toBe('ignored work\n');
+    expect(await branchExists(repoGit, branch)).toBe(true);
+  });
+
+  it('refuses to reattach a retained branch whose record a create never confirmed once its checkout is gone', async () => {
+    const { repoPath, repoGit } = await createTempRepo();
+    const service = new WorktreeService({ baseDir: repoPath, hiveDir: path.join(repoPath, '.hive') });
+    const created = await service.create(feature, task);
+    const metadataPath = `${created.path}.json`;
+    // A create that stopped after its own add and before confirming it leaves the record unconfirmed.
+    const record = JSON.parse(await fs.readFile(metadataPath, 'utf-8'));
+    await fs.writeFile(metadataPath, JSON.stringify({ ...record, createUnconfirmed: true }));
+    expect((await service.remove(feature, task)).cleanup.outcome).toBe('complete');
+    const tip = (await repoGit.revparse([branch])).trim();
+
+    // The checkout is gone and the branch stays; the branch may now hold another client's commits, so create neither
+    // reattaches it nor confirms the record, and it refuses before any marker or Git effect.
+    await expect(service.create(feature, task)).rejects.toThrow(/Cannot reattach retained task branch hive\/test-feature\/01-test-task: its workspace metadata .*01-test-task\.json was left by a create that never confirmed it \(createUnconfirmed\).*hive_worktree_cleanup/);
+    expect(await pathExists(created.path)).toBe(false);
+    expect(JSON.parse(await fs.readFile(metadataPath, 'utf-8')).createUnconfirmed).toBe(true);
+    expect((await repoGit.revparse([branch])).trim()).toBe(tip);
+    expect(operationMarkers(repoPath)).toEqual([]);
+
+    // Deleting the branch releases the record, and create starts over with a confirmed worker.
+    expect((await service.remove(feature, task, true)).cleanup.outcome).toBe('complete');
+    expect([await pathExists(metadataPath), await branchExists(repoGit, branch)]).toEqual([false, false]);
+    await service.create(feature, task);
+    expect(JSON.parse(await fs.readFile(metadataPath, 'utf-8')).createUnconfirmed).toBeUndefined();
+  });
+
+  it('keeps an unconfirmed composite workspace root and manifest while its worker branches remain', async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
+    const created = await fx.service.create(fx.feature, fx.task);
+    const manifestPath = path.join(created.path, 'workspace.json');
+    const branches = { api: `hive/api/${fx.feature}/${fx.task}`, 'web-ui': `hive/web-ui/${fx.feature}/${fx.task}` };
+    const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf-8'));
+    await fs.writeFile(manifestPath, JSON.stringify({ ...manifest, createUnconfirmed: true }));
+
+    // Worktree-only cleanup removes the empty checkouts but keeps the root and its unconfirmed manifest beside the
+    // branches, and says so instead of reporting a complete removal, also when it runs again.
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const removed = await fx.service.remove(fx.feature, fx.task);
+      expect(removed.cleanup.outcome).toBe('partial');
+      expect(removed.worktreeRemoved).toBe(false);
+      expect(removed.cleanup.failures).toContainEqual(expect.objectContaining({ step: 'composite-root', cause: expect.stringMatching(/Kept .* with its manifest .*workspace\.json, which a create never confirmed \(createUnconfirmed\), while worker branches remain: hive\/api\/.* in repository api, hive\/web-ui\/.* in repository web-ui/) }));
+      expect(JSON.parse(await fs.readFile(manifestPath, 'utf-8')).createUnconfirmed).toBe(true);
+      expect([await pathExists(created.repos!.api.path), await pathExists(created.repos!['web-ui'].path)]).toEqual([false, false]);
+      expect([await branchExists(fx.repos.api.git, branches.api), await branchExists(fx.repos['web-ui'].git, branches['web-ui'])]).toEqual([true, true]);
+    }
+    await expect(fx.service.create(fx.feature, fx.task)).rejects.toThrow(/never confirmed it \(createUnconfirmed in .*workspace\.json\).*keeps this record until the worker branches are deleted too/);
+
+    // Another Git client attaches both branches again and leaves an ignored payload in one: the workspace still reads
+    // as unconfirmed, merge refuses it, and cleanup keeps the payload with the manifest.
+    for (const repoId of ['api', 'web-ui'] as const) {
+      await fx.repos[repoId].git.raw(['worktree', 'add', '--', created.repos![repoId].path, branches[repoId]]);
+    }
+    await ignoreInRepository(fx.repos['web-ui'].path, 'payload.local');
+    await fs.writeFile(path.join(created.repos!['web-ui'].path, 'payload.local'), 'foreign ignored payload\n');
+    const inspected = (await fx.service.inspect(fx.feature, fx.task))!;
+    expect(inspected.createUnconfirmed).toBe(true);
+    const refused = await fx.service.merge(fx.feature, fx.task, 'merge', mergeMessage, {
+      historyIntent: 'preserve-source',
+      sourceCommits: Object.fromEntries(Object.entries(inspected.repos!).map(([id, repo]) => [id, repo.commit])),
+      expectedTargets: Object.fromEntries(Object.entries(inspected.repos!).map(([id, repo]) => [id, repo.target!])),
+    });
+    expect(refused).toMatchObject({ success: false, merged: false, reasonCode: 'CREATE_UNCONFIRMED', mutation: 'none' });
+    const kept = await fx.service.remove(fx.feature, fx.task, true);
+    expect(kept.cleanup.outcome).not.toBe('complete');
+    expect(await fs.readFile(path.join(created.repos!['web-ui'].path, 'payload.local'), 'utf-8')).toBe('foreign ignored payload\n');
+    expect(JSON.parse(await fs.readFile(manifestPath, 'utf-8')).createUnconfirmed).toBe(true);
+
+    // Once that checkout is gone, cleanup with branch deletion retires every branch and removes the workspace.
+    await fx.repos['web-ui'].git.raw(['worktree', 'remove', '--force', created.repos!['web-ui'].path]);
+    expect((await fx.service.remove(fx.feature, fx.task, true)).cleanup.outcome).toBe('complete');
+    expect(await pathExists(created.path)).toBe(false);
+    expect([await branchExists(fx.repos.api.git, branches.api), await branchExists(fx.repos['web-ui'].git, branches['web-ui'])]).toEqual([false, false]);
+  }, 30_000);
+
+  it('refuses a workspace record whose createUnconfirmed is anything but true', async () => {
+    const { repoPath } = await createTempRepo();
+    const service = new WorktreeService({ baseDir: repoPath, hiveDir: path.join(repoPath, '.hive') });
+    const single = await service.create(feature, task);
+    const fx = await createCompositeFixture({ repoIds: ['api'] });
+    const composite = await fx.service.create(fx.feature, fx.task);
+    const records = [
+      { file: `${single.path}.json`, read: () => service.get(feature, task), error: /Invalid single workspace metadata/ },
+      { file: path.join(composite.path, 'workspace.json'), read: () => fx.service.get(fx.feature, fx.task), error: /Invalid composite workspace manifest/ },
+    ];
+    for (const { file, read, error } of records) {
+      const record = JSON.parse(await fs.readFile(file, 'utf-8'));
+      for (const value of [false, 'true', null]) {
+        await fs.writeFile(file, JSON.stringify({ ...record, createUnconfirmed: value }));
+        await expect(read()).rejects.toThrow(error);
+      }
+    }
+    await expect(service.remove(feature, task)).rejects.toThrow(/Invalid single workspace metadata/);
+    await expect(fx.service.remove(fx.feature, fx.task)).rejects.toThrow(/Invalid composite workspace manifest/);
+    expect(await pathExists(single.path)).toBe(true);
+    expect(await pathExists(composite.repos!.api.path)).toBe(true);
+  }, 30_000);
+
+  it('keeps a same-branch checkout another Git client attached at a composite repository placement until it is gone, rolling back the repositories it attached', async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
+    const web = fx.repos['web-ui'];
+    const webBranch = `hive/web-ui/${fx.feature}/${fx.task}`;
+    const foreign = attachForeignCheckoutBeforeAdd(fx.service, web.path, web.path);
+    let failure: unknown;
+    try {
+      failure = await fx.service.create(fx.feature, fx.task).catch((error) => error);
+    } finally {
+      foreign.mockRestore();
+    }
+
+    const workspacePath = fx.service.getWorktreePath(fx.feature, fx.task);
+    const manifestPath = path.join(workspacePath, 'workspace.json');
+    const placement = foreign.placement()!;
+    expect(placement).toBe(path.join(workspacePath, 'repos', 'web-ui'));
+    await expectForeignCheckoutKept(web.git, placement, webBranch);
+    expect(await pathExists(path.join(workspacePath, 'repos', 'api'))).toBe(false);
+    expect(await branchExists(fx.repos.api.git, `hive/api/${fx.feature}/${fx.task}`)).toBe(false);
+    expect(JSON.parse(await fs.readFile(manifestPath, 'utf-8')).createUnconfirmed).toBe(true);
+    expect(failure).toBeInstanceOf(WorktreeOperationRecoveryRequiredError);
+    expect((failure as Error).message).toMatch(/rollback left worktree .*repos\/web-ui, which this create cannot show it attached, branch hive\/web-ui\/.*kept unconfirmed/);
+
+    const repositories = Object.entries(fx.repos).map(([id, repo]) => ({ id, path: repo.path, root: repo.path }));
+    await acknowledgePendingOperations(new WorktreeOperationRecoveryService({ baseDir: fx.projectRoot, hiveDir: path.join(fx.projectRoot, '.hive'), repositoryResolver: () => repositories }));
+    const kept = await fx.service.remove(fx.feature, fx.task, true);
+    expect(kept.cleanup.outcome).not.toBe('complete');
+    expect(kept.cleanup.failures).toContainEqual(expect.objectContaining({ repoId: 'web-ui', cause: expect.stringMatching(/Refusing to remove worktree .*repos\/web-ui, which holds changed, untracked or ignored files: .*createUnconfirmed/) }));
+    await expectForeignCheckoutKept(web.git, placement, webBranch);
+    expect(await pathExists(manifestPath)).toBe(true);
+    await expect(fx.service.create(fx.feature, fx.task)).rejects.toThrow(/never confirmed it \(createUnconfirmed in .*workspace\.json\)/);
+
+    await web.git.raw(['worktree', 'remove', placement]);
+    expect((await fx.service.remove(fx.feature, fx.task, true)).cleanup.outcome).toBe('complete');
+    expect(await pathExists(workspacePath)).toBe(false);
+    expect(await branchExists(web.git, webBranch)).toBe(false);
+    const created = await fx.service.create(fx.feature, fx.task);
+    expect(JSON.parse(await fs.readFile(manifestPath, 'utf-8')).createUnconfirmed).toBeUndefined();
+    await fs.writeFile(path.join(created.repos!['web-ui'].path, 'payload.local'), 'generated output\n');
+    expect((await fx.service.remove(fx.feature, fx.task, true)).cleanup.outcome).toBe('complete');
+    expect(await pathExists(workspacePath)).toBe(false);
+  }, 30_000);
+
+  it('cleans up an unconfirmed composite workspace whose checkouts hold nothing, and keeps a checkout holding ignored files', async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
+    const created = await fx.service.create(fx.feature, fx.task);
+    const manifestPath = path.join(created.path, 'workspace.json');
+    // A create that stopped after its own adds and before confirming them leaves the manifest unconfirmed.
+    const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf-8'));
+    expect(manifest.createUnconfirmed).toBeUndefined();
+    await fs.writeFile(manifestPath, JSON.stringify({ ...manifest, createUnconfirmed: true }));
+    await expect(fx.service.create(fx.feature, fx.task)).rejects.toThrow(/never confirmed it/);
+    const inspected = (await fx.service.inspect(fx.feature, fx.task))!;
+    expect(inspected.createUnconfirmed).toBe(true);
+    const refused = await fx.service.merge(fx.feature, fx.task, 'merge', mergeMessage, {
+      historyIntent: 'preserve-source',
+      sourceCommits: Object.fromEntries(Object.entries(inspected.repos!).map(([id, repo]) => [id, repo.commit])),
+      expectedTargets: Object.fromEntries(Object.entries(inspected.repos!).map(([id, repo]) => [id, repo.target!])),
+    });
+    expect(refused).toMatchObject({ success: false, merged: false, reasonCode: 'CREATE_UNCONFIRMED', mutation: 'none', action: 'manual_recovery' });
+    expect(refused.error).toMatch(/workspace\.json\).* is not integrated/);
+    expect(operationMarkers(fx.projectRoot)).toEqual([]);
+    const webPath = created.repos!['web-ui'].path;
+    await ignoreInRepository(fx.repos['web-ui'].path, 'payload.local');
+    await fs.writeFile(path.join(webPath, 'payload.local'), 'ignored work\n');
+
+    const partial = await fx.service.remove(fx.feature, fx.task, true);
+    expect(partial.cleanup.outcome).not.toBe('complete');
+    expect(await pathExists(created.repos!.api.path)).toBe(false);
+    expect(await fs.readFile(path.join(webPath, 'payload.local'), 'utf-8')).toBe('ignored work\n');
+
+    await fs.unlink(path.join(webPath, 'payload.local'));
+    expect((await fx.service.remove(fx.feature, fx.task, true)).cleanup.outcome).toBe('complete');
+    expect(await pathExists(created.path)).toBe(false);
+    expect(await branchExists(fx.repos['web-ui'].git, `hive/web-ui/${fx.feature}/${fx.task}`)).toBe(false);
+  }, 30_000);
+
+  it('reports a task branch as absent only when its exact ref is missing', async () => {
+    const fixture = await createCommittedFixture();
+    // An unreadable containment check is a failed deletion, not an absent branch.
+    const spy = interceptGit(fixture.service, (_cwd, args) => args[0] === 'rev-list' && args[1] === '--count'
+      ? Promise.reject(new Error("fatal: ambiguous argument 'main..HEAD': unknown revision or path not in the working tree."))
+      : undefined);
+    let unreadable: Awaited<ReturnType<CoreWorktreeService['remove']>>;
+    try {
+      unreadable = await fixture.service.remove(fixture.feature, fixture.task, true);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(unreadable.cleanup.branchDeletion).toMatchObject({ status: 'failed', error: expect.stringContaining('ambiguous argument') });
+    expect(unreadable.branchDeleted).toBe(false);
+    expect(await branchExists(fixture.repoGit, branch)).toBe(true);
+
+    // A detached target is compared by its HEAD commit.
+    await fixture.repoGit.raw(['checkout', '--detach', 'HEAD']);
+    const detached = await fixture.service.remove(fixture.feature, fixture.task, true);
+    expect(detached.cleanup.branchDeletion).toMatchObject({ status: 'failed', error: expect.stringMatching(/1 unmerged commits would be discarded/) });
+    expect(await branchExists(fixture.repoGit, branch)).toBe(true);
+
+    await fixture.repoGit.raw(['update-ref', '-d', `refs/heads/${branch}`]);
+    expect((await fixture.service.remove(fixture.feature, fixture.task, true)).cleanup.branchDeletion.status).toBe('already_absent');
+  });
+
+  it('leaves staged destination data untouched when a preflight read fails before any mutation', async () => {
+    const fixture = await createCommittedFixture();
+    const stagedPath = path.join(fixture.repoPath, 'staged-user.txt');
+    await fs.writeFile(stagedPath, 'staged user content\n');
+    await fixture.repoGit.add('staged-user.txt');
+    let failed = false;
+    const spy = interceptGit(fixture.service, (cwd, args) => {
+      if (cwd !== undefined || failed || args.join(' ') !== 'status --porcelain=v1 -z --untracked-files=no') return undefined;
+      failed = true;
+      return Promise.reject(new Error('simulated status read failure'));
+    });
+    let result: MergeResult;
+    try {
+      result = await fixture.service.merge(fixture.feature, fixture.task, 'squash', mergeMessage, { historyIntent: 'rewrite-private' });
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(failed).toBe(true);
+    expect(result).toMatchObject({ success: false, reasonCode: 'GIT_OPERATION_FAILED', mutation: 'none', error: expect.stringContaining('simulated status read failure') });
+    expect(await fs.readFile(stagedPath, 'utf-8')).toBe('staged user content\n');
+    expect((await fixture.repoGit.raw(['diff', '--cached', '--name-only'])).trim()).toBe('staged-user.txt');
+    expect(operationMarkers(fixture.repoPath)).toEqual([]);
+  });
+
+  it('reports a squash retry whose changes already landed beside independent target work as a no-op', async () => {
+    const fixture = await createCommittedFixture();
+    await fs.writeFile(path.join(fixture.repoPath, 'independent.txt'), 'independent\n');
+    await fixture.repoGit.add('independent.txt');
+    await fixture.repoGit.commit(testCommitMessage('feat: independent target work'));
+    const sourceCommit = (await simpleGit(fixture.worktreePath).revparse(['HEAD'])).trim();
+    const first = await fixture.service.merge(fixture.feature, fixture.task, 'squash', mergeMessage, { historyIntent: 'rewrite-private', sourceCommit });
+    expect(first).toMatchObject({ success: true, merged: true });
+    const head = (await fixture.repoGit.revparse(['HEAD'])).trim();
+
+    const retry = await fixture.service.merge(fixture.feature, fixture.task, 'squash', mergeMessage, { historyIntent: 'rewrite-private', sourceCommit });
+    expect(retry).toMatchObject({ success: true, merged: false, reasonCode: 'NO_TRACKED_CHANGES', mutation: 'none', retryable: false, action: 'none' });
+    expect((await fixture.repoGit.revparse(['HEAD'])).trim()).toBe(head);
+    expect(await pathExists(path.join(fixture.repoPath, '.git', 'SQUASH_MSG'))).toBe(false);
+    expect((await fixture.repoGit.raw(['status', '--porcelain=v1'])).trim()).toBe('');
+    expect(operationMarkers(fixture.repoPath)).toEqual([]);
+
+    // The private attestation, not source containment, proves the completed no-op for same-call cleanup.
+    const cleaned = await fixture.service.merge(fixture.feature, fixture.task, 'squash', mergeMessage, {
+      historyIntent: 'rewrite-private',
+      sourceCommit,
+      cleanup: 'worktree+branch',
+    });
+    expect(cleaned).toMatchObject({ success: true, reasonCode: 'NO_TRACKED_CHANGES', cleanup: { outcome: 'complete' } });
+    expect(await branchExists(fixture.repoGit, branch)).toBe(false);
+  }, 30_000);
+
+  it('persists a composite manifest before the first worktree add, so an incompletely rolled back create is cleaned up by the owning tool', async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
+    const workspacePath = fx.service.getWorktreePath(fx.feature, fx.task);
+    const manifestPath = path.join(workspacePath, 'workspace.json');
+    const heads = Object.fromEntries(await Promise.all(Object.entries(fx.repos).map(async ([id, repo]) => [id, (await repo.git.revparse(['HEAD'])).trim()])));
+    const manifestAtAdd: unknown[] = [];
+    const spy = interceptGit(fx.service, (cwd, args) => {
+      if (args[0] === 'worktree' && args[1] === 'add') {
+        manifestAtAdd.push(fsSync.existsSync(manifestPath) ? JSON.parse(fsSync.readFileSync(manifestPath, 'utf-8')) : null);
+        if (cwd === fx.repos['web-ui'].path) return Promise.reject(new Error('simulated web-ui add failure'));
+      }
+      if (args[0] === 'worktree' && args[1] === 'remove' && cwd === fx.repos.api.path) return Promise.reject(new Error('simulated api removal failure'));
+      return undefined;
+    });
+    let failure: unknown;
+    try {
+      failure = await fx.service.create(fx.feature, fx.task).catch((error) => error);
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(manifestAtAdd[0]).toMatchObject({ mode: 'composite', baseCommits: heads, repos: { api: { commit: heads.api }, 'web-ui': { commit: heads['web-ui'] } } });
+    // The original failure and what the rollback left are both reported; the markers guard what remains.
+    expect(failure).toBeInstanceOf(WorktreeOperationRecoveryRequiredError);
+    expect((failure as Error).message).toMatch(/simulated web-ui add failure; rollback left worktree .*repos\/api, branch hive\/api\//);
+    expect(await pathExists(manifestPath)).toBe(true);
+    expect(await pathExists(path.join(workspacePath, 'repos', 'api'))).toBe(true);
+    expect(await branchExists(fx.repos['web-ui'].git, `hive/web-ui/${fx.feature}/${fx.task}`)).toBe(false);
+
+    const recovery = new WorktreeOperationRecoveryService({
+      baseDir: fx.projectRoot,
+      hiveDir: path.join(fx.projectRoot, '.hive'),
+      repositoryResolver: () => Object.entries(fx.repos).map(([id, repo]) => ({ id, path: repo.path, root: repo.path })),
+    });
+    const [pending] = await recovery.list();
+    expect(pending).toMatchObject({ operationId: (failure as WorktreeOperationRecoveryRequiredError).operationIds[0], marker: { kind: 'create' }, recovery: { available: true } });
+    await recovery.recover({ operationId: pending!.operationId, markerDigest: pending!.markerDigest, observedStateDigest: pending!.observedStateDigest, mutatorsStopped: true });
+
+    expect((await fx.service.remove(fx.feature, fx.task, true)).cleanup.outcome).toBe('complete');
+    expect(await pathExists(workspacePath)).toBe(false);
+    expect(await branchExists(fx.repos.api.git, `hive/api/${fx.feature}/${fx.task}`)).toBe(false);
+
+    // An empty placement, as an interrupted create or root removal leaves, holds nothing to preserve.
+    await fs.mkdir(workspacePath, { recursive: true });
+    expect((await fx.service.create(fx.feature, fx.task)).mode).toBe('composite');
+  }, 30_000);
+
+  it('completes a composite squash retry after a partial result, treating the already squashed repository as a no-op', async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api', 'web'] });
+    const created = await fx.service.create(fx.feature, fx.task);
+    const commitIn = async (cwd: string, file: string, content: string, subject: string) => {
+      await fs.writeFile(path.join(cwd, file), content);
+      const git = simpleGit(cwd);
+      await git.add(file);
+      await git.commit(testCommitMessage(subject));
+      return (await git.revparse(['HEAD'])).trim();
+    };
+    await commitIn(created.repos!.api.path, 'api-change.txt', 'task change\n', 'feat: api task change');
+    await commitIn(created.repos!.web.path, 'README.md', '# web\n\ntask edit\n', 'feat: web task change');
+    await commitIn(fx.repos.api.path, 'api-independent.txt', 'independent\n', 'feat: independent api work');
+    await commitIn(fx.repos.web.path, 'README.md', '# web\n\nconflicting edit\n', 'feat: conflicting web work');
+
+    const partial = await fx.service.merge(fx.feature, fx.task, 'squash', mergeMessage, { historyIntent: 'rewrite-private' });
+    expect(partial).toMatchObject({ reasonCode: 'COMPOSITE_PARTIAL', repos: { api: { merged: true }, web: { reasonCode: 'MERGE_CONFLICT_ABORTED' } } });
+    const apiHead = (await fx.repos.api.git.revparse(['HEAD'])).trim();
+    await simpleGit(created.repos!.web.path).raw(['merge', '-X', 'ours', 'main', '-m', testCommitMessage('chore: reconcile web target')]);
+
+    const retry = await fx.service.merge(fx.feature, fx.task, 'squash', mergeMessage, { historyIntent: 'rewrite-private', cleanup: 'worktree+branch' });
+    expect(retry).toMatchObject({
+      success: true,
+      merged: true,
+      repos: { api: { merged: false, reasonCode: 'NO_TRACKED_CHANGES', mutation: 'none' }, web: { merged: true } },
+      cleanup: { outcome: 'complete' },
+    });
+    expect((await fx.repos.api.git.revparse(['HEAD'])).trim()).toBe(apiHead);
+    expect(await pathExists(path.join(fx.repos.api.path, '.git', 'SQUASH_MSG'))).toBe(false);
+    expect(await pathExists(created.path)).toBe(false);
+  }, 30_000);
+
+  it('refuses a rebase that would preserve conflicts before any lock or Git read', async () => {
+    const fixture = await createConflictingFixture();
+    const gitSpy = spyOn(fixture.service as any, 'getGit');
+    let result: MergeResult;
+    try {
+      result = await fixture.service.merge(fixture.feature, fixture.task, 'rebase', undefined, { historyIntent: 'rewrite-private', preserveConflicts: true, expectedTarget: await readWorktreeTargetIdentity(fixture.repoPath) });
+      expect(gitSpy).not.toHaveBeenCalled();
+    } finally {
+      gitSpy.mockRestore();
+    }
+    expect(result).toMatchObject({
+      success: false,
+      reasonCode: 'INVALID_ARGUMENTS',
+      mutation: 'none',
+      retryable: false,
+      action: 'correct_arguments',
+      error: expect.stringMatching(/strategy 'squash'.*normal merge/),
+    });
+    expect(operationMarkers(fixture.repoPath)).toEqual([]);
+  });
+
+  /**
+   * Run `change` after a create selected its placement and before it publishes the placement record, and record the
+   * feature's task-sync lock, the status lock and the record's presence the moment the record is written, and both
+   * locks again when Git runs.
+   */
+  function interruptPlacementPublication(service: CoreWorktreeService, statusPath: string, placementRecord: string) {
+    const publish = (service as any).publishTaskPlacement.bind(service);
+    const validate = (service as any).validateExactWorktreeRegistration.bind(service);
+    // <feature>/<tasks|execution>/<task>/status.json
+    const taskSyncPath = path.join(path.dirname(path.dirname(path.dirname(statusPath))), 'task-sync.json');
+    const locks = () => `task-sync lock ${probeLock(taskSyncPath)}, status lock ${probeLock(statusPath)}`;
+    const observed: string[] = [];
+    let change = async () => {};
+    const spies = [
+      spyOn(service as any, 'publishTaskPlacement').mockImplementation(async (...args: any[]) => {
+        await change();
+        const [owner, step, selectedStatusPath, admit, write] = args;
+        return publish(owner, step, selectedStatusPath, admit, () => {
+          write();
+          observed.push(`published: ${locks()}, record ${fsSync.existsSync(placementRecord)}`);
+        });
+      }),
+      spyOn(service as any, 'validateExactWorktreeRegistration').mockImplementation(async (...args: any[]) => {
+        observed.push(`git: ${locks()}`);
+        return validate(...args);
+      }),
+    ];
+    return {
+      observed,
+      between(next: () => Promise<void>) { change = next; },
+      mockRestore() { spies.forEach((spy) => spy.mockRestore()); },
+    };
+  }
+
+  it('publishes a worker placement under the task status lock only while the task still selects it', async () => {
+    const { repoPath, repoGit } = await createTempRepo();
+    const hiveDir = path.join(repoPath, '.hive');
+    const taskPath = path.join(hiveDir, 'features', feature, 'tasks', task);
+    const statusPath = path.join(taskPath, 'status.json');
+    const status = await fs.readFile(statusPath, 'utf-8');
+    const sidecar = path.join(hiveDir, '.worktrees', feature, `${task}.json`);
+    const service = new WorktreeService({ baseDir: repoPath, hiveDir });
+    const interrupted = interruptPlacementPublication(service, statusPath, sidecar);
+    try {
+      // A task sync removed the pending task while the create waited between selecting its placement and publishing it.
+      interrupted.between(() => fs.rm(taskPath, { recursive: true }));
+      await expect(service.create(feature, task)).rejects.toThrow(`Task ${feature}/${task} no longer has a task record`);
+      // Nothing was published, the removed task's folder is not recreated, and nothing is left to recover.
+      expect(await pathExists(sidecar)).toBe(false);
+      expect(await pathExists(taskPath)).toBe(false);
+      expect(await branchExists(repoGit, branch)).toBe(false);
+      expect(operationMarkers(repoPath)).toEqual([]);
+
+      // A refresh moved the task's repositories.
+      await fs.mkdir(taskPath, { recursive: true });
+      await fs.writeFile(statusPath, status);
+      interrupted.between(() => fs.writeFile(statusPath, JSON.stringify({ ...JSON.parse(status), repoIds: ['api'] })));
+      await expect(service.create(feature, task)).rejects.toThrow(`Task ${feature}/${task} now declares repositories api`);
+      expect(await pathExists(sidecar)).toBe(false);
+      expect(await branchExists(repoGit, branch)).toBe(false);
+      expect(operationMarkers(repoPath)).toEqual([]);
+
+      await fs.writeFile(statusPath, status);
+      interrupted.between(async () => {});
+      expect(await service.create(feature, task)).toMatchObject({ mode: 'legacy', branch });
+    } finally {
+      interrupted.mockRestore();
+    }
+    // The record task sync's placement check finds exists before the locks are released, and Git runs after they are.
+    expect(interrupted.observed).toEqual(['published: task-sync lock held, status lock held, record true', 'git: task-sync lock free, status lock free']);
+    // Creating the worker reads the task record and never writes it.
+    expect(await fs.readFile(statusPath, 'utf-8')).toBe(status);
+  });
+
+  it('claims a worker placement from the status file its selection read, never a legacy record left behind', async () => {
+    const { repoPath, repoGit } = await createTempRepo();
+    const hiveDir = path.join(repoPath, '.hive');
+    const taskPath = path.join(hiveDir, 'features', feature, 'tasks', task);
+    const status = await fs.readFile(path.join(taskPath, 'status.json'), 'utf-8');
+    // An older layout's record of the same task, identical in everything that chooses its placement.
+    const legacyTaskPath = path.join(hiveDir, 'features', feature, 'execution', task);
+    const legacyStatusPath = path.join(legacyTaskPath, 'status.json');
+    await fs.mkdir(legacyTaskPath, { recursive: true });
+    await fs.writeFile(legacyStatusPath, status);
+    const sidecar = path.join(hiveDir, '.worktrees', feature, `${task}.json`);
+    const service = new WorktreeService({ baseDir: repoPath, hiveDir });
+    const interrupted = interruptPlacementPublication(service, legacyStatusPath, sidecar);
+    try {
+      // The selection read the modern record; a task sync removed it before the claim, leaving the legacy record.
+      interrupted.between(() => fs.rm(taskPath, { recursive: true }));
+      await expect(service.create(feature, task)).rejects.toThrow(`Task ${feature}/${task} status now resolves to ${legacyStatusPath}`);
+      expect(await pathExists(sidecar)).toBe(false);
+      expect(await pathExists(taskPath)).toBe(false);
+      expect(await branchExists(repoGit, branch)).toBe(false);
+      expect(operationMarkers(repoPath)).toEqual([]);
+
+      // A task whose only record is the legacy one still gets its worker, claimed under that record's lock.
+      interrupted.between(async () => {});
+      expect(await service.create(feature, task)).toMatchObject({ mode: 'legacy', branch });
+      expect(await pathExists(taskPath)).toBe(false);
+    } finally {
+      interrupted.mockRestore();
+    }
+    expect(interrupted.observed).toEqual(['published: task-sync lock held, status lock held, record true', 'git: task-sync lock free, status lock free']);
+    expect(await fs.readFile(legacyStatusPath, 'utf-8')).toBe(status);
+  });
+
+  it('publishes a composite workspace root under the task status lock only while the task keeps its repositories', async () => {
+    const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
+    const hiveDir = path.join(fx.projectRoot, '.hive');
+    const statusPath = path.join(hiveDir, 'features', `01_${fx.feature}`, 'tasks', fx.task, 'status.json');
+    const status = await fs.readFile(statusPath, 'utf-8');
+    const workspaceRoot = path.join(hiveDir, '.worktrees', fx.feature, fx.task);
+    const interrupted = interruptPlacementPublication(fx.service, statusPath, workspaceRoot);
+    try {
+      interrupted.between(() => fs.writeFile(statusPath, JSON.stringify({ ...JSON.parse(status), repoIds: ['api'] })));
+      await expect(fx.service.create(fx.feature, fx.task)).rejects.toThrow(`Task ${fx.feature}/${fx.task} now declares repositories api`);
+      expect(await pathExists(workspaceRoot)).toBe(false);
+      for (const [id, repo] of Object.entries(fx.repos)) {
+        expect(await branchExists(repo.git, `hive/${id}/${fx.feature}/${fx.task}`)).toBe(false);
+        expect(operationMarkers(repo.path)).toEqual([]);
+      }
+
+      await fs.writeFile(statusPath, status);
+      interrupted.between(async () => {});
+      expect(await fx.service.create(fx.feature, fx.task)).toMatchObject({ mode: 'composite' });
+    } finally {
+      interrupted.mockRestore();
+    }
+    expect(interrupted.observed).toEqual(['published: task-sync lock held, status lock held, record true', 'git: task-sync lock free, status lock free', 'git: task-sync lock free, status lock free']);
+    expect(await fs.readFile(statusPath, 'utf-8')).toBe(status);
+  });
+});
+
 describe('WorktreeService targeted tasks', () => {
   it('creates a task worker bound to a retained checkout of one manifest repository and integrates into it', async () => {
     const fx = await createCompositeFixture({ repoIds: ['api', 'web-ui'] });
@@ -4579,6 +5515,19 @@ describe('WorktreeService targeted tasks', () => {
     const sourceCommit = (await workerGit.revparse(['HEAD'])).trim();
     const inspected = (await fx.service.inspect(fx.feature, fx.task))!;
     expect(inspected.targetBinding?.status).toBe('ok');
+    expect(inspected.createUnconfirmed).toBeUndefined();
+
+    // A sidecar its create never confirmed is shown by inspection and never integrated.
+    const sidecarPath = `${created.path}.json`;
+    const sidecar = await fs.readFile(sidecarPath, 'utf-8');
+    await fs.writeFile(sidecarPath, JSON.stringify({ ...JSON.parse(sidecar), createUnconfirmed: true }));
+    expect((await fx.service.inspect(fx.feature, fx.task))?.createUnconfirmed).toBe(true);
+    const checkoutBefore = await readWorktreeTargetIdentity(checkoutPath);
+    const refused = await fx.service.merge(fx.feature, fx.task, 'squash', mergeMessage, { historyIntent: 'rewrite-private', sourceCommit, expectedTarget: inspected.target! });
+    expect(refused).toMatchObject({ success: false, merged: false, reasonCode: 'CREATE_UNCONFIRMED', mutation: 'none', action: 'manual_recovery' });
+    expect(refused.error).toMatch(/is not integrated.*hive_worktree_cleanup/);
+    expect(await readWorktreeTargetIdentity(checkoutPath)).toEqual(checkoutBefore);
+    await fs.writeFile(sidecarPath, sidecar);
 
     const merged = await fx.service.merge(fx.feature, fx.task, 'squash', mergeMessage, { historyIntent: 'rewrite-private', sourceCommit, expectedTarget: inspected.target!, cleanup: 'worktree+branch' });
     expect(merged).toMatchObject({ success: true, merged: true, cleanup: { outcome: 'complete' } });
@@ -4671,21 +5620,22 @@ describe('WorktreeService targeted tasks', () => {
     expect(await service.create(fx.feature, fx.task)).toMatchObject({ targetBinding: { id: 'api/next' } });
   }, 30_000);
 
-  it('keeps a task target that a worker bound while a concurrent task sync was deciding to replace it', async () => {
+  it('holds a worker placement claim off while a concurrent task sync decides to replace the task target', async () => {
     const fx = await retargetableTaskFixture();
     const coreModule = path.join(import.meta.dir, 'worktreeService.ts');
-    // The worker runs in another process, between the sync's checks and its task writes.
+    // The worker runs in another process, between the sync's checks and its task writes. Its claim needs the
+    // task-sync lock the sync holds, so it cannot bind the old target there; it times out instead of waiting forever
+    // only because this sync is blocked on the worker.
     const deriveSync = (fx.tasks as any).deriveSync.bind(fx.tasks);
+    let worker: { status: number | null; stderr: string } | undefined;
     const spy = spyOn(fx.tasks as any, 'deriveSync').mockImplementation((...args: unknown[]) => {
       const derived = deriveSync(...args);
-      const worker = spawnSync(process.execPath, ['-e', `
+      worker = spawnSync(process.execPath, ['-e', `
         const { WorktreeService } = await import(${JSON.stringify(coreModule)});
         const repositories = ${JSON.stringify(fx.repositories)};
         await new WorktreeService({ baseDir: ${JSON.stringify(fx.projectRoot)}, hiveDir: ${JSON.stringify(fx.hiveDir)}, repositoryResolver: { resolveRepositories: () => repositories } })
           .create(${JSON.stringify(fx.feature)}, ${JSON.stringify(fx.task)});
       `], { encoding: 'utf-8' });
-      expect(worker.stderr).toBe('');
-      expect(worker.status).toBe(0);
       return derived;
     });
     let synced: ReturnType<typeof fx.retarget>;
@@ -4694,10 +5644,15 @@ describe('WorktreeService targeted tasks', () => {
     } finally {
       spy.mockRestore();
     }
-    expect(synced).toMatchObject({ skipped: [fx.task] });
-    expect(synced.refreshed).toBeUndefined();
-    expect(await fx.state()).toEqual({ declared: 'api/release', bound: 'api/release' });
-    expect(fx.tasks.getPlanSyncStatus(fx.feature).state).toBe('incomplete');
+    expect(worker?.status).not.toBe(0);
+    expect(worker?.stderr).toMatch(/Failed to acquire lock .*task-sync\.json after 5000ms/);
+    expect(synced).toMatchObject({ refreshed: [fx.task] });
+    expect(await fx.state()).toEqual({ declared: 'api/next', bound: null });
+    expect(await pathExists(path.join(fx.hiveDir, '.worktrees', fx.feature, fx.task))).toBe(false);
+    expect(await branchExists(fx.repos.api.git, `hive-targeted/task/${fx.feature}/${fx.task}`)).toBe(false);
+    expect(operationMarkers(fx.projectRoot)).toEqual([]);
+    expect(fx.tasks.getPlanSyncStatus(fx.feature).state).toBe('current');
+    expect(await fx.service.create(fx.feature, fx.task)).toMatchObject({ targetBinding: { id: 'api/next' } });
   }, 30_000);
 
   it('refuses to retarget a task whose worker was created through its indexed feature name', async () => {
@@ -4710,6 +5665,183 @@ describe('WorktreeService targeted tasks', () => {
     expect(() => fx.retarget()).toThrow(/Task sync rejected; no task files were changed\. "01-multi-task" would change its target from api\/release to api\/next/);
     expect(fx.tasks.getRawStatus(fx.feature, fx.task)?.target).toBe('api/release');
     expect(await fx.service.get(indexed, fx.task)).toMatchObject({ targetBinding: { id: 'api/release' } });
+  }, 30_000);
+
+  /**
+   * The retargetable task kept only as a legacy execution/ record, which task sync does not list: the plan still names
+   * it, so a sync would create its tasks/ record beside the legacy one.
+   */
+  async function legacyTaskFixture() {
+    const fx = await retargetableTaskFixture();
+    const featurePath = path.join(fx.hiveDir, 'features', `01_${fx.feature}`);
+    const modernStatusPath = path.join(featurePath, 'tasks', fx.task, 'status.json');
+    const legacyStatusPath = path.join(featurePath, 'execution', fx.task, 'status.json');
+    await fs.mkdir(path.join(featurePath, 'execution'), { recursive: true });
+    await fs.rename(path.dirname(modernStatusPath), path.dirname(legacyStatusPath));
+    const legacyStatus = await fs.readFile(legacyStatusPath, 'utf-8');
+    const sidecar = path.join(fx.hiveDir, '.worktrees', fx.feature, `${fx.task}.json`);
+    const workerBranch = `hive-targeted/task/${fx.feature}/${fx.task}`;
+    return { ...fx, modernStatusPath, legacyStatusPath, legacyStatus, sidecar, workerBranch };
+  }
+
+  it('refuses a worker claim after a concurrent task sync created a task record beside the legacy one it selected', async () => {
+    const fx = await legacyTaskFixture();
+    const service = new CoreWorktreeService({ baseDir: fx.projectRoot, hiveDir: fx.hiveDir, repositoryResolver: { resolveRepositories: () => fx.repositories } });
+    const commonDirectory = (service as any).trustedGitCommonDirectory.bind(service);
+    // A sync that moves the target, and one whose new record matches the legacy record exactly: either new record
+    // would become the task's identity while the worker was bound from the legacy one.
+    for (const target of ['api/next', 'api/release']) {
+      let synced: ReturnType<typeof fx.tasks.sync> | undefined;
+      // The worker selected the legacy record before its operation locks; the sync lands while it waits for them.
+      const spy = spyOn(service as any, 'trustedGitCommonDirectory').mockImplementation(async (repositoryPath: unknown) => {
+        if (synced === undefined) {
+          fx.writePlan(target);
+          synced = fx.tasks.sync(fx.feature, { refreshPending: true });
+        }
+        return commonDirectory(repositoryPath);
+      });
+      try {
+        await expect(service.create(fx.feature, fx.task)).rejects.toThrow(`Task ${fx.feature}/${fx.task} status now resolves to ${fx.modernStatusPath}, not ${fx.legacyStatusPath}`);
+      } finally {
+        spy.mockRestore();
+      }
+      expect(synced).toMatchObject({ created: [fx.task] });
+      expect(fx.tasks.getRawStatus(fx.feature, fx.task)?.target).toBe(target);
+      expect(await pathExists(fx.sidecar)).toBe(false);
+      expect(await branchExists(fx.repos.api.git, fx.workerBranch)).toBe(false);
+      expect(operationMarkers(fx.projectRoot)).toEqual([]);
+      expect(await fs.readFile(fx.legacyStatusPath, 'utf-8')).toBe(fx.legacyStatus);
+      // Start the next round from the legacy record alone.
+      await fs.rm(path.dirname(fx.modernStatusPath), { recursive: true });
+    }
+    // Once the task has its tasks/ record, the next create binds the record it resolves to.
+    fx.writePlan('api/next');
+    expect(fx.tasks.sync(fx.feature, { refreshPending: true })).toMatchObject({ created: [fx.task] });
+    expect(await service.create(fx.feature, fx.task)).toMatchObject({ targetBinding: { id: 'api/next' } });
+  }, 30_000);
+
+  it('refuses to create a task record over a worker claimed from the legacy record', async () => {
+    const fx = await legacyTaskFixture();
+    expect(await fx.service.create(fx.feature, fx.task)).toMatchObject({ targetBinding: { id: 'api/release' } });
+
+    // A plan that moves the target and one that matches the legacy record would both give the task a new record.
+    for (const target of ['api/next', 'api/release']) {
+      fx.writePlan(target);
+      expect(() => fx.tasks.sync(fx.feature, { refreshPending: true }))
+        .toThrow(/Task sync rejected; no task files were changed\. Task "01-multi-task" has no record under tasks\/, but a worker placement or binding/);
+      expect(await pathExists(fx.modernStatusPath)).toBe(false);
+    }
+    expect(() => fx.tasks.create(fx.feature, 'Multi task')).toThrow(/Manual task creation rejected; no task files were changed\. Task "01-multi-task"/);
+    expect(await pathExists(fx.modernStatusPath)).toBe(false);
+    expect(await fs.readFile(fx.legacyStatusPath, 'utf-8')).toBe(fx.legacyStatus);
+    expect(await fx.service.get(fx.feature, fx.task)).toMatchObject({ targetBinding: { id: 'api/release' } });
+
+    // Once that worker is gone, sync gives the task its tasks/ record as for any legacy-only feature.
+    expect((await fx.service.remove(fx.feature, fx.task, true)).cleanup.outcome).toBe('complete');
+    expect(fx.tasks.sync(fx.feature, { refreshPending: true })).toMatchObject({ created: [fx.task] });
+  }, 30_000);
+
+  it('keeps a concurrent task sync from publishing a task record while a worker claims the legacy record', async () => {
+    const fx = await legacyTaskFixture();
+    fx.writePlan('api/next');
+    const taskModule = path.join(import.meta.dir, 'taskService.ts');
+    const taskSyncPath = path.join(path.dirname(path.dirname(path.dirname(fx.legacyStatusPath))), 'task-sync.json');
+    const publishTaskPlacement = (fx.service as any).publishTaskPlacement.bind(fx.service);
+    const observed: string[] = [];
+    let sync: { status: number | null; stderr: string } | undefined;
+    // While the claim publishes the worker's binding, a sync in another process tries to create the task's record.
+    const spy = spyOn(fx.service as any, 'publishTaskPlacement').mockImplementation(async (...args: any[]) => {
+      const [owner, step, statusPath, admit, publish] = args;
+      return publishTaskPlacement(owner, step, statusPath, admit, () => {
+        publish();
+        observed.push(`published: task-sync lock ${probeLock(taskSyncPath)}, status lock ${probeLock(fx.legacyStatusPath)}`);
+        sync = spawnSync(process.execPath, ['-e', `
+          const { TaskService } = await import(${JSON.stringify(taskModule)});
+          new TaskService(${JSON.stringify(fx.projectRoot)}).sync(${JSON.stringify(fx.feature)}, { refreshPending: true });
+        `], { encoding: 'utf-8' });
+      });
+    });
+    try {
+      expect(await fx.service.create(fx.feature, fx.task)).toMatchObject({ targetBinding: { id: 'api/release' } });
+    } finally {
+      spy.mockRestore();
+    }
+    expect(observed).toEqual(['published: task-sync lock held, status lock held']);
+    expect(sync?.status).not.toBe(0);
+    expect(sync?.stderr).toMatch(/Failed to acquire lock .*task-sync\.json after 5000ms/);
+    expect(await pathExists(fx.modernStatusPath)).toBe(false);
+    // After the claim, the sync finds the worker's binding and refuses instead of hiding the record it was bound from.
+    expect(() => fx.tasks.sync(fx.feature, { refreshPending: true })).toThrow(/Task "01-multi-task" has no record under tasks\//);
+    expect(await pathExists(fx.modernStatusPath)).toBe(false);
+    expect(await fs.readFile(fx.legacyStatusPath, 'utf-8')).toBe(fx.legacyStatus);
+  }, 30_000);
+
+  it('keeps a same-branch checkout another Git client attached at a targeted worker placement until it is gone', async () => {
+    const fx = await targetedTaskFixture();
+    await fx.writeStatus({ status: 'pending', origin: 'plan', repoIds: ['api'], target: 'api/release' });
+    const api = fx.repos.api;
+    const placement = path.join(fx.hiveDir, '.worktrees', fx.feature, fx.task);
+    const sidecar = `${placement}.json`;
+    const branch = `hive-targeted/task/${fx.feature}/${fx.task}`;
+    const base = (await api.git.revparse(['HEAD'])).trim();
+
+    // A create whose confirming write fails rolls its own worker and binding back completely.
+    const confirming = failMetadataWrite(sidecar, { confirming: true });
+    try {
+      await expect(fx.service.create(fx.feature, fx.task)).rejects.toThrow(/simulated metadata write failure/);
+    } finally {
+      confirming.mockRestore();
+    }
+    expect([await pathExists(placement), await pathExists(sidecar), await branchExists(api.git, branch)]).toEqual([false, false, false]);
+    expect(operationMarkers(fx.projectRoot)).toEqual([]);
+
+    // Once the create has begun and is binding the worker, another Git client creates the worker branch with its own
+    // checkout at the placement, so the create's `worktree add -b` fails.
+    const publishTaskPlacement = (fx.service as any).publishTaskPlacement.bind(fx.service);
+    let attached = false;
+    const spy = spyOn(fx.service as any, 'publishTaskPlacement').mockImplementation(async (...args: unknown[]) => {
+      if (!attached && operationMarkers(fx.projectRoot).length > 0) {
+        attached = true;
+        await api.git.raw(['worktree', 'add', '-b', branch, '--', placement, base]);
+        await ignoreInRepository(api.path, 'payload.local');
+        await fs.writeFile(path.join(placement, 'payload.local'), 'foreign ignored payload\n');
+      }
+      return publishTaskPlacement(...args);
+    });
+    let failure: unknown;
+    try {
+      failure = await fx.service.create(fx.feature, fx.task).catch((error) => error);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(attached).toBe(true);
+    expect(failure).toBeInstanceOf(WorktreeOperationRecoveryRequiredError);
+    expect((failure as Error).message).toMatch(/its metadata .* is kept unconfirmed/);
+    expect(JSON.parse(await fs.readFile(sidecar, 'utf-8'))).toMatchObject({ branch, createUnconfirmed: true });
+
+    const repositories = Object.entries(fx.repos).map(([id, repo]) => ({ id, path: repo.path, root: repo.path }));
+    await acknowledgePendingOperations(new WorktreeOperationRecoveryService({ baseDir: fx.projectRoot, hiveDir: fx.hiveDir, repositoryResolver: () => repositories }));
+    const kept = await fx.service.remove(fx.feature, fx.task, true);
+    expect(kept.cleanup.worktreeRemoval).toMatchObject({ status: 'failed', error: expect.stringMatching(/holds changed, untracked or ignored files: .*createUnconfirmed/) });
+    expect(await fs.readFile(path.join(placement, 'payload.local'), 'utf-8')).toBe('foreign ignored payload\n');
+    expect(await pathExists(sidecar)).toBe(true);
+    await expect(fx.service.create(fx.feature, fx.task)).rejects.toThrow(/never confirmed it \(createUnconfirmed in /);
+
+    await api.git.raw(['worktree', 'remove', placement]);
+    expect((await fx.service.remove(fx.feature, fx.task, true)).cleanup.outcome).toBe('complete');
+    expect([await pathExists(sidecar), await branchExists(api.git, branch)]).toEqual([false, false]);
+    const created = await fx.service.create(fx.feature, fx.task);
+    expect(JSON.parse(await fs.readFile(sidecar, 'utf-8')).createUnconfirmed).toBeUndefined();
+
+    // Only true marks a binding unconfirmed; any other value is a damaged record.
+    const record = JSON.parse(await fs.readFile(sidecar, 'utf-8'));
+    await fs.writeFile(sidecar, JSON.stringify({ ...record, createUnconfirmed: false }));
+    await expect(fx.service.get(fx.feature, fx.task)).rejects.toThrow(/Invalid targeted workspace metadata/);
+    await fs.writeFile(sidecar, JSON.stringify(record));
+
+    await fs.writeFile(path.join(created.path, 'payload.local'), 'generated output\n');
+    expect((await fx.service.remove(fx.feature, fx.task, true)).cleanup.outcome).toBe('complete');
+    expect(await pathExists(placement)).toBe(false);
   }, 30_000);
 
   it('refuses a targeted worker whose task status no longer names its binding', async () => {

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, spyOn } from 'bun:test';
 import * as childProcess from 'child_process';
+import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -316,13 +317,22 @@ describe('worktree operation guard', () => {
     })).rejects.toThrow('verified rollback');
     expect(markerFiles(hiveDir)).toEqual([]);
 
+    const unknownResult = { mutation: 'unknown' as const };
     const unknown = await withWorktreeMutation(scope('unknown-result'), async (_selection, guard) => {
       await guard.begin();
-      return { mutation: 'unknown' as const };
-    }, (result) => result.mutation !== 'unknown');
-    expect(unknown).toEqual({ mutation: 'unknown' });
+      return unknownResult;
+    }, (result) => result.mutation !== 'unknown').catch((error) => error);
+    // The unchanged result comes back with the operation whose markers were kept for its unknown outcome.
+    expect(unknown).toBeInstanceOf(WorktreeOperationFinalizationError);
+    expect(unknown.result).toBe(unknownResult);
     const retained = markerFiles(hiveDir);
     expect(retained).toHaveLength(2);
+    expect(unknown.finalization).toEqual({
+      operationId: expect.any(String),
+      markers: 'retained',
+      retainedMarkers: retained.map((name) => path.join(hiveDir, '.locks', 'operations', name)),
+      action: 'manual_recovery',
+    });
 
     let ran = false;
     const refused = await withWorktreeMutation(scope('another-workspace'), async () => {
@@ -498,6 +508,117 @@ describe('worktree operation guard', () => {
     expect(fs.readFileSync(unmapped, 'utf8')).toBe('not json');
     // The unmapped record guards no resource of this run, so the run's mutations proceed.
     expect((await fx.service.cleanup('legacy', true)).cleanup.outcome).toBe('complete');
+  });
+
+  it('maps a legacy lock of an absent workspace only through its own validated placement, and clears it only while the workspace stays absent', async () => {
+    const fx = await createFixture();
+    const placement = path.join(fx.hiveDir, '.worktrees', 'adhoc', 'gone');
+    const lockName = `workspace-${createHash('sha256').update(placement).digest('hex')}`;
+    const legacyLock = path.join(fx.hiveDir, '.operation-locks', `${lockName}.lock`);
+    fs.mkdirSync(path.dirname(legacyLock), { recursive: true });
+    fs.writeFileSync(legacyLock, JSON.stringify({ pid: 3858212 }));
+
+    // Without the placement the record cannot be identified, and it still guards that workspace.
+    const [unmapped] = await fx.recovery.list();
+    expect(unmapped).toMatchObject({ operationId: `legacy:${lockName}`, recovery: { available: false } });
+    expect((await refusal(fx.recovery.recover(recoveryRequest(unmapped!)))).reason).toBe('recovery_unavailable');
+    await expect(fx.service.create({ runId: 'gone' })).rejects.toBeInstanceOf(WorktreeOperationRecoveryRequiredError);
+
+    // A path outside the placements, a non-canonical spelling, or another placement maps nothing.
+    await expect(fx.recovery.list({ workspacePath: path.join(fx.repoPath, 'gone') })).rejects.toThrow('not a Hive worktree placement');
+    await expect(fx.recovery.list({ workspacePath: `${placement}/../gone` })).rejects.toThrow('canonical absolute path');
+    const [other] = await fx.recovery.list({ workspacePath: path.join(fx.hiveDir, '.worktrees', 'adhoc', 'other') });
+    expect(other!.recovery).toMatchObject({ available: false });
+
+    const [mapped] = await fx.recovery.list({ workspacePath: placement });
+    expect(mapped).toMatchObject({ recovery: { available: true }, observed: { workspace: { workspacePath: placement, present: false } } });
+    // A checkout Git still registers inside the absent workspace keeps the record.
+    await fx.git.raw(['worktree', 'add', '-b', 'stale-checkout', '--', path.join(placement, 'repos', 'api')]);
+    fs.rmSync(placement, { recursive: true, force: true });
+    const request = { ...recoveryRequest(mapped!), workspacePath: placement };
+    expect((await refusal(fx.recovery.recover(request))).reason).toBe('git_operation_active');
+    expect(fs.existsSync(legacyLock)).toBe(true);
+
+    await fx.git.raw(['worktree', 'prune']);
+    expect(await fx.recovery.recover(request)).toMatchObject({ state: 'legacy_lock', cleared: [legacyLock], replayed: false });
+    expect(fs.existsSync(legacyLock)).toBe(false);
+    expect((await fx.service.create({ runId: 'gone' })).runId).toBe('gone');
+  });
+
+  it('keeps an absent workspace record while a trusted repository cannot be listed or the placement cannot be shown absent', async () => {
+    const fx = await createFixture();
+    const legacyLockFor = (placement: string) => {
+      const lockName = `workspace-${createHash('sha256').update(placement).digest('hex')}`;
+      const lockPath = path.join(fx.hiveDir, '.operation-locks', `${lockName}.lock`);
+      fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+      fs.writeFileSync(lockPath, JSON.stringify({ pid: 3858212 }));
+      return lockPath;
+    };
+    const placement = path.join(fx.hiveDir, '.worktrees', 'adhoc', 'gone');
+    const legacyLock = legacyLockFor(placement);
+
+    // Without HEAD, Git can neither list the project repository's worktrees nor resolve its common directory.
+    const head = path.join(fx.repoPath, '.git', 'HEAD');
+    fs.renameSync(head, `${head}.held`);
+    try {
+      const [unreadable] = await fx.recovery.list({ workspacePath: placement });
+      expect(unreadable).toMatchObject({ recovery: { available: true }, observed: { workspace: { present: false } } });
+      const refused = await refusal(fx.recovery.recover({ ...recoveryRequest(unreadable!), workspacePath: placement }));
+      expect(refused.reason).toBe('resource_untrusted');
+      expect(refused.message).toContain(`Repository ${fx.repoPath} cannot be read`);
+    } finally {
+      fs.renameSync(`${head}.held`, head);
+    }
+    expect(fs.existsSync(legacyLock)).toBe(true);
+
+    // A placement whose parent is a symlink, even a dangling one, is never shown absent.
+    const linkedGroup = path.join(fx.hiveDir, '.worktrees', 'linked');
+    fs.mkdirSync(path.dirname(linkedGroup), { recursive: true });
+    fs.symlinkSync(path.join(fx.hiveDir, 'missing-group'), linkedGroup);
+    const linkedPlacement = path.join(linkedGroup, 'gone');
+    const linkedLock = legacyLockFor(linkedPlacement);
+    const linked = (await fx.recovery.list({ workspacePath: linkedPlacement })).find((entry) => entry.markerPaths.includes(linkedLock))!;
+    expect(linked.recovery).toMatchObject({ available: false });
+    expect((await refusal(fx.recovery.recover({ ...recoveryRequest(linked), workspacePath: linkedPlacement }))).reason).toBe('recovery_unavailable');
+    expect(fs.existsSync(linkedLock)).toBe(true);
+
+    // A placement that cannot be inspected is never shown absent either.
+    const mapped = (await fx.recovery.list({ workspacePath: placement })).find((entry) => entry.markerPaths.includes(legacyLock))!;
+    const group = path.join(fx.hiveDir, '.worktrees', 'adhoc');
+    fs.mkdirSync(group, { recursive: true });
+    fs.chmodSync(group, 0o000);
+    try {
+      await expect(fx.recovery.list({ workspacePath: placement })).rejects.toMatchObject({ code: 'EACCES' });
+      await expect(fx.recovery.recover({ ...recoveryRequest(mapped), workspacePath: placement })).rejects.toMatchObject({ code: 'EACCES' });
+    } finally {
+      fs.chmodSync(group, 0o755);
+    }
+    expect(fs.existsSync(legacyLock)).toBe(true);
+
+    expect(await fx.recovery.recover({ ...recoveryRequest(mapped), workspacePath: placement })).toMatchObject({ cleared: [legacyLock] });
+  });
+
+  it('clears an absent retained checkout record in a manifest project whose root is not a repository, once Git registers no checkout there', async () => {
+    const projectRoot = tempDir('hive-recovery-manifest-root-');
+    const hiveDir = path.join(projectRoot, '.hive');
+    const api = await createRepo('hive-recovery-manifest-api-');
+    const recovery = new WorktreeOperationRecoveryService({ baseDir: projectRoot, hiveDir, repositoryResolver: () => [{ id: 'api', path: api.repoPath, root: api.repoPath }] });
+    const placement = path.join(hiveDir, 'checkouts', 'api', 'gone');
+    const lockName = `workspace-${createHash('sha256').update(placement).digest('hex')}`;
+    const legacyLock = path.join(hiveDir, '.operation-locks', `${lockName}.lock`);
+    fs.mkdirSync(path.dirname(legacyLock), { recursive: true });
+    fs.writeFileSync(legacyLock, JSON.stringify({ pid: 3858212 }));
+    await api.git.raw(['worktree', 'add', '-b', 'stale-checkout', '--', placement]);
+    fs.rmSync(placement, { recursive: true, force: true });
+
+    const [mapped] = await recovery.list({ workspacePath: placement });
+    expect(mapped).toMatchObject({ recovery: { available: true }, observed: { workspace: { workspacePath: placement, present: false } } });
+    const request = { ...recoveryRequest(mapped!), workspacePath: placement };
+    expect((await refusal(recovery.recover(request))).reason).toBe('git_operation_active');
+
+    // The project root holds no .git and declares its repository elsewhere, so only the declared repository is listed.
+    await api.git.raw(['worktree', 'prune']);
+    expect(await recovery.recover(request)).toMatchObject({ state: 'legacy_lock', cleared: [legacyLock], replayed: false });
   });
 
   it('reports a marker that names paths outside the project without reading them, and never clears it', async () => {
@@ -921,7 +1042,12 @@ describe('worktree operation finalization', () => {
 
   it('keeps an unknown result, including per-repository unknown, with its retained markers when lock release fails', async () => {
     const { repoPath } = await createRepo();
-    const unknown = { success: false, mutation: 'applied' as const, retryable: false, repos: { api: { mutation: 'unknown' as const } } };
+    const unknown = {
+      success: false,
+      mutation: 'applied' as const,
+      retryable: false,
+      repos: { api: { mutation: 'unknown' as const, retryable: false }, web: { mutation: 'none' as const, retryable: true } },
+    };
     const restore = failLockReleases();
     let failure: unknown;
     try {
@@ -938,6 +1064,11 @@ describe('worktree operation finalization', () => {
     const retainedMarkers = markerFiles(path.join(repoPath, '.hive')).map((name) => path.join(repoPath, '.hive', '.locks', 'operations', name));
     expect(retainedMarkers).toHaveLength(2);
     expect(finalized.finalization).toEqual({ operationId: expect.any(String), markers: 'retained', retainedMarkers, lockReleaseError: 'lock close failed', action: 'manual_recovery' });
+    // A repeat is refused while the markers remain, so no repository result may still claim retryability.
+    expect(withFinalizationFailure(finalized.result, finalized.finalization).repos).toEqual({
+      api: { mutation: 'unknown', retryable: false },
+      web: { mutation: 'none', retryable: false },
+    });
   });
 
   it('returns a finished merge and its same-call cleanup when releasing its locks fails', async () => {

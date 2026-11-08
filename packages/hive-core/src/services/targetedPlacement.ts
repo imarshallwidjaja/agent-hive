@@ -33,10 +33,15 @@ import {
 } from './retainedCheckout.js';
 import type { RetainedCheckoutContext } from './retainedCheckout.js';
 import {
+  assertCreateConfirmed,
+  confirmWorkspaceRecord,
+  createUnconfirmedRefusal,
   readCompositeWorkspaceManifest,
   readSingleWorkspaceMetadata,
   readTargetedWorkspaceMetadata,
-  writeWorkspaceJsonAtomic,
+  restoreWorkspaceRecord,
+  unresolvedRecordNote,
+  writeWorkspaceJsonAtomicSync,
 } from './workspaceManifest.js';
 import type { TargetBinding, TargetedWorkspaceMetadata } from './workspaceManifest.js';
 import {
@@ -44,6 +49,9 @@ import {
   CleanupActionError,
   cleanupStepDone,
   deleteBranchStep,
+  pruneWorktreesStep,
+  removeUnconfirmedWorktreeStep,
+  rollbackFailedCreate,
   WorktreeLinkageError,
 } from './worktreeOutcome.js';
 import type { CleanupStepOutcome, WorktreeCleanupOutcome } from './worktreeOutcome.js';
@@ -54,6 +62,10 @@ import { compareWorktreeTarget, isWorktreeTargetIdentity, readWorktreeTargetIden
 import type { WorktreeTargetComparison, WorktreeTargetIdentity } from './worktreeTarget.js';
 import { integrateWorktreeRepository, integrationFailure, readValidatedCommitMessage } from './worktreeIntegration.js';
 import type { IntegrationPolicy, WorktreeIntegrationResult } from './worktreeIntegration.js';
+
+function cleanupToolFor(spec: TargetedPlacementSpec): string {
+  return spec.mode === 'targeted' ? 'hive_worktree_cleanup' : 'hive_adhoc_worktree_cleanup';
+}
 
 /** Where a service places one targeted worker and who owns it. */
 export interface TargetedPlacementSpec {
@@ -315,7 +327,9 @@ async function assertSameStart(git: SimpleGit, spec: TargetedPlacementSpec, meta
  * when the owner's record declares the target and must still declare it at
  * that moment; when Git fails after creating anything, the sidecar and the
  * pending marker stay so the worker is recovered and cleaned up through its
- * binding.
+ * binding. The sidecar stays unconfirmed until this create's own add is
+ * validated, so cleanup never deletes a populated checkout another Git client
+ * attached there, and create refuses to reuse it.
  */
 export async function createTargetedPlacement(
   guard: WorktreeMutationGuard,
@@ -323,11 +337,12 @@ export async function createTargetedPlacement(
   spec: TargetedPlacementSpec,
   targetId: string,
   baseRef: string | undefined,
-  bind: (publish: () => Promise<void>) => Promise<void> = (publish) => publish(),
+  bind: (publish: () => void) => Promise<void> = async (publish) => publish(),
 ): Promise<TargetedPlacement & { commit: string }> {
   await assertNoSymlinkComponents(path.parse(spec.worktreePath).root, spec.worktreePath, true);
   const existing = await readTargetedPlacement(context, spec);
   if (existing) {
+    assertCreateConfirmed(existing.metadata, spec.worktreePath, spec.metadataPath, cleanupToolFor(spec));
     if (existing.metadata.target.id !== targetId) {
       throw new Error(`Worker ${spec.worktreePath} already targets ${existing.metadata.target.id}, not ${targetId}`);
     }
@@ -361,7 +376,8 @@ export async function createTargetedPlacement(
   await guard.begin({ repositories: [{ repositoryPath: repository.path, repoId: repository.id, sourceWorktreePath: spec.worktreePath, sourceBranch: spec.branch, targetPath: binding.path }] });
   await fs.mkdir(path.dirname(spec.worktreePath), { recursive: true });
   try {
-    await bind(() => writeWorkspaceJsonAtomic(spec.metadataPath, metadata));
+    // Unconfirmed until this create's own add is validated: a failed add may leave another client's checkout here.
+    await bind(() => writeWorkspaceJsonAtomicSync(spec.metadataPath, { ...metadata, createUnconfirmed: true }));
   } catch (error) {
     if (!(await occupied(spec.metadataPath))) guard.markOutcomeKnown();
     throw error;
@@ -370,14 +386,29 @@ export async function createTargetedPlacement(
     await repoGit.raw(['worktree', 'add', '-b', spec.branch, '--', spec.worktreePath, baseCommit]);
   } catch (error) {
     const created = await occupied(spec.worktreePath) || await branchExists(repoGit, spec.branch).catch(() => true);
-    if (!created && await fs.unlink(spec.metadataPath).then(() => true, () => false)) guard.markOutcomeKnown();
+    if (!created && await restoreWorkspaceRecord(spec.metadataPath, null)) guard.markOutcomeKnown();
     throw new Error(
       `Failed to create targeted worktree: ${(error as Error).message}`
-      + (created ? `. Git left a worktree or branch, so its metadata ${spec.metadataPath} is kept; recover the operation, then clean the worker up.` : ''),
+      + (created ? `. Git left a worktree or branch, so its metadata ${spec.metadataPath} is kept unconfirmed; recover the operation, then clean the worker up.` : ''),
       { cause: error },
     );
   }
-  await validateExactWorktreeRegistration(spec.worktreePath, () => trustedGitCommonDirectory(repository.path), repository.id);
+  try {
+    await validateExactWorktreeRegistration(spec.worktreePath, () => trustedGitCommonDirectory(repository.path), repository.id);
+    const placementGit = simpleGit(spec.worktreePath);
+    const current = (await placementGit.revparse(['--abbrev-ref', 'HEAD'])).trim();
+    const commit = (await placementGit.revparse(['HEAD'])).trim();
+    if (current !== spec.branch || commit !== baseCommit) throw new Error(`worktree ${spec.worktreePath} is on ${current} at ${commit}, not ${spec.branch} at ${baseCommit}`);
+    await confirmWorkspaceRecord(spec.metadataPath, metadata);
+  } catch (error) {
+    // `worktree add -b` succeeded, so the checkout and the branch are this create's; the binding goes only with both.
+    const leftovers = await rollbackFailedCreate(repoGit, spec.worktreePath, { name: spec.branch, tip: baseCommit, created: true }, true, repository.id);
+    const unbound = leftovers.length === 0 && await restoreWorkspaceRecord(spec.metadataPath, null);
+    if (unbound) guard.markOutcomeKnown();
+    else leftovers.push(`workspace metadata ${spec.metadataPath}`);
+    const message = `Failed to create targeted worktree: ${(error as Error).message}`;
+    throw new Error(unbound ? message : `${message}; rollback left ${leftovers.join(', ')}${unresolvedRecordNote(error)}`, { cause: error });
+  }
   return { metadata, repository, present: true, commit: baseCommit };
 }
 
@@ -438,6 +469,8 @@ export async function mergeTargetedPlacement(options: {
   if (!isWorktreeTargetIdentity(options.expectedTarget)) return integrationFailure('INVALID_ARGUMENTS', 'expectedTarget is malformed');
   const expectedTarget = options.expectedTarget;
   if (!placement.present) return integrationFailure('WORKTREE_NOT_REGISTERED', 'Worktree linkage preflight failed: targeted worktree is not registered');
+  const unconfirmed = createUnconfirmedRefusal(metadata, spec.worktreePath, spec.metadataPath, cleanupToolFor(spec), 'integrated');
+  if (unconfirmed !== null) return integrationFailure('CREATE_UNCONFIRMED', unconfirmed);
 
   const inspection = await inspectTargetBinding(context, binding, metadata.baseCommit);
   if (inspection.status !== 'ok') {
@@ -486,15 +519,6 @@ async function removeWorktreeStep(git: SimpleGit, worktreePath: string): Promise
   }
 }
 
-async function pruneStep(git: SimpleGit): Promise<CleanupStepOutcome> {
-  try {
-    await git.raw(['worktree', 'prune']);
-    return { status: 'succeeded' };
-  } catch (error) {
-    return { status: 'failed', error: (error as Error).message || 'worktree prune failed' };
-  }
-}
-
 /**
  * The worker branch's commit, when deletion is safe without `discard`: every
  * commit it holds is already in the bound target ref. The comparison is with
@@ -540,10 +564,14 @@ export async function removeTargetedPlacement(
     }
   }
   await guard.begin({ repositories: [{ repositoryPath: repository.path, repoId: repository.id, sourceWorktreePath: spec.worktreePath, sourceBranch: spec.branch, targetPath: metadata.target.path }] });
-  const worktreeRemoval = placement.present ? await removeWorktreeStep(git, spec.worktreePath) : { status: 'already_absent' as const };
+  const worktreeRemoval = !placement.present
+    ? { status: 'already_absent' as const }
+    : metadata.createUnconfirmed === true
+      ? await removeUnconfirmedWorktreeStep(git, spec.worktreePath, spec.branch)
+      : await removeWorktreeStep(git, spec.worktreePath);
   const outcome = buildCleanupOutcome(deleteBranch ? 'worktree+branch' : 'worktree', {
     worktreeRemoval,
-    prune: await pruneStep(git),
+    prune: await pruneWorktreesStep(git),
     branchDeletion: !deleteBranch
       ? { status: 'not_requested' }
       : branchPreparationError

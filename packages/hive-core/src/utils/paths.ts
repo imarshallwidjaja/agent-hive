@@ -313,9 +313,17 @@ export function getApprovedPath(projectRoot: string, featureName: string): strin
   return path.join(getFeaturePath(projectRoot, featureName), APPROVED_FILE);
 }
 
-/** Task sync checkpoint; its `.lock` sibling serializes syncs of one feature. */
+/**
+ * Task sync checkpoint. Its lock serializes the feature's task-record namespace: syncs, manual task creation and
+ * worker placement claims of one feature.
+ */
 export function getTaskSyncPath(projectRoot: string, featureName: string): string {
-  return path.join(getFeaturePath(projectRoot, featureName), TASK_SYNC_FILE);
+  return getFeatureTaskSyncPath(getFeaturePath(projectRoot, featureName));
+}
+
+/** `getTaskSyncPath` for an already resolved feature directory. */
+export function getFeatureTaskSyncPath(featurePath: string): string {
+  return path.join(featurePath, TASK_SYNC_FILE);
 }
 
 const SUBTASKS_DIR = 'subtasks';

@@ -103,7 +103,7 @@ const ORDINARY_OPERATION_SIGNATURES = [
   'hive_adhoc_worktree_inspect(runId:string, repoIds?:string[], sourceDirectory?:string)',
   'hive_adhoc_worktree_merge(runId:string, repoIds?:string[], sourceDirectory?:string, historyIntent:preserve-source|rewrite-private, strategy?:merge|squash|rebase, message?:string, preserveConflicts?:boolean, cleanup?:none|worktree|worktree+branch, sourceCommit?:string, sourceCommits?:record<string>, expectedTarget?:{path:string, ref:string|null, commit:string}, expectedTargets?:record<{path:string, ref:string|null, commit:string}>)',
   'hive_adhoc_worktree_cleanup(runId:string, repoIds?:string[], sourceDirectory?:string, deleteBranch?:boolean, discard?:boolean)',
-  'hive_worktree_recover(operationId?:string, markerDigest?:string, observedStateDigest?:string, mutatorsStopped?:boolean, sourceDirectory?:string)',
+  'hive_worktree_recover(operationId?:string, markerDigest?:string, observedStateDigest?:string, mutatorsStopped?:boolean, sourceDirectory?:string, workspacePath?:string)',
   'hive_checkouts_list()',
   'hive_checkout_inspect(id:string, local?:boolean, cleanup?:boolean)',
   'hive_checkout_create(id:string, branch:string, baseRef?:string, purpose?:string)',

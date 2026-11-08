@@ -136,6 +136,8 @@ interface ResourceRef {
   name: string;
   workspacePath?: string;
   repository?: RepositoryResource;
+  /** A workspace placement the recovery caller supplied because it no longer exists. */
+  absentHint?: true;
 }
 
 interface OperationResources {
@@ -854,10 +856,11 @@ interface GuardedOutcome<T> {
  * becomes a non-retryable WorktreeOperationRecoveryRequiredError.
  *
  * A thrown failure keeps its own classification even when releasing the locks
- * then fails. When the mutation returned a result but its markers could not all
- * be removed, their removal could not be flushed, or its locks could not be
- * released, the result is not discarded: a WorktreeOperationFinalizationError
- * carries it unchanged with the failure, naming exactly the markers that remain.
+ * then fails. When the mutation returned a result whose outcome is unknown, or
+ * whose markers could not all be removed, whose marker removal could not be
+ * flushed, or whose locks could not be released, the result is not discarded:
+ * a WorktreeOperationFinalizationError carries it unchanged with the operation
+ * and exactly the markers that remain.
  */
 export async function withWorktreeMutation<S, T>(
   scope: WorktreeOperationScope<S> & { kind: WorktreeOperationKind; subject: WorktreeOperationSubject },
@@ -886,9 +889,10 @@ export async function withWorktreeMutation<S, T>(
   }
   const { outcome } = guarded;
   if ('error' in outcome) throw outcome.error;
-  if (guarded.markerError === undefined && lockReleaseError === undefined) return outcome.result;
-
   const markers = guarded.markers ?? 'not_published';
+  // Markers retained for an unknown outcome are reported too, so the caller learns which operation to acknowledge.
+  if (guarded.markerError === undefined && lockReleaseError === undefined && markers !== 'retained') return outcome.result;
+
   const named = markers === 'retained' || markers === 'cleared_unflushed';
   const finalization: WorktreeFinalizationFailure = {
     ...(named ? { operationId: guarded.operationId } : {}),
@@ -900,6 +904,7 @@ export async function withWorktreeMutation<S, T>(
   };
   const failures = [
     ...(markers === 'retained' && finalization.markerError !== undefined ? [`its pending markers ${finalization.retainedMarkers!.join(', ')} could not be removed (${finalization.markerError}), so later mutations of the resources they guard stay refused until the operation is acknowledged through Hive worktree recovery`] : []),
+    ...(markers === 'retained' && finalization.markerError === undefined ? [`its outcome is unknown, so its pending markers ${finalization.retainedMarkers!.join(', ')} were retained and later mutations of the resources they guard stay refused until the operation is acknowledged through Hive worktree recovery`] : []),
     ...(markers === 'cleared_unflushed' ? [`flushing the removal of its pending markers failed (${finalization.markerError}): no marker guards these resources now, but the removal may not survive a host crash`] : []),
     ...(finalization.lockReleaseError !== undefined ? [`releasing its operation locks failed (${finalization.lockReleaseError}); the operating system releases them when this process exits`] : []),
   ];
@@ -969,7 +974,7 @@ async function runGuarded<S, T>(
       outcome: {
         error: new WorktreeOperationRecoveryRequiredError(
           `Worktree operation ${operationId} (${scope.kind}) failed after it began mutating, so its outcome is unknown and its pending markers were retained: ${describeError(cause)}`,
-          { mutation: 'unknown', operationIds: [operationId], cause },
+          { mutation: 'unknown', operationIds: [operationId], retainedMarkers, cause },
         ),
       },
       operationId,
@@ -991,7 +996,7 @@ async function runGuarded<S, T>(
     outcome: {
       error: new WorktreeOperationRecoveryRequiredError(
         `Worktree operation ${operationId} (${scope.kind}) failed after a verified outcome, but its pending markers ${removal.remaining.join(', ')} could not be removed (${markerError}); later mutations of the resources they guard stay refused. Inspect the worktree, then acknowledge the operation through Hive worktree recovery.`,
-        { mutation: 'unknown', operationIds: [operationId], cause: outcome.error },
+        { mutation: 'unknown', operationIds: [operationId], retainedMarkers: removal.remaining, cause: outcome.error },
       ),
     },
     operationId,
@@ -1147,6 +1152,11 @@ export interface WorktreeRecoveryRequest {
   mutatorsStopped: boolean;
   /** Absolute foreign checkout an ad-hoc run used, so its repository is trusted for this request. */
   sourceDirectory?: string;
+  /**
+   * Canonical absolute placement of a workspace that no longer exists, so a
+   * legacy lock file or unreadable marker of that workspace can be identified.
+   */
+  workspacePath?: string;
 }
 
 export interface WorktreeRecoveryResult {
@@ -1175,10 +1185,14 @@ export class WorktreeOperationRecoveryService {
     this.config = config;
   }
 
-  private trustedRepositoryPaths(sourceDirectory?: string): string[] {
+  private declaredRepositoryPaths(): string[] {
     const resolver = this.config.repositoryResolver;
     const resolved = resolver ? (typeof resolver === 'function' ? resolver() : resolver.resolveRepositories()) : [];
-    const paths = [this.config.baseDir, ...resolved.map((repository) => repository.path)];
+    return resolved.map((repository) => repository.path);
+  }
+
+  private trustedRepositoryPaths(sourceDirectory?: string): string[] {
+    const paths = [this.config.baseDir, ...this.declaredRepositoryPaths()];
     if (sourceDirectory !== undefined) {
       if (!path.isAbsolute(sourceDirectory)) throw new Error('sourceDirectory must be absolute');
       paths.push(fs.realpathSync(sourceDirectory));
@@ -1190,8 +1204,24 @@ export class WorktreeOperationRecoveryService {
     return path.join(this.config.hiveDir, '.worktrees');
   }
 
+  /**
+   * A caller's placement for a workspace that no longer exists. Only a
+   * canonical project worktree placement is accepted; its resource name is
+   * derived here, so it can only map a record of that exact workspace.
+   */
+  private absentWorkspaceHint(workspacePath: string | undefined): string | undefined {
+    if (workspacePath === undefined) return undefined;
+    if (!path.isAbsolute(workspacePath) || path.resolve(workspacePath) !== workspacePath) {
+      throw new Error(`workspacePath ${JSON.stringify(workspacePath)} must be a canonical absolute path`);
+    }
+    if (!isWorkspacePlacement(this.config.hiveDir, workspacePath)) {
+      throw new Error(`workspacePath ${workspacePath} is not a Hive worktree placement of this project`);
+    }
+    return workspacePath;
+  }
+
   /** Resources this project can currently identify, keyed by lock resource name. */
-  private async candidateResources(trustedRepositoryPaths: string[]): Promise<Map<string, ResourceRef>> {
+  private async candidateResources(trustedRepositoryPaths: string[], absentWorkspace?: string): Promise<Map<string, ResourceRef>> {
     const refs = new Map<string, ResourceRef>();
     for (const repositoryPath of trustedRepositoryPaths) {
       try {
@@ -1214,13 +1244,17 @@ export class WorktreeOperationRecoveryService {
         }
       }
     }
+    if (absentWorkspace !== undefined) {
+      const name = workspaceResourceName(absentWorkspace);
+      if (!refs.has(name)) refs.set(name, { name, workspacePath: absentWorkspace, absentHint: true });
+    }
     return refs;
   }
 
   /** One reading of the project's records, judged against one trust boundary and one candidate discovery. */
-  private async snapshot(sourceDirectory?: string): Promise<{ entries: PendingWorktreeOperation[]; candidates: Map<string, ResourceRef> }> {
+  private async snapshot(sourceDirectory?: string, absentWorkspace?: string): Promise<{ entries: PendingWorktreeOperation[]; candidates: Map<string, ResourceRef> }> {
     const trustedPaths = this.trustedRepositoryPaths(sourceDirectory);
-    const candidates = await this.candidateResources(trustedPaths);
+    const candidates = await this.candidateResources(trustedPaths, absentWorkspace);
     const names = new Set(readMarkerFiles(this.config.hiveDir).map((file) => file.name));
     const legacyDirectory = path.join(this.config.hiveDir, OPERATION_LOCK_NAMESPACE);
     for (const entry of isDirectory(legacyDirectory) ? fs.readdirSync(legacyDirectory) : []) {
@@ -1231,8 +1265,8 @@ export class WorktreeOperationRecoveryService {
   }
 
   /** Every interrupted operation, unreadable marker, and legacy operation lock file in the project. */
-  async list(options: { sourceDirectory?: string } = {}): Promise<PendingWorktreeOperation[]> {
-    return (await this.snapshot(options.sourceDirectory)).entries;
+  async list(options: { sourceDirectory?: string; workspacePath?: string } = {}): Promise<PendingWorktreeOperation[]> {
+    return (await this.snapshot(options.sourceDirectory, this.absentWorkspaceHint(options.workspacePath))).entries;
   }
 
   /**
@@ -1276,8 +1310,9 @@ export class WorktreeOperationRecoveryService {
     if (request.mutatorsStopped !== true) {
       throw new WorktreeRecoveryRefusedError('attestation_required', 'Recovery requires mutatorsStopped: true after confirming that no process of the interrupted operation, including a Git child it started, is still running.');
     }
+    const absentWorkspace = this.absentWorkspaceHint(request.workspacePath);
     const find = async (): Promise<{ entry: PendingWorktreeOperation; candidates: Map<string, ResourceRef> }> => {
-      const { entries, candidates } = await this.snapshot(request.sourceDirectory);
+      const { entries, candidates } = await this.snapshot(request.sourceDirectory, absentWorkspace);
       const entry = entries.find((candidate) => candidate.operationId === request.operationId);
       if (!entry) throw new WorktreeRecoveryRefusedError('operation_not_found', `No interrupted worktree operation or lock record ${request.operationId} is present.`);
       return { entry, candidates };
@@ -1306,6 +1341,9 @@ export class WorktreeOperationRecoveryService {
       if (entry.observedStateDigest !== request.observedStateDigest) {
         throw new WorktreeRecoveryRefusedError('observed_state_changed', 'The source or destination state changed since it was inspected. Inspect again.', entry);
       }
+      if (!entry.marker && candidates.get(entry.operationId.slice(entry.operationId.indexOf(':') + 1))?.absentHint) {
+        await this.requireAbsentWorkspace(absentWorkspace!, entry, request.sourceDirectory);
+      }
       const removal = clearMarkers(entry.markerPaths);
       if (removal.remaining.length > 0) {
         throw new Error(`Recovery of ${entry.operationId} could not remove ${removal.remaining.join(', ')} (${removalError(removal)}); those records still guard their resources. Inspect before retrying.`);
@@ -1317,6 +1355,56 @@ export class WorktreeOperationRecoveryService {
     } finally {
       releaseAll(ownerships);
     }
+  }
+
+  /**
+   * Under the workspace lock, a record mapped only through a caller's
+   * placement may be cleared only while that workspace is still absent, through
+   * no symlinked path component, and no trusted repository still registers a
+   * checkout inside it. A trusted repository Git cannot list refuses, unless it
+   * is a manifest project's root that holds no `.git` at all.
+   */
+  private async requireAbsentWorkspace(workspacePath: string, entry: PendingWorktreeOperation, sourceDirectory?: string): Promise<void> {
+    let present: boolean;
+    try {
+      // A symlinked ancestor, even a dangling one, could hide a workspace that still exists elsewhere.
+      await assertNoSymlinkComponents(path.parse(workspacePath).root, workspacePath, true);
+      present = (await lstatOrNull(workspacePath)) !== null;
+    } catch (error) {
+      throw new WorktreeRecoveryRefusedError('resource_untrusted', `Workspace ${workspacePath} cannot be shown absent: ${(error as Error).message}`, entry);
+    }
+    if (entry.observed.workspace?.present !== false || present) {
+      throw new WorktreeRecoveryRefusedError('observed_state_changed', `Workspace ${workspacePath} exists; inspect it through the worktree tools instead.`, entry);
+    }
+    const inside = (candidate: string) => candidate === workspacePath || candidate.startsWith(`${workspacePath}${path.sep}`);
+    for (const repositoryPath of this.trustedRepositoryPaths(sourceDirectory)) {
+      let listing: string;
+      try {
+        listing = await simpleGit(repositoryPath).raw(['worktree', 'list', '--porcelain']);
+      } catch (error) {
+        if (await this.isNonGitProjectRoot(repositoryPath).catch(() => false)) continue;
+        throw new WorktreeRecoveryRefusedError('resource_untrusted', `Repository ${repositoryPath} cannot be read to confirm no checkout of ${workspacePath} remains: ${(error as Error).message}`, entry);
+      }
+      const registered = listing.split('\n').filter((line) => line.startsWith('worktree ')).map((line) => path.resolve(line.slice('worktree '.length)));
+      const stale = registered.find(inside);
+      if (stale) {
+        throw new WorktreeRecoveryRefusedError('git_operation_active', `Repository ${repositoryPath} still registers checkout ${stale} of the absent workspace; review it and run git worktree prune first. Hive does not remove Git state.`, entry);
+      }
+    }
+  }
+
+  /**
+   * Whether `repositoryPath` is the root of a manifest project that declares
+   * its repositories elsewhere and holds no `.git` entry of its own, so Git
+   * failing to list its worktrees says nothing about a checkout. A failed Git
+   * call alone never shows that a path is not a repository.
+   */
+  private async isNonGitProjectRoot(repositoryPath: string): Promise<boolean> {
+    const root = path.resolve(this.config.baseDir);
+    if (path.resolve(repositoryPath) !== root) return false;
+    const declared = this.declaredRepositoryPaths().map((declaredPath) => path.resolve(declaredPath));
+    if (declared.length === 0 || declared.includes(root)) return false;
+    return (await lstatOrNull(path.join(root, '.git'))) === null;
   }
 }
 

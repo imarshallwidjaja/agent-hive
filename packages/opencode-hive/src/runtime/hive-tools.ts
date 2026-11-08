@@ -231,11 +231,12 @@ function mergeDescription(subject: string, inspectTool: string): string {
     + 'Read reasonCode, action and cleanup even when success is true: an integration that succeeded can still report CLEANUP_FAILED with action cleanup_only, and then only the cleanup is repeated. '
     + 'Composite repositories integrate one after another, and an earlier integration is not rolled back when a later one fails (COMPOSITE_PARTIAL). '
     + 'OPERATION_RECOVERY_REQUIRED means an interrupted worktree operation guards the workspace or a repository; inspect pendingOperations and use hive_worktree_recover, never a repeated merge. '
+    + `CREATE_UNCONFIRMED means the create that recorded the worker never confirmed its checkout (${inspectTool} shows createUnconfirmed: true), so it may be another Git client's and is never integrated: inspect it, keep or remove it yourself, then clean up and create again. `
     + FINALIZATION_NOTE;
 }
 
 /** Shared by every worktree mutation tool: a finished result whose own bookkeeping failed afterwards. */
-const FINALIZATION_NOTE = 'A finalization field means the operation returned the rest of this result, but clearing its pending markers or releasing its locks failed afterwards. Nothing was rolled back, and a result from an operation that began mutating is never retryable. With finalization.markers "retained", the files in finalization.retainedMarkers remain, and later mutations of the resources they guard are refused until you inspect and acknowledge finalization.operationId through hive_worktree_recover. With "cleared_unflushed", no marker remains and there is nothing to acknowledge, but the removal was not flushed and may not survive a host crash.';
+const FINALIZATION_NOTE = 'A finalization field means the operation returned the rest of this result, but its pending markers were kept (its outcome is unknown, or removing them failed) or releasing its locks failed afterwards. Nothing was rolled back, and a result from an operation that began mutating is never retryable. With finalization.markers "retained", the files in finalization.retainedMarkers remain, and later mutations of the resources they guard are refused until you inspect and acknowledge finalization.operationId through hive_worktree_recover. With "cleared_unflushed", no marker remains and there is nothing to acknowledge, but the removal was not flushed and may not survive a host crash.';
 
 function normalizeMergePins(
   inspected: { commit: string; repos?: Record<string, { commit: string }> },
@@ -557,7 +558,7 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
       },
     }),
     hive_worktree_inspect: operation({
-      description: 'Inspect a task worktree: placement, source commit, clean state (including untracked and ignored files) and the destination identity `target` with its `comparison` (per repository under `repos` for composites). Returns null when no such worktree exists. It never fetches. Copy `target` unchanged into the merge expectation, and inspect again after the destination may have moved.',
+      description: 'Inspect a task worktree: placement, source commit, clean state (including untracked and ignored files) and the destination identity `target` with its `comparison` (per repository under `repos` for composites). createUnconfirmed: true means the create that recorded it never confirmed the checkout, which may be another Git client\'s; merge refuses it and cleanup keeps it unless it is empty. Returns null when no such worktree exists. It never fetches. Copy `target` unchanged into the merge expectation, and inspect again after the destination may have moved.',
       args: { feature: z.string().optional(), task: z.string(), ...taskRepoIdsArgs, ...candidateArg },
       execute: async ({ feature, task, repoIds, candidate }, invocation) => {
         const selected = requireFeature(feature, invocation);
@@ -623,7 +624,7 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
       },
     }),
     hive_adhoc_worktree_inspect: operation({
-      description: 'Inspect an ad-hoc worktree: placement, source commit, clean state (including untracked and ignored files) and the destination identity `target` with its `comparison` (per repository under `repos` for composites). It never fetches. Copy `target` unchanged into the merge expectation, and inspect again after the destination may have moved.',
+      description: 'Inspect an ad-hoc worktree: placement, source commit, clean state (including untracked and ignored files) and the destination identity `target` with its `comparison` (per repository under `repos` for composites). createUnconfirmed: true means the create that recorded it never confirmed the checkout, which may be another Git client\'s; merge refuses it and cleanup keeps it unless it is empty. It never fetches. Copy `target` unchanged into the merge expectation, and inspect again after the destination may have moved.',
       args: { runId: z.string(), ...adhocRepoIdsArg, ...adhocSourceDirectoryArg },
       execute: ({ runId, repoIds, sourceDirectory }) => adhocService(sourceDirectory, repoIds).inspect(runId),
     }),
@@ -657,8 +658,9 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
         observedStateDigest: z.string().optional().describe('The entry\'s observedStateDigest from the same listing or inspection.'),
         mutatorsStopped: z.boolean().optional().describe('true only after confirming no process of the interrupted operation, including a Git child, is still running.'),
         sourceDirectory: z.string().optional().describe('Absolute foreign checkout an ad-hoc run used, so its repository is recognized; an absolute path resolving to the active project root is treated as omitted.'),
+        workspacePath: z.string().optional().describe('Canonical absolute placement (.hive/.worktrees/<group>/<name>) of a workspace that no longer exists, so a legacy lock file or unreadable marker of that workspace can be identified. Acknowledging such an entry also requires that the workspace is still absent, that every trusted repository can be listed (a manifest root without .git excepted), and that none registers a checkout inside it.'),
       },
-      execute: async ({ operationId, markerDigest, observedStateDigest, mutatorsStopped, sourceDirectory }) => {
+      execute: async ({ operationId, markerDigest, observedStateDigest, mutatorsStopped, sourceDirectory, workspacePath }) => {
         let foreign: string | undefined;
         if (sourceDirectory !== undefined) {
           if (!path.isAbsolute(sourceDirectory)) throw new Error('sourceDirectory must be absolute');
@@ -669,11 +671,11 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
           if ([markerDigest, observedStateDigest, mutatorsStopped].some((value) => value !== undefined)) {
             throw new Error('markerDigest, observedStateDigest and mutatorsStopped require operationId');
           }
-          return { pendingOperations: await worktreeRecoveryService.list({ sourceDirectory: foreign }) };
+          return { pendingOperations: await worktreeRecoveryService.list({ sourceDirectory: foreign, workspacePath }) };
         }
         if (markerDigest === undefined || observedStateDigest === undefined) throw new Error('Recovery requires markerDigest and observedStateDigest');
         try {
-          return { success: true, ...await worktreeRecoveryService.recover({ operationId, markerDigest, observedStateDigest, mutatorsStopped: mutatorsStopped === true, sourceDirectory: foreign }) };
+          return { success: true, ...await worktreeRecoveryService.recover({ operationId, markerDigest, observedStateDigest, mutatorsStopped: mutatorsStopped === true, sourceDirectory: foreign, workspacePath }) };
         } catch (error) {
           if (!(error instanceof WorktreeRecoveryRefusedError)) throw error;
           return { success: false, reason: error.reason, error: error.message, ...(error.current ? { current: error.current } : {}) };
