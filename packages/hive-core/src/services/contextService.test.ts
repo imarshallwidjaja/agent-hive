@@ -3,7 +3,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { createHash } from 'crypto';
 import { ContextService, CONTEXT_CANDIDATE_MAX, CONTEXT_NAMESPACE_ENTRY_MAX } from './contextService.js';
-import { acquireLockSync, getProjectContextPath, probeLock } from '../utils/paths.js';
+import { acquireLockSync, FeatureResolutionError, getProjectContextPath, probeLock } from '../utils/paths.js';
+import { resolveLockAnchor } from '../utils/nativeLock.js';
 
 const TEST_DIR = '/tmp/hive-core-contextservice-services-test-' + process.pid;
 const PROJECT_ROOT = TEST_DIR;
@@ -1756,5 +1757,263 @@ describe('ContextService guarded exact-text edit', () => {
     fs.writeFileSync(path.join(contextPath, '.managed-mutation-pending.json'), JSON.stringify({ schemaVersion: 1, operation: 'replace', names: ['notes'] }));
     expectRefusedWithoutPublication('context_reconciliation_required', () => service.edit(featureName, 'notes', 'body', 'x', created.revision, created.file.contentHash));
     expectRefusedWithoutPublication('context_reconciliation_required', () => service.edit(featureName, 'missing', 'body', 'x', created.revision, created.file.contentHash), 'missing');
+  });
+});
+
+describe('ContextService pending marker classification', () => {
+  let service: ContextService;
+  const featureName = 'publishing';
+  const contextPath = path.join(TEST_DIR, '.hive/features', featureName, 'context');
+  const indexPath = path.join(contextPath, 'index.json');
+  const markerPath = path.join(contextPath, '.managed-mutation-pending.json');
+  const sha = (value: Buffer | string) => createHash('sha256').update(value).digest('hex');
+  const errorOf = (action: () => unknown): unknown => {
+    try { action(); } catch (error) { return error; }
+    return undefined;
+  };
+  const reasonOf = (action: () => unknown): string | undefined => {
+    const error = errorOf(action);
+    return error === undefined ? undefined : (error as { reason?: string }).reason ?? (error as Error).message;
+  };
+  const publicReads = (target: ContextService) => ({
+    readSummary: reasonOf(() => target.readSummary(featureName)) ?? 'ok',
+    readCatalog: reasonOf(() => target.readCatalog(featureName)) ?? 'ok',
+    readManagementCatalog: reasonOf(() => target.readManagementCatalog(featureName)) ?? 'ok',
+    readContent: reasonOf(() => target.readContent(featureName, 'notes')) ?? 'ok',
+    read: reasonOf(() => target.read(featureName, 'notes')) ?? 'ok',
+    list: reasonOf(() => target.list(featureName)) ?? 'ok',
+  });
+  const allReads = (outcome: string) => ({
+    readSummary: outcome, readCatalog: outcome, readManagementCatalog: outcome, readContent: outcome, read: outcome, list: outcome,
+  });
+
+  // The reader is a separate process, so its lock probe meets the writer's kernel lock exactly as another host would.
+  function readInAnotherProcess(): Record<string, string> {
+    const script = path.join(TEST_DIR, 'context-reader.ts');
+    fs.writeFileSync(script, `
+      const { ContextService } = await import(${JSON.stringify(path.join(import.meta.dir, 'contextService.ts'))});
+      const [root, feature] = process.argv.slice(2);
+      const service = new ContextService(root);
+      const outcome = (read) => { try { read(); return 'ok'; } catch (error) { return error.reason ?? String(error); } };
+      process.stdout.write(JSON.stringify({
+        readSummary: outcome(() => service.readSummary(feature)),
+        readCatalog: outcome(() => service.readCatalog(feature)),
+        readManagementCatalog: outcome(() => service.readManagementCatalog(feature)),
+        readContent: outcome(() => service.readContent(feature, 'notes')),
+        read: outcome(() => service.read(feature, 'notes')),
+        list: outcome(() => service.list(feature)),
+      }));
+    `);
+    const result = Bun.spawnSync([process.execPath, script, PROJECT_ROOT, featureName], { stdout: 'pipe', stderr: 'pipe' });
+    expect(result.stderr.toString()).toBe('');
+    expect(result.exitCode).toBe(0);
+    return JSON.parse(result.stdout.toString());
+  }
+
+  /** Runs `transition` the first time the lock probe opens the index lock anchor, after the reader has seen the marker. */
+  function atLockProbe(transition: () => void): { restore: () => void; probes: () => number } {
+    const anchorPath = resolveLockAnchor(indexPath).anchorPath;
+    const originalOpen = fs.openSync;
+    let probes = 0;
+    const open = spyOn(fs, 'openSync').mockImplementation(((file: fs.PathLike, ...args: unknown[]) => {
+      if (String(file) === anchorPath) {
+        probes += 1;
+        if (probes === 1) transition();
+      }
+      return (originalOpen as (...values: unknown[]) => number)(file, ...args);
+    }) as typeof fs.openSync);
+    return { restore: () => open.mockRestore(), probes: () => probes };
+  }
+
+  beforeEach(() => {
+    cleanup();
+    fs.mkdirSync(TEST_DIR, { recursive: true });
+    setupFeature(featureName);
+    service = new ContextService(PROJECT_ROOT, () => new Date('2026-09-07T01:02:03.000Z'));
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it('reports a healthy publication to readers in another process as a retryable change, never as reconciliation', () => {
+    const created = service.create(featureName, 'notes', durable('alpha'));
+    const unlink = (service as unknown as { unlinkDurable: (target: string) => void }).unlinkDurable.bind(service);
+    const atMarkerRemoval: Array<Record<string, string>> = [];
+    (service as unknown as { unlinkDurable: (target: string) => void }).unlinkDurable = (target: string) => {
+      if (target === markerPath) {
+        // Content and index are published; the writer still holds the lock and has not removed its marker.
+        expect(probeLock(indexPath)).toBe('held');
+        atMarkerRemoval.push(readInAnotherProcess());
+      }
+      unlink(target);
+    };
+
+    const edited = service.edit(featureName, 'notes', 'alpha', 'beta', created.revision, created.file.contentHash);
+
+    expect(atMarkerRemoval).toEqual([allReads('context_changed_during_read')]);
+    expect(edited.revision).toBe(created.revision + 1);
+    expect(readInAnotherProcess()).toEqual(allReads('ok'));
+  });
+
+  it('fails closed on a marker that outlived its writer, for readers and for a mutation holding the lock', () => {
+    const created = service.create(featureName, 'notes', durable('alpha'));
+    const marker = JSON.stringify({ schemaVersion: 1, operation: 'replace', names: ['notes'] });
+    fs.writeFileSync(markerPath, marker);
+    const index = fs.readFileSync(indexPath);
+
+    expect(probeLock(indexPath)).toBe('free');
+    expect(publicReads(service)).toEqual(allReads('context_reconciliation_required'));
+    expect(readInAnotherProcess()).toEqual(allReads('context_reconciliation_required'));
+    // The mutation's own lock is not another writer: a marker it finds is an unresolved earlier operation.
+    expect(reasonOf(() => service.replace(featureName, 'notes', durable('beta'), created.revision, created.file.contentHash)))
+      .toBe('context_reconciliation_required');
+    expect(reasonOf(() => service.create(featureName, 'other', durable('other')))).toBe('context_reconciliation_required');
+    // A pre-native lock file proves no live writer, so it does not hide the abandoned marker.
+    fs.writeFileSync(`${indexPath}.lock`, 'stale');
+    expect(probeLock(indexPath)).toBe('legacy');
+    expect(reasonOf(() => service.readSummary(featureName))).toBe('context_reconciliation_required');
+    fs.unlinkSync(`${indexPath}.lock`);
+
+    expect(fs.readFileSync(markerPath, 'utf8')).toBe(marker);
+    expect(fs.readFileSync(indexPath)).toEqual(index);
+    expect(fs.existsSync(path.join(contextPath, 'other.md'))).toBe(false);
+  });
+
+  it('retries when the writer finishes between the marker observation and the lock probe', () => {
+    service.create(featureName, 'notes', durable('alpha'));
+    const releaseWriter = acquireLockSync(indexPath);
+    fs.writeFileSync(markerPath, JSON.stringify({ schemaVersion: 1, operation: 'edit', names: ['notes'] }));
+    const probe = atLockProbe(() => {
+      fs.unlinkSync(markerPath);
+      releaseWriter();
+    });
+    try {
+      expect(reasonOf(() => service.readSummary(featureName))).toBe('context_changed_during_read');
+      expect(probe.probes()).toBeGreaterThan(0);
+    } finally {
+      probe.restore();
+      releaseWriter();
+    }
+    expect(service.readSummary(featureName).files.map(file => file.name)).toEqual(['notes']);
+  });
+
+  it('retries when a later marker replaces the observed one, then fails closed once that marker is stable', () => {
+    service.create(featureName, 'notes', durable('alpha'));
+    fs.writeFileSync(markerPath, JSON.stringify({ schemaVersion: 1, operation: 'edit', names: ['notes'], startingRevision: 1 }));
+    const probe = atLockProbe(() => {
+      // An earlier writer finished and a later one published its own marker, then stopped without removing it.
+      const staged = `${markerPath}.staged`;
+      fs.writeFileSync(staged, JSON.stringify({ schemaVersion: 1, operation: 'edit', names: ['notes'], startingRevision: 2 }));
+      fs.renameSync(staged, markerPath);
+    });
+    try {
+      expect(reasonOf(() => service.readContent(featureName, 'notes'))).toBe('context_changed_during_read');
+      expect(probe.probes()).toBeGreaterThan(0);
+    } finally {
+      probe.restore();
+    }
+    expect(reasonOf(() => service.readContent(featureName, 'notes'))).toBe('context_reconciliation_required');
+    expect(JSON.parse(fs.readFileSync(markerPath, 'utf8')).startingRevision).toBe(2);
+  });
+
+  it('refuses every mutation of an unknown feature before creating any storage', () => {
+    const hash = sha('anything');
+    const hiveEntries = () => fs.readdirSync(path.join(TEST_DIR, '.hive'), { recursive: true }).map(String).sort();
+    const before = hiveEntries();
+    const mutations: Array<[string, () => unknown]> = [
+      ['create', () => service.create('ghost', 'notes', durable('typo'))],
+      ['replace', () => service.replace('ghost', 'notes', durable('typo'), 0, hash)],
+      ['write', () => service.write('ghost', 'notes', durable('typo'), 0, hash)],
+      ['append', () => service.append('ghost', 'notes', 'typo', 0, hash)],
+      ['edit', () => service.edit('ghost', 'notes', 'a', 'b', 0, hash)],
+      ['delete', () => service.delete('ghost', 'notes', 0, hash)],
+      ['archive', () => service.archive('ghost', 0, {})],
+      ['archiveSelected', () => service.archiveSelected('ghost', ['notes'], 'obsolete', 0, { notes: hash })],
+    ];
+    for (const [label, mutation] of mutations) {
+      const error = errorOf(mutation);
+      expect([label, error instanceof FeatureResolutionError, (error as FeatureResolutionError).reason]).toEqual([label, true, 'not_found']);
+    }
+    // A directory without feature metadata is not a feature, so its context stays readable but immutable.
+    seedLegacy('metadata-less', 'notes', 'legacy bytes');
+    const legacyBefore = hiveEntries();
+    expect((errorOf(() => service.create('metadata-less', 'other', durable('x'))) as FeatureResolutionError).reason).toBe('not_found');
+    expect(hiveEntries()).toEqual(legacyBefore);
+    expect(legacyBefore.filter(entry => !entry.includes('metadata-less'))).toEqual(before);
+
+    expect(service.readSummary('ghost')).toMatchObject({ revision: 0, files: [] });
+    expect(service.readContent('ghost', 'notes')).toBeNull();
+    expect(service.read('metadata-less', 'notes')).toBe('legacy bytes');
+  });
+
+  it('refuses reads of an ambiguous or unreadable feature and reads the valid feature beside a metadata-less namesake', () => {
+    const writeMetadata = (directory: string, metadata: string) => {
+      fs.mkdirSync(path.join(TEST_DIR, '.hive/features', directory), { recursive: true });
+      fs.writeFileSync(path.join(TEST_DIR, '.hive/features', directory, 'feature.json'), metadata);
+    };
+    const named = (name: string) => JSON.stringify({ name, status: 'executing', createdAt: '2026-09-07T00:00:00.000Z' });
+    writeMetadata('01_twin', named('twin'));
+    writeMetadata('02_twin', named('twin'));
+    seedLegacy('01_twin', 'notes', 'first twin bytes');
+    writeMetadata('broken', '{not json');
+    seedLegacy('broken', 'notes', 'broken bytes');
+    const snapshot = () => fs.readdirSync(path.join(TEST_DIR, '.hive'), { recursive: true }).map(String).sort().map((entry) => {
+      const target = path.join(TEST_DIR, '.hive', entry);
+      return [entry, fs.statSync(target).isFile() ? fs.readFileSync(target, 'utf8') : null];
+    });
+    const before = snapshot();
+    const reads = (feature: string) => ({
+      readSummary: reasonOf(() => service.readSummary(feature)),
+      readCatalog: reasonOf(() => service.readCatalog(feature)),
+      readContent: reasonOf(() => service.readContent(feature, 'notes')),
+      read: reasonOf(() => service.read(feature, 'notes')),
+      list: reasonOf(() => service.list(feature)),
+    });
+    const refused = (reason: string) => ({ readSummary: reason, readCatalog: reason, readContent: reason, read: reason, list: reason });
+    expect(reads('twin')).toEqual(refused('ambiguous'));
+    expect(reads('broken')).toEqual(refused('unreadable'));
+    expect(snapshot()).toEqual(before);
+
+    // A direct directory without metadata does not shadow the indexed feature whose metadata owns the name.
+    seedLegacy('ghosted', 'notes', 'ghost bytes');
+    writeMetadata('03_ghosted', named('ghosted'));
+    const created = service.create('ghosted', 'notes', durable('valid'));
+    const featureNotes = path.join(TEST_DIR, '.hive/features/03_ghosted/context/notes.md');
+    expect(fs.readFileSync(featureNotes, 'utf8')).toBe(durable('valid'));
+    expect(service.read('ghosted', 'notes')).toBe(durable('valid'));
+    expect(service.readContent('ghosted', 'notes')?.file.contentHash).toBe(created.file.contentHash);
+    expect(service.readCatalog('ghosted').files.map((file) => file.name)).toEqual(['notes']);
+    expect(fs.readFileSync(path.join(TEST_DIR, '.hive/features/ghosted/context/notes.md'), 'utf8')).toBe('ghost bytes');
+  });
+
+  it('validates ordinary mutation input before creating context storage', () => {
+    const projectPath = getProjectContextPath(PROJECT_ROOT);
+    const project = { type: 'project' } as const;
+    const refusals: Array<[string, () => unknown]> = [
+      ['invalid_context_name', () => service.create(project, '../escape', projectDurable('x'))],
+      ['invalid_argument', () => service.create(project, 'notes', 42 as unknown as string)],
+      ['context_input_too_large', () => service.create(project, 'notes', 'x'.repeat(1024 * 1024 + 1))],
+      ['invalid_context_kind', () => service.create(project, 'notes', projectDurable('x'), { kind: 'bogus' as never })],
+      ['invalid_context_kind', () => service.create(project, 'overview', 'x', { kind: 'durable' })],
+      ['invalid_context_metadata', () => service.create(project, 'notes', 'no frontmatter')],
+      ['context_precondition_required', () => service.replace(project, 'notes', projectDurable('x'), 0, 'not-a-hash')],
+      ['context_precondition_required', () => service.append(project, 'notes', 'x', -1, sha('x'))],
+      ['invalid_context_name', () => service.delete(featureName, 'a/b', 0, sha('x'))],
+      ['invalid_argument', () => service.archiveSelected(project, [], 'obsolete', 0, {})],
+      ['invalid_archive_reason', () => service.archiveSelected(project, ['notes'], ' ', 0, { notes: sha('x') })],
+      ['invalid_context_name', () => service.create(featureName, 'index', durable('x'))],
+    ];
+    for (const [reason, refusal] of refusals) expect([reason, reasonOf(refusal)]).toEqual([reason, reason]);
+    expect(fs.existsSync(projectPath)).toBe(false);
+    expect(fs.existsSync(contextPath)).toBe(false);
+    expect(fs.existsSync(path.join(TEST_DIR, '.hive', '.locks'))).toBe(false);
+
+    // Valid writes keep their revision and hash semantics in both scopes.
+    const projectNotes = service.create(project, 'notes', projectDurable('one'));
+    const featureNotes = service.create(featureName, 'notes', durable('one'));
+    expect([projectNotes.revision, featureNotes.revision]).toEqual([1, 1]);
+    expect(service.replace(featureName, 'notes', durable('two'), featureNotes.revision, featureNotes.file.contentHash).revision).toBe(2);
+    expect(reasonOf(() => service.replace(project, 'notes', projectDurable('two'), 0, projectNotes.file.contentHash))).toBe('stale_revision');
   });
 });

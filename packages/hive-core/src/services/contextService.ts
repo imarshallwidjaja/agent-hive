@@ -4,11 +4,13 @@ import { createHash } from 'crypto';
 import {
   acquireLockSync,
   ensureDir,
+  FeatureResolutionError,
   fileExists,
   getContextPath,
   getProjectContextPath,
   probeLock,
   readText,
+  resolveExistingFeaturePath,
   syncDirectory,
   syncFile,
   writeAtomicDurable,
@@ -54,6 +56,7 @@ const CONTEXT_ARCHIVE_NAME_MAX_BYTES = 255;
 const CONTEXT_ARCHIVE_NAMES_MAX = 50;
 const PENDING_MARKER_NAME = '.managed-mutation-pending.json';
 const INDEX_NAME = 'index.json';
+const FEATURE_CONTEXT_DIRECTORY = 'context';
 const CREATE_CONTEXT = Symbol('create-context');
 
 export type ContextMutationErrorReason =
@@ -223,6 +226,12 @@ interface ResolvedScope {
   identity: string;
 }
 
+/**
+ * How a caller reads the control files. `read` is a lock-free public read, `diagnostic` a primary-management read
+ * that tolerates a pending marker, and `locked` a mutation that already holds the index lock.
+ */
+type ControlAccess = 'read' | 'diagnostic' | 'locked';
+
 interface ControlState {
   index: ContextIndex;
   indexRaw: Buffer | null;
@@ -299,7 +308,7 @@ export class ContextService {
   read(scope: string | ContextScope, fileName: string): string | null {
     const resolved = this.resolveScope(scope);
     const name = this.normalizeName(fileName);
-    this.readControl(resolved, false);
+    this.readControl(resolved, 'read');
     const filePath = this.contentPath(resolved, name);
     return readText(filePath);
   }
@@ -324,9 +333,9 @@ export class ContextService {
   }
 
   delete(featureName: string, fileName: string, expectedRevision: number, expectedContentHash: string): boolean {
+    const name = this.normalizeName(fileName);
+    this.assertExpectedHash(expectedContentHash);
     return this.mutate(featureName, expectedRevision, (control, resolved) => {
-      const name = this.normalizeName(fileName);
-      this.assertExpectedHash(expectedContentHash);
       const filePath = this.contentPath(resolved, name);
       const prior = this.requireCurrentContent(filePath, name, expectedContentHash);
       const nextEntries = { ...control.index.entries };
@@ -344,10 +353,10 @@ export class ContextService {
   }
 
   archive(featureName: string, expectedRevision: number, expectedContentHashes: Record<string, string>): { archived: string[]; archivePath: string } {
+    if (!isPlainRecord(expectedContentHashes)) {
+      throw new ContextMutationError('context_precondition_required', 'Expected content hashes are required for every archived context.');
+    }
     return this.mutate(featureName, expectedRevision, (control, resolved) => {
-      if (!isPlainRecord(expectedContentHashes)) {
-        throw new ContextMutationError('context_precondition_required', 'Expected content hashes are required for every archived context.');
-      }
       const inventory = this.buildInventory(resolved, control);
       for (const file of inventory.files) {
         this.assertExpectedHash(expectedContentHashes[file.name]);
@@ -493,7 +502,8 @@ export class ContextService {
     const resolved = this.resolveScope(scope);
     const name = this.normalizeName(fileName);
     const diagnostic = options.diagnosticMode === 'primary-management';
-    const control = this.readControl(resolved, diagnostic);
+    const access: ControlAccess = diagnostic ? 'diagnostic' : 'read';
+    const control = this.readControl(resolved, access);
     const filePath = this.contentPath(resolved, name);
     const before = this.safeStat(filePath);
     if (!before) return null;
@@ -511,7 +521,7 @@ export class ContextService {
     if (!after || this.statFingerprint(before) !== this.statFingerprint(after)) {
       throw new ContextMutationError('context_changed_during_read', 'Context changed during the named read. Retry from the beginning.');
     }
-    const currentControl = this.readControl(resolved, diagnostic);
+    const currentControl = this.readControl(resolved, access);
     if (currentControl.indexDigest !== control.indexDigest || currentControl.index.revision !== control.index.revision
       || currentControl.classificationState !== control.classificationState) {
       throw new ContextMutationError('context_changed_during_read', 'Context control data changed during the named read. Retry from the beginning.');
@@ -671,16 +681,16 @@ export class ContextService {
     content: string,
     options: { kind?: ContextKind; task?: string } = {},
   ): ContextMutationResult {
+    const name = this.normalizeName(fileName);
+    this.assertContentInput(content);
+    const kind = this.resolveMutableKind(name, options.kind);
+    const metadata = parseContextMetadata(Buffer.from(content));
+    if (kind === 'durable') this.assertMetadata(metadata, this.parseScope(scope).type);
     return this.mutate(scope, CREATE_CONTEXT, (control, resolved) => {
-      const name = this.normalizeName(fileName);
-      this.assertContentInput(content);
       const filePath = this.contentPath(resolved, name);
       if (fileExists(filePath)) {
         throw new ContextMutationError('context_already_exists', `Context "${name}" already exists. Read it, then replace with its current revision and content hash.`, { name, revision: control.index.revision });
       }
-      const kind = this.resolveMutableKind(name, options.kind);
-      const metadata = parseContextMetadata(Buffer.from(content));
-      if (kind === 'durable') this.assertMetadata(metadata, resolved.scope.type);
       const timestamp = this.now().toISOString();
       const hash = sha256(content);
       const nextIndex = this.withEntry(control.index, name, kind, timestamp, options.task, undefined, hash);
@@ -697,10 +707,11 @@ export class ContextService {
     expectedContentHash: string,
     options: { kind?: ContextKind; task?: string } = {},
   ): ContextMutationResult {
+    const name = this.normalizeName(fileName);
+    this.assertExpectedHash(expectedContentHash);
+    this.assertContentInput(content);
+    if (options.kind !== undefined) this.resolveMutableKind(name, options.kind);
     return this.mutate(scope, expectedRevision, (control, resolved) => {
-      const name = this.normalizeName(fileName);
-      this.assertExpectedHash(expectedContentHash);
-      this.assertContentInput(content);
       const filePath = this.contentPath(resolved, name);
       const prior = this.requireCurrentContent(filePath, name, expectedContentHash);
       const existing = control.index.entries[name];
@@ -723,10 +734,10 @@ export class ContextService {
     expectedContentHash: string,
     options: { section?: string; task?: string } = {},
   ): ContextMutationResult {
+    const name = this.normalizeName(fileName);
+    this.assertExpectedHash(expectedContentHash);
+    this.assertContentInput(content);
     return this.mutate(scope, expectedRevision, (control, resolved) => {
-      const name = this.normalizeName(fileName);
-      this.assertExpectedHash(expectedContentHash);
-      this.assertContentInput(content);
       const filePath = this.contentPath(resolved, name);
       const priorBuffer = this.requireCurrentContent(filePath, name, expectedContentHash);
       let prior: string;
@@ -767,8 +778,8 @@ export class ContextService {
     }
     this.assertExpectedHash(expectedContentHash);
     // Read-only preflight so a missing target never creates the context namespace.
-    const preflight = this.resolveScope(scope);
-    this.readControl(preflight, false);
+    const preflight = this.resolveScope(scope, 'mutation');
+    this.readControl(preflight, 'read');
     this.requireRegularFile(this.contentPath(preflight, name), name);
     return this.mutate(scope, expectedRevision, (control, resolved) => {
       const filePath = this.contentPath(resolved, name);
@@ -815,13 +826,13 @@ export class ContextService {
   ): ContextArchiveResult {
     if (!reason.trim()) throw new ContextMutationError('invalid_archive_reason', 'Archive reason must not be blank.');
     this.assertBoundedText(reason, CONTEXT_DOCUMENT_MAX_BYTES, 'archive reason');
+    if (!isPlainRecord(expectedContentHashes)) {
+      throw new ContextMutationError('context_precondition_required', 'Expected content hashes are required for every archived context.');
+    }
+    const normalized = this.normalizeArchiveNames(names);
+    for (const name of normalized) this.assertExpectedHash(expectedContentHashes[name]);
     return this.mutate(scope, expectedRevision, (control, resolved) => {
-      if (!isPlainRecord(expectedContentHashes)) {
-        throw new ContextMutationError('context_precondition_required', 'Expected content hashes are required for every archived context.');
-      }
-      const normalized = this.normalizeArchiveNames(names);
       for (const name of normalized) {
-        this.assertExpectedHash(expectedContentHashes[name]);
         this.requireCurrentContent(this.contentPath(resolved, name), name, expectedContentHashes[name]!);
       }
       const moves = this.prepareArchiveMoves(resolved, normalized, false);
@@ -834,7 +845,8 @@ export class ContextService {
     });
   }
 
-  private resolveScope(input: string | ContextScope): ResolvedScope {
+  /** The scope a caller named, validated without touching storage. */
+  private parseScope(input: string | ContextScope): ContextScope {
     const scope: ContextScope = typeof input === 'string' ? { type: 'feature', featureName: input } : input;
     if (!scope || (scope.type !== 'project' && scope.type !== 'feature')) {
       throw new ContextMutationError('invalid_argument', 'Context scope must be project or feature.');
@@ -845,30 +857,54 @@ export class ContextService {
     if (scope.type === 'feature' && (scope.featureName === '.' || scope.featureName === '..' || /[\\/\0]/.test(scope.featureName))) {
       throw new ContextMutationError('invalid_argument', 'Feature context scope requires a simple logical name without path segments.');
     }
-    const contextPath = scope.type === 'project' ? getProjectContextPath(this.projectRoot) : getContextPath(this.projectRoot, scope.featureName);
+    return scope;
+  }
+
+  /**
+   * Where a scope's context lives. A mutation needs an existing, metadata-backed feature and resolves it before any
+   * lock or directory exists, so a mistyped name throws `FeatureResolutionError` instead of creating a phantom
+   * feature. A read of a feature that is not found keeps the legacy lookup, which reports absent context as empty and
+   * still reads a metadata-less directory. An ambiguous or unreadable feature fails the read as it fails a mutation,
+   * because the legacy lookup would pick one of the candidate directories.
+   */
+  private resolveScope(input: string | ContextScope, purpose: 'read' | 'mutation' = 'read'): ResolvedScope {
+    const scope = this.parseScope(input);
+    const contextPath = scope.type === 'project' ? getProjectContextPath(this.projectRoot) : this.featureContextPath(scope.featureName, purpose);
     const archivePath = scope.type === 'project'
       ? path.join(this.projectRoot, '.hive', 'archive', 'context')
       : path.join(contextPath, '..', 'archive', 'context');
     return { scope, contextPath, archivePath, identity: scope.type === 'project' ? 'project' : `feature:${scope.featureName}` };
   }
 
+  private featureContextPath(featureName: string, purpose: 'read' | 'mutation'): string {
+    try {
+      return path.join(resolveExistingFeaturePath(this.projectRoot, featureName), FEATURE_CONTEXT_DIRECTORY);
+    } catch (error) {
+      if (purpose === 'read' && error instanceof FeatureResolutionError && error.reason === 'not_found') {
+        return getContextPath(this.projectRoot, featureName);
+      }
+      throw error;
+    }
+  }
+
   private observe(resolved: ResolvedScope): { control: ControlState; inventory: Inventory } {
-    const control = this.readControl(resolved, false);
+    const control = this.readControl(resolved, 'read');
     const inventory = this.buildInventory(resolved, control);
-    const secondControl = this.readControl(resolved, false);
+    const secondControl = this.readControl(resolved, 'read');
     if (secondControl.indexDigest !== control.indexDigest || secondControl.index.revision !== control.index.revision) {
       throw new ContextMutationError('context_changed_during_read', 'Context control data changed during listing. Retry the read.');
     }
     return { control, inventory };
   }
 
-  private readControl(resolved: ResolvedScope, diagnostic: boolean): ControlState {
+  private readControl(resolved: ResolvedScope, access: ControlAccess): ControlState {
     this.assertNamespaceSafe(resolved.contextPath);
     const markerPath = this.markerPath(resolved);
     const marker = this.safeStat(markerPath);
-    if (marker && !diagnostic) {
-      throw new ContextMutationError('context_reconciliation_required', 'A managed context mutation was interrupted. A primary manager must inspect and reconcile it before discovery or mutation.', { markerPath });
-    }
+    // A mutation holds the lock, so a marker it finds can only be an earlier operation that never finished.
+    if (marker && access === 'locked') throw this.reconciliationRequired(markerPath);
+    if (marker && access === 'read') this.rejectPendingMarker(resolved, markerPath);
+    const diagnostic = access === 'diagnostic';
     const indexPath = this.indexPath(resolved);
     const raw = this.readFileBuffer(indexPath);
     if (raw === null) return {
@@ -899,6 +935,44 @@ export class ContextService {
       throw error;
     }
     return { index: parsed, indexRaw: raw, indexDigest: sha256(raw), classificationState: marker === null ? 'trusted' : 'pending' };
+  }
+
+  /**
+   * Classifies a pending marker that a lock-free reader found; always throws. A healthy writer creates and removes
+   * the marker only while it holds the index lock, so the marker was abandoned exactly when the same marker file,
+   * by stat identity and bytes, spans a moment at which the kernel reports that lock free: its writer crashed, or
+   * released the lock after a rollback it could not prove. A lock held at that moment, or a marker that vanished or
+   * was replaced around it, is a publication in progress or just finished, and the read is retried. A pre-native
+   * lock file proves no live writer, so it does not count as held.
+   */
+  private rejectPendingMarker(resolved: ResolvedScope, markerPath: string): never {
+    const changed = () => new ContextMutationError('context_changed_during_read', 'A managed context mutation is being published. Retry the read.', { markerPath });
+    const observed = this.markerIdentity(markerPath);
+    if (observed === null || probeLock(this.indexPath(resolved)) === 'held') throw changed();
+    if (this.markerIdentity(markerPath) !== observed) throw changed();
+    throw this.reconciliationRequired(markerPath);
+  }
+
+  private markerIdentity(markerPath: string): string | null {
+    let descriptor: number;
+    try {
+      descriptor = fs.openSync(markerPath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT') return null;
+      if (code === 'ELOOP') throw new ContextMutationError('context_symlink_refused', `Context control path is a symlink: ${markerPath}`);
+      throw error;
+    }
+    try {
+      const stat = fs.fstatSync(descriptor);
+      return `${this.statFingerprint(stat)}:${stat.isFile() ? sha256(fs.readFileSync(descriptor)) : 'not-a-file'}`;
+    } finally {
+      fs.closeSync(descriptor);
+    }
+  }
+
+  private reconciliationRequired(markerPath: string): ContextMutationError {
+    return new ContextMutationError('context_reconciliation_required', 'A managed context mutation was interrupted. A primary manager must inspect and reconcile it before discovery or mutation.', { markerPath });
   }
 
   private validateIndex(value: unknown): asserts value is ContextIndex {
@@ -1107,13 +1181,13 @@ export class ContextService {
     if (expectedRevision !== CREATE_CONTEXT && (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0)) {
       throw new ContextMutationError('context_precondition_required', 'Read the current revision before mutating existing context.');
     }
-    const resolved = this.resolveScope(scope);
+    const resolved = this.resolveScope(scope, 'mutation');
     this.assertNamespaceSafe(resolved.contextPath);
     ensureDir(resolved.contextPath);
     this.assertNamespaceSafe(resolved.contextPath);
     const release = acquireLockSync(this.indexPath(resolved));
     try {
-      const control = this.readControl(resolved, false);
+      const control = this.readControl(resolved, 'locked');
       if (expectedRevision !== CREATE_CONTEXT && control.index.revision !== expectedRevision) {
         throw new ContextMutationError('stale_revision', `Context changed since revision ${expectedRevision}; current revision is ${control.index.revision}.`, { expectedRevision, revision: control.index.revision });
       }

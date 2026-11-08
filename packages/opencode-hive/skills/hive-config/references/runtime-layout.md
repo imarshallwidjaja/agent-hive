@@ -72,7 +72,7 @@ Before its first workspace or Git mutation, a create, merge, remove or cleanup w
 - Feature context: the feature directory's `context/`. Project context: `.hive/context/`.
 - `index.json` carries `schemaVersion: 1`, a monotonic `revision`, and per-name `kind` (`durable` or `evidence`).
 - `overview`, `draft`, and `execution-decisions` are reserved names, outside the durable catalog. Progress and revision history live in the Worklog, not `overview`.
-- `.managed-mutation-pending.json` in a context directory means an interrupted publication. Context tools then return `context_reconciliation_required`; recovery is a separately authorized operator procedure (`context-engineering` holds it), and an agent that meets the error stops and reports it.
+- Every context publication keeps `.managed-mutation-pending.json` in the context directory while it runs, so the file alone does not show an interruption. The "Invalid or pending state" section of `context-engineering`'s `references/mutation-and-recovery.md` explains how reads tell a running publication from an interrupted one. An agent that meets `context_reconciliation_required` stops and reports it; recovery is a separately authorized operator procedure held in that reference.
 - Read and mutate through `hive_context_*`; the `context-engineering` skill owns how.
 
 ## Worktrees and branches

@@ -116,7 +116,7 @@ Resource ceilings: 10,000 Markdown candidates, 20,000 namespace entries, 64 MiB 
 
 ## Invalid or pending state
 
-`context_index_invalid` and `context_reconciliation_required` block `hive_context_read` catalogs and managed mutations. An error notice is not an empty or current catalog. `.managed-mutation-pending.json` in a context directory marks an interrupted publication.
+`context_index_invalid` and `context_reconciliation_required` block `hive_context_read` catalogs and managed mutations. An error notice is not an empty or current catalog. Every publication keeps `.managed-mutation-pending.json` in the context directory while it holds the context lock. A read that meets a running publication's marker fails `context_changed_during_read`; retry the read. `context_reconciliation_required` means the marker outlived its writer: the lock was free and the same marker remained, so the publication was interrupted.
 
 An agent that meets either error stops managed mutations, reports the exact error with the tool name, inputs, and the context directory, and waits for the operator. Reading this section does not authorize an agent to edit, delete, or rewrite `index.json`, the pending marker, or any manifest, and the tools never repair them either: Hive does not infer classification, rewrite control files, or retry repairs automatically.
 
