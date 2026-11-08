@@ -47,6 +47,8 @@ The config hook intentionally mutates these OpenCode fields:
 
 The same package loads through its `server` entry on v1 and its synchronous `effect` entry on v2. On v2 it registers every Hive tool and all **14 commands**, dedicated and unified modes, custom agents, packaged skills, native dispatch and background observation, and the forensic and recovery tools. Qualification ran against stock v1.18.30 and v2.0.26 with scripted model providers, which establishes wiring rather than real-model judgment. On both hosts it loaded a package already installed with plain npm; host-side registry resolution at first use was not part of it.
 
+The current plugin manifest declares 48 Hive tools and 14 commands on both hosts. The qualification above does not cover the six [retained checkout tools](docs/HIVE-TOOLS.md#retained-checkouts-6-tools).
+
 Install the released package with npm into a dedicated directory that the v2 host can read:
 
 ```bash

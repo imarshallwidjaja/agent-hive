@@ -1909,13 +1909,16 @@ describe('skill content', () => {
       expect(examples).toHaveLength(2);
       for (const example of examples) {
         const execute = new Function('lane', 'repositories', 'hive_repositories_status', 'hive_adhoc_worktree_create', 'task', 'subagent', 'hive_background_status', `return (async () => { ${example} })();`);
-        for (const repoIds of [['beta'], [], ['missing'], ['beta', 'beta']]) {
+        const valid = [['beta'], ['alpha', 'gamma']];
+        for (const repoIds of [...valid, [], ['missing'], ['beta', 'beta']]) {
+          // Snapshot the saved selection and each create call so an example that mutates its input cannot widen both sides.
+          const expectedRepoIds = [...repoIds];
           const created: unknown[] = [];
           const repositories = [{ id: 'alpha' }, { id: 'beta' }, { id: 'gamma' }];
-          const run = () => execute({ runId: 'saved-run', repoIds }, repositories, () => ({ repositories }), (input: unknown) => created.push(input), () => ({}), () => ({}), () => ({}));
-          if (repoIds.length === 1 && repoIds[0] === 'beta') {
+          const run = () => execute({ runId: 'saved-run', repoIds }, repositories, () => ({ repositories }), (input: unknown) => created.push(structuredClone(input)), () => ({}), () => ({}), () => ({}));
+          if (valid.includes(repoIds)) {
             await run();
-            expect(created).toEqual([{ runId: 'saved-run', repoIds: ['beta'] }]);
+            expect(created).toEqual([{ runId: 'saved-run', repoIds: expectedRepoIds }]);
           } else {
             await expect(run()).rejects.toThrow('Placement blocker');
             expect(created).toEqual([]);
@@ -2162,15 +2165,10 @@ describe('skill content', () => {
       expect(gateClosed, label).toBeDefined();
       expect(example, label).toBeDefined();
       for (const launch of [gateClosed!, example!]) {
+        // Preflight behavior is executed against saved selections in the placement-preflight test.
         expect(launch).toContain(read);
-        expect(launch).toContain('const requestedRepoIds = lane.repoIds;');
-        expect(launch).toContain('requestedRepoIds.includes(id)');
-        expect(launch).toContain('new Set(requestedRepoIds).size !== requestedRepoIds.length');
-        expect(launch).toContain('requestedRepoIds.some((id) => !selectedRepoIds.includes(id))');
         expect(launch).toContain('Placement blocker: saved lane.repoIds must be nonempty, unique, and configured');
         expect(launch).toContain('Hive run: ${lane.runId}');
-        expect(launch).toContain('const repoIds = selectedRepoIds;');
-        expect(launch).toContain('hive_adhoc_worktree_create({ runId: lane.runId, repoIds })');
       }
       expect(example).toContain('background: true');
       // The launch stops where the board protocol starts; reconciliation is not duplicated here.

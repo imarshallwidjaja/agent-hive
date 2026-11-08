@@ -23,7 +23,7 @@ describe('release documentation and runtime contract', () => {
 
   it('publishes only the canonical tool runtime', () => {
     const manifest = JSON.parse(read('packages/opencode-hive/plugin.json'));
-    assert.equal(manifest.tools.length, 42);
+    assert.equal(manifest.tools.length, 48);
     for (const required of [
       'hive_feature_select',
       'hive_worktree_create',
@@ -37,6 +37,12 @@ describe('release documentation and runtime contract', () => {
       'hive_worktree_recover',
       'hive_git_snapshot',
       'hive_context_edit',
+      'hive_checkouts_list',
+      'hive_checkout_inspect',
+      'hive_checkout_create',
+      'hive_checkout_register',
+      'hive_checkout_readiness',
+      'hive_checkout_cleanup',
     ]) assert.ok(manifest.tools.includes(required), required);
     for (const removed of [
       'hive_execution_prepare',
