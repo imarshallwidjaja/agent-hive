@@ -51,8 +51,10 @@ export type SourcePart =
 export interface SourceMessage {
   /** Raw native message ID. */
   id?: unknown;
+  /** Raw native ID of the message this one answers, where the host records it (v1 assistant messages). */
+  parentID?: unknown;
   role?: string;
-  /** The host recorded this message as finished (completed or failed). */
+  /** The host recorded this message as finished (completed or failed). User input is recorded whole, so it is closed. */
   closed: boolean;
   /** The host marks the message itself as a compaction summary. */
   summary: boolean;
@@ -80,9 +82,21 @@ export interface TraceTarget {
   report?: Record<string, unknown>;
 }
 
-/** A read that did not authorize or complete. `detail` holds safe extra reply fields (never target content). */
+/** A target that did not authorize. `unavailable` holds safe extra reply fields (never target details). */
 export interface Unavailable {
   unavailable: Record<string, unknown>;
+}
+
+/**
+ * Why the history of an authorized target could not be read: `malformed` records or paging, `torn` pages that do not
+ * form one timeline (including one that kept moving past the follow bound), `page_limit` when the page bound ran
+ * out, or `read_failed` when the host read itself failed.
+ */
+export type SourceReadFailure = 'malformed' | 'torn' | 'page_limit' | 'read_failed';
+
+/** A source read that failed after authorization. `read_access` names only a connection or caller boundary. */
+export interface SourceUnavailable {
+  unavailable: { source_read: SourceReadFailure; read_access?: string };
 }
 
 export type RuntimeStatus = 'busy' | 'retry' | 'idle';
@@ -90,7 +104,7 @@ export type RuntimeStatus = 'busy' | 'retry' | 'idle';
 /** Reads one generation's native session state. Every method reads fresh; nothing is cached between calls. */
 export interface TraceSource<Target extends TraceTarget = TraceTarget> {
   resolveTarget(taskID: string, callerID: string, signal?: AbortSignal): Promise<Target | Unavailable>;
-  readSource(taskID: string, target: Target, signal?: AbortSignal): Promise<SourceSnapshot | Unavailable>;
+  readSource(taskID: string, target: Target, signal?: AbortSignal): Promise<SourceSnapshot | SourceUnavailable>;
   /** Undefined when the status cannot be read. */
   readRuntime(taskID: string, target: Target, signal?: AbortSignal): Promise<RuntimeStatus | undefined>;
   /** A fresh check that `childID` is, right now, a direct child of `parentID`. Fails closed. */

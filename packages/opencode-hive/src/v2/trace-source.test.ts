@@ -337,16 +337,58 @@ describe('v2 complete history reads', () => {
     expect(seen).toEqual(Array.from({ length: 450 }, (_, index) => index + 1));
   });
 
-  it('follows messages appended while paging and rejects torn or repeating timelines', async () => {
+  it('follows messages appended while paging and reports torn, repeating, malformed or unbounded timelines as source_unavailable', async () => {
     const base = long(5);
     const appended = readAccessFor({ sessions: FAMILY, timelines: { ses_child: (read) => read <= 2 ? base : [...base, user('msg_new', 'late')] } });
     expect((await operations(appended.access).trace({ task_id: 'ses_child' })).source.messages).toBe(6);
 
     const torn = readAccessFor({ sessions: FAMILY, timelines: { ses_child: (read) => read <= 2 ? base : base.slice(0, 3) } });
-    expect(await operations(torn.access).trace({ task_id: 'ses_child' })).toEqual({ ok: false, reason: 'unavailable_or_unauthorized' });
+    expect(await operations(torn.access).trace({ task_id: 'ses_child' })).toEqual({ ok: false, reason: 'source_unavailable', source_read: 'torn' });
 
     const repeated = readAccessFor({ sessions: FAMILY, timelines: { ses_child: [...base, base[0]] } });
-    expect(await operations(repeated.access).trace({ task_id: 'ses_child' })).toEqual({ ok: false, reason: 'unavailable_or_unauthorized' });
+    expect(await operations(repeated.access).trace({ task_id: 'ses_child' })).toEqual({ ok: false, reason: 'source_unavailable', source_read: 'torn' });
+
+    // A message lands before every newest-message check, so the tail never settles within the follow bound.
+    let grown = 1;
+    const growing = readAccessFor({ sessions: FAMILY, timelines: { ses_child: () => long(grown) } });
+    const list = growing.access.messageList;
+    growing.access.messageList = async (request: any, signal?: AbortSignal) => {
+      if (request.order === 'desc') grown += 1;
+      return list(request, signal);
+    };
+    expect(await operations(growing.access).trace({ task_id: 'ses_child' })).toEqual({ ok: false, reason: 'source_unavailable', source_read: 'torn' });
+
+    const malformed = readAccessFor({ sessions: FAMILY, timelines: { ses_child: [{ type: 'user', text: 'no id' }] } });
+    expect(await operations(malformed.access).trace({ task_id: 'ses_child' })).toEqual({ ok: false, reason: 'source_unavailable', source_read: 'malformed' });
+
+    // A timeline that never ends within the page bound: every ascending page names a new message.
+    const endless = readAccessFor({ sessions: FAMILY, timelines: {} });
+    let issued = 0;
+    endless.access.messageList = async () => {
+      issued += 1;
+      return { data: [user(`msg_${issued}`, 'more')], cursor: { next: `cursor_${issued}` } } as never;
+    };
+    expect(await operations(endless.access).trace({ task_id: 'ses_child' })).toEqual({ ok: false, reason: 'source_unavailable', source_read: 'page_limit' });
+    expect(issued).toBe(1_000);
+  });
+
+  it('keeps target detail out of source read failures after authorization and names only binding causes', async () => {
+    for (const [error, expected] of [
+      [new ReadAccessError('unreachable', 'server down'), { source_read: 'read_failed', read_access: 'unreachable' }],
+      [new ReadAccessError('target_unavailable', 'secret target detail'), { source_read: 'read_failed' }],
+      [new Error('secret transport detail'), { source_read: 'read_failed' }],
+    ] as const) {
+      const { access } = readAccessFor({ sessions: FAMILY, timelines: {} });
+      access.messageList = async () => { throw error; };
+      const ops = operations(access);
+      for (const args of [{}, { recovery: true }]) {
+        expect(await ops.trace({ task_id: 'ses_child', ...args })).toEqual({ ok: false, reason: 'source_unavailable', ...expected });
+      }
+      expect(await ops.content({ task_id: 'ses_child', event: Buffer.from(JSON.stringify([3, 'n', 'm1', 'p1', 'a'.repeat(43)])).toString('base64url') })).toEqual({ ok: false, reason: 'source_unavailable', ...expected });
+    }
+    // Before authorization, the same failure stays opaque.
+    const { access } = readAccessFor({ sessions: FAMILY, timelines: {} });
+    expect(await operations(access).trace({ task_id: 'ses_unknown' })).toEqual({ ok: false, reason: 'unavailable_or_unauthorized' });
   });
 
   it('keeps positional cursors and refs bound to the unchanged source, and native ones across appends', async () => {

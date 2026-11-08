@@ -644,6 +644,24 @@ describe('forensic task trace v3 index', () => {
     for (const secret of ['SECRET_FILE_BODY', 'NOT_STRUCTURED']) expect(JSON.stringify([serialized, unsupported])).not.toContain(secret);
   });
 
+  it('counts one v1 compaction once across its request message and the summary that names it as parent', async () => {
+    // OpenCode v1 records a compaction as a user message carrying the compaction part, then an assistant summary
+    // whose parentID is that request. A summary without a recorded request (older hosts) is its own compaction.
+    const compaction = (id: string) => {
+      const summary = message(`${id}-summary`, 'assistant', [{ type: 'text', text: `Summary ${id}.` }], { summary: true });
+      return [message(`${id}-request`, 'user', [{ type: 'compaction', auto: true }]), { ...summary, info: { ...summary.info, parentID: `${id}-request` } }];
+    };
+    const legacySummary = message('legacy-summary', 'assistant', [{ type: 'text', text: 'Older summary.' }], { summary: true });
+    for (const [source, compactions] of [
+      [compaction('first'), 1],
+      [[...compaction('first'), ...compaction('second')], 2],
+      [[legacySummary, ...compaction('first')], 2],
+    ] as const) {
+      const { pages } = await indexPages(toolsFor(clientFor([...source])));
+      expect(pages[0].source).toMatchObject({ fidelity: 'compacted_surviving_source', compactions });
+    }
+  });
+
   it('reads one tool action with paired input, output, and error and keeps absent distinct from empty', async () => {
     const source = [message('work', 'assistant', [
       { type: 'tool', tool: 'bash', callID: 'call-empty', state: { status: 'completed', title: 'Quiet command', input: { command: 'true', description: 'Quiet command' }, output: '' } },
@@ -956,6 +974,32 @@ describe('forensic task trace v3 index', () => {
     }
   });
 
+  it('reports a source read that fails after authorization as source_unavailable with a bounded cause', async () => {
+    const locator = token([2, 0, 0, 1, 1, 'a'.repeat(43)]);
+    const event = token([3, 'n', 'm1', 'p1', 'a'.repeat(43)]);
+    for (const [response, sourceRead] of [
+      [{ error: 'session gone' }, 'read_failed'],
+      [new Error('socket closed'), 'read_failed'],
+      [{ data: { not: 'a list' } }, 'malformed'],
+    ] as const) {
+      const setup = clientFor([]);
+      (setup.client.session as any).messages = async () => {
+        if (response instanceof Error) throw response;
+        return response;
+      };
+      const tools = toolsFor(setup);
+      for (const [name, args] of [
+        ['hive_task_trace', {}],
+        ['hive_task_trace', { recovery: true }],
+        ['hive_task_trace_content', { content_id: locator }],
+        ['hive_task_trace_content', { event }],
+        ['hive_task_trace_content', { event, field: 'text', offset: 0 }],
+      ] as const) {
+        expect(await execute(tools, name, { task_id: 'child', ...args })).toEqual({ ok: false, reason: 'source_unavailable', source_read: sourceRead });
+      }
+    }
+  });
+
   it('rejects invalid or mixed selectors and cursors before authorization', async () => {
     const setup = clientFor([message('m1', 'assistant', [
       { type: 'text', text: 'visible' },
@@ -1239,6 +1283,75 @@ describe('forensic task trace v3 index', () => {
 });
 
 describe('task trace semantic recovery', () => {
+  async function recoverWithRequests(source: unknown[]) {
+    const setup = clientFor(source);
+    const result = await execute(toolsFor(setup), 'hive_task_trace', { task_id: 'child', recovery: true });
+    const requests = setup.calls.filter((call) => call.method === 'prompt').map((call) => JSON.parse(call.input.body.parts[0].text));
+    return { result, fragments: requests.filter((request) => request.kind === 'map').flatMap((request) => request.fragments) };
+  }
+
+  it('closes v1 user input steps, whose records have no completion time, without relaxing the latest-assistant guard', async () => {
+    // A v1 UserMessage records only time.created; it is stored whole, so its step is closed input, not open work.
+    const instruction = (id: string) => ({
+      info: { id, sessionID: 'child', role: 'user', time: { created: 1 } },
+      parts: [{ id: `${id}-part-0`, sessionID: 'child', messageID: id, type: 'text', text: 'Implement the fix.' }],
+    });
+    const { result, fragments } = await recoverWithRequests([instruction('instruction'), message('reply', 'assistant', [{ type: 'text', text: 'Fixed.' }])]);
+
+    expect(result.lifecycle.reason).toBe('idle_and_closed');
+    expect(JSON.parse(fragments.find((fragment: any) => fragment.step === 1).source.observed)).toMatchObject({ actor: 'user', state: 'closed' });
+    const awaiting = await execute(toolsFor(clientFor([message('reply', 'assistant', [{ type: 'text', text: 'Fixed.' }]), instruction('steer')])), 'hive_task_trace', { task_id: 'child' });
+    expect(awaiting.lifecycle).toMatchObject({ terminal: false, reason: 'latest_message_not_assistant' });
+  });
+
+  it('places an assistant message error after the work it ended, on the message\'s last step, as the index orders it', async () => {
+    const apiError = { name: 'APIError', data: { message: 'rate limited' } };
+    const source = [
+      message('instruction', 'user', [{ type: 'text', text: 'Run the suite.' }]),
+      message('work', 'assistant', [
+        { type: 'step-start' },
+        { type: 'text', text: 'Running the suite.' },
+        { type: 'tool', tool: 'bash', callID: 'call-suite', state: { status: 'error', input: { command: 'bun test' }, error: 'exit 1' } },
+        { type: 'step-finish' },
+        { type: 'step-start' },
+        { type: 'text', text: 'Retrying once.' },
+        { type: 'step-finish' },
+      ], { error: apiError }),
+      message('failed', 'assistant', [], { error: apiError }),
+    ];
+    const { result } = await recoverWithRequests(source);
+    const { events } = await indexPages(toolsFor(clientFor(source)));
+
+    expect(result.source.steps).toBe(4);
+    expect(result.errors.map((entry: any) => [entry.kind, entry.step])).toEqual([['tool', 2], ['assistant', 3], ['assistant', 4]]);
+    expect(events.map((event: any) => event.kind)).toEqual(['text', 'text', 'tool', 'text', 'assistant_error', 'assistant_error']);
+  });
+
+  it('takes the task instruction and assignment from user-authored text, not host-generated synthetic text', async () => {
+    const source = [
+      message('instruction', 'user', [
+        { type: 'text', text: 'Called the Read tool with the following input: {"filePath":"a.ts"}', synthetic: true },
+        { type: 'text', text: 'Fix a.ts.' },
+        { type: 'text', text: '<file>a.ts contents</file>', synthetic: true },
+      ]),
+      message('work', 'assistant', [{ type: 'text', text: 'Fixed a.ts.' }]),
+      message('continue', 'user', [{ type: 'text', text: 'Continue if you have next steps.', synthetic: true }]),
+      message('final', 'assistant', [{ type: 'text', text: 'Nothing left.' }]),
+    ];
+    const { result } = await recoverWithRequests(source);
+    const page = await execute(toolsFor(clientFor(source)), 'hive_task_trace', { task_id: 'child' });
+    expect(result.task_instruction).toEqual({ step: 1, text: 'Fix a.ts.' });
+    expect(page.context.assignment).toMatchObject({ seq: 2, text: 'Fix a.ts.' });
+    expect(page.context.assignment).not.toHaveProperty('synthetic');
+
+    // With only synthetic user text recorded, it is still shown, marked as host-generated.
+    const syntheticOnly = [source[2], source[3]];
+    const fallback = await recoverWithRequests(syntheticOnly);
+    const fallbackPage = await execute(toolsFor(clientFor(syntheticOnly)), 'hive_task_trace', { task_id: 'child' });
+    expect(fallback.result.task_instruction).toEqual({ step: 1, text: 'Continue if you have next steps.', synthetic: true });
+    expect(fallbackPage.context.assignment).toMatchObject({ seq: 1, text: 'Continue if you have next steps.', synthetic: true });
+  });
+
   it('returns semantic recovery unavailable for active and invalid or unavailable status maps without model sessions', async () => {
     const source = realisticTrace();
     const active = clientFor(source, { status: { child: { type: 'busy' } } });

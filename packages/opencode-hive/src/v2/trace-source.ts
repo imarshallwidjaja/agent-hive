@@ -26,6 +26,7 @@ import {
   type RuntimeStatus,
   type SourceMessage,
   type SourcePart,
+  type SourceReadFailure,
   type SourceSnapshot,
   type SummarizerHost,
   type TraceSource,
@@ -177,46 +178,49 @@ type Page = { data?: unknown; cursor?: { next?: string | null } };
 
 /**
  * Reads the complete timeline: ascending pages until an empty page, then the newest message, which must be the last
- * one read. A newer message (appended while paging) is followed from the last cursor; a newest message already read
- * but not last, a repeated ID, or a timeline longer than the page bound means the read was torn and is unavailable.
+ * one read. A newer message (appended while paging) is followed from the last cursor. A newest message already read
+ * but not last, a repeated ID, or a tail still moving after the follow bound is `torn`; a timeline longer than the
+ * page bound is `page_limit`; a page without a message list, string IDs or an advancing cursor is `malformed`.
  */
-async function readTimeline(readAccess: VerifiedReadAccess, sessionID: string, signal?: AbortSignal): Promise<unknown[] | undefined> {
+async function readTimeline(readAccess: VerifiedReadAccess, sessionID: string, signal?: AbortSignal): Promise<unknown[] | SourceReadFailure> {
   const messages: unknown[] = [];
   const seen = new Set<string>();
   let cursor: string | undefined;
   let pages = 0;
-  const accept = (page: Page): boolean => {
-    if (!Array.isArray(page.data)) return false;
+  const accept = (page: Page): SourceReadFailure | undefined => {
+    if (!Array.isArray(page.data)) return 'malformed';
     for (const message of page.data) {
       const id = record(message)?.id;
-      if (typeof id !== 'string' || seen.has(id)) return false;
+      if (typeof id !== 'string') return 'malformed';
+      if (seen.has(id)) return 'torn';
       seen.add(id);
       messages.push(message);
     }
-    return true;
+    return undefined;
   };
   for (let follows = 0; follows <= MAX_TAIL_FOLLOWS; follows += 1) {
     while (true) {
       if (signal?.aborted) throw cancellationReason(signal);
-      if ((pages += 1) > MAX_PAGES) return undefined;
+      if ((pages += 1) > MAX_PAGES) return 'page_limit';
       const page = await readAccess.messageList(cursor === undefined
         ? { sessionID, limit: PAGE_LIMIT, order: 'asc' }
         : { sessionID, limit: PAGE_LIMIT, cursor }, signal) as Page;
-      if (!accept(page)) return undefined;
+      const rejected = accept(page);
+      if (rejected) return rejected;
       if ((page.data as unknown[]).length === 0) break;
       const next = page.cursor?.next;
-      if (typeof next !== 'string' || next === cursor) return undefined;
+      if (typeof next !== 'string' || next === cursor) return 'malformed';
       cursor = next;
     }
     const newest = await readAccess.messageList({ sessionID, limit: 1, order: 'desc' }, signal) as Page;
-    if (!Array.isArray(newest.data)) return undefined;
+    if (!Array.isArray(newest.data)) return 'malformed';
     const newestID = record(newest.data[0])?.id;
-    if (newest.data.length === 0) return messages.length === 0 ? messages : undefined;
-    if (typeof newestID !== 'string') return undefined;
+    if (newest.data.length === 0) return messages.length === 0 ? messages : 'torn';
+    if (typeof newestID !== 'string') return 'malformed';
     if (newestID === record(messages.at(-1))?.id) return messages;
-    if (seen.has(newestID)) return undefined;
+    if (seen.has(newestID)) return 'torn';
   }
-  return undefined;
+  return 'torn';
 }
 
 export function createV2TraceSource(readAccess: VerifiedReadAccess): TraceSource<V2Target> {
@@ -237,13 +241,14 @@ export function createV2TraceSource(readAccess: VerifiedReadAccess): TraceSource
         return unavailableFrom(error);
       }
     },
+    // The target is authorized here, so a failed read is reported as such; only binding codes are named.
     async readSource(taskID, _target, signal) {
       try {
         const timeline = await readTimeline(readAccess, taskID, signal);
-        return timeline ? v2Snapshot(timeline) : { unavailable: {} };
+        return Array.isArray(timeline) ? v2Snapshot(timeline) : { unavailable: { source_read: timeline } };
       } catch (error) {
         if (signal?.aborted) throw cancellationReason(signal);
-        return unavailableFrom(error);
+        return { unavailable: { source_read: 'read_failed', ...unavailableFrom(error).unavailable } };
       }
     },
     // The v2 server runs every location's sessions; its active map is the status of the target wherever it is placed.

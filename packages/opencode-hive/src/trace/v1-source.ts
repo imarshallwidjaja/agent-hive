@@ -168,7 +168,10 @@ function sourcePart(part: RecordValue, index: number): SourcePart {
   return { kind: 'unsupported', index, id: part.id, type: type ?? 'unknown' };
 }
 
-/** Maps v1 `{ info, parts }` records one to one; the digest covers the raw records. */
+/**
+ * Maps v1 `{ info, parts }` records one to one; the digest covers the raw records. A v1 UserMessage records only
+ * `time.created`: it is stored whole, so it is closed input. Only assistant messages carry completion.
+ */
 export function v1Snapshot(messages: unknown[]): SourceSnapshot {
   return {
     messages: messages.map((rawMessage): SourceMessage => {
@@ -177,8 +180,9 @@ export function v1Snapshot(messages: unknown[]): SourceSnapshot {
       const parts = Array.isArray(message.parts) ? message.parts.map((part) => record(part) ?? {}) : [];
       return {
         id: info.id,
+        ...(info.parentID === undefined ? {} : { parentID: info.parentID }),
         role: typeof info.role === 'string' ? info.role : undefined,
-        closed: record(info.time)?.completed !== undefined || info.error !== undefined,
+        closed: info.role === 'user' || record(info.time)?.completed !== undefined || info.error !== undefined,
         summary: info.summary === true,
         ...(info.error === undefined ? {} : { error: info.error }),
         parts: parts.map(sourcePart),
@@ -208,10 +212,11 @@ export function createV1TraceSource(client: TaskTraceClient, directory: string):
           query: { directory: target.directory ?? directory },
           ...(signal ? { signal } : {}),
         });
-        return response.error === undefined && Array.isArray(response.data) ? v1Snapshot(response.data) : { unavailable: {} };
+        if (response.error !== undefined) return { unavailable: { source_read: 'read_failed' } };
+        return Array.isArray(response.data) ? v1Snapshot(response.data) : { unavailable: { source_read: 'malformed' } };
       } catch {
         if (signal?.aborted) throw cancellationReason(signal);
-        return { unavailable: {} };
+        return { unavailable: { source_read: 'read_failed' } };
       }
     },
     // Status is per runtime instance, so it is read only where the target itself is placed.

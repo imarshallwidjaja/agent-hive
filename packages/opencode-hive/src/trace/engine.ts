@@ -17,6 +17,7 @@ import type {
   ModelMetadata,
   RuntimeStatus,
   SourceSnapshot,
+  SourceUnavailable,
   SummarizerHost,
   SummarizerSelection,
   SummarizerStage,
@@ -150,6 +151,8 @@ interface SourceValue {
 interface IRText {
   source: SourceValue;
   messageClosed: boolean;
+  /** Host-generated text recorded in a user message (attachment expansions, continuation prompts). */
+  synthetic: boolean;
 }
 
 interface IRTool {
@@ -307,20 +310,22 @@ function normalizeTrace(snapshot: SourceSnapshot): TraceIR {
     return step;
   };
 
+  // A v1 compaction is two records: a request message carrying the compaction part and a summary message whose
+  // parentID names that request. A summary counts on its own only when no such request is recorded.
+  const compactionRequests = new Set(snapshot.messages.flatMap((message) => {
+    const id = nativeID(message.id);
+    return id !== undefined && message.parts.some((part) => part.kind === 'compaction') ? [id] : [];
+  }));
+
   snapshot.messages.forEach((message, messageIndex) => {
     const actor: Actor = message.role === 'user' ? 'user' : 'assistant';
     const { closed } = message;
     const summary = message.summary || message.parts.some((part) => part.kind === 'compaction');
     latestMessage = { index: messageIndex, role: message.role, closed, summary };
     partCount += message.parts.length;
-    if (message.summary) compactionCount += 1;
+    const parentID = nativeID(message.parentID);
+    if (message.summary && (parentID === undefined || !compactionRequests.has(parentID))) compactionCount += 1;
     let current: IRStep | undefined;
-
-    if (message.error !== undefined && actor === 'assistant') {
-      current = openStep(actor, false, messageIndex);
-      current.meaningful += 1;
-      current.errors.push({ kind: 'assistant', source: sourceValue(messageIndex, -1, 'assistant.error', message.error) });
-    }
 
     message.parts.forEach((part) => {
       if (part.kind === 'step' && part.boundary === 'start') {
@@ -337,7 +342,7 @@ function normalizeTrace(snapshot: SourceSnapshot): TraceIR {
       }
       current.meaningful += 1;
       if (part.kind === 'text') {
-        current.texts.push({ source: sourceValue(messageIndex, part.index, 'text', part.text), messageClosed: closed });
+        current.texts.push({ source: sourceValue(messageIndex, part.index, 'text', part.text), messageClosed: closed, synthetic: part.synthetic });
       } else if (part.kind === 'reasoning') {
         current.reasoning.push({
           ...(part.plaintext === undefined ? {} : { plaintext: part.plaintext }),
@@ -367,6 +372,15 @@ function normalizeTrace(snapshot: SourceSnapshot): TraceIR {
         current.unknownParts += 1;
       }
     });
+
+    // The message error ends the message, so it follows the recorded work on the message's last step, matching
+    // the index, which lists assistant_error after the message's parts. A message with no step gets its own.
+    if (message.error !== undefined && actor === 'assistant') {
+      const previous = steps.at(-1);
+      const last = current ?? (previous?.message === messageIndex ? previous : undefined) ?? (current = openStep(actor, false, messageIndex));
+      last.meaningful += 1;
+      last.errors.push({ kind: 'assistant', source: sourceValue(messageIndex, -1, 'assistant.error', message.error) });
+    }
 
     if (current) current.state = !current.explicit && closed ? 'closed' : 'open';
   });
@@ -711,6 +725,7 @@ function contextEntry(index: EventIndex, event: TraceEvent, extra: RecordValue =
     text: bounded.text,
     bytes: Buffer.byteLength(text),
     ...(bounded.abbreviated ? { abbreviated: true } : {}),
+    ...(event.synthetic ? { synthetic: true } : {}),
     ...extra,
     ...(event.identity === 'native' ? {} : { identity: event.identity }),
     ...(ref === undefined ? {} : { ref }),
@@ -718,7 +733,9 @@ function contextEntry(index: EventIndex, event: TraceEvent, extra: RecordValue =
 }
 
 function indexContext(index: EventIndex, ir: TraceIR, lifecycle: RecordValue): RecordValue {
-  const assignment = index.events.find((event) => event.kind === 'text' && event.actor === 'user');
+  // Host-generated (synthetic) user text is not an assignment; it stands in, marked, only when nothing else is recorded.
+  const userTexts = index.events.filter((event) => event.kind === 'text' && event.actor === 'user');
+  const assignment = userTexts.find((event) => !event.synthetic) ?? userTexts[0];
   const terminal = recoveryTerminalText(ir, lifecycle);
   const final = terminal
     ? index.events.find((event) => event.kind === 'text'
@@ -947,11 +964,12 @@ function reasoningReport(steps: IRStep[]): RecordValue {
   };
 }
 
+// The latest user-authored text; synthetic text stands in, marked, only when no user-authored text is recorded.
 function latestInstruction(ir: TraceIR) {
-  return ir.steps
+  const texts = ir.steps
     .filter((step) => step.actor === 'user')
-    .flatMap((step) => step.texts.map((text) => ({ step, text })))
-    .at(-1);
+    .flatMap((step) => step.texts.map((text) => ({ step, text })));
+  return texts.filter((entry) => !entry.text.synthetic).at(-1) ?? texts.at(-1);
 }
 
 function recoveryTerminalText(ir: TraceIR, lifecycle: RecordValue) {
@@ -1380,7 +1398,8 @@ async function promptEphemeral(
     );
     if (created === forbiddenSessionID) return { reply, reasons: ['summarizer_id_collision'] };
     if (allocated !== undefined && created !== allocated) {
-      // A session the engine did not name exists; keep it owned and unconfirmed instead of guessing its cleanup.
+      // The host made a session the engine did not name. It is not removed, because its origin is unknown; its ID
+      // stays in the unconfirmed set and the attempt reports ephemeral_cleanup_failed. Nothing removes it later.
       host.ephemeralSessionIDs.add(created);
       cleanupFailed = true;
       throw new Error('The host created a session other than the allocated one.');
@@ -2043,6 +2062,7 @@ function recoveryProjection(
       task_instruction: {
         step: instruction.step.number,
         text: recoverySourceValue(instruction.text.source, INITIAL_TEXT_INLINE_BYTES),
+        ...(instruction.text.synthetic ? { synthetic: true } : {}),
       },
     } : {}),
     final_response: final
@@ -2133,6 +2153,10 @@ function isUnavailable(value: object): value is Unavailable {
   return 'unavailable' in value;
 }
 
+function isSourceUnavailable(value: SourceSnapshot | SourceUnavailable): value is SourceUnavailable {
+  return 'unavailable' in value;
+}
+
 /**
  * The two trace operations over one source and summarizer. Each returns the serialized reply text; byte budgets and
  * `render` sizes describe exactly that text, so hosts must pass it through unchanged.
@@ -2147,6 +2171,8 @@ export function createTraceHandlers<Target extends TraceTarget>(source: TraceSou
     phases_source: null,
   });
   const unavailable = (read: Unavailable) => JSON.stringify({ ok: false, reason: 'unavailable_or_unauthorized', ...read.unavailable });
+  // Only after the target authorized: says the history could not be read, with a bounded cause and no target content.
+  const sourceUnavailable = (read: SourceUnavailable) => JSON.stringify({ ok: false, reason: 'source_unavailable', ...read.unavailable });
   const reported = (taskID: string, target: Target): RecordValue => ({ id: taskID, relationship: target.relationship, ...target.report });
 
   // disclosedChildren already checks each distinct candidate once per read.
@@ -2164,7 +2190,7 @@ export function createTraceHandlers<Target extends TraceTarget>(source: TraceSou
     const target = await source.resolveTarget(task_id, caller.sessionID, signal);
     if (isUnavailable(target)) return unavailable(target);
     const snapshot = await source.readSource(task_id, target, signal);
-    if (isUnavailable(snapshot)) return unavailable(snapshot);
+    if (isSourceUnavailable(snapshot)) return sourceUnavailable(snapshot);
     const status = await source.readRuntime(task_id, target, signal);
     const ir = normalizeTrace(snapshot);
     const lifecycle = deriveLifecycle(ir, status, target.placed);
@@ -2192,7 +2218,7 @@ export function createTraceHandlers<Target extends TraceTarget>(source: TraceSou
     const resolved = await source.resolveTarget(task_id, caller.sessionID, signal);
     const refreshedTarget = isUnavailable(resolved) ? undefined : resolved;
     const read = refreshedTarget ? await source.readSource(task_id, refreshedTarget, signal) : undefined;
-    const refreshedSnapshot = read === undefined || isUnavailable(read) ? undefined : read;
+    const refreshedSnapshot = read === undefined || isSourceUnavailable(read) ? undefined : read;
     const refreshedStatus = refreshedTarget ? await source.readRuntime(task_id, refreshedTarget, signal) : undefined;
     const refreshedIR = refreshedSnapshot ? normalizeTrace(refreshedSnapshot) : ir;
     const refreshedLifecycle = deriveLifecycle(refreshedIR, refreshedStatus, refreshedTarget?.placed ?? false);
@@ -2245,9 +2271,9 @@ export function createTraceHandlers<Target extends TraceTarget>(source: TraceSou
       if (!locator) return reply({ ok: false, reason: 'invalid_content_id' });
       const target = await source.resolveTarget(task_id, caller.sessionID, signal);
       if (isUnavailable(target)) return unavailable(target);
+      const snapshot = await source.readSource(task_id, target, signal);
+      if (isSourceUnavailable(snapshot)) return sourceUnavailable(snapshot);
       try {
-        const snapshot = await source.readSource(task_id, target, signal);
-        if (isUnavailable(snapshot)) throw new Error('missing');
         const value = readLocatedValue(snapshot, locator);
         if (value === undefined) throw new Error('missing');
         const text = fieldText(value);
@@ -2277,7 +2303,7 @@ export function createTraceHandlers<Target extends TraceTarget>(source: TraceSou
     const target = await source.resolveTarget(task_id, caller.sessionID, signal);
     if (isUnavailable(target)) return unavailable(target);
     const snapshot = await source.readSource(task_id, target, signal);
-    if (isUnavailable(snapshot)) return unavailable(snapshot);
+    if (isSourceUnavailable(snapshot)) return sourceUnavailable(snapshot);
     const index = indexEvents(snapshot);
     const resolved = resolveEvent(index, selector);
     if ('reason' in resolved) return reply({ ok: false, reason: resolved.reason });
