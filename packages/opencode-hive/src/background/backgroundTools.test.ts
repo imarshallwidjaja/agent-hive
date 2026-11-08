@@ -769,6 +769,65 @@ describe('background management tools', () => {
     expect(rejected.hint).toBe(`hive_background_reconcile({ identifier: ${JSON.stringify(uncertain.alias)}, decision: "ignored", summary: "<why the uncertain observation was archived>" })`);
   });
 
+  it('lets an unrecorded launch outrank live-row guidance only until its parent acknowledged it, and keeps listing it', async () => {
+    let promptAcknowledged = false;
+    const gap = () => ({ parentSessionId: 'parent-1', callId: 'call-gap', childSessionId: 'gap-child', agentName: 'forager-worker', reason: 'disk full', failedAt: '2026-01-01T00:00:00.000Z', promptAcknowledged });
+    const tools = createBackgroundTools({
+      backgroundJobService: service,
+      projectRoot: TEST_DIR,
+      isEnabled: () => true,
+      unrecordedLaunches: parent => parent === 'parent-1' ? [gap()] : [],
+    });
+    type Status = { unrecordedLaunches?: Array<Record<string, unknown>>; recommendedNextAction?: { action?: string; childSessionIds?: string[] }; schedulerGuidance?: unknown };
+    const status = async () => parseToolJson<Status>(await tools.hive_background_status.execute({}, createToolContext()));
+
+    const running = registerScopedJob(service, { taskId: 'running-child', sessionId: 'running-child' });
+    expect((await status()).recommendedNextAction?.action).toBe('inspect_unrecorded_background_launches');
+    promptAcknowledged = true;
+    const waiting = await status();
+    expect(waiting.recommendedNextAction?.action).toBe('wait_for_native_completion');
+    expect(waiting.schedulerGuidance).toBeDefined();
+    expect(waiting.unrecordedLaunches).toEqual([expect.objectContaining({ childSessionId: 'gap-child', promptAcknowledged: true })]);
+
+    service.updateRuntimeState(running.alias, 'unknown', { statusUncertain: true });
+    expect((await status()).recommendedNextAction?.action).toBe('inspect_uncertain_background_jobs');
+
+    // With no row needing anything, the acknowledged gap is still the recommendation, never idle.
+    service.markIgnored(running.alias, 'Inspected.');
+    expect((await status()).recommendedNextAction).toMatchObject({ action: 'inspect_unrecorded_background_launches', childSessionIds: ['gap-child'] });
+  });
+
+  it('reports an unreadable board as a failure with the caller\'s own unrecorded launches, never as an empty or idle board', async () => {
+    const gap = { parentSessionId: 'parent-1', callId: 'call-gap', childSessionId: 'gap-child', agentName: 'forager-worker', reason: 'disk full', failedAt: '2026-01-01T00:00:00.000Z', promptAcknowledged: false };
+    const tools = createBackgroundTools({
+      backgroundJobService: service,
+      projectRoot: TEST_DIR,
+      isEnabled: () => true,
+      currentRuntimeId: 'runtime-a',
+      unrecordedLaunches: parent => parent === 'parent-1' ? [gap] : [],
+    });
+    fs.mkdirSync(path.dirname(BOARD_PATH), { recursive: true });
+
+    type Status = { success?: boolean; reason?: string; error?: string; jobs?: unknown; unrecordedLaunches?: Array<Record<string, unknown>>; recommendedNextAction?: { action?: string; childSessionIds?: string[]; message?: string } };
+    // Existing JSON that is not a board (null, no jobs list) is unreadable too, never an empty board.
+    for (const content of ['{"jobs": [', 'null', '{}']) {
+      fs.writeFileSync(BOARD_PATH, content);
+      const own = parseToolJson<Status>(await tools.hive_background_status.execute({}, createToolContext()));
+      expect(own).toMatchObject({ success: false, reason: 'background_board_unreadable' });
+      expect(own.error).toContain('could not read the background board');
+      expect(own.jobs).toBeUndefined();
+      expect(own.unrecordedLaunches).toEqual([expect.objectContaining({ childSessionId: 'gap-child', callId: 'call-gap', promptAcknowledged: false })]);
+      expect(own.recommendedNextAction).toMatchObject({ action: 'inspect_unreadable_background_board', childSessionIds: ['gap-child'] });
+      expect(own.recommendedNextAction?.message).toContain('unknown, not absent');
+
+      const other = parseToolJson<Status>(await tools.hive_background_status.execute({}, createToolContext('parent-2')));
+      expect(other).toMatchObject({ success: false, reason: 'background_board_unreadable' });
+      expect(other.unrecordedLaunches).toBeUndefined();
+      expect(other.recommendedNextAction?.childSessionIds).toBeUndefined();
+      expect(fs.readFileSync(BOARD_PATH, 'utf-8')).toBe(content);
+    }
+  });
+
   it('hive_background_reconcile cannot act on archived jobs by direct identifier', async () => {
     registerScopedJob(service, { taskId: 'archived-job', sessionId: 'archived-session' });
     service.markTerminal('archived-job', 'completed', { resultSummary: 'done' });
@@ -1026,6 +1085,70 @@ describe('background management tools', () => {
       expect(service.resolve('done-b')?.archiveReason).toBe('reconciled');
     } finally {
       persistence.mockRestore();
+    }
+  });
+
+  it('reports an archive another writer won after the visibility read as job_archived, never as success', async () => {
+    registerScopedJob(service, { taskId: 'raced-ignore', sessionId: 'raced-ignore-session' });
+    registerScopedJob(service, { taskId: 'raced-reconcile', sessionId: 'raced-reconcile-session' });
+    service.markTerminal('raced-ignore', 'completed', { resultSummary: 'done' });
+    service.markTerminal('raced-reconcile', 'completed', { resultSummary: 'done' });
+    // Another process archives each record between the tool's unlocked read and its locked write.
+    const other = new BackgroundJobService(TEST_DIR);
+    const markReconciled = service.markReconciled.bind(service);
+    const markIgnored = service.markIgnored.bind(service);
+    const reconciled = spyOn(service, 'markReconciled').mockImplementation((identifier, options) => {
+      other.markIgnored(identifier, 'Ignored by the other writer.');
+      return markReconciled(identifier, options);
+    });
+    const ignored = spyOn(service, 'markIgnored').mockImplementation((identifier, reason, options) => {
+      other.markReconciled(identifier, { reconciliationSummary: 'Reconciled by the other writer.' });
+      return markIgnored(identifier, reason, options);
+    });
+    const tools = createBackgroundTools({ backgroundJobService: service, projectRoot: TEST_DIR, isEnabled: () => true });
+    try {
+      const result = parseToolJson<{ success: boolean; results: Array<Record<string, unknown>> }>(await tools.hive_background_reconcile_batch.execute({ items: [
+        { identifier: 'raced-ignore', decision: 'reconciled', summary: 'Consumed.' },
+        { identifier: 'raced-reconcile', decision: 'ignored', summary: 'Not needed.' },
+      ] }, createToolContext()));
+      expect(result.success).toBe(false);
+      expect(result.results).toEqual([
+        expect.objectContaining({ identifier: 'raced-ignore', success: false, reason: 'job_archived', hint: 'Inspect hive_background_status({ includeArchived: true }); this observation is already archived.' }),
+        expect.objectContaining({ identifier: 'raced-reconcile', success: false, reason: 'job_archived' }),
+      ]);
+      expect(service.resolve('raced-ignore')).toMatchObject({ archiveReason: 'ignored', ignoreReason: 'Ignored by the other writer.' });
+      expect(service.resolve('raced-ignore')).not.toHaveProperty('reconciledAt');
+      expect(service.resolve('raced-reconcile')).toMatchObject({ archiveReason: 'reconciled', reconciliationSummary: 'Reconciled by the other writer.' });
+      expect(service.resolve('raced-reconcile')).not.toHaveProperty('ignoredAt');
+    } finally {
+      reconciled.mockRestore();
+      ignored.mockRestore();
+    }
+  });
+
+  it('refuses an ignore read as uncertain when the row is ordinary running again under the lock', async () => {
+    registerScopedJob(service, { taskId: 'settled-job', sessionId: 'settled-session' });
+    service.updateRuntimeState('settled-job', 'unknown', { statusUncertain: true });
+    // A task_status sample from another process settles the row between the tool's read and its locked write.
+    const other = new BackgroundJobService(TEST_DIR);
+    const markIgnored = service.markIgnored.bind(service);
+    const ignored = spyOn(service, 'markIgnored').mockImplementation((identifier, reason, options) => {
+      other.updateRuntimeState(identifier, 'running', { statusUncertain: false });
+      return markIgnored(identifier, reason, options);
+    });
+    const tools = createBackgroundTools({ backgroundJobService: service, projectRoot: TEST_DIR, isEnabled: () => true });
+    try {
+      const result = parseToolJson(await tools.hive_background_reconcile.execute({ identifier: 'settled-job', decision: 'ignored', summary: 'Read as uncertain.' }, createToolContext()));
+      expect(result).toMatchObject({
+        identifier: 'settled-job',
+        success: false,
+        reason: 'job_not_terminal',
+        error: 'Background job settled-job is running, not terminal.',
+        hint: expect.stringContaining('Wait until OpenCode injects the native background completion notification'),
+      });
+      expect(service.resolve('settled-job')).not.toHaveProperty('archivedAt');
+    } finally {
+      ignored.mockRestore();
     }
   });
 

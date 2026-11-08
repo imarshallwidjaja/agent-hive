@@ -1544,6 +1544,29 @@ describe('coordinated runtime hard cut', () => {
     expect(scoutOutput.system[0]).toBe('provider');
   });
 
+  it('selects request instructions from the persisted session when a restarted process has no cached message', async () => {
+    const runtime = createRuntime();
+    const earlier = await runtime.hooks;
+    await earlier.config!({});
+    // The earlier process saw the parent's message and bound the child it dispatched.
+    await earlier['chat.message']!({ sessionID: 'restored', agent: 'hive-master' } as any, { message: {}, parts: [] } as any);
+    await earlier['tool.execute.before']!({ tool: 'task', sessionID: 'restored', callID: 'dispatch' } as any, { args: { subagent_type: 'forager-worker', description: 'Work', prompt: 'Go.' } });
+    await earlier.event!({ event: { type: 'message.part.updated', properties: { part: { type: 'tool', tool: 'task', sessionID: 'restored', callID: 'dispatch', metadata: { sessionId: 'restored-child' }, state: { input: { subagent_type: 'forager-worker' } } } } } } as any);
+
+    // v1 calls this hook with the session and model only; a compaction request does so without a chat.message first.
+    const restarted = await runtime.reload();
+    await restarted.config!({});
+    const transform = (sessionID: string) => {
+      const output = { system: ['provider'] };
+      return restarted['experimental.chat.system.transform']!({ sessionID, model: { providerID: 'p', id: 'm' } } as any, output).then(() => output.system[0]);
+    };
+    const parent = await transform('restored');
+    expect(parent.split('# Hive (Hybrid)').length - 1).toBe(1);
+    expect(parent).not.toContain('## Clarification Handoff');
+    expect(await transform('restored-child')).toContain('## Clarification Handoff');
+    expect(await transform('never-seen')).toBe('provider');
+  });
+
   it('continues named context reads with opaque snapshot-validated cursors', async () => {
     const { hooks } = createRuntime();
     const loaded = await hooks;

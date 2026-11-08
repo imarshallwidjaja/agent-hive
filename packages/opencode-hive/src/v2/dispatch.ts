@@ -57,6 +57,7 @@ type Admissions = Map<string, { route: ChildRoute; calls: Set<string> }>;
  *   binds the child to the captured route, with its task or run association beside it. If a step fails, the call
  *   fails and the child is never prompted, except that a child already bound to the captured route still runs when
  *   only its new association cannot be recorded; Hive warns, and the launch row names no task or run it cannot prove.
+ *   A call that returns successfully for a child it never bound at that barrier fails instead of being bound late.
  * - For a background launch, the board row, recorded at the barrier so a fast child cannot finish before its row
  *   exists. When the call then ends without returning normally, that row is marked uncertain. The board is never read
  *   to decide whether a dispatch may run.
@@ -250,13 +251,21 @@ function dispatchSubagent(
 
     return yield* native({ ...args, prompt }, { ...toolContext, progress }).pipe(
       Effect.catchDefect((defect) => defect instanceof ChildBindingRefused ? Effect.fail(new Tool.Error({ message: defect.message })) : Effect.die(defect)),
-      Effect.tap((result) => Effect.sync(() => {
+      // The qualified host reports the child's progress, which Hive binds, before it prompts the child. A success for a
+      // child Hive did not bind there means the child ran without its route; it is reported, never bound afterwards.
+      Effect.flatMap((result) => {
         const reported = reportedChild(result);
-        // A foreground call the user moved to the background returns `running` without a background launch.
-        if (reported.status === 'running' && launchAlias === undefined && reported.sessionID !== undefined && reported.sessionID === bound) {
-          launchAlias = background.recordLaunch(launchOf(bound));
+        if (bound === undefined || reported.sessionID !== bound) {
+          const child = reported.sessionID === undefined ? 'no child session' : `child session ${reported.sessionID}`;
+          const why = bound === undefined
+            ? 'without the progress update at which Hive binds the child before its prompt'
+            : `after Hive bound ${bound} at the progress update`;
+          return Effect.fail(new Tool.Error({ message: `The subagent call returned ${child} ${why}. Hive did not bind it after it ran, so the child may have run without its parent's route and standing constraints${reported.sessionID === undefined ? '' : `; inspect hive_task_trace({ task_id: ${JSON.stringify(reported.sessionID)} }) before relying on its result`}.` }));
         }
-      })),
+        // A foreground call the user moved to the background returns `running` without a background launch.
+        if (reported.status === 'running' && launchAlias === undefined) launchAlias = background.recordLaunch(launchOf(bound));
+        return Effect.succeed(result);
+      }),
       Effect.onExit((exit) => Effect.sync(() => {
         if (launchAlias === undefined || Exit.isSuccess(exit)) return;
         const how = Cause.hasInterruptsOnly(exit.cause) ? 'was interrupted' : 'failed';

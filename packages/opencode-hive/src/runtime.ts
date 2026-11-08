@@ -116,6 +116,16 @@ const plugin: Plugin = async (ctx) => {
     }
   };
 
+  /** A read-only lookup of the session's persisted record; an unreadable index reads as no record and is left as found. */
+  const readStoredSession = (sessionID: string) => {
+    try {
+      return sessionService.peekGlobal(sessionID);
+    } catch (error) {
+      console.warn(`[hive:sessions] Could not read session ${sessionID} from ${getNativeSessionsPath(projectRoot, services.nativeObservationOwner)}: ${error instanceof Error ? error.message : String(error)}`);
+      return undefined;
+    }
+  };
+
   // Permissions decide v1 access for most tools; the few that stamp shared authorship also check the caller's role
   // and live parent here, failing closed when the session cannot be read. The session is read in its own directory.
   const guardLiveParent = async (name: string, context: { sessionID?: string; agent?: string; directory?: string } | undefined): Promise<void> => {
@@ -145,6 +155,7 @@ const plugin: Plugin = async (ctx) => {
       projectRoot,
       isEnabled: isBackgroundSubagentsExperimentEnabled,
       currentRuntimeId: runtimeId,
+      unrecordedLaunches: backgroundAdapter.unrecordedLaunches,
       cancelRuntimeTask: async (sessionId) => {
         const result = await ctx.client.session.abort({ path: { id: sessionId }, query: { directory: projectRoot } });
         return { cancelled: result.data === true, message: result.data === true ? 'Runtime task abort requested.' : String(result.error ?? 'Abort not confirmed.') };
@@ -183,9 +194,16 @@ const plugin: Plugin = async (ctx) => {
       await createVariantHook(configService)(input, output);
     }) as any,
     'experimental.chat.system.transform': async (input, output) => {
-      const agent = (input as { agent?: string }).agent ?? (input.sessionID ? runtimeSessionAgents.get(input.sessionID) : undefined);
+      // v1 passes only the session and model here, and a compaction request reaches this hook without a
+      // `chat.message` first, so after a restart the process caches are empty. The persisted session record (agent from
+      // its last message, parent from its dispatch binding) then selects the instructions; it grants no authority.
+      const sessionID = input.sessionID;
+      const cachedAgent = (input as { agent?: string }).agent ?? (sessionID ? runtimeSessionAgents.get(sessionID) : undefined);
+      const cachedChild = sessionID ? runtimeTaskChildren.has(sessionID) : false;
+      const stored = sessionID && (cachedAgent === undefined || !cachedChild) ? readStoredSession(sessionID) : undefined;
+      const agent = cachedAgent ?? stored?.agent;
       const prompt = agent ? runtimeAgentPrompts.get(agent) : undefined;
-      const suffix = input.sessionID && runtimeTaskChildren.has(input.sessionID) ? SUBAGENT_CLARIFICATION_PROMPT : '';
+      const suffix = cachedChild || stored?.parentSessionId !== undefined ? SUBAGENT_CLARIFICATION_PROMPT : '';
       if (!prompt && !suffix) return;
       output.system[0] = `${output.system[0] ?? ''}\n\n${prompt ?? ''}${suffix}`;
     },

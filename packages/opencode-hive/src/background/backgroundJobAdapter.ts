@@ -4,7 +4,7 @@ import type {
   BackgroundJobService,
   SessionInfo,
 } from 'hive-core';
-import { isBackgroundJobArchived } from 'hive-core';
+import { BackgroundBoardReadError, isBackgroundJobArchived } from 'hive-core';
 import {
   parseTaskCompletionNotification,
   parseTaskLifecycleEvent,
@@ -64,6 +64,19 @@ export type NativeCompletionObservation = {
   timedOut?: boolean;
 };
 
+/** A background launch the host accepted whose board write failed, so its row is unconfirmed: absent, or written before the failure. */
+export type UnrecordedLaunch = {
+  parentSessionId: string;
+  callId?: string;
+  childSessionId: string;
+  agentName: string;
+  reason: string;
+  failedAt: string;
+};
+
+/** An unrecorded launch as its parent's board status reports it: `promptAcknowledged` once a completed turn saw it. */
+export type ReportedUnrecordedLaunch = UnrecordedLaunch & { promptAcknowledged: boolean };
+
 export interface BoardObserverOptions {
   projectRoot: string;
   service: BackgroundJobService;
@@ -118,10 +131,38 @@ export function classifyRuntimeEpochStaleJobs(input: {
  * lifecycle matching serve v1, whose notifications can carry the launching call: every match is scoped to this project
  * and the notification's parent, and a child identity with more than one board row (a reused native child) is marked
  * uncertain rather than guessed.
+ *
+ * A launch whose board write failed may have no row, so the board alone would look complete; a failure such as
+ * releasing the lock can also follow a completed write, so the row may exist. The observer keeps each such launch by
+ * parent and call until the same call records it, shows it to that parent only, and holds every one for the life of
+ * the process: none is dropped to bound memory, because a dropped entry is exactly the silent gap.
  */
 export function createBoardObserver(options: BoardObserverOptions) {
   const { warn } = options;
   const observedCompletionNotifications = new Set<string>();
+  // `shown` means a prompt carried the entry; `acknowledged` means the parent then finished a turn.
+  const unrecorded = new Map<string, { launch: UnrecordedLaunch; prompt: 'pending' | 'shown' | 'acknowledged' }>();
+  const launchKey = (parentSessionId: string, callId: string | undefined, childSessionId: string) =>
+    JSON.stringify([parentSessionId, callId ?? `child:${childSessionId}`]);
+
+  function launchNotRecorded(launch: Omit<UnrecordedLaunch, 'reason' | 'failedAt'>, error: unknown): void {
+    const reason = error instanceof Error ? error.message : String(error);
+    warn(`[hive:background] could not confirm background launch ${launch.childSessionId} was recorded: ${reason}`);
+    unrecorded.set(launchKey(launch.parentSessionId, launch.callId, launch.childSessionId), {
+      launch: { ...launch, reason, failedAt: new Date().toISOString() },
+      prompt: 'pending',
+    });
+  }
+
+  function launchRecorded(parentSessionId: string, callId: string | undefined, childSessionId: string): void {
+    unrecorded.delete(launchKey(parentSessionId, callId, childSessionId));
+  }
+
+  function unrecordedLaunches(parentSessionId: string): ReportedUnrecordedLaunch[] {
+    return [...unrecorded.values()]
+      .filter(entry => entry.launch.parentSessionId === parentSessionId)
+      .map(entry => ({ ...entry.launch, promptAcknowledged: entry.prompt === 'acknowledged' }));
+  }
 
   function findNativeJobs(taskId: string, parentSessionId: string, callId?: string): BackgroundJobRecord[] {
     return options.service
@@ -154,7 +195,15 @@ export function createBoardObserver(options: BoardObserverOptions) {
   /** Applies one v1 completion notification to the single board row it matches, or marks a reused child ambiguous. */
   function observeCompletion(observation: NativeCompletionObservation): void {
     if (observedCompletionNotifications.has(observation.key)) return;
-    const jobs = findNativeJobs(observation.childId, observation.parentSessionId, observation.callId);
+    let jobs: BackgroundJobRecord[];
+    try {
+      jobs = findNativeJobs(observation.childId, observation.parentSessionId, observation.callId);
+    } catch (error) {
+      // An unreadable board leaves the notification unconsumed, so a later request applies it once the board reads.
+      if (!(error instanceof BackgroundBoardReadError)) throw error;
+      warn(`[hive:background] ${error.message}; completion notification for ${observation.childId} is left for a later request.`);
+      return;
+    }
     if (jobs.length === 0) return;
     if (jobs.length > 1) {
       if (markAmbiguousObservation(jobs, observation.childId, 'native completion notification')) {
@@ -200,8 +249,14 @@ export function createBoardObserver(options: BoardObserverOptions) {
     }
   }
 
-  /** The parent session finished a turn, so it has seen the board it was shown. */
+  /**
+   * The parent session finished a turn successfully, so it has processed the board it was shown. The host adapter
+   * calls this only for a completed turn; a turn that failed after the board was shown leaves it unacknowledged.
+   */
   function acknowledgePrompt(parentSessionId: string): void {
+    for (const entry of unrecorded.values()) {
+      if (entry.launch.parentSessionId === parentSessionId && entry.prompt === 'shown') entry.prompt = 'acknowledged';
+    }
     try {
       options.service.markPromptAcknowledgedForSession(parentSessionId);
     } catch (error) {
@@ -211,24 +266,44 @@ export function createBoardObserver(options: BoardObserverOptions) {
 
   /**
    * The board a parent session's next model request shows, or undefined when nothing needs showing. Rows from an
-   * earlier runtime epoch are classified stale first. Showing the board records the prompt notification.
+   * earlier runtime epoch are classified stale first. Showing the board records the prompt notification; a terminal
+   * row or unrecorded launch is shown again until the parent acknowledges it.
+   *
+   * The parent's unrecorded launches are held in memory, so an unreadable board does not hide them: the board then
+   * shows them with the read failure instead of rows. Without such a launch the read failure is thrown as before,
+   * since there is nothing of this parent's to show in place of rows that are unknown, not absent.
    */
   function promptBoard(sessionID: string): { text: string; notify: () => void } | undefined {
-    classifyRuntimeEpochStaleJobs({
-      service: options.service,
-      projectRoot: options.projectRoot,
-      currentRuntimeId: options.runtimeId,
-      isVisible: job => isJobVisibleInPrompt(job, options.projectRoot, sessionID),
-    });
-    const jobs = options.service
-      .listScoped({ projectRoot: options.projectRoot })
-      .filter(job => isJobVisibleInPrompt(job, options.projectRoot, sessionID))
-      .filter(job => shouldShowJobInPrompt(job, sessionID));
-    if (jobs.length === 0) return undefined;
-    return { text: formatPromptBoard(jobs), notify: () => { options.service.markPromptNotified(jobs.map(job => job.taskId), sessionID); } };
+    const gaps = [...unrecorded.values()].filter(entry => entry.launch.parentSessionId === sessionID && entry.prompt !== 'acknowledged');
+    let jobs: BackgroundJobRecord[] = [];
+    let boardReadError: string | undefined;
+    try {
+      classifyRuntimeEpochStaleJobs({
+        service: options.service,
+        projectRoot: options.projectRoot,
+        currentRuntimeId: options.runtimeId,
+        isVisible: job => isJobVisibleInPrompt(job, options.projectRoot, sessionID),
+      });
+      jobs = options.service
+        .listScoped({ projectRoot: options.projectRoot })
+        .filter(job => isJobVisibleInPrompt(job, options.projectRoot, sessionID))
+        .filter(job => shouldShowJobInPrompt(job, sessionID));
+    } catch (error) {
+      if (!(error instanceof BackgroundBoardReadError) || gaps.length === 0) throw error;
+      warn(`[hive:background] ${error.message}; showing ${sessionID} its unrecorded launches without board rows.`);
+      boardReadError = error.message;
+    }
+    if (jobs.length === 0 && gaps.length === 0) return undefined;
+    return {
+      text: formatPromptBoard(jobs, gaps.map(entry => entry.launch), boardReadError),
+      notify: () => {
+        for (const entry of gaps) entry.prompt = 'shown';
+        options.service.markPromptNotified(jobs.map(job => job.taskId), sessionID);
+      },
+    };
   }
 
-  return { findNativeJobs, markAmbiguousObservation, observeCompletion, observeSessionLifecycle, acknowledgePrompt, promptBoard };
+  return { findNativeJobs, markAmbiguousObservation, observeCompletion, observeSessionLifecycle, acknowledgePrompt, promptBoard, launchNotRecorded, launchRecorded, unrecordedLaunches };
 }
 
 export type BoardObserver = ReturnType<typeof createBoardObserver>;
@@ -236,6 +311,10 @@ export type BoardObserver = ReturnType<typeof createBoardObserver>;
 /** V1 board adapter: decodes v1 tool output, synthetic XML notifications and session events into the shared observer. */
 export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions) {
   const lifecycleContextByCall = new Map<string, TaskLifecycleContext>();
+  // Sessions whose turn reported an error since the board was last shown to them. v1 publishes `session.error` and
+  // then reports idle twice (`session.status` idle, then `session.idle`), so no idle after a failure means the parent
+  // processed the board. The failure stands until a new request shows the board again.
+  const failedTurns = new Set<string>();
   const parseLifecycleEvent = options.parseLifecycleEvent ?? parseTaskLifecycleEvent;
   const warn = options.warn ?? ((message: string) => console.warn(message));
   const observer = createBoardObserver({ projectRoot: options.projectRoot, service: options.service, runtimeId: options.runtimeId, warn });
@@ -268,7 +347,7 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
       try {
         const event = parseLifecycleEvent(input, output, resolveLifecycleContext(input));
         if (event) {
-          await handleLifecycleEvent(event);
+          await handleLifecycleEvent(event, output);
         }
       } finally {
         clearLifecycleContext(input);
@@ -307,6 +386,8 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
         synthetic: true,
       });
       board.notify();
+      // This request carries the board again, so an earlier failure no longer decides the turn's acknowledgement.
+      failedTurns.delete(sessionID);
     },
 
     event: async (input: unknown): Promise<void> => {
@@ -318,11 +399,16 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
       if (!observation) {
         return;
       }
-      if (observation.kind === 'idle') {
+      if (observation.kind === 'error') {
+        failedTurns.add(observation.sessionId);
+      } else if (!failedTurns.has(observation.sessionId)) {
         observer.acknowledgePrompt(observation.sessionId);
       }
       observeSessionLifecycle(observation);
     },
+
+    /** This process's launches of `parentSessionId` that the board could not record. */
+    unrecordedLaunches: observer.unrecordedLaunches,
   };
 
   function resolveLifecycleContext(input: unknown): TaskLifecycleContext | undefined {
@@ -353,12 +439,13 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
     lifecycleContextByCall.delete(key);
   }
 
-  async function handleLifecycleEvent(event: ParsedTaskLifecycleEvent): Promise<void> {
+  async function handleLifecycleEvent(event: ParsedTaskLifecycleEvent, output: unknown): Promise<void> {
     if (event.tool === 'task') {
       if (event.args.background !== true) {
         return;
       }
 
+      const agentName = event.args.subagent_type ?? 'unknown';
       try {
         // Only the child binding this call confirmed for this parent names its feature, task or run; nothing is inferred.
         const child = options.getBoundChild?.({ childSessionId: event.taskId, parentSessionId: event.parentSessionId, callId: event.callId });
@@ -366,7 +453,7 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
           taskId: event.taskId,
           sessionId: event.taskId,
           callId: event.callId,
-          agentName: event.args.subagent_type ?? 'unknown',
+          agentName,
           description: event.args.description,
           runtimeId: options.runtimeId,
           scope: {
@@ -376,8 +463,9 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
             ...boundChildScope(child?.parentSessionId === event.parentSessionId ? child : undefined),
           },
         });
+        observer.launchRecorded(event.parentSessionId, event.callId, event.taskId);
       } catch (error) {
-        warn(`[hive:background] failed to record background launch ${event.taskId}: ${error instanceof Error ? error.message : String(error)}`);
+        observer.launchNotRecorded({ parentSessionId: event.parentSessionId, callId: event.callId, childSessionId: event.taskId, agentName }, error);
       }
       return;
     }
@@ -386,10 +474,25 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
     if (!status) {
       return;
     }
-    const statusJobs = findNativeJobs(event.taskId, event.parentSessionId, status.callId);
+    // The sample stays in the native result; the result says the board did not record it instead of failing the call.
+    const sampleNotRecorded = (error: BackgroundBoardReadError) => {
+      warn(`[hive:background] ${error.message}; task_status sample for ${event.taskId} was not recorded on the board.`);
+      appendToolOutputNotice(output, `[hive background board] This task_status sample was not recorded on the board: ${error.message}. The board shows the row as last recorded until it can be read again.`);
+    };
+    let statusJobs: BackgroundJobRecord[];
+    try {
+      statusJobs = findNativeJobs(event.taskId, event.parentSessionId, status.callId);
+    } catch (error) {
+      if (!(error instanceof BackgroundBoardReadError)) throw error;
+      sampleNotRecorded(error);
+      return;
+    }
     if (statusJobs.length === 0) return;
     if (statusJobs.length > 1) {
-      markAmbiguousObservation(statusJobs, event.taskId, 'task_status sample');
+      if (!markAmbiguousObservation(statusJobs, event.taskId, 'task_status sample')) {
+        // Rows are written one at a time, so earlier rows may already be marked uncertain when a later write fails.
+        appendToolOutputNotice(output, `[hive background board] This task_status sample matches more than one board row for reused native child '${event.taskId}' (${statusJobs.map(job => job.alias).join(', ')}), and the board could not mark every matching row uncertain: some rows may show it as ambiguous while others show their state as last recorded. Inspect hive_task_trace({ task_id: ${JSON.stringify(event.taskId)} }) and use an exact board alias.`);
+      }
       return;
     }
     const statusJob = statusJobs[0]!;
@@ -411,7 +514,15 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
         });
       }
     } catch (error) {
-      warn(`[hive:background] failed to update background task ${event.taskId}: ${error instanceof Error ? error.message : String(error)}`);
+      // The locked update rereads the board, which can become unreadable after the lookup above.
+      if (error instanceof BackgroundBoardReadError) {
+        sampleNotRecorded(error);
+        return;
+      }
+      // Other failures, such as releasing the lock, can follow a completed write, so the board may or may not hold the sample.
+      const reason = error instanceof Error ? error.message : String(error);
+      warn(`[hive:background] could not confirm the task_status sample for background task ${event.taskId} was recorded: ${reason}`);
+      appendToolOutputNotice(output, `[hive background board] Hive could not confirm this task_status sample was recorded on the board: ${reason}. The row may show this sample or its state as last recorded; inspect it with hive_background_status before relying on it.`);
     }
   }
 
@@ -446,6 +557,13 @@ export function createBackgroundJobAdapter(options: BackgroundJobAdapterOptions)
   }
 
   return adapter;
+}
+
+function appendToolOutputNotice(output: unknown, notice: string): void {
+  if (!output || typeof output !== 'object') return;
+  const record = output as { output?: unknown };
+  const text = typeof record.output === 'string' ? record.output : '';
+  record.output = text ? `${text}\n\n${notice}` : notice;
 }
 
 function toolCallKey(sessionID: string, callID: string): string {
@@ -524,7 +642,9 @@ function isJobVisibleInPrompt(job: BackgroundJobRecord, projectRoot: string, ses
 }
 
 function shouldShowJobInPrompt(job: BackgroundJobRecord, sessionID: string): boolean {
-  if (job.promptNotifiedAt && job.promptNotifiedInSessionId === sessionID && isTerminalRuntimeState(job.runtimeState)) {
+  // A terminal row leaves the prompt once the parent acknowledged it; being shown is not enough, since the request
+  // that carried it may have failed before the parent processed it.
+  if (job.promptAcknowledgedAt && job.promptNotifiedInSessionId === sessionID && isTerminalRuntimeState(job.runtimeState)) {
     return false;
   }
 
@@ -544,7 +664,12 @@ function isTerminalRuntimeState(state: BackgroundJobRecord['runtimeState']): boo
   return state === 'completed' || state === 'error' || state === 'cancelled';
 }
 
-function formatPromptBoard(jobs: BackgroundJobRecord[]): string {
+function formatPromptBoard(jobs: BackgroundJobRecord[], unrecorded: UnrecordedLaunch[], boardReadError?: string): string {
+  const readLines = boardReadError === undefined ? [] : [
+    `- board unreadable: ${promptSnippet(boardReadError)}\n  coordination: rows for this session's other launches are unknown, not absent; inspect each launched child before relying on the board, and do not launch an overlapping writer`,
+  ];
+  const gapLines = unrecorded.map(launch =>
+    `- unrecorded launch (${launch.childSessionId}) ${launch.agentName}\n  runtime: unconfirmed; Hive could not confirm this launch was recorded on the board (${promptSnippet(launch.reason)}), so the board may have no row for it or a row written before the failure; diagnostic: hive_task_trace({ task_id: ${JSON.stringify(launch.childSessionId)} })\n  coordination: inspect before relying on the board; do not repeat the launch or launch an overlapping writer`);
   const lines = jobs.map((job) => {
     const runtimeParts = [
       job.runtimeState,
@@ -563,7 +688,7 @@ function formatPromptBoard(jobs: BackgroundJobRecord[]): string {
     return `- ${job.alias} (${job.taskId}) ${job.agentName}${scope ? ` ${scope}` : ''}\n  runtime: ${runtimeParts}\n  coordination: ${coordinationParts}`;
   });
 
-  return `## Background Job Board\n${lines.join('\n')}`;
+  return `## Background Job Board\n${[...readLines, ...lines, ...gapLines].join('\n')}`;
 }
 
 function singleLine(value: string): string {

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import * as fs from 'node:fs';
 import { BackgroundJobService, type SessionInfo } from 'hive-core';
 import { createBackgroundJobAdapter, type ReplayMessageEntry } from './backgroundJobAdapter.js';
+import { createBackgroundOperations } from './operations.js';
 
 const TEST_DIR = `/tmp/opencode-hive-background-adapter-${process.pid}`;
 
@@ -566,6 +567,339 @@ describe('background job adapter observation', () => {
     ));
     expect(service.resolve('task-a')).toMatchObject({ runtimeState: 'completed', statusUncertain: false, resultSummary: 'authoritative result' });
     expect(service.resolve('task-a')).not.toHaveProperty('lastStatusError');
+  });
+
+  it('shows a terminal row and an unrecorded launch again until a parent turn that saw them completes, through both v1 idle events of a failed turn', async () => {
+    const { adapter, sessions, service } = harness();
+    sessions.set('parent', session('parent'));
+    await register(adapter, 'parent', 'call-a', 'task-a');
+    service.markTerminal('task-a', 'completed', { resultSummary: 'done' });
+    const registerLaunch = service.registerLaunch.bind(service);
+    service.registerLaunch = (() => { throw new Error('disk full'); }) as typeof service.registerLaunch;
+    await register(adapter, 'parent', 'call-b', 'task-b');
+    service.registerLaunch = registerLaunch;
+    const boardText = async () => {
+      const output = messages('parent');
+      await adapter['experimental.chat.messages.transform']({}, output);
+      return output.messages[0]!.parts.map(part => part.text).join('\n');
+    };
+    const acknowledged = () => ({
+      row: service.resolve('task-a')?.promptAcknowledgedAt !== undefined,
+      gap: adapter.unrecordedLaunches('parent')[0]?.promptAcknowledged,
+    });
+    // v1 ends a failed turn with session.error, then session.status idle, then session.idle.
+    const failedTurn = async () => {
+      await adapter.event(sessionEvent('session.error', { sessionID: 'parent', error: { name: 'APIError', data: { message: 'overloaded' } } }));
+      await adapter.event(sessionEvent('session.status', { sessionID: 'parent', status: { type: 'idle' } }));
+      await adapter.event(sessionEvent('session.idle', { sessionID: 'parent' }));
+    };
+    const completedTurn = async () => {
+      await adapter.event(sessionEvent('session.status', { sessionID: 'parent', status: { type: 'idle' } }));
+      await adapter.event(sessionEvent('session.idle', { sessionID: 'parent' }));
+    };
+
+    const first = await boardText();
+    expect(first).toContain('parent:job-1 (task-a)');
+    expect(first).toContain('unrecorded launch (task-b)');
+    expect(service.resolve('task-a')?.promptNotifiedAt).toBeDefined();
+    await failedTurn();
+    expect(acknowledged()).toEqual({ row: false, gap: false });
+    // Further idles without a new request still belong to the failed turn.
+    await adapter.event(sessionEvent('session.idle', { sessionID: 'parent' }));
+    expect(acknowledged()).toEqual({ row: false, gap: false });
+
+    // The retried request shows both again; its completed turn acknowledges them, and they stop repeating.
+    const retried = await boardText();
+    expect(retried).toContain('parent:job-1 (task-a)');
+    expect(retried).toContain('unrecorded launch (task-b)');
+    await completedTurn();
+    expect(acknowledged()).toEqual({ row: true, gap: true });
+    expect(await boardText()).not.toContain('## Background Job Board');
+    expect(service.resolve('task-a')).toMatchObject({ terminalUnreconciled: true, promptBoardInjectionCount: 1 });
+  });
+
+  it('shows a terminal row again after acknowledgement when new conflicting terminal evidence arrives, once per conflict', async () => {
+    const { adapter, sessions, service } = harness();
+    sessions.set('parent', session('parent'));
+    await register(adapter, 'parent', 'call-a', 'task-a');
+    service.markTerminal('task-a', 'completed', { resultSummary: 'done' });
+    const boardText = async () => {
+      const output = messages('parent');
+      await adapter['experimental.chat.messages.transform']({}, output);
+      return output.messages[0]!.parts.map(part => part.text).join('\n');
+    };
+    const completedTurn = () => adapter.event(sessionEvent('session.idle', { sessionID: 'parent' }));
+
+    expect(await boardText()).toContain('parent:job-1 (task-a)');
+    await completedTurn();
+    expect(await boardText()).not.toContain('## Background Job Board');
+
+    service.markTerminal('task-a', 'error', { lastStatusError: 'provider failed late' });
+    // A turn that ends before the parent is shown the conflict does not acknowledge it.
+    await completedTurn();
+    const conflict = await boardText();
+    expect(conflict).toContain('Conflicting terminal evidence');
+    expect(conflict).toContain('status uncertain');
+    await completedTurn();
+    expect(await boardText()).not.toContain('## Background Job Board');
+
+    service.markTerminal('task-a', 'error', { lastStatusError: 'provider failed late' });
+    expect(await boardText()).not.toContain('## Background Job Board');
+    expect(service.resolve('task-a')).toMatchObject({ runtimeState: 'completed', promptBoardInjectionCount: 2 });
+  });
+
+  it('shows its own unrecorded launches with the read failure when the board is unreadable, and nothing to another parent', async () => {
+    const { adapter, sessions, service, warnings } = harness();
+    sessions.set('parent', session('parent'));
+    service.registerLaunch = (() => { throw new Error('disk full'); }) as typeof service.registerLaunch;
+    await register(adapter, 'parent', 'call-a', 'task-a');
+    fs.mkdirSync(`${TEST_DIR}/.hive`, { recursive: true });
+    fs.writeFileSync(`${TEST_DIR}/.hive/background-jobs.json`, '{"jobs": [');
+
+    const shown = messages('parent');
+    await adapter['experimental.chat.messages.transform']({}, shown);
+    const text = shown.messages[0]!.parts.map(part => part.text).join('\n');
+    expect(text).toContain('- board unreadable: Hive could not read the background board');
+    expect(text).toContain('unknown, not absent');
+    expect(text).toContain('unrecorded launch (task-a) forager-worker');
+    expect(warnings.at(-1)).toContain('showing parent its unrecorded launches without board rows');
+
+    // Another parent has no gap to show, so the read failure stays the caller's, and the gap is not disclosed.
+    const other = messages('other-parent');
+    await expect(adapter['experimental.chat.messages.transform']({}, other)).rejects.toThrow('could not read the background board');
+    expect(other.messages[0]!.parts).toHaveLength(1);
+
+    // The completed turn acknowledges the gap even though the board acknowledgement cannot be written.
+    await adapter.event(sessionEvent('session.idle', { sessionID: 'parent' }));
+    expect(adapter.unrecordedLaunches('parent')).toEqual([expect.objectContaining({ childSessionId: 'task-a', promptAcknowledged: true })]);
+    expect(warnings.join('\n')).toContain('failed to acknowledge parent prompt for parent: Hive could not read the background board');
+  });
+
+  it('reports a launch onto an existing non-board file as unrecorded and leaves the file as found', async () => {
+    const { adapter, sessions } = harness();
+    sessions.set('parent', session('parent'));
+    const boardPath = `${TEST_DIR}/.hive/background-jobs.json`;
+    fs.mkdirSync(`${TEST_DIR}/.hive`, { recursive: true });
+    for (const [content, id] of [['null', 'null-board'], ['{}', 'no-jobs-board']] as const) {
+      fs.writeFileSync(boardPath, content);
+      await register(adapter, 'parent', `call-${id}`, `task-${id}`);
+      expect(fs.readFileSync(boardPath, 'utf8')).toBe(content);
+      expect(adapter.unrecordedLaunches('parent').at(-1)).toMatchObject({ childSessionId: `task-${id}`, reason: expect.stringContaining('does not hold a board with a jobs list') });
+    }
+    expect(adapter.unrecordedLaunches('other-parent')).toEqual([]);
+  });
+
+  it('leaves a completion notification unconsumed while the board is unreadable and still shows its own unrecorded launch', async () => {
+    const { adapter, sessions, service, warnings } = harness();
+    sessions.set('parent', session('parent'));
+    await register(adapter, 'parent', 'call-b', 'task-b');
+    const registerLaunch = service.registerLaunch;
+    service.registerLaunch = (() => { throw new Error('disk full'); }) as typeof service.registerLaunch;
+    await register(adapter, 'parent', 'call-a', 'task-a');
+    service.registerLaunch = registerLaunch;
+    const boardPath = `${TEST_DIR}/.hive/background-jobs.json`;
+    const board = fs.readFileSync(boardPath, 'utf8');
+    fs.writeFileSync(boardPath, '{"jobs": [');
+    const completion = (parent: string) => messages(
+      parent,
+      '<task id="task-b" state="completed"><task_result>Complete.</task_result></task>',
+      { synthetic: true },
+    );
+
+    const shown = completion('parent');
+    await adapter['experimental.chat.messages.transform']({}, shown);
+    const text = shown.messages[0]!.parts.map(part => part.text).join('\n');
+    expect(text).toContain('- board unreadable: Hive could not read the background board');
+    expect(text).toContain('unrecorded launch (task-a) forager-worker');
+    expect(warnings.join('\n')).toContain('completion notification for task-b is left for a later request');
+
+    // Another parent has no gap to show: the board read failure is the caller's and this parent's gap stays private.
+    const other = completion('other-parent');
+    await expect(adapter['experimental.chat.messages.transform']({}, other)).rejects.toThrow('could not read the background board');
+    expect(other.messages[0]!.parts).toHaveLength(1);
+
+    // Once the board reads again, the same notification applies.
+    fs.writeFileSync(boardPath, board);
+    await adapter['experimental.chat.messages.transform']({}, completion('parent'));
+    expect(service.resolve('task-b')).toMatchObject({ runtimeState: 'completed', resultSummary: 'Complete.' });
+  });
+
+  it('keeps a task_status sample in the result and says the board did not record it while the board is unreadable', async () => {
+    const { adapter, sessions, service, warnings } = harness();
+    sessions.set('parent', session('parent'));
+    await register(adapter, 'parent', 'call-b', 'task-b');
+    const registerLaunch = service.registerLaunch;
+    service.registerLaunch = (() => { throw new Error('disk full'); }) as typeof service.registerLaunch;
+    await register(adapter, 'parent', 'call-a', 'task-a');
+    service.registerLaunch = registerLaunch;
+    const boardPath = `${TEST_DIR}/.hive/background-jobs.json`;
+    const board = fs.readFileSync(boardPath, 'utf8');
+    fs.writeFileSync(boardPath, '{"jobs": [');
+
+    const sample = JSON.stringify({ task_id: 'task-b', status: 'completed', result: 'Sampled complete.' });
+    const output = { output: sample };
+    await adapter['tool.execute.before']({ tool: 'task_status', sessionID: 'parent', callID: 'status-b' }, { args: { task_id: 'task-b' } });
+    await adapter['tool.execute.after']({ tool: 'task_status', sessionID: 'parent', callID: 'status-b' }, output);
+    expect(output.output.startsWith(sample)).toBe(true);
+    expect(output.output).toContain('This task_status sample was not recorded on the board: Hive could not read the background board');
+    expect(warnings.join('\n')).toContain('task_status sample for task-b was not recorded on the board');
+    expect(fs.readFileSync(boardPath, 'utf8')).toBe('{"jobs": [');
+
+    // The parent's own unrecorded launch is still shown with the read failure.
+    const shown = messages('parent');
+    await adapter['experimental.chat.messages.transform']({}, shown);
+    expect(shown.messages[0]!.parts.map(part => part.text).join('\n')).toContain('unrecorded launch (task-a) forager-worker');
+
+    // A failure other than an unreadable board still fails the call.
+    fs.writeFileSync(boardPath, board);
+    service.listScoped = (() => { throw new Error('unexpected'); }) as typeof service.listScoped;
+    await adapter['tool.execute.before']({ tool: 'task_status', sessionID: 'parent', callID: 'status-c' }, { args: { task_id: 'task-b' } });
+    await expect(adapter['tool.execute.after']({ tool: 'task_status', sessionID: 'parent', callID: 'status-c' }, { output: sample })).rejects.toThrow('unexpected');
+  });
+
+  it('says a task_status sample was not recorded when the board becomes unreadable between lookup and locked update', async () => {
+    const { adapter, sessions, service, warnings } = harness();
+    sessions.set('parent', session('parent'));
+    await register(adapter, 'parent', 'call-b', 'task-b');
+    const registerLaunch = service.registerLaunch;
+    service.registerLaunch = (() => { throw new Error('disk full'); }) as typeof service.registerLaunch;
+    await register(adapter, 'parent', 'call-a', 'task-a');
+    service.registerLaunch = registerLaunch;
+    const boardPath = `${TEST_DIR}/.hive/background-jobs.json`;
+    const markTerminal = service.markTerminal.bind(service);
+    // The lookup reads a valid board; the board is corrupted before the locked update rereads it.
+    service.markTerminal = ((...args: Parameters<typeof service.markTerminal>) => {
+      fs.writeFileSync(boardPath, '{"jobs": [');
+      return markTerminal(...args);
+    }) as typeof service.markTerminal;
+
+    const sample = JSON.stringify({ task_id: 'task-b', status: 'completed', result: 'Sampled complete.' });
+    const output = { output: sample };
+    await adapter['tool.execute.before']({ tool: 'task_status', sessionID: 'parent', callID: 'status-b' }, { args: { task_id: 'task-b' } });
+    await adapter['tool.execute.after']({ tool: 'task_status', sessionID: 'parent', callID: 'status-b' }, output);
+    expect(output.output.startsWith(sample)).toBe(true);
+    expect(output.output).toContain('This task_status sample was not recorded on the board: Hive could not read the background board');
+    expect(warnings.join('\n')).toContain('task_status sample for task-b was not recorded on the board');
+    expect(warnings.join('\n')).not.toContain('failed to update background task task-b');
+    expect(fs.readFileSync(boardPath, 'utf8')).toBe('{"jobs": [');
+    expect(adapter.unrecordedLaunches('parent')).toEqual([expect.objectContaining({ childSessionId: 'task-a' })]);
+  });
+
+  it('says a task_status sample could not be confirmed when its single row update fails for another reason', async () => {
+    const { adapter, sessions, service, warnings } = harness();
+    sessions.set('parent', session('parent'));
+    await register(adapter, 'parent', 'call-b', 'task-b');
+    // A lock-release failure surfaces after the board write completed.
+    const markTerminal = service.markTerminal.bind(service);
+    service.markTerminal = ((identifier, state, patch) => {
+      markTerminal(identifier, state, patch);
+      throw new Error('lock release failed');
+    }) as typeof service.markTerminal;
+
+    const sample = JSON.stringify({ task_id: 'task-b', status: 'completed', result: 'Sampled complete.' });
+    const output = { output: sample };
+    await adapter['tool.execute.before']({ tool: 'task_status', sessionID: 'parent', callID: 'status-b' }, { args: { task_id: 'task-b' } });
+    await adapter['tool.execute.after']({ tool: 'task_status', sessionID: 'parent', callID: 'status-b' }, output);
+    expect(output.output.startsWith(sample)).toBe(true);
+    expect(output.output).toContain('Hive could not confirm this task_status sample was recorded on the board: lock release failed. The row may show this sample or its state as last recorded; inspect it with hive_background_status before relying on it.');
+    expect(output.output).not.toContain('was not recorded');
+    expect(warnings.join('\n')).toContain('could not confirm the task_status sample for background task task-b was recorded: lock release failed');
+    expect(service.resolve('task-b')).toMatchObject({ runtimeState: 'completed' });
+  });
+
+  it('says an ambiguous task_status sample was only partly recorded when a later row write fails', async () => {
+    const { adapter, sessions, service } = harness();
+    sessions.set('parent', session('parent'));
+    await register(adapter, 'parent', 'call-1', 'resumed-child');
+    await register(adapter, 'parent', 'call-2', 'resumed-child');
+    const sample = JSON.stringify({ task_id: 'resumed-child', status: 'completed', result: 'Sampled complete.' });
+    const sampleStatus = async (callID: string) => {
+      const output = { output: sample };
+      await adapter['tool.execute.before']({ tool: 'task_status', sessionID: 'parent', callID }, { args: { task_id: 'resumed-child' } });
+      await adapter['tool.execute.after']({ tool: 'task_status', sessionID: 'parent', callID }, output);
+      return output.output;
+    };
+
+    const updateRuntimeState = service.updateRuntimeState.bind(service);
+    const written: string[] = [];
+    service.updateRuntimeState = ((identifier, state, patch) => {
+      if (written.length > 0) throw new Error('disk full');
+      written.push(identifier);
+      return updateRuntimeState(identifier, state, patch);
+    }) as typeof service.updateRuntimeState;
+
+    const partial = await sampleStatus('status-1');
+    expect(partial.startsWith(sample)).toBe(true);
+    expect(partial).toContain("matches more than one board row for reused native child 'resumed-child' (parent:job-1, parent:job-2)");
+    expect(partial).toContain('some rows may show it as ambiguous while others show their state as last recorded');
+    expect(partial).toContain('hive_task_trace({ task_id: "resumed-child" })');
+    const [markedAlias] = written;
+    const unmarkedAlias = ['parent:job-1', 'parent:job-2'].find(alias => alias !== markedAlias)!;
+    expect(service.resolve(markedAlias!)).toMatchObject({ runtimeState: 'unknown', statusUncertain: true });
+    expect(service.resolve(unmarkedAlias)).toMatchObject({ runtimeState: 'running' });
+    expect(service.resolve(unmarkedAlias)).not.toHaveProperty('lastStatusError');
+
+    // Once every matching row is marked, the sample is recorded as ambiguous and carries no notice.
+    service.updateRuntimeState = updateRuntimeState;
+    expect(await sampleStatus('status-2')).toBe(sample);
+    expect(service.resolve(unmarkedAlias)).toMatchObject({ runtimeState: 'unknown', statusUncertain: true });
+  });
+
+  it('reports a launch the board could not record to its own parent, in the prompt until that parent acknowledges it', async () => {
+    const { adapter, sessions, service, warnings } = harness();
+    sessions.set('parent', session('parent'));
+    service.registerLaunch = (() => { throw new Error('disk full'); }) as typeof service.registerLaunch;
+    await register(adapter, 'parent', 'call-a', 'task-a');
+
+    expect(service.listScoped({}, { includeArchived: true })).toEqual([]);
+    expect(warnings.at(-1)).toContain('could not confirm background launch task-a was recorded: disk full');
+    expect(adapter.unrecordedLaunches('parent')).toEqual([expect.objectContaining({ parentSessionId: 'parent', callId: 'call-a', childSessionId: 'task-a', agentName: 'forager-worker', reason: 'disk full' })]);
+    expect(adapter.unrecordedLaunches('other-parent')).toEqual([]);
+
+    const other = messages('other-parent');
+    await adapter['experimental.chat.messages.transform']({}, other);
+    expect(other.messages[0]!.parts).toHaveLength(1);
+    const shown = messages('parent');
+    await adapter['experimental.chat.messages.transform']({}, shown);
+    expect(shown.messages[0]!.parts.map(part => part.text).join('\n')).toContain('unrecorded launch (task-a) forager-worker');
+
+    await adapter.event(sessionEvent('session.idle', { sessionID: 'parent' }));
+    const after = messages('parent');
+    await adapter['experimental.chat.messages.transform']({}, after);
+    expect(after.messages[0]!.parts).toHaveLength(1);
+    // Acknowledged in the prompt, the gap stays in the parent's board status.
+    expect(adapter.unrecordedLaunches('parent')).toHaveLength(1);
+  });
+
+  it('reports a launch whose board write failed after the row was written as unconfirmed, never as absent, and keeps the row', async () => {
+    const { adapter, sessions, service, warnings } = harness();
+    sessions.set('parent', session('parent'));
+    // A lock-release failure surfaces after the board write completed.
+    const registerLaunch = service.registerLaunch.bind(service);
+    service.registerLaunch = ((input) => {
+      registerLaunch(input);
+      throw new Error('lock release failed');
+    }) as typeof service.registerLaunch;
+    await register(adapter, 'parent', 'call-a', 'task-a');
+
+    expect(service.listScoped({}, { includeArchived: true })).toEqual([expect.objectContaining({ taskId: 'task-a', callId: 'call-a', runtimeState: 'running' })]);
+    expect(warnings.at(-1)).toContain('could not confirm background launch task-a was recorded: lock release failed');
+    expect(adapter.unrecordedLaunches('parent')).toEqual([expect.objectContaining({ childSessionId: 'task-a', reason: 'lock release failed' })]);
+
+    const shown = messages('parent');
+    await adapter['experimental.chat.messages.transform']({}, shown);
+    const prompt = shown.messages[0]!.parts.map(part => part.text).join('\n');
+    expect(prompt).toContain('Hive could not confirm this launch was recorded on the board (lock release failed), so the board may have no row for it or a row written before the failure');
+    expect(prompt).toContain('do not repeat the launch');
+    expect(prompt).not.toContain('not on the board');
+    expect(prompt).not.toContain('will not appear');
+
+    const status = createBackgroundOperations({ backgroundJobService: service, projectRoot: TEST_DIR, isEnabled: () => true, currentRuntimeId: 'runtime', unrecordedLaunches: adapter.unrecordedLaunches }).hive_background_status!;
+    const result = await status.execute({}, { sessionID: 'parent' }) as { recommendedNextAction?: { action?: string; message?: string } };
+    expect(result.recommendedNextAction?.action).toBe('inspect_unrecorded_background_launches');
+    expect(result.recommendedNextAction?.message).toContain('each may have no row, or a row written before the failure');
+    expect(result.recommendedNextAction?.message).not.toContain('do not appear');
+    expect(service.resolve('task-a')).toMatchObject({ callId: 'call-a', runtimeState: 'running' });
   });
 
   it('bounds result snippets injected into parent prompts', async () => {

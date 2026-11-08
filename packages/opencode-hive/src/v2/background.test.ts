@@ -437,6 +437,30 @@ describe('v2 background board tools', () => {
     expect(service.resolve('child-2')).toMatchObject({ runtimeState: 'unknown', statusUncertain: true });
   });
 
+  it('keeps an unrecorded launch in the prompt and in status when the board becomes unreadable, without disclosing it to another session', async () => {
+    const { root, service, background, host, status } = await registered();
+    service.registerLaunch = (() => { throw new Error('disk full'); }) as typeof service.registerLaunch;
+    background.recordLaunch(launch());
+    const boardPath = getNativeBackgroundJobsPath(root, 'opencode-v2');
+    fs.mkdirSync(path.dirname(boardPath), { recursive: true });
+    fs.writeFileSync(boardPath, 'not json');
+    const request = (sessionID: string) => ({ sessionID, system: [] as Array<{ type: string; text: string }> });
+
+    const parent = request('parent');
+    await Effect.runPromise(host.contextHooks[0]!(parent));
+    expect(parent.system[0]!.text).toContain('- board unreadable: Hive could not read the background board');
+    expect(parent.system[0]!.text).toContain('unrecorded launch (child-1) forager-worker');
+    const other = request('someone-else');
+    await Effect.runPromise(host.contextHooks[0]!(other));
+    expect(other.system).toEqual([]);
+
+    const output = await status();
+    expect(output).toMatchObject({ success: false, reason: 'background_board_unreadable' });
+    expect(output.jobs).toBeUndefined();
+    expect(output.unrecordedLaunches).toEqual([expect.objectContaining({ childSessionId: 'child-1', callId: 'call-1', reason: 'disk full' })]);
+    expect(output.recommendedNextAction).toMatchObject({ action: 'inspect_unreadable_background_board', childSessionIds: ['child-1'] });
+  });
+
   it('marks a launch recorded after its activation stopped observing uncertain', async () => {
     const { service, background, scope } = await registered();
     await Effect.runPromise(Scope.close(scope, Exit.void));

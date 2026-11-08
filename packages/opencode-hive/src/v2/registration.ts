@@ -82,7 +82,8 @@ export function registerCatalog(input: { context: Plugin.Context; identity: Iden
     const { configService } = services;
     if (services.configFallbackWarning) console.warn(`[hive:config] ${services.configFallbackWarning}`);
     const host = createHostProfile('opencode-v2', { readTransport: options.readTransport });
-    const prepared = yield* Effect.promise(() => prepareNativeHiveSkills({ host, directory: projectRoot, worktree: workTarget, disableSkills: configService.getDisabledSkills() }));
+    // The live catalog read by `effectiveSkills` settles user shadows, so no bundled skill is withheld on a disk guess.
+    const prepared = yield* Effect.promise(() => prepareNativeHiveSkills({ host, directory: projectRoot, worktree: workTarget, disableSkills: configService.getDisabledSkills(), hostResolvesShadows: true }));
     const roles = buildRoleCatalog(host, configService);
     const authority = createHiveAuthority(context, roles.customAgents);
     const registrar = createHiveToolRegistrar({ context, readTransport: host.readTransport, guard: authority.guardHive });

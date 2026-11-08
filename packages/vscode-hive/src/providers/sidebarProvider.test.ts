@@ -689,6 +689,34 @@ describe('HiveSidebarProvider', () => {
     provider.dispose();
   });
 
+  it('labels a session kind from its record: a legacy kind, a parent binding, or not recorded', async () => {
+    const { SessionConstraintsProvider } = await import('./sessionConstraintsProvider.js');
+    const provider = new SessionConstraintsProvider(testRoot);
+    const service = new hiveCore.SessionService(testRoot);
+    service.trackGlobal('legacy', { agent: 'hive-master', sessionKind: 'primary', standingConstraints: 'one' });
+    service.trackGlobal('child', { agent: 'forager-worker', parentSessionId: 'legacy', standingConstraints: 'two' });
+    service.trackGlobal('root', { agent: 'hive-master', standingConstraints: 'three' });
+    service.trackGlobal('stale-unknown', { sessionKind: 'unknown', parentSessionId: 'legacy', standingConstraints: 'four' });
+    const descriptions = new Map<string, string>();
+    for (const id of ['legacy', 'child', 'root', 'stale-unknown']) {
+      ui.picks.push((items: any[]) => {
+        for (const item of items) descriptions.set(item.sessionId, item.description);
+        return items.find(item => item.sessionId === id);
+      });
+      await provider.inspect();
+    }
+    expect(descriptions.get('legacy')).toBe('Unbound · primary');
+    expect(descriptions.get('child')).toBe('Unbound · subagent');
+    expect(descriptions.get('root')).toBe('Unbound');
+    expect(descriptions.get('stale-unknown')).toBe('Unbound · subagent');
+    const [legacy, child, root] = ui.shown.map(document => provider.provideTextDocumentContent(document.uri));
+    expect(legacy).toContain('Kind: primary\n');
+    expect(child).toContain('Kind: subagent (parent legacy)\n');
+    expect(root).toContain('Kind: not recorded\n');
+    expect(root).not.toContain('unknown');
+    provider.dispose();
+  });
+
   it('isolates session documents and refreshes only open selections as plain text', async () => {
     const { SessionConstraintsProvider } = await import('./sessionConstraintsProvider.js');
     const provider = new SessionConstraintsProvider(testRoot);

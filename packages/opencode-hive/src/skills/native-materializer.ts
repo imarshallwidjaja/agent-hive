@@ -43,6 +43,13 @@ export interface PreparedNativeHiveSkills {
 export interface PrepareNativeHiveSkillsInput {
   /** The host the bundled skills are rendered for; its sections are kept and every other host's are removed. */
   host: HostProfile;
+  /**
+   * The host's live skill catalog decides between a bundled skill and a user skill of the same name or id, so no
+   * bundled skill is withheld for a user skill found on disk. OpenCode v2 sets this: it applies user skill sources
+   * after plugin transforms and Hive reads its effective catalog, while a filesystem scan cannot see which sources the
+   * host actually loads (a server started without project or global configuration loads none of those found here).
+   */
+  hostResolvesShadows?: boolean;
   directory: string;
   worktree: string;
   packagedSkillsDir?: string;
@@ -679,8 +686,12 @@ export async function prepareNativeHiveSkills(
   const resolvedUserPaths = (input.opencodeConfig?.skills?.paths ?? [])
     .map((skillPath) => resolveConfiguredSkillPath(skillPath, input.directory, homeDir))
     .filter((skillPath) => !isHiveManagedSkillsPath(skillPath, generatedRoot, legacyGeneratedRoot));
-  const localNativeSkills = await scanLocalNativeSkills(input, resolvedUserPaths, logger);
-  const urlScan = await scanUrlNativeSkills(input, logger);
+  const localNativeSkills = input.hostResolvesShadows
+    ? new Map<string, PreparedNativeSkill>()
+    : await scanLocalNativeSkills(input, resolvedUserPaths, logger);
+  const urlScan: UrlScanResult = input.hostResolvesShadows
+    ? { urlScanComplete: true, nativeSkillsByName: new Map() }
+    : await scanUrlNativeSkills(input, logger);
 
   if (!urlScan.urlScanComplete) {
     return {

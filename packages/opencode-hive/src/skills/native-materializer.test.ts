@@ -1047,6 +1047,30 @@ describe('prepareNativeHiveSkills - native discovery parity', () => {
     });
   });
 
+  it('withholds no bundled skill for a same-named file on disk when the host catalog resolves shadows', async () => {
+    const worktree = createTempDir();
+    const bundledSkillsDir = path.join(worktree, 'fixtures', 'bundled-skills');
+    createBundledSkillDir(bundledSkillsDir, 'shadowed');
+    createNativeSkill(worktree, '.claude/skills/shadowed/SKILL.md', 'shadowed');
+    let fetches = 0;
+
+    const result = await prepareNativeHiveSkills({
+      directory: worktree,
+      worktree,
+      packagedSkillsDir: bundledSkillsDir,
+      env: { HOME: worktree },
+      host: createHostProfile('opencode-v2'),
+      hostResolvesShadows: true,
+      opencodeConfig: { skills: { urls: ['https://skills.example.test/'] } },
+      fetchImpl: async () => { fetches += 1; throw new Error('not reachable'); },
+    });
+
+    expect(result.skillsByName.has('shadowed')).toBe(true);
+    expect(result.skipped).toEqual([]);
+    expect(result.urlScanComplete).toBe(true);
+    expect(fetches).toBe(0);
+  });
+
   it('scans the OpenCode config directory from OPENCODE_CONFIG_DIR', async () => {
     const worktree = createTempDir();
     const bundledSkillsDir = path.join(worktree, 'fixtures', 'bundled-skills');

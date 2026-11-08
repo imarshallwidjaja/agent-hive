@@ -774,6 +774,21 @@ describe('v2 skills, commands and models', () => {
     expect([...skills.values()].some((skill) => skill.content.includes('skill({ name'))).toBe(false);
   });
 
+  it('keeps a bundled skill whose same-named file on disk the host catalog does not load', async () => {
+    // A server started without project configuration does not load this file; only the live catalog knows that.
+    const host = await activate({}, undefined, {
+      seed: (root) => {
+        fs.mkdirSync(path.join(root, '.claude', 'skills', 'verification'), { recursive: true });
+        fs.writeFileSync(path.join(root, '.claude', 'skills', 'verification', 'SKILL.md'), '---\nname: verification\ndescription: user copy\n---\nUSER VERIFICATION\n');
+      },
+    });
+    expect(host.skills().get('verification')?.content).not.toBe('USER VERIFICATION');
+    expect(host.skills().get('verification')?.name).toBe('verification');
+    // When the host does load the user skill, its later source wins on the shared id.
+    host.addUserSkill({ id: 'verification', name: 'verification', description: 'user', path: '/user/verification/SKILL.md', content: 'USER VERIFICATION' });
+    expect(host.skills().get('verification').content).toBe('USER VERIFICATION');
+  });
+
   it('keeps user content and resolves name-based requirements to a unique user id, while retaining explicit ids', async () => {
     const host = await activate({}, { agents: { 'scout-researcher': { autoLoadSkills: ['verification', 'systematic-debugging', 'team-debugging'] } } });
     host.addUserSkill({ id: 'verification', name: 'verification', description: 'user', path: '/user/verification/SKILL.md', content: 'USER VERIFICATION' });

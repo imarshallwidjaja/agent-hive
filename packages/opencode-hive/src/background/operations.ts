@@ -1,8 +1,8 @@
 import type { BackgroundJobRecord, BackgroundJobService } from 'hive-core';
-import { isBackgroundJobArchived } from 'hive-core';
+import { BackgroundBoardReadError, BackgroundJobArchiveError, isBackgroundJobArchived } from 'hive-core';
 import type { HiveOperation } from '../runtime/hive-tools.js';
 import { z } from '../runtime/schema.js';
-import { classifyRuntimeEpochStaleJobs } from './backgroundJobAdapter.js';
+import { classifyRuntimeEpochStaleJobs, type ReportedUnrecordedLaunch } from './backgroundJobAdapter.js';
 
 /**
  * The four background board operations, shared by both hosts. Each host registers them its own way (v1 as plugin
@@ -44,6 +44,8 @@ export interface CreateBackgroundOperationsOptions {
   cancelRuntimeTask?: (sessionId: string, context: BoardInvocation) => Promise<RuntimeCancelResult> | RuntimeCancelResult;
   /** Checked before each status read; it may retry pending uncertainty writes first. A host without it reports none. */
   checkObservation?: () => ObservationHealth;
+  /** Launches of this parent session the host accepted whose board write failed; each row is unconfirmed, not known absent. */
+  unrecordedLaunches?: (parentSessionId: string) => ReportedUnrecordedLaunch[];
 }
 
 type ReconcileDecision = 'reconciled' | 'ignored';
@@ -84,24 +86,32 @@ export function createBackgroundOperations(options: CreateBackgroundOperationsOp
         }
 
         const observation = options.checkObservation?.();
-        classifyRuntimeEpochStaleJobs({
-          service: options.backgroundJobService,
-          projectRoot: options.projectRoot,
-          currentRuntimeId: options.currentRuntimeId,
-          isVisible: job => isJobVisible(job, toolContext),
-        });
-
-        const allJobs = options.backgroundJobService
-          .listScoped({ projectRoot: options.projectRoot }, { includeArchived: includeArchived === true })
-          .filter(job => isJobVisible(job, toolContext))
-          .filter(job => matchesOptionalScope(job, { feature, task, adHocRunId, workflow }));
+        // Only the caller's own launches: another parent's gaps are never disclosed. They are held in memory, so an
+        // unreadable board does not hide them.
+        const unrecorded = toolContext.sessionID ? options.unrecordedLaunches?.(toolContext.sessionID) ?? [] : [];
+        let allJobs: BackgroundJobRecord[];
+        try {
+          classifyRuntimeEpochStaleJobs({
+            service: options.backgroundJobService,
+            projectRoot: options.projectRoot,
+            currentRuntimeId: options.currentRuntimeId,
+            isVisible: job => isJobVisible(job, toolContext),
+          });
+          allJobs = options.backgroundJobService
+            .listScoped({ projectRoot: options.projectRoot }, { includeArchived: includeArchived === true })
+            .filter(job => isJobVisible(job, toolContext))
+            .filter(job => matchesOptionalScope(job, { feature, task, adHocRunId, workflow }));
+        } catch (error) {
+          if (!(error instanceof BackgroundBoardReadError)) throw error;
+          return boardUnreadable(error, currentScope(options.projectRoot, toolContext), observation, unrecorded);
+        }
         const archivedJobs = allJobs.filter(job => isBackgroundJobArchived(job));
         const activeJobs = allJobs.filter(job => !isBackgroundJobArchived(job));
         const staleActiveJobs = activeJobs.filter(isNonTerminalStaleJob);
         const nextActions = buildNextActions(activeJobs);
         const waitingForNativeCompletion = buildNativeCompletionWaits(activeJobs);
         const orchestrationBurden = buildOrchestrationBurden(activeJobs);
-        const recommendedNextAction = buildRecommendedNextAction(activeJobs);
+        const recommendedNextAction = buildRecommendedNextAction(activeJobs, unrecorded);
         const schedulerGuidance = staleActiveJobs.length === 0
           && recommendedNextAction.reasonCode === 'native_completion_wait_only'
           ? {
@@ -114,6 +124,7 @@ export function createBackgroundOperations(options: CreateBackgroundOperationsOp
           success: true,
           scope: currentScope(options.projectRoot, toolContext),
           observation: observation?.healthy === false ? observation : undefined,
+          unrecordedLaunches: unrecorded.length > 0 ? unrecorded.map(formatUnrecordedLaunch) : undefined,
           jobs: allJobs.map(formatJob),
           archivedCount: archivedJobs.length > 0 ? archivedJobs.length : undefined,
           waitingForNativeCompletion: waitingForNativeCompletion.length > 0 ? waitingForNativeCompletion : undefined,
@@ -291,58 +302,64 @@ function reconcileVisibleJob(
     }
     const resolved = resolveVisibleJob(backgroundJobService, item.identifier, projectRoot, toolContext);
     if (resolved.success === false) {
-      const hints: Record<string, string> = {
-        identifier_required: 'Supply a task ID, session ID, or canonical scoped alias from hive_background_status.',
-        job_identifier_ambiguous: 'Use the exact canonical scoped alias from the error or hive_background_status.',
-        job_not_found: 'Inspect hive_background_status for the correct identifier before retrying.',
-        job_not_in_scope: 'Use the originating parent session to inspect and reconcile this observation.',
-        job_archived: 'Inspect hive_background_status({ includeArchived: true }); this observation is already archived.',
-      };
-      return { ...acknowledgement, ...resolved, hint: hints[resolved.reason] ?? 'Inspect hive_background_status and the reported error before retrying with the correct identifier.' };
+      return { ...acknowledgement, ...resolved, hint: RECONCILE_FAILURE_HINTS[resolved.reason] ?? 'Inspect hive_background_status and the reported error before retrying with the correct identifier.' };
     }
 
-    if (!isTerminalRuntimeState(resolved.job.runtimeState)) {
-      if (resolved.job.staleAt || resolved.job.statusUncertain) {
-        const stale = !!resolved.job.staleAt;
-        if (item.decision !== 'ignored') {
-          const reason = stale ? 'stale_job_requires_ignore' : 'uncertain_job_requires_ignore';
-          return {
-            ...acknowledgement,
-            ...failure(reason, `${stale ? 'Stale' : 'Uncertain'} background job ${resolved.job.alias} is ${resolved.job.runtimeState}, not terminal. Inspect it or archive the observation with decision "ignored".`),
-            hint: (stale ? staleRecoveryPendingAction(resolved.job) : uncertainRecoveryPendingAction(resolved.job)).command,
-          };
-        }
-
-        backgroundJobService.markIgnored(resolved.job.alias, trimmedSummary);
-        return { ...acknowledgement, success: true, archived: true, state: 'ignored_archived', requiresHiveStatusRefresh: hasHiveFeatureOrTaskScope(resolved.job) };
-      }
-      return {
-        ...acknowledgement,
-        ...failure('job_not_terminal', `Background job ${resolved.job.taskId} is ${resolved.job.runtimeState}, not terminal.`),
-        hint: nativeCompletionPendingWait(resolved.job).message,
-      };
-    }
-
-    if (item.decision === 'reconciled') {
-      backgroundJobService.markReconciled(resolved.job.alias, {
+    // The board decides whether the record's state permits this archive under its lock, so a change after the read
+    // above (another writer archiving it, or a live row losing its uncertainty) is judged on the state it archives.
+    const archived = item.decision === 'reconciled'
+      ? backgroundJobService.markReconciled(resolved.job.alias, {
         reconciledBy: toolContext.sessionID,
         reconciliationSummary: trimmedSummary,
-      });
-    } else {
-      backgroundJobService.markIgnored(resolved.job.alias, trimmedSummary);
-    }
+      })
+      : backgroundJobService.markIgnored(resolved.job.alias, trimmedSummary, { refuseAwaitingCompletion: true });
 
     return {
       ...acknowledgement,
       success: true,
       archived: true,
       state: item.decision === 'reconciled' ? 'archived_after_reconcile' : 'ignored_archived',
-      requiresHiveStatusRefresh: hasHiveFeatureOrTaskScope(resolved.job),
+      requiresHiveStatusRefresh: hasHiveFeatureOrTaskScope(archived),
     };
   } catch (error) {
+    if (error instanceof BackgroundJobArchiveError) {
+      return { ...acknowledgement, ...archiveRefusal(error) };
+    }
     return { ...acknowledgement, ...failure('reconciliation_failed', error instanceof Error ? error.message : String(error)), hint: 'Inspect hive_background_status({ includeArchived: true }) before retrying; a failed persistence write may have published.' };
   }
 }
+
+/** The public failure for a refusal the board raised under its lock, with the hint for the state it read there. */
+function archiveRefusal(error: BackgroundJobArchiveError): { success: false; reason: string; error: string; hint: string } {
+  const { job } = error;
+  switch (error.reason) {
+    case 'job_archived':
+      return { ...failure(error.reason, error.message), hint: RECONCILE_FAILURE_HINTS.job_archived! };
+    case 'stale_job_requires_ignore':
+      return {
+        ...failure(error.reason, `Stale background job ${job.alias} is ${job.runtimeState}, not terminal. Inspect it or archive the observation with decision "ignored".`),
+        hint: staleRecoveryPendingAction(job).command!,
+      };
+    case 'uncertain_job_requires_ignore':
+      return {
+        ...failure(error.reason, `Uncertain background job ${job.alias} is ${job.runtimeState}, not terminal. Inspect it or archive the observation with decision "ignored".`),
+        hint: uncertainRecoveryPendingAction(job).command!,
+      };
+    case 'job_not_terminal':
+      return {
+        ...failure(error.reason, `Background job ${job.taskId} is ${job.runtimeState}, not terminal.`),
+        hint: nativeCompletionPendingWait(job).message!,
+      };
+  }
+}
+
+const RECONCILE_FAILURE_HINTS: Record<string, string> = {
+  identifier_required: 'Supply a task ID, session ID, or canonical scoped alias from hive_background_status.',
+  job_identifier_ambiguous: 'Use the exact canonical scoped alias from the error or hive_background_status.',
+  job_not_found: 'Inspect hive_background_status for the correct identifier before retrying.',
+  job_not_in_scope: 'Use the originating parent session to inspect and reconcile this observation.',
+  job_archived: 'Inspect hive_background_status({ includeArchived: true }); this observation is already archived.',
+};
 
 function isJobVisible(job: BackgroundJobRecord, toolContext: BoardInvocation): boolean {
   return !!toolContext.sessionID && job.scope?.parentSessionId === toolContext.sessionID;
@@ -386,8 +403,39 @@ function buildOrchestrationBurden(jobs: BackgroundJobRecord[]): Record<string, n
   };
 }
 
+/**
+ * The status result when the board cannot be read: a failure that keeps the caller's own unrecorded launches and
+ * says the rows are unknown, never an empty board or an idle recommendation.
+ */
+function boardUnreadable(
+  error: BackgroundBoardReadError,
+  scope: Record<string, string | undefined>,
+  observation: ObservationHealth | undefined,
+  unrecorded: ReportedUnrecordedLaunch[],
+): Record<string, unknown> {
+  return {
+    ...failure('background_board_unreadable', error.message),
+    scope,
+    observation: observation?.healthy === false ? observation : undefined,
+    unrecordedLaunches: unrecorded.length > 0 ? unrecorded.map(formatUnrecordedLaunch) : undefined,
+    recommendedNextAction: pruneUndefined({
+      action: 'inspect_unreadable_background_board',
+      reasonCode: 'background_board_unreadable',
+      childSessionIds: unrecorded.length > 0 ? unrecorded.map(launch => launch.childSessionId) : undefined,
+      message: 'Hive could not read the background board, so the board rows of this session are unknown, not absent. Inspect each child this session launched with hive_task_trace, starting with any unrecorded launch listed here, before relying on the board; do not launch an overlapping writer, and report the unreadable board to the operator instead of editing it.',
+      requiresHiveStatusRefresh: false,
+    }),
+    requiresHiveStatusRefresh: false,
+  };
+}
+
+/**
+ * An unrecorded launch the parent has not yet acknowledged outranks uncertain and waiting rows. Once acknowledged it
+ * stays listed but yields to that row guidance, and is recommended only when no row needs anything.
+ */
 function buildRecommendedNextAction(
   jobs: BackgroundJobRecord[],
+  unrecorded: ReportedUnrecordedLaunch[],
 ): RecommendedNextAction {
   const staleJobs = jobs.filter(isNonTerminalStaleJob);
   if (staleJobs.length > 0) {
@@ -417,6 +465,11 @@ function buildRecommendedNextAction(
     };
   }
 
+  const unacknowledged = unrecorded.filter(launch => !launch.promptAcknowledged);
+  if (unacknowledged.length > 0) {
+    return unrecordedLaunchAction(unacknowledged);
+  }
+
   const uncertainJobs = jobs.filter(job => !isTerminalRuntimeState(job.runtimeState) && !job.staleAt && job.statusUncertain);
   if (uncertainJobs.length > 0) {
     return {
@@ -441,7 +494,21 @@ function buildRecommendedNextAction(
     });
   }
 
+  if (unrecorded.length > 0) {
+    return unrecordedLaunchAction(unrecorded);
+  }
+
   return idleRecommendedNextAction();
+}
+
+function unrecordedLaunchAction(unrecorded: ReportedUnrecordedLaunch[]): RecommendedNextAction {
+  return {
+    action: 'inspect_unrecorded_background_launches',
+    reasonCode: 'background_launch_not_recorded',
+    childSessionIds: unrecorded.map(launch => launch.childSessionId),
+    message: 'Hive could not confirm that one or more background launches of this session were recorded on the board; each may have no row, or a row written before the failure. Inspect each child with hive_task_trace before relying on the board; do not repeat the launch or launch an overlapping writer for it.',
+    requiresHiveStatusRefresh: false,
+  };
 }
 
 function buildStaleRecoveryAction(staleJobs: BackgroundJobRecord[]): RecommendedNextAction {
@@ -569,6 +636,18 @@ function formatJob(job: BackgroundJobRecord): Record<string, unknown> {
     }),
     scope: job.scope,
   };
+}
+
+function formatUnrecordedLaunch(launch: ReportedUnrecordedLaunch): Record<string, unknown> {
+  return pruneUndefined({
+    childSessionId: launch.childSessionId,
+    callId: launch.callId,
+    agentName: launch.agentName,
+    failedAt: launch.failedAt,
+    reason: launch.reason,
+    promptAcknowledged: launch.promptAcknowledged,
+    diagnostic: `hive_task_trace({ task_id: ${JSON.stringify(launch.childSessionId)} })`,
+  });
 }
 
 function failure(reason: string, error: string): { success: false; reason: string; error: string } {

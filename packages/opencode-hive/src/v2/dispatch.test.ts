@@ -7,6 +7,7 @@ import type { Plugin } from '@opencode/plugin/effect';
 import { FeatureService, PlanService, TaskService, getNativeBackgroundJobsPath, type ResolvedCustomAgentConfig } from 'hive-core';
 import plugin from '../index.js';
 import { createHiveServices, type HiveServices } from '../runtime/hive-services.js';
+import { createBackgroundOperations } from '../background/operations.js';
 import { createV2BackgroundLifecycle } from './background.js';
 import { NATIVE_SUBAGENT_TOOL, registerDispatch } from './dispatch.js';
 import { createHiveAuthority } from './registration.js';
@@ -58,7 +59,7 @@ function project(features: string[] = ['alpha']) {
  * return `running` for background calls or `completed`. Every agent is configured for `test/model-of-<agent>` unless
  * `catalog.models` says otherwise (`null` is a model-less entry); `catalog.missing` and `catalog.error` fail lookups.
  */
-function fakeHost(services: HiveServices, options: { pauseBeforeProgress?: Effect.Effect<void>; reportedParent?: (child: string, parent: string) => string | undefined; promptFails?: boolean; blockForever?: boolean; backgrounded?: boolean; holdNewChild?: Promise<void>; holdContinuation?: Promise<void>; afterAdmission?: (child: string) => void } = {}) {
+function fakeHost(services: HiveServices, options: { pauseBeforeProgress?: Effect.Effect<void>; reportedParent?: (child: string, parent: string) => string | undefined; promptFails?: boolean; blockForever?: boolean; backgrounded?: boolean; holdNewChild?: Promise<void>; holdContinuation?: Promise<void>; afterAdmission?: (child: string) => void; skipProgress?: boolean } = {}) {
   const sessions = new Map<string, Session>();
   const admissions: Admission[] = [];
   const nativeInputs: any[] = [];
@@ -128,7 +129,8 @@ function fakeHost(services: HiveServices, options: { pauseBeforeProgress?: Effec
         sessions.set(child, { id: child, parentID: options.reportedParent?.(child, ctx.sessionID) ?? ctx.sessionID, agent: input.agent, ...(model === undefined ? {} : { model }) });
       }
       if (options.pauseBeforeProgress) yield* options.pauseBeforeProgress;
-      yield* ctx.progress({ sessionID: child, status: 'running' });
+      // A host that skips the awaited progress update (the qualified host never does) prompts an unbound child.
+      if (!options.skipProgress) yield* ctx.progress({ sessionID: child, status: 'running' });
       if (options.promptFails) return yield* Effect.fail(new Error(`Failed to prompt subagent: ${child}`));
       const bound = services.sessionService.getGlobal(child);
       admissions.push({
@@ -700,6 +702,46 @@ describe('v2 native dispatch', () => {
     expect(host.admissions).toHaveLength(1);
     expect(services.sessionService.getGlobal(child)).toEqual(before);
     expect(Exit.isSuccess(await host.call('parent', { agent: 'forager-worker', prompt: 'Continue.', sessionID: child }))).toBe(true);
+  });
+
+  it('reports a launch whose row could not be written to its parent until the same call records it', async () => {
+    const { root, services, host, background } = await setup();
+    const board = services.backgroundJobService;
+    const register = board.registerLaunch.bind(board);
+    let failures = 2;
+    // The barrier write and the retry when the call returns `running` both fail; reads of the board still work.
+    board.registerLaunch = ((input) => { if (failures > 0) { failures -= 1; throw new Error('disk full'); } return register(input); }) as typeof board.registerLaunch;
+    const status = createBackgroundOperations({ backgroundJobService: board, projectRoot: root, isEnabled: () => true, currentRuntimeId: 'runtime-a', unrecordedLaunches: background.observer.unrecordedLaunches }).hive_background_status!;
+
+    expect(Exit.isSuccess(await host.call('parent', { agent: 'forager-worker', prompt: 'Go.', background: true }, 'call-A'))).toBe(true);
+    expect(board.listScoped({ projectRoot: root }, { includeArchived: true })).toHaveLength(0);
+    const gap = await status.execute({}, { sessionID: 'parent' }) as any;
+    expect(gap.jobs).toEqual([]);
+    expect(gap.unrecordedLaunches).toEqual([expect.objectContaining({ childSessionId: 'child-1', callId: 'call-A', agentName: 'forager-worker', reason: 'disk full' })]);
+    expect(gap.recommendedNextAction).toMatchObject({ action: 'inspect_unrecorded_background_launches', childSessionIds: ['child-1'] });
+    expect(gap.schedulerGuidance).toBeUndefined();
+    // Another parent's board never shows it, and its prompt board does not either.
+    const other = await status.execute({}, { sessionID: 'other-parent' }) as any;
+    expect(other.unrecordedLaunches).toBeUndefined();
+    expect(other.recommendedNextAction.action).toBe('idle');
+    expect(background.observer.promptBoard('other-parent')).toBeUndefined();
+    expect(background.observer.promptBoard('parent')?.text).toContain('unrecorded launch (child-1) forager-worker');
+
+    // The same call writing its row on the retry clears the gap; another call's failure does not hide behind it.
+    failures = 1;
+    expect(Exit.isSuccess(await host.call('parent', { agent: 'forager-worker', prompt: 'Again.', background: true }, 'call-B'))).toBe(true);
+    const recovered = await status.execute({}, { sessionID: 'parent' }) as any;
+    expect(recovered.unrecordedLaunches).toEqual([expect.objectContaining({ childSessionId: 'child-1', callId: 'call-A' })]);
+    expect(board.listScoped({ projectRoot: root }).map((job) => job.callId)).toEqual(['call-B']);
+    expect(board.resolve('child-2')?.statusUncertain).toBeUndefined();
+  });
+
+  it('fails a call that returns a child it never bound at the progress barrier, without binding it afterwards', async () => {
+    const { services, host } = await setup({ skipProgress: true });
+    const exit = await host.call('parent', { agent: 'forager-worker', prompt: 'Go.' }, 'call-unbound');
+    expect(failureMessage(exit)).toBe('The subagent call returned child session child-1 without the progress update at which Hive binds the child before its prompt. Hive did not bind it after it ran, so the child may have run without its parent\'s route and standing constraints; inspect hive_task_trace({ task_id: "child-1" }) before relying on its result.');
+    expect(services.sessionService.getGlobal('child-1')).toBeUndefined();
+    expect(services.backgroundJobService.listScoped({}, { includeArchived: true })).toEqual([]);
   });
 
   it('does not hand a completion for a launch Hive could not record to a later continuation of the same child', async () => {

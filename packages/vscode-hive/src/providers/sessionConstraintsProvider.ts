@@ -43,7 +43,7 @@ export class SessionConstraintsProvider implements vscode.TextDocumentContentPro
       }
       const selected = await vscode.window.showQuickPick(sessions.map(({ owner, session }) => ({
         label: session.agent || session.baseAgent || 'Unknown agent',
-        description: [session.featureName || 'Unbound', session.sessionKind || 'unknown', ownerNote(owner)].filter(Boolean).join(' · '),
+        description: [session.featureName || 'Unbound', sessionKindLabel(session), ownerNote(owner)].filter(Boolean).join(' · '),
         detail: `Last active: ${session.lastActiveAt} · ID: ${session.sessionId}`,
         owner,
         sessionId: session.sessionId,
@@ -76,7 +76,7 @@ export class SessionConstraintsProvider implements vscode.TextDocumentContentPro
         `Session ID: ${session.sessionId}`,
         `Host: ${getNativeObservationOwnerLabel(selection.owner)}`,
         `Agent: ${session.agent || session.baseAgent || 'Unknown'}`,
-        `Kind: ${session.sessionKind || 'unknown'}`,
+        `Kind: ${sessionKindLabel(session) ?? 'not recorded'}${session.parentSessionId ? ` (parent ${session.parentSessionId})` : ''}`,
         `Feature: ${session.featureName || 'Unbound'}`,
         'Scope: Operator directives for this session; this inspector does not select an active session.',
         `Revision: ${register.revision}`,
@@ -101,6 +101,15 @@ export class SessionConstraintsProvider implements vscode.TextDocumentContentPro
     this.selections.clear();
     this.changed.dispose();
   }
+}
+
+/**
+ * The session's kind as far as its record shows it. Current hosts do not write `sessionKind`, so a record without one
+ * is a subagent when its dispatch binding names a parent, and otherwise its kind is unknown rather than guessed.
+ */
+function sessionKindLabel(session: SessionInfo): string | undefined {
+  if (session.sessionKind && session.sessionKind !== 'unknown') return session.sessionKind;
+  return session.parentSessionId ? 'subagent' : undefined;
 }
 
 function ownerNote(owner: NativeObservationOwner): string | undefined {

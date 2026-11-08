@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { BackgroundJobsJson } from '../types.js';
-import { BackgroundJobService } from './backgroundJobService.js';
+import { BackgroundBoardReadError, BackgroundJobArchiveError, BackgroundJobService } from './backgroundJobService.js';
 
 const TEST_DIR = `/tmp/hive-core-backgroundjobservice-test-${process.pid}`;
 const BOARD_PATH = path.join(TEST_DIR, '.hive', 'background-jobs.json');
@@ -150,7 +150,7 @@ describe('BackgroundJobService', () => {
     expect(() => service.resolve('resumed-child')).toThrow(`Use one of these exact aliases: ${first.alias}, ${resumed.alias}`);
   });
 
-  it('keeps the first terminal result and reconciles observational bookkeeping', () => {
+  it('keeps the first terminal result, records a conflicting later one as uncertainty, and reconciles observational bookkeeping', () => {
     registerJob(service);
     const terminal = service.markTerminal('task-1', 'completed', { resultSummary: 'done' });
     const conflicting = service.markTerminal('task-1', 'error', { lastStatusError: 'late error' });
@@ -159,8 +159,16 @@ describe('BackgroundJobService', () => {
       runtimeState: 'completed',
       resultSummary: 'done',
       terminalUnreconciled: true,
+      statusUncertain: true,
+      lastStatusError: 'Conflicting terminal evidence: the board recorded completed, then a later observation reported error (late error). Hive kept the first state; inspect the native session before relying on either.',
     });
     expect(conflicting.runtimeCompletedAt).toBe(terminal.runtimeCompletedAt);
+    // The same conflicting observation again adds nothing, and a later agreeing observation does not clear the conflict.
+    expect(service.markTerminal('task-1', 'error', { lastStatusError: 'late error' }).lastStatusError).toBe(conflicting.lastStatusError);
+    expect(service.markTerminal('task-1', 'completed', { statusUncertain: false, lastStatusError: undefined })).toMatchObject({
+      statusUncertain: true,
+      lastStatusError: conflicting.lastStatusError,
+    });
 
     const reconciled = service.markReconciled('task-1', {
       reconciledBy: 'parent-1',
@@ -173,6 +181,68 @@ describe('BackgroundJobService', () => {
     });
     expect(service.listScoped()).toEqual([]);
     expect(service.listScoped({}, { includeArchived: true })).toHaveLength(1);
+  });
+
+  it('keeps an earlier diagnostic beside conflicting terminal evidence', () => {
+    registerJob(service);
+    service.markTerminal('task-1', 'error', { lastStatusError: 'provider disconnected' });
+    expect(service.markTerminal('task-1', 'cancelled')).toMatchObject({
+      runtimeState: 'error',
+      statusUncertain: true,
+      lastStatusError: 'provider disconnected | Conflicting terminal evidence: the board recorded error, then a later observation reported cancelled. Hive kept the first state; inspect the native session before relying on either.',
+    });
+  });
+
+  it('refuses under the lock to archive a record another writer already archived', () => {
+    registerJob(service);
+    registerJob(service, 'task-2', 'session-2');
+    service.markTerminal('task-1', 'completed');
+    // A second service instance stands in for another process that read the same record before the first archive.
+    const other = new BackgroundJobService(TEST_DIR);
+    service.markIgnored('task-1', 'Ignored first.');
+
+    expect(() => other.markReconciled('task-1', { reconciliationSummary: 'Reconciled second.' })).toThrow(BackgroundJobArchiveError);
+    expect(() => other.markIgnored('task-1', 'Ignored again.')).toThrow('already archived');
+    expect(service.resolve('task-1')).toMatchObject({ archiveReason: 'ignored', ignoreReason: 'Ignored first.' });
+    expect(service.resolve('task-1')).not.toHaveProperty('reconciledAt');
+
+    try {
+      service.markReconciled('task-2');
+      throw new Error('expected a refusal');
+    } catch (error) {
+      expect(error).toBeInstanceOf(BackgroundJobArchiveError);
+      expect((error as BackgroundJobArchiveError).reason).toBe('job_not_terminal');
+    }
+    expect(service.resolve('task-2')).not.toHaveProperty('archivedAt');
+  });
+
+  it('judges archive state under the lock: a live row that lost its uncertainty refuses a guarded ignore', () => {
+    const refusal = (archive: () => unknown) => {
+      try {
+        archive();
+      } catch (error) {
+        expect(error).toBeInstanceOf(BackgroundJobArchiveError);
+        return (error as BackgroundJobArchiveError).reason;
+      }
+      throw new Error('expected a refusal');
+    };
+    registerJob(service);
+    registerJob(service, 'task-2', 'session-2');
+    service.updateRuntimeState('task-1', 'unknown', { statusUncertain: true });
+    service.markStale('task-2');
+
+    // A non-terminal stale or uncertain row needs an ignore, never a reconcile.
+    expect(refusal(() => service.markReconciled('task-1'))).toBe('uncertain_job_requires_ignore');
+    expect(refusal(() => service.markReconciled('task-2'))).toBe('stale_job_requires_ignore');
+
+    // A later sample settles task-1 back to ordinary running, after a caller read it as uncertain.
+    service.updateRuntimeState('task-1', 'running', { statusUncertain: false });
+    expect(refusal(() => service.markIgnored('task-1', 'Read as uncertain.', { refuseAwaitingCompletion: true }))).toBe('job_not_terminal');
+    expect(service.resolve('task-1')).not.toHaveProperty('archivedAt');
+
+    expect(service.markIgnored('task-2', 'Stale lane.', { refuseAwaitingCompletion: true })).toMatchObject({ archiveReason: 'ignored' });
+    // An operator archive does not check state.
+    expect(service.markIgnored('task-1', 'Operator archived')).toMatchObject({ archiveReason: 'ignored' });
   });
 
   it('marks prompt notification and acknowledgment without reconciling the result', () => {
@@ -191,6 +261,57 @@ describe('BackgroundJobService', () => {
       promptBoardInjectionCount: 1,
     });
     expect(acknowledged[0].promptAcknowledgedAt).toBeDefined();
+  });
+
+  it('withdraws a prompt acknowledgement for a newly noted terminal conflict only, and needs a new notification to acknowledge again', () => {
+    registerJob(service);
+    service.markTerminal('task-1', 'completed', { resultSummary: 'done' });
+    service.markPromptNotified(['task-1'], 'parent-1');
+    service.markPromptAcknowledgedForSession('parent-1');
+
+    const conflicted = service.markTerminal('task-1', 'error', { lastStatusError: 'late error' });
+    expect(conflicted).toMatchObject({ runtimeState: 'completed', resultSummary: 'done', statusUncertain: true, promptBoardInjectionCount: 1 });
+    expect(conflicted.lastStatusError).toContain('Conflicting terminal evidence');
+    expect(conflicted.promptNotifiedAt).toBeDefined();
+    expect(conflicted).not.toHaveProperty('promptAcknowledgedAt');
+    expect(conflicted).not.toHaveProperty('promptNotifiedInSessionId');
+    // A parent turn that ends before the conflict is shown does not acknowledge it.
+    expect(service.markPromptAcknowledgedForSession('parent-1')).toEqual([]);
+
+    expect(service.markPromptNotified(['task-1'], 'parent-1')[0]).toMatchObject({ promptNotifiedInSessionId: 'parent-1', promptBoardInjectionCount: 2 });
+    expect(service.markPromptAcknowledgedForSession('parent-1')).toHaveLength(1);
+
+    // The same conflict again is already noted: the acknowledgement stands and nothing is notified again.
+    const repeated = service.markTerminal('task-1', 'error', { lastStatusError: 'late error' });
+    expect(repeated.promptAcknowledgedAt).toBeDefined();
+    expect(repeated.lastStatusError).toBe(conflicted.lastStatusError);
+    expect(service.markPromptNotified(['task-1'], 'parent-1')).toEqual([]);
+    expect(service.resolve('task-1')?.promptBoardInjectionCount).toBe(2);
+
+    // An archived record's conflict is noted without reopening its prompt bookkeeping.
+    service.markReconciled('task-1');
+    const archived = service.markTerminal('task-1', 'cancelled');
+    expect(archived.lastStatusError).toContain('later observation reported cancelled');
+    expect(archived.promptAcknowledgedAt).toBeDefined();
+  });
+
+  it('classifies an unreadable or malformed board as a read failure and leaves the file as found', () => {
+    fs.mkdirSync(path.dirname(BOARD_PATH), { recursive: true });
+    for (const content of ['{"schemaVersion":1,"jobs":[', '[]', '{"jobs":{}}', 'null', '{}', '{"schemaVersion":1}']) {
+      fs.writeFileSync(BOARD_PATH, content);
+      expect(() => service.listScoped()).toThrow(BackgroundBoardReadError);
+      expect(() => registerJob(service)).toThrow(BackgroundBoardReadError);
+      expect(fs.readFileSync(BOARD_PATH, 'utf8')).toBe(content);
+    }
+    fs.rmSync(BOARD_PATH);
+    fs.mkdirSync(BOARD_PATH);
+    expect(() => service.listScoped()).toThrow(BackgroundBoardReadError);
+
+    // Only an absent file is an empty board.
+    fs.rmdirSync(BOARD_PATH);
+    expect(service.listScoped()).toEqual([]);
+    registerJob(service);
+    expect(service.listScoped()).toHaveLength(1);
   });
 
   it('keeps prompt metadata scoped to the originating parent for reused child ids', () => {

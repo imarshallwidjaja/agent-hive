@@ -24,6 +24,9 @@ import type { HiveToolRegistrar } from './tools.js';
  * - observation gap: Hive does not see a notification while no activation listens (a plugin reload) or after its
  *   event stream stops, and a failed board write loses what was observed. Rows live across a gap are uncertain; after
  *   the stream stops or a write fails, so is every later launch of the activation, and failed writes are retried.
+ * - unrecorded launch: the launch row's write failed, so the row is unconfirmed (a failure such as releasing the lock
+ *   can follow a completed write). Nothing else is missed, so this is not an observation gap; the observer reports
+ *   that one launch to its parent until the same call records it.
  */
 
 /**
@@ -135,9 +138,11 @@ export function createV2BackgroundLifecycle(input: { projectRoot: string; servic
         },
       }).alias;
     } catch (error) {
-      warn(`[hive:background] failed to record background launch ${launch.childSessionID}: ${describe(error)}`);
+      // Only this launch's row is unconfirmed; other launches are still observed, so this is not an observation gap.
+      observer.launchNotRecorded({ parentSessionId: launch.parentSessionID, callId: launch.callID, childSessionId: launch.childSessionID, agentName: launch.agent }, error);
       return undefined;
     }
+    observer.launchRecorded(launch.parentSessionID, launch.callID, launch.childSessionID);
     const key = earlyKey(launch.parentSessionID, launch.childSessionID);
     const held = early.get(key);
     early.delete(key);
@@ -277,7 +282,7 @@ export function registerBackground(input: { context: Plugin.Context; registrar: 
     ),
   );
   return Effect.gen(function* () {
-    yield* registrar.register(createBackgroundOperations({ backgroundJobService: service, projectRoot, isEnabled: () => true, currentRuntimeId: runtimeId, cancelRuntimeTask, checkObservation: lifecycle.checkObservation }));
+    yield* registrar.register(createBackgroundOperations({ backgroundJobService: service, projectRoot, isEnabled: () => true, currentRuntimeId: runtimeId, cancelRuntimeTask, checkObservation: lifecycle.checkObservation, unrecordedLaunches: lifecycle.observer.unrecordedLaunches }));
     yield* Effect.sync(() => lifecycle.resumeObservation());
     yield* Effect.addFinalizer(() => Effect.sync(() => lifecycle.deactivate()));
     // Board bookkeeping never fails a model request or stops observation; a broken board store is reported.
