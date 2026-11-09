@@ -102,7 +102,7 @@ For an implementation review, add a review packet so the reviewer can judge how 
 - **Boundaries**: contracts, interfaces, or persisted shapes the change touches, with known consumers, sibling implementations, and owning tests as paths or symbols.
 - **Lenses**: skills or project rules that bear on this change beyond the required ones.
 - **Leads**: concerns you noticed in the worker report or diff, each with an anchor and the question that would settle it, marked unverified. Leads direct attention without narrowing the reviewer's scope.
-- **Evidence**: the worker's verification commands and results, stated deviations, and known risks.
+- **Evidence**: the worker's verification commands and results, the scope they cover, stated deviations, and known risks.
 - **Re-review**: prior findings with your decision on each, the prior review's Coverage, the fix range (prior..current candidate), and what the fix can affect.`;
 
 /**
@@ -165,7 +165,7 @@ Workers do not inherit your conversation. An assignment gives one worker one pri
 - **Preserved contracts**: behavior, interfaces, and persisted shapes that must not change.
 - **Binding decisions**: the scope, contract, ownership, dependency, and gate decisions in force for this lane, each with the reason the worker needs to apply it. Point to the plan's Design Summary for the rest rather than copying it. Mark sketches and private implementation hints as illustrative; the worker may adapt those.
 - **Evidence you hold**: known facts with file and line references, prior failures, and attempted fixes. Point to catalog names, reports, and Hive records instead of pasting their bodies; a first catalog match is not proof of sufficient evidence.
-- **Acceptance and checks**: observable criteria and the commands to run, so the worker returns output for the candidate it verified. When you have not settled the checks, say so; the worker then selects them with \`verification\`, starting from the candidate repository's own guidance.
+- **Acceptance and checks**: observable criteria and the commands to run, so the worker returns output for the candidate it verified. Name the claim those checks prove, the affected consumers they reach, and the binding gates, under the Scoped Claims rules in \`verification\`; a small single lane gets the same brief as a decomposed batch. When you have not settled the checks, say so; the worker then selects them with \`verification\`, starting from the candidate repository's own guidance.
 - **Authority**: the mission mode (implement, fix, refactor, or report-only diagnosis, which includes verify-only work; standalone diagnosis goes to an Investigator under Experiments), whether the worker commits and returns a source pin (\`sourceCommit\` for targeted or legacy single-root workspaces, the complete \`sourceCommits\` map for untargeted composites), required skills, and decisions made only in this session.
 - **Destination**: the assigned immediate target and its inspected path, full ref, and commit, with the worker's checkpoint duty. Name any separately authorized onward destination and condition without changing the immediate target.
 

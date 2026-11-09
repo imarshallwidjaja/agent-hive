@@ -622,7 +622,7 @@ describe('Review grounding contract', () => {
       '**Leads**: concerns you noticed in the worker report or diff',
       'each with an anchor and the question that would settle it, marked unverified',
       "Leads direct attention without narrowing the reviewer's scope",
-      "**Evidence**: the worker's verification commands and results, stated deviations, and known risks",
+      "**Evidence**: the worker's verification commands and results, the scope they cover, stated deviations, and known risks",
       "**Re-review**: prior findings with your decision on each, the prior review's Coverage, the fix range (prior..current candidate), and what the fix can affect",
     ]) expect(REVIEW_HANDOFF_PROMPT).toContain(term);
   });
@@ -929,6 +929,13 @@ describe('Worker assignment contract', () => {
     expect(WORKER_ASSIGNMENT_PROMPT).toContain('assign bounded discovery first');
     expect(WORKER_ASSIGNMENT_PROMPT).toContain('cite the report paths the worker must read and why');
     expect(WORKER_ASSIGNMENT_PROMPT).toContain('mandatory findings and requirements, and operator decisions directly in the assignment');
+  });
+
+  it('briefs every lane, single or decomposed, with the claim, affected consumers, and binding gates from verification', () => {
+    expect(WORKER_ASSIGNMENT_PROMPT).toContain('Name the claim those checks prove, the affected consumers they reach, and the binding gates, under the Scoped Claims rules in `verification`; a small single lane gets the same brief as a decomposed batch');
+    expect(HIVE_BUILDER_PROMPT).toContain('A single lane follows the same Scoped Claims rules as a decomposed batch: fresh proof of the changed behavior and its affected consumers, plus binding gates, finishes it without an earlier whole-product pass, and its report states what that proof covers');
+    // The rule body stays in the verification skill; prompts point to it.
+    for (const prompt of [WORKER_ASSIGNMENT_PROMPT, HIVE_BUILDER_PROMPT]) expect(prompt).not.toContain('Sharing a package or file with the change does not show that by itself');
   });
 
   it('keeps source-pin authority and destination identity in the assignment', () => {
@@ -1603,6 +1610,8 @@ describe('Task report reliability', () => {
       'What changed, how it works, and why, naming the important paths and symbols',
       'Material failed approaches, discoveries, and how they were resolved',
       'which claims you observed directly and which are attributed to another author, and what remains unproven',
+      'the scope that evidence covers (a focused pass is not product certification), earlier evidence reused with the reason it still applies',
+      'and what remains unproven or still owed',
       'Risks and forward obligations, each with an owner',
       'Do not add filler, pad to a length, paste full logs, or include secrets',
       'Start with one attribution line naming the author role and the basis of the account',
@@ -3213,6 +3222,9 @@ describe('Scout (Explorer/Researcher) prompt', () => {
 describe('Plan reviewer prompt', () => {
   it('contains agent-executable verification guidance', () => {
     expect(PLAN_REVIEWER_PROMPT).toContain('task checks have executable commands and expected signals');
+    expect(PLAN_REVIEWER_PROMPT).toContain("A task's proof is sized to its changed behavior and affected consumers; a scoped task needs no earlier whole-product pass");
+    expect(PLAN_REVIEWER_PROMPT).toContain('A broad union copied into a task without such a reason is a Verification Observation');
+    expect(PLAN_REVIEWER_PROMPT).toContain('An affected consumer with neither task proof nor a named deferral is a blocker when the omission conceals required acceptance');
   });
 
   it('keeps verification routed to the canonical skill', () => {

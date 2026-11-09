@@ -1,6 +1,6 @@
 ---
 name: project-verification
-description: Use when the operator explicitly asks for, or an assignment names, setting up, auditing, or maintaining a project's durable verification capability, such as its verification guide, the AGENTS.md entry that holds or points to it, a verification harness, or a formal check. Ordinary feature or regression tests, routine in-scope fixtures, and temporary diagnostic probes stay ordinary implementation or diagnosis.
+description: Use when the operator explicitly asks for, or an assignment names, setting up, auditing, or maintaining a project's durable verification capability, such as its verification guide, the AGENTS.md entry that holds or points to it, a verification harness, or a formal check. Ordinary feature or regression tests, routine in-scope fixtures, and temporary diagnostic probes stay ordinary implementation or diagnosis. Also use for a small improvement to an existing verification recipe, guide, or helper inside already-authorized work when a real gap blocked or slowed its proof.
 ---
 
 # Project Verification
@@ -10,6 +10,8 @@ description: Use when the operator explicitly asks for, or an assignment names, 
 A project's verification capability is what lets the next agent, arriving cold in the middle of a change, prove the project's important claims: concise guidance in the repository's applicable `AGENTS.md` or a scoped pointer there to a canonical detailed guide, plus whatever existing or operator-approved checks that guidance orchestrates. This skill creates, audits, and maintains that capability. `verification` owns how any agent selects checks, reads their results, and claims completion; this skill builds the material that `verification` routes to.
 
 Writing a test for the feature you are building, adding a fixture your change needs, or running a throwaway probe while diagnosing is ordinary work under the role's existing guidance, not this skill.
+
+Work that is already authorized may also make a small improvement to an existing verification recipe, guide, or helper when a real gap blocked or slowed the proof that work needed, such as a stale command, a missing setup step, or a fragile operation repeated by hand. Prefer the project's existing tools, keep the change inside the work's writable scope, and report it with the gap it closed. It needs no new guide or framework, and the Creating steps below do not apply to it. Check the changed portion as the next agent would, by following the corrected command or step and reading its real output, and report any portion you did not run as unvalidated; the rest of the guide needs no new proof run. Ordinary regression tests for the change stay with its owning task. The Authority rules below still hold: the improvement brings no new dependency, service, installed tool, or `AGENTS.md` edit that the work does not already authorize.
 
 ## Authority
 
@@ -63,7 +65,7 @@ Keep run-specific decisions and evidence in session or work logs or untracked ar
 - Changing an expected guarantee, a skip, retry, tolerance, assumption, or bound, or a selected gate obligation needs covering authority and a visible statement of its impact. Never weaken a check to make it pass; disclosing a weakening does not authorize it.
 - Keep fixed regression inputs binding unless the operator authorizes a change. Do not reclassify skipped checks or shrink inputs after failure to obtain a pass. Keep the original results when using a recovery variant, and state the variant's separate applicability.
 - Fixing the product needs implementation scope that covers the fix. Without it, report the product failure and keep it out of the verification change.
-- Maintenance is requested work. No periodic job, pull request, or installation is required.
+- Maintenance is requested work, apart from the small in-scope improvement described under Purpose. No periodic job, pull request, or installation is required.
 
 ## Formal Verification
 

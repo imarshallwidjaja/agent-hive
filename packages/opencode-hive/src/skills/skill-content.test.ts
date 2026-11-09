@@ -883,6 +883,79 @@ describe('skill content', () => {
     expect(template).toContain('an unrun node never counts');
   });
 
+  it('finishes a scoped change on fresh focused proof while keeping claim scope, obligations, and cost questions explicit', () => {
+    const template = readSkillTemplate('verification');
+    const scoped = template.slice(template.indexOf('### Scoped Claims'), template.indexOf('## Rigor By Risk'));
+
+    expect(scoped.length).toBeGreaterThan(0);
+    for (const rule of [
+      // No historic whole-product pass is a prerequisite; coverage selects checks but is not an execution.
+      'fresh, executed proof covers the behavior it changed and the connections that behavior reaches',
+      'An earlier whole-product pass is not a prerequisite for finishing it',
+      'a pass needs an observed execution that applies to this candidate, either run now or an earlier result kept under the reuse rule above',
+      // Smallest sufficient proof, read from the actual command expansion and fixture lifetimes.
+      'deterministic owning tests, a constrained integration, or a walkthrough of the changed flow',
+      'what it actually expands to, the setup it performs, and how long its fixtures and state live',
+      // Affectedness follows inputs, not package membership; a material shared input broadens; true docs-only stays light.
+      'source, fixtures, schemas and contracts, lockfiles and configuration, generated artifacts, the build or runner, or relevant runtime inputs',
+      'Sharing a package or file with the change does not show that by itself',
+      'extends the affected set to every check that reads it',
+      'Content that no build, generator, prompt, test, check, or runtime reads needs a content and format check, not a runtime run',
+      'changed prompts, generated content, and documents a test or check reads still get their owning checks',
+      // Claim scope and binding obligations.
+      'never as full-product certification',
+      'binding repository, operator, and plan gates, necessary build, artifact, isolation, and release checks, and known in-scope failures remain obligations',
+      'Never weaken an assertion, a fixture, or a trial count to reach green',
+      // Disproportionate proof: bounded alternative, then explain and ask; proportionate checks need no permission, and an unbounded-impact fallback gets no exemption.
+      'look for a bounded alternative first',
+      'explain the gap, the proof that would close it, and its cost, and ask whoever assigned the work before expanding',
+      'report the claim unproven',
+      'Proportionate owning checks and required gates run without this question',
+      'The broader fallback for impact that cannot be bounded follows the bounded-alternative-then-ask rule above when no requirement demands it and its cost is materially disproportionate',
+      'never counted as a pass',
+    ]) {
+      expect(scoped, rule).toContain(rule);
+    }
+    expect(scoped).not.toMatch(/\d+\s*(%|minutes?|min\b|x\b)/);
+
+    // Corrections rerun corrected cases and affected consumers; retained evidence is recovered and kept honestly.
+    const failure = template.slice(template.indexOf('## Failure Handling'), template.indexOf('## Output Formats'));
+    for (const rule of [
+      'After a correction to product, test, fixture, harness, or content',
+      'rerun the corrected cases and the owning regression',
+      'a commit, session, or merge alone does not invalidate them',
+      'Before a costly rerun, recover retained evidence that still applies',
+      "Keep each run's actual exit status and output before truncation or cleanup",
+      'A required gate that is still missing runs within your authority or is reported unmet',
+    ]) {
+      expect(failure, rule).toContain(rule);
+    }
+    expect(template).toContain('run the owning checks of any prompt, generated, test, check, or runtime consumer that reads it');
+    expect(template).toContain('**Scope**: [what the evidence covers, earlier evidence reused with its reason, and obligations still open]');
+
+    // Workflow owners point to Scoped Claims rather than restating it.
+    for (const caller of ['writing-plans', 'executing-plans', 'orchestrating-ad-hoc-work']) {
+      expect(readSkillTemplate(caller), caller).toContain('Scoped Claims');
+      expect(readSkillTemplate(caller), caller).not.toContain('Sharing a package or file with the change does not show that by itself');
+    }
+    // Ad-hoc entry stays scope routing, not a second verification owner.
+    const starting = readSkillTemplate('starting-ad-hoc-implementation');
+    expect(starting).not.toContain('Scoped Claims');
+  });
+
+  it('sizes plan verification to the delivery path in proportion without a mandatory benchmark', () => {
+    const template = readSkillTemplate('writing-plans');
+    const baseline = template.slice(template.indexOf('## Verification Planning'), template.indexOf('## Worker-Branch Task Granularity'));
+    const method = readSkillReference('writing-plans', 'verification-planning.md');
+
+    expect(baseline).toContain('Size verification to the delivery path, in proportion to the change: what proves the initial work, what a representative correction would rerun, what integration adds, and what the final content needs');
+    expect(baseline).toContain('Each task proves its changed behavior and affected consumers under the Scoped Claims rules in `verification`');
+    expect(baseline).toContain('a task does not copy the complete union by habit');
+    expect(baseline).toContain('This needs no timing benchmark or comparison table unless a verification-efficiency outcome is stated');
+    // The default sizing does not import the efficiency comparison.
+    expect(method).toContain('Plans without such an outcome need none of this beyond the proportionate delivery-path sizing in `SKILL.md`');
+  });
+
   it('selects unsettled checks from the candidate repository AGENTS.md guidance without a fixed layout', () => {
     const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'verification')!;
     const choosing = skill.template.slice(skill.template.indexOf('### Choosing Checks'), skill.template.indexOf('### Candidate and Input Applicability'));
@@ -951,6 +1024,19 @@ describe('skill content', () => {
     expect(skill!.description).toMatch(/^Use when the operator explicitly asks for, or an assignment names, setting up, auditing, or maintaining a project's durable verification capability/);
     expect(skill!.description).toContain('Ordinary feature or regression tests, routine in-scope fixtures, and temporary diagnostic probes stay ordinary implementation or diagnosis');
     expect(template).toContain('`verification` owns how any agent selects checks, reads their results, and claims completion');
+    // A small improvement to existing controls inside authorized work is supported, without new authority or a new guide.
+    expect(skill!.description).toContain('Also use for a small improvement to an existing verification recipe, guide, or helper inside already-authorized work when a real gap blocked or slowed its proof');
+    for (const rule of [
+      'Work that is already authorized may also make a small improvement to an existing verification recipe, guide, or helper when a real gap blocked or slowed the proof that work needed',
+      "Prefer the project's existing tools, keep the change inside the work's writable scope, and report it with the gap it closed",
+      'It needs no new guide or framework, and the Creating steps below do not apply to it',
+      'Check the changed portion as the next agent would, by following the corrected command or step and reading its real output, and report any portion you did not run as unvalidated; the rest of the guide needs no new proof run',
+      'Maintenance is requested work, apart from the small in-scope improvement described under Purpose',
+      'Ordinary regression tests for the change stay with its owning task',
+      'the improvement brings no new dependency, service, installed tool, or `AGENTS.md` edit that the work does not already authorize',
+    ]) {
+      expect(template, rule).toContain(rule);
+    }
     // Authority: none granted; verify-only stays report-only; plan-first and ad-hoc lifecycles hold; scoped creation.
     for (const rule of [
       'This skill grants no tool, edit, commit, or role authority',
@@ -1192,6 +1278,9 @@ describe('skill content', () => {
     expect(template).toContain('existing contract coverage');
     expect(template).toContain('proportionate no-new-test verification');
     expect(template).toContain('tightly bounded behavior-preserving preparatory refactoring');
+    // Verification-capability changes defer to project-verification's own trigger instead of a competing one.
+    expect(template).toContain("a change to the project's durable verification guidance or helpers follows `project-verification`'s own applicability");
+    expect(template).not.toContain('`project-verification` applies only when');
     expect(template).toContain('first unintended side effect');
     expect(template).toContain('Hidden write checks');
     expect(template).toContain('Do not stop at the first contract, parsing, type, null, or schema error');
@@ -1532,6 +1621,13 @@ describe('skill content', () => {
     expect(operatorGuide).toContain('it loads `project-verification`');
     expect(operatorGuide).toContain('A working check can still find a real product failure');
     expect(operatorGuide).toContain('A request to verify a candidate, without implementation authority, is handled the same way');
+    // Operators learn scoped proof, claim scope, and when the agent asks before expanding verification.
+    expect(operatorGuide).toContain('A scoped change is finished by fresh proof of what it changed');
+    expect(operatorGuide).toContain('Tests that cover the change help choose checks, but only an observed run that applies to this candidate counts as proof; an earlier result still applies when nothing it read has changed since');
+    expect(operatorGuide).toContain('A documentation change that no build, test, check, or runtime reads gets a content check, while changed prompts, generated content, and documents a test or check reads still get their owning checks');
+    expect(operatorGuide).toContain('never presents it as certifying the whole product');
+    expect(operatorGuide).toContain('explains the gap and the cost and asks you before expanding');
+    expect(operatorGuide).toContain('a small fix to an existing verification recipe, guide, or helper when a real gap got in the way of its proof');
     expect(operatorGuide).not.toMatch(/\/project-verification|\/create-verification|gate catalogue/);
     expect(pluginReadme).toContain('| `project-verification` |');
   });

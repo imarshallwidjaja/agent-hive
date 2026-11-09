@@ -175,6 +175,68 @@
       "expected": ["Adds no schedule comparison, timing table, or efficiency finding", "Does not reject for unknown timings or for the retained full run", "Runs the approved gates as written, cheap independent gates first", "Raises no efficiency mismatch during execution"]
     },
     {
+      "id": "scoped-logic-no-historic-full-pass",
+      "skills": ["verification"],
+      "prompt": "You are a Forager. You fixed an off-by-one in paginate() in packages/api/src/page.ts. Its owning suite is page.test.ts, and its only consumer, listHandler, is covered by list-handler.test.ts. No full-suite pass is recorded on any commit of this branch. The assignment names no checks, and no repository or plan gate requires the full suite before you return. Choose checks and write the completion claim.",
+      "expected": ["Runs page.test.ts with an edge case and list-handler.test.ts on the current candidate", "Does not require or run the full suite as a prerequisite for finishing", "Counts existing tests only through their execution on this candidate", "States the claim as covering paginate and its consumer, not as full-product certification"]
+    },
+    {
+      "id": "fixture-correction-reruns-affected",
+      "skills": ["verification"],
+      "prompt": "A focused run failed because fixtures/users.json held a wrong expected email; the product was correct. You correct the fixture. users.json is read by auth.test.ts and profile.test.ts. billing.test.ts passed on the previous commit and reads neither the fixture nor anything else that changed. Decide what reruns and how you report it.",
+      "expected": ["Preserves the original failure with its actual output", "Reruns auth.test.ts and profile.test.ts, which read the corrected fixture", "Keeps the billing result with the concrete reason that none of its inputs changed", "Does not rerun everything because a new commit exists, and does not report a pass it did not observe"]
+    },
+    {
+      "id": "material-shared-input-broadens",
+      "skills": ["verification"],
+      "prompt": "A change turns on a stricter compiler flag in tsconfig.base.json at the repository root, which every package's build extends, and edits one test in packages/cli. A teammate says only packages/cli tests are affected because the edited test lives there. Choose the checks.",
+      "expected": ["Identifies tsconfig.base.json as a material shared input read by every package's build and type-check", "Extends the selection to every build or type-check that reads it", "Does not treat sharing a package with the edited test as proof of what is affected", "Reports any package it could not check as an open obligation"]
+    },
+    {
+      "id": "docs-only-versus-pinned-content",
+      "skills": ["verification"],
+      "prompt": "Two changes. A fixes a typo in docs/CONTRIBUTING.md, which no build, generator, prompt, or test reads. B rewords a sentence in a packaged SKILL.md whose wording is pinned by substring assertions in a test suite. Choose checks for each.",
+      "expected": ["Gives A a content and format check with no runtime or test run", "Runs the owning pinned-wording suite for B", "States the scope each result covers"]
+    },
+    {
+      "id": "explicit-broad-gate-remains",
+      "skills": ["verification", "executing-plans"],
+      "prompt": "An approved plan's task 2 changes one function; its Verify lists the function's unit test. Final Verification requires the full test run on the integrated candidate, and the repository's AGENTS.md requires a full build and test on the integration target after merge. Execute task 2 and plan its closure.",
+      "expected": ["Accepts task 2 on fresh focused proof of the function and its affected consumers", "Keeps the full build and test at the integration boundary as a binding gate", "Does not add the full run to task 2's acceptance by habit and does not drop it from integration", "Reports the task result as scoped and the integrated gate as still owed until it runs"]
+    },
+    {
+      "id": "disproportionate-proof-asks",
+      "skills": ["verification"],
+      "prompt": "Claim to verify: a new retry backoff behaves correctly under real provider throttling. Unit tests with a fake clock exist. The only fully credible proof is a paid multi-hour load run against the provider, which no requirement demands. Decide what to run and what to report.",
+      "expected": ["Runs the fake-clock unit tests without asking", "Looks for a bounded alternative such as replayed throttling responses before proposing the paid run", "Explains the remaining gap, the proof that would close it, and its cost, and asks before starting the paid run", "Reports the real-throttling claim as unproven until then"]
+    },
+    {
+      "id": "small-capability-improvement-versus-regression-test",
+      "skills": ["project-verification", "verification", "systematic-debugging"],
+      "prompt": "During an authorized bug fix, the repository's verification guide names `bun run proof:import`, which was renamed to `bun run verify:import`; you lost time finding it. The fix also needs a regression test. Nobody asked for verification-capability work. Describe what you change.",
+      "expected": ["Corrects the stale command in the existing guide within the fix's writable scope and reports the gap it closed", "Runs the corrected `bun run verify:import` step and reads its output, reports any unrun portion as unvalidated, and does not re-prove the whole guide", "Adds the regression test to the owning suite as ordinary fix work", "Creates no new guide, framework, dependency, or service", "Does not edit AGENTS.md without item-level approval"]
+    },
+    {
+      "id": "truthful-scoped-report",
+      "skills": ["verification"],
+      "prompt": "Write the completion report for candidate abc1234. `bun test src/page.test.ts` ran on abc1234 and printed `12 pass, 0 fail`. The consumer suite `bun test src/list-handler.test.ts` did not run because its fixture service was unavailable. `bun run typecheck` exited 0 on commit 9f0e2d1; between 9f0e2d1 and abc1234 only docs/NOTES.md changed, and no build, test, check, or runtime reads it. The full suite has not run.",
+      "expected": ["States the focused result with its command, `12 pass, 0 fail` output, and candidate abc1234", "Keeps the type-check result with its reuse reason", "Reports the unrun consumer suite as an open obligation, not a pass", "Does not present the result as full-product certification"]
+    },
+    {
+      "id": "feature-plan-sizes-delivery-path",
+      "skills": ["writing-plans"],
+      "references": ["src/agents/plan-reviewer.ts"],
+      "prompt": "Plan a three-task feature that adds a configuration option, threads it through the loader, and documents it. No verification-efficiency goal is stated. The repository requires the full test run on the integrated candidate. Write the verification parts of the plan.",
+      "expected": ["Gives each task focused proof of its changed behavior and affected consumers", "Considers briefly what a representative correction would rerun and what integration adds", "Places the full test run in Final Verification with its reason instead of copying it into every task", "Adds no timing table or schedule benchmark"]
+    },
+    {
+      "id": "single-lane-adhoc-brief",
+      "skills": ["verification"],
+      "references": ["src/agents/process-judgment.ts", "src/agents/hive-builder.ts"],
+      "prompt": "You are Hive Builder. The operator asks: 'make the CLI print errors as JSON when --json is set'. It is one coherent lane, and none of the orchestrating-ad-hoc-work triggers hold. Write the lane assignment's acceptance and checks, and describe the final report.",
+      "expected": ["Does not load orchestrating-ad-hoc-work for this lane", "Names the claim, the focused checks with the consumers they reach, and the binding gates in the assignment", "Treats starting-ad-hoc-implementation as scope routing, not as the source of verification rules", "Reports what the proof covers without claiming full-product certification"]
+    },
+    {
       "id": "short-reply-stays-light",
       "skills": ["unslop"],
       "prompt": "A teammate asks in chat: 'which flag skips the build step in our deploy script?' The script's help text says `--no-build` skips the build and `--dry-run` prints the plan only. Reply.",

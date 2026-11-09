@@ -84,11 +84,20 @@ When the assignment, plan, or a binding repository or operator requirement alrea
 - If ownership or impact cannot be bounded, select a broader coherent existing check and report any missing check. Unknown impact is not an empty green result.
 - Required checks that are skipped, unrun, failed, or blocked are not PASS. Optional skips may be reported as skipped.
 
+### Scoped Claims
+
+A scoped change is complete when fresh, executed proof covers the behavior it changed and the connections that behavior reaches. An earlier whole-product pass is not a prerequisite for finishing it. Existing test coverage helps you choose checks; a pass needs an observed execution that applies to this candidate, either run now or an earlier result kept under the reuse rule above.
+
+- **Smallest sufficient proof.** Prefer deterministic owning tests, a constrained integration, or a walkthrough of the changed flow. Before relying on a command, read what it actually expands to, the setup it performs, and how long its fixtures and state live.
+- **Affected connections.** A check is affected when an input it reads changed: source, fixtures, schemas and contracts, lockfiles and configuration, generated artifacts, the build or runner, or relevant runtime inputs. Sharing a package or file with the change does not show that by itself. A material shared input, such as a common fixture, schema, or build stage, extends the affected set to every check that reads it. Content that no build, generator, prompt, test, check, or runtime reads needs a content and format check, not a runtime run; changed prompts, generated content, and documents a test or check reads still get their owning checks.
+- **Claim scope.** Report a focused pass as proof of what it exercised, never as full-product certification. Real affected consumers, binding repository, operator, and plan gates, necessary build, artifact, isolation, and release checks, and known in-scope failures remain obligations. Never weaken an assertion, a fixture, or a trial count to reach green.
+- **Proof that outgrows the task.** When credible proof would materially expand verification cost or scope beyond the task and no requirement already demands it, look for a bounded alternative first. If none is credible, explain the gap, the proof that would close it, and its cost, and ask whoever assigned the work before expanding; a subagent returns that question to its parent. Until then, report the claim unproven. Proportionate owning checks and required gates run without this question. The broader fallback for impact that cannot be bounded follows the bounded-alternative-then-ask rule above when no requirement demands it and its cost is materially disproportionate; the unbounded impact stays reported, never counted as a pass.
+
 ## Rigor By Risk
 
 | Change type | Minimum useful verification |
 |---|---|
-| Docs, prompts, metadata | Spot-check changed content and syntax/format if applicable |
+| Docs, prompts, metadata | Spot-check changed content and syntax/format if applicable; run the owning checks of any prompt, generated, test, check, or runtime consumer that reads it |
 | Logic change | Relevant tests plus one edge/error path when practical |
 | API, tool, or public interface | Build/typecheck plus tests or consumer-style invocation |
 | Bug fix | Reproduce original symptom when practical, then verify fix and regression coverage |
@@ -147,7 +156,7 @@ If a check fails:
 
 Use PARTIAL only for environmental or tool limitations, such as unavailable services, missing credentials, or a server that cannot start for reasons outside the change. Do not use PARTIAL for uncertainty when a check ran.
 
-When output is missing or candidate applicability cannot be established, report UNVERIFIED or BLOCKED, never PASS. After a correction, preserve the original failure, verify the owning regression, and rerun affected consumer and integrated gates; unaffected results stay under the reuse rule above. An unexplained green retry does not resolve an intermittent failure.
+When output is missing or candidate applicability cannot be established, report UNVERIFIED or BLOCKED, never PASS. After a correction to product, test, fixture, harness, or content, preserve the original failure, rerun the corrected cases and the owning regression, and rerun affected consumer and integrated gates; unaffected results stay under the reuse rule above with a concrete reason, and a commit, session, or merge alone does not invalidate them. Before a costly rerun, recover retained evidence that still applies. Keep each run's actual exit status and output before truncation or cleanup. A required gate that is still missing runs within your authority or is reported unmet. An unexplained green retry does not resolve an intermittent failure.
 
 ## Output Formats
 
@@ -161,6 +170,7 @@ When output is missing or candidate applicability cannot be established, report 
 **Output observed**: [relevant output excerpt]
 **Candidate and inputs**: [tested ref/commit, relevant dirty changes and mutable inputs, and why evidence still applies]
 **Attribution**: [direct observation or attributed worker result]
+**Scope**: [what the evidence covers, earlier evidence reused with its reason, and obligations still open]
 **Result**: PASS / FAIL / PARTIAL / UNVERIFIED / BLOCKED
 ```
 

@@ -623,7 +623,7 @@ Generated/managed shape (for inspection) at `<project>/.hive/repositories.json`:
 | `test-driven-development` | Strict red-green-refactor when TDD is the selected testing strategy |
 | `test-quality` | Outcome/oracle and duplicate-coverage lens for reviewers, report-only suite audits, and explicitly authorized remediation |
 | `unslop` | Shared philosophy and router for writing, messaging, and visual work; every Hive role is asked to load it, and it selects depth skills and carries the delegation contract |
-| `verification` | Select checks from the candidate repository's own guidance, read their results, and require applicable command/tool evidence before completion or verification claims |
+| `verification` | Select checks from the candidate repository's own guidance, size proof to what a change touches and reaches, read their results, and require applicable command/tool evidence before completion or verification claims |
 | `why` | Investigate explicitly requested historical rationale with calibrated source evidence |
 | `writing-for-agents` | Reference for authoring documents agents consume: skills, subagent prompts, instructions, and pointer architecture |
 | `writing-for-humans` | Draft substantial reader-centered prose and apply the non-invention finish pass |

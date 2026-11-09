@@ -26,7 +26,7 @@ Choose boundaries in this order:
 1. Identify coherent, independently verifiable outcomes. Keep tightly coupled code, tests, documentation, and generated artifacts together.
 2. Name each concrete predecessor output or capability decision. If a handoff cannot be stated, keep the work together or recommend escalation.
 3. Assign one owner for each module/path and shared resource: generated outputs, external mutable resources, fixed-path test fixtures, ports, databases, and containers. Distinct worktrees do not isolate these resources; use one owner or sequence access.
-4. Define done criteria, binding repository/operator checks, required early or pre-merge gates, lane verification, reviews required by the active primary's Review Routing, and deterministic integration order. Name any integrated-only obligation in the lane/todo inventory with its owner, prerequisite, command, and expected signal.
+4. Define done criteria, the claim each lane proves with its focused checks and affected consumers under the Scoped Claims rules in `verification`, binding repository/operator checks, required early or pre-merge gates, lane verification, reviews required by the active primary's Review Routing, and deterministic integration order. Name any integrated-only obligation in the lane/todo inventory with its owner, prerequisite, command, and expected signal.
 5. Add dependency edges and derive ready waves only after those contracts are clear.
 
 Record each lane's purpose, kind/owner, inputs/handoffs, path and resource ownership, done/verification/review contract, dependencies, integration order, and wait mode. Session state or `todowrite` is enough to track that. Do not create a mandatory evidence ledger.
