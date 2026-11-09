@@ -29,7 +29,7 @@ Paths are repository-root-relative. To run a focused test from its owning packag
 
 For example, a context hash-guard change needs the core context suite and, if the exposed tool contract changes, the plugin tool suite. A role permission change needs both host permission checks and may need installed-host wiring. A prompt wording change needs the pinned wording suites; a claim that a model follows it needs qualitative evidence. A native dependency or public type change needs the applicable packed-consumer and VSIX checks, not just unit tests.
 
-Install dependencies in the candidate worktree when needed, confirm `hive-core` resolves there, and build core before OpenCode checks as root `AGENTS.md` requires. Follow its concurrency-failure procedure and generated VS Code bundle rule. Full canonical build and tests after integration, affected integrated checks, and any release gates remain binding; a local component edit does not by itself require a release rehearsal.
+Install dependencies in the candidate worktree when needed, confirm `hive-core` resolves there, and build core before OpenCode checks as root `AGENTS.md` requires. Follow its concurrency-failure procedure and generated VS Code bundle rule. After integration, follow the root AGENTS.md verification rule on the actual target; required release gates remain binding. A local component edit does not by itself require a release rehearsal.
 
 ## Installed-host and model evidence
 
