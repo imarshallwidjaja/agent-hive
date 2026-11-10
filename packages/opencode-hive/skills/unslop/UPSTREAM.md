@@ -23,7 +23,7 @@ The delegation section is the former delegation rule carried over word for word,
 
 Three skills from [cursor/plugins](https://github.com/cursor/plugins) were read for this change: `pstack/skills/technical-writing/SKILL.md`, `pstack/skills/unslop/SKILL.md`, and `pstack/skills/teach/SKILL.md` (current `main` fetched 2026-10-17; no commit is asserted). Their ideas informed the baseline: real symbol names over synonyms, pronoun and modifier ambiguity, keeping the small words that show structure, and stating a skill dependency as an explicit load. No text was copied, so no license file is bundled. The name `unslop` and the idea of one writing skill that every role knows come from the pstack skill of that name.
 
-Not adopted: the universal sentence-length caps, the ban on dashes and parentheses, the controlled-vocabulary rules, mandatory history and diagrams for explanations, "have opinions" and "let some mess in" as instructions, and an unconditional "must always apply" for every turn. Depth loading here stays conditional, and short replies stay light.
+Not adopted: the universal sentence-length caps, the ban on dashes and parentheses, the controlled-vocabulary rules, mandatory history and diagrams for explanations, "have opinions" and "let some mess in" as instructions, and an unconditional "must always apply" for every turn. Depth loading remains conditional on task and defects at any length.
 
 The reader-impact correction replaces unconditional draft-caveat preservation with a compact affirmative baseline and source authority distinction. The detailed boundary and prose-review decisions live in `writing-for-humans`; the handoff carries the contract into authoring and review and retains the pre-dispatch section check without changing role authority.
 

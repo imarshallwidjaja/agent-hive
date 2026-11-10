@@ -261,10 +261,40 @@
       "expected": ["Does not load orchestrating-ad-hoc-work for this lane", "Names the claim, the focused checks with the consumers they reach, and the binding gates in the assignment", "Treats starting-ad-hoc-implementation as scope routing, not as the source of verification rules", "Reports what the proof covers without claiming full-product certification"]
     },
     {
-      "id": "short-reply-stays-light",
+      "id": "clean-factual-answer-stays-baseline",
       "skills": ["unslop"],
       "prompt": "A teammate asks in chat: 'which flag skips the build step in our deploy script?' The script's help text says `--no-build` skips the build and `--dry-run` prints the plan only. Reply.",
-      "expected": ["Answers `--no-build` in one or two sentences with the flag spelled exactly", "Mentions `--dry-run` only if it helps, without inventing behavior beyond the help text", "Loads no depth writing skill and announces no writing policy", "Adds no opener, closer, summary, or shorter option"]
+      "expected": ["Answers `--no-build` in one or two sentences with the flag spelled exactly", "Mentions `--dry-run` only if it helps, without inventing behavior beyond the help text", "Uses only baseline; no additional route or defect applies", "Announces no writing policy and adds no opener, closer, summary, or shorter option"]
+    },
+    {
+      "id": "rewrite-defect-short",
+      "skills": ["unslop", "writing-for-humans", "humanizer", "stop-slop"],
+      "prompt": "Rewrite this supplied AI draft for an operator, preserving its supported facts and uncertainty: 'This isn't just a retry. It's a game-changing revolution. The service may retry once when `TEMPORARY_FAILURE` occurs.'",
+      "expected": ["Uses the full rewrite workflow and removes the empty contrast and hype", "Keeps the one-retry limit, exact literal and uncertainty", "Adds no unsupported benefit or shorter-option postscript"]
+    },
+    {
+      "id": "rewrite-defect-long",
+      "skills": ["unslop", "writing-for-humans", "humanizer", "stop-slop"],
+      "prompt": "Rewrite this supplied AI draft for an operator, preserving its supported facts and uncertainty: 'This isn't just a retry. It's a game-changing revolution. The service may retry once when `TEMPORARY_FAILURE` occurs. The operator configures the timeout in seconds. The log records the request ID. A failed retry returns the original error.'",
+      "expected": ["Uses the same full rewrite and removes the same empty contrast and hype as the short case", "Keeps the one-retry limit, exact literal, uncertainty and all three additional facts", "Adds no unsupported benefit or shorter-option postscript"]
+    },
+    {
+      "id": "audit-defect-short",
+      "skills": ["unslop", "writing-for-humans", "humanizer", "stop-slop"],
+      "prompt": "Audit this operator-facing draft in place: 'This isn't just a retry. It's a game-changing revolution. The service may retry once when `TEMPORARY_FAILURE` occurs.' The source supports only the last sentence. Keep the command-like literal and uncertainty.",
+      "expected": ["Audits in place and removes the empty contrast and hype, applying applicable cadence checks", "Checks the source and keeps the retry limit, exact literal and uncertainty", "Adds no unsupported benefit or shorter option"]
+    },
+    {
+      "id": "audit-defect-long",
+      "skills": ["unslop", "writing-for-humans", "humanizer", "stop-slop"],
+      "prompt": "Audit this operator-facing draft in place: 'This isn't just a retry. It's a game-changing revolution. The service may retry once when `TEMPORARY_FAILURE` occurs. The operator configures the timeout in seconds. The log records the request ID. A failed retry returns the original error.' The source supports the last four sentences. Keep the command-like literal and uncertainty.",
+      "expected": ["Audits in place with the same cleanup and cadence checks as the short case", "Checks the source and keeps the retry limit, exact literal, uncertainty and all three additional facts", "Adds no unsupported benefit or shorter option"]
+    },
+    {
+      "id": "audit-single-defect-and-voice",
+      "skills": ["unslop", "writing-for-humans", "humanizer"],
+      "prompt": "Audit this author's short note in place, retaining her warm voice and exact quoted product label: 'Thanks for helping. This is a game-changing revolution. Choose `Retry` if the request fails.' The source confirms the instruction but supplies no benefit behind the hype.",
+      "expected": ["Repairs the single empty hype claim without requiring a cluster", "Keeps the thank-you, exact `Retry` label, condition and instruction", "Adds no unsupported benefit or shorter option"]
     },
     {
       "id": "draft-audit-own-technical-answer",

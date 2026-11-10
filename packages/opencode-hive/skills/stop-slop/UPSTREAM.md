@@ -11,3 +11,5 @@ The 2026-10-10 integration of [phuryn/work-humanizer](https://github.com/phuryn/
 A full `humanizer` rewrite now loads this skill explicitly for its crafted-line budget and sentence-length band. The ownership paragraph says so; no rule in this skill changed.
 
 The reader-impact correction aligns the first example and relevance selection with the boundary owner. It retains the prohibition on cadence-driven list changes while removing unconditional retention of every item.
+
+Local reference pointers now name the diagnosis or repair that calls for each reference, independent of text length.

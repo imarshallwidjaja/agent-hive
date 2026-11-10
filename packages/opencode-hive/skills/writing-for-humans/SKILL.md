@@ -1,6 +1,6 @@
 ---
 name: writing-for-humans
-description: Use when drafting or explaining code, architecture, systems, processes, decisions, requirements, PRDs, product outcomes, plans, ADRs, technical documentation, reviews, or other substantial human-facing prose.
+description: Use when drafting or explaining code, architecture, systems, processes, decisions, requirements, PRDs, product outcomes, plans, ADRs, technical documentation, or reviews; or authoring emails, announcements, posts, release notes, or product copy.
 ---
 
 # Writing for humans
@@ -39,7 +39,7 @@ For technical and product prose, check the details relevant to the reader: who o
 
 A rewrite adds nothing that is not in the source or supplied by the user. Specificity comes from the source, not from the rewrite. If a sentence needs real detail to work, ask for it when necessary or write the plain version without it. Preserve relevant semantically distinct list items; rhythm alone is not a reason to add or delete one.
 
-Calibrate before cutting. Look for clusters of tells rather than single instances; one "however" or one short emphatic sentence proves nothing. Preserve specific detail, mixed feelings, unresolved tension, dated references, genuine asides, and varied sentence length. A user-supplied writing sample outranks these defaults.
+Calibrate before cutting. A clear reader-facing defect, such as an unclear relation or empty hype, merits repair on its own. Weak signals need context: one "however" or an isolated word proves nothing. Preserve specific detail, mixed feelings, unresolved tension, dated references, genuine asides, and varied sentence length. A user-supplied writing sample outranks these defaults.
 
 Em dash policy: limit them, and pick the substitute by context: a colon for a label then its description, a period for two complete thoughts, parentheses for a real aside, a comma for a light pause. Never reroute a removed dash into a semicolon or a colon reveal. In a rewrite of AI-composed prose, replace em dashes and spaced en dashes unless the writer's own writing uses them. Elsewhere a deliberate aside may keep one, and a user-supplied sample sets the frequency. This is not an absolute ban.
 

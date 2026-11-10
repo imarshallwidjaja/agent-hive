@@ -93,10 +93,13 @@ describe('skill content', () => {
 
   it('gives writing routing and its overlays distinct ownership without compulsory cleanup', () => {
     const get = (name: string) => BUILTIN_SKILLS.find((entry) => entry.name === name)!.template;
-    expect(get('unslop')).toContain('Load only the rows the case matches');
+    expect(get('unslop')).toContain('Load only matching rows');
     expect(get('unslop')).toContain('Parent-loaded skills do not imply child loading');
     expect(get('unslop')).toContain('does not authorize delegation');
     expect(get('writing-for-humans')).toContain('A rewrite adds nothing');
+    expect(get('writing-for-humans')).toContain('A clear reader-facing defect, such as an unclear relation or empty hype, merits repair on its own');
+    expect(get('writing-for-humans')).toContain('when calibrating a rewrite, explaining a system, or drafting technical or product prose where actors, terminology, conditions, comparisons, or evidence need clarification');
+    expect(BUILTIN_SKILLS.find((entry) => entry.name === 'writing-for-humans')!.description).toContain('authoring emails, announcements, posts, release notes, or product copy');
     expect(get('writing-for-humans')).toContain('This is not an absolute ban');
     expect(get('writing-for-humans')).toContain('without claiming exhaustive scope');
     expect(get('writing-for-humans')).toContain('safety prohibitions at each applicable step');
@@ -134,13 +137,17 @@ describe('skill content', () => {
     const unslop = get('unslop');
     for (const phrase of [
       '**Concrete nouns.**', '**One reading.**', '**Enough words.**', '**Meaning and authority.**', 'guess what a number means',
-      'binding guards at their original force', 'A short reply stays short and needs nothing further loaded',
-      'Routing is a load obligation', 'none applies to every turn',
+      'binding guards at their original force', 'regardless of length',
+      'Routing is a load obligation', 'the baseline suffices when none applies', 'a clear defect or a contextual cluster',
       "It changes no role's authority, finding bar, verdict, or required output format",
       'A read-only reviewer names the defect and the direction of the repair',
       "instruction whose conditions apply to that artifact", 'requester\'s identity alone does not select an overlay',
       'do not turn an inferred register into an operator requirement',
     ]) expect(unslop, phrase).toContain(phrase);
+    expect(unslop).not.toContain('A short reply stays short and needs nothing further loaded');
+    expect(unslop).not.toContain('Substantial docs');
+    expect(unslop).toContain('supplied prose is requested for an audit or check');
+    expect(unslop).toContain('authoring emails, announcements, posts, release notes, or product copy');
     for (const name of ['writing-for-humans', 'stop-slop', 'humanizer', 'writing-for-agents', 'pr-writing', 'stop-design-slop']) {
       expect(unslop, name).toContain(`\`${name}\``);
       expect(BUILTIN_SKILLS.some((entry) => entry.name === name), name).toBe(true);
@@ -154,11 +161,17 @@ describe('skill content', () => {
     expect(humanizer).toContain('without extra reconstruction, even if it is inferable');
     expect(humanizer).toContain('cutting irrelevant, inflated, or unsupported material');
     const description = BUILTIN_SKILLS.find((entry) => entry.name === 'humanizer')!.description;
-    expect(description).toContain('your own draft shows a cluster of these tells before you deliver it');
+    expect(description).toContain('your own draft shows a clear defect or contextual cluster');
     expect(humanizer).toContain('**Draft audit.**');
     expect(humanizer).toContain('There is no interview, no fresh rewrite, no shorter option, and no change notes unless asked');
     expect(humanizer).toContain('A full rewrite (the rewrite, interview, and notes modes below) also loads `stop-slop`');
     expect(humanizer).toContain('A draft audit loads it only when staging or cadence tells appear');
+    expect(humanizer).toContain('checks 3 and 4 when `stop-slop` applies');
+    expect(humanizer).toContain('A requested rewrite uses rewrite mode regardless of length');
+    expect(humanizer).not.toContain('The facts are already right');
+    expect(humanizer).not.toContain('a short draft you are asked to check');
+    expect(readSkillReference('humanizer', 'patterns.md')).toContain('`writing-for-humans` owns calibration');
+    expect(humanizer).toContain('Complete all applicable in-text tightening and checks before deciding whether to offer a shorter option');
     expect(humanizer).toContain('Ordinary technical answers, reports, docs, plans, and status updates get no shorter option unless the writer asks for one');
     expect(readSkillTemplate('stop-slop')).toContain('A full `humanizer` rewrite loads this skill');
   });

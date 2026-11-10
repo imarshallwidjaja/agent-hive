@@ -1,6 +1,6 @@
 # Vocabulary, register, attribution, and formatting
 
-Use patterns in context. A cluster can reveal a writing problem; an isolated word is not a blacklist match. One hit is weak evidence; several together in one passage are the tell. Leave a word alone inside a quotation, a product name, or a passage that discusses the word. Every example below is constructed and its rewrite adds no facts.
+Use patterns in context; `writing-for-humans` owns calibration. No token proves AI authorship. Leave a word alone inside a quotation, a product name, or a passage that discusses the word. Every example below is constructed and its rewrite adds no facts.
 
 ## Doing the reader's work
 
@@ -37,7 +37,7 @@ Before: "The tool offers a seamless way to export rows as CSV."
 
 After: "The tool exports rows as CSV."
 
-Marketing register is fine in an ad and a tell elsewhere. Outside ads, the marketing terms in the high-frequency list under "Vocabulary clusters and copula avoidance" (empower, unlock, seamless, and the like) count as marketing register, and so do these: streamline, revolutionize, transform (as hype), supercharge, harness the power of, best-in-class, world-class, in an ever-changing landscape, the landscape of, we're thrilled/excited to announce, take it to the next level.
+Marketing register can fit an ad and distract elsewhere. Examine these terms in context, including the reader and selected voice: streamline, revolutionize, transform (as hype), supercharge, harness the power of, best-in-class, world-class, in an ever-changing landscape, the landscape of, we're thrilled/excited to announce, take it to the next level.
 
 ## Notability as a substitute for substance
 
@@ -63,7 +63,7 @@ Watch for "Despite its... faces several challenges", "Despite these challenges",
 
 High-frequency words to examine in clusters: Additionally, align with, crucial, cutting-edge, delve, elevate, emphasizing, empower, enduring, enhance, fostering, game-changer, garner, highlight (verb), highlighting, interplay, intricate/intricacies, journey (figurative), key (adjective), landscape (abstract noun), meticulous, next-level, pivotal, revolutionary (figurative), robust (figurative), seamless, showcase, showcasing, tapestry (abstract noun), testament, underscore (verb), unlock (figurative), valuable, vibrant.
 
-Stock AI vocabulary, rarely chosen by working writers, so a hit is drift rather than style: bolster, illuminate, elucidate, transcend, intertwine, espouse, exemplify, underpin, synergy, beacon, symphony, kaleidoscope, myriad, plethora, advancements, game-changing, unparalleled, commendable, indelible, poignant, tireless, unwavering, unyielding, timeless, ever-evolving. Phrases: shed light on, grapple with, rich tapestry, navigate the complexities, paving the way, look no further.
+Other words to examine in context: bolster, illuminate, elucidate, transcend, intertwine, espouse, exemplify, underpin, synergy, beacon, symphony, kaleidoscope, myriad, plethora, advancements, game-changing, unparalleled, commendable, indelible, poignant, tireless, unwavering, unyielding, timeless, ever-evolving. Phrases: shed light on, grapple with, rich tapestry, navigate the complexities, paving the way, look no further.
 
 Also examine superficially scientific vocabulary such as causal, empirical, and correlate when it dresses up an unsupported claim. Keep those words when they are the accurate technical term. This is not a model-specific diagnostic or an authorship claim.
 

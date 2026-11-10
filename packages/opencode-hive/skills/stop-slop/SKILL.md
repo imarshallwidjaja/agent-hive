@@ -9,8 +9,8 @@ Remove filler, staging, formulaic structures, and mechanical cadence while prese
 
 ## Core rules
 
-1. **Cut filler phrases.** Remove throat-clearing openers, emphasis crutches, pause-and-point lines, restating closers, and filler transitions. See [phrases](references/phrases.md).
-2. **Break formulaic structures.** Avoid LinkedIn cadence, antithesis, stacked negation, dramatic fragmentation, and rhetorical setups. See [structures](references/structures.md). Flattening the rhythm is not enough if the contrast frame remains.
+1. **Cut filler phrases.** Remove throat-clearing openers, emphasis crutches, pause-and-point lines, restating closers, and filler transitions. Read [phrases](references/phrases.md) when diagnosing or repairing these phrases.
+2. **Break formulaic structures.** Avoid LinkedIn cadence, antithesis, stacked negation, dramatic fragmentation, and rhetorical setups. Read [structures](references/structures.md) when diagnosing or repairing these structures. Flattening the rhythm is not enough if the contrast frame remains.
 3. **Vary rhythm without reshaping meaning.** AI prose clusters sentence lengths in one band, usually 10 to 20 words. When more than about 70% of sentences sit within five words of the median, vary them in the direction the text needs. Uniformly long: split one or two and add a short sentence that lands a fact. Uniformly short and choppy, the usual result of removing dashes and fragments: merge sentences into a longer one that breathes, around 25 to 40 words. A short sentence must carry a fact or a decision; "It works." carries nothing. Merging sentences is not merging list items: never add, merge, or remove list items for cadence.
 4. **Trust readers.** State facts directly. Preserve meaningful uncertainty, scope, and qualifiers. Remove empty hedging that only softens the point without adding information.
 5. **Cut quotables.** If it sounds like a pull-quote, rewrite it. Budget at most one crafted, quotable line per piece, and zero is fine; flatten the rest into plain statements that keep the fact. Preserve source quotations and concise instructional tests whose wording changes a decision; this test targets manufactured profundity in prose.
@@ -36,4 +36,4 @@ Load with `writing-for-humans`. That skill owns the finish pass, non-invention, 
 - Explaining a metaphor? Trust it to land when the intended reader can understand it without the explanation.
 - Em-dash before a reveal? Remove the staged reveal; follow the core punctuation policy.
 
-These are diagnostic questions, not automatic substitutions. Respect deliberate authorial voice and required quotations alongside the requested cleanup. See [examples](references/examples.md).
+These are diagnostic questions, not automatic substitutions. Respect deliberate authorial voice and required quotations alongside the requested cleanup. Read [examples](references/examples.md) when a staging, cadence, or structure repair needs calibration.

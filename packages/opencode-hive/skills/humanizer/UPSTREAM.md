@@ -2,7 +2,7 @@
 
 Imported from the operator-maintained `~/.agents/skills/humanizer/` on 2026-10-01 at the operator's request. The local source was not a Git checkout; no upstream revision is asserted. Its two files attributed the pattern vocabulary to Wikipedia's Signs of AI writing and later diagnostics to Miqdad Badjuber's MIT-licensed anti-slop project.
 
-oc-arkive maintains the canonical copy. The non-invention rules, voice calibration, cluster test, vocabulary/register/attribution ownership, and diagnostic vocabulary are retained. Cadence-only entries move to `stop-slop` with their detection lists. The checklist is organized by editing problem rather than numbering; examples that invented dates, actors, purposes, or citations have been replaced. Required schemas and selected authorial typography are explicit exceptions to formatting cleanup, consistent with the core writing policy. The local source had no license file; the public anti-slop notice was retrieved during import and included in `LICENSE.antislop`, scoped to its adapted portions.
+oc-arkive maintains the canonical copy. The non-invention rules, voice calibration, contextual diagnostic approach, vocabulary/register/attribution ownership, and diagnostic vocabulary are retained. Cadence-only entries move to `stop-slop` with their detection lists. The checklist is organized by editing problem rather than numbering; examples that invented dates, actors, purposes, or citations have been replaced. Required schemas and selected authorial typography are explicit exceptions to formatting cleanup, consistent with the core writing policy. The local source had no license file; the public anti-slop notice was retrieved during import and included in `LICENSE.antislop`, scoped to its adapted portions.
 
 The public [blader/humanizer](https://github.com/blader/humanizer) skill (retrieved as version 3.1.0 during import review) was also consulted. It shares diagnostic vocabulary and examples with the local source, but the local copy's historical derivation cannot be established from a Git record. `LICENSE.blader` includes Siqi Chen's MIT notice for that overlapping source material; no pinned historical lineage is asserted. The package does not adopt that version's universal dash ban, mandatory multi-output format, or permission to add personal reactions.
 
@@ -32,6 +32,10 @@ Deliberate policy changes:
 ## Draft audit and shorter option (2026-10-17)
 
 An oc-arkive change, not present in either source, adds a focused draft-audit mode for an agent's own draft before delivery, makes the full rewrite's dependency on `stop-slop` explicit (final checks 3 and 4 use its budget and band), and limits the shorter option to a writer's own long-form piece. Ordinary technical answers, reports, docs, plans, and status updates get none unless asked. The upstream shorter-option check is otherwise unchanged.
+
+The local mode selection follows the requested operation and provenance at any length. Audits retain the fact audit and run cadence checks when applicable; weak word hits need context, while a confirmed defect can stand alone. The shorter-option threshold governs presentation after applicable cleanup.
+
+Vocabulary classification is adapted: listed words are examined in context rather than treated as automatic drift, protecting legitimate voice and domain terms. A lone empty hype claim still warrants repair. The earlier cluster test is therefore not a prerequisite for a clear defect.
 
 ## Reader-impact correction
 

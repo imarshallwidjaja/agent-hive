@@ -13,7 +13,7 @@ This skill is the shared philosophy and the router. It applies to writing, to re
 
 Apply to every human-facing output, short replies included, without announcing it:
 
-- **Reader first.** Put the answer, decision, or next action first, in the words this reader would use. A short reply stays short and needs nothing further loaded.
+- **Reader first.** Put the answer, decision, or next action first, in the words this reader would use.
 - **Concrete nouns.** Name the real symbol, file, flag, command, number, or person, not a synonym, a description, or a metaphor for it. Give each thing one name and keep it.
 - **One reading.** Each "it", "this", "they", and "which" points at one obvious noun; repeat the noun when in doubt. Place "only" and "not" beside the word they change. Keep the verb and the small words that show a sentence's structure.
 - **Enough words.** Compression that makes the reader rebuild a relationship or guess what a number means moves the work to them. Shorter is clearer only when nothing the reader needs was cut.
@@ -27,14 +27,14 @@ Product copy, announcements, and interface labels meet the same test: concrete p
 
 ## Route
 
-Routing is a load obligation. When a row matches, load the skills it names with the native skill tool before drafting or repair, plus any those skills name for themselves. Load only the rows the case matches; none applies to every turn.
+Routing is a load obligation. The task and actual defects determine matching rows and applicable workflows and checks regardless of length. When a row matches, load the skills it names with the native skill tool before drafting or repair, plus any those skills name for themselves. Load only matching rows; the baseline suffices when none applies.
 
 | Case | Load |
 |---|---|
-| Substantial docs, plans, reports, reviews, explanations, or a prose handoff | `writing-for-humans` |
+| Docs, plans, reports, reviews, explanations, prose handoffs, or authoring emails, announcements, posts, release notes, or product copy | `writing-for-humans` |
 | Cadence or structure problems: antithesis, stacked negation, fragment runs, quotable closers, uniform rhythm | `writing-for-humans` and `stop-slop` |
 | Rewriting existing prose to remove AI tone (vocabulary, register, attribution, formatting, chat artifacts), or composing from a writer's notes, transcript, or interview answers | `writing-for-humans` and `humanizer`; a full rewrite adds `stop-slop` |
-| Your own draft shows a cluster of those tells before you deliver it | `humanizer` for a draft audit, adding `stop-slop` when staging or cadence tells appear |
+| Your own draft shows a clear defect or a contextual cluster of those tells before you deliver it, or supplied prose is requested for an audit or check | `humanizer` for a draft audit, adding `stop-slop` when staging or cadence tells appear |
 | A broadly slop-heavy rewrite | `writing-for-humans`, `humanizer`, and `stop-slop` |
 | Agent-consumed instructions: skills, prompts, `AGENTS.md`, pointers | `writing-for-agents` |
 | PR titles, descriptions, and review comments | `pr-writing` |

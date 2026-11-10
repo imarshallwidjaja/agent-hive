@@ -611,7 +611,7 @@ Generated/managed shape (for inspection) at `<project>/.hive/repositories.json`:
 | `grilling` | Orient on supplied context, explain what is found, and question it until material decisions and evidence are aligned |
 | `hive-config` | Hive runtime layout, state-tool ownership, read-only session forensics, and Agent Hive configuration reference |
 | `how` | Explain current source-grounded behavior and subsystem flow |
-| `humanizer` | Rewrite existing prose without changing its facts or commitments, interview the writer or work from their notes, audit your own draft, and repair vocabulary, register, attribution, and formatting |
+| `humanizer` | Rewrite existing prose without changing its facts or commitments, interview the writer or work from their notes, audit your own or supplied draft, and repair vocabulary, register, attribution, and formatting |
 | `orchestrating-ad-hoc-work` | Coordinate qualifying ad-hoc work for Hive Builder or unified Hive |
 | `parallel-exploration` | Researcher fan-out for read-only research |
 | `pr-writing` | Draft PR titles, descriptions, and general or inline review comments |
@@ -626,7 +626,7 @@ Generated/managed shape (for inspection) at `<project>/.hive/repositories.json`:
 | `verification` | Select checks from the candidate repository's own guidance, size proof to what a change touches and reaches, read their results, and require applicable command/tool evidence before completion or verification claims |
 | `why` | Investigate explicitly requested historical rationale with calibrated source evidence |
 | `writing-for-agents` | Reference for authoring documents agents consume: skills, subagent prompts, instructions, and pointer architecture |
-| `writing-for-humans` | Draft substantial reader-centered prose and apply the non-invention finish pass |
+| `writing-for-humans` | Draft reader-centered prose, including emails, announcements, posts, release notes, and product copy, and apply the non-invention finish pass |
 | `writing-plans` | Turn requirements into an implementation plan |
 
 ### Per-Agent Skills
@@ -643,7 +643,7 @@ Skills are loaded through OpenCode's native `skill` tool, not through a Hive plu
 
 **User file skills** should be configured through OpenCode's native `.opencode`, `.claude`, `.agents`, `skills.paths`, or `skills.urls` discovery. They can be loaded manually with the native `skill` tool or advertised to an agent by adding the skill's frontmatter `name` to `autoLoadSkills`. Native/user skills take precedence over Hive bundled skills with the same name.
 
-The writing and visual family is maintained in oc-arkive. `unslop` is the shared philosophy and router, and every Hive role is asked to load it (see [Default auto-load skills](#per-agent-skills) below). It selects the depth skills by case: `writing-for-humans` owns drafting and the finish pass, `stop-slop` owns staging/cadence/structure repair, `humanizer` owns the rewrite workflow for existing prose (rewrite, interview, and notes modes, a focused audit of an agent's own draft, a fact audit, and an optional `check.py` sweep) plus vocabulary/register/attribution/formatting repair, and `stop-design-slop` carries the visual foundation. Depth skills load only on their triggers. `pr-writing` retains its artifact and publication contract, and `writing-for-agents` retains instruction-authoring ownership.
+The writing and visual family is maintained in oc-arkive. `unslop` is the shared philosophy and router, and every Hive role is asked to load it (see [Default auto-load skills](#per-agent-skills) below). It selects the depth skills by case: `writing-for-humans` owns drafting and the finish pass, `stop-slop` owns staging/cadence/structure repair, `humanizer` owns the rewrite workflow for existing prose (rewrite, interview, and notes modes, a focused audit of an agent's own or supplied draft, a fact audit, and an optional `check.py` sweep) plus vocabulary/register/attribution/formatting repair, and `stop-design-slop` carries the visual foundation. Depth skills load only on their triggers. `pr-writing` retains its artifact and publication contract, and `writing-for-agents` retains instruction-authoring ownership.
 
 `writing-policy` no longer ships and has no alias: `unslop` replaced it. A personal copy at `~/.agents/skills/writing-policy/` is outside the package, is not migrated or removed, and nothing in oc-arkive loads it now; references to `writing-policy` in your own instructions, constraints, or agent configuration find only that personal copy, if you keep one. A personal `stop-design-slop` skill (for example `~/.agents/skills/stop-design-slop/`) is a same-name native skill, so it takes precedence over the bundled `stop-design-slop` until you remove it. Moving to the bundled foundation is a separate step that the operator takes by hand; oc-arkive migrates nothing automatically.
 

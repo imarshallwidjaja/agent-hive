@@ -15,3 +15,5 @@ An oc-arkive adaptation adds a context-sensitive technical clarity check to the 
 The reader-impact correction replaces the earlier expectation-only and source-negative rules with a concrete consequence test, while retaining necessary claim qualifiers and imported instruction wording, examples, exceptions, and normative force. It distinguishes editable drafts from evidence and actual literals from ordinary copy. Paired examples show how the question changes which evidence gaps matter. Review guidance applies the same test to proposed changes within the existing role bar.
 
 The finish pass now foregrounds comprehension and checks technical quantities and obscured relationships in context. [Zonder Labs' clarity diagnostics](https://zonderlabs.com/slop) (2026-11-09) informed these examples; their reported frequencies are not adopted as proof.
+
+The local trigger and calibration apply at any length: a clear reader-facing defect warrants repair without a cluster, while weak signals need context.
