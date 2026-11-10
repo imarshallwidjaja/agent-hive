@@ -28,3 +28,5 @@ Not adopted: the universal sentence-length caps, the ban on dashes and parenthes
 The reader-impact correction replaces unconditional draft-caveat preservation with a compact affirmative baseline and source authority distinction. The detailed boundary and prose-review decisions live in `writing-for-humans`; the handoff carries the contract into authoring and review and retains the pre-dispatch section check without changing role authority.
 
 Personal overlay selection now follows the artifact and applicable instructions; handoffs preserve that selection without promoting an inferred register to an operator requirement.
+
+The reader-first and compression guidance also reflects [Zonder Labs' clarity diagnostics](https://zonderlabs.com/slop) (2026-11-09): next actions and obscured relationships or number meanings are reader concerns. The article's frequency claims are not adopted as proof.

@@ -11,6 +11,7 @@ This skill carries the operator-maintained `writing-for-humans` guidance importe
 - [arc42](https://arc42.org/overview), [C4](https://c4model.com/), and [MADR](https://adr.github.io/madr/): explain context, responsibilities, behavior, constraints, and decisions. Keep discarded alternatives where they help the reader decide.
 - [Wikipedia: Signs of AI writing](https://en.wikipedia.org/wiki/Wikipedia:Signs_of_AI_writing): a pattern reference, not proof of authorship or a vocabulary blacklist.
 - [wait-what](https://github.com/mattpocock/skills/tree/main/skills/productivity/wait-what): re-pitch an explanation with enough context and the project's terms.
+- [Zonder Labs, "Why is AI Slop so Frustrating to Read?"](https://zonderlabs.com/slop) (2026-11-09): diagnostic examples of hidden actions, vague wording, and misplaced emphasis; not a validated frequency claim for this guidance.
 - [anti-slop](https://github.com/miqdadbadjuber/anti-slop), Miqdad Badjuber, MIT: the draft/audit/fix loop, non-invention rule, cluster principle, and preservation of human voice. Its license notice is bundled in this skill.
 
 The local source also cited [danyuchn/asd-ste100-skill](https://github.com/danyuchn/asd-ste100-skill) and [tamdogood/orwell-writing](https://github.com/tamdogood/builder-essential-skills/blob/main/skills/orwell-writing/SKILL.md) as influences. These links are provenance, not prerequisites to fetch on every writing task.

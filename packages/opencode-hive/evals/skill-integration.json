@@ -32,6 +32,30 @@
       "expected": ["Names software as the calculating actor and satellite data as input", "Explains the returned reports and records in language suited to the reader", "Keeps saved-result identity, technical checks, and rules for use distinct without inventing authority", "Names both answers in the comparison", "Bounds the retry benefit to the acceptance operation and does not claim earlier calculations are avoided", "Explains coordinator and worker responsibilities and the recorded cost without claiming measured savings"]
     },
     {
+      "id": "technical-clarity-order-and-jargon",
+      "skills": ["unslop", "writing-for-humans"],
+      "prompt": "Revise for database engineers. Notes: the schema migration runs before the index rebuild. Engineers know both terms. The checkpoint is written before replication resumes; who writes it is unspecified. Draft: 'Migration sits at the indexing boundary. The checkpoint is written before replication resumes.'",
+      "expected": ["Makes the migration's order relative to the index rebuild explicit", "Preserves checkpoint and the useful passive without inventing its actor", "Does not turn domain vocabulary into a generic paraphrase"]
+    },
+    {
+      "id": "technical-clarity-known-and-unknown-metrics",
+      "skills": ["unslop", "writing-for-humans"],
+      "prompt": "Write a status update on the catalog experiment. On catalog B, the median search returned 18 results before the change and 24 afterward. A separate billing report says only that its numbers improved; its metric and baseline are unavailable. Draft: 'Search improved by 6. Billing improved too.' Then answer: Does the billing report establish an improvement?",
+      "expected": ["Names the median result count, catalog and comparison for the known change", "May omit the billing claim from the update if irrelevant; if retained, identifies its missing metric and baseline", "Answers the direct billing question with the missing evidence and invents no metric or baseline", "Does not treat the two reports as one measurement"]
+    },
+    {
+      "id": "technical-clarity-deletion-and-dependency",
+      "skills": ["unslop", "writing-for-humans", "humanizer"],
+      "prompt": "Tighten this explanation for new support staff unfamiliar with escrow: 'Escrow holds funds with a third party until a condition is met. In other words, the funds are held by a third party. The buyer must confirm delivery before escrow releases the funds, so shipment alone does not release them.' Separately, an inspection is underway; the inspector sends a certificate after it finishes, and the landlord must receive that certificate before opening the building. No other status is supplied. Summarize the status too.",
+      "expected": ["Removes the redundant gloss while retaining the definition and the delivery condition's consequence", "States the ongoing inspection, certificate delivery and opening dependency unambiguously", "Does not infer that no other tasks are pending"]
+    },
+    {
+      "id": "technical-clarity-metaphor-source",
+      "skills": ["unslop", "writing-for-humans"],
+      "prompt": "Explain two notes for an operations handoff: A: the scheduler's 'circuit breaker' pauses new jobs after three consecutive failures. B: a billing service also has a 'circuit breaker', but its operation is unspecified. No other behavior is supplied.",
+      "expected": ["Explains A as pausing new jobs after three consecutive failures", "Does not invent an operation for B", "States the missing operation if needed to answer"]
+    },
+    {
       "id": "working-product-notes-and-missing-facts",
       "skills": ["unslop", "writing-for-humans"],
       "prompt": "Turn these rough notes into working product-alignment notes for a product and engineering discussion: A user starts a review and receives a report. The report includes a quality flag. A worker produces the report after a source is accepted. Who accepts the source and what the quality flag establishes are not specified. Use short task-oriented sections with ideas and commentary where useful.",

@@ -6,6 +6,56 @@ These are constructed examples, not external factual claims. Each rewrite preser
 
 Each source note supplies the context for its short before-sentence. The repairs are examples, not required sentence shapes.
 
+**Order and domain terms**
+
+Source: The readiness check runs before the authentication handler. The audience knows the term "authentication handler".
+
+Before: "The readiness check sits at the session entry boundary."
+
+After: "The readiness check runs before the authentication handler."
+
+**Measured and unknown quantities**
+
+Source: On dataset A, median import time fell from 12 s to 9 s. A separate report says only that its numbers improved; its metric and baseline are unavailable.
+
+Before: "Import improved by 3 s. The other numbers improved too."
+
+After: "On dataset A, median import time fell from 12 s to 9 s. The other report says its numbers improved, but does not identify the metric or baseline."
+
+If the other report is irrelevant to the reader's question, omit its vague claim without a gap disclaimer. If the question asks whether that report establishes an improvement, explain the missing metric and baseline.
+
+**Useful connection and redundant gloss**
+
+Source: The snapshot may omit later changes. The report describes the snapshot, so it does not establish the dataset's current state. A snapshot is a saved copy.
+
+Before: "The report describes the snapshot, a saved copy. In other words, it describes the saved copy. The snapshot may omit later changes, so the report does not establish the dataset's current state."
+
+After: "The report describes the snapshot, a saved copy. The snapshot may omit later changes, so the report does not establish the dataset's current state."
+
+**Status and dependency**
+
+Source: The poll is still running. When the poll finishes, the coordinator will report the poll result. Deploy cannot begin until the result is approved. No other task status is supplied.
+
+Before: "The result is the remaining dependency, with reporting following the polling boundary."
+
+After: "The poll is still running. When the poll finishes, the coordinator will report the poll result; deploy cannot begin until the result is approved."
+
+**Metaphor and known operation**
+
+Source: The worker's "safety net" retries a failed upload once. No other behavior is specified.
+
+Before: "The safety net protects uploads."
+
+After: "The worker retries a failed upload once."
+
+**Known jargon and useful passive**
+
+Source: Engineers know the term "write-ahead log". The log is flushed before the transaction is acknowledged; the actor that flushes it is unspecified.
+
+Before: "The write-ahead log is flushed before the transaction is acknowledged."
+
+After: "The write-ahead log is flushed before the transaction is acknowledged."
+
 **Actor and input**
 
 Source: Software uses satellite data to calculate a screening result.

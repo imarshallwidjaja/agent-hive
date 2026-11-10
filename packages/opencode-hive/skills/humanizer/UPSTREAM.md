@@ -36,3 +36,5 @@ An oc-arkive change, not present in either source, adds a focused draft-audit mo
 ## Reader-impact correction
 
 The upstream all-facts and all-caveats audit is adapted to select supported, relevant content before rewriting and audit that selection. The `writing-for-humans` boundary rule governs standalone exclusions and evidence gaps; retained claims keep their qualifications, imported instructions keep required wording, examples, exceptions, and force, and explicit faithful-copy and light-edit contracts remain binding. Interview and voice workflows stay in place.
+
+The main rewrite step deliberately adapts the upstream deletion test for doing the reader's work: inferable meaning alone does not make a restatement removable when it carries a definition or connection the intended reader needs. Reader effort matters, while irrelevant or unsupported material remains removable. Zonder Labs' [clarity diagnostics](https://zonderlabs.com/slop) (2026-11-09) informed this distinction; its examples are diagnostic, not evidence of a validated frequency here.

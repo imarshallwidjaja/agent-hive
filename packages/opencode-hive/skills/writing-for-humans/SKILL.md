@@ -32,10 +32,10 @@ Do not manufacture importance or tension. Avoid antithesis frames such as "This 
 Before delivering, run one loop: draft, audit, fix.
 
 1. Draft with the principles above, then read it as the intended reader would.
-2. Audit with three questions. What makes this read as machine-written? Is each thing introduced by what it is or does, with every remaining exclusion meeting the boundaries test? Does it state any fact, name, number, date, quote, or citation not in the source or conversation?
+2. Audit with three questions. Where must the reader reread or guess to understand the point, and what makes this read as machine-written? Is each thing introduced by what it is or does, with every remaining exclusion meeting the boundaries test? Does it state any fact, name, number, date, quote, or citation not in the source or conversation?
 3. Fix the hits, then check again. Do not narrate the audit unless asked.
 
-For technical and product prose, check the details relevant to the reader: who or what acts, the action and its object or version, conditions and prerequisites, both sides of a comparison, and what a result establishes. Make relationships explicit before compressing them. Resolve or state necessary missing facts; do not invent an actor, condition, benefit, or authority to fill a gap.
+For technical and product prose, check the details relevant to the reader: who or what acts, the action and its object or version, conditions and prerequisites, both sides of a comparison, what a quantity or delta measures and its baseline or conditions, and what a result establishes. Unpack compounds or metaphor labels when they obscure an operation or relationship; keep the reader's domain terms and concise known referents. Make relationships explicit before compressing them. Resolve or state necessary missing facts; do not invent an actor, condition, metric, baseline, benefit, or authority to fill a gap.
 
 A rewrite adds nothing that is not in the source or supplied by the user. Specificity comes from the source, not from the rewrite. If a sentence needs real detail to work, ask for it when necessary or write the plain version without it. Preserve relevant semantically distinct list items; rhythm alone is not a reason to add or delete one.
 

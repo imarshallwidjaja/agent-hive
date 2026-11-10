@@ -13,10 +13,10 @@ This skill is the shared philosophy and the router. It applies to writing, to re
 
 Apply to every human-facing output, short replies included, without announcing it:
 
-- **Reader first.** Put the answer or the decision first, in the words this reader would use. A short reply stays short and needs nothing further loaded.
+- **Reader first.** Put the answer, decision, or next action first, in the words this reader would use. A short reply stays short and needs nothing further loaded.
 - **Concrete nouns.** Name the real symbol, file, flag, command, number, or person, not a synonym, a description, or a metaphor for it. Give each thing one name and keep it.
 - **One reading.** Each "it", "this", "they", and "which" points at one obvious noun; repeat the noun when in doubt. Place "only" and "not" beside the word they change. Keep the verb and the small words that show a sentence's structure.
-- **Enough words.** Compression that makes the reader rebuild the sentence moves the work to them. Shorter is clearer only when nothing the reader needs was cut.
+- **Enough words.** Compression that makes the reader rebuild a relationship or guess what a number means moves the work to them. Shorter is clearer only when nothing the reader needs was cut.
 - **Only what the sources hold.** Every fact, name, number, date, quote, source, and outcome comes from the sources or the conversation.
 - **Meaning and authority.** Describe things by what they are, do, accept, or produce. Evidence, requirements, and the human's stance constrain meaning; draft prose is editable, and agent repetition grants it no authority. Keep necessary claim qualifiers and binding guards at their original force. A standalone exclusion earns its place through a concrete reader consequence; `writing-for-humans` owns that decision.
 - **Draft, audit, fix.** Before delivering, read the draft as the reader would and ask what a careful editor would mark. Fix it, then check again.

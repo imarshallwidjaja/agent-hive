@@ -101,6 +101,10 @@ describe('skill content', () => {
     expect(get('writing-for-humans')).toContain('without claiming exhaustive scope');
     expect(get('writing-for-humans')).toContain('safety prohibitions at each applicable step');
     expect(get('writing-for-humans')).toContain('every remaining exclusion meeting the boundaries test');
+    expect(get('writing-for-humans')).toContain('Where must the reader reread or guess');
+    expect(get('writing-for-humans')).toContain('what a quantity or delta measures and its baseline or conditions');
+    expect(get('writing-for-humans')).toContain('keep the reader\'s domain terms and concise known referents');
+    expect(get('writing-for-humans')).toContain('do not invent an actor, condition, metric, baseline');
     expect(get('writing-for-humans')).toContain('concrete consequence for this reader');
     expect(get('writing-for-humans')).toContain('never invent its converse');
     expect(get('writing-for-humans')).toContain('prior presence or implied-but-not-explicit alone is insufficient');
@@ -129,7 +133,7 @@ describe('skill content', () => {
     const get = (name: string) => BUILTIN_SKILLS.find((entry) => entry.name === name)!.template;
     const unslop = get('unslop');
     for (const phrase of [
-      '**Concrete nouns.**', '**One reading.**', '**Enough words.**', '**Meaning and authority.**',
+      '**Concrete nouns.**', '**One reading.**', '**Enough words.**', '**Meaning and authority.**', 'guess what a number means',
       'binding guards at their original force', 'A short reply stays short and needs nothing further loaded',
       'Routing is a load obligation', 'none applies to every turn',
       "It changes no role's authority, finding bar, verdict, or required output format",
@@ -145,6 +149,10 @@ describe('skill content', () => {
 
   it('keeps humanizer focused on a draft audit apart from the full rewrite and limits the shorter option', () => {
     const humanizer = readSkillTemplate('humanizer');
+    expect(humanizer).toContain('Apply the deletion test in rewrite step 5');
+    expect(humanizer).toContain('keep a definition or connection the intended reader needs');
+    expect(humanizer).toContain('without extra reconstruction, even if it is inferable');
+    expect(humanizer).toContain('cutting irrelevant, inflated, or unsupported material');
     const description = BUILTIN_SKILLS.find((entry) => entry.name === 'humanizer')!.description;
     expect(description).toContain('your own draft shows a cluster of these tells before you deliver it');
     expect(humanizer).toContain('**Draft audit.**');

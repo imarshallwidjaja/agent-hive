@@ -4,10 +4,10 @@ Use patterns in context. A cluster can reveal a writing problem; an isolated wor
 
 ## Doing the reader's work
 
-Test each sentence by deleting it: if the reader can still recover the meaning, leave it deleted.
+Apply the deletion test in the main skill's rewrite step 5 to these patterns.
 
 1. Defining a word the reader knows ("Revoke the token, which invalidates the session.").
-2. Spelling out the implication ("This means that...", "In other words..."), including the trailing -ing rider (", highlighting the team's commitment to...", ", underscoring...", ", reflecting a broader shift").
+2. Unnecessarily restating an implication ("This means that...", "In other words..."), including the trailing -ing rider (", highlighting the team's commitment to...", ", underscoring...", ", reflecting a broader shift"); distinguish it from a causal or ordering explanation the reader needs.
 3. Stating the conclusion the facts already delivered ("So the lesson is...").
 4. Pointing ("Notice how...", "As you can see...", "What this shows is...").
 5. Telling the reader how to feel ("This is exciting.", "This should worry you.").
