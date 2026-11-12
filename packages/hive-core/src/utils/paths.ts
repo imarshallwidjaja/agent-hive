@@ -1,5 +1,6 @@
 import * as path from 'path';
 import * as fs from 'fs';
+import { randomUUID } from 'crypto';
 import type { FeatureDirectoryInfo, FeatureJson, ReviewDocument } from '../types.js';
 import {
   describeNativeLockHolder,
@@ -588,6 +589,35 @@ export function writeAtomicDurable(filePath: string, content: string | NodeJS.Ar
       // The rename may already have published the destination.
     }
     throw error;
+  }
+}
+
+/**
+ * Durably publish content at `filePath` only when nothing exists there: the
+ * content is flushed to a uniquely named temp file, then hard-linked into
+ * place, so an existing file is never replaced. Returns false, leaving the
+ * existing file untouched, when the name is taken.
+ */
+export function writeAtomicDurableExclusive(filePath: string, content: string | NodeJS.ArrayBufferView): boolean {
+  ensureDir(path.dirname(filePath));
+  const tempPath = `${filePath}.tmp.${process.pid}.${randomUUID()}`;
+  try {
+    fs.writeFileSync(tempPath, content, { flag: 'wx' });
+    syncFile(tempPath);
+    try {
+      fs.linkSync(tempPath, filePath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
+      throw error;
+    }
+    syncDirectory(path.dirname(filePath));
+    return true;
+  } finally {
+    try {
+      fs.unlinkSync(tempPath);
+    } catch {
+      // A temp file that was never created needs no removal.
+    }
   }
 }
 

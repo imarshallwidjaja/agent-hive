@@ -21,6 +21,7 @@ import {
   type ContextScope,
   type NativeObservationOwner,
   type StandingConstraintEntry,
+  type WorklogAuthor,
   type WorklogRef,
 } from 'hive-core';
 
@@ -184,6 +185,21 @@ export function createHiveServices(options: { projectRoot: string; detectedFeatu
     if (selected !== undefined && selected !== null) throw new Error(`Session ${sessionID} has an invalid selected feature route; select a feature or null with hive_feature_select, or pass ref explicitly.`);
     return { kind: 'session', owner: nativeObservationOwner, sessionId: sessionID };
   };
+  /** The calling session and agent as a host-attested author, or undefined unless both are known. */
+  const sessionActor = (invocation: HiveInvocation): WorklogAuthor | undefined => invocation.sessionID && invocation.agent
+    ? { owner: nativeObservationOwner, sessionId: invocation.sessionID, agent: invocation.agent }
+    : undefined;
+  /**
+   * The Worklog an ad-hoc run's creating session records into, by `resolveWorklogRef`'s rule without an explicit ref.
+   * Undefined instead of an error when it cannot be resolved, so provenance never fails a create.
+   */
+  const adhocRunOrigin = (invocation: HiveInvocation): { worklog: WorklogRef } | undefined => {
+    try {
+      return { worklog: resolveWorklogRef(undefined, invocation) };
+    } catch {
+      return undefined;
+    }
+  };
   const readConstraints = (target: ConstraintTarget): ConstraintRegister => target.scope === 'session'
     ? sessionService.readStandingConstraints(target.sessionID)
     : featureConstraintService.read(target.feature);
@@ -222,6 +238,8 @@ export function createHiveServices(options: { projectRoot: string; detectedFeatu
     captureRoute,
     constraintTarget,
     resolveWorklogRef,
+    sessionActor,
+    adhocRunOrigin,
     readConstraints,
     assertTaskRepoIds,
   };

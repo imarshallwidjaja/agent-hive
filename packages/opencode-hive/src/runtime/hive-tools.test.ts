@@ -592,11 +592,21 @@ describe('retained checkout operations', () => {
       runId: 'run', historyIntent: 'preserve-source', message: 'feat: run work\n\nIntegrate the run.', sourceCommit: work,
       expectedTarget: (await callJson('hive_adhoc_worktree_inspect', { runId: 'run' })).target,
     });
-    expect(merged).toMatchObject({ success: true, merged: true });
+    expect(merged).toMatchObject({ success: true, merged: true, provenance: { status: 'recorded' } });
     expect(gitIn(release.checkout.path, 'merge-base', '--is-ancestor', work, 'HEAD')).toBe('');
     expect(gitIn(root, 'rev-parse', 'HEAD')).toBe(base);
+    // Without a selected feature the run's origin is the creating session's own log; the merge stamps its caller.
+    expect(JSON.parse(fs.readFileSync(path.join(root, '.hive', 'provenance', 'integrations', `${merged.sha}.json`), 'utf8'))).toMatchObject({
+      origins: [{ kind: 'adhoc', runId: 'run', worklog: { kind: 'session', owner: 'opencode-v1', sessionId: 'session' } }],
+      integratedBy: { owner: 'opencode-v1', sessionId: 'session', agent: 'hive-master' },
+    });
 
     await callJson('hive_feature_create', { name: 'ship' });
+    // With a selected feature the origin is that feature's log, and a caller cannot supply its own.
+    await callJson('hive_feature_select', { feature: 'ship' });
+    const shipRun = await callJson('hive_adhoc_worktree_create', { runId: 'ship-run', target: 'root/next', origin: { worklog: { kind: 'feature', featureName: 'forged' } } });
+    expect(JSON.parse(fs.readFileSync(`${shipRun.path}.json`, 'utf8')).origin).toEqual({ worklog: { kind: 'feature', featureName: 'ship' } });
+    await callJson('hive_feature_select', { feature: null });
     expect(await failure('hive_task_create', { feature: 'ship', name: 'bad', target: 'root/next', repos: ['api'] })).toContain('works only in repository root');
     expect(await call('hive_task_create', { feature: 'ship', name: 'work', target: 'root/next' })).toBe('01-work');
     expect((await callJson('hive_status', { feature: 'ship' })).tasks[0]).toMatchObject({ folder: '01-work', target: 'root/next' });
@@ -635,7 +645,7 @@ describe('retained checkout operations', () => {
     expect(await callJson('hive_checkout_readiness', { id: 'root/release', expectedTarget: { ...head, commit: '0'.repeat(40) }, readiness }))
       .toMatchObject({ success: false, reason: 'binding_mismatch' });
     expect(await callJson('hive_checkout_readiness', { id: 'root/release', expectedTarget: head, readiness }))
-      .toMatchObject({ success: true, checkout: { readiness: { state: 'ready', commit: head.commit, waitingFor: 'release review' } } });
+      .toMatchObject({ success: true, checkout: { readiness: { state: 'ready', commit: head.commit, waitingFor: 'release review', declaredBy: { owner: 'opencode-v1', sessionId: 'session', agent: 'hive-master' } } } });
     commit(created.checkout.path, 'later.txt');
     const moved = (await callJson('hive_checkout_inspect', { id: 'root/release' })).checkout;
     expect(moved.readiness).toMatchObject({ commit: head.commit, headMoved: true });

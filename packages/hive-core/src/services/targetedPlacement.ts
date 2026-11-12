@@ -62,6 +62,8 @@ import { compareWorktreeTarget, isWorktreeTargetIdentity, readWorktreeTargetIden
 import type { WorktreeTargetComparison, WorktreeTargetIdentity } from './worktreeTarget.js';
 import { integrateWorktreeRepository, integrationFailure, readValidatedCommitMessage } from './worktreeIntegration.js';
 import type { IntegrationPolicy, WorktreeIntegrationResult } from './worktreeIntegration.js';
+import type { IntegrationRecorder } from './integrationReceipt.js';
+import type { AdhocRunOrigin } from './workspaceManifest.js';
 
 function cleanupToolFor(spec: TargetedPlacementSpec): string {
   return spec.mode === 'targeted' ? 'hive_worktree_cleanup' : 'hive_adhoc_worktree_cleanup';
@@ -338,6 +340,7 @@ export async function createTargetedPlacement(
   targetId: string,
   baseRef: string | undefined,
   bind: (publish: () => void) => Promise<void> = async (publish) => publish(),
+  origin?: AdhocRunOrigin,
 ): Promise<TargetedPlacement & { commit: string }> {
   await assertNoSymlinkComponents(path.parse(spec.worktreePath).root, spec.worktreePath, true);
   const existing = await readTargetedPlacement(context, spec);
@@ -371,6 +374,7 @@ export async function createTargetedPlacement(
     target: binding,
     createdAt: new Date().toISOString(),
     ...spec.owner,
+    ...(origin !== undefined ? { origin } : {}),
   };
 
   await guard.begin({ repositories: [{ repositoryPath: repository.path, repoId: repository.id, sourceWorktreePath: spec.worktreePath, sourceBranch: spec.branch, targetPath: binding.path }] });
@@ -462,6 +466,7 @@ export async function mergeTargetedPlacement(options: {
   cleanupMode: 'none' | 'worktree' | 'worktree+branch';
   sourceCommit?: string;
   expectedTarget: unknown;
+  recordIntegration: IntegrationRecorder;
 }): Promise<WorktreeIntegrationResult> {
   const { guard, context, spec, placement, policy } = options;
   const { metadata, repository } = placement;
@@ -502,6 +507,7 @@ export async function mergeTargetedPlacement(options: {
     beforeMutation: () => guard.begin({ strategy: policy.strategy, repositories: [marker] }),
     cleanup: async (deleteBranch) => removeTargetedPlacement(guard, spec, placement, deleteBranch, { expectedBranchCommit: sourceCommit }),
     readCommitMessage: readValidatedCommitMessage,
+    recordIntegration: options.recordIntegration,
   });
 }
 

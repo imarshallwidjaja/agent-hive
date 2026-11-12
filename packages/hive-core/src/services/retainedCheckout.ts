@@ -26,6 +26,8 @@ import { assertNoSymlinkComponents, trustedGitCommonDirectory, validateExactWork
 import { readWorktreeTargetIdentity } from './worktreeTarget.js';
 import type { WorktreeTargetIdentity } from './worktreeTarget.js';
 import { writeWorkspaceJsonAtomic } from './workspaceManifest.js';
+import { isNativeObservationOwner } from '../native-observations.js';
+import type { WorklogAuthor } from './worklogService.js';
 
 export const IMPLICIT_ROOT_REPOSITORY_ID = 'root';
 const CHECKOUTS_DIRECTORY = 'checkouts';
@@ -46,6 +48,8 @@ export interface RetainedCheckoutReadiness {
   nextTarget?: string;
   /** What the work is waiting for, in the primary's words. */
   waitingFor?: string;
+  /** Host-supplied session and agent that made the declaration; absent on older records and unknown callers. */
+  declaredBy?: WorklogAuthor;
 }
 
 export interface RetainedCheckoutRecord {
@@ -154,7 +158,9 @@ function isReadiness(value: unknown): value is RetainedCheckoutReadiness {
     && typeof value.commit === 'string' && FULL_COMMIT.test(value.commit)
     && typeof value.recordedAt === 'string'
     && optionalString(value.nextTarget)
-    && optionalString(value.waitingFor);
+    && optionalString(value.waitingFor)
+    && (value.declaredBy === undefined || (isRecord(value.declaredBy) && isNativeObservationOwner(value.declaredBy.owner)
+      && typeof value.declaredBy.sessionId === 'string' && typeof value.declaredBy.agent === 'string'));
 }
 
 export function parseRetainedCheckoutRecord(value: unknown, recordPath: string, expectedId: string): RetainedCheckoutRecord {

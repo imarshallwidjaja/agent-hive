@@ -59,6 +59,13 @@ export type {
   AdhocCleanupOptions,
 } from './adhocWorktreeService.js';
 export type { HistoryIntent, IntegrationStrategy } from './worktreeIntegration.js';
+export { IntegrationReceiptError, listIntegrationReceiptCommits, readIntegrationReceipt } from './integrationReceipt.js';
+export type {
+  IntegrationOrigin,
+  IntegrationProvenanceOutcome,
+  IntegrationReceipt,
+  IntegrationReceiptErrorReason,
+} from './integrationReceipt.js';
 export {
   buildCleanupOutcome,
   buildNotRequestedMergeCleanupBlock,
@@ -147,7 +154,7 @@ export { ConfigService } from './configService.js';
 export type { LegacyRepositoryTopology } from './configService.js';
 export { RepositoryService } from './repositoryService.js';
 export { readCompositeWorkspaceManifest } from './workspaceManifest.js';
-export type { TargetBinding } from './workspaceManifest.js';
+export type { AdhocRunOrigin, TargetBinding } from './workspaceManifest.js';
 export type { TargetBindingStatus } from './targetedPlacement.js';
 export {
   IMPLICIT_ROOT_REPOSITORY_ID,

@@ -14,6 +14,7 @@ Everything below is relative to the project root, the directory that holds `.hiv
 ├── background-jobs.json       background board: observational bookkeeping only (OpenCode v1)
 ├── runtime/opencode-v2/       OpenCode v2 owner: sessions.json, background-jobs.json
 ├── worklogs/sessions/<owner>/<sha256(sessionId)>.json  per-session Worklog for ad-hoc work
+├── provenance/integrations/<afterCommit>.json  write-once integration receipt: links a merge's resulting commit to its task or run, Worklog and caller
 ├── context/                   project-scope managed context
 │   ├── index.json             revisioned control index
 │   └── <name>.md
@@ -92,7 +93,7 @@ Before its first workspace or Git mutation, a create, merge, remove or cleanup w
 - A retained checkout record identifies a managed worktree or an existing registered checkout. Registered checkout cleanup removes only the record, never the user's checkout. When a managed checkout's directory is gone, an operator may remove only its record from the VS Code extension; its branch and Git worktree registration remain.
 - Single-root workspace metadata is a sidecar file beside the worktree: `<task>.json` or `adhoc/<runId>.json`, recording mode, paths, branch, and `baseCommit`. A sidecar or `workspace.json` holding `createUnconfirmed: true` belongs to a create that never confirmed its checkout, which may be another Git client's; inspection reports `createUnconfirmed: true`, merge refuses it (`CREATE_UNCONFIRMED`), cleanup removes such a checkout only when it is empty and keeps the record, with a composite's root, while a worker branch remains, and create refuses to reuse it or to reattach its retained branch.
 - Composite roots contain `workspace.json` and one worktree per selected repository under `repos/<repoId>/`.
-- Ad-hoc runs create no feature or task records and do not appear in `hive_status`. They have no run history or reports.
+- Ad-hoc runs create no feature or task records and do not appear in `hive_status`. They have no run history or reports; after cleanup, the durable link from a commit to its run is the integration receipt each applied merge writes under `.hive/provenance/integrations/`.
 - The `adhoc` and `review` directory names under `.worktrees/` are not features.
 
 ## Repository manifest

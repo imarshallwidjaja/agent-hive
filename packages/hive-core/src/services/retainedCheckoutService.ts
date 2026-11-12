@@ -44,6 +44,7 @@ import { activeCheckoutGitState, withWorktreeMutation, withWorktreeRead } from '
 import type { PendingWorktreeOperation, WorktreeMutationGuard, WorktreeOperationKind } from './worktreeOperation.js';
 import { readWorktreeTargetIdentity, sameWorktreeTarget } from './worktreeTarget.js';
 import type { WorktreeTargetIdentity } from './worktreeTarget.js';
+import type { WorklogAuthor } from './worklogService.js';
 
 export interface RetainedCheckoutServiceConfig {
   baseDir: string;
@@ -361,7 +362,12 @@ export class RetainedCheckoutService {
    * Record, replace or (with null) clear a declared readiness. The checkout must still be exactly `expected`, whose
    * commit the declaration pins; a next target must be another retained checkout in the same repository.
    */
-  async setReadiness(id: string, expected: WorktreeTargetIdentity, input: RetainedCheckoutReadinessInput | null): Promise<RetainedCheckoutRecord> {
+  async setReadiness(
+    id: string,
+    expected: WorktreeTargetIdentity,
+    input: RetainedCheckoutReadinessInput | null,
+    declaredBy?: WorklogAuthor,
+  ): Promise<RetainedCheckoutRecord> {
     const { repoId } = parseRetainedCheckoutId(id);
     return this.mutate('create', id, async () => {
       const resolved = await resolveRetainedCheckout(this.context(), id);
@@ -385,6 +391,7 @@ export class RetainedCheckoutService {
           recordedAt: new Date().toISOString(),
           ...(input.nextTarget !== undefined ? { nextTarget: input.nextTarget } : {}),
           ...(input.waitingFor !== undefined ? { waitingFor: input.waitingFor } : {}),
+          ...(declaredBy !== undefined ? { declaredBy } : {}),
         },
       };
       await writeRetainedCheckoutRecord(this.config.hiveDir, record);

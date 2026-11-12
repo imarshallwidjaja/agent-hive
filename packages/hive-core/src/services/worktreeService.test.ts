@@ -13,6 +13,7 @@ import { WorktreeLinkageError, WorktreeOperationRecoveryRequiredError } from "./
 import { repositoryResourceName, trustedGitCommonDirectory, WorktreeOperationRecoveryService } from './worktreeOperation.js';
 import { RepositoryService } from './repositoryService.js';
 import { inspectTargetMergeEligibility } from './worktreeIntegration.js';
+import { recordIntegrationReceipt } from './integrationReceipt.js';
 import { readWorktreeTargetIdentity } from './worktreeTarget.js';
 import { RetainedCheckoutService } from './retainedCheckoutService.js';
 import { TaskService } from './taskService.js';
@@ -5229,8 +5230,10 @@ describe("WorktreeService lifecycle integrity", () => {
     await fixture.repoGit.commit(testCommitMessage('feat: independent target work'));
     const sourceCommit = (await simpleGit(fixture.worktreePath).revparse(['HEAD'])).trim();
     const first = await fixture.service.merge(fixture.feature, fixture.task, 'squash', mergeMessage, { historyIntent: 'rewrite-private', sourceCommit });
-    expect(first).toMatchObject({ success: true, merged: true });
+    expect(first).toMatchObject({ success: true, merged: true, provenance: { status: 'recorded' } });
     const head = (await fixture.repoGit.revparse(['HEAD'])).trim();
+    // The first merge's receipt sits in this project-root destination; it is not protected local data.
+    expect(await fs.readdir(path.join(fixture.repoPath, '.hive', 'provenance', 'integrations'))).toEqual([`${head}.json`]);
 
     const retry = await fixture.service.merge(fixture.feature, fixture.task, 'squash', mergeMessage, { historyIntent: 'rewrite-private', sourceCommit });
     expect(retry).toMatchObject({ success: true, merged: false, reasonCode: 'NO_TRACKED_CHANGES', mutation: 'none', retryable: false, action: 'none' });
@@ -5862,5 +5865,49 @@ describe('WorktreeService targeted tasks', () => {
 
     await fx.writeStatus({ status: 'pending', origin: 'plan', repoIds: ['api'], target: 'api/release' });
     expect(await merge()).toMatchObject({ success: true, reasonCode: 'ALREADY_INTEGRATED' });
+  });
+});
+
+describe('WorktreeService integration receipts', () => {
+  it('records the task and integrator for a preserve-source merge with no replaced links, and writes nothing for a repeat', async () => {
+    const fixture = await createCommittedFixture();
+    const hiveDir = path.join(fixture.repoPath, '.hive');
+    const receiptsDir = path.join(hiveDir, 'provenance', 'integrations');
+    const sourceCommit = (await simpleGit(fixture.worktreePath).revparse(['HEAD'])).trim();
+    // A receipt already keyed by the source commit stays reachable through a normal merge, so it is not linked.
+    await recordIntegrationReceipt(hiveDir, { git: fixture.repoGit, before: sourceCommit, after: sourceCommit, source: sourceCommit, targetRef: null, strategy: 'merge' }, { kind: 'adhoc', runId: 'upstream' });
+    const integratedBy = { owner: 'opencode-v2' as const, sessionId: 'ses_swarm', agent: 'swarm-orchestrator' };
+
+    const merged = await fixture.service.merge(fixture.feature, fixture.task, 'merge', mergeMessage, { historyIntent: 'preserve-source', integratedBy });
+    expect(merged).toMatchObject({ success: true, merged: true, action: 'none', provenance: { status: 'recorded' } });
+    expect(JSON.parse(await fs.readFile(path.join(receiptsDir, `${merged.sha}.json`), 'utf8'))).toMatchObject({
+      after: merged.sha,
+      source: sourceCommit,
+      targetRef: 'refs/heads/main',
+      strategy: 'merge',
+      origins: [{ kind: 'task', feature: fixture.feature, task: fixture.task }],
+      integratedBy,
+    });
+    expect(JSON.parse(await fs.readFile(path.join(receiptsDir, `${merged.sha}.json`), 'utf8'))).not.toHaveProperty('replaced');
+    const recorded = (await fs.readdir(receiptsDir)).sort();
+
+    const repeat = await fixture.service.merge(fixture.feature, fixture.task, 'merge', mergeMessage, { historyIntent: 'preserve-source', integratedBy });
+    expect(repeat).toMatchObject({ success: true, merged: false, reasonCode: 'ALREADY_INTEGRATED' });
+    expect(repeat.provenance).toBeUndefined();
+    expect((await fs.readdir(receiptsDir)).sort()).toEqual(recorded);
+  });
+
+  it('keeps the merged commit and reports provenance failed when the recorder rejects with an unprintable value', async () => {
+    const fixture = await createCommittedFixture();
+    // Every production route builds its recorder through taskRecorder; replace it with one that throws a null-prototype object.
+    (fixture.service as unknown as { taskRecorder: () => () => Promise<never> }).taskRecorder = () => async () => {
+      throw Object.create(null);
+    };
+
+    const merged = await fixture.service.merge(fixture.feature, fixture.task, 'merge', mergeMessage, { historyIntent: 'preserve-source', cleanup: 'worktree+branch' });
+
+    expect(merged).toMatchObject({ success: true, merged: true, action: 'inspect_state', provenance: { status: 'failed', error: 'unprintable error value' } });
+    expect((await fixture.repoGit.revparse(['HEAD'])).trim()).toBe(merged.sha);
+    expect(merged.cleanup.worktreeRemoval.status).toBe('not_attempted');
   });
 });

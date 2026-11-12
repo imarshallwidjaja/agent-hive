@@ -10,6 +10,7 @@
 ├── background-jobs.json       # Background board (observational bookkeeping, OpenCode v1 owner)
 ├── runtime/opencode-v2/       # OpenCode v2 owner: its own sessions.json and background-jobs.json
 ├── worklogs/sessions/{owner}/ # Session Worklogs: {sha256(sessionId)}.json per primary session
+├── provenance/integrations/   # Integration receipts: {afterCommit}.json per applied worktree merge
 ├── context/                    # Project-wide managed knowledge
 │   ├── index.json              # Schema-v1 operational index
 │   └── {name}.md               # Raw Markdown with discovery frontmatter
@@ -74,7 +75,15 @@ The board file has `schemaVersion: 1`, `jobs: BackgroundJobRecord[]`, and option
 
 Reconcile tools return compact acknowledgements, not stored job bodies: successful items include `archived`, `state`, and boolean `requiresHiveStatusRefresh`; failures include `reason`, `error`, and an actionable `hint`. Refresh is true for successfully archived feature/task-scoped jobs. Batch output is `{ success, results, requiresHiveStatusRefresh }`, with refresh true when any successful item requires it, even if another item failed. A non-terminal hint asks for native completion; stale/uncertain hints supply an exact ignore call using the canonical alias. These signals do not establish native termination or merge readiness. See [Background Orchestration](HIVE-TOOLS.md#background-orchestration-4-tools).
 
-Ad-hoc worktrees are temporary workspace metadata only: no run history, evidence ledgers, or reports.
+Ad-hoc worktrees are temporary workspace metadata only: no run history, evidence ledgers, or reports. The one exception is the integration receipt described below, which links a commit to the run that produced it and records nothing else about the run.
+
+## Integration receipts
+
+Every task or ad-hoc worktree merge that applies a commit writes one integration receipt at `.hive/provenance/integrations/{afterCommit}.json`, keyed by the final commit the integration produced; a rebase of several commits writes one receipt at its final head. A receipt records `before` (the destination HEAD before the merge), `source` (the pinned source commit), `targetRef`, `strategy`, `recordedAt`, `integratedBy` (the session and agent that called merge, when the host knows both), and `origins`. `origins` holds one entry, the integrating worker: `{ kind: 'task', feature, task, candidate? }` from the merge's own arguments, or `{ kind: 'adhoc', runId, worklog? }`, where `worklog` is the Worklog ref the creating session's host stamped into the run's metadata as `origin`. A receipt never copies another receipt's origins.
+
+Squash and rebase rewrite source history, so their receipts also carry `replaced`: the commits in `before..source` that had a receipt file when this receipt was written, in `git rev-list` order, and an empty list when there were none. Only file names are matched; the linked receipts are not read, so a corrupt one does not fail the record. A reader follows `replaced` transitively to find the work a commit carries, and subtracts receipts the destination already holds. A normal merge keeps the source commits reachable and writes no `replaced` field. The links stay readable after the worker, its branch and its retained checkout are removed.
+
+A receipt is written once: it is published without replacing any existing file. When a file already exists at the commit, identical content, ignoring `recordedAt`, counts as recorded; different content is a failure, and the existing file is kept. Receipts are keyed by commit alone, so when two repositories of one composite integration produce the identical resulting commit ID, the second repository's receipt reports `failed`. No-op merges (`ALREADY_INTEGRATED`, `NO_TRACKED_CHANGES`) write nothing. Receipts are advisory: they gate no merge or cleanup and are not task status, a run lifecycle ledger or evidence of verification. The receipt directory is excluded from the local-data checks that decide merge eligibility, so a recorded receipt never changes a later merge's outcome. A failed receipt keeps the Git result and skips same-call cleanup; see [the merge result](HIVE-TOOLS.md#integration-receipts).
 
 ## Worklog
 

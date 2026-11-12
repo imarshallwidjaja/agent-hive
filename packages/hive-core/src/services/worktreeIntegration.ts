@@ -2,6 +2,8 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { SimpleGit } from 'simple-git';
 import { normalizeCommitMessage } from '../utils/mergeMessage.js';
+import { describeReceiptError, provenanceCleanupSkip } from './integrationReceipt.js';
+import type { IntegrationProvenanceOutcome, IntegrationRecorder } from './integrationReceipt.js';
 import {
   buildNotRequestedCleanupOutcome,
   buildNotRequestedMergeCleanupBlock,
@@ -189,11 +191,18 @@ export function integrationFailure(
   };
 }
 
+/**
+ * Classify a successful integration. A failed integration receipt leaves the
+ * Git result standing but asks for inspection instead of a cleanup-only retry:
+ * cleanup was skipped on purpose to keep the source for association.
+ */
 export function mergeSuccessClassification(
   requested: CleanupMode,
   cleanup: WorktreeCleanupOutcome,
   mutation: WorktreeMutationState,
+  provenance?: IntegrationProvenanceOutcome,
 ): Pick<WorktreeIntegrationResult, 'phase' | 'reasonCode' | 'mutation' | 'retryable' | 'action'> {
+  if (provenance?.status === 'failed') return { phase: 'integration', mutation, retryable: false, action: 'inspect_state' };
   if (requested !== 'none' && cleanup.outcome !== 'complete') {
     const classification = classifyWorktreeOutcome('CLEANUP_FAILED', mutation);
     return { ...classification, reasonCode: 'CLEANUP_FAILED' };
@@ -596,6 +605,12 @@ export async function integrateWorktreeRepository(options: {
   readCommitMessage: (git: SimpleGit, hash: string) => Promise<string>;
   /** Called immediately before the first command that changes the destination or removes the source. */
   beforeMutation: () => Promise<void>;
+  /**
+   * Records the integration receipt after a verified applied integration and
+   * before same-call cleanup. Not called for a no-op. A failure keeps the Git
+   * result and skips cleanup; it never rolls the integration back.
+   */
+  recordIntegration: IntegrationRecorder;
 }): Promise<WorktreeIntegrationResult> {
   const {
     targetGit,
@@ -719,6 +734,18 @@ export async function integrateWorktreeRepository(options: {
       return await cleanup(cleanupMode === 'worktree+branch');
     } catch (error) {
       return buildThrownCleanupOutcome(cleanupMode, error);
+    }
+  };
+
+  // A receipt failure, thrown or returned, must not reach the rollback catch:
+  // the integration it describes is complete and stays.
+  const recordProvenance = async (
+    applied: Parameters<IntegrationRecorder>[0],
+  ): Promise<IntegrationProvenanceOutcome> => {
+    try {
+      return await options.recordIntegration(applied);
+    } catch (error) {
+      return { status: 'failed', error: describeReceiptError(error) };
     }
   };
 
@@ -987,7 +1014,17 @@ export async function integrateWorktreeRepository(options: {
     }
 
     const filesChanged = await observedDeltaFiles(targetGit, startingHead, finalHead);
-    const cleanupOutcome = await cleanupAfterProof({ ...expectedTarget, commit: finalHead }, operationCompletion);
+    const provenance = await recordProvenance({
+      git: targetGit,
+      before: startingHead,
+      after: finalHead,
+      source: sourceCommit,
+      targetRef: operationTarget.ref,
+      strategy,
+    });
+    const cleanupOutcome = provenance.status === 'failed' && cleanupMode !== 'none'
+      ? buildSkippedCleanupOutcome(cleanupMode, provenanceCleanupSkip(provenance.error))
+      : await cleanupAfterProof({ ...expectedTarget, commit: finalHead }, operationCompletion);
     return {
       success: true,
       merged: true,
@@ -997,7 +1034,8 @@ export async function integrateWorktreeRepository(options: {
       conflicts,
       conflictState: 'none',
       cleanup: toMergeCleanupBlock(cleanupOutcome),
-      ...mergeSuccessClassification(cleanupMode, cleanupOutcome, 'applied'),
+      provenance,
+      ...mergeSuccessClassification(cleanupMode, cleanupOutcome, 'applied', provenance),
     };
   } catch (error: unknown) {
     if (error instanceof BeforeMutationFailure) throw error.cause;

@@ -51,7 +51,7 @@ When an ad-hoc request has multiple independently verifiable outcomes, dependenc
 
 ${REPOSITORY_WORKTREE_POLICY_PROMPT}
 
-Ad-hoc worktrees are temporary workspace metadata only: no run history, evidence ledgers, or reports.
+Ad-hoc worktrees are temporary workspace metadata only: no run history, evidence ledgers, or reports. The one exception is the integration receipt a merge writes under \`.hive/provenance/integrations/\`, which links each resulting commit to its run and records nothing else about the run.
 
 ## Ad-Hoc by Default
 

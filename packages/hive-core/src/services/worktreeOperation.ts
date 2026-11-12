@@ -41,6 +41,7 @@ import { assertNoSymlinkComponents, trustedGitCommonDirectory, validateExactWork
 import { readWorktreeTargetIdentity } from './worktreeTarget.js';
 import type { WorktreeTargetIdentity } from './worktreeTarget.js';
 import { getCheckoutsRoot, isRetainedCheckoutPlacement } from './retainedCheckout.js';
+import { integrationReceiptsDirectory } from './integrationReceipt.js';
 
 const WORKTREE_OPERATION_PROTOCOL = 'hive-worktree-operation/v1';
 /** Namespace of operation lock resources; pre-native hosts created `<name>.lock` files here. */
@@ -202,9 +203,12 @@ function markerPath(hiveDir: string, name: string): string {
   return path.join(markerDirectory(hiveDir), `${name}.json`);
 }
 
-/** Paths an integration must not count as protected local data in a destination checkout. */
+/**
+ * Paths an integration must not count as protected local data in a destination checkout: operation locks and markers,
+ * and the integration receipts merges write, so a recorded receipt never changes a later merge's eligibility.
+ */
 export function worktreeOperationLocalPaths(hiveDir: string): string[] {
-  return [path.join(hiveDir, OPERATION_LOCK_NAMESPACE), getLockAnchorDirectory(hiveDir)];
+  return [path.join(hiveDir, OPERATION_LOCK_NAMESPACE), getLockAnchorDirectory(hiveDir), integrationReceiptsDirectory(hiveDir)];
 }
 
 export { trustedGitCommonDirectory };

@@ -4,9 +4,13 @@ import simpleGit, { type SimpleGit } from 'simple-git';
 import type { ResolvedRepository } from '../types.js';
 import { projectRootsMatch } from '../utils/repositoryConfig.js';
 import type {
+  AdhocRunOrigin,
   AdhocWorkspaceManifest as AdhocCompositeManifest,
   SingleWorkspaceMetadata,
 } from './workspaceManifest.js';
+import { aggregateIntegrationProvenance, integrationRecorder, provenanceCleanupSkip, storedAdhocWorklog } from './integrationReceipt.js';
+import type { IntegrationProvenanceOutcome, IntegrationRecorder } from './integrationReceipt.js';
+import type { WorklogAuthor } from './worklogService.js';
 import {
   assertCreateConfirmed,
   confirmWorkspaceRecord,
@@ -129,6 +133,11 @@ export interface AdhocCreateOptions {
   target?: string;
   /** Targeted runs only: commit-ish to start from instead of the target's HEAD, resolved once to a commit. */
   baseRef?: string;
+  /**
+   * Host-supplied Worklog of the creating session, stamped into the run's record and later copied into its
+   * integration receipts. A reused run keeps the origin of its first create. Never a tool argument.
+   */
+  origin?: AdhocRunOrigin;
 }
 
 export interface AdhocCreateTarget {
@@ -190,6 +199,8 @@ export interface AdhocMergeOptions {
   sourceCommits?: Record<string, string>;
   expectedTarget?: WorktreeTargetIdentity;
   expectedTargets?: Record<string, WorktreeTargetIdentity>;
+  /** Host-supplied session and agent of the caller, stamped on the integration receipt. Never a tool argument. */
+  integratedBy?: WorklogAuthor;
 }
 
 export interface AdhocCleanupOptions {
@@ -229,6 +240,11 @@ export interface AdhocMergeResult {
   action: WorktreeRecoveryAction;
   expectedTarget?: WorktreeTargetIdentity;
   observedTarget?: WorktreeTargetIdentity | null;
+  /**
+   * The integration receipt outcome when a commit was applied; composites aggregate their repositories. A failed
+   * receipt keeps the Git result, skips cleanup and sets action inspect_state.
+   */
+  provenance?: IntegrationProvenanceOutcome;
   /** Present when the merge returned this result but clearing its pending markers or releasing its locks then failed. */
   finalization?: WorktreeFinalizationFailure;
 }
@@ -734,7 +750,7 @@ export class AdhocWorktreeService {
     }
 
     const repoIds = options.repoIds?.length ? options.repoIds : undefined;
-    if (options.target !== undefined) return this.createTargeted(runId, options.target, repoIds, options.baseRef);
+    if (options.target !== undefined) return this.createTargeted(runId, options.target, repoIds, options.baseRef, options.origin);
     if (options.baseRef !== undefined) throw new Error('baseRef applies only to a targeted run; pass target as well');
     const selectRepositories = async (): Promise<CreateRepositorySelection> => {
       const resolved = this.resolveRepositories();
@@ -776,11 +792,11 @@ export class AdhocWorktreeService {
     };
     // Every effect uses the selection read under the locks, never a later resolver answer.
     return this.mutateRun('create', runId, selectRepositories, ({ repositories, manifest }, guard) => repositories
-      ? this.createComposite(guard, runId, repositories, manifest)
-      : this.createSingle(guard, runId, explicit));
+      ? this.createComposite(guard, runId, repositories, manifest, options.origin)
+      : this.createSingle(guard, runId, explicit, options.origin));
   }
 
-  private async createTargeted(runId: string, targetId: string, repoIds: string[] | undefined, baseRef: string | undefined): Promise<AdhocWorktreeInfo> {
+  private async createTargeted(runId: string, targetId: string, repoIds: string[] | undefined, baseRef: string | undefined, origin: AdhocRunOrigin | undefined): Promise<AdhocWorktreeInfo> {
     const { repoId } = parseRetainedCheckoutId(targetId);
     if (repoIds && (repoIds.length !== 1 || repoIds[0] !== repoId)) {
       throw new WorktreeTopologyMismatchError(`A run targeting ${targetId} works in repository ${repoId} only; repoIds must be omitted or exactly [${repoId}]`);
@@ -791,7 +807,7 @@ export class AdhocWorktreeService {
       return { repositoryPaths: [repository.path] };
     };
     return this.mutateRun('create', runId, select, async (_selection, guard) => {
-      const created = await createTargetedPlacement(guard, this.checkoutContext(), this.targetedSpec(runId), targetId, baseRef);
+      const created = await createTargetedPlacement(guard, this.checkoutContext(), this.targetedSpec(runId), targetId, baseRef, undefined, origin);
       return this.targetedInfo(runId, created, created.commit);
     });
   }
@@ -800,6 +816,7 @@ export class AdhocWorktreeService {
     guard: WorktreeMutationGuard,
     runId: string,
     explicit: boolean,
+    origin: AdhocRunOrigin | undefined,
   ): Promise<AdhocWorktreeInfo> {
     const worktreePath = this.getWorktreePath(runId);
     const branchName = this.getBranchName(runId);
@@ -850,6 +867,7 @@ export class AdhocWorktreeService {
       repositoryPath: this.config.baseDir,
       branch: branchName,
       baseCommit: base,
+      ...(origin !== undefined ? { origin } : {}),
     };
     // Published unconfirmed before `worktree add`, which can fail after another Git client attached a checkout of this
     // branch at the placement; confirmed only once this create's own add is validated.
@@ -906,6 +924,7 @@ export class AdhocWorktreeService {
     runId: string,
     repositories: ResolvedRepository[],
     existingManifest: AdhocCompositeManifest | null,
+    origin: AdhocRunOrigin | undefined,
   ): Promise<AdhocWorktreeInfo> {
     // Validate inputs
     for (const repository of repositories) this.assertSafeRepoId(repository.id);
@@ -968,6 +987,7 @@ export class AdhocWorktreeService {
         }),
       ),
       baseCommits,
+      ...(origin !== undefined ? { origin } : {}),
     };
 
     await guard.begin({
@@ -1193,8 +1213,19 @@ export class AdhocWorktreeService {
       cleanupMode: options.cleanup ?? 'none',
       ...(options.sourceCommit !== undefined ? { sourceCommit: options.sourceCommit } : {}),
       expectedTarget: options.expectedTarget,
+      recordIntegration: this.runRecorder(runId, placement.metadata.origin, options.integratedBy),
     });
     return { ...result, strategy };
+  }
+
+  /** Receipts name the run and the Worklog stamped at create; a missing or malformed stored origin leaves the bare run ID. */
+  private runRecorder(runId: string, storedOrigin: unknown, integratedBy: WorklogAuthor | undefined): IntegrationRecorder {
+    const worklog = storedAdhocWorklog(storedOrigin);
+    return integrationRecorder(
+      this.config.hiveDir,
+      { kind: 'adhoc', runId, ...(worklog !== undefined ? { worklog } : {}) },
+      integratedBy,
+    );
   }
 
   private async mergeUnlocked(
@@ -1227,6 +1258,7 @@ export class AdhocWorktreeService {
         preserveConflicts,
         sourceCommits: options.sourceCommits,
         expectedTargets: targets.expectedTargets!,
+        recordIntegration: this.runRecorder(runId, manifest.origin, options.integratedBy),
       });
     }
 
@@ -1235,6 +1267,7 @@ export class AdhocWorktreeService {
       preserveConflicts,
       sourceCommit: options.sourceCommit,
       expectedTarget: targets.expectedTarget!,
+      integratedBy: options.integratedBy,
     });
   }
 
@@ -1248,6 +1281,7 @@ export class AdhocWorktreeService {
       preserveConflicts: boolean;
       sourceCommit?: string;
       expectedTarget: WorktreeTargetIdentity;
+      integratedBy?: WorklogAuthor;
     },
   ): Promise<AdhocMergeResult> {
     const { strategy } = policy;
@@ -1279,6 +1313,8 @@ export class AdhocWorktreeService {
 
     const git = this.getGit();
     const sourceCommit = options.sourceCommit ?? registered.commit;
+    // The record was validated by get(); its origin is read tolerantly.
+    const storedOrigin = (await readSingleWorkspaceMetadata(this.getSingleMetadataPath(runId)).catch(() => null))?.origin;
     const repoResult = await this.mergeOneRepo({
       git,
       branchName,
@@ -1294,29 +1330,10 @@ export class AdhocWorktreeService {
         repositories: [{ repositoryPath: this.config.baseDir, sourceWorktreePath: registered.path, sourceBranch: branchName, sourceCommit, expectedTarget: options.expectedTarget }],
       }),
       cleanupFn: async (deleteBranch: boolean) => (await this.cleanupSingle(guard, runId, deleteBranch, {}, sourceCommit)).cleanup,
+      recordIntegration: this.runRecorder(runId, storedOrigin, options.integratedBy),
     });
 
-    return {
-      success: repoResult.success,
-      merged: repoResult.merged,
-      strategy,
-      ...(repoResult.sha !== undefined ? { sha: repoResult.sha } : {}),
-      ...(repoResult.commitMessage !== undefined ? { commitMessage: repoResult.commitMessage } : {}),
-      ...(repoResult.reason !== undefined ? { reason: repoResult.reason } : {}),
-      ...(repoResult.reasonCode !== undefined ? { reasonCode: repoResult.reasonCode } : {}),
-      ...(repoResult.cleanupEligible !== undefined ? { cleanupEligible: repoResult.cleanupEligible } : {}),
-      filesChanged: repoResult.filesChanged,
-      conflicts: repoResult.conflicts,
-      conflictState: repoResult.conflictState,
-      cleanup: repoResult.cleanup,
-      ...(repoResult.error !== undefined ? { error: repoResult.error } : {}),
-      phase: repoResult.phase,
-      mutation: repoResult.mutation,
-      retryable: repoResult.retryable,
-      action: repoResult.action,
-      ...(repoResult.expectedTarget !== undefined ? { expectedTarget: repoResult.expectedTarget } : {}),
-      ...(repoResult.observedTarget !== undefined ? { observedTarget: repoResult.observedTarget } : {}),
-    };
+    return { ...repoResult, strategy };
   }
 
   private async mergeComposite(
@@ -1330,6 +1347,7 @@ export class AdhocWorktreeService {
       preserveConflicts: boolean;
       sourceCommits?: Record<string, string>;
       expectedTargets: Record<string, WorktreeTargetIdentity>;
+      recordIntegration: IntegrationRecorder;
     },
   ): Promise<AdhocMergeResult> {
     const { strategy } = policy;
@@ -1452,6 +1470,7 @@ export class AdhocWorktreeService {
         precomputedCandidates: precomputedCandidates[repoId],
         beforeMutation: beginMerge,
         cleanupFn: async () => buildNotRequestedCleanupOutcome(),
+        recordIntegration: options.recordIntegration,
       });
       repos[repoId] = {
         ...repoResult,
@@ -1496,7 +1515,7 @@ export class AdhocWorktreeService {
       const reasonCode: WorktreeReasonCode = partial
         ? 'COMPOSITE_PARTIAL'
         : (stopped.reasonCode ?? 'GIT_OPERATION_FAILED');
-      return mergeFailure(strategy, reasonCode, firstError ?? 'merge failed', {
+      const failure = mergeFailure(strategy, reasonCode, firstError ?? 'merge failed', {
         mutation: partial ? 'partial' : stopped.mutation,
         filesChanged: flattenedFiles,
         conflicts: flattenedConflicts,
@@ -1504,17 +1523,26 @@ export class AdhocWorktreeService {
         repos,
         partial,
       });
+      // Receipts of repositories integrated before the stop stay visible beside the Git failure.
+      const partialProvenance = aggregateIntegrationProvenance(repoIds, repos);
+      return partialProvenance !== undefined ? { ...failure, provenance: partialProvenance } : failure;
     }
 
     // All repos merged -> apply cleanup (all repos passed preflight above)
+    const provenance = aggregateIntegrationProvenance(repoIds, repos);
     let cleanup = buildNotRequestedCleanupOutcome();
     if (options.cleanup !== 'none') {
       const cleanupMode = options.cleanup;
       const deleteBranch = cleanupMode === 'worktree+branch';
       const perRepo: Array<{ repoId: string; cleanup: AdhocCleanupResult }> = [];
+      // A failed receipt in any repository keeps the whole workspace; earlier receipts stay.
+      const provenanceRepoId = repoIds.find((repoId) => repos[repoId].provenance?.status === 'failed');
+      const failedProvenance = provenanceRepoId === undefined ? undefined : repos[provenanceRepoId].provenance;
+      let proofFailure: { repoId: string; step: string; cause: string } | undefined = failedProvenance?.status === 'failed'
+        ? { repoId: provenanceRepoId!, ...provenanceCleanupSkip(failedProvenance.error) }
+        : undefined;
       // Every repository proves its completed work before any repository is cleaned up.
-      let proofFailure: { repoId: string; step: string; cause: string } | undefined;
-      for (const repoId of repoIds) {
+      for (const repoId of proofFailure ? [] : repoIds) {
         const failure = await proveCleanupEligibility({
           targetGit: this.getGit(trustedById.get(repoId)!.path),
           targetRoot: trustedById.get(repoId)!.path,
@@ -1602,7 +1630,8 @@ export class AdhocWorktreeService {
       conflicts: flattenedConflicts,
       conflictState: 'none',
       cleanup: toMergeCleanupBlock(cleanup),
-      ...mergeSuccessClassification(options.cleanup, cleanup, 'applied'),
+      ...(provenance !== undefined ? { provenance } : {}),
+      ...mergeSuccessClassification(options.cleanup, cleanup, 'applied', provenance),
       repos,
     };
   }
@@ -1693,6 +1722,7 @@ export class AdhocWorktreeService {
     precomputedCandidates?: TargetMergeCandidates;
     beforeMutation: () => Promise<void>;
     cleanupFn: (deleteBranch: boolean) => Promise<WorktreeCleanupOutcome>;
+    recordIntegration: IntegrationRecorder;
   }): Promise<AdhocRepoMergeResult> {
     return integrateWorktreeRepository({
       targetGit: options.git,
@@ -1710,6 +1740,7 @@ export class AdhocWorktreeService {
       cleanupMode: options.cleanupMode,
       cleanup: options.cleanupFn,
       readCommitMessage: this.readValidatedCommitMessage.bind(this),
+      recordIntegration: options.recordIntegration,
     });
   }
 
