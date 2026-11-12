@@ -89,7 +89,7 @@ Before its first workspace or Git mutation, a create, merge, remove or cleanup w
 | Ad-hoc, composite | `.hive/.worktrees/adhoc/<runId>/repos/<repoId>` | `hive/adhoc/<repoId>/<runId>` |
 
 - `<feature>` is the name the create call received, normally the logical name. Older placements can differ, so take the path from inspect or status output.
-- A retained checkout record identifies a managed worktree or an existing registered checkout. Registered checkout cleanup removes only the record, never the user's checkout.
+- A retained checkout record identifies a managed worktree or an existing registered checkout. Registered checkout cleanup removes only the record, never the user's checkout. When a managed checkout's directory is gone, an operator may remove only its record from the VS Code extension; its branch and Git worktree registration remain.
 - Single-root workspace metadata is a sidecar file beside the worktree: `<task>.json` or `adhoc/<runId>.json`, recording mode, paths, branch, and `baseCommit`. A sidecar or `workspace.json` holding `createUnconfirmed: true` belongs to a create that never confirmed its checkout, which may be another Git client's; inspection reports `createUnconfirmed: true`, merge refuses it (`CREATE_UNCONFIRMED`), cleanup removes such a checkout only when it is empty and keeps the record, with a composite's root, while a worker branch remains, and create refuses to reuse it or to reattach its retained branch.
 - Composite roots contain `workspace.json` and one worktree per selected repository under `repos/<repoId>/`.
 - Ad-hoc runs create no feature or task records and do not appear in `hive_status`. They have no run history or reports.

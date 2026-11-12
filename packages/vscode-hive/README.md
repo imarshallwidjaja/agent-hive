@@ -75,7 +75,7 @@ Viewer + limited operator archive tree for the background boards `.hive/backgrou
 One tree per configured repository (the project root counts as one when there is no `.hive/repositories.json`). Under each repository:
 
 - **The repository checkout**: its current branch and commit. When it is registered as a retained checkout, the row is named by the registered branch and shows that record's state.
-- **Retained checkouts** from `.hive/checkouts`, labelled by branch. The description gives the recorded readiness and the declared next destination, for example `Ready → develop`, `Waiting → develop`, `Changed since readiness → develop`, or `Retained` when no readiness was recorded, and how many workers are bound to it. A checkout that cannot be read shows `Unavailable`, and one on another branch shows `Off intended branch`, in place of its readiness. Expand a checkout for its bound workers, then the full waiting condition, readiness commit and time, purpose, HEAD, location, and its record file.
+- **Retained checkouts** from `.hive/checkouts`, labelled by branch. The description gives the recorded readiness and the declared next destination, for example `Ready → develop`, `Waiting → develop`, `Changed since readiness → develop`, or `Retained` when no readiness was recorded, and how many workers are bound to it. A managed checkout whose directory is gone shows `Missing`, one whose HEAD cannot be read shows `Unavailable`, and one on another branch shows `Off intended branch`, in place of its readiness. Expand a checkout for its bound workers, then the full waiting condition, readiness commit and time, purpose, HEAD, location, and its record file.
 - **Temporary workers** from `.hive/.worktrees`, nested under the retained checkout each was bound to. Workers with no declared target, or a target that is not a retained checkout in that repository, are listed under **Other workers / unresolved**; their destination is not guessed. A worker whose worktree was removed while its branch was kept stays listed. Expand a worker for its branch, location, target, start commit, task spec, latest report, and feature worklog.
 - **Other local branches**, collapsed, lists local branches that no Hive record represents. Branches are read from local refs only when you expand it; nothing is fetched.
 
@@ -85,7 +85,18 @@ Readiness is what a primary agent declared at a commit. It is not a verification
 
 Git state is read when the view opens, when it becomes visible again, when the window regains focus, on **Hive: Refresh**, and when Hive records under `.hive` change. File changes inside worker and retained checkouts do not trigger a read. The view title shows when Git was last read.
 
-Selecting a row expands it. The inline actions **Open in New Window** and **Open in Terminal** open a checkout's directory; a window opened on a worker or retained checkout reads the Hive project that holds it; the context menu adds **Copy Path**, **Copy Branch Name**, and **Copy Commit SHA**. The view has no merge, rebase, delete, push, or cleanup actions; use `oc-arkive` for those.
+Selecting a row expands it. The inline actions **Open in New Window** and **Open in Terminal** open a checkout's directory; a window opened on a worker or retained checkout reads the Hive project that holds it; the context menu adds **Copy Path**, **Copy Branch Name**, and **Copy Commit SHA**. The view has no merge, rebase, push, branch deletion, or worktree cleanup actions; use `oc-arkive` for those.
+
+#### Removing a stale checkout record
+
+When the directory of a managed retained checkout is deleted outside Hive, for example with `git worktree remove` or by deleting the folder, its record in `.hive/checkouts` stays behind and the row shows `Missing`. Refreshing the view only reads; it never removes the record. To remove it, right-click the row and choose **Remove Stale Hive Record...**. The extension inspects the checkout again before it offers anything:
+
+- If an unfinished task, a targeted worker, or another checkout's next-target declaration still names the checkout, if a file that could name it cannot be read, or if an interrupted worktree operation guards its repository, the extension lists these and does not offer removal. Select a task, worker, or checkout in the list to open the file that names it; unreadable files and interrupted operations are listed as text.
+- Otherwise one confirmation shows the project, the checkout ID, its intended branch, the missing directory, and the record file. Confirming deletes only the record file.
+
+The extension only reads Git and never changes it, so the branch and every Git worktree registration stay as they are. After you confirm, the removal checks the record and directory, scans the references again, and checks the record and directory once more before it deletes the file. If the record changed, the directory came back, or the scan finds a reference or a file it cannot read, the record is not removed, the view refreshes, and the error says why; inspect the row again before retrying.
+
+The scan reads each file once. Hive worktree and retained checkout operations on the repository wait for the removal, but task records do not: a task that names the checkout, written after the scan read its file, is not detected. If you need that assurance, stop agents that could create or update tasks targeting this checkout until the removal finishes.
 
 ## Usage
 
@@ -103,6 +114,7 @@ Selecting a row expands it. The inline actions **Open in New Window** and **Open
 - **Background visibility**: Background Jobs and Repositories & Work views read Hive state without agentic control
 - **Worklogs**: read feature and session worklogs offline, pin them, and page through their history
 - **Operator archive**: Use the inline row actions to archive features and background jobs; right-click a context folder or document for **Archive Context**
+- **Stale checkout records**: right-click a `Missing` retained checkout in Repositories & Work for **Remove Stale Hive Record...**
 - **Inline comments**: discuss changes directly in `plan.md` and `overview.md`
 - **File watching**: tracks `.hive/` changes and refreshes in real time
 
@@ -135,6 +147,7 @@ Selecting a row expands it. The inline actions **Open in New Window** and **Open
 | Copy Path | `hive.repositories.copyPath` | Copy the directory of a row in Repositories & Work |
 | Copy Branch Name | `hive.repositories.copyBranch` | Copy the branch name of a row in Repositories & Work |
 | Copy Commit SHA | `hive.repositories.copyCommit` | Copy the full commit SHA of a row in Repositories & Work |
+| Remove Stale Hive Record... | `hive.repositories.removeStaleRecord` | Remove the record of a managed retained checkout whose directory is gone; reads Git without changing it |
 
 ### Tips
 
@@ -145,16 +158,19 @@ Selecting a row expands it. The inline actions **Open in New Window** and **Open
 
 For the supported workflow, install [oc-arkive](https://www.npmjs.com/package/oc-arkive) and use this extension as the review/sidebar companion.
 
-## Scope: viewer + limited operator archive
+## Scope: viewer + limited operator actions
 
-This extension is **viewer-first** with limited operator archive actions. It reads `.hive/` artifacts (features, plans, tasks, contexts, comments, worklogs, background jobs, repository manifests, retained checkout records, and worker placements) and surfaces them in the sidebar and review flow. Viewing and review actions include Refresh, Open File, Copy ID, the Repositories & Work open and copy actions, Inspect Session Standing Constraints, Done Review, and inline comments.
+This extension is **viewer-first** with limited operator actions. It reads `.hive/` artifacts (features, plans, tasks, contexts, comments, worklogs, background jobs, repository manifests, retained checkout records, and worker placements) and surfaces them in the sidebar and review flow. Viewing and review actions include Refresh, Open File, Copy ID, the Repositories & Work open and copy actions, Inspect Session Standing Constraints, Done Review, and inline comments.
 
 Three explicit **operator archive** actions allow cleaning up stale state:
 - **Archive Context**: selectively archives confirmed durable, evidence, or reserved documents in the selected project or feature scope, using a captured context revision, actual content hashes, a required reason, and a confirmation warning when byte size differs from the listing or the document carries a last-managed-write warning.
 - **Archive Feature**: marks a feature with `archived` status, excluding it from ordinary agent status and implicit sole-live resolution. Preserves all `.hive/` files for audit or manual recovery. Does not delete worktrees, branches, tasks, or commits.
 - **Archive Background Job**: moves a background job to the collapsed Ignored group using existing ignored/archive fields. Does not mutate runtime state and does not cancel or kill any running process.
 
-It does not start worktrees, commit changes, merge branches, cancel jobs, or reconcile jobs; archiving a background job is its only job mutation. It contributes no `languageModelTools`. Use `oc-arkive` in OpenCode for those other operations. Multi-repo orchestration (composite workspaces, per-repo base commits, aggregate diff/commit/merge) is owned by `hive-core` and exposed through `oc-arkive`; any per-repo metadata the sidebar shows is read-through from those files. Reintroducing agentic command surfaces beyond archive would change the security and review posture of this extension and is out of scope.
+One **record cleanup** action removes a retained checkout record that no longer describes anything on disk:
+- **Remove Stale Hive Record**: deletes the `.hive/checkouts/<repoId>/<slug>.json` record of a managed retained checkout whose directory is gone, after a fresh inspection finds nothing that references it and you confirm. It reads Git but changes nothing there, so branches and Git worktree registrations stay unchanged.
+
+It does not start worktrees, commit changes, merge branches, cancel jobs, or reconcile jobs; archiving a background job is its only job mutation. It contributes no `languageModelTools`. Use `oc-arkive` in OpenCode for those other operations. Multi-repo orchestration (composite workspaces, per-repo base commits, aggregate diff/commit/merge) is owned by `hive-core` and exposed through `oc-arkive`; any per-repo metadata the sidebar shows is read-through from those files. Reintroducing agentic command surfaces beyond these operator actions would change the security and review posture of this extension and is out of scope.
 
 ## Requirements
 

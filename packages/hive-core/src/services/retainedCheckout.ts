@@ -255,12 +255,18 @@ export interface RetainedCheckoutListing {
   /** IDs of records found, by valid file name. */
   ids: string[];
   /** Entries under `.hive/checkouts` that are not a valid record or a placement with one. */
-  unrecognized: Array<{ path: string; reason: string }>;
+  unrecognized: Array<{
+    path: string;
+    reason: string;
+    /** Set when the entry could hold records the listing does not read: a symlinked repository directory or a record path that is not a regular file. */
+    mayHoldRecord?: true;
+  }>;
 }
 
-/** List record files and stray entries without reading Git. */
+/** List record files and stray entries without reading Git. Refuses a checkouts root reached through a symlink. */
 export async function listRetainedCheckouts(hiveDir: string): Promise<RetainedCheckoutListing> {
   const root = getCheckoutsRoot(hiveDir);
+  await assertNoSymlinkComponents(path.dirname(hiveDir), root, true);
   const listing: RetainedCheckoutListing = { ids: [], unrecognized: [] };
   const readDir = (directory: string) => fs.readdir(directory, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
     if (error.code === 'ENOENT') return [];
@@ -269,7 +275,8 @@ export async function listRetainedCheckouts(hiveDir: string): Promise<RetainedCh
   for (const repoEntry of (await readDir(root)).sort((left, right) => left.name.localeCompare(right.name))) {
     const repoPath = path.join(root, repoEntry.name);
     if (!repoEntry.isDirectory() || !isValidRepositoryId(repoEntry.name)) {
-      listing.unrecognized.push({ path: repoPath, reason: 'not a repository directory' });
+      const mayHoldRecord = isValidRepositoryId(repoEntry.name) && !repoEntry.isFile();
+      listing.unrecognized.push({ path: repoPath, reason: 'not a repository directory', ...(mayHoldRecord ? { mayHoldRecord } : {}) });
       continue;
     }
     const entries = await readDir(repoPath);
@@ -284,9 +291,12 @@ export async function listRetainedCheckouts(hiveDir: string): Promise<RetainedCh
     for (const entry of entries) {
       if (entry.isFile() && recorded.has(entry.name.slice(0, -'.json'.length))) continue;
       if (entry.isDirectory() && recorded.has(entry.name)) continue;
+      const slug = entry.name.endsWith('.json') ? entry.name.slice(0, -'.json'.length) : null;
+      const mayHoldRecord = slug !== null && isValidRepositoryId(slug);
       listing.unrecognized.push({
         path: path.join(repoPath, entry.name),
-        reason: entry.isDirectory() ? 'placement has no retained checkout record' : 'not a retained checkout record',
+        reason: mayHoldRecord ? 'record path is not a regular file' : entry.isDirectory() ? 'placement has no retained checkout record' : 'not a retained checkout record',
+        ...(mayHoldRecord ? { mayHoldRecord } : {}),
       });
     }
   }

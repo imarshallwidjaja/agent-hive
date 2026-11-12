@@ -221,6 +221,10 @@
       {
         "command": "hive.repositories.copyCommit",
         "title": "Copy Commit SHA"
+      },
+      {
+        "command": "hive.repositories.removeStaleRecord",
+        "title": "Remove Stale Hive Record..."
       }
     ],
     "menus": {
@@ -346,6 +350,11 @@
           "command": "hive.repositories.copyCommit",
           "when": "view == hive.repositories && viewItem =~ /\\bcommit\\b/",
           "group": "copy@3"
+        },
+        {
+          "command": "hive.repositories.removeStaleRecord",
+          "when": "view == hive.repositories && viewItem =~ /\\bstale\\b/",
+          "group": "remove@1"
         }
       ],
       "commandPalette": [
@@ -407,6 +416,10 @@
         },
         {
           "command": "hive.repositories.copyCommit",
+          "when": "false"
+        },
+        {
+          "command": "hive.repositories.removeStaleRecord",
           "when": "false"
         }
       ],

@@ -8,8 +8,12 @@ import { FeatureService } from './featureService';
 import { RetainedCheckoutError } from './retainedCheckout';
 import { RetainedCheckoutService } from './retainedCheckoutService';
 import { RepositoryService } from './repositoryService';
+import { getFeaturePath } from '../utils/paths';
 import { TaskService } from './taskService';
 import { WorktreeService } from './worktreeService';
+import { trustedGitCommonDirectory } from './worktreeLinkage';
+import { repositoryResourceName } from './worktreeOperation';
+import { WorktreeOperationRecoveryRequiredError } from './worktreeOutcome';
 import { readWorktreeTargetIdentity } from './worktreeTarget';
 
 const tempDirs: string[] = [];
@@ -111,12 +115,18 @@ describe('RetainedCheckoutService', () => {
     const placement = path.join(fx.hiveDir, 'checkouts', 'root', 'feature');
 
     new FeatureService(fx.repoPath).create('demo');
-    new TaskService(fx.repoPath).create('demo', 'Ship it', undefined, { target: 'root/feature' });
-    await fx.adhoc.create({ runId: 'bound', target: 'root/feature' });
+    const task = new TaskService(fx.repoPath).create('demo', 'Ship it', undefined, { target: 'root/feature' });
+    const bound = await fx.adhoc.create({ runId: 'bound', target: 'root/feature' });
     await fx.checkouts.setReadiness('root/release', await readWorktreeTargetIdentity(path.join(fx.hiveDir, 'checkouts', 'root', 'release')), { state: 'ready', nextTarget: 'root/feature' });
 
     const proposal = await fx.checkouts.inspectCleanup('root/feature');
-    expect(proposal.references.map((reference) => reference.kind).sort()).toEqual(['next_target', 'task', 'worker']);
+    // Each reference names the file that holds it.
+    expect(proposal.references.sort((left, right) => left.kind.localeCompare(right.kind))).toEqual([
+      { kind: 'next_target', from: 'root/release', recordPath: path.join(fx.hiveDir, 'checkouts', 'root', 'release.json') },
+      { kind: 'task', feature: 'demo', task, status: 'pending', statusPath: path.join(getFeaturePath(fx.repoPath, 'demo'), 'tasks', task, 'status.json') },
+      { kind: 'worker', path: bound.path, sidecarPath: `${bound.path}.json`, runId: 'bound' },
+    ]);
+    expect(proposal.present).toBe(true);
     expect(proposal.blockers).toHaveLength(3);
     const referenced = await rejection(fx.checkouts.cleanup('root/feature', { expected: proposal.identity }));
     expect(referenced).toBeInstanceOf(RetainedCheckoutError);
@@ -275,6 +285,185 @@ describe('RetainedCheckoutService', () => {
     expect(clean.blockers).toEqual([]);
   });
 
+  it('removes only the record of a managed checkout deleted outside Hive, and refuses when the record, placement or references are not as inspected', async () => {
+    const fx = await createFixture();
+    const feature = await fx.checkouts.create({ id: 'root/feature', branch: 'feat/x', baseRef: 'main' });
+    const kept = await fx.checkouts.create({ id: 'root/kept', branch: 'kept', baseRef: 'main' });
+    await fx.checkouts.register({ id: 'root/main' });
+    const recordPath = `${feature.path}.json`;
+    const recordBytes = fs.readFileSync(recordPath, 'utf8');
+    // An unrelated worktree deleted without Git leaves a prunable registration that must survive too.
+    const unrelated = path.join(fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hive-retained-unrelated-'))), 'wt');
+    tempDirs.push(path.dirname(unrelated));
+    await fx.git.raw(['worktree', 'add', '-b', 'unrelated', unrelated]);
+    fs.rmSync(unrelated, { recursive: true, force: true });
+    // The operator deletes one checkout's directory, and removes the other through Git along with its branch.
+    fs.rmSync(feature.path, { recursive: true, force: true });
+    await fx.git.raw(['worktree', 'remove', kept.path]);
+    await fx.git.raw(['branch', '-D', 'kept']);
+    expect(await fx.git.raw(['worktree', 'list', '--porcelain'])).toContain(`worktree ${feature.path}\nHEAD ${fx.base}\nbranch refs/heads/feat/x\nprunable`);
+
+    const proposal = await fx.checkouts.inspectCleanup('root/feature');
+    expect(proposal).toMatchObject({ present: false, identity: null, references: [], unreadableReferences: [], pendingOperations: [], blockers: [] });
+    const refusal = async () => {
+      const before = fs.readFileSync(recordPath, 'utf8');
+      const error = await rejection(fx.checkouts.removeMissingRecord('root/feature', proposal.record));
+      expect(fs.readFileSync(recordPath, 'utf8')).toBe(before);
+      return error;
+    };
+
+    // The record changed after inspection, in its purpose or its readiness.
+    for (const changed of [{ ...proposal.record, purpose: 'reused' }, { ...proposal.record, readiness: { state: 'ready', commit: fx.base, recordedAt: '2026-11-12T00:00:00.000Z' } }]) {
+      fs.writeFileSync(recordPath, JSON.stringify(changed));
+      expect(((await refusal()) as RetainedCheckoutError).reason).toBe('binding_mismatch');
+      expect(JSON.parse(fs.readFileSync(recordPath, 'utf8'))).toEqual(changed);
+    }
+    fs.writeFileSync(recordPath, recordBytes);
+    // Key order is not part of the record's identity.
+    const reordered = Object.fromEntries(Object.entries(proposal.record).reverse()) as typeof proposal.record;
+
+    // Something exists at the placement again: the worktree recreated by Git, a plain directory, or a symlink.
+    await fx.git.raw(['worktree', 'add', '-f', feature.path, 'feat/x']);
+    expect((await refusal()).message).toContain('it is not missing');
+    fs.rmSync(feature.path, { recursive: true, force: true });
+    fs.mkdirSync(feature.path);
+    await refusal();
+    fs.rmdirSync(feature.path);
+    fs.symlinkSync(fx.repoPath, feature.path);
+    expect((await refusal()).message).toContain('symlink');
+    fs.rmSync(feature.path);
+
+    // The record itself is reached through a symlink.
+    const copy = path.join(path.dirname(unrelated), 'feature.json');
+    fs.writeFileSync(copy, recordBytes);
+    fs.rmSync(recordPath);
+    fs.symlinkSync(copy, recordPath);
+    expect((await refusal()).message).toContain('symlink');
+    fs.rmSync(recordPath);
+    fs.writeFileSync(recordPath, recordBytes);
+
+    // A registered record is never a stale managed record.
+    const main = (await fx.checkouts.inspectCleanup('root/main')).record;
+    expect(((await rejection(fx.checkouts.removeMissingRecord('root/main', main))) as RetainedCheckoutError).reason).toBe('user_owned');
+
+    // A reference, or a source that could hold one, appeared after inspection.
+    new FeatureService(fx.repoPath).create('demo');
+    new TaskService(fx.repoPath).create('demo', 'Ship it', undefined, { target: 'root/feature' });
+    expect(((await refusal()) as RetainedCheckoutError).reason).toBe('referenced');
+    fs.rmSync(path.join(fx.hiveDir, 'features'), { recursive: true, force: true });
+    fs.writeFileSync(path.join(fx.hiveDir, 'checkouts', 'root', 'broken.json'), '{');
+    expect(((await refusal()) as RetainedCheckoutError).reason).toBe('references_unknown');
+    fs.rmSync(path.join(fx.hiveDir, 'checkouts', 'root', 'broken.json'));
+
+    // An interrupted operation guards the repository.
+    const legacyLock = path.join(fx.hiveDir, '.operation-locks', `${repositoryResourceName(await trustedGitCommonDirectory(fx.repoPath))}.lock`);
+    fs.mkdirSync(path.dirname(legacyLock), { recursive: true });
+    fs.writeFileSync(legacyLock, '{}');
+    expect(await refusal()).toBeInstanceOf(WorktreeOperationRecoveryRequiredError);
+    fs.rmSync(legacyLock);
+
+    const registrations = await fx.git.raw(['worktree', 'list', '--porcelain']);
+    expect(await fx.checkouts.removeMissingRecord('root/feature', reordered)).toEqual({ id: 'root/feature', ownership: 'managed', worktreeRemoved: false, branchDeleted: false, recordRemoved: true });
+    expect(fs.existsSync(recordPath)).toBe(false);
+    expect((await fx.git.raw(['show-ref', '--verify', '--hash', 'refs/heads/feat/x'])).trim()).toBe(fx.base);
+    const keptProposal = await fx.checkouts.inspectCleanup('root/kept');
+    expect(keptProposal).toMatchObject({ present: false, blockers: [] });
+    expect(await fx.checkouts.removeMissingRecord('root/kept', keptProposal.record)).toMatchObject({ recordRemoved: true, branchDeleted: false });
+    // Git was only read and no pending marker was written: every registration, prunable or not, is unchanged.
+    expect(await fx.git.raw(['worktree', 'list', '--porcelain'])).toBe(registrations);
+    const markers = path.join(fx.hiveDir, '.locks', 'operations');
+    expect(fs.existsSync(markers) ? fs.readdirSync(markers) : []).toEqual([]);
+    expect(((await rejection(fx.checkouts.removeMissingRecord('root/feature', proposal.record))) as RetainedCheckoutError).reason).toBe('not_found');
+  });
+
+  it('keeps a missing checkout record while a sibling record or repository directory that could name it is not a readable entry', async () => {
+    const fx = await createFixture();
+    const feature = await fx.checkouts.create({ id: 'root/feature', branch: 'feat/x', baseRef: 'main' });
+    fs.rmSync(feature.path, { recursive: true, force: true });
+    const checkoutsRoot = path.join(fx.hiveDir, 'checkouts');
+    const recordPath = `${feature.path}.json`;
+    const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hive-retained-hidden-')));
+    tempDirs.push(outside);
+    const naming = (id: string) => JSON.stringify({
+      schemaVersion: 1, id, repoId: id.split('/')[0], slug: id.split('/')[1], ownership: 'managed', path: path.join(checkoutsRoot, id), ref: 'refs/heads/peer',
+      created: { at: '2026-11-12T00:00:00.000Z', commit: fx.base, branch: 'existing' },
+      readiness: { state: 'ready', commit: fx.base, recordedAt: '2026-11-12T00:00:00.000Z', nextTarget: 'root/feature' },
+    });
+    fs.writeFileSync(path.join(outside, 'peer.json'), naming('root/peer'));
+    fs.mkdirSync(path.join(outside, 'other'));
+    fs.writeFileSync(path.join(outside, 'other', 'peer.json'), naming('other/peer'));
+    // Unrecorded placements and scratch files cannot hold a record, so they never block.
+    fs.mkdirSync(path.join(checkoutsRoot, 'root', 'scratch'));
+    fs.writeFileSync(path.join(checkoutsRoot, 'root', 'notes.txt'), 'scratch\n');
+    fs.writeFileSync(path.join(checkoutsRoot, 'README.md'), 'scratch\n');
+    const proposal = await fx.checkouts.inspectCleanup('root/feature');
+    expect(proposal.blockers).toEqual([]);
+
+    const refused = async (hidden: string) => {
+      const scan = await fx.checkouts.findReferences('root/feature');
+      expect(scan.unreadable.map((source) => source.path)).toEqual([hidden]);
+      const error = await rejection(fx.checkouts.removeMissingRecord('root/feature', proposal.record));
+      expect((error as RetainedCheckoutError).reason).toBe('references_unknown');
+      expect(fs.existsSync(recordPath)).toBe(true);
+    };
+    // A sibling record reached through a symlink, or one that is not a regular file.
+    const sibling = path.join(checkoutsRoot, 'root', 'peer.json');
+    fs.symlinkSync(path.join(outside, 'peer.json'), sibling);
+    await refused(sibling);
+    fs.rmSync(sibling);
+    fs.mkdirSync(sibling);
+    await refused(sibling);
+    fs.rmdirSync(sibling);
+    // A repository directory reached through a symlink.
+    const repository = path.join(checkoutsRoot, 'other');
+    fs.symlinkSync(path.join(outside, 'other'), repository);
+    await refused(repository);
+    fs.rmSync(repository);
+    // The checkouts root itself reached through a symlink is never listed.
+    const moved = path.join(outside, 'checkouts');
+    fs.renameSync(checkoutsRoot, moved);
+    fs.symlinkSync(moved, checkoutsRoot);
+    expect((await fx.checkouts.findReferences('root/feature')).unreadable.map((source) => source.path)).toContain(checkoutsRoot);
+    fs.rmSync(checkoutsRoot);
+    fs.renameSync(moved, checkoutsRoot);
+
+    expect(await fx.checkouts.removeMissingRecord('root/feature', proposal.record)).toMatchObject({ recordRemoved: true });
+  });
+
+  it('checks the record and placement again after the reference scan, so a change made during the scan is refused', async () => {
+    const fx = await createFixture();
+    const feature = await fx.checkouts.create({ id: 'root/feature', branch: 'feat/x', baseRef: 'main' });
+    fs.rmSync(feature.path, { recursive: true, force: true });
+    const recordPath = `${feature.path}.json`;
+    const proposal = await fx.checkouts.inspectCleanup('root/feature');
+    const scan = fx.checkouts.findReferences.bind(fx.checkouts);
+    // Another writer acts while the scan runs, after the first record and placement checks passed.
+    const duringScan = async (change: () => Promise<void> | void) => {
+      fx.checkouts.findReferences = async (id: string) => {
+        const result = await scan(id);
+        await change();
+        return result;
+      };
+      try {
+        return await rejection(fx.checkouts.removeMissingRecord('root/feature', proposal.record));
+      } finally {
+        fx.checkouts.findReferences = scan;
+      }
+    };
+
+    const changed = { ...proposal.record, purpose: 'reused' };
+    const replaced = await duringScan(() => fs.writeFileSync(recordPath, JSON.stringify(changed)));
+    expect((replaced as RetainedCheckoutError).reason).toBe('binding_mismatch');
+    expect(JSON.parse(fs.readFileSync(recordPath, 'utf8'))).toEqual(changed);
+    fs.writeFileSync(recordPath, JSON.stringify(proposal.record));
+
+    const recreated = await duringScan(async () => {
+      await fx.git.raw(['worktree', 'add', '-f', feature.path, 'feat/x']);
+    });
+    expect(recreated.message).toContain('it is not missing');
+    expect(fs.existsSync(recordPath)).toBe(true);
+  });
+
   it('counts persisted references and refuses cleanup while any reference source is unreadable or unknown', async () => {
     const fx = await createFixture();
     await fx.checkouts.create({ id: 'root/feature', branch: 'feat/x', baseRef: 'main' });
@@ -283,7 +472,7 @@ describe('RetainedCheckoutService', () => {
     // Worktree-only cleanup keeps the unmerged branch, so the binding and its reference stay.
     expect((await fx.adhoc.cleanup('kept-branch', false)).cleanup).toMatchObject({ outcome: 'complete', worktreeRemoval: { status: 'succeeded' } });
     expect(fs.existsSync(run.path)).toBe(false);
-    expect((await fx.checkouts.findReferences('root/feature')).references).toEqual([{ kind: 'worker', path: run.path, runId: 'kept-branch' }]);
+    expect((await fx.checkouts.findReferences('root/feature')).references).toEqual([{ kind: 'worker', path: run.path, sidecarPath: `${run.path}.json`, runId: 'kept-branch' }]);
     expect(await fx.adhoc.cleanup('kept-branch', true, { discard: true })).toMatchObject({ cleanup: { outcome: 'complete' } });
     expect(await fx.checkouts.findReferences('root/feature')).toEqual({ references: [], unreadable: [] });
 
@@ -349,8 +538,8 @@ describe('RetainedCheckoutService', () => {
     fs.mkdirSync(path.join(featurePath, 'tasks', '04-fallback'), { recursive: true });
     writeStatus('execution', '04-fallback', pending);
 
-    const task = (folder: string) => ({ kind: 'task' as const, feature: 'old', task: folder, status: 'pending' });
-    expect(await fx.checkouts.findReferences('root/feature')).toEqual({ references: [task('01-legacy'), task('02-both'), task('04-fallback')], unreadable: [] });
+    const task = (layout: 'tasks' | 'execution', folder: string) => ({ kind: 'task' as const, feature: 'old', task: folder, status: 'pending', statusPath: path.join(featurePath, layout, folder, 'status.json') });
+    expect(await fx.checkouts.findReferences('root/feature')).toEqual({ references: [task('execution', '01-legacy'), task('tasks', '02-both'), task('execution', '04-fallback')], unreadable: [] });
     const proposal = await fx.checkouts.inspectCleanup('root/feature');
     expect(((await rejection(fx.checkouts.cleanup('root/feature', { expected: proposal.identity }))) as RetainedCheckoutError).reason).toBe('referenced');
     // The worker reads the same file: it binds the target the fallback status declares.

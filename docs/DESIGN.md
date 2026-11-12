@@ -45,7 +45,7 @@ PROBLEM  -> CONTEXT  -> EXECUTION -> REPORT
 packages/
 ├── hive-core/            <- Shared logic (services, types, utils)
 ├── opencode-hive/        <- OpenCode plugin (planning, execution, tracking)
-└── vscode-hive/          <- VS Code extension (viewer-first plan/overview review, status, Worklogs, limited archive)
+└── vscode-hive/          <- VS Code extension (viewer-first plan/overview review, status, Worklogs, limited archive, stale checkout record removal)
 ```
 
 ### Component responsibilities

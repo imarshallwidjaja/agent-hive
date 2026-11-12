@@ -48,6 +48,8 @@ export interface RetainedCheckoutView {
   slug: string;
   /** The record; absent when it could not be read or resolved (see `error`). */
   record?: RetainedCheckoutRecord;
+  /** Whether the checkout path exists; absent with `record`, when the record could not be resolved. */
+  present?: boolean;
   /** Live checkout identity; null when it could not be read. */
   head: WorktreeTargetIdentity | null;
   /** Whether the checkout is on its intended branch; null when unknown. */
@@ -176,7 +178,7 @@ export class CheckoutInspector {
     try {
       ({ repoId, slug } = parseRetainedCheckoutId(id));
       const resolved = await resolveRetainedCheckout(this.context(repositories), id);
-      const view: RetainedCheckoutView = { id, repoId, slug, record: resolved.record, head: null, onIntendedRef: null };
+      const view: RetainedCheckoutView = { id, repoId, slug, record: resolved.record, present: resolved.present, head: null, onIntendedRef: null };
       if (!resolved.present) {
         view.error = `checkout is missing at ${resolved.record.path}`;
       } else {
@@ -373,7 +375,7 @@ export class CheckoutInspector {
 
     try {
       const listing = await listRetainedCheckouts(this.config.hiveDir);
-      projection.errors.push(...listing.unrecognized);
+      projection.errors.push(...listing.unrecognized.map(({ path: entryPath, reason }) => ({ path: entryPath, reason })));
       for (const id of listing.ids) {
         const view = await this.inspectCheckout(id, repositories);
         (byId.get(view.repoId)?.checkouts ?? projection.unassigned.checkouts).push(view);

@@ -25,7 +25,10 @@ export const vscodeTestState = {
   shown: [] as any[],
   shownOptions: [] as any[],
   pickItems: [] as any[],
+  pickOptions: [] as any[],
   warnings: [] as string[],
+  /** The options and button titles passed with each warning, in the same order as `warnings`. */
+  warningArgs: [] as any[][],
   commands: new Map<string, (...args: any[]) => unknown>(),
   executed: [] as Array<{ id: string; args: any[] }>,
   terminals: [] as any[],
@@ -37,6 +40,7 @@ export const vscodeTestState = {
   textDocuments: [] as any[],
   contentProviders: new Map<string, any>(),
   linkProviders: [] as any[],
+  commentControllers: [] as any[],
   openListeners: new Set<(document: any) => void>(),
   closeListeners: new Set<(document: any) => void>(),
 };
@@ -169,16 +173,18 @@ const window = {
   registerTreeDataProvider() {
     return { dispose() {} };
   },
-  async showQuickPick(items: any[]) {
+  async showQuickPick(items: any[], options?: unknown) {
     vscodeTestState.pickItems = items;
+    vscodeTestState.pickOptions.push(options);
     const pick = vscodeTestState.picks.shift();
     return typeof pick === 'function' ? pick(items) : pick;
   },
   async showInputBox() {
     return vscodeTestState.inputs.shift();
   },
-  async showWarningMessage(message: string) {
+  async showWarningMessage(message: string, ...args: any[]) {
     vscodeTestState.warnings.push(message);
+    vscodeTestState.warningArgs.push(args);
     const confirm = vscodeTestState.confirmations.shift();
     return typeof confirm === 'function' ? confirm() : confirm;
   },
@@ -285,7 +291,9 @@ const commands = {
 
 const comments = {
   createCommentController() {
-    return { dispose() {} };
+    const controller = { dispose() {} };
+    vscodeTestState.commentControllers.push(controller);
+    return controller;
   },
 };
 
