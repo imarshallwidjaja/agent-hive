@@ -36,7 +36,8 @@ import { describeAge, formatTimestamp } from './worklogPresentation.js'
 /**
  * Repositories & Work: per repository, its configured checkout, the retained checkouts Hive keeps, and the
  * temporary workers nested under the checkout each was bound to. Every row reads stored records and read-only Git;
- * nothing here merges, deletes, or writes Hive state.
+ * nothing here merges, deletes, or writes Hive state. A row whose managed checkout directory is gone carries its
+ * checkout ID for the one writing action, Remove Stale Hive Record (`staleCheckoutRecord.ts`).
  *
  * Readiness is the primary's declaration at a commit, not verification, and says nothing about whether Git could
  * merge. Activity is shown only for an exact recorded association (task or ad-hoc run) and is labelled as a
@@ -92,6 +93,8 @@ type Kind = 'repo' | 'checkout' | 'worker' | 'detail' | 'link' | 'group' | 'bran
 
 class WorkItem extends vscode.TreeItem {
   children: WorkItem[] = []
+  /** Set only on a managed retained checkout whose directory is gone; selects Remove Stale Hive Record. */
+  checkoutId?: string
 
   constructor(
     id: string,
@@ -136,7 +139,8 @@ class OtherBranchesItem extends WorkItem {
 export class RepositoryWorkProvider implements vscode.TreeDataProvider<WorkItem> {
   private readonly changed = new vscode.EventEmitter<WorkItem | undefined>()
   readonly onDidChangeTreeData = this.changed.event
-  private readonly projectRoot: string
+  /** The physical project root, resolved once when the view opens; every row this view shows was read from it. */
+  readonly projectRoot: string
   private readonly inspector: Pick<CheckoutInspector, 'inspectProject' | 'listLocalBranches'>
   private generation = 0
   private pending: Promise<Snapshot> | null = null
@@ -361,6 +365,8 @@ function checkoutItem(checkout: RetainedCheckoutView, boundWorkers: number, cont
     commit: checkout.head?.commit,
   })
   const state = checkoutState(checkout, context)
+  // Only a managed checkout Hive confirmed absent leaves a stale record; an unreadable HEAD is not absence.
+  const stale = record?.ownership === 'managed' && checkout.present === false
   row.description = [state.text, boundText(boundWorkers), record?.purpose].filter(Boolean).join(' · ')
   row.tooltip = [
     `Retained checkout ${checkout.id}`,
@@ -368,15 +374,21 @@ function checkoutItem(checkout: RetainedCheckoutView, boundWorkers: number, cont
     record?.path,
     checkout.head ? `HEAD ${checkout.head.commit}` : undefined,
     checkout.error,
+    stale ? 'Remove Stale Hive Record in the context menu deletes only this record; branches stay unchanged.' : undefined,
     `Git read ${formatTimestamp(context.snapshot.observedAt)}`,
   ].filter(Boolean).join('\n')
   row.iconPath = new vscode.ThemeIcon(state.icon)
+  if (stale) {
+    row.checkoutId = checkout.id
+    row.contextValue = `${row.contextValue} stale`
+  }
   return row
 }
 
 /** A checkout that cannot be read or is off its branch says so first; its readiness then describes the past. */
 function checkoutState(checkout: RetainedCheckoutView, context: BuildContext): { text: string; icon: string } {
   if (!checkout.record) return { text: 'Record unreadable', icon: 'warning' }
+  if (checkout.present === false) return { text: 'Missing', icon: 'warning' }
   if (!checkout.head) return { text: 'Unavailable', icon: 'warning' }
   if (!checkout.onIntendedRef) return { text: `Off intended branch: ${checkout.head.ref ? `on ${shortRef(checkout.head.ref)}` : 'detached HEAD'}`, icon: 'warning' }
   const readiness = checkout.readiness
@@ -396,7 +408,8 @@ function checkoutDetails(id: string, checkout: RetainedCheckoutView, context: Bu
   if (record) {
     if (readiness) {
       const head = checkout.head
-      const stale = !head ? 'checkout unavailable'
+      const stale = checkout.present === false ? 'checkout is missing'
+        : !head ? 'checkout unavailable'
         : !checkout.onIntendedRef ? 'checkout is off its intended branch'
           : readiness.headMoved ? `HEAD is now ${shortSha(head.commit)}` : undefined
       const declared = `${readiness.state === 'ready' ? 'Ready' : 'Not ready'} at ${shortSha(readiness.commit)} · recorded ${formatTimestamp(readiness.recordedAt)}`

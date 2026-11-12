@@ -8,6 +8,7 @@ import { BackgroundJobsProvider, HiveSidebarProvider, PlanCommentController, Rep
 import { archiveContext, isContextScope } from './providers/contextInspection.js'
 import { archiveBackgroundJobItem } from './providers/backgroundJobsProvider.js'
 import { copyLocation, openInNewWindow, openTerminal } from './providers/repositoryWorkProvider.js'
+import { removeStaleCheckoutRecord } from './providers/staleCheckoutRecord.js'
 import { SessionConstraintsProvider } from './providers/sessionConstraintsProvider.js'
 import { WorklogDocuments } from './providers/worklogDocuments.js'
 import type { WorklogDocumentView } from './providers/worklogDocuments.js'
@@ -16,18 +17,105 @@ import { describeFailure } from './providers/worklogPresentation.js'
 
 import { reviewTargetForDocument, findReviewCommentsPath } from './reviewRouting.js'
 
-function findHiveRoot(startPath: string): string | null {
-  // A worker or retained checkout that Hive placed may hold a .hive of its own; the project that holds the placement governs.
-  const detected = detectContext(startPath)
-  if (detected.isWorktree) return detected.projectRoot
-  let current = startPath
-  while (current !== path.dirname(current)) {
-    if (fs.existsSync(path.join(current, '.hive'))) {
-      return current
+/**
+ * The real path of a workspace folder, keeping the trailing components that do not exist so a removed placement is
+ * still recognized by its location. Null when the folder cannot be resolved: a broken or cyclic link, a component that
+ * is a file, or a path that cannot be read. Guessing a root from such a path could select an unrelated project.
+ */
+function resolveWorkspacePath(startPath: string): string | null {
+  const missing: string[] = []
+  let current = path.resolve(startPath)
+  for (;;) {
+    try {
+      const real = fs.realpathSync(current)
+      // Also after climbing: Windows reports a path below a file as missing rather than as not a directory.
+      if (!fs.statSync(real).isDirectory()) return null
+      return path.join(real, ...missing.reverse())
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return null
     }
-    current = path.dirname(current)
+    try {
+      fs.lstatSync(current)
+      return null // The entry exists but cannot be followed: a link whose target is gone.
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return null
+    }
+    const parent = path.dirname(current)
+    if (parent === current) return null
+    missing.push(path.basename(current))
+    current = parent
   }
-  return null
+}
+
+const NO_HIVE_DIRECTORY = 'Hive: No .hive directory found. Open a Hive workspace, then refresh this view.'
+
+/**
+ * Whether `directory` holds a .hive directory, or the warning to show when that cannot be told. A .hive that exists
+ * but cannot be read or searched, is a file, or is a broken link stops the search: looking further up could open an
+ * unrelated project.
+ */
+function hiveDirectoryIn(directory: string): boolean | string {
+  const hive = path.join(directory, '.hive')
+  const stopped = (problem: string, advice: string) =>
+    `Hive: No project opened. ${hive} ${problem}, so the search for a Hive project stopped there. ${advice}, then refresh this view.`
+  const unreadable = (error: unknown) =>
+    stopped(`could not be read (${(error as NodeJS.ErrnoException).code ?? 'unknown error'})`, 'Check its permissions or open the Hive project folder')
+  let stats: fs.Stats
+  try {
+    stats = fs.statSync(hive)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return unreadable(error)
+    // A link whose target is gone reports ENOENT too, but it is an entry, not an absent .hive.
+    try {
+      stats = fs.lstatSync(hive)
+    } catch (linkError) {
+      return (linkError as NodeJS.ErrnoException).code === 'ENOENT' ? false : unreadable(linkError)
+    }
+  }
+  if (!stats.isDirectory()) return stopped('is not a directory', 'Open the Hive project folder')
+  // stat needs only the parent's permissions; listing and opening entries inside .hive needs its own. Windows access
+  // ignores ACLs, so the listing itself is tried too.
+  try {
+    fs.accessSync(hive, fs.constants.R_OK | fs.constants.X_OK)
+    fs.readdirSync(hive)
+  } catch (error) {
+    return unreadable(error)
+  }
+  return true
+}
+
+/** The project a workspace folder opens, or the warning that explains why it opens none. */
+function findHiveRoot(startPath: string): { root: string } | { root: null; warning: string } {
+  // Placement detection reads the path, so an alias is resolved first.
+  const resolved = resolveWorkspacePath(startPath)
+  if (!resolved) {
+    return { root: null, warning: `Hive: No project opened. ${startPath} could not be resolved: a link in its path is broken, part of it is a file, or it cannot be read. Open the Hive project folder, then refresh this view.` }
+  }
+  // A worker or retained checkout that Hive placed may hold a .hive of its own; the project that holds the placement
+  // governs. When that project's .hive is gone there is no project to read.
+  const detected = detectContext(resolved)
+  if (detected.isWorktree) {
+    const hive = hiveDirectoryIn(detected.projectRoot)
+    return hive === true ? { root: detected.projectRoot } : { root: null, warning: hive || NO_HIVE_DIRECTORY }
+  }
+  let root = resolved
+  for (;;) {
+    if (root === path.dirname(root)) return { root: null, warning: NO_HIVE_DIRECTORY }
+    const hive = hiveDirectoryIn(root)
+    if (typeof hive === 'string') return { root: null, warning: hive }
+    if (hive) break
+    root = path.dirname(root)
+  }
+  // Plan review matches document paths to the root by their spelling, and the editor spells documents through the
+  // folder the window opened. When that folder or one of its ancestors names this project, keep its spelling.
+  for (let spelled = path.resolve(startPath); spelled !== path.dirname(spelled); spelled = path.dirname(spelled)) {
+    try {
+      if (fs.realpathSync(spelled) === root) return { root: spelled }
+    } catch {
+      // A component that does not resolve, such as a missing folder below the project; its ancestors may still name it.
+    }
+  }
+  return { root }
 }
 
 class HiveExtension {
@@ -51,7 +139,7 @@ class HiveExtension {
   ) {}
 
   initialize(): void {
-    this.workspaceRoot = findHiveRoot(this.workspaceFolder)
+    this.workspaceRoot = findHiveRoot(this.workspaceFolder).root
     
     if (this.workspaceRoot) {
       this.initializeWithHive(this.workspaceRoot)
@@ -120,7 +208,7 @@ class HiveExtension {
     )
 
     const onHiveCreated = () => {
-      const newRoot = findHiveRoot(this.workspaceFolder)
+      const newRoot = findHiveRoot(this.workspaceFolder).root
       if (newRoot && !this.initialized) {
         this.workspaceRoot = newRoot
         this.initializeWithHive(newRoot)
@@ -137,14 +225,13 @@ class HiveExtension {
     this.context.subscriptions.push(
       vscode.commands.registerCommand('hive.refresh', () => {
         if (!this.initialized) {
-          const newRoot = findHiveRoot(workspaceFolder)
-          if (newRoot) {
-            this.workspaceRoot = newRoot
-            this.initializeWithHive(newRoot)
-          } else {
-            vscode.window.showWarningMessage('Hive: No .hive directory found. Open a Hive workspace, then refresh this view.')
+          const found = findHiveRoot(workspaceFolder)
+          if ('warning' in found) {
+            vscode.window.showWarningMessage(found.warning)
             return
           }
+          this.workspaceRoot = found.root
+          this.initializeWithHive(found.root)
         }
         this.sidebarProvider?.refresh()
         this.backgroundJobsProvider?.refresh()
@@ -262,6 +349,15 @@ class HiveExtension {
       vscode.commands.registerCommand('hive.repositories.copyPath', (item: unknown) => copyLocation(item, 'path')),
       vscode.commands.registerCommand('hive.repositories.copyBranch', (item: unknown) => copyLocation(item, 'ref')),
       vscode.commands.registerCommand('hive.repositories.copyCommit', (item: unknown) => copyLocation(item, 'commit')),
+      vscode.commands.registerCommand('hive.repositories.removeStaleRecord', async (item: unknown) => {
+        // The project the row was read from, not the window folder: an alias may point elsewhere by now.
+        const provider = this.repositoryWorkProvider
+        if (!provider) {
+          vscode.window.showErrorMessage('Hive: No .hive directory found')
+          return
+        }
+        await removeStaleCheckoutRecord(provider.projectRoot, item, () => provider.refresh())
+      }),
 
       vscode.commands.registerCommand('hive.openBackgroundJobInBoard', (owner: unknown, alias: unknown) => {
         this.launcher?.openBackgroundJobInBoard(owner, alias)

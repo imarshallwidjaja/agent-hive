@@ -125,11 +125,14 @@ describe('RepositoryWorkProvider', () => {
     const detached = await declareReady('root/detached', 'feat/detached');
     const missing = await declareReady('root/missing', 'feat/missing');
     const gone = await checkouts.create({ id: 'root/gone', branch: 'feat/gone', baseRef: 'main' });
+    await checkouts.create({ id: 'root/headless', branch: 'feat/headless', baseRef: 'main' });
     // Same commit, other branch: the declared commit still matches, but the checkout is not where it was declared.
     git(switched.path, 'switch', '-c', 'other');
     git(detached.path, 'switch', '--detach');
     fs.rmSync(missing.path, { recursive: true, force: true });
     fs.rmSync(gone.path, { recursive: true, force: true });
+    // Present, but its HEAD cannot be read.
+    fs.writeFileSync(path.join(testRoot, '.git', 'worktrees', 'headless', 'HEAD'), 'not a ref\n');
     git(testRoot, 'switch', '-c', 'elsewhere');
     const before = snapshot(hiveDir);
 
@@ -139,16 +142,27 @@ describe('RepositoryWorkProvider', () => {
     expect(tree).toContain('  main | Repository checkout · Off intended branch: on elsewhere');
     expect(tree).toContain('  feat/switched | Off intended branch: on other');
     expect(tree).toContain('  feat/detached | Off intended branch: detached HEAD');
-    expect(tree).toContain('  feat/missing | Unavailable');
-    expect(tree).toContain('  feat/gone | Unavailable');
+    expect(tree).toContain('  feat/missing | Missing');
+    expect(tree).toContain('  feat/gone | Missing');
+    expect(tree).toContain('  feat/headless | Unavailable');
     expect(tree.some(line => line.includes('Ready') && !line.includes('Readiness |'))).toBe(false);
 
     const details = async (id: string) => (await provider.getChildren(await find(provider, id))).map((row: any) => `${row.label} | ${row.description}`);
     expect((await details('checkout:root/switched')).find(line => line.startsWith('Readiness |'))).toEndWith(' · not current: checkout is off its intended branch');
-    expect((await details('checkout:root/missing')).find(line => line.startsWith('Readiness |'))).toEndWith(' · not current: checkout unavailable');
+    expect((await details('checkout:root/missing')).find(line => line.startsWith('Readiness |'))).toEndWith(' · not current: checkout is missing');
     expect(await details('checkout:root/gone')).toContain('Readiness | Not recorded');
     expect(await details('checkout:root/gone')).toContain(`Problem | checkout is missing at ${gone.path}`);
     expect(await details('repo:root/checkout')).toContain(`HEAD | elsewhere @ ${git(testRoot, 'rev-parse', '--short=7', 'HEAD')}, intended main`);
+
+    // Only a managed checkout confirmed absent offers Remove Stale Hive Record, and the row carries its ID.
+    const goneRow = await find(provider, 'checkout:root/gone');
+    expect(goneRow.contextValue).toBe('repository-work checkout path ref stale');
+    expect(goneRow.checkoutId).toBe('root/gone');
+    for (const id of ['checkout:root/headless', 'checkout:root/switched', 'repo:root/checkout']) {
+      const row = await find(provider, id);
+      expect(row.contextValue).not.toContain('stale');
+      expect(row.checkoutId).toBeUndefined();
+    }
   });
 
   it('shows a repository configured at a subdirectory as one checkout at the root of its Git checkout', async () => {

@@ -97,9 +97,20 @@ describe('CheckoutInspector', () => {
     expect(planted?.error).toContain('path contains a symlink');
     expect(JSON.stringify(planted)).not.toContain('do-not-read');
 
+    expect(byId.get('root/feature')?.present).toBe(true);
+    expect(byId.get('root/broken')).not.toHaveProperty('present');
+
+    // A HEAD that cannot be read is not a missing checkout.
+    const adminHead = path.join(repoPath, '.git', 'worktrees', 'feature', 'HEAD');
+    const headBytes = fs.readFileSync(adminHead, 'utf8');
+    fs.writeFileSync(adminHead, 'not a ref\n');
+    expect(await inspector.inspectCheckout('root/feature')).toMatchObject({ present: true, head: null, error: expect.any(String) });
+    fs.writeFileSync(adminHead, headBytes);
+
     // A missing checkout keeps its recorded readiness, unconfirmed because HEAD cannot be read.
     fs.rmSync(feature.path, { recursive: true, force: true });
     expect(await inspector.inspectCheckout('root/feature')).toMatchObject({
+      present: false,
       head: null,
       error: expect.stringContaining('missing'),
       readiness: { state: 'ready', waitingFor: 'review', headMoved: null },

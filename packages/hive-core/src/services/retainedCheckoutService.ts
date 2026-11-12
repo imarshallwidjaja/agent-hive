@@ -11,6 +11,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import simpleGit, { type SimpleGit } from 'simple-git';
 import * as fsSync from 'fs';
+import { isDeepStrictEqual } from 'util';
 import type { ResolvedRepository } from '../types.js';
 import { getFeaturesPath, listFeatureDirectories } from '../utils/paths.js';
 import { projectRootsMatch } from '../utils/repositoryConfig.js';
@@ -72,11 +73,12 @@ export interface RetainedCheckoutReadinessInput {
   waitingFor?: string;
 }
 
+/** Each reference names the persisted file that holds it, so an operator can open the source. */
 export type RetainedCheckoutReference =
-  | { kind: 'task'; feature: string; task: string; status: string }
+  | { kind: 'task'; feature: string; task: string; status: string; statusPath: string }
   /** A targeted worker's binding; `path` is its worktree, which may already be removed while its branch remains. */
-  | { kind: 'worker'; path: string; feature?: string; task?: string; candidate?: string; runId?: string }
-  | { kind: 'next_target'; from: string };
+  | { kind: 'worker'; path: string; sidecarPath: string; feature?: string; task?: string; candidate?: string; runId?: string }
+  | { kind: 'next_target'; from: string; recordPath: string };
 
 /** Persisted state that could name a checkout but could not be read, so whether it does is unknown. */
 export interface UnreadableReferenceSource {
@@ -91,6 +93,8 @@ export interface RetainedCheckoutReferenceScan {
 
 export interface RetainedCheckoutCleanupProposal {
   record: RetainedCheckoutRecord;
+  /** Whether the checkout path exists now. */
+  present: boolean;
   /** Live identity to pass back as `expected`; null when the checkout is missing or unreadable. */
   identity: WorktreeTargetIdentity | null;
   onIntendedRef: boolean | null;
@@ -392,9 +396,10 @@ export class RetainedCheckoutService {
    * Tasks, targeted workers and readiness declarations that still name `id`, read from persisted records. A task
    * counts by the status file its worker would read, including the legacy `execution/` layout. A worker counts by its
    * binding sidecar, so one whose worktree was removed while its branch remains still references the checkout.
-   * Sources whose answer is unknown are returned as unreadable, never skipped: a record that cannot be read, a task
-   * without status, a symlinked feature or task entry, and a targeted branch in the checkout's repository that has
-   * lost its sidecar, found with one `for-each-ref`.
+   * Sources whose answer is unknown are returned as unreadable, never skipped: a record that cannot be read, a
+   * symlinked repository directory or record path that is not a regular file, a task without status, a symlinked
+   * feature or task entry, and a targeted branch in the checkout's repository that has lost its sidecar, found with
+   * one `for-each-ref`.
    */
   async findReferences(id: string): Promise<RetainedCheckoutReferenceScan> {
     const scan: RetainedCheckoutReferenceScan = { references: [], unreadable: [] };
@@ -435,18 +440,19 @@ export class RetainedCheckoutService {
         if ('integrity' in entry) {
           unreadable(statusPath, entry.integrity.reason === 'status_unreadable' ? entry.integrity.error : new Error('task status is missing'));
         } else if (entry.target === id && UNFINISHED.has(entry.status)) {
-          scan.references.push({ kind: 'task', feature: feature.logicalName, task: entry.folder, status: entry.status });
+          scan.references.push({ kind: 'task', feature: feature.logicalName, task: entry.folder, status: entry.status, statusPath });
         }
       }
     }
 
     const { sidecars, unreadable: unreadableSidecars } = await listTargetedSidecars(this.config.hiveDir);
     scan.unreadable.push(...unreadableSidecars);
-    for (const { metadata } of sidecars.filter((sidecar) => sidecar.metadata.target.id === id)) {
+    for (const { path: sidecarPath, metadata } of sidecars.filter((sidecar) => sidecar.metadata.target.id === id)) {
       const { feature, task, candidate, runId } = metadata;
       scan.references.push({
         kind: 'worker',
         path: metadata.worktreePath,
+        sidecarPath,
         ...(feature !== undefined ? { feature, task } : {}),
         ...(candidate !== undefined ? { candidate } : {}),
         ...(runId !== undefined ? { runId } : {}),
@@ -464,16 +470,20 @@ export class RetainedCheckoutService {
 
     let others: string[] = [];
     try {
-      others = (await listRetainedCheckouts(this.config.hiveDir)).ids;
+      const listing = await listRetainedCheckouts(this.config.hiveDir);
+      others = listing.ids;
+      // A symlinked repository directory or a record path that is not a regular file could hide a declaration.
+      for (const entry of listing.unrecognized.filter((candidate) => candidate.mayHoldRecord)) unreadable(entry.path, new Error(entry.reason));
     } catch (error) {
       unreadable(path.join(this.config.hiveDir, 'checkouts'), error);
     }
     for (const other of others.filter((candidate) => candidate !== id)) {
+      const { recordPath } = retainedCheckoutPaths(this.config.hiveDir, other);
       try {
         const record = await readRetainedCheckoutRecord(this.config.hiveDir, other);
-        if (record?.readiness?.nextTarget === id) scan.references.push({ kind: 'next_target', from: other });
+        if (record?.readiness?.nextTarget === id) scan.references.push({ kind: 'next_target', from: other, recordPath });
       } catch (error) {
-        unreadable(retainedCheckoutPaths(this.config.hiveDir, other).recordPath, error);
+        unreadable(recordPath, error);
       }
     }
     return scan;
@@ -515,7 +525,53 @@ export class RetainedCheckoutService {
         ...(pendingOperations.length > 0 ? ['an interrupted worktree operation guards this repository'] : []),
         ...(removal?.problems.map((problem) => problem.message) ?? []),
       ];
-      return { record: resolved.record, identity, onIntendedRef, local: removal?.local ?? null, references, unreadableReferences: unreadable, pendingOperations, blockers };
+      return { record: resolved.record, present: resolved.present, identity, onIntendedRef, local: removal?.local ?? null, references, unreadableReferences: unreadable, pendingOperations, blockers };
+    });
+  }
+
+  /** Refuse while any reference to `id` exists or any source that could hold one cannot be read. */
+  private async assertUnreferenced(id: string): Promise<void> {
+    const { references, unreadable } = await this.findReferences(id);
+    if (references.length > 0) {
+      throw new RetainedCheckoutError('referenced', `Retained checkout ${id} is still referenced: ${references.map((reference) => JSON.stringify(reference)).join(', ')}`);
+    }
+    if (unreadable.length > 0) {
+      throw new RetainedCheckoutError('references_unknown', `Retained checkout ${id} cannot be shown to be unreferenced: ${unreadable.map((source) => `${source.path} (${source.reason})`).join(', ')}`);
+    }
+  }
+
+  /**
+   * Remove only the record of a managed checkout whose placement is gone, for example after someone deleted the
+   * worktree with Git. The record must still equal `expectedRecord` from the cleanup proposal, and the checkout must
+   * be unreferenced with every reference source readable. Git is only read, never changed: the branch and every Git
+   * worktree registration, including a prunable one for this placement, stay as they are.
+   *
+   * The record and placement are checked again after the reference scan, just before the record is deleted.
+   * Retained checkout and worktree operations on this repository wait for the operation lock, but task writes (which
+   * take TaskService's locks, not this one) and processes outside Hive do not. A reference source can change after the scan
+   * has read it, while the scan continues as well as after the last check, and that change goes undetected. Callers
+   * that need the checkout to stay unreferenced must stop such writers until the removal finishes.
+   */
+  async removeMissingRecord(id: string, expectedRecord: RetainedCheckoutRecord): Promise<RetainedCheckoutCleanupResult> {
+    return this.mutate('cleanup', id, async () => {
+      const assertStillMissing = async () => {
+        const resolved = await resolveRetainedCheckout(this.context(), id);
+        if (!isDeepStrictEqual(resolved.record, expectedRecord)) {
+          throw new RetainedCheckoutError('binding_mismatch', `Retained checkout record ${id} changed since it was inspected; inspect it again`);
+        }
+        if (resolved.record.ownership !== 'managed') {
+          throw new RetainedCheckoutError('user_owned', `Retained checkout ${id} is registered; only a managed checkout's missing placement leaves a stale record`);
+        }
+        if (resolved.present) {
+          throw new RetainedCheckoutError('binding_mismatch', `Retained checkout ${id} exists at ${resolved.record.path}; it is not missing`);
+        }
+      };
+      await assertStillMissing();
+      await this.assertUnreferenced(id);
+      // The scan is slow and unlocked against writers outside Hive, so what it started from is established again.
+      await assertStillMissing();
+      await fs.unlink(retainedCheckoutPaths(this.config.hiveDir, id).recordPath);
+      return { id, ownership: 'managed', worktreeRemoved: false, branchDeleted: false, recordRemoved: true };
     });
   }
 
@@ -530,13 +586,7 @@ export class RetainedCheckoutService {
     return this.mutate('cleanup', id, async (guard) => {
       const resolved = await resolveRetainedCheckout(this.context(), id);
       const { record, repository } = resolved;
-      const { references, unreadable } = await this.findReferences(id);
-      if (references.length > 0) {
-        throw new RetainedCheckoutError('referenced', `Retained checkout ${id} is still referenced: ${references.map((reference) => JSON.stringify(reference)).join(', ')}`);
-      }
-      if (unreadable.length > 0) {
-        throw new RetainedCheckoutError('references_unknown', `Retained checkout ${id} cannot be shown to be unreferenced: ${unreadable.map((source) => `${source.path} (${source.reason})`).join(', ')}`);
-      }
+      await this.assertUnreferenced(id);
       let identity: WorktreeTargetIdentity | null = null;
       if (resolved.present) {
         ({ identity } = await observeRetainedCheckout(resolved));

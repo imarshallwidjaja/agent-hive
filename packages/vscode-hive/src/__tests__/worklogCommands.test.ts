@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import * as fs from 'fs';
 import * as path from 'path';
 import { disposeTextDocument, resetVscodeTestState, vscodeTestDouble, vscodeTestState as ui } from '../test/vscodeTestDouble.js';
@@ -20,7 +20,8 @@ describe('worklog commands', () => {
     resetVscodeTestState();
     fs.rmSync(TEST_ROOT_BASE, { recursive: true, force: true });
     fs.mkdirSync(TEST_ROOT_BASE, { recursive: true });
-    root = fs.mkdtempSync(path.join(TEST_ROOT_BASE, 'workspace-'));
+    // Canonical, so expectations hold where the temporary directory is itself reached through a link.
+    root = fs.realpathSync(fs.mkdtempSync(path.join(TEST_ROOT_BASE, 'workspace-')));
     new FeatureService(root).create('checkout');
     new WorklogService(root).record(
       { kind: 'feature', featureName: 'checkout' },
@@ -85,6 +86,142 @@ describe('worklog commands', () => {
       expect(ui.treeViews.find(view => view.id === 'hive.worklogs')?.description, checkout).toBe(path.basename(root));
       await run('hive.worklog.open', 'feature:checkout');
       expect(shownQuery(0).get('project'), checkout).toBe(root);
+    }
+  });
+
+  it('resolves a window opened through an alias of a placement to the project that holds it, and still recognizes a removed placement by its path', async () => {
+    const placement = path.join(root, '.hive', 'checkouts', 'root', 'release');
+    fs.mkdirSync(path.join(placement, '.hive'), { recursive: true });
+    const alias = path.join(TEST_ROOT_BASE, 'release-alias');
+    fs.symlinkSync(placement, alias);
+    const removed = path.join(root, '.hive', 'checkouts', 'root', 'removed');
+    for (const folder of [alias, removed]) {
+      resetVscodeTestState();
+      ui.workspaceFolders = [{ uri: { fsPath: folder } }];
+      activate({ subscriptions: [], workspaceState: { get: () => undefined, update: async () => {} } } as never);
+
+      expect(ui.treeViews.find(view => view.id === 'hive.worklogs')?.description, folder).toBe(path.basename(root));
+      await run('hive.worklog.open', 'feature:checkout');
+      expect(shownQuery(0).get('project'), folder).toBe(root);
+    }
+  });
+
+  it('keeps the placement an alias names when the window opens a folder below it that does not exist', async () => {
+    const placement = path.join(root, '.hive', 'checkouts', 'root', 'release');
+    fs.mkdirSync(path.join(placement, '.hive'), { recursive: true });
+    const alias = path.join(TEST_ROOT_BASE, 'release-alias');
+    fs.symlinkSync(placement, alias);
+    resetVscodeTestState();
+    ui.workspaceFolders = [{ uri: { fsPath: path.join(alias, 'missing', 'deeper') } }];
+    activate({ subscriptions: [], workspaceState: { get: () => undefined, update: async () => {} } } as never);
+
+    await run('hive.worklog.open', 'feature:checkout');
+    expect(shownQuery(0).get('project')).toBe(root);
+  });
+
+  it('reviews a plan or overview opened through an alias of the project folder the window opened', async () => {
+    const alias = path.join(TEST_ROOT_BASE, 'project-alias');
+    fs.symlinkSync(root, alias);
+    const feature = path.join(alias, '.hive', 'features', '01_checkout');
+    const plan = path.join(feature, 'plan.md');
+    const overview = path.join(feature, 'context', 'overview.md');
+    fs.writeFileSync(plan, '# Plan\n');
+    fs.mkdirSync(path.join(feature, 'comments'), { recursive: true });
+    fs.writeFileSync(path.join(feature, 'comments', 'plan.json'), JSON.stringify({ threads: [{ id: 't1', line: 0, body: 'Tighten scope', replies: [] }] }));
+    resetVscodeTestState();
+    ui.workspaceFolders = [{ uri: { fsPath: alias } }];
+    activate({ subscriptions: [], workspaceState: { get: () => undefined, update: async () => {} } } as never);
+
+    // The editor names documents by the folder the window opened, so the alias spelling must route to the review.
+    const [controller] = ui.commentControllers;
+    for (const fileName of [plan, overview]) {
+      expect(controller.commentingRangeProvider.provideCommentingRanges({ fileName, lineCount: 2 }), fileName).toHaveLength(1);
+    }
+    for (const fileName of [plan, overview]) {
+      ui.activeTextEditor = { document: { uri: { fsPath: fileName } } };
+      ui.inputs.push('');
+      await run('hive.plan.doneReview');
+    }
+    expect(ui.errors).toEqual([]);
+    expect(ui.clipboard).toEqual(['Plan review comments:\nLine 0: Tighten scope', 'Overview approved']);
+  });
+
+  it('opens no project for a folder it cannot resolve to the project that governs it, and says so on refresh', async () => {
+    const other = fs.mkdtempSync(path.join(TEST_ROOT_BASE, 'other-'));
+    new FeatureService(other).create('elsewhere');
+    // An alias inside `root` to a removed placement of `other` must never select `root`.
+    const dangling = path.join(root, 'removed-alias');
+    fs.symlinkSync(path.join(other, '.hive', 'checkouts', 'root', 'removed'), dangling);
+    const replacedByFile = path.join(root, '.hive', 'checkouts', 'root', 'replaced');
+    fs.mkdirSync(path.dirname(replacedByFile), { recursive: true });
+    fs.writeFileSync(replacedByFile, '');
+    const cycle = path.join(root, 'cycle');
+    fs.symlinkSync(cycle, cycle);
+    // A removed placement whose project lost its .hive must not fall back to an outer project either.
+    const outer = path.join(root, 'nested-project');
+    const unmanaged = path.join(outer, '.hive', 'checkouts', 'root', 'removed');
+    fs.mkdirSync(outer, { recursive: true });
+    // A .hive that exists but cannot be used as a project stops the search instead of opening `root` above it.
+    const fileHive = path.join(root, 'file-hive');
+    fs.mkdirSync(fileHive);
+    fs.writeFileSync(path.join(fileHive, '.hive'), '');
+    const danglingHive = path.join(root, 'dangling-hive');
+    fs.mkdirSync(danglingHive);
+    fs.symlinkSync(path.join(root, 'gone'), path.join(danglingHive, '.hive'));
+    // Simulated rather than chmod, which does not deny a privileged test process.
+    const denied = path.join(root, 'denied');
+    fs.mkdirSync(path.join(denied, '.hive'), { recursive: true });
+    const statSync = fs.statSync;
+    const stat = spyOn(fs, 'statSync').mockImplementation(((target: fs.PathLike, ...rest: never[]) => {
+      if (target === path.join(denied, '.hive')) throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+      return (statSync as (...args: unknown[]) => unknown)(target, ...rest);
+    }) as typeof fs.statSync);
+    // A .hive directory that stat reports but whose entries cannot be listed or searched.
+    const unsearchable = path.join(root, 'unsearchable');
+    fs.mkdirSync(path.join(unsearchable, '.hive'), { recursive: true });
+    const accessSync = fs.accessSync;
+    const access = spyOn(fs, 'accessSync').mockImplementation(((target: fs.PathLike, mode?: number) => {
+      if (target === path.join(unsearchable, '.hive')) throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+      return accessSync(target, mode);
+    }) as typeof fs.accessSync);
+    // A .hive that stat and access accept but that cannot be listed, as on Windows, where access ignores ACLs.
+    const unlistable = path.join(root, 'unlistable');
+    fs.mkdirSync(path.join(unlistable, '.hive'), { recursive: true });
+    const readdirSync = fs.readdirSync;
+    const readdir = spyOn(fs, 'readdirSync').mockImplementation(((target: fs.PathLike, ...rest: never[]) => {
+      if (target === path.join(unlistable, '.hive')) throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+      return (readdirSync as (...args: unknown[]) => unknown)(target, ...rest);
+    }) as typeof fs.readdirSync);
+
+    const notDirectory = (project: string) => `Hive: No project opened. ${path.join(project, '.hive')} is not a directory, so the search for a Hive project stopped there. Open the Hive project folder, then refresh this view.`;
+    const unresolved = (folder: string) => `Hive: No project opened. ${folder} could not be resolved: a link in its path is broken, part of it is a file, or it cannot be read. Open the Hive project folder, then refresh this view.`;
+    const cases: Array<[string, string]> = [
+      [dangling, unresolved(dangling)],
+      [path.join(dangling, 'sub'), unresolved(path.join(dangling, 'sub'))],
+      [replacedByFile, unresolved(replacedByFile)],
+      [path.join(replacedByFile, 'sub'), unresolved(path.join(replacedByFile, 'sub'))],
+      [cycle, unresolved(cycle)],
+      [unmanaged, 'Hive: No .hive directory found. Open a Hive workspace, then refresh this view.'],
+      [fileHive, notDirectory(fileHive)],
+      [danglingHive, notDirectory(danglingHive)],
+      [path.join(denied, 'sub'), `Hive: No project opened. ${path.join(denied, '.hive')} could not be read (EACCES), so the search for a Hive project stopped there. Check its permissions or open the Hive project folder, then refresh this view.`],
+      [unsearchable, `Hive: No project opened. ${path.join(unsearchable, '.hive')} could not be read (EACCES), so the search for a Hive project stopped there. Check its permissions or open the Hive project folder, then refresh this view.`],
+      [unlistable, `Hive: No project opened. ${path.join(unlistable, '.hive')} could not be read (EACCES), so the search for a Hive project stopped there. Check its permissions or open the Hive project folder, then refresh this view.`],
+    ];
+    try {
+      for (const [folder, warning] of cases) {
+        resetVscodeTestState();
+        ui.workspaceFolders = [{ uri: { fsPath: folder } }];
+        expect(() => activate({ subscriptions: [], workspaceState: { get: () => undefined, update: async () => {} } } as never), folder).not.toThrow();
+        expect(ui.treeViews, folder).toEqual([]);
+        await run('hive.refresh');
+        expect(ui.treeViews, folder).toEqual([]);
+        expect(ui.warnings, folder).toEqual([warning]);
+      }
+    } finally {
+      stat.mockRestore();
+      access.mockRestore();
+      readdir.mockRestore();
     }
   });
 

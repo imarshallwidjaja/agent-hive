@@ -153,6 +153,7 @@ export {
   IMPLICIT_ROOT_REPOSITORY_ID,
   parseRetainedCheckoutId,
   RetainedCheckoutError,
+  retainedCheckoutPaths,
 } from './retainedCheckout.js';
 export type {
   RetainedCheckoutErrorReason,

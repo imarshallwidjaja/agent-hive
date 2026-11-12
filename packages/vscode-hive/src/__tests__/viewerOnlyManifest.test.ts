@@ -16,7 +16,7 @@ describe('viewer-only VS Code manifest', () => {
     expect(pkg.devDependencies['@types/vscode']).toBe('1.67.0');
   });
 
-  it('contributes viewer, review, and limited operator archive commands', () => {
+  it('contributes viewer, review, and limited operator commands', () => {
     const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
     const lmKey = ['language', 'Model', 'Tools'].join('');
     expect(pkg.contributes[lmKey]).toBeUndefined();
@@ -41,6 +41,7 @@ describe('viewer-only VS Code manifest', () => {
       'hive.repositories.copyPath',
       'hive.repositories.openInNewWindow',
       'hive.repositories.openTerminal',
+      'hive.repositories.removeStaleRecord',
       'hive.worklog.loadMore',
       'hive.worklog.open',
       'hive.worklog.pin',
@@ -66,6 +67,16 @@ describe('viewer-only VS Code manifest', () => {
     expect(source).toContain('this.context.subscriptions.push(\n      this.sessionConstraintsProvider,');
     expect(source).toContain('this.sessionConstraintsProvider?.refresh()');
     expect(source).not.toContain('registerFileSystemProvider');
+  });
+
+  it('offers stale checkout record removal only from a missing managed checkout row', () => {
+    const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+    const entries = (menu: string) => pkg.contributes.menus[menu].filter((entry: { command: string }) => entry.command === 'hive.repositories.removeStaleRecord');
+    expect(entries('view/item/context')).toEqual([{ command: 'hive.repositories.removeStaleRecord', when: 'view == hive.repositories && viewItem =~ /\\bstale\\b/', group: 'remove@1' }]);
+    expect(entries('commandPalette')).toEqual([{ command: 'hive.repositories.removeStaleRecord', when: 'false' }]);
+    for (const menu of Object.keys(pkg.contributes.menus).filter((name) => name !== 'view/item/context' && name !== 'commandPalette')) {
+      expect(entries(menu)).toEqual([]);
+    }
   });
 
   it('contributes the minimal Hive viewer views', () => {
@@ -99,7 +110,7 @@ describe('viewer-only VS Code manifest', () => {
     expect(source).not.toContain('registerWebviewViewProvider');
   });
 
-  it('documents background and repository views as viewer-first surfaces with limited archive actions', () => {
+  it('documents background and repository views as viewer-first surfaces with limited operator actions', () => {
     const readme = fs.readFileSync(readmePath, 'utf8');
 
     expect(readme).toContain('Background Jobs');
@@ -107,5 +118,6 @@ describe('viewer-only VS Code manifest', () => {
     expect(readme).toContain('does not start worktrees, commit changes, merge branches, cancel jobs, or reconcile jobs; archiving a background job is its only job mutation');
     expect(readme).toContain('Archive Background Job');
     expect(readme).toContain('Archive Feature');
+    expect(readme).toContain('Remove Stale Hive Record');
   });
 });
