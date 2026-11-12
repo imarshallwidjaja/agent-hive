@@ -119,6 +119,8 @@ export interface WorktreeRepositoryMergeResult {
   action: WorktreeRecoveryAction;
   expectedTarget?: import('./worktreeTarget.js').WorktreeTargetIdentity;
   observedTarget?: import('./worktreeTarget.js').WorktreeTargetIdentity | null;
+  /** Present when the integration applied a commit and a receipt recorder ran; absent for no-ops and failures. */
+  provenance?: import('./integrationReceipt.js').IntegrationProvenanceOutcome;
 }
 
 interface WorktreeOutcomeRule {

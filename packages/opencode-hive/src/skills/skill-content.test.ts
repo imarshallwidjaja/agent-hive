@@ -1892,6 +1892,7 @@ describe('skill content', () => {
     expect(adhoc).toContain('targeted or legacy single-root workers return `sourceCommit`');
     expect(adhoc).toContain('untargeted composite workers return the complete `sourceCommits` map');
     expect(adhoc).toContain('from the pinned retained source commit');
+    expect(adhoc).toContain('When integrating one retained checkout into another, first read `hive_checkout_brief({ id, against })` for that pair');
     expect(adhoc).toContain('without a second approval');
     expect(adhoc).toContain('Hold no locks or unfinished merges during the wait');
     expect(adhoc).toContain('recheck Git identities, prepare and reverify integration');

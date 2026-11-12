@@ -5,7 +5,7 @@ import * as path from 'path';
 import simpleGit, { type SimpleGit } from 'simple-git';
 import { AdhocWorktreeService } from './adhocWorktreeService';
 import { FeatureService } from './featureService';
-import { RetainedCheckoutError } from './retainedCheckout';
+import { readRetainedCheckoutRecord, RetainedCheckoutError } from './retainedCheckout';
 import { RetainedCheckoutService } from './retainedCheckoutService';
 import { RepositoryService } from './repositoryService';
 import { getFeaturePath } from '../utils/paths';
@@ -105,6 +105,10 @@ describe('RetainedCheckoutService', () => {
     const fresh = await readWorktreeTargetIdentity(placement);
     expect((await rejection(fx.checkouts.setReadiness('root/feature', fresh, { state: 'ready', nextTarget: 'root/feature' }))).message).toContain('another retained checkout');
     expect((await rejection(fx.checkouts.setReadiness('root/feature', fresh, { state: 'ready', nextTarget: 'api/main' }))).message).toContain('another retained checkout');
+    // The first declaration has no declaredBy and was read again above; a host-attested author is stored when given.
+    const declaredBy = { owner: 'opencode-v1' as const, sessionId: 'ses_primary', agent: 'hive-builder' };
+    await fx.checkouts.setReadiness('root/feature', fresh, { state: 'not_ready' }, declaredBy);
+    expect((await readRetainedCheckoutRecord(fx.hiveDir, 'root/feature'))?.readiness).toMatchObject({ state: 'not_ready', declaredBy });
     expect(await fx.checkouts.setReadiness('root/feature', fresh, null)).not.toHaveProperty('readiness');
   });
 

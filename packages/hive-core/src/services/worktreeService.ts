@@ -28,6 +28,9 @@ import {
 import type { AdhocGroupEntryOwner, TargetBinding } from './workspaceManifest.js';
 import { parseRetainedCheckoutId, projectRepositories } from './retainedCheckout.js';
 import type { RetainedCheckoutContext } from './retainedCheckout.js';
+import { aggregateIntegrationProvenance, integrationRecorder } from './integrationReceipt.js';
+import type { IntegrationProvenanceOutcome, IntegrationRecorder } from './integrationReceipt.js';
+import type { WorklogAuthor } from './worklogService.js';
 import {
   createTargetedPlacement,
   inspectTargetBinding,
@@ -203,6 +206,8 @@ export interface MergeOptions {
   sourceCommits?: Record<string, string>;
   expectedTarget?: WorktreeTargetIdentity;
   expectedTargets?: Record<string, WorktreeTargetIdentity>;
+  /** Host-supplied session and agent of the caller, stamped on the integration receipt. Never a tool argument. */
+  integratedBy?: WorklogAuthor;
 }
 
 export interface MergeResult {
@@ -235,6 +240,11 @@ export interface MergeResult {
   action: WorktreeRecoveryAction;
   expectedTarget?: WorktreeTargetIdentity;
   observedTarget?: WorktreeTargetIdentity | null;
+  /**
+   * The integration receipt outcome when a commit was applied; composites aggregate their repositories. A failed
+   * receipt keeps the Git result, skips cleanup and sets action inspect_state.
+   */
+  provenance?: IntegrationProvenanceOutcome;
   /** Present when the merge returned this result but clearing its pending markers or releasing its locks then failed. */
   finalization?: WorktreeFinalizationFailure;
 }
@@ -2039,8 +2049,18 @@ export class WorktreeService {
       cleanupMode: options.cleanup ?? 'none',
       ...(options.sourceCommit !== undefined ? { sourceCommit: options.sourceCommit } : {}),
       expectedTarget: options.expectedTarget,
+      recordIntegration: this.taskRecorder(feature, step, attemptSlot, options),
     });
     return { ...result, strategy };
+  }
+
+  /** Receipts name the task from the merge's own arguments; nothing is stamped on the task at create. */
+  private taskRecorder(feature: string, step: string, attemptSlot: string | undefined, options: MergeOptions): IntegrationRecorder {
+    return integrationRecorder(
+      this.config.hiveDir,
+      { kind: 'task', feature, task: step, ...(attemptSlot !== undefined ? { candidate: attemptSlot } : {}) },
+      options.integratedBy,
+    );
   }
 
   private async mergeUnlocked(
@@ -2100,6 +2120,7 @@ export class WorktreeService {
         preserveConflicts,
         sourceCommits: options.sourceCommits,
         expectedTargets: targets.expectedTargets!,
+        recordIntegration: this.taskRecorder(feature, step, attemptSlot, options),
       }, attemptSlot);
     }
 
@@ -2120,29 +2141,9 @@ export class WorktreeService {
         repositories: [{ repositoryPath: this.config.baseDir, sourceWorktreePath: registered.path, sourceBranch: branchName, sourceCommit, expectedTarget: targets.expectedTarget! }],
       }),
       cleanupFn: async (deleteBranch: boolean) => (await this.removeLegacy(guard, feature, step, deleteBranch, {}, attemptSlot, sourceCommit)).cleanup,
+      recordIntegration: this.taskRecorder(feature, step, attemptSlot, options),
     });
-    return {
-      success: repoResult.success,
-      merged: repoResult.merged,
-      strategy,
-      ...(repoResult.sha !== undefined ? { sha: repoResult.sha } : {}),
-      ...(repoResult.commitMessage !== undefined ? { commitMessage: repoResult.commitMessage } : {}),
-      ...(repoResult.reason !== undefined ? { reason: repoResult.reason } : {}),
-      ...(repoResult.reasonCode !== undefined ? { reasonCode: repoResult.reasonCode } : {}),
-      ...(repoResult.cleanupEligible !== undefined ? { cleanupEligible: repoResult.cleanupEligible } : {}),
-      ...(repoResult.taskUpdateRecommended !== undefined ? { taskUpdateRecommended: repoResult.taskUpdateRecommended } : {}),
-      filesChanged: repoResult.filesChanged,
-      conflicts: repoResult.conflicts,
-      conflictState: repoResult.conflictState,
-      cleanup: repoResult.cleanup,
-      ...(repoResult.error !== undefined ? { error: repoResult.error } : {}),
-      phase: repoResult.phase,
-      mutation: repoResult.mutation,
-      retryable: repoResult.retryable,
-      action: repoResult.action,
-      ...(repoResult.expectedTarget !== undefined ? { expectedTarget: repoResult.expectedTarget } : {}),
-      ...(repoResult.observedTarget !== undefined ? { observedTarget: repoResult.observedTarget } : {}),
-    };
+    return { ...repoResult, strategy };
   }
 
   private async mergeComposite(
@@ -2157,6 +2158,7 @@ export class WorktreeService {
       preserveConflicts: boolean;
       sourceCommits?: Record<string, string>;
       expectedTargets: Record<string, WorktreeTargetIdentity>;
+      recordIntegration: IntegrationRecorder;
     },
     attemptSlot?: string,
   ): Promise<MergeResult> {
@@ -2277,6 +2279,7 @@ export class WorktreeService {
         precomputedCandidates: precomputedCandidates[repoId],
         beforeMutation: beginMerge,
         cleanupFn: async () => buildNotRequestedCleanupOutcome(),
+        recordIntegration: options.recordIntegration,
       });
       repos[repoId] = {
         ...repoResult,
@@ -2322,7 +2325,7 @@ export class WorktreeService {
       const reasonCode: WorktreeReasonCode = partial
         ? 'COMPOSITE_PARTIAL'
         : (stopped.reasonCode ?? 'GIT_OPERATION_FAILED');
-      return mergeFailure(strategy, reasonCode, firstError ?? 'merge failed', {
+      const failure = mergeFailure(strategy, reasonCode, firstError ?? 'merge failed', {
         mutation: partial ? 'partial' : stopped.mutation,
         filesChanged: flattenedFiles,
         conflicts: flattenedConflicts,
@@ -2330,19 +2333,24 @@ export class WorktreeService {
         repos,
         partial,
       });
+      // Receipts of repositories integrated before the stop stay visible beside the Git failure.
+      const { provenance: partialProvenance } = aggregateIntegrationProvenance(repoIds, repos);
+      return partialProvenance !== undefined ? { ...failure, provenance: partialProvenance } : failure;
     }
 
     // All repos merged. Apply per-repo cleanup and populate each
     // repos[repoId].cleanup field; aggregate top-level cleanup from per-repo
     // results so the contract holds for both shapes.
+    const { provenance, cleanupFailure: provenanceCleanupFailure } = aggregateIntegrationProvenance(repoIds, repos);
     let cleanup = buildNotRequestedCleanupOutcome();
     if (options.cleanup !== 'none') {
       const cleanupMode = options.cleanup;
       const deleteBranch = cleanupMode === 'worktree+branch';
       const perRepo: Array<{ repoId: string; cleanup: WorktreeCleanupOutcome }> = [];
+      // A failed receipt in any repository keeps the whole workspace; earlier receipts stay.
+      let proofFailure: { repoId: string; step: string; cause: string } | undefined = provenanceCleanupFailure;
       // Every repository proves its completed work before any repository is cleaned up.
-      let proofFailure: { repoId: string; step: string; cause: string } | undefined;
-      for (const repoId of repoIds) {
+      for (const repoId of proofFailure ? [] : repoIds) {
         const failure = await proveCleanupEligibility({
           targetGit: this.getGit(trustedById.get(repoId)!.path),
           targetRoot: trustedById.get(repoId)!.path,
@@ -2430,7 +2438,8 @@ export class WorktreeService {
       conflicts: flattenedConflicts,
       conflictState: 'none',
       cleanup: toMergeCleanupBlock(cleanup),
-      ...mergeSuccessClassification(options.cleanup, cleanup, 'applied'),
+      ...(provenance !== undefined ? { provenance } : {}),
+      ...mergeSuccessClassification(options.cleanup, cleanup, 'applied', provenance),
       repos,
     };
   }
@@ -2527,6 +2536,7 @@ export class WorktreeService {
     precomputedCandidates?: TargetMergeCandidates;
     beforeMutation: () => Promise<void>;
     cleanupFn: (deleteBranch: boolean) => Promise<WorktreeCleanupOutcome>;
+    recordIntegration: IntegrationRecorder;
   }): Promise<RepoMergeResult> {
     const result = await integrateWorktreeRepository({
       targetGit: options.git,
@@ -2544,6 +2554,7 @@ export class WorktreeService {
       cleanupMode: options.cleanupMode,
       cleanup: options.cleanupFn,
       readCommitMessage: this.readValidatedCommitMessage.bind(this),
+      recordIntegration: options.recordIntegration,
     });
     return !result.merged && (result.reason === 'nothing_to_merge' || result.reason === 'already_integrated')
       ? { ...result, taskUpdateRecommended: true }

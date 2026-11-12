@@ -24,9 +24,20 @@ interface GitResult {
   stderr: string;
 }
 
-function runGit(cwd: string, args: string[]): Promise<GitResult> {
+/** Options for a Git read. `noLazyFetch` stops a partial clone from fetching a missing object; the read fails instead. */
+export interface GitReadOptions {
+  noLazyFetch?: boolean;
+}
+
+/** Environment for a Git process that must fail on a missing object instead of fetching it, as `hive_git_snapshot` runs Git. */
+export function noLazyFetchEnvironment(): NodeJS.ProcessEnv {
+  return { ...process.env, GIT_NO_LAZY_FETCH: '1' };
+}
+
+function runGit(cwd: string, args: string[], options: GitReadOptions = {}): Promise<GitResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn('git', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+    const env = options.noLazyFetch ? noLazyFetchEnvironment() : undefined;
+    const child = spawn('git', args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     child.stdout.setEncoding('utf8');
@@ -42,12 +53,12 @@ function gitError(operation: string, result: GitResult): Error {
   return new Error(`${operation} failed${result.stderr.trim() ? `: ${result.stderr.trim()}` : ` with exit code ${result.code}`}`);
 }
 
-export async function readWorktreeTargetIdentity(repositoryPath: string): Promise<WorktreeTargetIdentity> {
+export async function readWorktreeTargetIdentity(repositoryPath: string, options: GitReadOptions = {}): Promise<WorktreeTargetIdentity> {
   const canonicalPath = await fs.realpath(path.resolve(repositoryPath));
-  const commitResult = await runGit(canonicalPath, ['rev-parse', '--verify', 'HEAD']);
+  const commitResult = await runGit(canonicalPath, ['rev-parse', '--verify', 'HEAD'], options);
   if (commitResult.code !== 0) throw gitError('Reading target commit', commitResult);
 
-  const refResult = await runGit(canonicalPath, ['symbolic-ref', '-q', 'HEAD']);
+  const refResult = await runGit(canonicalPath, ['symbolic-ref', '-q', 'HEAD'], options);
   if (refResult.code !== 0 && refResult.code !== 1) throw gitError('Reading target ref', refResult);
   const ref = refResult.code === 0 ? refResult.stdout.trim() : null;
   if (ref !== null && !ref.startsWith('refs/heads/')) {

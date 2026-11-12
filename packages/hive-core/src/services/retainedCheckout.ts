@@ -19,13 +19,16 @@
  */
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import simpleGit from 'simple-git';
 import type { ResolvedRepository } from '../types.js';
 import { isValidRepositoryId } from '../utils/repositoryIds.js';
 import { projectRootsMatch } from '../utils/repositoryConfig.js';
 import { assertNoSymlinkComponents, trustedGitCommonDirectory, validateExactWorktreeRegistration } from './worktreeLinkage.js';
-import { readWorktreeTargetIdentity } from './worktreeTarget.js';
-import type { WorktreeTargetIdentity } from './worktreeTarget.js';
+import { noLazyFetchEnvironment, readWorktreeTargetIdentity } from './worktreeTarget.js';
+import type { GitReadOptions, WorktreeTargetIdentity } from './worktreeTarget.js';
 import { writeWorkspaceJsonAtomic } from './workspaceManifest.js';
+import { isNativeObservationOwner } from '../native-observations.js';
+import type { WorklogAuthor } from './worklogService.js';
 
 export const IMPLICIT_ROOT_REPOSITORY_ID = 'root';
 const CHECKOUTS_DIRECTORY = 'checkouts';
@@ -46,6 +49,8 @@ export interface RetainedCheckoutReadiness {
   nextTarget?: string;
   /** What the work is waiting for, in the primary's words. */
   waitingFor?: string;
+  /** Host-supplied session and agent that made the declaration; absent on older records and unknown callers. */
+  declaredBy?: WorklogAuthor;
 }
 
 export interface RetainedCheckoutRecord {
@@ -77,6 +82,8 @@ export type RetainedCheckoutErrorReason =
   | 'record_invalid'
   | 'repository_unknown'
   | 'binding_mismatch'
+  /** A comparison destination that is the checkout itself or belongs to another repository. */
+  | 'invalid_destination'
   | 'referenced'
   | 'references_unknown'
   | 'local_data'
@@ -154,7 +161,9 @@ function isReadiness(value: unknown): value is RetainedCheckoutReadiness {
     && typeof value.commit === 'string' && FULL_COMMIT.test(value.commit)
     && typeof value.recordedAt === 'string'
     && optionalString(value.nextTarget)
-    && optionalString(value.waitingFor);
+    && optionalString(value.waitingFor)
+    && (value.declaredBy === undefined || (isRecord(value.declaredBy) && isNativeObservationOwner(value.declaredBy.owner)
+      && typeof value.declaredBy.sessionId === 'string' && typeof value.declaredBy.agent === 'string'));
 }
 
 export function parseRetainedCheckoutRecord(value: unknown, recordPath: string, expectedId: string): RetainedCheckoutRecord {
@@ -219,7 +228,7 @@ export async function readRetainedCheckoutRecord(hiveDir: string, id: string): P
  * malformed record, an unconfigured repository, a path the record may not name,
  * or a managed path that is not a linked worktree of its repository is refused.
  */
-export async function resolveRetainedCheckout(context: RetainedCheckoutContext, id: string): Promise<ResolvedRetainedCheckout> {
+export async function resolveRetainedCheckout(context: RetainedCheckoutContext, id: string, options: GitReadOptions = {}): Promise<ResolvedRetainedCheckout> {
   const { repoId } = parseRetainedCheckoutId(id);
   const { placementPath } = retainedCheckoutPaths(context.hiveDir, id);
   const record = await readRetainedCheckoutRecord(context.hiveDir, id);
@@ -240,14 +249,18 @@ export async function resolveRetainedCheckout(context: RetainedCheckoutContext, 
   await assertNoSymlinkComponents(path.parse(placementPath).root, placementPath, true);
   const present = await pathExists(placementPath);
   if (present) {
-    await validateExactWorktreeRegistration(placementPath, () => trustedGitCommonDirectory(repository.path), repoId);
+    const git = options.noLazyFetch ? simpleGit(repository.path).env(noLazyFetchEnvironment()) : undefined;
+    await validateExactWorktreeRegistration(placementPath, () => trustedGitCommonDirectory(repository.path, git), repoId);
   }
   return { record, repository, present };
 }
 
 /** Live identity of a resolved checkout and whether it is still on its intended branch. */
-export async function observeRetainedCheckout(resolved: ResolvedRetainedCheckout): Promise<{ identity: WorktreeTargetIdentity; onIntendedRef: boolean }> {
-  const identity = await readWorktreeTargetIdentity(resolved.record.path);
+export async function observeRetainedCheckout(
+  resolved: ResolvedRetainedCheckout,
+  options: GitReadOptions = {},
+): Promise<{ identity: WorktreeTargetIdentity; onIntendedRef: boolean }> {
+  const identity = await readWorktreeTargetIdentity(resolved.record.path, options);
   return { identity, onIntendedRef: identity.ref === resolved.record.ref };
 }
 

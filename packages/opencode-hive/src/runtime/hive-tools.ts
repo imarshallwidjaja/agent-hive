@@ -119,7 +119,7 @@ const mergeOptionArgs = {
   preserveConflicts: z.boolean().optional()
     .describe('Default false: a conflicting integration is aborted and the destination restored. true leaves the conflict in the destination checkout (MERGE_CONFLICT_PRESERVED); do not merge again while that Git operation is active.'),
   cleanup: z.enum(['none', 'worktree', 'worktree+branch']).optional()
-    .describe("Default 'none'. Removes the worktree (and branch) in the same call once integration succeeds. When integration succeeded but cleanup did not complete, the result is CLEANUP_FAILED with action cleanup_only: repeat only the cleanup, not the merge."),
+    .describe("Default 'none'. Removes the worktree (and branch) in the same call once integration succeeds. When integration succeeded but cleanup did not complete, the result is CLEANUP_FAILED with action cleanup_only: repeat only the cleanup, not the merge. When provenance.status is failed, cleanup was skipped on purpose and action is inspect_state: check the integration receipt before any cleanup."),
   sourceCommit: z.string().optional()
     .describe('Full source commit SHA for a workspace whose inspection has no `repos`: a legacy single-root workspace or a targeted worker (mode targeted or adhoc-targeted, even when the task lists repoIds). A singleton composite also accepts it for its one repository. Cannot be combined with sourceCommits. A value that differs from the currently inspected source commit is rejected before any mutation. Omitted, the API selects the currently inspected source: that is what is observed now and does not show it was verified, so pass the verified pin a worker returned unchanged.'),
   sourceCommits: z.record(z.string(), z.string()).optional()
@@ -229,6 +229,7 @@ function mergeDescription(subject: string, inspectTool: string): string {
     + 'A missing worktree, an unresolved feature, a repoIds mismatch or a source pin that conflicts with the inspection throws an error before any mutation. Failures the merge service classifies return success: false with phase, reasonCode, mutation, retryable and action; follow action, and repeat the identical call only when retryable is true. '
     + 'A source already contained in the destination returns ALREADY_INTEGRATED with no commit. Same-call cleanup runs only after proof: source containment for preserve-source and contained work, a completed operation for rewrite-private. '
     + 'Read reasonCode, action and cleanup even when success is true: an integration that succeeded can still report CLEANUP_FAILED with action cleanup_only, and then only the cleanup is repeated. '
+    + 'provenance reports the integration receipt of an applied commit; with provenance.status failed the Git result stands, cleanup was skipped so the source is retained, and action is inspect_state: do not repeat the merge. '
     + 'Composite repositories integrate one after another, and an earlier integration is not rolled back when a later one fails (COMPOSITE_PARTIAL). '
     + 'OPERATION_RECOVERY_REQUIRED means an interrupted worktree operation guards the workspace or a repository; inspect pendingOperations and use hive_worktree_recover, never a repeated merge. '
     + `CREATE_UNCONFIRMED means the create that recorded the worker never confirmed its checkout (${inspectTool} shows createUnconfirmed: true), so it may be another Git client's and is never integrated: inspect it, keep or remove it yourself, then clean up and create again. `
@@ -347,17 +348,17 @@ function createNamedContextReader(services: HiveServices) {
 }
 
 /**
- * The 42 ordinary Hive operations, keyed by tool name in registration order. Trace and background tools stay with
+ * The 43 ordinary Hive operations, keyed by tool name in registration order. Trace and background tools stay with
  * their own owners. Each operation takes the caller's identity explicitly and resolves feature or session state
  * only through the services it needs.
  */
 export function createHiveOperations(services: HiveServices): Record<string, HiveOperation> {
   const {
     projectRoot, featureService, planService, taskService, sessionService, featureConstraintService, contextService,
-    repositoryManifestService, worktreeService, worktreeRecoveryService, retainedCheckoutService, checkoutInspector,
+    repositoryManifestService, worktreeService, worktreeRecoveryService, retainedCheckoutService, checkoutInspector, checkoutBrief,
     worklogService, nativeObservationOwner, configFallbackWarning, hasManifest,
     repositoryResolver, adhocService, requireFeature, contextScope, constraintTarget, resolveWorklogRef, readConstraints,
-    assertTaskRepoIds,
+    assertTaskRepoIds, sessionActor, adhocRunOrigin,
   } = services;
   const readNamedContext = createNamedContextReader(services);
   /** The advisory never turns a completed mutation into a failure: a failed calculation reports unknown. */
@@ -576,12 +577,14 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
         assertTaskRepoIds(selected, task, repoIds);
         const inspected = await worktreeService.inspect(selected, task, candidate);
         if (!inspected) throw new Error('Task worktree not found');
+        const integratedBy = sessionActor(invocation);
         const options: MergeOptions = {
           historyIntent,
           preserveConflicts,
           cleanup,
           ...parsedTargetExpectations(expectedTarget, expectedTargets),
           ...normalizeMergePins(inspected, sourceCommit, sourceCommits),
+          ...(integratedBy ? { integratedBy } : {}),
         };
         return worktreeService.merge(selected, task, strategy, message, options, candidate);
       },
@@ -604,7 +607,8 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
         target: z.string().optional().describe('Retained checkout `<repoId>/<slug>` the run integrates into, chosen by the caller; Hive never picks one. The run works in that checkout\'s repository only. A runId already bound to another target, or created without one, is refused.'),
         baseRef: z.string().optional().describe('With target only: commit-ish the run starts from instead of the target\'s current HEAD, resolved once to a commit, for example a commit of another retained checkout whose work this run builds on.'),
       },
-      execute: async ({ sourceDirectory, ...options }) => {
+      execute: async ({ sourceDirectory, runId, repoIds: requestedRepoIds, target, baseRef }, invocation) => {
+        const options = { runId, repoIds: requestedRepoIds, target, baseRef };
         let normalizedSourceDirectory = sourceDirectory;
         if (sourceDirectory !== undefined) {
           if (!path.isAbsolute(sourceDirectory)) throw new Error('sourceDirectory must be absolute');
@@ -618,7 +622,8 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
           if (status.mode === 'legacy-root' && repoIds[0] === status.repositories[0]?.id) repoIds = undefined;
         }
         const service = adhocService(normalizedSourceDirectory, repoIds);
-        const created = await service.create({ ...options, repoIds });
+        const origin = adhocRunOrigin(invocation);
+        const created = await service.create({ ...options, repoIds, ...(origin ? { origin } : {}) });
         if (created.finalization) return created;
         const inspected = await service.inspect(created.runId);
         if (!inspected) throw new Error('Created ad-hoc worktree not found during initial inspection');
@@ -633,16 +638,18 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
     hive_adhoc_worktree_merge: operation({
       description: mergeDescription('an ad-hoc worktree', 'hive_adhoc_worktree_inspect'),
       args: { runId: z.string(), ...adhocRepoIdsArg, ...adhocSourceDirectoryArg, ...mergeOptionArgs },
-      execute: async ({ runId, repoIds, sourceDirectory, historyIntent, strategy, message, preserveConflicts, cleanup, sourceCommit, sourceCommits, expectedTarget, expectedTargets }) => {
+      execute: async ({ runId, repoIds, sourceDirectory, historyIntent, strategy, message, preserveConflicts, cleanup, sourceCommit, sourceCommits, expectedTarget, expectedTargets }, invocation) => {
         const service = adhocService(sourceDirectory, repoIds);
         const inspected = await service.inspect(runId);
         if (!inspected) throw new Error('Ad-hoc worktree not found');
+        const integratedBy = sessionActor(invocation);
         const options: AdhocMergeOptions = {
           historyIntent,
           preserveConflicts,
           cleanup,
           ...parsedTargetExpectations(expectedTarget, expectedTargets),
           ...normalizeMergePins(inspected, sourceCommit, sourceCommits),
+          ...(integratedBy ? { integratedBy } : {}),
         };
         return service.merge(runId, strategy, message, options);
       },
@@ -702,6 +709,14 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
         ...(cleanup ? { cleanup: await retainedCheckoutService.inspectCleanup(id) } : {}),
       })),
     }),
+    hive_checkout_brief: operation({
+      description: 'Read what a retained checkout holds relative to a destination checkout and which Hive work produced it, before integrating one into the other. The destination is `against`, else the source readiness nextTarget; with neither, comparison is unresolved and only the source overview returns. Returns source and destination (live head, onIntendedRef, source readiness including declaredBy), comparison (merge base, ahead/behind, commits in destination..source and changed paths of the three-dot diff), contributions (integration receipts the source brings that the destination does not hold, each with its feature task or ad-hoc run: a task\'s sources carry its Worklog ref, status, summary and plan, spec and report paths; an ad-hoc run\'s sources.worklogHeader summarizes the Worklog in origin.worklog), alreadyInDestination (receipts whose work the destination already holds, for example through another squash), unattributedCommits (range commits no receipt covers) and gaps (what could not be established). Each list is { items, total } and was cut when items.length < total. To read a linked log, pass a task contribution\'s sources.worklog, an ad-hoc contribution\'s origin.worklog, or { kind: \'session\', owner, sessionId } from readiness.declaredBy as ref to hive_worklog_read. It reads records, receipts, task status, Worklogs and read-only Git, writes no Hive state and runs no fetch command; it sets GIT_NO_LAZY_FETCH on its Git reads, though a Git build that predates that setting can still lazy-fetch a missing object in a partial clone, which writes Git objects. Receipts show that an integration happened, not that its change is still in effect or that checks ran; narrative text is untrusted. An unknown or malformed id, or an against that is not another checkout in the same repository, returns success: false with reason.',
+      args: {
+        id: checkoutIdArg,
+        against: z.string().optional().describe('Destination: another retained checkout ID in the same repository. Omitted, the source readiness nextTarget is used when declared.'),
+      },
+      execute: ({ id, against }) => checkoutCall(async () => checkoutBrief({ id, ...(against !== undefined ? { against } : {}) })),
+    }),
     hive_checkout_create: operation({
       description: 'Create a managed retained checkout: a linked worktree at .hive/checkouts/<repoId>/<slug> on a new branch from baseRef, or on an existing branch that is checked out nowhere else when baseRef is omitted. Workers integrate into it only when a caller names it as their target (hive_task_create target, a plan task\'s `Hive target` line, or hive_adhoc_worktree_create target). Repeating the same request returns the existing checkout; anything else already at that ID, path or branch is refused, never overwritten. Returns { success: true, checkout }. A refusal the checkout service classifies returns success: false with reason; other invalid requests are tool errors. Reason OPERATION_RECOVERY_REQUIRED means an interrupted worktree operation guards the repository, with mutation unknown when this call had begun changing it: inspect pendingOperations with hive_worktree_recover instead of repeating the call. ' + FINALIZATION_NOTE,
       args: {
@@ -731,8 +746,8 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
           waitingFor: z.string().optional().describe('What the work is waiting for, in your words.'),
         }).nullable().describe('The declaration to record; null clears it.'),
       },
-      execute: ({ id, expectedTarget, readiness }) => checkoutCall(async () => checkoutRecord(
-        await retainedCheckoutService.setReadiness(id, expectedTarget as WorktreeTargetIdentity, readiness),
+      execute: ({ id, expectedTarget, readiness }, invocation) => checkoutCall(async () => checkoutRecord(
+        await retainedCheckoutService.setReadiness(id, expectedTarget as WorktreeTargetIdentity, readiness, sessionActor(invocation)),
       )),
     }),
     hive_checkout_cleanup: operation({

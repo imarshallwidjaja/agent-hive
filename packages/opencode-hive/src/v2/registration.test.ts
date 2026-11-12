@@ -214,8 +214,8 @@ function denied(exit: Exit.Exit<unknown, unknown>): string | undefined {
 }
 
 describe('v2 tool registration', () => {
-  it('registers all 48 Hive tools once, with an explicit Code Mode flag from the selected transport', async () => {
-    expect(HIVE_TOOL_NAMES).toHaveLength(48);
+  it('registers all 49 Hive tools once, with an explicit Code Mode flag from the selected transport', async () => {
+    expect(HIVE_TOOL_NAMES).toHaveLength(49);
     for (const transport of ['codemode', 'direct'] as const) {
       const host = await activate({ readTransport: transport });
       const tools = host.tools();
@@ -436,6 +436,10 @@ describe('v2 execution guards', () => {
     ['hive-helper', 'child', 'hive_checkout_inspect', {}, true],
     ['scout-researcher', 'child', 'hive_checkout_inspect', {}, false],
     ['general', 'child', 'hive_checkouts_list', {}, false],
+    ['hive-helper', 'child', 'hive_checkout_brief', {}, true],
+    ['code-reviewer', 'child', 'hive_checkout_brief', {}, true],
+    ['forager-investigator', 'child', 'hive_checkout_brief', {}, true],
+    ['general', 'child', 'hive_checkout_brief', {}, false],
     ['build', 'primary', 'hive_checkout_create', {}, true],
     ['build', 'child', 'hive_checkout_cleanup', {}, false],
   ];

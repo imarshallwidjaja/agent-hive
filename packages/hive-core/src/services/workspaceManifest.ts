@@ -3,6 +3,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { FeatureResolutionError, resolveExistingFeaturePath, resolveFeatureDirectoryName, writeAtomicDurable, writeJsonAtomicDurable } from '../utils/paths.js';
 import { assertNoSymlinkComponents } from './worktreeLinkage.js';
+import type { WorklogRef } from './worklogService.js';
 
 export interface WorkspaceManifestEntry {
   path: string;
@@ -125,6 +126,15 @@ export async function restoreWorkspaceRecord(filePath: string, prior: Buffer | n
   }
 }
 
+/**
+ * The Worklog an ad-hoc run's creating session recorded into, stamped once at
+ * create and copied into the run's integration receipts. Read tolerantly: a
+ * missing or malformed value leaves receipts with the bare run ID.
+ */
+export interface AdhocRunOrigin {
+  worklog: WorklogRef;
+}
+
 interface WorkspaceManifestBase extends CreateConfirmation {
   schemaVersion: 1;
   repos: Record<string, WorkspaceManifestEntry>;
@@ -141,6 +151,7 @@ export interface TaskWorkspaceManifest extends WorkspaceManifestBase {
 export interface AdhocWorkspaceManifest extends WorkspaceManifestBase {
   mode: 'adhoc-composite';
   runId: string;
+  origin?: AdhocRunOrigin;
 }
 
 export type CompositeWorkspaceManifest = TaskWorkspaceManifest | AdhocWorkspaceManifest;
@@ -156,6 +167,7 @@ export interface SingleWorkspaceMetadata extends CreateConfirmation {
   feature?: string;
   task?: string;
   runId?: string;
+  origin?: AdhocRunOrigin;
 }
 
 /**
@@ -194,6 +206,7 @@ export interface TargetedWorkspaceMetadata extends CreateConfirmation {
   task?: string;
   candidate?: string;
   runId?: string;
+  origin?: AdhocRunOrigin;
 }
 
 const SAFE_REPOSITORY_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;

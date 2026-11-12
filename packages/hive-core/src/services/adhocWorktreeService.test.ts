@@ -14,6 +14,7 @@ import { readWorktreeTargetIdentity } from './worktreeTarget.js';
 import { RetainedCheckoutService } from './retainedCheckoutService.js';
 import { CheckoutInspector } from './checkoutInspector.js';
 import { readSingleWorkspaceMetadata } from './workspaceManifest.js';
+import { recordIntegrationReceipt } from './integrationReceipt.js';
 import { WorktreeOperationRecoveryService } from './worktreeOperation.js';
 import { WorktreeService } from './worktreeService.js';
 
@@ -4204,4 +4205,170 @@ describe('AdhocWorktreeService targeted runs', () => {
     expect((await tasks.list()).errors).toEqual([{ path: run.path, reason: expect.stringContaining("multiple entries named 'adhoc'") }]);
     expect(await fx.core.get('old-run')).toMatchObject({ path: run.path });
   }, 30_000);
+});
+
+describe('AdhocWorktreeService integration receipts', () => {
+  const receiptsDir = (hiveDir: string) => path.join(hiveDir, 'provenance', 'integrations');
+  const readReceipt = async (hiveDir: string, commit: string) => JSON.parse(await fs.readFile(path.join(receiptsDir(hiveDir), `${commit}.json`), 'utf-8'));
+  // A file where the store's directory belongs makes every receipt write fail.
+  const blockReceiptStore = async (hiveDir: string) => {
+    await fs.mkdir(hiveDir, { recursive: true });
+    await fs.writeFile(path.join(hiveDir, 'provenance'), 'not a directory\n');
+  };
+  const sessionLog = (sessionId: string) => ({ kind: 'session' as const, owner: 'opencode-v1' as const, sessionId });
+
+  it('keeps a squash, skips requested cleanup and asks for inspection when the receipt cannot be written', async () => {
+    const fixture = await createFixture();
+    const created = await fixture.service.create({ runId: 'receipt-unwritable' });
+    await fs.writeFile(path.join(created.path, 'receipt.txt'), 'r\n', 'utf-8');
+    await commitAdhocChanges(fixture.service, created.runId, testCommitMessage('feat: receipt content'));
+    await blockReceiptStore(fixture.hiveDir);
+
+    const result = await fixture.service.merge(created.runId, 'squash', mergeMessage, { historyIntent: 'rewrite-private', cleanup: 'worktree+branch' });
+
+    expect(result).toMatchObject({
+      success: true,
+      merged: true,
+      sha: (await fixture.repoGit.revparse(['HEAD'])).trim(),
+      mutation: 'applied',
+      retryable: false,
+      action: 'inspect_state',
+      provenance: { status: 'failed' },
+      cleanup: { worktreeRemoval: { status: 'not_attempted' }, branchDeletion: { status: 'not_attempted' }, failures: [expect.objectContaining({ step: 'provenance' })] },
+    });
+    expect(result.reasonCode).toBeUndefined();
+    expect(await pathExists(created.path)).toBe(true);
+    expect(await pathExists(`${created.path}.json`)).toBe(true);
+    expect(await branchExists(fixture.repoGit, created.branch)).toBe(true);
+  });
+
+  it('links an upstream receipt from an onward squash without copying its origin, readable after workers and the first checkout are gone', async () => {
+    const fixture = await createFixture();
+    const core = new CoreAdhocWorktreeService({ baseDir: fixture.repoPath, hiveDir: fixture.hiveDir });
+    const checkouts = new RetainedCheckoutService({ baseDir: fixture.repoPath, hiveDir: fixture.hiveDir });
+    const checkoutPath = (slug: string) => path.join(fixture.hiveDir, 'checkouts', 'root', slug);
+    await checkouts.create({ id: 'root/alpha', branch: 'alpha', baseRef: 'main' });
+    await checkouts.create({ id: 'root/beta', branch: 'beta', baseRef: 'main' });
+    const commitIn = async (cwd: string, file: string) => {
+      await fs.writeFile(path.join(cwd, file), `${file}\n`, 'utf-8');
+      await simpleGit(cwd).add([file]);
+      await simpleGit(cwd).commit(testCommitMessage(`feat: add ${file}`));
+      return (await simpleGit(cwd).revparse(['HEAD'])).trim();
+    };
+
+    const upstream = await core.create({ runId: 'upstream', target: 'root/alpha', origin: { worklog: sessionLog('ses_upstream') } });
+    const upstreamSource = await commitIn(upstream.path, 'upstream.txt');
+    const upstreamMerge = await core.merge('upstream', 'squash', mergeMessage, { historyIntent: 'rewrite-private', sourceCommit: upstreamSource, expectedTarget: (await core.inspect('upstream'))!.target!, cleanup: 'worktree+branch' });
+    expect(upstreamMerge).toMatchObject({ success: true, merged: true, cleanup: { outcome: 'complete' }, provenance: { status: 'recorded' } });
+
+    const onward = await core.create({ runId: 'onward', target: 'root/beta', baseRef: upstreamMerge.sha! });
+    const onwardSource = await commitIn(onward.path, 'onward.txt');
+    const integratedBy = { owner: 'opencode-v1' as const, sessionId: 'ses_primary', agent: 'hive-builder' };
+    const onwardMerge = await core.merge('onward', 'squash', mergeMessage, { historyIntent: 'rewrite-private', sourceCommit: onwardSource, expectedTarget: (await core.inspect('onward'))!.target!, cleanup: 'worktree+branch', integratedBy });
+    expect(onwardMerge).toMatchObject({ success: true, merged: true, cleanup: { outcome: 'complete' }, provenance: { status: 'recorded' } });
+    expect(await checkouts.cleanup('root/alpha', { expected: await readWorktreeTargetIdentity(checkoutPath('alpha')) })).toMatchObject({ recordRemoved: true });
+
+    expect(await readReceipt(fixture.hiveDir, onwardMerge.sha!)).toMatchObject({
+      after: onwardMerge.sha,
+      source: onwardSource,
+      targetRef: 'refs/heads/beta',
+      strategy: 'squash',
+      integratedBy,
+      origin: { kind: 'adhoc', runId: 'onward' },
+      replaced: [upstreamMerge.sha],
+    });
+    expect(await readReceipt(fixture.hiveDir, upstreamMerge.sha!)).toMatchObject({
+      origin: { kind: 'adhoc', runId: 'upstream', worklog: sessionLog('ses_upstream') },
+      replaced: [],
+    });
+  }, 30_000);
+
+  it('links a receipted mainline commit that a retained checkout run carries, and copies no origin from it', async () => {
+    const fixture = await createFixture();
+    const core = new CoreAdhocWorktreeService({ baseDir: fixture.repoPath, hiveDir: fixture.hiveDir });
+    const checkouts = new RetainedCheckoutService({ baseDir: fixture.repoPath, hiveDir: fixture.hiveDir });
+    await checkouts.create({ id: 'root/beta', branch: 'beta', baseRef: 'main' });
+    const mainline = await fixture.service.create({ runId: 'mainline', origin: { worklog: sessionLog('ses_mainline') } });
+    await fs.writeFile(path.join(mainline.path, 'mainline.txt'), 'm\n', 'utf-8');
+    await commitAdhocChanges(fixture.service, mainline.runId, testCommitMessage('feat: mainline work'));
+    const mainlineMerge = await fixture.service.merge(mainline.runId, 'squash', mergeMessage, { historyIntent: 'rewrite-private', cleanup: 'worktree+branch' });
+    expect(mainlineMerge).toMatchObject({ success: true, merged: true, provenance: { status: 'recorded' } });
+
+    // The run starts from main, so its source carries the receipted mainline commit into beta.
+    const synced = await core.create({ runId: 'synced', target: 'root/beta', baseRef: 'main' });
+    await fs.writeFile(path.join(synced.path, 'synced.txt'), 's\n', 'utf-8');
+    await simpleGit(synced.path).add(['synced.txt']);
+    await simpleGit(synced.path).commit(testCommitMessage('feat: beta work'));
+    const syncedSource = (await simpleGit(synced.path).revparse(['HEAD'])).trim();
+    const syncedMerge = await core.merge('synced', 'squash', mergeMessage, { historyIntent: 'rewrite-private', sourceCommit: syncedSource, expectedTarget: (await core.inspect('synced'))!.target! });
+
+    expect(syncedMerge).toMatchObject({ success: true, merged: true, provenance: { status: 'recorded' } });
+    const receipt = await readReceipt(fixture.hiveDir, syncedMerge.sha!);
+    expect(receipt).toMatchObject({ targetRef: 'refs/heads/beta', replaced: [mainlineMerge.sha] });
+    expect(receipt.origin).toEqual({ kind: 'adhoc', runId: 'synced' });
+  }, 30_000);
+
+  it('records one receipt at the final rebased head and a bare run ID when the stored origin is malformed', async () => {
+    const fixture = await createFixture();
+    const created = await fixture.service.create({ runId: 'receipt-rebase', origin: { worklog: sessionLog('ses_rebase') } });
+    const sidecarPath = `${created.path}.json`;
+    const sidecar = JSON.parse(await fs.readFile(sidecarPath, 'utf-8'));
+    expect(sidecar.origin).toEqual({ worklog: sessionLog('ses_rebase') });
+    await fs.writeFile(sidecarPath, JSON.stringify({ ...sidecar, origin: { worklog: { kind: 'session', owner: 'unknown-host' } } }));
+    const runCommits: string[] = [];
+    for (const name of ['one', 'two', 'three']) {
+      await fs.writeFile(path.join(created.path, `${name}.txt`), `${name}\n`, 'utf-8');
+      await commitAdhocChanges(fixture.service, created.runId, testCommitMessage(`feat: add ${name}`));
+      runCommits.push((await simpleGit(created.path).revparse(['HEAD'])).trim());
+    }
+    // An earlier integration already produced the middle commit, so the rebase replaces its receipt.
+    const middle = runCommits[1]!;
+    expect(await recordIntegrationReceipt(fixture.hiveDir, { git: fixture.repoGit, before: runCommits[0]!, after: middle, source: middle, targetRef: null, strategy: 'merge' }, { kind: 'adhoc', runId: 'earlier' }))
+      .toMatchObject({ status: 'recorded' });
+    const before = (await fixture.repoGit.revparse(['HEAD'])).trim();
+    expect(await fixture.service.inspect(created.runId)).toMatchObject({ runId: 'receipt-rebase', clean: true });
+
+    const result = await fixture.service.merge(created.runId, 'rebase', undefined, { historyIntent: 'rewrite-private' });
+
+    expect(result).toMatchObject({ success: true, merged: true, provenance: { status: 'recorded' } });
+    expect((await fs.readdir(receiptsDir(fixture.hiveDir))).sort()).toEqual([`${result.sha}.json`, `${middle}.json`].sort());
+    expect(await readReceipt(fixture.hiveDir, result.sha!)).toMatchObject({ before, after: result.sha, strategy: 'rebase', origin: { kind: 'adhoc', runId: 'receipt-rebase' }, replaced: [middle] });
+  });
+
+  it('skips composite cleanup for the workspace when a receipt cannot be written', async () => {
+    const fixture = await createCompositeFixture();
+    const created = await fixture.service.create({ runId: 'receipt-composite', repoIds: ['api', 'web'] });
+    await fs.writeFile(path.join(created.repos!.api.path, 'api.txt'), 'a\n', 'utf-8');
+    await fs.writeFile(path.join(created.repos!.web.path, 'web.txt'), 'w\n', 'utf-8');
+    await commitAdhocChanges(fixture.service, created.runId, testCommitMessage('feat: composite receipt'));
+    await blockReceiptStore(fixture.hiveDir);
+
+    const result = await fixture.service.merge(created.runId, 'squash', mergeMessage, { historyIntent: 'rewrite-private', cleanup: 'worktree+branch' });
+
+    expect(result).toMatchObject({ success: true, merged: true, action: 'inspect_state', retryable: false, provenance: { status: 'failed' } });
+    expect(result.repos!.api.provenance?.status).toBe('failed');
+    expect(result.cleanup.worktreeRemoval.status).toBe('not_attempted');
+    expect(await pathExists(created.repos!.api.path)).toBe(true);
+    expect(await pathExists(created.repos!.web.path)).toBe(true);
+  });
+
+  it('keeps an earlier repository\'s failed receipt visible when a later repository stops the composite', async () => {
+    const fixture = await createCompositeFixture();
+    const created = await fixture.service.create({ runId: 'receipt-composite-partial', repoIds: ['api', 'web'] });
+    await fs.writeFile(path.join(created.repos!.api.path, 'api.txt'), 'a\n', 'utf-8');
+    await fs.writeFile(path.join(created.repos!.web.path, 'web.txt'), 'w\n', 'utf-8');
+    await commitAdhocChanges(fixture.service, created.runId, testCommitMessage('feat: composite partial receipt'));
+    await blockReceiptStore(fixture.hiveDir);
+    // web rejects the merge commit through a pre-merge-commit hook after api integrated.
+    const hookPath = path.join(fixture.repos[1].path, '.git', 'hooks', 'pre-merge-commit');
+    await fs.mkdir(path.dirname(hookPath), { recursive: true });
+    await fs.writeFile(hookPath, '#!/bin/sh\nexit 1\n', 'utf-8');
+    await fs.chmod(hookPath, 0o755);
+
+    const result = await fixture.service.merge(created.runId, 'merge', mergeMessage, { historyIntent: 'preserve-source' });
+
+    expect(result).toMatchObject({ success: false, partial: true, reasonCode: 'COMPOSITE_PARTIAL', mutation: 'partial', action: 'inspect_state', provenance: { status: 'failed' } });
+    expect(result.repos!.api).toMatchObject({ merged: true, provenance: { status: 'failed' } });
+    expect(result.repos!.web.provenance).toBeUndefined();
+  });
 });
