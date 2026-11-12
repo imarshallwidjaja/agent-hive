@@ -47,8 +47,25 @@ describe('integration receipts', () => {
     const differing = await recordIntegrationReceipt(hiveDir, applied, { kind: 'adhoc', runId: 'other' });
     expect(differing).toMatchObject({ status: 'failed', error: expect.stringContaining('already exists') });
     expect(await fs.readFile(integrationReceiptPath(hiveDir, AFTER), 'utf8')).toBe(stored);
-    expect((await readIntegrationReceipt(hiveDir, AFTER))?.origins).toEqual([origin]);
+    expect((await readIntegrationReceipt(hiveDir, AFTER))?.origin).toEqual(origin);
     expect((await fs.readdir(path.dirname(integrationReceiptPath(hiveDir, AFTER))))).toEqual([`${AFTER}.json`]);
+
+    // A receipt holds one origin; one without a valid `origin`, such as an `origins` array, is corrupt.
+    const other = 'b'.repeat(40);
+    const { origin: _origin, ...withoutOrigin } = JSON.parse(stored);
+    await fs.writeFile(integrationReceiptPath(hiveDir, other), JSON.stringify({ ...withoutOrigin, after: other, origins: [origin] }));
+    await expect(readIntegrationReceipt(hiveDir, other)).rejects.toMatchObject({ reason: 'corrupt', message: expect.stringContaining('origin is malformed') });
+  });
+
+  it('never lists a rebase that reproduces its source as replacing itself, so an identical repeat stays recorded', async () => {
+    const { hiveDir, git, commits } = await repoWithHistory();
+    const applied: AppliedIntegration = { git, before: commits[0]!, after: commits[2]!, source: commits[2]!, targetRef: 'refs/heads/main', strategy: 'rebase' };
+    const origin = { kind: 'adhoc' as const, runId: 'fast-forward' };
+
+    expect(await recordIntegrationReceipt(hiveDir, applied, origin)).toMatchObject({ status: 'recorded' });
+    // The repeat sees its own receipt in before..source; listing it would make the content differ.
+    expect(await recordIntegrationReceipt(hiveDir, applied, origin)).toMatchObject({ status: 'recorded' });
+    expect((await readIntegrationReceipt(hiveDir, commits[2]!))?.replaced).toEqual([]);
   });
 
   it('links receipted commits in a rewritten range by file name, even when that receipt is corrupt', async () => {
@@ -62,7 +79,7 @@ describe('integration receipts', () => {
       { kind: 'adhoc', runId: 'run' },
     );
     expect(outcome).toMatchObject({ status: 'recorded' });
-    expect(await readIntegrationReceipt(hiveDir, AFTER)).toMatchObject({ origins: [{ kind: 'adhoc', runId: 'run' }], replaced: [commits[1]] });
+    expect(await readIntegrationReceipt(hiveDir, AFTER)).toMatchObject({ origin: { kind: 'adhoc', runId: 'run' }, replaced: [commits[1]] });
     expect(await listIntegrationReceiptCommits(hiveDir)).toEqual([AFTER, commits[1]!].sort());
   });
 });

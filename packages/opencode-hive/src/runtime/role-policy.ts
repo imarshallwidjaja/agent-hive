@@ -29,7 +29,7 @@ export const ROUTING_BASES = [
 ] as const satisfies readonly CustomAgentBase[];
 
 const READ_TOOLS = ['hive_context_read', 'hive_constraints_read', 'hive_plan_read', 'hive_status', 'hive_repositories_status', 'hive_git_snapshot',
-  'hive_worklog_list', 'hive_worklog_read', 'hive_checkouts_list'];
+  'hive_worklog_list', 'hive_worklog_read', 'hive_checkouts_list', 'hive_checkout_brief'];
 const WORKLOG_RECORD = 'hive_worklog_record';
 const CONTEXT_WRITES = ['hive_context_write', 'hive_context_append', 'hive_context_edit'];
 const CONSTRAINT_MUTATIONS = ['hive_constraints_add', 'hive_constraints_edit', 'hive_constraints_clear'];

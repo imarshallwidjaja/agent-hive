@@ -18,6 +18,7 @@ import {
   WorktreeOperationRecoveryService,
   WorktreeService,
   assertValidFeatureName,
+  readCheckoutBrief,
   type ContextScope,
   type NativeObservationOwner,
   type StandingConstraintEntry,
@@ -107,6 +108,7 @@ export function createHiveServices(options: { projectRoot: string; detectedFeatu
   const checkoutConfig = { baseDir: projectRoot, hiveDir: path.join(projectRoot, '.hive'), repositoryResolver: { resolveRepositories: repositoryResolver } };
   const retainedCheckoutService = new RetainedCheckoutService(checkoutConfig);
   const checkoutInspector = new CheckoutInspector(checkoutConfig);
+  const checkoutBrief = (request: { id: string; against?: string }) => readCheckoutBrief(checkoutConfig, request);
 
   // A listed feature whose metadata is unreadable or whose name is ambiguous is never the sole-live fallback.
   const liveFeatures = (): string[] => featureService.list().filter((name) => {
@@ -228,6 +230,7 @@ export function createHiveServices(options: { projectRoot: string; detectedFeatu
     worktreeRecoveryService,
     retainedCheckoutService,
     checkoutInspector,
+    checkoutBrief,
     configFallbackWarning,
     hasManifest,
     repositoryResolver,

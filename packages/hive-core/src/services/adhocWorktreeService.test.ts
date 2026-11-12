@@ -4274,11 +4274,11 @@ describe('AdhocWorktreeService integration receipts', () => {
       targetRef: 'refs/heads/beta',
       strategy: 'squash',
       integratedBy,
-      origins: [{ kind: 'adhoc', runId: 'onward' }],
+      origin: { kind: 'adhoc', runId: 'onward' },
       replaced: [upstreamMerge.sha],
     });
     expect(await readReceipt(fixture.hiveDir, upstreamMerge.sha!)).toMatchObject({
-      origins: [{ kind: 'adhoc', runId: 'upstream', worklog: sessionLog('ses_upstream') }],
+      origin: { kind: 'adhoc', runId: 'upstream', worklog: sessionLog('ses_upstream') },
       replaced: [],
     });
   }, 30_000);
@@ -4305,7 +4305,7 @@ describe('AdhocWorktreeService integration receipts', () => {
     expect(syncedMerge).toMatchObject({ success: true, merged: true, provenance: { status: 'recorded' } });
     const receipt = await readReceipt(fixture.hiveDir, syncedMerge.sha!);
     expect(receipt).toMatchObject({ targetRef: 'refs/heads/beta', replaced: [mainlineMerge.sha] });
-    expect(receipt.origins).toEqual([{ kind: 'adhoc', runId: 'synced' }]);
+    expect(receipt.origin).toEqual({ kind: 'adhoc', runId: 'synced' });
   }, 30_000);
 
   it('records one receipt at the final rebased head and a bare run ID when the stored origin is malformed', async () => {
@@ -4332,7 +4332,7 @@ describe('AdhocWorktreeService integration receipts', () => {
 
     expect(result).toMatchObject({ success: true, merged: true, provenance: { status: 'recorded' } });
     expect((await fs.readdir(receiptsDir(fixture.hiveDir))).sort()).toEqual([`${result.sha}.json`, `${middle}.json`].sort());
-    expect(await readReceipt(fixture.hiveDir, result.sha!)).toMatchObject({ before, after: result.sha, strategy: 'rebase', origins: [{ kind: 'adhoc', runId: 'receipt-rebase' }], replaced: [middle] });
+    expect(await readReceipt(fixture.hiveDir, result.sha!)).toMatchObject({ before, after: result.sha, strategy: 'rebase', origin: { kind: 'adhoc', runId: 'receipt-rebase' }, replaced: [middle] });
   });
 
   it('skips composite cleanup for the workspace when a receipt cannot be written', async () => {

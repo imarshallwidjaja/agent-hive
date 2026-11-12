@@ -468,10 +468,13 @@ export function readWorkerTaskStatusEntries(featurePath: string, guard: (target:
   const layouts = ['tasks', 'execution'].map((layout) => path.join(featurePath, layout));
   layouts.forEach(guard);
   const folders = [...new Set(layouts.flatMap(listTaskFolders))].sort();
-  return folders.map((folder) => {
-    const statusPath = resolveWorkerTaskStatusPath(featurePath, folder);
-    return { statusPath, entry: readTaskStatusEntry(folder, statusPath, guard) };
-  });
+  return folders.map((folder) => readWorkerTaskStatusEntry(featurePath, folder, guard));
+}
+
+/** One task folder's status entry as `readWorkerTaskStatusEntries` reads it, from the modern or the legacy layout. */
+export function readWorkerTaskStatusEntry(featurePath: string, folder: string, guard: (target: string) => void = () => {}): { statusPath: string; entry: TaskStatusEntry } {
+  const statusPath = resolveWorkerTaskStatusPath(featurePath, folder);
+  return { statusPath, entry: readTaskStatusEntry(folder, statusPath, guard) };
 }
 
 function readTaskStatusEntry(folder: string, statusPath: string, guard: (target: string) => void): TaskStatusEntry {

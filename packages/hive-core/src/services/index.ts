@@ -66,6 +66,22 @@ export type {
   IntegrationReceipt,
   IntegrationReceiptErrorReason,
 } from './integrationReceipt.js';
+export { readCheckoutBrief } from './checkoutBrief.js';
+export type {
+  CheckoutBrief,
+  CheckoutBriefComparison,
+  CheckoutBriefCommit,
+  CheckoutBriefConfig,
+  CheckoutBriefContribution,
+  CheckoutBriefEndpoint,
+  CheckoutBriefGap,
+  CheckoutBriefGapKind,
+  CheckoutBriefHeld,
+  CheckoutBriefList,
+  CheckoutBriefOriginSources,
+  CheckoutBriefSource,
+  CheckoutBriefWorklogHeader,
+} from './checkoutBrief.js';
 export {
   buildCleanupOutcome,
   buildNotRequestedMergeCleanupBlock,

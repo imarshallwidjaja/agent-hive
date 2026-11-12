@@ -5885,7 +5885,7 @@ describe('WorktreeService integration receipts', () => {
       source: sourceCommit,
       targetRef: 'refs/heads/main',
       strategy: 'merge',
-      origins: [{ kind: 'task', feature: fixture.feature, task: fixture.task }],
+      origin: { kind: 'task', feature: fixture.feature, task: fixture.task },
       integratedBy,
     });
     expect(JSON.parse(await fs.readFile(path.join(receiptsDir, `${merged.sha}.json`), 'utf8'))).not.toHaveProperty('replaced');

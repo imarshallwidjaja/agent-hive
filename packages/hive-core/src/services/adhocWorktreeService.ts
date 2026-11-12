@@ -8,7 +8,7 @@ import type {
   AdhocWorkspaceManifest as AdhocCompositeManifest,
   SingleWorkspaceMetadata,
 } from './workspaceManifest.js';
-import { aggregateIntegrationProvenance, integrationRecorder, provenanceCleanupSkip, storedAdhocWorklog } from './integrationReceipt.js';
+import { aggregateIntegrationProvenance, integrationRecorder, storedAdhocWorklog } from './integrationReceipt.js';
 import type { IntegrationProvenanceOutcome, IntegrationRecorder } from './integrationReceipt.js';
 import type { WorklogAuthor } from './worklogService.js';
 import {
@@ -1524,23 +1524,19 @@ export class AdhocWorktreeService {
         partial,
       });
       // Receipts of repositories integrated before the stop stay visible beside the Git failure.
-      const partialProvenance = aggregateIntegrationProvenance(repoIds, repos);
+      const { provenance: partialProvenance } = aggregateIntegrationProvenance(repoIds, repos);
       return partialProvenance !== undefined ? { ...failure, provenance: partialProvenance } : failure;
     }
 
     // All repos merged -> apply cleanup (all repos passed preflight above)
-    const provenance = aggregateIntegrationProvenance(repoIds, repos);
+    const { provenance, cleanupFailure: provenanceCleanupFailure } = aggregateIntegrationProvenance(repoIds, repos);
     let cleanup = buildNotRequestedCleanupOutcome();
     if (options.cleanup !== 'none') {
       const cleanupMode = options.cleanup;
       const deleteBranch = cleanupMode === 'worktree+branch';
       const perRepo: Array<{ repoId: string; cleanup: AdhocCleanupResult }> = [];
       // A failed receipt in any repository keeps the whole workspace; earlier receipts stay.
-      const provenanceRepoId = repoIds.find((repoId) => repos[repoId].provenance?.status === 'failed');
-      const failedProvenance = provenanceRepoId === undefined ? undefined : repos[provenanceRepoId].provenance;
-      let proofFailure: { repoId: string; step: string; cause: string } | undefined = failedProvenance?.status === 'failed'
-        ? { repoId: provenanceRepoId!, ...provenanceCleanupSkip(failedProvenance.error) }
-        : undefined;
+      let proofFailure: { repoId: string; step: string; cause: string } | undefined = provenanceCleanupFailure;
       // Every repository proves its completed work before any repository is cleaned up.
       for (const repoId of proofFailure ? [] : repoIds) {
         const failure = await proveCleanupEligibility({

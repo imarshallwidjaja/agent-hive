@@ -7,12 +7,14 @@
  * `.hive/provenance/integrations/<afterCommit>.json`, keyed by the final
  * resulting commit. A receipt is written once and never rewritten: an existing
  * receipt with the same content (ignoring `recordedAt`) counts as recorded and a
- * different one is a failure. `origins` names only the integrating worker.
+ * different one is a failure. `origin` names only the integrating worker.
  * Squash and rebase rewrite source history, so their receipts list in
  * `replaced` the rewritten commits that have receipts of their own; a reader
  * follows those links. A normal merge keeps the source commits reachable and
- * writes no `replaced`. Receipts are advisory: they gate nothing and are not a
- * run ledger.
+ * writes no `replaced`. Receipts are advisory: a missing receipt never blocks an
+ * integration, and a receipt that fails to record makes the merge skip the
+ * requested same-call cleanup so the source placement is retained. They are not
+ * a run ledger.
  */
 import * as fs from 'fs/promises';
 import * as path from 'path';
@@ -43,12 +45,13 @@ export interface IntegrationReceipt {
   source: string;
   targetRef: string | null;
   strategy: IntegrationStrategy;
-  /** The integrating worker's origin; one entry. */
-  origins: IntegrationOrigin[];
+  /** The integrating worker's origin. */
+  origin: IntegrationOrigin;
   /**
    * Squash and rebase only: commits in `before..source` that had a receipt when
-   * this one was written, in rev-list order, possibly empty. Their receipts
-   * describe work this commit replaced. Absent for a normal merge.
+   * this one was written, in rev-list order, possibly empty, excluding this
+   * integration's own resulting commit (`after`). Their receipts describe work
+   * this commit replaced. Absent for a normal merge.
    */
   replaced?: string[];
   integratedBy?: WorklogAuthor;
@@ -143,7 +146,7 @@ function parseReceipt(value: unknown, filePath: string, commit: string): Integra
   }
   if (value.targetRef !== null && typeof value.targetRef !== 'string') throw corrupt('targetRef is malformed');
   if (value.strategy !== 'merge' && value.strategy !== 'squash' && value.strategy !== 'rebase') throw corrupt('unknown strategy');
-  if (!Array.isArray(value.origins) || value.origins.length === 0 || !value.origins.every(isOrigin)) throw corrupt('origins are malformed');
+  if (!isOrigin(value.origin)) throw corrupt('origin is malformed');
   if (value.replaced !== undefined && (!Array.isArray(value.replaced) || !value.replaced.every((commit) => typeof commit === 'string' && FULL_COMMIT.test(commit)))) {
     throw corrupt('replaced is malformed');
   }
@@ -198,12 +201,14 @@ export async function listIntegrationReceiptCommits(hiveDir: string): Promise<st
 /**
  * Commits in `before..source` that have a receipt, in rev-list order: the
  * receipted work a squash or rebase rewrote into this integration's commit.
+ * The integration's own commit is never listed: a rebase that reproduces the
+ * source commit would otherwise link the receipt to itself.
  */
 async function replacedReceiptCommits(hiveDir: string, applied: AppliedIntegration): Promise<string[]> {
   const recorded = new Set(await listIntegrationReceiptCommits(hiveDir));
   if (recorded.size === 0) return [];
   const range = (await applied.git.raw(['rev-list', `${applied.before}..${applied.source}`])).split('\n').filter(Boolean);
-  return range.filter((commit) => recorded.has(commit));
+  return range.filter((commit) => commit !== applied.after && recorded.has(commit));
 }
 
 /** Receipt content as stored JSON, without `recordedAt`, for the write-once comparison. */
@@ -247,7 +252,7 @@ export async function recordIntegrationReceipt(
       source: applied.source,
       targetRef: applied.targetRef,
       strategy: applied.strategy,
-      origins: [origin],
+      origin,
       ...(applied.strategy !== 'merge' ? { replaced: await replacedReceiptCommits(hiveDir, applied) } : {}),
       ...(integratedBy !== undefined ? { integratedBy } : {}),
       recordedAt: new Date().toISOString(),
@@ -266,22 +271,38 @@ export function integrationRecorder(hiveDir: string, origin: IntegrationOrigin, 
   return (applied) => recordIntegrationReceipt(hiveDir, applied, origin, integratedBy);
 }
 
+/** The cleanup a composite integration skips because a repository's receipt failed. */
+export interface ProvenanceCleanupFailure {
+  repoId: string;
+  step: string;
+  cause: string;
+}
+
 /**
- * Composite provenance: failed when any repository's receipt failed, naming
- * each; otherwise the first applied repository's recorded outcome, as `sha`
- * names the first applied repository's commit. Undefined when no repository
- * applied an integration.
+ * Composite provenance, in `repoIds` order. `provenance` is failed when any
+ * repository's receipt failed, naming each; otherwise the first applied
+ * repository's recorded outcome, as `sha` names the first applied repository's
+ * commit; undefined when no repository applied an integration.
+ * `cleanupFailure` names the first repository whose receipt failed, as the
+ * skipped-cleanup cause that keeps the whole workspace.
  */
 export function aggregateIntegrationProvenance(
   repoIds: readonly string[],
   repos: Record<string, { provenance?: IntegrationProvenanceOutcome }>,
-): IntegrationProvenanceOutcome | undefined {
-  const failures = repoIds.flatMap((repoId) => {
+): { provenance?: IntegrationProvenanceOutcome; cleanupFailure?: ProvenanceCleanupFailure } {
+  const failed = repoIds.flatMap((repoId) => {
     const provenance = repos[repoId]?.provenance;
-    return provenance?.status === 'failed' ? [`${repoId}: ${provenance.error}`] : [];
+    return provenance?.status === 'failed' ? [{ repoId, error: provenance.error }] : [];
   });
-  if (failures.length > 0) return { status: 'failed', error: failures.join('; ') };
-  return repoIds.map((repoId) => repos[repoId]?.provenance).find((provenance) => provenance !== undefined);
+  if (failed.length > 0) {
+    const first = failed[0]!;
+    return {
+      provenance: { status: 'failed', error: failed.map(({ repoId, error }) => `${repoId}: ${error}`).join('; ') },
+      cleanupFailure: { repoId: first.repoId, ...provenanceCleanupSkip(first.error) },
+    };
+  }
+  const provenance = repoIds.map((repoId) => repos[repoId]?.provenance).find((outcome) => outcome !== undefined);
+  return provenance !== undefined ? { provenance } : {};
 }
 
 /** The skipped-cleanup cause when a repository's receipt failed. */

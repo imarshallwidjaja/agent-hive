@@ -47,7 +47,7 @@ The config hook intentionally mutates these OpenCode fields:
 
 The same package loads through its `server` entry on v1 and its synchronous `effect` entry on v2. On v2 it registers every Hive tool and all **14 commands**, dedicated and unified modes, custom agents, packaged skills, native dispatch and background observation, and the forensic and recovery tools. Qualification ran against stock v1.18.30 and v2.0.26 with scripted model providers, which establishes wiring rather than real-model judgment. On both hosts it loaded a package already installed with plain npm; host-side registry resolution at first use was not part of it.
 
-The current plugin manifest declares 48 Hive tools and 14 commands on both hosts. The qualification above does not cover the six [retained checkout tools](docs/HIVE-TOOLS.md#retained-checkouts-6-tools).
+The current plugin manifest declares 49 Hive tools and 14 commands on both hosts. The qualification above does not cover the seven [retained checkout tools](docs/HIVE-TOOLS.md#retained-checkouts-7-tools).
 
 Install the released package with npm into a dedicated directory that the v2 host can read:
 
@@ -314,6 +314,7 @@ A retained checkout `<repoId>/<slug>` is a long-lived branch checkout, such as a
 |------|-------------|
 | `hive_checkouts_list` | Every repository with its retained checkouts and task and ad-hoc workers; read-only |
 | `hive_checkout_inspect` | One checkout; optionally its local paths and the cleanup proposal |
+| `hive_checkout_brief` | What one checkout holds relative to another and which Hive integrations produced it, with pointers to their Worklogs and task records; read-only |
 | `hive_checkout_create` | Create a managed checkout at `.hive/checkouts/<repoId>/<slug>` on a new or existing branch |
 | `hive_checkout_register` | Record a checkout the project already configures, which Hive never removes |
 | `hive_checkout_readiness` | Declare or clear readiness pinned to the checkout's current commit; it gates nothing |
@@ -327,7 +328,7 @@ hive_checkout_create({ id: "root/hotfix", branch: "hotfix", baseRef: "main" })
 hive_adhoc_worktree_create({ runId: "fix-login", target: "root/hotfix", baseRef: "release" })
 ```
 
-Only Hive, Swarm and Hive Builder primary sessions change retained checkouts. See [Hive Tools](docs/HIVE-TOOLS.md#retained-checkouts-6-tools) for results, refusals and cleanup rules.
+Only Hive, Swarm and Hive Builder primary sessions change retained checkouts. See [Hive Tools](docs/HIVE-TOOLS.md#retained-checkouts-7-tools) for results, refusals and cleanup rules.
 
 ### Background Orchestration
 

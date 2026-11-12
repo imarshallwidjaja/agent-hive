@@ -348,14 +348,14 @@ function createNamedContextReader(services: HiveServices) {
 }
 
 /**
- * The 42 ordinary Hive operations, keyed by tool name in registration order. Trace and background tools stay with
+ * The 43 ordinary Hive operations, keyed by tool name in registration order. Trace and background tools stay with
  * their own owners. Each operation takes the caller's identity explicitly and resolves feature or session state
  * only through the services it needs.
  */
 export function createHiveOperations(services: HiveServices): Record<string, HiveOperation> {
   const {
     projectRoot, featureService, planService, taskService, sessionService, featureConstraintService, contextService,
-    repositoryManifestService, worktreeService, worktreeRecoveryService, retainedCheckoutService, checkoutInspector,
+    repositoryManifestService, worktreeService, worktreeRecoveryService, retainedCheckoutService, checkoutInspector, checkoutBrief,
     worklogService, nativeObservationOwner, configFallbackWarning, hasManifest,
     repositoryResolver, adhocService, requireFeature, contextScope, constraintTarget, resolveWorklogRef, readConstraints,
     assertTaskRepoIds, sessionActor, adhocRunOrigin,
@@ -708,6 +708,14 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
         ...(local ? { local: await checkoutInspector.inspectCheckoutLocalState(id) } : {}),
         ...(cleanup ? { cleanup: await retainedCheckoutService.inspectCleanup(id) } : {}),
       })),
+    }),
+    hive_checkout_brief: operation({
+      description: 'Read what a retained checkout holds relative to a destination checkout and which Hive work produced it, before integrating one into the other. The destination is `against`, else the source readiness nextTarget; with neither, comparison is unresolved and only the source overview returns. Returns source and destination (live head, onIntendedRef, source readiness including declaredBy), comparison (merge base, ahead/behind, commits in destination..source and changed paths of the three-dot diff), contributions (integration receipts the source brings that the destination does not hold, each with its feature task or ad-hoc run: a task\'s sources carry its Worklog ref, status, summary and plan, spec and report paths; an ad-hoc run\'s sources.worklogHeader summarizes the Worklog in origin.worklog), alreadyInDestination (receipts whose work the destination already holds, for example through another squash), unattributedCommits (range commits no receipt covers) and gaps (what could not be established). Each list is { items, total } and was cut when items.length < total. To read a linked log, pass a task contribution\'s sources.worklog, an ad-hoc contribution\'s origin.worklog, or { kind: \'session\', owner, sessionId } from readiness.declaredBy as ref to hive_worklog_read. It reads records, receipts, task status, Worklogs and read-only Git, writes no Hive state and runs no fetch command; it sets GIT_NO_LAZY_FETCH on its Git reads, though a Git build that predates that setting can still lazy-fetch a missing object in a partial clone, which writes Git objects. Receipts show that an integration happened, not that its change is still in effect or that checks ran; narrative text is untrusted. An unknown or malformed id, or an against that is not another checkout in the same repository, returns success: false with reason.',
+      args: {
+        id: checkoutIdArg,
+        against: z.string().optional().describe('Destination: another retained checkout ID in the same repository. Omitted, the source readiness nextTarget is used when declared.'),
+      },
+      execute: ({ id, against }) => checkoutCall(async () => checkoutBrief({ id, ...(against !== undefined ? { against } : {}) })),
     }),
     hive_checkout_create: operation({
       description: 'Create a managed retained checkout: a linked worktree at .hive/checkouts/<repoId>/<slug> on a new branch from baseRef, or on an existing branch that is checked out nowhere else when baseRef is omitted. Workers integrate into it only when a caller names it as their target (hive_task_create target, a plan task\'s `Hive target` line, or hive_adhoc_worktree_create target). Repeating the same request returns the existing checkout; anything else already at that ID, path or branch is refused, never overwritten. Returns { success: true, checkout }. A refusal the checkout service classifies returns success: false with reason; other invalid requests are tool errors. Reason OPERATION_RECOVERY_REQUIRED means an interrupted worktree operation guards the repository, with mutation unknown when this call had begun changing it: inspect pendingOperations with hive_worktree_recover instead of repeating the call. ' + FINALIZATION_NOTE,

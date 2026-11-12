@@ -1300,7 +1300,7 @@ describe('coordinated runtime hard cut', () => {
     };
     await loaded.config!(config);
 
-    const reads = ['hive_context_read', 'hive_constraints_read', 'hive_plan_read', 'hive_status', 'hive_repositories_status', 'hive_git_snapshot', 'hive_worklog_list', 'hive_worklog_read', 'hive_checkouts_list'];
+    const reads = ['hive_context_read', 'hive_constraints_read', 'hive_plan_read', 'hive_status', 'hive_repositories_status', 'hive_git_snapshot', 'hive_worklog_list', 'hive_worklog_read', 'hive_checkouts_list', 'hive_checkout_brief'];
     const contextWrites = ['hive_context_write', 'hive_context_append', 'hive_context_edit'];
     const traces = ['hive_task_trace', 'hive_task_trace_content'];
     const inspections = ['hive_worktree_inspect', 'hive_adhoc_worktree_inspect', 'hive_checkout_inspect'];
@@ -1337,7 +1337,7 @@ describe('coordinated runtime hard cut', () => {
     };
     for (const base of CUSTOM_AGENT_BASES) matrix[`audit-${base}`] = matrix[base]!;
 
-    expect(HIVE_TOOL_NAMES).toHaveLength(48);
+    expect(HIVE_TOOL_NAMES).toHaveLength(49);
     // The operator's entries stay first and `question` is not repeated; the policy's entries follow in policy order.
     expect(config.experimental.primary_tools).toEqual(['operator_tool', 'question', ...primaryOnly]);
     const bare: any = {};
@@ -1474,7 +1474,7 @@ describe('coordinated runtime hard cut', () => {
       expect(architectSession).toContainEqual({ permission: name, pattern: '*', action: 'deny' });
     }
 
-    const reads = ['hive_context_read', 'hive_constraints_read', 'hive_plan_read', 'hive_status', 'hive_repositories_status', 'hive_git_snapshot', 'hive_worklog_list', 'hive_worklog_read', 'hive_checkouts_list'];
+    const reads = ['hive_context_read', 'hive_constraints_read', 'hive_plan_read', 'hive_status', 'hive_repositories_status', 'hive_git_snapshot', 'hive_worklog_list', 'hive_worklog_read', 'hive_checkouts_list', 'hive_checkout_brief'];
     const helperTargets = [...planningHelpers.flatMap((base) => [base, `nested-${base}`]), 'hive-helper'];
     for (const target of helperTargets) {
       const base = target.replace(/^nested-/, '');

@@ -45,6 +45,7 @@ export const HIVE_TOOL_NAMES = [
   'hive_worktree_recover',
   'hive_checkouts_list',
   'hive_checkout_inspect',
+  'hive_checkout_brief',
   'hive_checkout_create',
   'hive_checkout_register',
   'hive_checkout_readiness',

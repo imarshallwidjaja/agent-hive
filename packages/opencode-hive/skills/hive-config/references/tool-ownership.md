@@ -29,7 +29,7 @@ Each piece of Hive state has one owning tool. If that tool is not exposed to you
 
 | Set | Tools | Roles |
 |---|---|---|
-| R | `hive_status`, `hive_plan_read`, `hive_context_read`, `hive_constraints_read`, `hive_repositories_status`, `hive_git_snapshot`, `hive_worklog_list`, `hive_worklog_read`, `hive_checkouts_list` | Every Hive role except the hidden trace summarizer |
+| R | `hive_status`, `hive_plan_read`, `hive_context_read`, `hive_constraints_read`, `hive_repositories_status`, `hive_git_snapshot`, `hive_worklog_list`, `hive_worklog_read`, `hive_checkouts_list`, `hive_checkout_brief` | Every Hive role except the hidden trace summarizer |
 | I | `hive_worktree_inspect`, `hive_adhoc_worktree_inspect`, `hive_checkout_inspect` | Primaries, Architect, Forager, Investigator, Hive Helper, review primaries |
 | T | `hive_task_trace`, `hive_task_trace_content` | Primaries, Architect, Forager, Hive Helper, review primaries (not Investigator) |
 | Discover | `hive_repositories_discover` | Primaries, Architect, Scout |
