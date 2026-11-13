@@ -286,6 +286,48 @@ describe('skill content', () => {
 
     const doubleBacktick = sweep('Call ``a ` b;`` first; then flush.');
     expect(doubleBacktick).toContain('semicolons: 1');
+
+    // A stripped inline code span leaves a space, so a following colon cannot form a pause-and-point match.
+    expect(sweep('`foo`: ship now.')).toBe('words: 3');
+
+    // Each local detector has one true case and one false alarm it must skip
+    // or that check.py documents as a known false alarm.
+    const sample = sweep('## What this establishes\n\n'
+      + 'These are inspected worker results, not independent execution. The check is load-bearing.\n\n'
+      + '- Scope: bounded sample evidence, not a whole-home audit.\n'
+      + '- The plan uses polling rather than webhooks.\n\n'
+      + 'Short answer: yes. It is not a cache. It is a log.');
+    expect(sample).toContain('trailing exclusions: 2 ["not independent execution", "not a whole-home audit"]');
+    expect(sample).toContain('rather-than tails: 1 ["rather than webhooks"]');
+    expect(sample).toContain('two-sentence negation: 1');
+    expect(sample).toContain('question-word headings: 1 ["What this establishes"]');
+    expect(sample).toContain('figures: 1 [load-bearing]');
+    expect(sample).toContain('label openers: 1 ["Short answer: yes."]');
+
+    // Documented false alarms: a numeric correction and a template "## Why" match by form.
+    expect(sweep('The p99 latency is 18 ms, not 20 ms.')).toContain('trailing exclusions: 1');
+    expect(sweep('## Why\n\nThis PR fixes the build.')).toContain('question-word headings: 1 ["Why"]');
+    const fencedTail = sweep('Ship it.\n\n```\nkeep a, not b.\n```\n\nDone here today.');
+    expect(fencedTail).not.toContain('trailing exclusions');
+    const parenthetical = sweep('Keep the field (not the alias, which is deprecated).');
+    expect(parenthetical).not.toContain('trailing exclusions');
+    expect(sweep('- Scope is bounded, not\n- Another task is pending.')).not.toContain('trailing exclusions');
+    expect(sweep('Rather than poll, we subscribe to events.')).not.toContain('rather-than tails');
+    expect(sweep('- The plan uses polling rather than\n- Another task is pending.')).not.toContain('rather-than tails');
+    expect(sweep("It's not a cache. It's a log.")).not.toContain('two-sentence negation');
+    expect(sweep('## Results\n\nAll checks ran.')).not.toContain('question-word headings');
+    expect(sweep('Add a test seam around the clock.')).not.toContain('figures');
+
+    const crowns = sweep('The real issue is the retry budget, and it is worth noting here.');
+    expect(crowns).toContain('significance crowns: 2 ["The real issue", "worth noting"]');
+    expect(sweep('The actual files are listed below.')).not.toContain('significance crowns');
+
+    expect(sweep('One caveat:\nthe cache expires after an hour.')).toContain('label openers: 1 ["One caveat:"]');
+    const reportLabels = sweep('Bottom Line:\nThe change is safe to merge.\n\nCoverage:\nUnit tests cover both branches.');
+    expect(reportLabels).not.toContain('label openers');
+
+    expect(sweep('The fix is genuinely simple and truly small.')).toContain('intensifiers: 2 [genuinely, truly]');
+    expect(sweep('The truthful answer came deep in the log.')).not.toContain('intensifiers');
   });
 
   it('separates design depth, present behavior, and historical rationale from execution authority', () => {

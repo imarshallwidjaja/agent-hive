@@ -37,6 +37,10 @@ The local mode selection follows the requested operation and provenance at any l
 
 Vocabulary classification is adapted: listed words are examined in context rather than treated as automatic drift, protecting legitimate voice and domain terms. A lone empty hype claim still warrants repair. The earlier cluster test is therefore not a prerequisite for a clear defect.
 
+## Local check.py detectors (2026-11-13)
+
+An oc-arkive change, not present in either source, adds eight counts to `check.py`: trailing exclusions (", not Y." tails, counted in list items and field lines too, with parenthetical text masked), rather-than tails, two-sentence negations ("It is not X. It is Y."), question-word headings, figures, significance crowns, label openers, and intensifiers. Six of them are adapted from a local measurement of 24,000 assistant messages whose detectors were tuned against hand-judged samples: trailing exclusions, two-sentence negations, question-word headings, figures, significance crowns, and the explicit label-opener prefixes. "Seam" is left out of the figures because it is a standard testing term and made up 45% of the measured hits. Rather-than tails and intensifiers are new here and have no such tuning. A trailing-exclusion or rather-than tail never continues onto the next line. The script still only flags, and its header lists the false alarms each new count knowingly keeps.
+
 ## Reader-impact correction
 
 The upstream all-facts and all-caveats audit is adapted to select supported, relevant content before rewriting and audit that selection. The `writing-for-humans` boundary rule governs standalone exclusions and evidence gaps; retained claims keep their qualifications, imported instructions keep required wording, examples, exceptions, and force, and explicit faithful-copy and light-edit contracts remain binding. Interview and voice workflows stay in place.
