@@ -120,6 +120,38 @@ Did costs drop? "The coordinator records each job's execution cost, but no befor
 
 The missing measurement matters to the second question. It need not accompany the mechanism description.
 
+## Sentence endings, subjects, and deferred nouns
+
+**Required limit written as an evidence contrast**
+
+Source: The focused suite passed on commit `3f1c9e0`. The full suite was not run. The report contract requires every unrun check to be listed.
+
+Before: "The focused suite passed on commit `3f1c9e0`; this is a focused result, not a full-suite pass."
+
+After: "The focused suite passed on commit `3f1c9e0`. The full suite was not run."
+
+The tail classified the evidence by contrast. The repair states what ran, then states the unrun suite the contract requires in its own sentence. No fact is added or dropped.
+
+**Non-human subject and the finding**
+
+Source: Table 2 lists p95 latency for runs 1 to 4. Run 4 has the highest p95, 2.1 s. The median p95 across the four runs is 0.9 s.
+
+Before: "The table shows it. The median hides run 4."
+
+After: "Table 2 lists a p95 of 2.1 s for run 4, the highest of the four runs. The median p95 across the four runs is 0.9 s."
+
+A table can list and a median can be computed; neither can show or hide. The rewrite states the numbers the reader needed.
+
+**Deferred noun**
+
+Source: The token refresher expires sessions early. It needs a fix before the release.
+
+Before: "One component needs attention before the release. It is the token refresher, which expires sessions early."
+
+After: "The token refresher expires sessions early and needs a fix before the release."
+
+Name the thing in the sentence that introduces it.
+
 ## Preserve uncertainty
 
 **Before:**

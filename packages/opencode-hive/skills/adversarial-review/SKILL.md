@@ -98,8 +98,8 @@ When an operator asks a primary or general agent for an adversarial review and n
 
 ### Findings
 - None | [severity: critical/high/medium/low] [artifact:line] - [issue]
-  - What can go wrong: [failure mode]
-  - Why vulnerable: [evidence]
+  - Failure mode: [what breaks and when]
+  - Vulnerability cause: [evidence]
   - Impact: [effect]
   - Recommendation: [specific fix direction]
 

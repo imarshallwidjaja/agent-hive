@@ -73,6 +73,23 @@ Before: "The gateway serves as the entry point and boasts support for signed req
 
 After: "The gateway is the entry point and accepts signed requests."
 
+## Figures with literal replacements
+
+These figures recur in technical prose and hide the relation they stand for. Replace each with the literal word, naming the specific thing when the sentence needs it:
+
+| Figure | Literal replacement |
+|---|---|
+| load-bearing | required, or depended on (name by what) |
+| earns its keep, earns its place | is needed (say for what) |
+| lives in | is defined in, or is stored in |
+| sits at | runs before or after, or is located in |
+| smoking gun | the evidence, named |
+| footgun | the error-prone API, with the error named |
+| quietly | cut it, or name what happens without notice |
+| the shape of | the structure or format |
+
+A field's own terms stay: "test seam", "memory leak", and "race condition" are the names engineers use for those things.
+
 ## Constructions nobody says out loud
 
 "The recommended approach is X" becomes "Do X". Nominalizations ("perform an evaluation of") become verbs ("evaluate"). Op-ed verbs for sources (posits, contends, asserts, maintains that, concedes, and argues that for a plain statement) become says, writes, found, or reports. The test: would you say this sentence to a smart friend over coffee? If you'd say something plainer, write that, keeping the claim and its strength.
@@ -123,13 +140,17 @@ After: "The support team rewrote the guide for the new roles."
 
 If the input did not name the actor of this same action, do not invent "the support team".
 
-## Inanimate subjects with human verbs
+## Non-human subjects
 
-"The roadmap wants" or "the dashboard understands" gives an abstraction a mind. Describe actual behavior using supplied facts. "The report shows" and "the form submits" are ordinary product verbs, not defects.
+A non-human subject gets only a verb it can literally perform, and the sentence states the finding. "Table 2 lists the p95 for each run", "AGENTS.md says to rebuild first", and "the UI hides the panel" are literal: a table lists, a document says, an interface hides. Sources say, write, report, and find, as "Constructions nobody says out loud" sets out. "The median hides it", "the test knows", and "the plan wants" give an abstraction a mind; bare pointing such as "the table shows it" names no finding. Rewrite with the actual behavior or the number from the source.
 
-Before: "The dashboard understands your priorities and opens the three cohorts you pinned last."
+Source note: the test clears the cache before it runs; Table 3 lists a first-request latency of 840 ms.
 
-After: "The dashboard opens the three cohorts you pinned last."
+Before: "The test knows the cache is cold, and the table shows it."
+
+After: "The test clears the cache before it runs. Table 3 lists a first-request latency of 840 ms."
+
+Use only facts the source supplies. If it gives no number, name what the table lists instead of inventing one.
 
 ## Mechanical formatting
 

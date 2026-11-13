@@ -32,6 +32,18 @@ Other forms of the same move:
 
 State the claim directly, keeping the affirmative half of a collapsed contrast: "labels show intent rather than final copy" becomes "labels show intent". A denied item stays only when it passes the boundaries test in `writing-for-humans`. An instruction, source quotation, or design trade-off can legitimately depend on contrast.
 
+### Trailing exclusion
+
+Drop an unneeded trailing contrast. Keep one the reader asked for, or a correction such as "The timeout is 30 s, not the 60 s in the old runbook." Guards, required limits, unrun checks, and unknowns stay as separate sentences. A tail that classifies evidence, such as "The counts come from the log, not a rerun", becomes two statements: what the evidence is, and what was not done ("The counts come from the log. They were not obtained from a rerun.").
+
+### Knockdown of a reading nobody holds
+
+"X is the obvious reading, and it is wrong" and "This looks like a duplicate, but it is not" invent a mistaken reader so the author can correct them. State what X is: given a source that says the first check validates the source path and the second validates the destination path, write "The second check validates the destination path." The form is legitimate when the reader or a source actually holds the reading, for example a review comment that called the check a duplicate.
+
+### Deferred reveal
+
+"Five of those six rows are one cluster. The sixth is not." withholds the names so the next sentence can deliver them. Name them where they first appear: given a log that tags each failing row with its cluster ID, five with `eu-2` and one with `us-1`, write "Five of the six failing rows come from cluster `eu-2`; the sixth comes from `us-1`." A sequence may unfold step by step when the order of discovery is the point, as in an incident timeline.
+
 ## Dramatic fragmentation
 
 "Speed. Quality. Cost", "X. And Y. And Z", and "This unlocks something. Freedom" can manufacture profundity. Complete sentences let the content do the work. A single deliberate fragment is not a defect on its own.

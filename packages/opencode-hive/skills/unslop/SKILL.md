@@ -14,12 +14,15 @@ This skill is the shared philosophy and the router. It applies to writing, to re
 Apply to every human-facing output, short replies included, without announcing it:
 
 - **Reader first.** Put the answer, decision, or next action first, in the words this reader would use.
-- **Concrete nouns.** Name the real symbol, file, flag, command, number, or person, not a synonym, a description, or a metaphor for it. Give each thing one name and keep it.
+- **Claim in the subject and verb.** Make the topic the subject and its action the verb; name a source-given actor when it matters. A non-human subject does only what it literally can; state the finding: given "Table 2: p95 2.1 s", write "Table 2 lists a p95 of 2.1 s" for "The table shows it."
+- **Concrete nouns, literal words.** Name the real symbol, file, flag, command, number, or person, with literal verbs and adjectives: write "required" for "load-bearing". Give each thing one name and keep it.
 - **One reading.** Each "it", "this", "they", and "which" points at one obvious noun; repeat the noun when in doubt. Place "only" and "not" beside the word they change. Keep the verb and the small words that show a sentence's structure.
 - **Enough words.** Compression that makes the reader rebuild a relationship or guess what a number means moves the work to them. Shorter is clearer only when nothing the reader needs was cut.
+- **End the sentence on the fact.** State a limit as what was done and what was not: given a review that read the source and ran no tests, write "The source was read. No test ran." for "These findings are static, not tested." Keep a contrast the reader asked for or a correction to a value they have seen. Guards, required limits, unrun checks, and unknowns stay, each as its own sentence.
+- **Headings that withhold nothing.** Use a noun phrase the reader would search for, or the finding in full: write "Retry limits" for "What retries actually do". Question headings are the reader's own questions. Headings a role or template requires stay.
 - **Only what the sources hold.** Every fact, name, number, date, quote, source, and outcome comes from the sources or the conversation.
-- **Meaning and authority.** Describe things by what they are, do, accept, or produce. Evidence, requirements, and the human's stance constrain meaning; draft prose is editable, and agent repetition grants it no authority. Keep necessary claim qualifiers and binding guards at their original force. A standalone exclusion earns its place through a concrete reader consequence; `writing-for-humans` owns that decision.
-- **Draft, audit, fix.** Before delivering, read the draft as the reader would and ask what a careful editor would mark. Fix it, then check again.
+- **Meaning and authority.** Describe things by what they are, do, accept, or produce. Evidence, requirements, and the human's stance constrain meaning; draft prose is editable, and agent repetition grants it no authority. Keep necessary claim qualifiers and binding guards at their original force. A standalone exclusion needs a concrete reader consequence; `writing-for-humans` defines that test.
+- **Draft, audit, fix.** Before delivering, read the draft as the reader would, ask what a careful editor would mark, and check sentence endings and headings. Fix it, then check again.
 
 Preserve actual literals, quotations, identifiers, schema and protocol values, and UI strings quoted to match the product. Ordinary headings and UI copy are editable when copy is in scope; retain their meaning and commitments.
 

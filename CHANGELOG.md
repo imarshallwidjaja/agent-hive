@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Reviewer-first test quality.** The packaged `test-quality` skill owns outcome/oracle and duplicate-coverage guidance formerly under TDD. Code and simplicity reviewers load it for relevant assertions, coverage claims, and duplicate tests. `/test-audit [paths or natural-language scope]` routes a report-only suite audit to `dash-reviewer`; remediation requires an explicit follow-up implementation request. Findings preserve unique coverage and state sampling limits. Guidance and delivery checks do not establish model compliance.
 
+### Changed
+
+- **Directional prose rules in the `unslop` baseline.** Every role's writing baseline now asks for a non-human subject with a verb it can literally perform, literal verbs and adjectives, sentences that end on their fact, and headings that name their content. Each rule carries one before/after pair. A trailing contrast stays when it answers the reader's question or corrects a value they have seen, and guards, required limits, unrun checks, and unknowns stay as separate sentences. A limit on evidence is written as what was done and what was not, and the agent instructions that stated evidence limits as a contrast now use that form with the same guards. `writing-for-humans`, `stop-slop`, and `humanizer` carry the depth and examples. Report templates use the new labels "Rationale and Tradeoffs" (approach advisor), "Equivalence" (simplicity reviewer), "Failure mode" and "Vulnerability cause" (adversarial review), and "Mechanism" and "Key files" (`how` explanations). The wording checks confirm the text is present; they do not measure whether a model follows it.
+
 ## [5.2.0] - 2026-10-31
 
 `oc-arkive` 5.2.0 adds the Investigator role, crash-safe native locks and guarded worktree recovery. It also requires an explicit history intent for integration. This minor version intentionally carries the compatibility changes below. See [v5.2.0 release notes](docs/releases/v5.2.0.md).

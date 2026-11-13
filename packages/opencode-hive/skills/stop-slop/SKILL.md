@@ -26,6 +26,7 @@ Load with `writing-for-humans`. That skill owns the finish pass, non-invention, 
 - The sentences could be shuffled without losing meaning, so the text is a stack of facts, not an argument: rebuild the spine so each sentence leans on the one before (cause, contrast, example, consequence). Sprinkled connectors only fake it.
 - One sentence per paragraph for emphasis: join related sentences.
 - "It's not X, and it's not Y, but Z": state Z. X and Y stay only when they pass the boundaries test in `writing-for-humans`.
+- A sentence that ends in ", not Y" or "rather than Y": end it on the fact. The tail stays when it answers the reader's question or corrects a value the reader has seen.
 - A one-line colon reveal ("The best part: it learns.") or a count announced before a list ("Three things changed:"): make the point simply the next sentence.
 - A restating or engagement closer ("The bottom line?", "Key takeaway:", "Thoughts?"): end on the last concrete thing, or on one line of what the writer concludes.
 - A fragment stack in prose ("No setup. No config. Just results."): merge into one sentence with a subject and a verb. Lists are exempt.
@@ -33,7 +34,7 @@ Load with `writing-for-humans`. That skill owns the finish pass, non-invention, 
 - "The best X don't Y. They Z": state the claim without manufacturing authority.
 - "Stop X. Start Y": state the action, preserving both requirements when both matter.
 - "And that's okay": delete empty permission-giving; retain an answer to a real concern.
-- Explaining a metaphor? Trust it to land when the intended reader can understand it without the explanation.
+- Explaining a metaphor? Cut the explanation when the intended reader understands the metaphor without it, or replace the metaphor with the literal statement.
 - Em-dash before a reveal? Remove the staged reveal; follow the core punctuation policy.
 
 These are diagnostic questions, not automatic substitutions. Respect deliberate authorial voice and required quotations alongside the requested cleanup. Read [examples](references/examples.md) when a staging, cadence, or structure repair needs calibration.

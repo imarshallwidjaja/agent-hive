@@ -85,7 +85,7 @@ Only report a finding when all are true:
 - You can explain why behavior should remain equivalent.
 - The simplification is more valuable than the churn.
 
-ALREADY_MINIMAL means no worthwhile in-scope simplification was found, not a claim of global optimality; return No action. MINOR_TWEAKS describes optional improvements. SIMPLIFY recommends action but is not an automatic merge veto; a demonstrated material maintainability problem or violation of approved cleanup goals may still be required. Use NEEDS_DISCUSSION only when a material question about intent or behavioral equivalence prevents a sound review, and name the evidence that would resolve it.
+ALREADY_MINIMAL means no worthwhile in-scope simplification was found. ALREADY_MINIMAL does not claim global optimality. Return No action. MINOR_TWEAKS describes optional improvements. SIMPLIFY recommends action but is not an automatic merge veto; a demonstrated material maintainability problem or violation of approved cleanup goals may still be required. Use NEEDS_DISCUSSION only when a material question about intent or behavioral equivalence prevents a sound review, and name the evidence that would resolve it.
 
 ## Output Format
 
@@ -108,7 +108,7 @@ Always give the assessment label, Review Basis, Core Purpose, and Coverage. Omit
 [file:line] \`quoted line\` - [what to remove, inline, merge, or replace]
    - Current: [brief description]
    - Simpler: [specific alternative]
-   - Why safe: [behavioral equivalence]
+   - Equivalence: [why behavior stays the same]
    - Requirement impact: [why current requirements do not need the complexity]
    - Survived: [the justification you looked for and did not find]
 

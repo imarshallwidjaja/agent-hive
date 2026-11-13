@@ -47,7 +47,7 @@ Unless the assignment also grants implementation authority, verifying reports an
 - No completion claims without actual command output or tool-result evidence that applies to the candidate being claimed.
 - Rationalizations are not evidence.
 - Reading code is not verification.
-- Worker reports are attributed evidence, not independent verification. A report must include the command/tool result and tested-candidate details; worker prose alone is not evidence.
+- Worker reports are attributed evidence. They do not count as independent verification. A report must include the command/tool result and tested-candidate details; worker prose alone is not evidence.
 - A source-backed trace can expose tool output, but it does not attest the tested Git candidate, current integration, or mutable live/artifact inputs and is not a result cache.
 - Session recency neither proves nor invalidates evidence. Establish whether the tested candidate and relevant inputs still apply.
 - Verify the claim being made, not a nearby claim. Build proves build. Lint proves lint. Tests prove only what they exercise.

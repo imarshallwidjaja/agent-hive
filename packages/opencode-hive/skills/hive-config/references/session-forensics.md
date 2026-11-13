@@ -22,7 +22,7 @@ They are the supported read path.
 
 ## Task records
 
-- `report.md` is the latest successful report write; `reports/<N>.md` is history in write order. Current agent prompts require writers to open with an attribution line naming the author role and basis, but `hive_task_update` stores the text unchanged and does not enforce it. Treat a report whose first line is missing or is not an attribution line as unattributed. A worker's report is attributed evidence, not independent verification.
+- `report.md` is the latest successful report write; `reports/<N>.md` is history in write order. Current agent prompts require writers to open with an attribution line naming the author role and basis, but `hive_task_update` stores the text unchanged and does not enforce it. Treat a report whose first line is missing or is not an attribution line as unattributed. A worker's report is attributed evidence. It does not count as independent verification.
 - `handoff.md` is forward notes for the next worker, replaced on each write.
 - `status.json` holds `status`, `summary`, `blocker`, `dependsOn`, `repoIds`, `baseCommit` or `baseCommits`, and timestamps. It never holds report bodies.
 - After an interrupted `hive_task_update`, compare all four locations. Any prefix of report history, `report.md`, `handoff.md`, `status.json` may have been written.

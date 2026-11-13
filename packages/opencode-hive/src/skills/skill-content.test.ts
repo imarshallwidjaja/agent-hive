@@ -136,7 +136,15 @@ describe('skill content', () => {
     const get = (name: string) => BUILTIN_SKILLS.find((entry) => entry.name === name)!.template;
     const unslop = get('unslop');
     for (const phrase of [
-      '**Concrete nouns.**', '**One reading.**', '**Enough words.**', '**Meaning and authority.**', 'guess what a number means',
+      '**Concrete nouns, literal words.**', '**One reading.**', '**Enough words.**', '**Meaning and authority.**', 'guess what a number means',
+      '**Claim in the subject and verb.**', '**End the sentence on the fact.**', '**Headings that withhold nothing.**',
+      'Guards, required limits, unrun checks, and unknowns stay, each as its own sentence',
+      'State a limit as what was done and what was not',
+      'Make the topic the subject and its action the verb; name a source-given actor when it matters',
+      'A non-human subject does only what it literally can; state the finding', 'with literal verbs and adjectives',
+      'Keep a contrast the reader asked for or a correction to a value they have seen',
+      'Use a noun phrase the reader would search for, or the finding in full', "Question headings are the reader's own questions",
+      'Headings a role or template requires stay', 'check sentence endings and headings',
       'binding guards at their original force', 'regardless of length',
       'Routing is a load obligation', 'the baseline suffices when none applies', 'a clear defect or a contextual cluster',
       "It changes no role's authority, finding bar, verdict, or required output format",
@@ -171,6 +179,7 @@ describe('skill content', () => {
     expect(humanizer).not.toContain('The facts are already right');
     expect(humanizer).not.toContain('a short draft you are asked to check');
     expect(readSkillReference('humanizer', 'patterns.md')).toContain('`writing-for-humans` owns calibration');
+    expect(readSkillReference('humanizer', 'patterns.md')).toContain('A non-human subject gets only a verb it can literally perform, and the sentence states the finding');
     expect(humanizer).toContain('Complete all applicable in-text tightening and checks before deciding whether to offer a shorter option');
     expect(humanizer).toContain('Ordinary technical answers, reports, docs, plans, and status updates get no shorter option unless the writer asks for one');
     expect(readSkillTemplate('stop-slop')).toContain('A full `humanizer` rewrite loads this skill');
@@ -898,7 +907,7 @@ describe('skill content', () => {
     expect(skill).toBeDefined();
     expect(skill!.description).not.toContain('fresh');
     expect(template).toContain('actual command output or tool-result evidence');
-    expect(template).toContain('Worker reports are attributed evidence, not independent verification');
+    expect(template).toContain('Worker reports are attributed evidence. They do not count as independent verification');
     expect(template).toContain('A source-backed trace can expose tool output');
     expect(template).toContain('is not a result cache');
     expect(template).toContain('Session recency neither proves nor invalidates evidence');
@@ -1548,6 +1557,7 @@ describe('skill content', () => {
     expect(skill!.template).toContain('may use background execution');
     expect(skill!.template).toContain('may require more than one worker attempt or turn');
     expect(skill!.template).toContain('Decomposition may retain one coherent lane');
+    expect(skill!.template).toContain('A discovered HEAD is an observation. It does not count as a verified source pin.');
     expect(skill!.template).not.toMatch(/hive_(?:feature|plan|tasks|worktree)_/);
     expect(skill!.template).not.toContain('plan.md');
     expect(skill!.template).not.toContain('tasks.json');

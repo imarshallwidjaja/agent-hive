@@ -13,3 +13,7 @@ A full `humanizer` rewrite now loads this skill explicitly for its crafted-line 
 The reader-impact correction aligns the first example and relevance selection with the boundary owner. It retains the prohibition on cadence-driven list changes while removing unconditional retention of every item.
 
 Local reference pointers now name the diagnosis or repair that calls for each reference, independent of text length.
+
+## Trailing exclusions, knockdowns, and deferred reveals (2026-11-13)
+
+An oc-arkive policy change, not from the imported source, adds three structures to the antithesis section of `references/structures.md` (the trailing ", not Y" tail, the knockdown of a reading nobody holds, and the deferred reveal), each with its repair and the case where it is legitimate; the trailing-tail entry also names a tail that classifies evidence and splits it into what the evidence is and what was not done. `references/phrases.md` adds significance phrases and classifying label openers. `SKILL.md` gains one check for the trailing tail, and the metaphor check now states its repair literally. Retained source wording: the five core rules, including the pinned rhythm rule, and the existing reference lists. Host adaptation: none.

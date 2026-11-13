@@ -43,6 +43,24 @@ State the content directly. "I used to think" survives when the change in the au
 
 A real causal explanation after "This matters because" may be necessary. Cut the crutch, not the explanation.
 
+## Significance phrases
+
+- "The key insight is" / "the key point"
+- "The honest answer is"
+- "The whole point"
+- "Worth flagging"
+
+Each announces importance instead of stating the content. Write the content: "The honest answer is that the cache never expires" becomes "The cache never expires." Keep "worth flagging" when a role's output format names a flag field.
+
+## Classifying label openers
+
+- "One caveat:"
+- "Important distinction:"
+- "What this settles."
+- "Short answer:"
+
+A label that only classifies the next statement delays it. Write the statement: "One caveat: the export skips archived rows" becomes "The export skips archived rows." A field label in a required format, such as "Impact:" in a review template, stays.
+
 ## Pause-and-point
 
 - "Here's what matters" / "Here's why this matters" / "Here's the kicker"

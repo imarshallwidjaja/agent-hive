@@ -12,6 +12,11 @@ This skill carries the operator-maintained `writing-for-humans` guidance importe
 - [Wikipedia: Signs of AI writing](https://en.wikipedia.org/wiki/Wikipedia:Signs_of_AI_writing): a pattern reference, not proof of authorship or a vocabulary blacklist.
 - [wait-what](https://github.com/mattpocock/skills/tree/main/skills/productivity/wait-what): re-pitch an explanation with enough context and the project's terms.
 - [Zonder Labs, "Why is AI Slop so Frustrating to Read?"](https://zonderlabs.com/slop) (2026-11-09): diagnostic examples of hidden actions, vague wording, and misplaced emphasis; not a validated frequency claim for this guidance.
+- Joseph M. Williams, "Style: Lessons in Clarity and Grace": characters as subjects and actions as verbs, the basis of the subject-and-verb rule.
+- George D. Gopen and Judith A. Swan, "The Science of Scientific Writing" (American Scientist, 1990): topic and stress positions, the basis for ending a sentence on its new information.
+- [Plain language headings](https://digital.gov/guides/plain-language/design/headings): headings that state content the reader looks for, including question headings for the reader's own questions.
+- [Anthropic prompting guidance](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-fable-5-1): its description of "mannered prose" informed the literal-wording rule.
+- [claudish](https://github.com/cmdcolin/claudish) and [tropes.fyi](https://tropes.fyi/tropes-md): catalogs of recurring model phrasings consulted when choosing which forms to name; no text was copied.
 - [anti-slop](https://github.com/miqdadbadjuber/anti-slop), Miqdad Badjuber, MIT: the draft/audit/fix loop, non-invention rule, cluster principle, and preservation of human voice. Its license notice is bundled in this skill.
 
 The local source also cited [danyuchn/asd-ste100-skill](https://github.com/danyuchn/asd-ste100-skill) and [tamdogood/orwell-writing](https://github.com/tamdogood/builder-essential-skills/blob/main/skills/orwell-writing/SKILL.md) as influences. These links are provenance, not prerequisites to fetch on every writing task.

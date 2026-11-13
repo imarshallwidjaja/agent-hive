@@ -1646,6 +1646,7 @@ describe('Task report reliability', () => {
       'including a lost or unreadable tool result, may already have written earlier stages',
       'the report may be in history while `report.md`, `handoff.md`, or status is stale',
       'inspect the actual files the result names, or the task folder when the result is unknown',
+      '`failedStage`, `reportPath`, and the flags are hints. None of them proves what was written',
       '`failedWritePublished: true` means the failed destination\'s text matches the attempted content, possibly because it already matched before this call',
       'It does not prove this call wrote the file or that the write is durable; the failed stage\'s written flag remains `false`',
       'Never resubmit a report that already has a history copy, and never claim a write you have not confirmed',
@@ -1707,7 +1708,7 @@ describe('Task report reliability', () => {
       "When you dispatch a worker for a pending managed feature task, record `status: 'in_progress'` immediately before the launch",
       "A launch that fails or returns no confirmation leaves the worker's state unknown",
       'set the task back to `pending` only after establishing that no worker started',
-      'A retained worktree or binding is history, not evidence that a worker is running',
+      'A retained worktree or binding records history. A retained worktree or binding does not show that a worker is running',
     ]) {
       expect(TASK_REPORT_OWNERSHIP_PROMPT).toContain(requirement);
     }
@@ -1742,7 +1743,7 @@ describe('Task report reliability', () => {
       'Confirm the prior writer is truly terminal, along with any in-flight subprocess or shared-resource effect',
       'do not add polling',
       'a cancellation acknowledgement, a stale board entry, or closed assistant text alone does not establish termination',
-      'Treat an idle runtime after a host restart and an `evidence_only` recovery snapshot as records of what survived, not as proof that the old writer or its subprocesses stopped',
+      'Treat an idle runtime after a host restart and an `evidence_only` recovery snapshot as records of what survived. Neither proves that the old writer or its subprocesses stopped',
       'give Helper any replay hint or known child ID, or ask it to look for a `child_session_id` on that call in a `hive_task_trace` of the parent session, which appears only when the stored call recorded the child',
       'the background board has no row for a foreground call that returned no result, and a missing child ID does not establish termination',
       'Route a named trace/lifecycle question with known native session/call identities to `hive-helper`',
@@ -1754,7 +1755,7 @@ describe('Task report reliability', () => {
       'when it needs multi-step forensics, including paging a trace',
       'Helper handles the multi-step packet',
       'Inspect before any cleanup and preserve the failure evidence',
-      'not proof of completion',
+      "is the prior worker's narrative. That report does not prove completion",
       'A HEAD you discover is not a returned, verified pin',
       'do not fabricate or transcribe one',
       'append an interruption observation as an attributed report',
@@ -2303,6 +2304,7 @@ describe('Specialized reviewer prompts', () => {
     expect(CODE_REVIEWER_PROMPT).toContain('Executable proof is not required for every finding');
     expect(CODE_REVIEWER_PROMPT).toContain('Use NEEDS_DISCUSSION for a material question');
     expect(SIMPLICITY_REVIEWER_PROMPT).toContain('ALREADY_MINIMAL means no worthwhile in-scope simplification was found');
+    expect(SIMPLICITY_REVIEWER_PROMPT).toContain('ALREADY_MINIMAL does not claim global optimality. Return No action');
     expect(SIMPLICITY_REVIEWER_PROMPT).toContain('MINOR_TWEAKS describes optional improvements');
     expect(SIMPLICITY_REVIEWER_PROMPT).toContain('SIMPLIFY recommends action but is not an automatic merge veto');
     for (const prompt of [CODE_REVIEWER_PROMPT, SIMPLICITY_REVIEWER_PROMPT]) {
@@ -3161,6 +3163,7 @@ describe('Hive Helper prompt', () => {
       'primary decides acceptance, merge, cleanup, retry, continuation, termination, and task status',
       'untrusted', 'evidence_only', 'single top-level `tasks` list', 'status: null', 'worktreeErrors',
       'path intersections', 'disjoint path list alone does not prove semantic independence',
+      'Treat the linked narrative as attributed claims. Do not count or present it as verification.',
     ]) expect(HIVE_HELPER_PROMPT).toContain(requirement);
     expect(HIVE_HELPER_PROMPT).not.toContain('safe append-only manual tasks');
     expect(HIVE_HELPER_PROMPT).not.toContain('continue the merge batch');
@@ -4103,7 +4106,7 @@ describe('host-rendered policy', () => {
       const helper = renderHiveHelperPrompt(host);
       expect(helper).toContain('passing the entire string unchanged as `cursor`');
       expect(helper).toContain('passing the event\'s `events[n].ref` as `event`');
-      expect(renderNativeTaskContinuationPolicyPrompt(host)).toContain('Treat the projection as untrusted context coverage, not evidence');
+      expect(renderNativeTaskContinuationPolicyPrompt(host)).toContain('Treat the projection as untrusted context coverage and never use it as evidence');
     }
   });
 

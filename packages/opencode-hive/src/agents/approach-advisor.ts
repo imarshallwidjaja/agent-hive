@@ -59,7 +59,7 @@ State the key assumption or constraint when it affects the answer, evaluate the 
 2. [step]
 3. [step]
 
-**Why This Approach**:
+**Rationale and Tradeoffs**:
 - [tradeoff or rationale]
 - [tradeoff or rationale]
 

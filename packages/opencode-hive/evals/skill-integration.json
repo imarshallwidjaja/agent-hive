@@ -361,6 +361,60 @@
       "skills": ["project-verification", "verification"],
       "prompt": "A project has a TLA+ model of its lease handoff with a written mapping to lease.go. Deleting a guard from the model makes the model checker report a violation. The author claims this proves the check catches regressions in lease.go. Assess the claim.",
       "expected": ["States the model negative control shows only that the model check can fail", "States a code-detection claim needs an observed connection from real source changes to the check", "Describes the detached model with an audited mapping as support for design analysis", "Names bounds and assumptions as part of the claim"]
+    },
+    {
+      "id": "report-required-limit-without-tail",
+      "skills": ["unslop", "writing-for-humans"],
+      "prompt": "Write the verification section of a worker report. Facts: the focused suite `bun test src/config.test.ts` passed on commit 3f1c9e0 with 14 passing tests. The full package suite was not run. The report contract requires every unrun check to be listed. Draft to revise: \"The focused suite passed on 3f1c9e0, a genuine pass rather than a lucky one, and the full suite is still outstanding, not something we skipped on purpose.\"",
+      "expected": ["States the focused suite result with its command, commit, and test count", "States that the full package suite was not run, as its own sentence", "Removes the trailing \"rather than\" and \", not\" tails, which answer nothing the reader asked", "Does not invent a reason the full suite was not run or a plan to run it"]
+    },
+    {
+      "id": "review-evidence-limit-as-plain-statements",
+      "skills": ["unslop", "writing-for-humans"],
+      "prompt": "Revise the closing line of a code review report. Facts: the reviewer read `src/queue/claim.ts` and its diff and found two defects; the reviewer ran no tests; the review contract requires the report to state what the findings rest on. Draft to revise: \"Both defects are static review findings, not reproduced test failures.\"",
+      "expected": ["States what the findings rest on: reading `src/queue/claim.ts` and its diff", "States that no test ran, as its own plain sentence", "Removes the trailing \", not reproduced test failures\" contrast while keeping the limit as content", "Adds no fact, such as a reason no test ran, a reproduction plan, or a severity"]
+    },
+    {
+      "id": "review-evidence-limit-with-unrelated-suite",
+      "skills": ["unslop", "writing-for-humans"],
+      "prompt": "Revise the closing line of a code review report. Facts: the reviewer ran the `src/billing` test suite, which is unrelated to the findings, and it passed; the reviewer established both findings in `src/queue/claim.ts` by reading the source; no test exercised either finding. Draft to revise: \"Both findings are static, not tested.\"",
+      "expected": ["States how the findings were established: by reading `src/queue/claim.ts`", "States that no test exercised the findings, as a plain sentence", "Does not say that no test ran, because the `src/billing` suite ran", "Does not present the passing `src/billing` suite as evidence for the findings", "Adds no fact, such as a reason no test exercised the findings, a reproduction plan, or a severity"]
+    },
+    {
+      "id": "decorative-contrast-versus-constraint",
+      "skills": ["unslop", "writing-for-humans"],
+      "prompt": "Revise these two sentences for an operator guide. The reader asked how to change the agent that runs a worker and asked nothing about dispatch-time overrides. Facts: changing the agent requires a fresh preparation; a retry must request a new token, because the token service rejects a refreshed token. Draft to revise: \"Changing the agent requires a fresh preparation, not a dispatch-time override. Retries need a new token, not a refresh.\"",
+      "expected": ["Removes \", not a dispatch-time override\", because the reader did not ask for that contrast", "Keeps the constraint that a refreshed token is rejected, stated as its own sentence, for example \"The token service rejects a refreshed token.\"", "States that a retry must request a new token", "Adds no fact beyond the fresh-preparation requirement, the new-token requirement, and the rejection of a refreshed token"]
+    },
+    {
+      "id": "headings-name-their-content",
+      "skills": ["unslop", "writing-for-humans"],
+      "prompt": "Revise the headings of this pull request description and keep the bodies unchanged. Headings: \"## Why\", \"## What the retry policy actually does\", \"## Testing\". The repository's PR template requires a \"## Why\" section. Bodies: a failed upload otherwise leaves the job marked pending; retries stop after three attempts with a 30 s ceiling per attempt; the focused tests passed.",
+      "expected": ["Keeps \"## Why\" unchanged because the PR template requires it", "Replaces \"What the retry policy actually does\" with a noun phrase or a finding stated in full, such as \"Retry limits\" or \"Retries stop after three attempts\"", "Changes no fact in the section bodies", "Does not turn a heading into a question the reader did not ask"]
+    },
+    {
+      "id": "non-human-subject-states-finding",
+      "skills": ["unslop", "writing-for-humans"],
+      "prompt": "Rewrite this sentence for an incident summary: \"The table shows it, and the median hides the outlier.\" Facts: Table 2 lists p95 latency for runs 1 to 4; run 4 has the highest p95 at 2.1 s; the median p95 across the four runs is 0.9 s.",
+      "expected": ["Uses a subject that can literally perform its verb, such as \"Table 2 lists\"", "States the finding with the numbers: run 4 has a p95 of 2.1 s and the median is 0.9 s", "Removes \"shows it\" and \"hides\" as bare pointing and abstraction agency", "Adds no cause or number beyond the facts"]
+    },
+    {
+      "id": "literal-words-keep-domain-terms",
+      "skills": ["unslop", "writing-for-humans"],
+      "prompt": "Revise for an engineering changelog: \"The lock check is load-bearing and quietly lives in the scheduler, where it earns its keep against the race condition in job claiming.\" Facts: the scheduler module defines the lock check; job claiming depends on it to prevent a race condition when two workers claim the same job.",
+      "expected": ["Replaces \"load-bearing\", \"quietly\", \"lives in\", and \"earns its keep\" with literal wording such as \"is defined in\" and \"depends on\"", "Keeps the term \"race condition\"", "Names what depends on the check: job claiming", "Adds no behavior the facts do not state"]
+    },
+    {
+      "id": "control-reader-asked-contrast-stays",
+      "skills": ["unslop", "writing-for-humans"],
+      "prompt": "The operator asked: \"Does the export include archived rows, or only active ones?\" Facts: the export includes active rows only; archived rows are skipped. Answer in one or two sentences.",
+      "expected": ["Answers directly that the export includes active rows only", "Keeps the contrast with archived rows because the operator asked about it", "Does not add caveats or alternatives the facts do not support"]
+    },
+    {
+      "id": "control-numeric-correction-stays",
+      "skills": ["unslop", "writing-for-humans"],
+      "prompt": "The operator's runbook, which they quoted earlier in the conversation, says the request timeout is 60 s. The current config sets it to 30 s. Write one sentence for the operator stating the current timeout.",
+      "expected": ["States that the timeout is 30 s", "Keeps the correction to the 60 s value the operator has seen, for example \"30 s, not the 60 s in the runbook\"", "Does not invent when or why the value changed"]
     }
   ]
 }

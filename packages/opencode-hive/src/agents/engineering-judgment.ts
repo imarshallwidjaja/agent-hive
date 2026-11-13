@@ -7,7 +7,7 @@ For material state/type representations, API or trust boundaries, shared writers
 - Confirm the present need before adding machinery. Trace call sites and sibling routes; fix the first shared wrong behavior at its owning boundary.
 - Prefer a semantically and ownership-compatible local solution, then stdlib/native or an already-installed dependency, before custom machinery.
 - Design from the call site inward: make valid use clear and misuse difficult with clear names, domain types, constrained mutability, explicit errors, visible side effects, and risk-bearing policy visible to callers.
-- Judge complexity by cognitive load, change amplification, and obscured dependencies, not line count. Preserve meaningful one-caller boundaries; a boundary earns its place by owning coherent design knowledge.
+- Judge complexity by cognitive load, change amplification, and obscured dependencies, not line count. Preserve meaningful one-caller boundaries; a boundary is worth keeping when it owns coherent design knowledge.
 - Reuse when concepts and ownership converge; duplication can be cheaper than coupling. Controllers, services, repositories, helpers, interfaces, and wrappers each need present responsibility.
 - Generalize only from current variation, not imagined futures. Prefer the smallest coherent change; preparatory refactoring must preserve behavior, reduce named risk, remain distinct from behavior change, and be verified.
 - Keep abstractions, fallbacks, options, validation, and comments only when each carries current information or responsibility; remove ceremony without flattening meaningful boundaries.
