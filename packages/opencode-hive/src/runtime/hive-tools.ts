@@ -30,6 +30,7 @@ import {
   getTaskHandoffPath,
   projectRootsMatch,
   readCompositeWorkspaceManifest,
+  resolveExistingFeaturePath,
   type AdhocMergeOptions,
   type MergeOptions,
   type PlanApprovalResult,
@@ -377,6 +378,29 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
       return 'unknown';
     }
   };
+  /**
+   * A completing feature's task workers that remain, from the checkout inventory (branch-only workers included), and the
+   * inventory entries that could not be read in its worktree groups or above them, as bounded warnings. A feature's
+   * workers sit in a group named by whichever of its names created them: the supplied name, its logical name or its
+   * directory. A failed inventory is reported, not read as none.
+   */
+  const remainingFeatureWorkers = async (feature: string, logicalName: string): Promise<object[]> => {
+    const bounded = <T>(items: T[]) => ({ items: items.slice(0, 20), total: items.length });
+    try {
+      const names = new Set([feature, logicalName, path.basename(resolveExistingFeaturePath(projectRoot, feature))]);
+      const groups = [...names].map((name) => path.join(projectRoot, '.hive', '.worktrees', name));
+      const within = (inner: string, outer: string) => inner === outer || inner.startsWith(`${outer}${path.sep}`);
+      const { workers, errors } = await checkoutInspector.listWorkers();
+      const remaining = workers.filter((worker) => worker.kind === 'task' && worker.feature !== undefined && names.has(worker.feature));
+      const unreadable = errors.filter((error) => groups.some((group) => within(error.path, group) || within(group, error.path)));
+      return [
+        ...(remaining.length ? [{ remainingWorkers: bounded(remaining.map(({ kind: _kind, feature: _feature, ...worker }) => worker)) }] : []),
+        ...(unreadable.length ? [{ worktreeErrors: bounded(unreadable) }] : []),
+      ];
+    } catch (error) {
+      return [{ worktreeInventoryError: error instanceof Error ? error.message : String(error) }];
+    }
+  };
 
   return {
     hive_feature_create: operation({
@@ -393,13 +417,13 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
       },
     }),
     hive_feature_complete: operation({
-      description: 'Mark a feature completed. Incomplete tasks are returned as warnings.',
+      description: 'Mark a feature completed. It changes only feature metadata: no task, worktree or branch is removed or verified. Incomplete tasks are returned as a warning, and so are the feature\'s task workers that remain, as in hive_checkouts_list, including a worker whose checkout is gone while its branch remains (retained.branchCommit), and placements that could not be read; each list is { items, total } and was cut when items.length < total.',
       args: { name: z.string().optional() },
-      execute: ({ name }, invocation) => {
+      execute: async ({ name }, invocation) => {
         const feature = requireFeature(name, invocation);
         const incompleteTasks = taskService.listStatusEntries(feature).filter((task) => task.status !== 'done' && task.status !== 'cancelled');
         const result = featureService.complete(feature);
-        return { success: true, feature: result, warnings: incompleteTasks.length ? [{ incompleteTasks }] : [] };
+        return { success: true, feature: result, warnings: [...(incompleteTasks.length ? [{ incompleteTasks }] : []), ...await remainingFeatureWorkers(feature, result.name)] };
       },
     }),
     hive_repositories_status: operation({ description: 'Inspect project repository mode and manifest.', args: {}, execute: () => repositoryManifestService.getStatus() }),
@@ -561,7 +585,7 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
       },
     }),
     hive_worktree_inspect: operation({
-      description: 'Inspect a task worktree: placement, source commit, clean state (including untracked and ignored files) and the destination identity `target` with its `comparison` (per repository under `repos` for composites). createUnconfirmed: true means the create that recorded it never confirmed the checkout, which may be another Git client\'s; merge refuses it and cleanup keeps it unless it is empty. Returns null when no such worktree exists. It never fetches. Copy `target` unchanged into the merge expectation, and inspect again after the destination may have moved.',
+      description: 'Inspect a task worktree: placement, source commit, clean state (including untracked and ignored files) and the destination identity `target` with its `comparison` (per repository under `repos` for composites). createUnconfirmed: true means the create that recorded it never confirmed the checkout, which may be another Git client\'s; merge refuses it and cleanup keeps it unless it is empty. Returns null when there is no live worker, as after a worktree-only cleanup that kept the branch; read hive_checkouts_list for what remains. It never fetches. Copy `target` unchanged into the merge expectation, and inspect again after the destination may have moved.',
       args: { feature: z.string().optional(), task: z.string(), ...taskRepoIdsArgs, ...candidateArg },
       execute: async ({ feature, task, repoIds, candidate }, invocation) => {
         const selected = requireFeature(feature, invocation);
@@ -631,7 +655,7 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
       },
     }),
     hive_adhoc_worktree_inspect: operation({
-      description: 'Inspect an ad-hoc worktree: placement, source commit, clean state (including untracked and ignored files) and the destination identity `target` with its `comparison` (per repository under `repos` for composites). createUnconfirmed: true means the create that recorded it never confirmed the checkout, which may be another Git client\'s; merge refuses it and cleanup keeps it unless it is empty. It never fetches. Copy `target` unchanged into the merge expectation, and inspect again after the destination may have moved.',
+      description: 'Inspect an ad-hoc worktree: placement, source commit, clean state (including untracked and ignored files) and the destination identity `target` with its `comparison` (per repository under `repos` for composites). createUnconfirmed: true means the create that recorded it never confirmed the checkout, which may be another Git client\'s; merge refuses it and cleanup keeps it unless it is empty. Returns null when the run has no complete usable worker, also for a composite with one repository checkout missing or unregistered; that does not show its checkouts, branches or records are gone, so read hive_checkouts_list for what remains. It never fetches. Copy `target` unchanged into the merge expectation, and inspect again after the destination may have moved.',
       args: { runId: z.string(), ...adhocRepoIdsArg, ...adhocSourceDirectoryArg },
       execute: ({ runId, repoIds, sourceDirectory }) => adhocService(sourceDirectory, repoIds).inspect(runId),
     }),
@@ -736,19 +760,27 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
       execute: ({ id, purpose }) => checkoutCall(async () => checkoutRecord(await retainedCheckoutService.register({ id, purpose }))),
     }),
     hive_checkout_readiness: operation({
-      description: 'Declare, replace or clear (readiness: null) whether the work in a retained checkout is ready at its current commit, optionally naming the next retained checkout in the same repository it should integrate into and what it waits for. A declaration is a statement pinned to the commit of expectedTarget: Hive runs no verification of the work and gates nothing with it, and inspection reports headMoved once the checkout moves past that commit. The checkout must still be exactly expectedTarget; a moved checkout returns success: false with reason binding_mismatch, so inspect again. Returns { success: true, checkout }. ' + FINALIZATION_NOTE,
+      description: 'Declare, replace or clear (readiness: null) whether the work in a retained checkout is ready at its current commit, optionally naming the next retained checkout in the same repository it should integrate into and what it waits for. A declaration is a statement pinned to the commit of expectedTarget: Hive runs no verification of the work and gates nothing with it, and inspection reports headMoved once the checkout moves past that commit. The checkout must still be exactly expectedTarget; a moved checkout returns success: false with reason binding_mismatch, so inspect again. For a checkout whose placement is missing, only clearing is possible: pass expectedTarget: null, readiness: null and expectedRecord, the record from hive_checkout_inspect cleanup: true copied unchanged; it changes only the record, and a record that changed or a checkout that exists again returns binding_mismatch. Clearing retires a next-target declaration, such as two missing checkouts naming each other, that keeps their records from being removed. Returns { success: true, checkout }. ' + FINALIZATION_NOTE,
       args: {
         id: checkoutIdArg,
-        expectedTarget: targetIdentitySchema.describe('The checkout\'s live identity, copied unchanged from `head` in hive_checkouts_list or hive_checkout_inspect.'),
+        expectedTarget: targetIdentitySchema.nullable().describe('The checkout\'s live identity, copied unchanged from `head` in hive_checkouts_list or hive_checkout_inspect; null only to clear the readiness of a missing checkout with expectedRecord.'),
+        expectedRecord: z.object({ id: z.string() }).passthrough().optional().describe('Only with expectedTarget: null: cleanup.record from hive_checkout_inspect cleanup: true, copied unchanged.'),
         readiness: z.object({
           state: z.enum(['ready', 'not_ready']),
           nextTarget: z.string().optional().describe('Another retained checkout ID in the same repository that this work should integrate into next.'),
           waitingFor: z.string().optional().describe('What the work is waiting for, in your words.'),
         }).nullable().describe('The declaration to record; null clears it.'),
       },
-      execute: ({ id, expectedTarget, readiness }, invocation) => checkoutCall(async () => checkoutRecord(
-        await retainedCheckoutService.setReadiness(id, expectedTarget as WorktreeTargetIdentity, readiness, sessionActor(invocation)),
-      )),
+      execute: ({ id, expectedTarget, expectedRecord, readiness }, invocation) => {
+        if (expectedTarget === null) {
+          if (expectedRecord === undefined || readiness !== null) throw new Error('expectedTarget: null clears the readiness of a missing checkout: pass readiness: null and expectedRecord from hive_checkout_inspect cleanup: true');
+          return checkoutCall(async () => checkoutRecord(await retainedCheckoutService.clearMissingReadiness(id, expectedRecord as unknown as RetainedCheckoutRecord)));
+        }
+        if (expectedRecord !== undefined) throw new Error('expectedRecord applies only with expectedTarget: null, for a missing checkout');
+        return checkoutCall(async () => checkoutRecord(
+          await retainedCheckoutService.setReadiness(id, expectedTarget as WorktreeTargetIdentity, readiness, sessionActor(invocation)),
+        ));
+      },
     }),
     hive_checkout_cleanup: operation({
       description: 'Remove a retained checkout after reading its proposal with hive_checkout_inspect cleanup: true. It is refused while an unfinished task, a targeted worker (even one whose worktree is gone but whose branch remains) or another checkout\'s next-target declaration references it, or while a source that could reference it cannot be read. A registered checkout only loses its record. A managed checkout must be exactly expectedTarget, on its intended branch, with no Git operation in progress and no modified or untracked files; ignored content goes only with removeIgnored. Its worktree and record are removed and its branch kept unless deleteBranch says otherwise. Refusals return success: false with reason and change nothing; check worktreeRemoved, branchDeleted and recordRemoved on success. ' + FINALIZATION_NOTE,

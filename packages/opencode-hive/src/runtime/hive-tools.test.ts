@@ -109,7 +109,7 @@ const ORDINARY_OPERATION_SIGNATURES = [
   'hive_checkout_brief(id:string, against?:string)',
   'hive_checkout_create(id:string, branch:string, baseRef?:string, purpose?:string)',
   'hive_checkout_register(id:string, purpose?:string)',
-  'hive_checkout_readiness(id:string, expectedTarget:{path:string, ref:string|null, commit:string}, readiness:{state:ready|not_ready, nextTarget?:string, waitingFor?:string}|null)',
+  'hive_checkout_readiness(id:string, expectedTarget:{path:string, ref:string|null, commit:string}|null, expectedRecord?:{id:string}, readiness:{state:ready|not_ready, nextTarget?:string, waitingFor?:string}|null)',
   'hive_checkout_cleanup(id:string, expectedTarget:{path:string, ref:string|null, commit:string}|null, removeIgnored?:boolean, deleteBranch?:{containedIn:string}|{discard:true, commit:string})',
   'hive_context_read(name?:string, scope?:feature|project, feature?:string, view?:summary|catalog, query?:string, limit?:number, cursor?:string, maxBytes?:number, scanChars?:boolean)',
   'hive_context_write(name:string, content:string, kind?:durable|evidence, task?:string, expectedRevision?:number, expectedContentHash?:string, scope?:feature|project, feature?:string)',
@@ -181,7 +181,7 @@ const DESCRIBED_FIELDS: Record<string, string[]> = {
   hive_checkout_brief: ['id', 'against'],
   hive_checkout_create: ['id', 'branch', 'baseRef', 'purpose'],
   hive_checkout_register: ['id', 'purpose'],
-  hive_checkout_readiness: ['id', 'expectedTarget', 'readiness'],
+  hive_checkout_readiness: ['id', 'expectedTarget', 'expectedRecord', 'readiness'],
   hive_checkout_cleanup: ['id', 'expectedTarget', 'removeIgnored', 'deleteBranch'],
   hive_context_read: ['name', 'scope', 'view', 'query', 'limit', 'cursor', 'maxBytes', 'scanChars'],
   hive_context_write: ['content', 'kind', 'task', 'expectedRevision', 'expectedContentHash', 'scope'],
@@ -646,8 +646,57 @@ describe('retained checkout operations', () => {
     expect(gitIn(next.checkout.path, 'rev-parse', 'HEAD')).toBe(nextHead);
   });
 
-  it('pins readiness to an inspected commit and cleans up only an unreferenced checkout at the proposed identity', async () => {
+  it('completes a feature without removing anything and warns about its task workers that remain, including one whose checkout is gone', async () => {
+    const { root, call, callJson } = await createRuntime();
+    await callJson('hive_feature_create', { name: 'wrap' });
+    expect(await call('hive_task_create', { feature: 'wrap', name: 'kept' })).toBe('01-kept');
+    expect(await call('hive_task_create', { feature: 'wrap', name: 'live' })).toBe('02-live');
+    const kept = await callJson('hive_worktree_create', { feature: 'wrap', task: '01-kept' });
+    const keptTip = commit(kept.path, 'kept.txt');
+    expect(await callJson('hive_worktree_cleanup', { feature: 'wrap', task: '01-kept' })).toMatchObject({ worktreeRemoved: true, branchDeleted: false });
+    const live = await callJson('hive_worktree_create', { feature: 'wrap', task: '02-live' });
+    // A worker created under the feature's directory name sits in that group.
+    const directory = fs.readdirSync(path.join(root, '.hive', 'features')).find((entry) => entry.endsWith('_wrap'))!;
+    expect(await call('hive_task_create', { feature: 'wrap', name: 'alias' })).toBe('03-alias');
+    const alias = await callJson('hive_worktree_create', { feature: directory, task: '03-alias' });
+    expect(alias.path).toBe(path.join(root, '.hive', '.worktrees', directory, '03-alias'));
+    for (const task of ['01-kept', '02-live', '03-alias']) await callJson('hive_task_update', { feature: 'wrap', task, status: 'done' });
+
+    const completed = await callJson('hive_feature_complete', { name: 'wrap' });
+    expect(completed).toMatchObject({ success: true, feature: { status: 'completed' } });
+    expect(completed.warnings).toHaveLength(1);
+    const { remainingWorkers } = completed.warnings[0];
+    expect(Object.keys(completed.warnings[0])).toEqual(['remainingWorkers']);
+    expect(remainingWorkers.total).toBe(3);
+    expect(remainingWorkers.items).toHaveLength(3);
+    // The inventory lists live checkouts before kept records; no order is part of the warning.
+    expect(remainingWorkers.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ task: '02-live', path: live.path, branch: 'hive/wrap/02-live', head: live.commit }),
+      expect.objectContaining({ task: '01-kept', path: kept.path, branch: 'hive/wrap/01-kept', head: null, retained: { branchCommit: keptTip } }),
+      expect.objectContaining({ task: '03-alias', path: alias.path, head: alias.commit }),
+    ]));
+    expect(fs.existsSync(live.path)).toBe(true);
+    expect(gitIn(root, 'rev-parse', 'refs/heads/hive/wrap/01-kept')).toBe(keptTip);
+  });
+
+  it('warns that the worktree inventory could not be read when completing a feature, instead of reporting no workers', async () => {
     const { root, callJson } = await createRuntime();
+    await callJson('hive_feature_create', { name: 'blind' });
+    const worktrees = path.join(root, '.hive', '.worktrees');
+    fs.mkdirSync(worktrees, { recursive: true });
+    fs.chmodSync(worktrees, 0o000);
+    let completed: any;
+    try {
+      completed = await callJson('hive_feature_complete', { name: 'blind' });
+    } finally {
+      fs.chmodSync(worktrees, 0o755);
+    }
+    expect(completed).toMatchObject({ success: true, feature: { status: 'completed' } });
+    expect(completed.warnings).toEqual([{ worktreeErrors: { total: 1, items: [{ path: worktrees, reason: expect.stringContaining('EACCES') }] } }]);
+  });
+
+  it('pins readiness to an inspected commit and cleans up only an unreferenced checkout at the proposed identity', async () => {
+    const { root, callJson, failure } = await createRuntime();
     const created = await callJson('hive_checkout_create', { id: 'root/release', branch: 'release', baseRef: 'main' });
     const head = (await callJson('hive_checkout_inspect', { id: 'root/release' })).checkout.head;
     expect(head).toEqual({ path: created.checkout.path, ref: 'refs/heads/release', commit: gitIn(root, 'rev-parse', 'HEAD') });
@@ -662,6 +711,21 @@ describe('retained checkout operations', () => {
     expect(moved.readiness).toMatchObject({ commit: head.commit, headMoved: true });
     const cleared = await callJson('hive_checkout_readiness', { id: 'root/release', expectedTarget: moved.head, readiness: null });
     expect(cleared.checkout).not.toHaveProperty('readiness');
+
+    // A missing checkout's readiness clears only against its inspected record, and never alongside a live identity.
+    const gone = await callJson('hive_checkout_create', { id: 'root/gone', branch: 'gone', baseRef: 'main' });
+    const goneHead = (await callJson('hive_checkout_inspect', { id: 'root/gone' })).checkout.head;
+    await callJson('hive_checkout_readiness', { id: 'root/gone', expectedTarget: goneHead, readiness: { state: 'ready', nextTarget: 'root/release' } });
+    fs.rmSync(gone.checkout.path, { recursive: true, force: true });
+    const goneRecord = (await callJson('hive_checkout_inspect', { id: 'root/gone', cleanup: true })).cleanup.record;
+    expect(await failure('hive_checkout_readiness', { id: 'root/gone', expectedTarget: null, readiness: { state: 'ready' }, expectedRecord: goneRecord })).toContain('expectedTarget: null clears the readiness of a missing checkout');
+    expect(await failure('hive_checkout_readiness', { id: 'root/release', expectedTarget: moved.head, readiness: null, expectedRecord: goneRecord })).toContain('expectedRecord applies only with expectedTarget: null');
+    expect(await callJson('hive_checkout_readiness', { id: 'root/gone', expectedTarget: null, readiness: null, expectedRecord: { ...goneRecord, purpose: 'other' } }))
+      .toMatchObject({ success: false, reason: 'binding_mismatch' });
+    const goneCleared = await callJson('hive_checkout_readiness', { id: 'root/gone', expectedTarget: null, readiness: null, expectedRecord: goneRecord });
+    expect(goneCleared).toMatchObject({ success: true, checkout: { id: 'root/gone' } });
+    expect(goneCleared.checkout).not.toHaveProperty('readiness');
+    expect(await callJson('hive_checkout_cleanup', { id: 'root/gone', expectedTarget: null })).toMatchObject({ success: true, recordRemoved: true });
 
     // A worker bound to the checkout keeps it until the worker and its branch are gone.
     await callJson('hive_adhoc_worktree_create', { runId: 'run', target: 'root/release' });

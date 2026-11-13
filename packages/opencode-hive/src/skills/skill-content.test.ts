@@ -1892,6 +1892,12 @@ describe('skill content', () => {
     expect(adhoc).toContain('targeted or legacy single-root workers return `sourceCommit`');
     expect(adhoc).toContain('untargeted composite workers return the complete `sourceCommits` map');
     expect(adhoc).toContain('from the pinned retained source commit');
+    expect(adhoc).toContain('hold the original source branch until they pass');
+    expect(adhoc).toContain('a named hold that states the obligation it serves, its owner and the condition that releases it');
+    expect(adhoc).toContain('an integration receipt alone never authorizes deletion');
+    expect(adhoc).toContain('a worktree inspect that returns null means no complete usable worker, not that the worker\'s checkouts, branches or records are gone');
+    expect(adhoc).not.toContain('means no live checkout');
+    expect(adhoc).not.toContain('Retain the original source branch.');
     expect(adhoc).toContain('When integrating one retained checkout into another, first read `hive_checkout_brief({ id, against })` for that pair');
     expect(adhoc).toContain('without a second approval');
     expect(adhoc).toContain('Hold no locks or unfinished merges during the wait');

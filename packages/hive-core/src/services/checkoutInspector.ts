@@ -25,13 +25,20 @@ import {
 import type { RetainedCheckoutContext, RetainedCheckoutReadiness, RetainedCheckoutRecord } from './retainedCheckout.js';
 import {
   adhocGroupEntryOwner,
+  describesCompositeWorker,
+  describesSingleWorker,
+  describesTargetedWorker,
+  isMetadataOnlyComposite,
+  isRegisteredWorktreePath,
   parseCompositeWorkspaceManifest,
+  parseSingleWorkspaceMetadata,
   parseTaskPlacementEntry,
   readSingleWorkspaceMetadata,
   readTargetedWorkspaceMetadata,
 } from './workspaceManifest.js';
-import type { TargetBinding } from './workspaceManifest.js';
-import { listTargetedSidecars, TARGETED_BRANCH_NAMESPACE } from './targetedPlacement.js';
+import type { SingleWorkspaceMetadata, TargetBinding, WorkerOwner } from './workspaceManifest.js';
+import { readWorkerSidecars, targetedRunBranch, targetedSidecars, targetedTaskBranch, TARGETED_BRANCH_NAMESPACE } from './targetedPlacement.js';
+import { readBranchOid } from './worktreeOutcome.js';
 import { assertNoSymlinkComponents, trustedGitCommonDirectory, validateExactWorktreeRegistration } from './worktreeLinkage.js';
 import { readWorktreeTargetIdentity } from './worktreeTarget.js';
 import type { WorktreeTargetIdentity } from './worktreeTarget.js';
@@ -73,7 +80,12 @@ export interface CheckoutWorkerView {
   baseCommit?: string;
   /** The retained checkout the worker is bound to; present only for targeted workers. */
   target?: TargetBinding;
-  /** Only for a targeted worker whose worktree is gone while its binding remains: its branch tip, null when the branch is gone too. */
+  /**
+   * Only for a worker whose checkout is gone while its record (targeted or single sidecar, composite manifest) remains:
+   * the branch tip, null when the branch is gone too. Without `error` the record is what a worktree-only cleanup keeps
+   * beside its branch. With `error` the state is unresolved, such as a partial composite removal, a create that never
+   * confirmed its checkout, or a checkout Git still registers; `retained` then grants no readiness or cleanliness.
+   */
   retained?: { branchCommit: string | null };
   error?: string;
 }
@@ -143,6 +155,52 @@ export async function readCheckoutLocalState(checkoutPath: string): Promise<Chec
   }
   return state;
 }
+
+/**
+ * A worker whose checkout is gone while its record remains, with its branch tip read from its configured repository.
+ * `observeUnresolved` says why the record is not only what a worktree-only cleanup keeps, such as a create that never
+ * confirmed its checkout; it is reported in `error` beside the branch tip. An observation that fails is this worker's
+ * `error`, not the inventory's.
+ */
+async function retainedBranch(view: CheckoutWorkerView, repository: ResolvedRepository | null, observeUnresolved: () => Promise<string | null>): Promise<CheckoutWorkerView> {
+  try {
+    const unresolved = await observeUnresolved();
+    if (!repository) throw new Error('its repository is not configured');
+    const branchCommit = await readBranchOid(simpleGit(repository.path), view.branch!);
+    return { ...view, head: null, retained: { branchCommit }, ...(unresolved !== null ? { error: unresolved } : {}) };
+  } catch (error) {
+    return { ...view, head: null, error: message(error) };
+  }
+}
+
+/** Why a kept single-placement record is not only what a worktree-only cleanup keeps, or null when it is. */
+async function singleRecordUnresolved(repository: ResolvedRepository | null, placement: string, createUnconfirmed: boolean): Promise<string | null> {
+  if (createUnconfirmed) return 'its create never confirmed the checkout (createUnconfirmed), so a checkout attached to its branch may be another Git client\'s';
+  if (repository && await isRegisteredWorktreePath(repository.path, placement)) return 'its checkout is gone but still registered with Git';
+  return null;
+}
+
+/**
+ * The owner a worker placement's group and entry name, and the branches a record must name for that owner. A task
+ * entry `<task>--<candidate>` uses the branch step `<task>-<candidate>`.
+ */
+function placementOwner(kind: 'task' | 'adhoc', group: string, entry: string): {
+  view: Pick<CheckoutWorkerView, 'kind' | 'feature' | 'task' | 'candidate' | 'runId'>;
+  owner: WorkerOwner;
+  single: string;
+  composite: (repoId: string) => string;
+  targeted: string;
+} {
+  if (kind === 'adhoc') {
+    return { view: { kind, runId: entry }, owner: { runId: entry }, single: `hive/adhoc/${entry}`, composite: (repoId) => `hive/adhoc/${repoId}/${entry}`, targeted: targetedRunBranch(entry) };
+  }
+  const { task, candidate } = parseTaskPlacementEntry(entry);
+  const step = candidate === undefined ? task : `${task}-${candidate}`;
+  const owner = { feature: group, task, ...(candidate !== undefined ? { candidate } : {}) };
+  return { view: { kind, ...owner }, owner, single: `hive/${group}/${step}`, composite: (repoId) => `hive/${repoId}/${group}/${step}`, targeted: targetedTaskBranch(group, step) };
+}
+
+const UNDESCRIBED = 'its metadata does not describe this placement';
 
 async function readHead(checkoutPath: string): Promise<{ head: string; branch: string | null }> {
   const git = simpleGit(checkoutPath);
@@ -224,86 +282,156 @@ export class CheckoutInspector {
     });
   }
 
-  /** Every temporary worker placement under `.hive/.worktrees`, with errors kept per entry. */
+  /**
+   * Every temporary worker placement under `.hive/.worktrees`, with errors kept per entry. A symlinked root, group or
+   * placement is reported and never read through. Plain files other than sidecars, such as Hive's own temporary
+   * files, are not placements and are skipped.
+   */
   async listWorkers(repositories = this.repositories()): Promise<{ workers: CheckoutWorkerView[]; errors: Array<{ path: string; reason: string }> }> {
     const root = path.join(this.config.hiveDir, '.worktrees');
     const workers: CheckoutWorkerView[] = [];
     const errors: Array<{ path: string; reason: string }> = [];
-    const directories = async (directory: string) => (await fs.readdir(directory, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
+    const entriesOf = async (directory: string) => (await fs.readdir(directory, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
       if (error.code === 'ENOENT') return [];
       throw error;
-    })).filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
-    let groups: string[];
+    })).sort((left, right) => left.name.localeCompare(right.name));
+    let groups: Awaited<ReturnType<typeof entriesOf>>;
     try {
-      groups = await directories(root);
+      await assertNoSymlinkComponents(path.dirname(this.config.hiveDir), root, true);
+      groups = await entriesOf(root);
     } catch (error) {
       return { workers, errors: [{ path: root, reason: message(error) }] };
     }
     for (const group of groups) {
-      let entries: string[];
+      const groupPath = path.join(root, group.name);
+      if (group.isSymbolicLink()) {
+        errors.push({ path: groupPath, reason: 'worker group is a symlink' });
+        continue;
+      }
+      if (!group.isDirectory()) continue;
+      let entries: Awaited<ReturnType<typeof entriesOf>>;
       try {
-        entries = await directories(path.join(root, group));
+        entries = await entriesOf(groupPath);
       } catch (error) {
-        errors.push({ path: path.join(root, group), reason: message(error) });
+        errors.push({ path: groupPath, reason: message(error) });
         continue;
       }
       for (const entry of entries) {
-        const owned = group === 'adhoc' ? await adhocGroupEntryOwner(this.config.baseDir, this.config.hiveDir, entry) : { owner: 'task' as const };
-        if (owned.owner === 'unknown') {
-          errors.push({ path: path.join(root, group, entry), reason: owned.reason });
+        const placement = path.join(groupPath, entry.name);
+        // Sidecars are listed with the records they keep; a directory is a placement whatever its name ends in.
+        if (entry.name.endsWith('.json') && !entry.isDirectory()) continue;
+        if (entry.isSymbolicLink()) {
+          errors.push({ path: placement, reason: 'worker placement is a symlink' });
           continue;
         }
-        const owner = owned.owner === 'adhoc' ? { kind: 'adhoc' as const, runId: entry } : { kind: 'task' as const, feature: group, ...parseTaskPlacementEntry(entry) };
-        workers.push(...await this.readWorkerPlacement(path.join(root, group, entry), owner, repositories));
+        if (!entry.isDirectory()) continue;
+        const owned = group.name === 'adhoc' ? await adhocGroupEntryOwner(this.config.baseDir, this.config.hiveDir, entry.name) : { owner: 'task' as const };
+        if (owned.owner === 'unknown') {
+          errors.push({ path: placement, reason: owned.reason });
+          continue;
+        }
+        workers.push(...await this.readWorkerPlacement(placement, placementOwner(owned.owner, group.name, entry.name), repositories));
       }
     }
-    await this.listRetainedBindings(repositories, workers, errors);
+    await this.listRetainedRecords(repositories, workers, errors);
     return { workers, errors };
   }
 
   /**
-   * Targeted workers whose worktree is gone while their sidecar remains, because cleanup kept the branch. A sidecar
-   * that cannot be read is an error only here, where no placement entry reports it.
+   * Workers whose checkout is gone while their sidecar remains, because cleanup kept the branch: targeted and
+   * single-root workers. Each sidecar is read once, and the owner is the one its group and entry name. A sidecar or
+   * placement that cannot be read, a sidecar declaring no supported mode, a placement that is not a directory, and a
+   * sidecar that does not describe its placement are reported, not skipped; a record whose create was never confirmed
+   * or whose checkout Git still registers keeps its branch tip with an error. A sidecar beside a placement directory is
+   * the placement listing's to report.
    */
-  private async listRetainedBindings(repositories: ResolvedRepository[], workers: CheckoutWorkerView[], errors: Array<{ path: string; reason: string }>): Promise<void> {
-    const placementMissing = async (sidecarPath: string) => (await fs.lstat(sidecarPath.slice(0, -'.json'.length)).catch(() => null)) === null;
-    const { sidecars, unreadable } = await listTargetedSidecars(this.config.hiveDir);
-    for (const source of unreadable) {
+  private async listRetainedRecords(repositories: ResolvedRepository[], workers: CheckoutWorkerView[], errors: Array<{ path: string; reason: string }>): Promise<void> {
+    const { records, unreadable } = await readWorkerSidecars(this.config.hiveDir);
+    const targeted = targetedSidecars(records);
+    const report = (entry: { path: string; reason: string }) => {
+      if (!errors.some((reported) => reported.path === entry.path)) errors.push(entry);
+    };
+    // Whether the placement beside a sidecar is gone; anything but a missing placement or a directory is reported.
+    const placementMissing = async (sidecarPath: string): Promise<boolean> => {
+      const placement = sidecarPath.slice(0, -'.json'.length);
+      try {
+        const stat = await fs.lstat(placement);
+        if (stat.isDirectory()) return false;
+        report({ path: placement, reason: stat.isSymbolicLink() ? 'worker placement is a symlink' : 'worker placement is not a directory' });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true;
+        report({ path: placement, reason: `worker placement cannot be inspected: ${message(error)}` });
+      }
+      return false;
+    };
+    for (const source of [...unreadable, ...targeted.unreadable]) {
       if (errors.some((reported) => reported.path === source.path)) continue;
       if (!source.path.endsWith('.json') || await placementMissing(source.path)) errors.push(source);
     }
-    for (const { path: sidecarPath, metadata } of sidecars) {
+    // The owner a kept sidecar's group and entry name; in the `adhoc` group, which tasks of a feature named `adhoc` share, its mode says which.
+    const ownerOf = (sidecarPath: string, mode: string) => {
+      const placement = sidecarPath.slice(0, -'.json'.length);
+      const group = path.basename(path.dirname(placement));
+      return { placement, ...placementOwner(group === 'adhoc' && mode.startsWith('adhoc-') ? 'adhoc' : 'task', group, path.basename(placement)) };
+    };
+    for (const { path: sidecarPath, metadata } of targeted.sidecars) {
       if (!(await placementMissing(sidecarPath))) continue;
-      const view: CheckoutWorkerView = {
-        ...(metadata.mode === 'targeted'
-          ? { kind: 'task' as const, feature: metadata.feature, task: metadata.task, ...(metadata.candidate !== undefined ? { candidate: metadata.candidate } : {}) }
-          : { kind: 'adhoc' as const, runId: metadata.runId }),
-        repoId: metadata.repoId,
-        path: sidecarPath.slice(0, -'.json'.length),
-        branch: metadata.branch,
-        head: null,
-        baseCommit: metadata.baseCommit,
-        target: { ...metadata.target },
-      };
-      try {
-        if (path.resolve(metadata.worktreePath) !== view.path) throw new Error(`metadata names another worktree path, ${metadata.worktreePath}`);
-        const repository = repositories.find((candidate) => candidate.id === metadata.repoId);
-        if (!repository) throw new Error('its repository is not configured');
-        const tip = (await simpleGit(repository.path).raw(['for-each-ref', '--format=%(objectname)', `refs/heads/${metadata.branch}`])).trim();
-        workers.push({ ...view, retained: { branchCommit: tip || null } });
-      } catch (error) {
-        workers.push({ ...view, error: message(error) });
+      const { placement, view: owner, ...expected } = ownerOf(sidecarPath, metadata.mode);
+      const view: CheckoutWorkerView = { ...owner, repoId: metadata.repoId, path: placement, branch: metadata.branch, head: null, baseCommit: metadata.baseCommit, target: { ...metadata.target } };
+      if (!describesTargetedWorker(metadata, { owner: expected.owner, worktreePath: placement, branch: expected.targeted })) {
+        workers.push({ ...view, error: UNDESCRIBED });
+        continue;
       }
+      const repository = repositories.find((candidate) => candidate.id === metadata.repoId && projectRootsMatch(candidate.path, metadata.repositoryPath)) ?? null;
+      workers.push(await retainedBranch(view, repository, () => singleRecordUnresolved(repository, placement, metadata.createUnconfirmed === true)));
+    }
+    for (const { path: sidecarPath, value } of records) {
+      const mode = value && typeof value === 'object' ? (value as { mode?: unknown }).mode : undefined;
+      if (mode !== 'single' && mode !== 'adhoc-single') continue;
+      if (!(await placementMissing(sidecarPath))) continue;
+      let metadata: SingleWorkspaceMetadata;
+      try {
+        metadata = parseSingleWorkspaceMetadata(value, sidecarPath);
+      } catch (error) {
+        errors.push({ path: sidecarPath, reason: message(error) });
+        continue;
+      }
+      const { placement, view: owner, ...expected } = ownerOf(sidecarPath, mode);
+      const view = this.describedSingle(metadata, placement, owner, expected, repositories);
+      const repository = this.singleRepository(metadata, repositories);
+      workers.push(view.error !== undefined ? view : await retainedBranch(view, repository, () => singleRecordUnresolved(repository, placement, metadata.createUnconfirmed === true)));
     }
   }
 
-  private async readWorkerPlacement(
+  /** The configured repository a single-root sidecar names, or null when it names none, such as a foreign checkout's. */
+  private singleRepository(metadata: SingleWorkspaceMetadata, repositories: ResolvedRepository[]): ResolvedRepository | null {
+    return repositories.find((repository) => projectRootsMatch(repository.path, metadata.repositoryPath)) ?? null;
+  }
+
+  /**
+   * The view of a single-root sidecar's worker, with an error and no Git read when the sidecar does not describe its
+   * placement's owner, path and branch, and, for a task, the project root. An ad-hoc run may come from a foreign
+   * checkout, so its repository is the configured one its sidecar names, or none.
+   */
+  private describedSingle(
+    metadata: SingleWorkspaceMetadata,
     placement: string,
     owner: Pick<CheckoutWorkerView, 'kind' | 'feature' | 'task' | 'candidate' | 'runId'>,
+    expected: { owner: WorkerOwner; single: string },
     repositories: ResolvedRepository[],
-  ): Promise<CheckoutWorkerView[]> {
-    const base = { ...owner, path: placement, repoId: null, branch: null, head: null };
-    const byPath = (repositoryPath: string) => repositories.find((repository) => projectRootsMatch(repository.path, repositoryPath)) ?? null;
+  ): CheckoutWorkerView {
+    const view: CheckoutWorkerView = { ...owner, path: placement, repoId: this.singleRepository(metadata, repositories)?.id ?? null, branch: metadata.branch, head: null, baseCommit: metadata.baseCommit };
+    const described = describesSingleWorker(metadata, {
+      owner: expected.owner,
+      worktreePath: placement,
+      ...(owner.kind === 'task' ? { repositoryPath: this.config.baseDir } : {}),
+      branch: expected.single,
+    });
+    return described ? view : { ...view, error: UNDESCRIBED };
+  }
+
+  private async readWorkerPlacement(placement: string, owned: ReturnType<typeof placementOwner>, repositories: ResolvedRepository[]): Promise<CheckoutWorkerView[]> {
+    const base = { ...owned.view, path: placement, repoId: null, branch: null, head: null };
     const live = async (view: CheckoutWorkerView, repository: ResolvedRepository | null): Promise<CheckoutWorkerView> => {
       try {
         if (!repository) throw new Error('its repository is not configured');
@@ -324,26 +452,51 @@ export class CheckoutInspector {
     try {
       const targeted = await readTargetedWorkspaceMetadata(await safePath(`${placement}.json`));
       if (targeted) {
-        const repository = repositories.find((candidate) => candidate.id === targeted.repoId) ?? null;
-        return [await live({ ...base, repoId: targeted.repoId, branch: targeted.branch, baseCommit: targeted.baseCommit, target: { ...targeted.target } }, repository)];
+        const view: CheckoutWorkerView = { ...base, repoId: targeted.repoId, branch: targeted.branch, baseCommit: targeted.baseCommit, target: { ...targeted.target } };
+        if (!describesTargetedWorker(targeted, { owner: owned.owner, worktreePath: placement, branch: owned.targeted })) return [{ ...view, error: UNDESCRIBED }];
+        return [await live(view, repositories.find((candidate) => candidate.id === targeted.repoId && projectRootsMatch(candidate.path, targeted.repositoryPath)) ?? null)];
       }
-      const manifestRaw = await fs.readFile(await safePath(path.join(placement, 'workspace.json')), 'utf8').catch((error: NodeJS.ErrnoException) => {
+      const manifestPath = await safePath(path.join(placement, 'workspace.json'));
+      const manifestRaw = await fs.readFile(manifestPath, 'utf8').catch((error: NodeJS.ErrnoException) => {
         if (error.code === 'ENOENT') return null;
         throw error;
       });
       if (manifestRaw !== null) {
-        const manifest = parseCompositeWorkspaceManifest(JSON.parse(manifestRaw), path.join(placement, 'workspace.json'));
-        return Promise.all(Object.keys(manifest.repos).sort().map((repoId) => {
+        const manifest = parseCompositeWorkspaceManifest(JSON.parse(manifestRaw), manifestPath);
+        if (!describesCompositeWorker(manifest, { owner: owned.owner, branch: owned.composite })) return [{ ...base, error: UNDESCRIBED }];
+        // A repository is trusted only as worktree operations trust it: configured composite topology naming the entry's
+        // repository path and root. The implicit project root of a project without a repository manifest is not.
+        const configured = this.resolveConfigured();
+        const trusted = new Map(Object.entries(manifest.repos).flatMap(([repoId, entry]) => {
+          const repository = configured.find((candidate) => candidate.id === repoId
+            && path.resolve(candidate.path) === path.resolve(entry.repoPath) && candidate.root === entry.repoRoot);
+          return repository ? [[repoId, repository] as const] : [];
+        }));
+        // Only a whole root that is the record of a worktree-only cleanup makes a missing checkout plainly retained.
+        let unresolved: Promise<string | null> | undefined;
+        const wholeRoot = () => unresolved ??= isMetadataOnlyComposite(placement, manifest, trusted).then(
+          (metadataOnly) => metadataOnly ? null : 'its checkout is missing, but the workspace is not only the record of a worktree-only cleanup: another checkout remains or is still registered with Git, its create was never confirmed, or the root holds other content',
+          (error: unknown) => `its checkout is missing, and the workspace cannot be shown to be only the record of a worktree-only cleanup: ${message(error)}`,
+        );
+        return Promise.all(Object.keys(manifest.repos).sort().map(async (repoId) => {
           const entry = manifest.repos[repoId]!;
-          const repository = repositories.find((candidate) => candidate.id === repoId && projectRootsMatch(candidate.path, entry.repoPath)) ?? null;
-          return live({ ...base, repoId, path: path.join(placement, entry.path), branch: entry.branch, baseCommit: manifest.baseCommits[repoId] }, repository);
+          const repository = trusted.get(repoId) ?? null;
+          const view: CheckoutWorkerView = { ...base, repoId, path: path.join(placement, entry.path), branch: entry.branch, baseCommit: manifest.baseCommits[repoId] };
+          if (!repository) return { ...view, repoId: null, error: 'its repository path and root do not match the configured repository topology' };
+          if (await fs.lstat(await safePath(view.path)).then(() => false, (error: NodeJS.ErrnoException) => error.code === 'ENOENT')) return retainedBranch(view, repository, wholeRoot);
+          return live(view, repository);
         }));
       }
       const single = await readSingleWorkspaceMetadata(await safePath(`${placement}.json`));
-      const repository = byPath(single?.repositoryPath ?? this.config.baseDir);
-      const view = await live({ ...base, repoId: repository?.id ?? null, branch: single?.branch ?? null, ...(single ? { baseCommit: single.baseCommit } : {}) }, repository);
+      if (single) {
+        const view = this.describedSingle(single, placement, owned.view, owned, repositories);
+        return [view.error !== undefined ? view : await live(view, this.singleRepository(single, repositories))];
+      }
+      // A worker from before sidecars is the project root's.
+      const projectRepository = repositories.find((repository) => projectRootsMatch(repository.path, this.config.baseDir)) ?? null;
+      const view = await live({ ...base, repoId: projectRepository?.id ?? null }, projectRepository);
       // Only a targeted worker uses this namespace; on such a branch without a targeted sidecar its binding is lost.
-      if (!single && view.branch?.startsWith(`${TARGETED_BRANCH_NAMESPACE}/`)) return [{ ...view, error: 'targeted worker branch has no binding metadata, so its target is unknown' }];
+      if (view.branch?.startsWith(`${TARGETED_BRANCH_NAMESPACE}/`)) return [{ ...view, error: 'targeted worker branch has no binding metadata, so its target is unknown' }];
       return [view];
     } catch (error) {
       return [{ ...base, error: message(error) }];

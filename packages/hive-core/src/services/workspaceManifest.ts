@@ -2,7 +2,10 @@ import * as fsSync from 'fs';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { FeatureResolutionError, resolveExistingFeaturePath, resolveFeatureDirectoryName, writeAtomicDurable, writeJsonAtomicDurable } from '../utils/paths.js';
+import simpleGit, { type SimpleGit } from 'simple-git';
 import { assertNoSymlinkComponents } from './worktreeLinkage.js';
+import { projectRootsMatch } from '../utils/repositoryConfig.js';
+import { workerBranchPresence } from './worktreeOutcome.js';
 import type { WorklogRef } from './worklogService.js';
 
 export interface WorkspaceManifestEntry {
@@ -146,6 +149,8 @@ export interface TaskWorkspaceManifest extends WorkspaceManifestBase {
   mode: 'composite';
   feature: string;
   task: string;
+  /** Recorded by creates that know candidates; older manifests omit it and their canonical branches name the candidate. */
+  candidate?: string;
 }
 
 export interface AdhocWorkspaceManifest extends WorkspaceManifestBase {
@@ -299,24 +304,87 @@ export async function readSingleWorkspaceMetadata(metadataPath: string): Promise
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
     throw error;
   }
-  let value: Partial<SingleWorkspaceMetadata>;
+  let value: unknown;
   try {
-    value = JSON.parse(raw) as Partial<SingleWorkspaceMetadata>;
+    value = JSON.parse(raw);
   } catch (error) {
     throw new Error(`Invalid JSON in single workspace metadata ${metadataPath}: ${(error as Error).message}`);
   }
+  return parseSingleWorkspaceMetadata(value, metadataPath);
+}
+
+export function parseSingleWorkspaceMetadata(value: unknown, metadataPath: string): SingleWorkspaceMetadata {
+  const metadata = (isRecord(value) ? value : {}) as Partial<SingleWorkspaceMetadata>;
   if (
-    value.schemaVersion !== 1
-    || (value.mode !== 'single' && value.mode !== 'adhoc-single')
-    || typeof value.worktreePath !== 'string'
-    || typeof value.repositoryPath !== 'string'
-    || typeof value.branch !== 'string'
-    || typeof value.baseCommit !== 'string'
-    || !isValidCreateConfirmation(value)
+    metadata.schemaVersion !== 1
+    || (metadata.mode !== 'single' && metadata.mode !== 'adhoc-single')
+    || typeof metadata.worktreePath !== 'string'
+    || typeof metadata.repositoryPath !== 'string'
+    || typeof metadata.branch !== 'string'
+    || typeof metadata.baseCommit !== 'string'
+    || !isValidCreateConfirmation(metadata)
   ) {
     throw new Error(`Invalid single workspace metadata: ${metadataPath}`);
   }
-  return value as SingleWorkspaceMetadata;
+  return metadata as SingleWorkspaceMetadata;
+}
+
+/** The owner, checkout path, repository and branch a single-root sidecar must name to describe one worker. */
+export interface SingleWorkerExpectation {
+  owner: { feature: string; task: string } | { runId: string };
+  worktreePath: string;
+  /** The repository the worker must be in; omitted only by a reader that cannot know it and checks the repository separately. */
+  repositoryPath?: string;
+  branch: string;
+}
+
+/**
+ * Whether a single-root sidecar describes the expected worker: a task's (`single`, its feature and task) or an ad-hoc
+ * run's (`adhoc-single`, its run ID), at the expected checkout path, in the expected repository, on the expected
+ * branch. Create, removal, reattachment and inventory hold a sidecar to the same description.
+ */
+export function describesSingleWorker(metadata: SingleWorkspaceMetadata, expected: SingleWorkerExpectation): boolean {
+  const owner = 'runId' in expected.owner
+    ? metadata.mode === 'adhoc-single' && metadata.runId === expected.owner.runId
+    : metadata.mode === 'single' && metadata.feature === expected.owner.feature && metadata.task === expected.owner.task;
+  return owner
+    && path.resolve(metadata.worktreePath) === path.resolve(expected.worktreePath)
+    && (expected.repositoryPath === undefined || projectRootsMatch(metadata.repositoryPath, expected.repositoryPath))
+    && metadata.branch === expected.branch;
+}
+
+/** The owner of a task or ad-hoc worker, as its placement names it: a task candidate is optional. */
+export type WorkerOwner = { feature: string; task: string; candidate?: string } | { runId: string };
+
+/** A task record's candidate matches when it names the expected one, or names none: records from before candidates were recorded omit it, and their path and branch name the candidate. */
+function sameRecordedCandidate(recorded: string | undefined, expected: string | undefined): boolean {
+  return recorded === undefined || recorded === expected;
+}
+
+/**
+ * Whether a composite manifest describes the expected workspace: a task's (`composite`, its feature, task and
+ * candidate) or an ad-hoc run's (`adhoc-composite`, its run ID), naming each repository's canonical worker branch.
+ * Readers, cleanup and inventory hold a manifest to the same description before they read Git for it.
+ */
+export function describesCompositeWorker(manifest: CompositeWorkspaceManifest, expected: { owner: WorkerOwner; branch: (repoId: string) => string }): boolean {
+  const owner = 'runId' in expected.owner
+    ? manifest.mode === 'adhoc-composite' && manifest.runId === expected.owner.runId
+    : manifest.mode === 'composite' && manifest.feature === expected.owner.feature && manifest.task === expected.owner.task
+      && sameRecordedCandidate(manifest.candidate, expected.owner.candidate);
+  return owner && Object.entries(manifest.repos).every(([repoId, entry]) => entry.branch === expected.branch(repoId));
+}
+
+/**
+ * Whether a targeted sidecar describes the expected worker: a task's (`targeted`, its feature, task and candidate) or
+ * an ad-hoc run's (`adhoc-targeted`, its run ID), at the expected checkout path, on the expected branch. Its repository
+ * is checked by the caller against the configured repository its `repoId` names.
+ */
+export function describesTargetedWorker(metadata: TargetedWorkspaceMetadata, expected: { owner: WorkerOwner; worktreePath: string; branch: string }): boolean {
+  const owner = 'runId' in expected.owner
+    ? metadata.mode === 'adhoc-targeted' && metadata.runId === expected.owner.runId
+    : metadata.mode === 'targeted' && metadata.feature === expected.owner.feature && metadata.task === expected.owner.task
+      && sameRecordedCandidate(metadata.candidate, expected.owner.candidate);
+  return owner && path.resolve(metadata.worktreePath) === path.resolve(expected.worktreePath) && metadata.branch === expected.branch;
 }
 
 function isTargetBinding(value: unknown): value is TargetBinding {
@@ -387,6 +455,47 @@ export function parseTaskPlacementEntry(entry: string): { task: string; candidat
   const separator = entry.lastIndexOf('--');
   if (separator <= 0 || separator + 2 >= entry.length) return { task: entry };
   return { task: entry.slice(0, separator), candidate: entry.slice(separator + 2) };
+}
+
+/**
+ * Refuse to create, adopt, integrate or delete single-root `branch` for `placement`, which has no record of its own,
+ * while another worker record of its group may claim it. Distinct placements can name one branch: a task candidate
+ * `<task>--<candidate>` and a task or run `<task>-<candidate>` share the branch step `<task>-<candidate>`. Another
+ * placement's sidecar naming the exact same branch claims it, whatever repository path it records: a linked checkout of
+ * one repository has another path, and no Git read through a sidecar's path is trusted. A sidecar that cannot be read,
+ * including a targeted one, has an unknown claim and refuses too. Composite manifests live inside their placements, so
+ * they claim no single-root branch. A directory whose name ends in `.json` is a placement, not a sidecar. Reads no Git
+ * and nothing through a symlink.
+ */
+export async function assertBranchUnclaimedInGroup(placement: string, branch: string): Promise<void> {
+  const group = path.dirname(placement);
+  await assertNoSymlinkComponents(path.parse(group).root, group, true);
+  const entries = await fs.readdir(group, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  });
+  const own = `${path.basename(placement)}.json`;
+  for (const entry of entries) {
+    if (!entry.name.endsWith('.json') || entry.isDirectory() || entry.name === own) continue;
+    const sidecarPath = path.join(group, entry.name);
+    const record = await readRecordFile(sidecarPath);
+    if (record.state === 'missing') continue;
+    let claimed: string;
+    try {
+      if (record.state !== 'read') throw new Error('it is not a regular file holding JSON');
+      const mode = isRecord(record.value) ? record.value.mode : undefined;
+      claimed = mode === 'targeted' || mode === 'adhoc-targeted'
+        ? parseTargetedWorkspaceMetadata(record.value, sidecarPath).branch
+        : parseSingleWorkspaceMetadata(record.value, sidecarPath).branch;
+    } catch (error) {
+      throw new Error(`${sidecarPath} cannot be read (${(error as Error).message}), so whether its worker uses branch ${branch} is unknown. `
+        + `Inspect that record and repair or remove it before acting on ${branch} for ${placement}.`);
+    }
+    if (claimed === branch) {
+      throw new Error(`${sidecarPath} records a worker on branch ${branch}, which ${placement} would also use. `
+        + `Integrate or keep that worker's work and clean it up, or address the branch through that worker, before acting on ${branch} for ${placement}.`);
+    }
+  }
 }
 
 /**
@@ -473,6 +582,35 @@ export async function adhocGroupEntryOwner(projectRoot: string, hiveDir: string,
 }
 
 /**
+ * What a composite workspace root holds besides an empty `repos/` and its `workspace.json`, once its repository
+ * checkouts are gone: each remaining `repos/` entry and each other root entry. Null when the root is gone.
+ */
+async function compositeRootExtraEntries(workspaceRoot: string): Promise<{ entries: string[]; repositories: string[]; unexpected: string[] } | null> {
+  const repositories = await fs.readdir(path.join(workspaceRoot, 'repos')).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  });
+  const entries = await fs.readdir(workspaceRoot).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  });
+  if (entries === null) return null;
+  return { entries, repositories, unexpected: entries.filter((entry) => entry !== 'repos' && entry !== 'workspace.json') };
+}
+
+/**
+ * The entries of a composite workspace root whose repository checkouts are gone, or null when the root is gone:
+ * only an empty `repos/` and `workspace.json` may remain. Anything else throws.
+ */
+async function compositeRootMetadataEntries(workspaceRoot: string): Promise<string[] | null> {
+  const extra = await compositeRootExtraEntries(workspaceRoot);
+  if (extra === null) return null;
+  if (extra.repositories.length > 0) throw new Error(`Composite workspace still contains repositories: ${extra.repositories.join(', ')}`);
+  if (extra.unexpected.length > 0) throw new Error(`Composite workspace contains unexpected entries: ${extra.unexpected.join(', ')}`);
+  return extra.entries;
+}
+
+/**
  * Remove a composite workspace root once its repository checkouts are gone: an
  * empty root, or one holding only an empty `repos/` and `workspace.json`. Any
  * other entry refuses. The manifest is set aside while the directory is
@@ -480,15 +618,7 @@ export async function adhocGroupEntryOwner(projectRoot: string, hiveDir: string,
  */
 export async function removeEmptyCompositeWorkspaceRoot(workspaceRoot: string): Promise<void> {
   const reposPath = path.join(workspaceRoot, 'repos');
-  const remaining = await fs.readdir(reposPath).catch((error: NodeJS.ErrnoException) => {
-    if (error.code === 'ENOENT') return [];
-    throw error;
-  });
-  if (remaining.length > 0) throw new Error(`Composite workspace still contains repositories: ${remaining.join(', ')}`);
-  const entries = await fs.readdir(workspaceRoot).catch((error: NodeJS.ErrnoException) => {
-    if (error.code === 'ENOENT') return null;
-    throw error;
-  });
+  const entries = await compositeRootMetadataEntries(workspaceRoot);
   if (entries === null) return;
   if (entries.length === 0) {
     await fs.rmdir(workspaceRoot).catch((error: NodeJS.ErrnoException) => {
@@ -496,8 +626,6 @@ export async function removeEmptyCompositeWorkspaceRoot(workspaceRoot: string): 
     });
     return;
   }
-  const unexpected = entries.filter((entry) => entry !== 'repos' && entry !== 'workspace.json');
-  if (unexpected.length > 0) throw new Error(`Composite workspace contains unexpected entries: ${unexpected.join(', ')}`);
   await fs.rmdir(reposPath).catch((error: NodeJS.ErrnoException) => {
     if (error.code !== 'ENOENT') throw error;
   });
@@ -523,6 +651,105 @@ export async function removeEmptyCompositeWorkspaceRoot(workspaceRoot: string): 
     await fs.unlink(heldManifestPath).catch((error: NodeJS.ErrnoException) => {
       if (error.code !== 'ENOENT') throw error;
     });
+  }
+}
+
+/**
+ * Finish a composite workspace whose repository cleanups all completed. While a worker branch remains, the root keeps
+ * its manifest and nothing else, so the branches keep their owner for inventory and a later cleanup; such a root is
+ * metadata, not a checkout. Once every branch is shown gone, the empty root and its manifest are removed. Returns the
+ * root failure to report, if any: a branch that cannot be read, a branch that exists again after `branchesDeleted`
+ * cleanup deleted it, or a manifest a create never confirmed kept while branches remain. The root is kept with each.
+ */
+export async function finishCompositeWorkspace(
+  workspaceRoot: string,
+  manifest: CreateConfirmation,
+  branches: Array<{ repoId: string; git: SimpleGit; name: string }>,
+  branchesDeleted: boolean,
+  cleanupTool: string,
+): Promise<{ cause: string } | undefined> {
+  const manifestPath = path.join(workspaceRoot, 'workspace.json');
+  try {
+    const { present, unreadable } = await workerBranchPresence(branches);
+    if (unreadable.length > 0) {
+      return { cause: `Kept ${workspaceRoot} with its manifest ${manifestPath}: worker branches could not be read, so they are not shown gone: ${unreadable.join(', ')}` };
+    }
+    if (present.length > 0) {
+      if (manifest.createUnconfirmed === true) {
+        return {
+          cause: `Kept ${workspaceRoot} with its manifest ${manifestPath}, which a create never confirmed (createUnconfirmed), while worker branches remain: ${present.join(', ')}. `
+            + `A checkout attached to one of them later still reads as unconfirmed. Inspect those branches, then delete them with ${cleanupTool} and branch deletion, or remove them yourself; cleanup then removes the workspace.`,
+        };
+      }
+      // Kept as metadata, which content other than the manifest would make it no longer be.
+      await compositeRootMetadataEntries(workspaceRoot);
+      if (branchesDeleted) {
+        return { cause: `Kept ${workspaceRoot} with its manifest ${manifestPath}: worker branches exist again after cleanup deleted them: ${present.join(', ')}` };
+      }
+      return undefined;
+    }
+    await removeEmptyCompositeWorkspaceRoot(workspaceRoot);
+    return undefined;
+  } catch (error) {
+    return { cause: (error as Error).message || 'composite root removal failed' };
+  }
+}
+
+/**
+ * Whether a composite workspace is only the record of a worktree-only cleanup that kept worker branches: a manifest
+ * its create confirmed, every repository checkout it names gone and no longer registered with Git in the trusted
+ * `repositories`, and nothing in the root but an empty `repos/` and the manifest. Anything else, such as a partial
+ * removal, an unconfirmed create or a placement still registered with Git, is not, and is read as a workspace.
+ */
+export async function isMetadataOnlyComposite(
+  workspaceRoot: string,
+  manifest: CompositeWorkspaceManifest,
+  repositories: ReadonlyMap<string, { path: string }>,
+): Promise<boolean> {
+  if (manifest.createUnconfirmed === true) return false;
+  const checkouts = Object.entries(manifest.repos).map(([repoId, entry]) => ({ repoId, checkout: path.join(workspaceRoot, entry.path) }));
+  for (const { checkout } of checkouts) {
+    // Refuses a symlinked component before anything below it is read.
+    await assertNoSymlinkComponents(workspaceRoot, checkout, true);
+    const present = await fs.lstat(checkout).then(() => true, (error: NodeJS.ErrnoException) => error.code !== 'ENOENT');
+    if (present) return false;
+  }
+  const extra = await compositeRootExtraEntries(workspaceRoot);
+  if (extra === null || extra.repositories.length > 0 || extra.unexpected.length > 0) return false;
+  for (const { repoId, checkout } of checkouts) {
+    const repository = repositories.get(repoId);
+    if (!repository) throw new Error(`Repository ${repoId} of ${workspaceRoot} is not a trusted repository`);
+    if (await isRegisteredWorktreePath(repository.path, checkout)) return false;
+  }
+  return true;
+}
+
+/** Whether the trusted repository at `repositoryPath` still registers a worktree at `checkout`, on any branch. */
+export async function isRegisteredWorktreePath(repositoryPath: string, checkout: string): Promise<boolean> {
+  return (await simpleGit(repositoryPath).raw(['worktree', 'list', '--porcelain'])).split('\n')
+    .some((line) => line.startsWith('worktree ') && path.resolve(line.slice('worktree '.length)) === path.resolve(checkout));
+}
+
+/** Why a create refuses a composite workspace that holds only its manifest while worker branches remain. */
+export function retainedCompositeRefusal(workspaceRoot: string, cleanupTool: string): string {
+  return `${workspaceRoot} holds only its manifest: an earlier worktree-only cleanup removed its checkouts and kept its worker branches. `
+    + `Integrate or keep those branches, then remove them with ${cleanupTool} and branch deletion (discard: true for unintegrated work you mean to drop) before creating this workspace again.`;
+}
+
+/**
+ * Refuse a composite create at `workspaceRoot` while the single-root worker record of the same name, `<root>.json`,
+ * exists: a worktree-only cleanup keeps it while the worker's branch remains, and a manifest written here would leave
+ * that branch without its owner.
+ */
+export async function assertNoSingleWorkerRecord(workspaceRoot: string, cleanupTool: string): Promise<void> {
+  const recordPath = `${workspaceRoot}.json`;
+  const exists = await fs.lstat(recordPath).then(() => true, (error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return false;
+    throw error;
+  });
+  if (exists) {
+    throw new Error(`${recordPath} records a single-root worker of this name, kept while its branch remains. `
+      + `Integrate or keep that branch, then remove the worker with ${cleanupTool} and branch deletion before creating a composite workspace here.`);
   }
 }
 

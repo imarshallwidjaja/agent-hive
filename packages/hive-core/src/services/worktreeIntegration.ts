@@ -24,6 +24,7 @@ import {
   sameWorktreeTarget,
 } from './worktreeTarget.js';
 import type { WorktreeTargetIdentity } from './worktreeTarget.js';
+import { activeCheckoutGitState } from './worktreeOperation.js';
 
 /**
  * What the caller declares about the source-only history being integrated.
@@ -146,14 +147,6 @@ type TargetMergeEligibility =
   | TargetMergeCandidates
   | { reasonCode: 'INVALID_ARGUMENTS' | 'TARGET_DIRTY' | 'TARGET_RECONCILIATION_REQUIRED' | 'GIT_OPERATION_IN_PROGRESS'; error: string };
 
-const gitOperationStates = [
-  { name: 'MERGE_HEAD', label: 'merge' },
-  { name: 'REBASE_HEAD', label: 'rebase' },
-  { name: 'CHERRY_PICK_HEAD', label: 'cherry-pick' },
-  { name: 'rebase-merge', label: 'rebase' },
-  { name: 'rebase-apply', label: 'rebase' },
-] as const;
-
 export interface WorktreeIntegrationResult extends WorktreeRepositoryMergeResult {}
 
 /** Carries a failure of the pre-mutation hook past the rollback path: nothing ran, so nothing is rolled back. */
@@ -220,13 +213,32 @@ async function resolveGitPath(git: SimpleGit, repoRoot: string, name: string): P
   }
 }
 
-async function activeGitOperationStates(git: SimpleGit, repoRoot: string): Promise<string[]> {
-  const activeStates: string[] = [];
-  for (const { name } of gitOperationStates) {
-    const statePath = await resolveGitPath(git, repoRoot, name);
-    if (await fs.access(statePath).then(() => true).catch(() => false)) activeStates.push(name);
+/**
+ * Why a rollback did not put the target back as the operation found it, or null when it did: the exact initial
+ * checkout path, branch and commit, no unmerged path, no Git operation state or lock left in the checkout (including
+ * the AUTO_MERGE a stopped merge or squash writes), and a tracked tree and index equal to HEAD. Untracked and ignored
+ * files are neither inspected nor removed. A Git hook or another writer can leave a tracked edit that `reset --merge`
+ * keeps, so a successful reset alone does not show the target restored.
+ */
+async function restoredTargetFailure(targetGit: SimpleGit, initial: WorktreeTargetIdentity): Promise<string | null> {
+  try {
+    const observed = await readWorktreeTargetIdentity(initial.path);
+    if (!sameWorktreeTarget(initial, observed)) {
+      return `the target is ${observed.ref ?? 'a detached HEAD'} at ${observed.commit}, not the initial ${initial.ref ?? 'detached HEAD'} at ${initial.commit}`;
+    }
+    const conflicts = await activeConflictFiles(targetGit);
+    if (conflicts.length > 0) return `unmerged paths remain: ${conflicts.join(', ')}`;
+    // A rollback's reset clears AUTO_MERGE. Successful cherry-picks also leave it behind, so the preflight does not
+    // treat it alone as an open operation.
+    const states = await activeCheckoutGitState(initial.path);
+    if (await fs.access(await resolveGitPath(targetGit, initial.path, 'AUTO_MERGE')).then(() => true, () => false)) states.push('AUTO_MERGE');
+    if (states.length > 0) return `Git operation state remains: ${states.join(', ')}`;
+    const tracked = (await targetGit.raw(['status', '--porcelain=v1', '-z', '--untracked-files=no'])).split('\0').filter(Boolean);
+    if (tracked.length > 0) return `tracked or index changes remain: ${tracked.map((entry) => entry.slice(3)).join(', ')}`;
+    return null;
+  } catch (error) {
+    return `the restored state cannot be verified: ${error instanceof Error ? error.message : String(error)}`;
   }
-  return activeStates;
 }
 
 export async function validateSourceCommitMessages(
@@ -508,11 +520,10 @@ export async function inspectTargetMergeEligibility(options: {
     excludedLocalPaths = [],
     precomputedCandidates,
   } = options;
-  for (const { name, label } of gitOperationStates) {
-    const statePath = await resolveGitPath(targetGit, targetRoot, name);
-    if (await fs.access(statePath).then(() => true).catch(() => false)) {
-      return { reasonCode: 'GIT_OPERATION_IN_PROGRESS', error: `active ${label} state in progress` };
-    }
+  // The same operation state and locks a rollback must leave behind, so a stopped revert or squash is refused too.
+  const states = await activeCheckoutGitState(targetRoot);
+  if (states.length > 0) {
+    return { reasonCode: 'GIT_OPERATION_IN_PROGRESS', error: `Git operation state in the target: ${states.join(', ')}` };
   }
 
   const trackedStatus = await targetGit.raw(['status', '--porcelain=v1', '-z', '--untracked-files=no']);
@@ -794,8 +805,7 @@ export async function integrateWorktreeRepository(options: {
         failure = 'the squash staged nothing but left tracked changes';
       } else {
         await targetGit.raw(['reset', '--quiet']);
-        const squashMessage = await resolveGitPath(targetGit, targetRoot!, 'SQUASH_MSG');
-        if (await fs.access(squashMessage).then(() => true, () => false)) failure = 'SQUASH_MSG remained after reset';
+        failure = await restoredTargetFailure(targetGit, operationTarget!) ?? undefined;
       }
     } catch (error) {
       failure = error instanceof Error ? error.message : String(error);
@@ -949,19 +959,7 @@ export async function integrateWorktreeRepository(options: {
             await targetGit.raw(['reset', '--merge', startingHead]).catch((error: unknown) => {
               rollbackError = (error as { message?: string }).message ?? 'reset --merge failed';
             });
-            if (!rollbackError && (await targetGit.revparse(['HEAD']).catch(() => '')).trim() !== startingHead) {
-              rollbackError = 'Git reset did not restore the original target HEAD';
-            }
-            if (!rollbackError) {
-              const trackedStatus = await targetGit.raw(['status', '--porcelain=v1', '-z', '--untracked-files=no']);
-              if (trackedStatus.length > 0) rollbackError = 'Git reset did not restore a clean tracked/index state';
-            }
-            if (!rollbackError) {
-              const activeStates = await activeGitOperationStates(targetGit, targetRoot);
-              if (activeStates.length > 0 || (await activeConflictFiles(targetGit)).length > 0) {
-                rollbackError = `Git operation remains active after reset${activeStates.length > 0 ? `: ${activeStates.join(', ')}` : ''}`;
-              }
-            }
+            rollbackError ??= await restoredTargetFailure(targetGit, { ...operationTarget, commit: startingHead }) ?? undefined;
             if (rollbackError) {
               return integrationFailure(
                 'ROLLBACK_FAILED',
@@ -1071,26 +1069,13 @@ export async function integrateWorktreeRepository(options: {
       }
     }
 
-    if (!preserveConflictState && startingHead && isConflict) {
-      if (strategy === 'merge') await targetGit.raw(['merge', '--abort']).catch(() => {});
-      else if (strategy === 'rebase') await targetGit.raw(['cherry-pick', '--abort']).catch(() => {});
+    if (!preserveConflictState && startingHead && operationTarget) {
+      if (isConflict && strategy === 'merge') await targetGit.raw(['merge', '--abort']).catch(() => {});
+      else if (isConflict && strategy === 'rebase') await targetGit.raw(['cherry-pick', '--abort']).catch(() => {});
       await targetGit.raw(['reset', '--merge', startingHead]).catch((resetError: unknown) => {
         rollbackError = (resetError as { message?: string }).message ?? 'reset --merge failed';
       });
-      if ((await targetGit.revparse(['HEAD']).catch(() => '')).trim() !== startingHead) {
-        rollbackError = 'Git abort did not restore the original target HEAD';
-      }
-    } else if (!preserveConflictState && startingHead) {
-      await targetGit.raw(['reset', '--merge', startingHead]).catch((resetError: unknown) => {
-        rollbackError = (resetError as { message?: string }).message ?? 'reset --merge failed';
-      });
-    }
-
-    if (!preserveConflictState && startingHead && !rollbackError) {
-      const activeStates = await activeGitOperationStates(targetGit, targetRoot ?? '');
-      if (activeStates.length > 0 || (await activeConflictFiles(targetGit)).length > 0) {
-        rollbackError = `Git operation remains active after abort/reset${activeStates.length > 0 ? `: ${activeStates.join(', ')}` : ''}`;
-      }
+      rollbackError ??= await restoredTargetFailure(targetGit, { ...operationTarget, commit: startingHead }) ?? undefined;
     }
 
     if (rollbackError) {

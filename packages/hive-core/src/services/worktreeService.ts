@@ -3,7 +3,7 @@ import * as fs from "fs/promises";
 import * as path from "path";
 import simpleGit, { SimpleGit } from "simple-git";
 import type { ResolvedRepository, TaskStatus } from "../types.js";
-import { acquireLockSync, getFeatureTaskSyncPath, readJson, resolveFeatureDirectoryName } from "../utils/paths.js";
+import { acquireLockSync, assertValidFeatureName, getFeatureTaskSyncPath, readJson, resolveFeatureDirectoryName } from "../utils/paths.js";
 import { projectRootsMatch } from '../utils/repositoryConfig.js';
 import { validateStoredTaskStatus } from './taskService.js';
 import type {
@@ -13,8 +13,14 @@ import type {
 import {
   adhocGroupEntryOwner,
   assertCreateConfirmed,
+  assertNoSingleWorkerRecord,
   confirmWorkspaceRecord,
   createUnconfirmedRefusal,
+  assertBranchUnclaimedInGroup,
+  describesCompositeWorker,
+  describesSingleWorker,
+  finishCompositeWorkspace,
+  isMetadataOnlyComposite,
   readCompositeWorkspaceManifest,
   readSingleWorkspaceMetadata,
   readTargetedWorkspaceMetadata,
@@ -22,6 +28,7 @@ import {
   removeEmptyCompositeWorkspaceRoot,
   resolveWorkerTaskStatusPath,
   restoreWorkspaceRecord,
+  retainedCompositeRefusal,
   unresolvedRecordNote,
   writeWorkspaceJsonAtomicSync,
 } from './workspaceManifest.js';
@@ -47,7 +54,6 @@ import {
   buildNotRequestedMergeCleanupBlock,
   buildSkippedCleanupOutcome,
   buildThrownCleanupOutcome,
-  CleanupActionError,
   cleanupFacts,
   cleanupStepDone,
   createBranchExclusively,
@@ -59,9 +65,10 @@ import {
   isRetryableWithMutation,
   pruneWorktreesStep,
   readBranchOid,
+  releaseWorkerRecord,
   removeUnconfirmedWorktreeStep,
-  unconfirmedCompositeRetention,
   retainedMarkerFinalization,
+  workerBranchPresence,
   rollbackFailedCreate,
   withFinalizationFailure,
   WorktreeOperationFinalizationError,
@@ -683,12 +690,34 @@ export class WorktreeService {
     return attemptSlot;
   }
 
+  /**
+   * Refuse a task folder name that is not one path component: with a separator, `feat/01-task` of group `root` would
+   * address the placement and branch `hive/root/feat/01-task` of composite task `feat/01-task` in repository `root`.
+   */
+  private assertSafeTaskFolder(step: string): void {
+    if (!step || step === '.' || step === '..' || step.includes('/') || step.includes('\\') || step.includes('\0')) {
+      throw new Error(`Invalid task folder: ${JSON.stringify(step)}`);
+    }
+  }
+
+  /**
+   * Refuse a feature or task name that would address another worker before anything is read for it: feature
+   * `root/feat` of task `01-task` names branch `hive/root/feat/01-task` of composite task `feat/01-task` in repository
+   * `root`. Every public entry point that takes a task calls this first.
+   */
+  private assertTaskAddress(feature: string, step: string): void {
+    assertValidFeatureName(feature);
+    this.assertSafeTaskFolder(step);
+  }
+
   private worktreeDirectoryName(step: string, attemptSlot?: string): string {
+    this.assertSafeTaskFolder(step);
     const slot = this.normalizeAttemptSlot(attemptSlot);
     return slot ? `${step}--${slot}` : step;
   }
 
   private worktreeBranchStep(step: string, attemptSlot?: string): string {
+    this.assertSafeTaskFolder(step);
     const slot = this.normalizeAttemptSlot(attemptSlot);
     return slot ? `${step}-${slot}` : step;
   }
@@ -801,6 +830,7 @@ export class WorktreeService {
   }
 
   async create(feature: string, step: string, baseBranch?: string, attemptSlot?: string): Promise<WorktreeInfo> {
+    this.assertTaskAddress(feature, step);
     const target = await this.readTaskTarget(feature, step);
     if (target) return this.createTargeted(feature, step, target, baseBranch, attemptSlot);
     const bound = await readTargetedPlacement(this.checkoutContext(), this.targetedSpec(feature, step, attemptSlot));
@@ -877,13 +907,24 @@ export class WorktreeService {
     const metadataPath = this.getSingleMetadataPath(feature, step, attemptSlot);
     const existing = await this.get(feature, step, attemptSlot);
     if (existing) {
-      assertCreateConfirmed(await readSingleWorkspaceMetadata(metadataPath), worktreePath, metadataPath, 'hive_worktree_cleanup');
+      const ownRecord = await this.readOwnSingleMetadata(feature, step, attemptSlot);
+      assertCreateConfirmed(ownRecord, worktreePath, metadataPath, 'hive_worktree_cleanup');
+      // A checkout without a record of its own, which another Git client may have attached, is the task's only while no
+      // other record of the group names its branch.
+      if (ownRecord === null) await assertBranchUnclaimedInGroup(worktreePath, branchName);
       return existing;
     }
 
     const base = baseBranch || (await git.revparse(["HEAD"])).trim();
     // An existing task branch is reattached, never recreated or deleted here: it may hold unmerged work.
     const retainedTip = await readBranchOid(git, branchName);
+    if (retainedTip === null) {
+      // Without a branch, a record at the placement may still be another owner's, unreadable or unconfirmed; none is replaced.
+      const ownRecord = await this.readOwnSingleMetadata(feature, step, attemptSlot);
+      assertCreateConfirmed(ownRecord, worktreePath, metadataPath, 'hive_worktree_cleanup');
+      // Without a record of its own, the branch it would make may be one another record of the group still names.
+      if (ownRecord === null) await assertBranchUnclaimedInGroup(worktreePath, branchName);
+    }
     const baseCommit = retainedTip === null
       ? null
       : await this.retainedBranchBaseline(git, metadataPath, { feature, step, worktreePath, branchName, retainedTip, base });
@@ -1004,12 +1045,7 @@ export class WorktreeService {
       );
     }
     if (prior) {
-      if (prior.mode !== 'single'
-        || prior.feature !== feature
-        || prior.task !== step
-        || path.resolve(prior.worktreePath) !== path.resolve(worktreePath)
-        || !projectRootsMatch(prior.repositoryPath, this.config.baseDir)
-        || prior.branch !== branchName) {
+      if (!describesSingleWorker(prior, { owner: { feature, task: step }, worktreePath, repositoryPath: this.config.baseDir, branch: branchName })) {
         throw refuse('its workspace metadata describes a different workspace');
       }
       let recorded: string;
@@ -1022,6 +1058,8 @@ export class WorktreeService {
       if (unreachable !== '0') throw refuse(`its recorded baseline ${recorded} is not an ancestor of the branch tip ${retainedTip}`);
       return recorded;
     }
+    // Without a record of its own the branch is the task's only while no other record of the group names it.
+    await assertBranchUnclaimedInGroup(worktreePath, branchName);
     const forkPoint = (await git.raw(['merge-base', base, retainedTip]).catch(() => '')).trim();
     if (!forkPoint) throw refuse(`it shares no history with ${base}`);
     return forkPoint;
@@ -1064,8 +1102,12 @@ export class WorktreeService {
       throw error;
     });
     if (rootEntries && rootEntries.length > 0) {
+      if (existingManifest && await isMetadataOnlyComposite(compositeRoot, existingManifest, this.trustedRepositoriesForManifest(existingManifest))) {
+        throw new Error(retainedCompositeRefusal(compositeRoot, 'hive_worktree_cleanup'));
+      }
       throw new Error(`Composite workspace already exists at ${compositeRoot}`);
     }
+    await assertNoSingleWorkerRecord(compositeRoot, 'hive_worktree_cleanup');
 
     const baseCommits: Record<string, string> = {};
     for (const repoId of repoIds) {
@@ -1207,15 +1249,19 @@ export class WorktreeService {
   }
 
   async get(feature: string, step: string, attemptSlot?: string): Promise<WorktreeInfo | null> {
+    this.assertTaskAddress(feature, step);
     const targeted = await this.readTargetedTask(feature, step, attemptSlot);
     if (targeted) return targeted.info;
     const manifest = await this.readWorkspaceManifest(feature, step, attemptSlot);
     if (manifest) {
+      this.assertOwnComposite(feature, step, manifest, attemptSlot);
       const compositeRoot = this.getCompositeRoot(feature, step, attemptSlot);
+      const trustedById = this.trustedRepositoriesForManifest(manifest);
+      // A workspace that kept only its manifest while worker branches remain has no live checkout.
+      if (await isMetadataOnlyComposite(compositeRoot, manifest, trustedById)) return null;
       const repos: Record<string, WorktreeRepoInfo> = {};
       const baseCommits: Record<string, string> = { ...manifest.baseCommits };
       const repoIds = Object.keys(manifest.repos);
-      const trustedById = this.trustedRepositoriesForManifest(manifest);
       for (const id of repoIds) {
         const entry = manifest.repos[id]!;
         const trusted = trustedById.get(id)!;
@@ -1251,28 +1297,13 @@ export class WorktreeService {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
       throw error;
     }
-    // A caller naming this task keeps the earlier legacy behavior: a sidecarless run and task of the adhoc feature leave
-    // the same path and branch, so only metadata that names a run refuses the placement.
-    const owner = await this.groupEntryOwner(feature, this.worktreeDirectoryName(step, attemptSlot));
-    if (owner.owner === 'adhoc' && owner.declared) {
-      throw new WorktreeLinkageError(`Worktree linkage preflight failed: ${worktreePath} is an ad-hoc run, not a worktree of task ${feature}/${step}`);
-    }
+    await this.assertTaskEntry(feature, step, attemptSlot);
     this.workspaceRepositoryPaths(null, worktreePath);
     await this.validateExactWorktreeRegistration(worktreePath, this.config.baseDir, 'legacy');
     await this.validateWorktreeBranch(worktreePath, branchName, 'legacy');
     const worktreeGit = this.getGit(worktreePath);
     const commit = (await worktreeGit.revparse(["HEAD"])).trim();
-    const metadata = await readSingleWorkspaceMetadata(this.getSingleMetadataPath(feature, step, attemptSlot));
-    if (metadata && (
-      metadata.mode !== 'single'
-      || metadata.feature !== feature
-      || metadata.task !== step
-      || path.resolve(metadata.worktreePath) !== path.resolve(worktreePath)
-      || !projectRootsMatch(metadata.repositoryPath, this.config.baseDir)
-      || metadata.branch !== branchName
-    )) {
-      throw new WorktreeLinkageError('Worktree linkage preflight failed: single workspace metadata does not match the requested task worktree');
-    }
+    const metadata = await this.readOwnSingleMetadata(feature, step, attemptSlot);
     return {
       path: worktreePath,
       branch: branchName,
@@ -1286,8 +1317,50 @@ export class WorktreeService {
     };
   }
 
+  /** Refuse a manifest that does not name this task workspace and its canonical branches, before any Git read for it. */
+  private assertOwnComposite(feature: string, step: string, manifest: WorkspaceManifest, attemptSlot?: string): void {
+    const owner = { feature, task: step, ...(attemptSlot !== undefined ? { candidate: attemptSlot } : {}) };
+    if (!describesCompositeWorker(manifest, { owner, branch: (repoId) => this.getRepoBranchName(repoId, feature, step, attemptSlot) })) {
+      throw new WorktreeLinkageError(`Worktree linkage preflight failed: workspace manifest ${this.getWorkspaceManifestPath(feature, step, attemptSlot)} does not describe the requested task workspace and its canonical branches`);
+    }
+  }
+
+  /**
+   * The single-root sidecar of this task worker, or null when there is none. A sidecar naming another owner (such as an
+   * ad-hoc run of the same name in the shared `adhoc` group), path, repository or branch is refused, also when the
+   * checkout is gone.
+   */
+  private async readOwnSingleMetadata(feature: string, step: string, attemptSlot?: string): Promise<SingleWorkspaceMetadata | null> {
+    const metadata = await readSingleWorkspaceMetadata(this.getSingleMetadataPath(feature, step, attemptSlot));
+    if (metadata && !describesSingleWorker(metadata, {
+      owner: { feature, task: step },
+      worktreePath: this.getWorktreePath(feature, step, attemptSlot),
+      repositoryPath: this.config.baseDir,
+      branch: this.getLegacyBranchName(feature, step, attemptSlot),
+    })) {
+      throw new WorktreeLinkageError('Worktree linkage preflight failed: single workspace metadata does not match the requested task worktree');
+    }
+    return metadata;
+  }
+
+  /**
+   * Refuse a task call on an entry of the `adhoc` group that belongs to an ad-hoc run: one whose metadata names the
+   * run, or one no task of that name records. An entry whose owner no record settles stays addressable by the task, as
+   * before sidecars.
+   */
+  private async assertTaskEntry(feature: string, step: string, attemptSlot?: string): Promise<void> {
+    const entry = this.worktreeDirectoryName(step, attemptSlot);
+    const owner = await this.groupEntryOwner(feature, entry);
+    if (owner.owner !== 'adhoc') return;
+    const placement = this.getWorktreePath(feature, step, attemptSlot);
+    throw new WorktreeLinkageError(owner.declared
+      ? `Worktree linkage preflight failed: ${placement} is an ad-hoc run, not a worktree of task ${feature}/${step}`
+      : `Worktree linkage preflight failed: no task ${feature}/${step} exists, so ${placement} is ad-hoc run ${entry}`);
+  }
+
   /** Inspect one explicit workspace candidate, including ignored-file dirt. */
   async inspect(feature: string, step: string, attemptSlot?: string): Promise<WorktreeInfo | null> {
+    this.assertTaskAddress(feature, step);
     const workspacePath = this.getWorktreePath(feature, step, attemptSlot);
     return this.readWorkspace(workspacePath, () => this.selectWorkspaceRepositories(feature, step, attemptSlot), async ({ manifest }, pending) => {
       const info = await this.get(feature, step, attemptSlot);
@@ -1550,6 +1623,7 @@ export class WorktreeService {
     options: WorktreeRemoveOptions = {},
     attemptSlot?: string,
   ): Promise<{ worktreeRemoved: boolean; branchDeleted: boolean; pruned: boolean; cleanup: WorktreeCleanupOutcome; finalization?: WorktreeFinalizationFailure }> {
+    this.assertTaskAddress(feature, step);
     return this.mutate(
       'remove',
       { feature, step, attemptSlot },
@@ -1582,11 +1656,16 @@ export class WorktreeService {
     const branchName = this.getLegacyBranchName(feature, step, attemptSlot);
     const git = this.getGit();
     const metadataPath = this.getSingleMetadataPath(feature, step, attemptSlot);
-    const unconfirmed = (await readSingleWorkspaceMetadata(metadataPath))?.createUnconfirmed === true;
+    const ownRecord = await this.readOwnSingleMetadata(feature, step, attemptSlot);
+    const unconfirmed = ownRecord?.createUnconfirmed === true;
+    // Also when the checkout is gone: removing it would delete the run's branch.
+    await this.assertTaskEntry(feature, step, attemptSlot);
 
     let branchPreparationError: string | undefined;
     let pinnedBranchCommit = expectedBranchCommit;
     if (deleteBranch && !pinnedBranchCommit) {
+      // Without a record of its own, the branch may be the one another record of the group names.
+      if (ownRecord === null) await assertBranchUnclaimedInGroup(worktreePath, branchName);
       try {
         pinnedBranchCommit = await this.prepareBranchDeletion(git, branchName, options.discard === true);
       } catch (error) {
@@ -1611,15 +1690,7 @@ export class WorktreeService {
         : { status: 'not_requested' },
     });
     // The metadata keeps a retained branch's diff baseline for a later reattaching create, so it goes with the branch.
-    const branchGone = deleteBranch
-      ? cleanupStepDone(outcome.branchDeletion)
-      : await readBranchOid(git, branchName).then((tip) => tip === null, () => false);
-    if (cleanupStepDone(outcome.worktreeRemoval) && branchGone) {
-      await fs.unlink(metadataPath).catch((error: NodeJS.ErrnoException) => {
-        if (error.code !== 'ENOENT') throw new CleanupActionError(outcome, 'metadata-removal', error);
-      });
-    }
-    return mergeCleanupResult(outcome);
+    return mergeCleanupResult(await releaseWorkerRecord(git, branchName, metadataPath, outcome));
   }
 
   private async removeComposite(
@@ -1632,16 +1703,14 @@ export class WorktreeService {
     attemptSlot?: string,
   ): Promise<{ worktreeRemoved: boolean; branchDeleted: boolean; pruned: boolean; cleanup: WorktreeCleanupOutcome }> {
     const compositeRoot = this.getCompositeRoot(feature, step, attemptSlot);
+    this.assertOwnComposite(feature, step, manifest, attemptSlot);
     const reposById = this.trustedRepositoriesForManifest(manifest);
 
     // A retry may find a repo worktree already removed. Validate every remaining
     // link before mutating any repository, but do not require the link to exist.
-    for (const [repoId, entry] of Object.entries(manifest.repos)) {
+    for (const repoId of Object.keys(manifest.repos)) {
       const repositoryPath = reposById.get(repoId)!.path;
       const branchName = this.getRepoBranchName(repoId, feature, step, attemptSlot);
-      if (entry.branch !== branchName) {
-        throw new WorktreeLinkageError(`Worktree linkage preflight failed for repository ${repoId}: manifest branch does not match the canonical task branch`);
-      }
       const repoWtPath = this.getRepoWorktreePath(feature, step, repoId, attemptSlot);
       if (await this.isPathAbsent(repoWtPath)) continue;
       await this.validateExactWorktreeRegistration(repoWtPath, repositoryPath, repoId);
@@ -1675,28 +1744,7 @@ export class WorktreeService {
     // Clean up the composite root directory itself
     let rootFailure: { cause: string } | undefined;
     if (perRepo.every(({ cleanup }) => cleanup.outcome === 'complete')) {
-      const retained = manifest.createUnconfirmed === true
-        ? await unconfirmedCompositeRetention(
-          compositeRoot,
-          this.getWorkspaceManifestPath(feature, step, attemptSlot),
-          Object.keys(manifest.repos).map((repoId) => ({
-            repoId,
-            git: this.getGit(reposById.get(repoId)!.path),
-            name: this.getRepoBranchName(repoId, feature, step, attemptSlot),
-          })),
-          'hive_worktree_cleanup',
-        )
-        : null;
-      if (retained !== null) {
-        rootFailure = { cause: retained };
-      } else {
-        try {
-          await removeEmptyCompositeWorkspaceRoot(compositeRoot);
-        } catch (error: unknown) {
-          const err = error as { message?: string };
-          rootFailure = { cause: err.message || 'composite root removal failed' };
-        }
-      }
+      rootFailure = await finishCompositeWorkspace(compositeRoot, manifest, this.compositeBranches(feature, step, manifest, reposById, attemptSlot), deleteBranch, 'hive_worktree_cleanup');
     }
 
     const outcome = combineRepoCleanupOutcomes(
@@ -1870,7 +1918,16 @@ export class WorktreeService {
 
     const { manifest } = selection;
     if (manifest) {
+      this.assertOwnComposite(feature, step, manifest, attemptSlot);
       const trustedById = this.trustedRepositoriesForManifest(manifest);
+      if (await isMetadataOnlyComposite(worktreePath, manifest, trustedById)) {
+        // Only the manifest of a worktree-only removal is left. It stays while a worker branch remains or cannot be
+        // read; once every branch is gone, removal finishes with the empty root.
+        const { present, unreadable } = await workerBranchPresence(this.compositeBranches(feature, step, manifest, trustedById, attemptSlot));
+        if (present.length > 0 || unreadable.length > 0) return false;
+        const cleanup = await this.removeComposite(guard, feature, step, manifest, false, {}, attemptSlot);
+        return cleanup.cleanup.outcome === 'complete' && await this.isPathAbsent(worktreePath);
+      }
       let stale = false;
       for (const [repoId, repoEntry] of Object.entries(manifest.repos)) {
         const repoWt = path.join(worktreePath, repoEntry.path);
@@ -1892,7 +1949,8 @@ export class WorktreeService {
       }
       if (!stale) return false;
       const cleanup = await this.removeComposite(guard, feature, step, manifest, false, {}, attemptSlot);
-      return cleanup.worktreeRemoved && await this.isPathAbsent(worktreePath);
+      // A complete removal leaves no checkout; the root stays as metadata while its worker branches remain.
+      return cleanup.worktreeRemoved && cleanup.cleanup.outcome === 'complete';
     }
 
     await this.validateExactWorktreeRegistration(worktreePath, this.config.baseDir, 'legacy');
@@ -1987,6 +2045,7 @@ export class WorktreeService {
     const optionFailure = rebasePreserveConflictsFailure(policy, options.preserveConflicts);
     if (optionFailure) return mergeFailure(policy.strategy, 'INVALID_ARGUMENTS', optionFailure, { partial: false });
     try {
+      this.assertTaskAddress(feature, step);
       return await this.mutate(
         'merge',
         { feature, step, attemptSlot },
@@ -2125,6 +2184,13 @@ export class WorktreeService {
     }
 
     const branchName = this.getLegacyBranchName(feature, step, attemptSlot);
+    // A worker without a record of its own may sit on a branch another record of the group names; it is refused here,
+    // before any effect, since same-call cleanup after the integration would delete that branch under the wrong owner.
+    try {
+      if ((await this.readOwnSingleMetadata(feature, step, attemptSlot)) === null) await assertBranchUnclaimedInGroup(registered.path, branchName);
+    } catch (error) {
+      return mergeFailure(strategy, 'WORKTREE_LINKAGE_INVALID', error instanceof Error ? error.message : String(error), { partial: false });
+    }
     const sourceCommit = options.sourceCommit ?? registered.commit;
     const repoResult = await this.mergeOneRepo({
       git: this.getGit(),
@@ -2391,25 +2457,25 @@ export class WorktreeService {
             repoCleanup = buildThrownCleanupOutcome(cleanupMode, error, repoId);
           }
         }
-        repos[repoId].cleanup = toMergeCleanupBlock(repoCleanup);
+        // The repository merged with its cleanup deferred, so its classification is recomputed with the cleanup it got.
+        // A failed receipt anywhere holds every repository for inspection, as the aggregate result reports.
+        Object.assign(repos[repoId], {
+          cleanup: toMergeCleanupBlock(repoCleanup),
+          ...mergeSuccessClassification(cleanupMode, repoCleanup, repos[repoId].mutation, provenanceCleanupFailure ? provenance : repos[repoId].provenance),
+        });
         perRepo.push({ repoId, cleanup: repoCleanup });
       }
-      // Tear down the composite root after per-repo cleanup.
-      const compositeRoot = this.getCompositeRoot(feature, step, attemptSlot);
+      // Tear down the composite root after per-repo cleanup, or keep its manifest while worker branches remain.
       let rootFailure: { cause: string } | undefined;
       if (!proofFailure && perRepo.every(({ cleanup }) => cleanup.outcome === 'complete')) {
-        try {
-          await removeEmptyCompositeWorkspaceRoot(compositeRoot);
-        } catch (error: unknown) {
-          const err = error as { message?: string };
-          rootFailure = { cause: err.message || 'composite root removal failed' };
-        }
+        rootFailure = await finishCompositeWorkspace(this.getCompositeRoot(feature, step, attemptSlot), manifest, this.compositeBranches(feature, step, manifest, trustedById, attemptSlot), deleteBranch, 'hive_worktree_cleanup');
       }
       cleanup = combineRepoCleanupOutcomes(options.cleanup, perRepo, rootFailure);
     }
 
     if (!anyActualMerge) {
-      const allContained = repoIds.every((repoId) => repos[repoId].reasonCode === 'ALREADY_INTEGRATED');
+      // `reason` keeps what each repository's integration found; a cleanup failure replaces only its reasonCode.
+      const allContained = repoIds.every((repoId) => repos[repoId].reason === 'already_integrated');
       return {
         success: true,
         merged: false,
@@ -2442,6 +2508,15 @@ export class WorktreeService {
       ...mergeSuccessClassification(options.cleanup, cleanup, 'applied', provenance),
       repos,
     };
+  }
+
+  /** The worker branch of each repository a composite task workspace owns, for deciding whether its manifest may go. */
+  private compositeBranches(feature: string, step: string, manifest: WorkspaceManifest, trustedById: Map<string, ResolvedRepository>, attemptSlot?: string): Array<{ repoId: string; git: SimpleGit; name: string }> {
+    return Object.keys(manifest.repos).map((repoId) => ({
+      repoId,
+      git: this.getGit(trustedById.get(repoId)!.path),
+      name: this.getRepoBranchName(repoId, feature, step, attemptSlot),
+    }));
   }
 
   private async removeCompositeRepo(

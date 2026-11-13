@@ -12,14 +12,22 @@ import { aggregateIntegrationProvenance, integrationRecorder, storedAdhocWorklog
 import type { IntegrationProvenanceOutcome, IntegrationRecorder } from './integrationReceipt.js';
 import type { WorklogAuthor } from './worklogService.js';
 import {
+  adhocGroupEntryOwner,
   assertCreateConfirmed,
+  assertNoSingleWorkerRecord,
   confirmWorkspaceRecord,
   createUnconfirmedRefusal,
+  assertBranchUnclaimedInGroup,
+  describesCompositeWorker,
+  describesSingleWorker,
+  finishCompositeWorkspace,
+  isMetadataOnlyComposite,
   readCompositeWorkspaceManifest,
   readSingleWorkspaceMetadata,
   readWorkspaceRecordBytes,
   removeEmptyCompositeWorkspaceRoot,
   restoreWorkspaceRecord,
+  retainedCompositeRefusal,
   unresolvedRecordNote,
   writeWorkspaceJsonAtomic,
 } from './workspaceManifest.js';
@@ -29,7 +37,6 @@ import {
   buildNotRequestedMergeCleanupBlock,
   buildSkippedCleanupOutcome,
   buildThrownCleanupOutcome,
-  CleanupActionError,
   cleanupFacts,
   cleanupStepDone,
   createBranchExclusively,
@@ -41,8 +48,8 @@ import {
   isRetryableWithMutation,
   pruneWorktreesStep,
   readBranchOid,
+  releaseWorkerRecord,
   removeUnconfirmedWorktreeStep,
-  unconfirmedCompositeRetention,
   rollbackFailedCreate,
   withFinalizationFailure,
   WorktreeOperationFinalizationError,
@@ -584,6 +591,37 @@ export class AdhocWorktreeService {
     return { path: worktreePath, exists: true };
   }
 
+  /** The single-root sidecar of this run, or null when there is none; a sidecar naming another owner, path, repository or branch is refused. */
+  private async readOwnSingleMetadata(runId: string): Promise<SingleWorkspaceMetadata | null> {
+    const metadata = await readSingleWorkspaceMetadata(this.getSingleMetadataPath(runId));
+    if (metadata && !describesSingleWorker(metadata, {
+      owner: { runId },
+      worktreePath: this.getWorktreePath(runId),
+      repositoryPath: this.config.baseDir,
+      branch: this.getBranchName(runId),
+    })) {
+      throw new WorktreeLinkageError('Worktree linkage preflight failed: single workspace metadata does not match the requested ad-hoc worktree');
+    }
+    return metadata;
+  }
+
+  /**
+   * Refuse a removal of a single-root placement this run does not own, before anything changes, whether or not its
+   * checkout is still there: a sidecar must name this run, and a placement without one must not be a task worker of
+   * the feature named `adhoc`, which shares this directory. A sidecarless placement whose owner no record settles stays
+   * removable by a call naming the run, as before sidecars. Returns the run's sidecar.
+   */
+  private async assertOwnSinglePlacement(runId: string): Promise<SingleWorkspaceMetadata | null> {
+    const metadata = await this.readOwnSingleMetadata(runId);
+    if (metadata) return metadata;
+    // Task records live under the Hive root's features, also for a run made from a foreign checkout.
+    const owner = await adhocGroupEntryOwner(path.dirname(this.config.hiveDir), this.config.hiveDir, runId);
+    if (owner.owner === 'task') {
+      throw new WorktreeLinkageError(`Worktree linkage preflight failed: ${this.getWorktreePath(runId)} is the worktree of task adhoc/${runId}, not an ad-hoc run`);
+    }
+    return null;
+  }
+
   private async validateCompositeRepoRegistration(
     manifest: AdhocCompositeManifest,
     repoId: string,
@@ -660,7 +698,15 @@ export class AdhocWorktreeService {
     };
   }
 
+  /** Refuse a manifest that does not name this run and its canonical branches, before any Git read for it. */
+  private assertOwnComposite(manifest: AdhocCompositeManifest): void {
+    if (!describesCompositeWorker(manifest, { owner: { runId: manifest.runId }, branch: (repoId) => this.getCompositeBranchName(repoId, manifest.runId) })) {
+      throw new WorktreeLinkageError(`Worktree linkage preflight failed: workspace manifest ${this.getWorkspaceManifestPath(manifest.runId)} does not name the canonical branches of ad-hoc run ${manifest.runId}`);
+    }
+  }
+
   private async refreshCompositeInfo(manifest: AdhocCompositeManifest): Promise<AdhocWorktreeInfo | null> {
+    this.assertOwnComposite(manifest);
     if (!(await this.validateCompositeManifest(manifest))) {
       return null;
     }
@@ -827,19 +873,24 @@ export class AdhocWorktreeService {
       .access(worktreePath)
       .then(() => true)
       .catch(() => false);
-    const branches = await git.branch().catch(() => null);
-    const branchPresent = branches?.all.includes(branchName) ?? false;
+    const branchPresent = (await readBranchOid(git, branchName)) !== null;
 
     const metadataPath = this.getSingleMetadataPath(runId);
     if (pathExists && branchPresent) {
-      assertCreateConfirmed(await readSingleWorkspaceMetadata(metadataPath), worktreePath, metadataPath, 'hive_adhoc_worktree_cleanup');
+      const record = await readSingleWorkspaceMetadata(metadataPath);
+      assertCreateConfirmed(record, worktreePath, metadataPath, 'hive_adhoc_worktree_cleanup');
       let existing: AdhocWorktreeInfo | null = null;
       try {
         existing = await this.get(runId);
       } catch {
         existing = null;
       }
-      if (explicit && existing) return existing;
+      if (explicit && existing) {
+        // get() refuses a record that is not the run's own. A checkout without one, which another Git client may have
+        // attached, is the run's only while no other record of the group names its branch.
+        if (record === null) await assertBranchUnclaimedInGroup(worktreePath, branchName);
+        return existing;
+      }
       throw new Error(
         `Ad-hoc run collision: ${worktreePath} and ${branchName} already exist but do not match the requested ad-hoc worktree`,
       );
@@ -856,6 +907,12 @@ export class AdhocWorktreeService {
       );
     }
 
+    // A record left at the placement may be another run's, a task's, one from another source repository, unreadable or
+    // unconfirmed; none is replaced.
+    const ownRecord = await this.readOwnSingleMetadata(runId);
+    assertCreateConfirmed(ownRecord, worktreePath, metadataPath, 'hive_adhoc_worktree_cleanup');
+    // Without a record of its own, the branch it would make may be one another record of the group still names.
+    if (ownRecord === null) await assertBranchUnclaimedInGroup(worktreePath, branchName);
     const base = (await git.revparse(['HEAD'])).trim();
     await guard.begin({ repositories: [{ repositoryPath: this.config.baseDir, sourceWorktreePath: worktreePath, sourceBranch: branchName }] });
     await fs.mkdir(path.dirname(worktreePath), { recursive: true });
@@ -945,8 +1002,12 @@ export class AdhocWorktreeService {
     if (rootEntries && rootEntries.length > 0) {
       const existing = existingManifest ? await this.refreshCompositeInfo(existingManifest) : null;
       if (existing) return existing;
+      if (existingManifest && await isMetadataOnlyComposite(compositeRoot, existingManifest, this.trustedRepositoriesForManifest(existingManifest))) {
+        throw new Error(retainedCompositeRefusal(compositeRoot, 'hive_adhoc_worktree_cleanup'));
+      }
       throw new Error(`Composite ad-hoc workspace already exists at ${compositeRoot}`);
     }
+    await assertNoSingleWorkerRecord(compositeRoot, 'hive_adhoc_worktree_cleanup');
 
     // Preflight: no branch collisions in any target source repo
     const baseCommits: Record<string, string> = {};
@@ -1106,16 +1167,7 @@ export class AdhocWorktreeService {
     const currentBranch = (await git.revparse(['--abbrev-ref', 'HEAD'])).trim();
     if (currentBranch !== branchName) return null;
     const commit = (await git.revparse(['HEAD'])).trim();
-    const metadata = await readSingleWorkspaceMetadata(this.getSingleMetadataPath(runId));
-    if (metadata && (
-      metadata.mode !== 'adhoc-single'
-      || metadata.runId !== runId
-      || path.resolve(metadata.worktreePath) !== path.resolve(worktreePath)
-      || !projectRootsMatch(metadata.repositoryPath, this.config.baseDir)
-      || metadata.branch !== branchName
-    )) {
-      throw new WorktreeLinkageError('Worktree linkage preflight failed: single workspace metadata does not match the requested ad-hoc worktree');
-    }
+    const metadata = await this.readOwnSingleMetadata(runId);
     return {
       runId,
       path: worktreePath,
@@ -1311,10 +1363,20 @@ export class AdhocWorktreeService {
     const unconfirmed = createUnconfirmedRefusal(registered, registered.path, this.getSingleMetadataPath(runId), 'hive_adhoc_worktree_cleanup', 'integrated');
     if (unconfirmed !== null) return mergeFailure(strategy, 'CREATE_UNCONFIRMED', unconfirmed);
 
+    // A run without a record of its own may sit on a branch another record of the group names; it is refused here,
+    // before any effect, since same-call cleanup after the integration would delete that branch under the wrong owner.
+    let ownRecord: SingleWorkspaceMetadata | null;
+    try {
+      ownRecord = await this.readOwnSingleMetadata(runId);
+      if (ownRecord === null) await assertBranchUnclaimedInGroup(registered.path, branchName);
+    } catch (error) {
+      return mergeFailure(strategy, 'WORKTREE_LINKAGE_INVALID', error instanceof Error ? error.message : String(error));
+    }
+
     const git = this.getGit();
     const sourceCommit = options.sourceCommit ?? registered.commit;
-    // The record was validated by get(); its origin is read tolerantly.
-    const storedOrigin = (await readSingleWorkspaceMetadata(this.getSingleMetadataPath(runId)).catch(() => null))?.origin;
+    // The record's origin is untrusted; the recorder accepts only a well-formed one.
+    const storedOrigin = ownRecord?.origin;
     const repoResult = await this.mergeOneRepo({
       git,
       branchName,
@@ -1577,18 +1639,17 @@ export class AdhocWorktreeService {
             repoCleanup = cleanupResultFromOutcome(buildThrownCleanupOutcome(cleanupMode, error, repoId), 'CLEANUP_FAILED');
           }
         }
-        repos[repoId].cleanup = toMergeCleanupBlock(repoCleanup.cleanup);
+        // The repository merged with its cleanup deferred, so its classification is recomputed with the cleanup it got.
+        // A failed receipt anywhere holds every repository for inspection, as the aggregate result reports.
+        Object.assign(repos[repoId], {
+          cleanup: toMergeCleanupBlock(repoCleanup.cleanup),
+          ...mergeSuccessClassification(cleanupMode, repoCleanup.cleanup, repos[repoId].mutation, provenanceCleanupFailure ? provenance : repos[repoId].provenance),
+        });
         perRepo.push({ repoId, cleanup: repoCleanup });
       }
-      const compositeRoot = this.getCompositeRoot(runId);
       let rootFailure: { cause: string } | undefined;
       if (!proofFailure && perRepo.every(({ cleanup }) => cleanup.cleanup.outcome === 'complete')) {
-        try {
-          await removeEmptyCompositeWorkspaceRoot(compositeRoot);
-        } catch (error: unknown) {
-          const err = error as { message?: string };
-          rootFailure = { cause: err.message || 'composite root removal failed' };
-        }
+        rootFailure = await finishCompositeWorkspace(this.getCompositeRoot(runId), manifest, this.compositeBranches(manifest, trustedById), deleteBranch, 'hive_adhoc_worktree_cleanup');
       }
       cleanup = combineRepoCleanupOutcomes(
         options.cleanup,
@@ -1598,7 +1659,8 @@ export class AdhocWorktreeService {
     }
 
     if (!anyActualMerge) {
-      const allContained = repoIds.every((repoId) => repos[repoId].reasonCode === 'ALREADY_INTEGRATED');
+      // `reason` keeps what each repository's integration found; a cleanup failure replaces only its reasonCode.
+      const allContained = repoIds.every((repoId) => repos[repoId].reason === 'already_integrated');
       return {
         success: true,
         merged: false,
@@ -1630,6 +1692,15 @@ export class AdhocWorktreeService {
       ...mergeSuccessClassification(options.cleanup, cleanup, 'applied', provenance),
       repos,
     };
+  }
+
+  /** The worker branch of each repository a composite run owns, for deciding whether its manifest may go. */
+  private compositeBranches(manifest: AdhocCompositeManifest, trustedById: Map<string, ResolvedRepository>): Array<{ repoId: string; git: SimpleGit; name: string }> {
+    return Object.keys(manifest.repos).sort().map((repoId) => ({
+      repoId,
+      git: this.getGit(trustedById.get(repoId)!.path),
+      name: this.getCompositeBranchName(repoId, manifest.runId),
+    }));
   }
 
   private async removeCompositeRepo(
@@ -1750,14 +1821,12 @@ export class AdhocWorktreeService {
     deleteBranch: boolean,
     options: AdhocCleanupOptions = {},
   ): Promise<AdhocCleanupResult> {
+    this.assertOwnComposite(manifest);
     const trustedById = this.trustedRepositoriesForManifest(manifest);
     const repoIds = Object.keys(manifest.repos).sort();
     for (const repoId of repoIds) {
       const repositoryPath = trustedById.get(repoId)!.path;
       const branchName = this.getCompositeBranchName(repoId, manifest.runId);
-      if (manifest.repos[repoId].branch !== branchName) {
-        throw new WorktreeLinkageError(`Worktree linkage preflight failed for repository ${repoId}: manifest branch does not match the canonical ad-hoc branch`);
-      }
       const repoWtPath = this.getCompositeRepoPath(manifest.runId, repoId);
       const stat = await this.lstatOrNull(repoWtPath);
       if (!stat) continue;
@@ -1792,24 +1861,7 @@ export class AdhocWorktreeService {
     const compositeRoot = this.getCompositeRoot(manifest.runId);
     let rootFailure: { cause: string } | undefined;
     if (perRepo.every(({ cleanup }) => cleanup.cleanup.outcome === 'complete')) {
-      const retained = manifest.createUnconfirmed === true
-        ? await unconfirmedCompositeRetention(
-          compositeRoot,
-          this.getWorkspaceManifestPath(manifest.runId),
-          repoIds.map((repoId) => ({ repoId, git: this.getGit(trustedById.get(repoId)!.path), name: this.getCompositeBranchName(repoId, manifest.runId) })),
-          'hive_adhoc_worktree_cleanup',
-        )
-        : null;
-      if (retained !== null) {
-        rootFailure = { cause: retained };
-      } else {
-        try {
-          await removeEmptyCompositeWorkspaceRoot(compositeRoot);
-        } catch (error: unknown) {
-          const err = error as { message?: string };
-          rootFailure = { cause: err.message || 'composite root removal failed' };
-        }
-      }
+      rootFailure = await finishCompositeWorkspace(compositeRoot, manifest, this.compositeBranches(manifest, trustedById), deleteBranch, 'hive_adhoc_worktree_cleanup');
     }
     const requested = deleteBranch ? 'worktree+branch' : 'worktree';
     const outcome = combineRepoCleanupOutcomes(
@@ -1849,16 +1901,30 @@ export class AdhocWorktreeService {
     const worktreePath = this.getWorktreePath(runId);
     const branchName = this.getBranchName(runId);
     await assertNoSymlinkComponents(path.parse(worktreePath).root, worktreePath, true);
+    const ownRecord = await this.assertOwnSinglePlacement(runId);
+    const unconfirmed = ownRecord?.createUnconfirmed === true;
     const stat = await this.lstatOrNull(worktreePath);
+    const requested = deleteBranch ? 'worktree+branch' : 'worktree';
     if (stat) {
       await this.validateExactWorktreeRegistration(worktreePath, this.config.baseDir, 'adhoc');
+      // A confirmed checkout switched to another branch may hold work on that branch; an unconfirmed one keeps the
+      // stricter removal of a checkout this run cannot show it attached.
+      if (!unconfirmed && !(await this.isRegisteredWorktree(worktreePath, branchName, this.config.baseDir))) {
+        const current = (await this.getGit(worktreePath).raw(['symbolic-ref', '-q', 'HEAD']).catch(() => '')).trim() || 'a detached HEAD';
+        return cleanupResultFromOutcome(buildCleanupOutcome(requested, {
+          worktreeRemoval: { status: 'not_attempted' },
+          branchDeletion: { status: 'not_attempted' },
+          prune: { status: 'not_attempted' },
+          failures: [{ step: 'preflight', cause: `${worktreePath} is on ${current}, not ${branchName}; switch it back or keep its work on a branch, then clean up again` }],
+        }), 'CLEANUP_FAILED');
+      }
     }
-    const unconfirmed = (await readSingleWorkspaceMetadata(this.getSingleMetadataPath(runId)))?.createUnconfirmed === true;
     const git = this.getGit();
-    const requested = deleteBranch ? 'worktree+branch' : 'worktree';
     let branchPreparationError: string | undefined;
     let pinnedBranchCommit = expectedBranchCommit;
     if (deleteBranch && !pinnedBranchCommit) {
+      // Without a record of its own, the branch may be the one another record of the group names.
+      if (ownRecord === null) await assertBranchUnclaimedInGroup(worktreePath, branchName);
       try {
         pinnedBranchCommit = await this.prepareBranchDeletion(git, branchName, options.discard === true);
       } catch (error) {
@@ -1882,17 +1948,10 @@ export class AdhocWorktreeService {
           : { status: 'not_attempted' }
         : { status: 'not_requested' },
     });
-    // An unconfirmed record stays with a remaining branch: a checkout another client later attaches to that branch at
-    // the placement must still read as unconfirmed, not as a sidecarless worker cleanup may empty.
-    const recordReleased = !unconfirmed || (deleteBranch
-      ? cleanupStepDone(outcome.branchDeletion)
-      : await readBranchOid(git, branchName).then((tip) => tip === null, () => false));
-    if (cleanupStepDone(outcome.worktreeRemoval) && recordReleased) {
-      await fs.unlink(this.getSingleMetadataPath(runId)).catch((error: NodeJS.ErrnoException) => {
-        if (error.code !== 'ENOENT') throw new CleanupActionError(outcome, 'metadata-removal', error);
-      });
-    }
-    return cleanupResultFromOutcome(outcome, outcome.outcome === 'complete' ? undefined : 'CLEANUP_FAILED');
+    // The record stays with a remaining branch, so the branch keeps a known owner for inventory and a later cleanup.
+    // An unconfirmed one also keeps a checkout another client later attaches to that branch reading as unconfirmed.
+    const released = await releaseWorkerRecord(git, branchName, this.getSingleMetadataPath(runId), outcome);
+    return cleanupResultFromOutcome(released, released.outcome === 'complete' ? undefined : 'CLEANUP_FAILED');
   }
 
 }

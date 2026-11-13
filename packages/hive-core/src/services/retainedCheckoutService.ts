@@ -18,6 +18,7 @@ import { projectRootsMatch } from '../utils/repositoryConfig.js';
 import { readCheckoutLocalState } from './checkoutInspector.js';
 import type { CheckoutLocalState } from './checkoutInspector.js';
 import {
+  getCheckoutsRoot,
   listRetainedCheckouts,
   observeRetainedCheckout,
   parseRetainedCheckoutId,
@@ -335,7 +336,15 @@ export class RetainedCheckoutService {
         }
         return existing.record;
       }
-      for (const other of (await listRetainedCheckouts(this.config.hiveDir)).ids.filter((candidate) => candidate.startsWith(`${repoId}/`))) {
+      const listing = await listRetainedCheckouts(this.config.hiveDir);
+      // A symlinked repository directory or a record path that is not a regular file could hold this repository's
+      // registration, which the duplicate check below cannot read.
+      const repositoryDirectory = path.join(getCheckoutsRoot(this.config.hiveDir), repoId);
+      const hidden = listing.unrecognized.filter((entry) => entry.mayHoldRecord && (entry.path === repositoryDirectory || path.dirname(entry.path) === repositoryDirectory));
+      if (hidden.length > 0) {
+        throw new Error(`Repository ${repoId} may already be registered in a record that cannot be read: ${hidden.map((entry) => `${entry.path} (${entry.reason})`).join(', ')}`);
+      }
+      for (const other of listing.ids.filter((candidate) => candidate.startsWith(`${repoId}/`))) {
         // An unreadable record could be this repository's registration, so it refuses rather than being skipped.
         const record = await readRetainedCheckoutRecord(this.config.hiveDir, other);
         if (record?.ownership === 'registered' && projectRootsMatch(record.path, identity.path)) {
@@ -394,6 +403,29 @@ export class RetainedCheckoutService {
           ...(declaredBy !== undefined ? { declaredBy } : {}),
         },
       };
+      await writeRetainedCheckoutRecord(this.config.hiveDir, record);
+      return record;
+    });
+  }
+
+  /**
+   * Clear the declared readiness of a retained checkout whose placement is missing, changing only its record. The
+   * record must still equal `expectedRecord` from inspection and the checkout must still be missing; a present
+   * checkout's readiness is cleared through `setReadiness` against its live identity, and no readiness is declared
+   * for a missing one. Clearing retires a next-target declaration, such as two missing checkouts naming each other,
+   * that keeps `removeMissingRecord` refused. A record without readiness is returned unchanged.
+   */
+  async clearMissingReadiness(id: string, expectedRecord: RetainedCheckoutRecord): Promise<RetainedCheckoutRecord> {
+    return this.mutate('create', id, async () => {
+      const resolved = await resolveRetainedCheckout(this.context(), id);
+      if (!isDeepStrictEqual(resolved.record, expectedRecord)) {
+        throw new RetainedCheckoutError('binding_mismatch', `Retained checkout record ${id} changed since it was inspected; inspect it again`);
+      }
+      if (resolved.present) {
+        throw new RetainedCheckoutError('binding_mismatch', `Retained checkout ${id} exists at ${resolved.record.path}; clear its readiness against its live identity instead`);
+      }
+      if (resolved.record.readiness === undefined) return resolved.record;
+      const { readiness: _cleared, ...record } = resolved.record;
       await writeRetainedCheckoutRecord(this.config.hiveDir, record);
       return record;
     });
@@ -587,13 +619,18 @@ export class RetainedCheckoutService {
    * only loses its record. A managed one must be exactly `expected`, on its intended branch, with no stopped Git
    * operation and no modified or untracked files; ignored content needs `removeIgnored`. Its worktree is removed,
    * its branch is kept unless `deleteBranch` proves containment in a surviving checkout's intended branch or
-   * discards at an explicit commit, and its record is removed last.
+   * discards at an explicit commit, and its record is removed last. The reference scan has the limit described on
+   * `removeMissingRecord`: task writes and processes outside Hive do not wait for this operation's lock, so callers
+   * that need the checkout to stay unreferenced stop them until cleanup returns.
    */
   async cleanup(id: string, input: RetainedCheckoutCleanupInput): Promise<RetainedCheckoutCleanupResult> {
     return this.mutate('cleanup', id, async (guard) => {
+      await resolveRetainedCheckout(this.context(), id);
+      await this.assertUnreferenced(id);
+      // The scan is unlocked against writers outside Hive, so presence is read after it: a checkout missing before the
+      // scan and reattached during it is then present and must match `expected`.
       const resolved = await resolveRetainedCheckout(this.context(), id);
       const { record, repository } = resolved;
-      await this.assertUnreferenced(id);
       let identity: WorktreeTargetIdentity | null = null;
       if (resolved.present) {
         ({ identity } = await observeRetainedCheckout(resolved));

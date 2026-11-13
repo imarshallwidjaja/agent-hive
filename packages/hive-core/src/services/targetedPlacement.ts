@@ -36,8 +36,10 @@ import {
   assertCreateConfirmed,
   confirmWorkspaceRecord,
   createUnconfirmedRefusal,
+  describesTargetedWorker,
   readCompositeWorkspaceManifest,
   readSingleWorkspaceMetadata,
+  parseTargetedWorkspaceMetadata,
   readTargetedWorkspaceMetadata,
   restoreWorkspaceRecord,
   unresolvedRecordNote,
@@ -46,10 +48,11 @@ import {
 import type { TargetBinding, TargetedWorkspaceMetadata } from './workspaceManifest.js';
 import {
   buildCleanupOutcome,
-  CleanupActionError,
   cleanupStepDone,
   deleteBranchStep,
   pruneWorktreesStep,
+  readBranchOid,
+  releaseWorkerRecord,
   removeUnconfirmedWorktreeStep,
   rollbackFailedCreate,
   WorktreeLinkageError,
@@ -118,16 +121,17 @@ export function targetedRunBranch(runId: string): string {
 }
 
 /**
- * Every targeted worker sidecar under `.hive/.worktrees/<group>/`, read without Git and through no symlink. Files
- * declaring another mode are skipped. A group that cannot be listed, or a `.json` entry that is not a regular file
- * or does not parse as a targeted sidecar, is returned as unreadable: it could be a damaged binding.
+ * Every worker sidecar under `.hive/.worktrees/<group>/`, each read once as JSON, without Git and through no symlink.
+ * A directory is a placement even when its name ends in `.json` (run `x.json` has the sidecar `x.json.json`). A group
+ * that cannot be listed, or another `.json` entry that is not a regular file or is not JSON, is returned as unreadable.
+ * Callers interpret each record's mode.
  */
-export async function listTargetedSidecars(hiveDir: string): Promise<{
-  sidecars: Array<{ path: string; metadata: TargetedWorkspaceMetadata }>;
+export async function readWorkerSidecars(hiveDir: string): Promise<{
+  records: Array<{ path: string; value: unknown }>;
   unreadable: Array<{ path: string; reason: string }>;
 }> {
   const root = path.join(hiveDir, '.worktrees');
-  const sidecars: Array<{ path: string; metadata: TargetedWorkspaceMetadata }> = [];
+  const records: Array<{ path: string; value: unknown }> = [];
   const unreadable: Array<{ path: string; reason: string }> = [];
   const reason = (error: unknown) => error instanceof Error ? error.message : String(error);
   const list = async (directory: string) => {
@@ -153,15 +157,59 @@ export async function listTargetedSidecars(hiveDir: string): Promise<{
       unreadable.push({ path: groupPath, reason: reason(error) });
       continue;
     }
-    for (const entry of entries.filter((candidate) => candidate.name.endsWith('.json')).sort((a, b) => a.name.localeCompare(b.name))) {
+    for (const entry of entries.filter((candidate) => candidate.name.endsWith('.json') && !candidate.isDirectory()).sort((a, b) => a.name.localeCompare(b.name))) {
       const sidecarPath = path.join(groupPath, entry.name);
       try {
         if (!entry.isFile()) throw new Error('worker metadata is not a regular file');
-        const metadata = await readTargetedWorkspaceMetadata(sidecarPath);
-        if (metadata) sidecars.push({ path: sidecarPath, metadata });
+        const raw = await fs.readFile(sidecarPath, 'utf8');
+        try {
+          records.push({ path: sidecarPath, value: JSON.parse(raw) });
+        } catch (error) {
+          throw new Error(`Invalid JSON in workspace metadata ${sidecarPath}: ${(error as Error).message}`);
+        }
       } catch (error) {
         unreadable.push({ path: sidecarPath, reason: reason(error) });
       }
+    }
+  }
+  return { records, unreadable };
+}
+
+/**
+ * Every targeted worker sidecar under `.hive/.worktrees/<group>/`. Single-root sidecars are skipped. A sidecar that
+ * `readWorkerSidecars` cannot read, a targeted one that does not parse, or one declaring no supported mode is returned
+ * as unreadable: it could be a damaged binding.
+ */
+export async function listTargetedSidecars(hiveDir: string): Promise<{
+  sidecars: Array<{ path: string; metadata: TargetedWorkspaceMetadata }>;
+  unreadable: Array<{ path: string; reason: string }>;
+}> {
+  const { records, unreadable } = await readWorkerSidecars(hiveDir);
+  const targeted = targetedSidecars(records);
+  return { sidecars: targeted.sidecars, unreadable: [...unreadable, ...targeted.unreadable] };
+}
+
+/**
+ * The targeted sidecars among read worker sidecar records, with the ones that could be a damaged binding: a targeted
+ * sidecar that does not parse, and one whose mode is missing or is no single-placement mode.
+ */
+export function targetedSidecars(records: Array<{ path: string; value: unknown }>): {
+  sidecars: Array<{ path: string; metadata: TargetedWorkspaceMetadata }>;
+  unreadable: Array<{ path: string; reason: string }>;
+} {
+  const sidecars: Array<{ path: string; metadata: TargetedWorkspaceMetadata }> = [];
+  const unreadable: Array<{ path: string; reason: string }> = [];
+  for (const { path: sidecarPath, value } of records) {
+    const mode = value && typeof value === 'object' ? (value as { mode?: unknown }).mode : undefined;
+    if (mode === 'single' || mode === 'adhoc-single') continue;
+    if (mode !== 'targeted' && mode !== 'adhoc-targeted') {
+      unreadable.push({ path: sidecarPath, reason: `worker metadata declares no supported mode (${JSON.stringify(mode) ?? 'none'})` });
+      continue;
+    }
+    try {
+      sidecars.push({ path: sidecarPath, metadata: parseTargetedWorkspaceMetadata(value, sidecarPath) });
+    } catch (error) {
+      unreadable.push({ path: sidecarPath, reason: error instanceof Error ? error.message : String(error) });
     }
   }
   return { sidecars, unreadable };
@@ -181,14 +229,8 @@ function placementMismatch(spec: TargetedPlacementSpec, detail: string): Worktre
   return new WorktreeLinkageError(`Worktree linkage preflight failed: targeted workspace metadata ${spec.metadataPath} ${detail}`);
 }
 
-function ownerMatches(metadata: TargetedWorkspaceMetadata, owner: TargetedPlacementSpec['owner']): boolean {
-  if ('runId' in owner) return metadata.runId === owner.runId;
-  return metadata.feature === owner.feature && metadata.task === owner.task && metadata.candidate === owner.candidate;
-}
-
 async function branchExists(git: SimpleGit, branch: string): Promise<boolean> {
-  // for-each-ref prints nothing for a missing ref and fails only when the repository cannot be read.
-  return (await git.raw(['for-each-ref', '--format=%(refname)', `refs/heads/${branch}`])).trim() !== '';
+  return (await readBranchOid(git, branch)) !== null;
 }
 
 /**
@@ -243,10 +285,7 @@ async function readBinding(context: RetainedCheckoutContext, spec: TargetedPlace
 export async function readTargetedPlacement(context: RetainedCheckoutContext, spec: TargetedPlacementSpec): Promise<TargetedPlacement | null> {
   const metadata = await readBinding(context, spec);
   if (!metadata) return null;
-  if (metadata.mode !== spec.mode || !ownerMatches(metadata, spec.owner)) throw placementMismatch(spec, 'belongs to another owner');
-  if (path.resolve(metadata.worktreePath) !== path.resolve(spec.worktreePath) || metadata.branch !== spec.branch) {
-    throw placementMismatch(spec, 'names another worktree path or branch');
-  }
+  if (!describesTargetedWorker(metadata, spec)) throw placementMismatch(spec, 'names another owner, worktree path or branch');
   const repository = context.repositories.find((candidate) => candidate.id === metadata.repoId);
   if (!repository || !projectRootsMatch(metadata.repositoryPath, repository.path)) {
     throw placementMismatch(spec, `names repository ${metadata.repoId}, which is not configured at ${metadata.repositoryPath}`);
@@ -586,13 +625,5 @@ export async function removeTargetedPlacement(
           ? await deleteBranchStep(git, spec.branch, pinnedBranchCommit)
           : { status: 'not_attempted' },
   });
-  const branchGone = deleteBranch
-    ? cleanupStepDone(outcome.branchDeletion)
-    : !(await branchExists(git, spec.branch).catch(() => true));
-  if (cleanupStepDone(outcome.worktreeRemoval) && branchGone) {
-    await fs.unlink(spec.metadataPath).catch((error: NodeJS.ErrnoException) => {
-      if (error.code !== 'ENOENT') throw new CleanupActionError(outcome, 'metadata-removal', error);
-    });
-  }
-  return outcome;
+  return releaseWorkerRecord(git, spec.branch, spec.metadataPath, outcome);
 }

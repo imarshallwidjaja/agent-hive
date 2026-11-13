@@ -1063,44 +1063,71 @@ describe("AdhocWorktreeService.merge", () => {
     expect(await branchExists(fixture.repoGit, created.branch)).toBe(false);
   });
 
-  for (const { stateName, label } of [
-    { stateName: "MERGE_HEAD", label: "merge" },
-    { stateName: "rebase-merge", label: "rebase" },
-    { stateName: "CHERRY_PICK_HEAD", label: "cherry-pick" },
-  ] as const) {
-    it(`fails safely when a net-zero ad-hoc merge sees active ${label} state`, async () => {
+  // The same Git operation state a rollback must leave behind refuses before anything changes, including the
+  // destructive cleanup of a net-zero or already contained source on an otherwise clean target.
+  for (const stateName of ["MERGE_HEAD", "rebase-merge", "CHERRY_PICK_HEAD", "REVERT_HEAD", "SQUASH_MSG", "index.lock"] as const) {
+    it(`fails safely when a net-zero or contained ad-hoc merge sees active ${stateName} state`, async () => {
       const fixture = await createFixture();
-      const created = await fixture.service.create({ runId: `merge-active-${label}` });
-      await fs.writeFile(path.join(created.path, "tracked.txt"), "transient ad-hoc change\n", "utf-8");
-      await commitAdhocChanges(fixture.service, created.runId, testCommitMessage('chore: transient ad-hoc change'));
-      await fs.writeFile(path.join(created.path, "tracked.txt"), "base\n", "utf-8");
-      await commitAdhocChanges(fixture.service, created.runId, testCommitMessage('revert: transient ad-hoc change'));
+      const netZero = await fixture.service.create({ runId: `merge-active-${stateName.toLowerCase().replace(/[^a-z0-9]/g, "-")}` });
+      await fs.writeFile(path.join(netZero.path, "tracked.txt"), "transient ad-hoc change\n", "utf-8");
+      await commitAdhocChanges(fixture.service, netZero.runId, testCommitMessage('chore: transient ad-hoc change'));
+      await fs.writeFile(path.join(netZero.path, "tracked.txt"), "base\n", "utf-8");
+      await commitAdhocChanges(fixture.service, netZero.runId, testCommitMessage('revert: transient ad-hoc change'));
+      const contained = await fixture.service.create({ runId: `contained-active-${stateName.toLowerCase().replace(/[^a-z0-9]/g, "-")}` });
       await fixture.repoGit.checkout("main");
       await fs.writeFile(path.join(fixture.repoPath, ".git", stateName), "deadbeef\n", "utf-8");
+      expect((await fixture.repoGit.status()).isClean()).toBe(true);
 
-      const result = await fixture.service.merge(created.runId, "squash", undefined, {
-        historyIntent: 'rewrite-private',
-        cleanup: "worktree+branch",
-      });
+      for (const created of [netZero, contained]) {
+        const result = await fixture.service.merge(created.runId, "squash", undefined, {
+          historyIntent: 'rewrite-private',
+          cleanup: "worktree+branch",
+        });
 
-      expect(result).toMatchObject({
-        success: false,
-        merged: false,
-        strategy: "squash",
-        filesChanged: [],
-        conflicts: [],
-        conflictState: "none",
-        cleanup: {
-          worktreeRemoved: false,
-          branchDeleted: false,
-          pruned: false,
-        },
-      });
-      expect(result.error).toMatch(new RegExp(`active ${label} state`, "i"));
-      expect(await pathExists(created.path)).toBe(true);
-      expect(await branchExists(fixture.repoGit, created.branch)).toBe(true);
+        expect(result).toMatchObject({
+          success: false,
+          merged: false,
+          strategy: "squash",
+          reasonCode: "GIT_OPERATION_IN_PROGRESS",
+          mutation: "none",
+          filesChanged: [],
+          conflicts: [],
+          conflictState: "none",
+          cleanup: {
+            worktreeRemoved: false,
+            branchDeleted: false,
+            pruned: false,
+          },
+        });
+        expect(result.error).toContain(stateName);
+        expect(await pathExists(created.path)).toBe(true);
+        expect(await branchExists(fixture.repoGit, created.branch)).toBe(true);
+      }
+      const markers = path.join(fixture.hiveDir, '.locks', 'operations');
+      expect(await pathExists(markers) ? await fs.readdir(markers) : []).toEqual([]);
     });
   }
+
+  it("integrates over an AUTO_MERGE that an earlier successful cherry-pick left behind", async () => {
+    const fixture = await createFixture();
+    const first = await fixture.service.create({ runId: "rebased-first" });
+    for (const name of ["one", "two"]) {
+      await fs.writeFile(path.join(first.path, `${name}.txt`), `${name}\n`, "utf-8");
+      await commitAdhocChanges(fixture.service, first.runId, testCommitMessage(`feat: add ${name}`));
+    }
+    await fixture.repoGit.checkout("main");
+    await fs.writeFile(path.join(fixture.repoPath, "main.txt"), "main\n", "utf-8");
+    await fixture.repoGit.add("main.txt");
+    await fixture.repoGit.commit(testCommitMessage("feat: advance main"));
+    expect(await fixture.service.merge(first.runId, "rebase", undefined, { historyIntent: 'rewrite-private' })).toMatchObject({ success: true, merged: true });
+    // Git's sequencer keeps AUTO_MERGE after a clean pick; it marks no open operation.
+    expect(await pathExists(path.join(fixture.repoPath, ".git", "AUTO_MERGE"))).toBe(true);
+
+    const next = await fixture.service.create({ runId: "after-rebase" });
+    await fs.writeFile(path.join(next.path, "next.txt"), "next\n", "utf-8");
+    await commitAdhocChanges(fixture.service, next.runId, testCommitMessage('feat: add next'));
+    expect(await fixture.service.merge(next.runId, "squash", mergeMessage, { historyIntent: 'rewrite-private', cleanup: "worktree+branch" })).toMatchObject({ success: true, merged: true, cleanup: { outcome: "complete" } });
+  });
 
   it("returns an error for strategy: 'rebase' with a custom message", async () => {
     const fixture = await createFixture();
@@ -2545,8 +2572,9 @@ describe("AdhocWorktreeService composite merge", () => {
       retryable: false,
       action: 'cleanup_only',
     });
-    expect(result.repos!.api).toMatchObject({ success: true, merged: true, sha: apiHead });
-    expect(result.repos!.web).toMatchObject({ success: true, merged: true, sha: webHead });
+    // Each repository's classification agrees with the cleanup it got.
+    expect(result.repos!.api).toMatchObject({ success: true, merged: true, sha: apiHead, phase: 'integration', action: 'none' });
+    expect(result.repos!.web).toMatchObject({ success: true, merged: true, sha: webHead, reasonCode: 'CLEANUP_FAILED', phase: 'cleanup', mutation: 'applied', action: 'cleanup_only' });
     expect(result.repos!.web.cleanup.failures).toContainEqual(expect.objectContaining({
       cause: expect.stringMatching(/simulated lstat failure/),
     }));
@@ -3150,6 +3178,26 @@ describe("AdhocWorktreeService cleanup observability", () => {
     expect(await pathExists(created.workspacePath!)).toBe(false);
     expect(await branchExists(fixture.apiGit, created.repos!.api.branch)).toBe(false);
     expect(await branchExists(fixture.webGit, created.repos!.web.branch)).toBe(false);
+  });
+
+  it('keeps the manifest of a composite run whose worker branches outlive a worktree-only cleanup', async () => {
+    const fixture = await createCompositeFixture();
+    const created = await fixture.service.create({ runId: 'cleanup-composite-kept', repoIds: ['api', 'web'] });
+    const branches = [[fixture.apiGit, created.repos!.api.branch], [fixture.webGit, created.repos!.web.branch]] as const;
+
+    expect((await fixture.service.cleanup(created.runId)).cleanup).toMatchObject({ requested: 'worktree', outcome: 'complete' });
+    expect(await pathExists(created.repos!.api.path)).toBe(false);
+    expect(await pathExists(created.repos!.web.path)).toBe(false);
+    expect(await pathExists(path.join(created.workspacePath!, 'workspace.json'))).toBe(true);
+    for (const [git, branch] of branches) expect(await branchExists(git, branch)).toBe(true);
+    // The root is metadata, not a live checkout: worker reads find none, and a create points to cleanup.
+    expect(await fixture.service.get(created.runId)).toBeNull();
+    expect(await fixture.service.inspect(created.runId)).toBeNull();
+    await expect(fixture.service.create({ runId: created.runId, repoIds: ['api', 'web'] })).rejects.toThrow(`${created.workspacePath} holds only its manifest`);
+
+    expect((await fixture.service.cleanup(created.runId, true)).cleanup).toMatchObject({ requested: 'worktree+branch', outcome: 'complete' });
+    for (const [git, branch] of branches) expect(await branchExists(git, branch)).toBe(false);
+    expect(await pathExists(created.workspacePath!)).toBe(false);
   });
 
   it("reports composite cleanup complete across repos when every step succeeds", async () => {
@@ -4185,6 +4233,229 @@ describe('AdhocWorktreeService targeted runs', () => {
     expect(errors).toEqual([candidateShaped, ambiguous]);
   }, 30_000);
 
+  it('refuses to clean up a task worker of a feature named adhoc or a run switched off its branch, also once the checkout is gone', async () => {
+    const fx = await targetedFixture();
+    const tasks = new WorktreeService({ baseDir: fx.repoPath, hiveDir: fx.hiveDir });
+    const group = path.join(fx.hiveDir, '.worktrees', 'adhoc');
+    const writeTaskStatus = async (task: string, status: object) => {
+      const taskPath = path.join(fx.hiveDir, 'features', 'adhoc', 'tasks', task);
+      await fs.mkdir(taskPath, { recursive: true });
+      await fs.writeFile(path.join(taskPath, 'status.json'), JSON.stringify({ origin: 'plan', ...status }));
+    };
+
+    // A task worker whose sidecar names its task: ad-hoc cleanup of the same name leaves it, with or without its checkout.
+    await writeTaskStatus('01-recorded', { status: 'in_progress' });
+    const recorded = await tasks.create('adhoc', '01-recorded');
+    const recordedSidecar = await fs.readFile(path.join(group, '01-recorded.json'), 'utf8');
+    for (const removeCheckout of [false, true]) {
+      if (removeCheckout) await fx.repoGit.raw(['worktree', 'remove', recorded.path]);
+      const refused = fx.core.cleanup('01-recorded', true);
+      await expect(refused).rejects.toBeInstanceOf(WorktreeLinkageError);
+      await expect(refused).rejects.toThrow('does not match the requested ad-hoc worktree');
+      expect(await pathExists(recorded.path)).toBe(!removeCheckout);
+      expect(await branchExists(fx.repoGit, recorded.branch)).toBe(true);
+      expect(await fs.readFile(path.join(group, '01-recorded.json'), 'utf8')).toBe(recordedSidecar);
+    }
+
+    // A sidecarless task worker whose status records its base commit is the task's.
+    await writeTaskStatus('02-old-task', { status: 'pending' });
+    const oldTask = await tasks.create('adhoc', '02-old-task');
+    await fs.rm(path.join(group, '02-old-task.json'));
+    await writeTaskStatus('02-old-task', { status: 'in_progress', baseCommit: oldTask.commit });
+    await expect(fx.core.cleanup('02-old-task', true)).rejects.toThrow(`${oldTask.path} is the worktree of task adhoc/02-old-task, not an ad-hoc run`);
+    expect(await pathExists(oldTask.path)).toBe(true);
+    expect(await branchExists(fx.repoGit, oldTask.branch)).toBe(true);
+
+    // A sidecarless run whose owner no record settles stays removable by the call that names it.
+    const legacyRun = await fx.core.create({ runId: '02-old-task--blue' });
+    await fs.rm(path.join(group, '02-old-task--blue.json'));
+    expect((await fx.core.cleanup('02-old-task--blue', true)).cleanup).toMatchObject({ outcome: 'complete' });
+    expect(await pathExists(legacyRun.path)).toBe(false);
+    expect(await branchExists(fx.repoGit, legacyRun.branch)).toBe(false);
+
+    // A confirmed run whose checkout was switched to another branch is refused before anything is removed.
+    const switched = await fx.core.create({ runId: 'off-branch' });
+    await simpleGit(switched.path).raw(['switch', '-c', 'fixture-other']);
+    const offBranch = await fx.core.cleanup('off-branch', true);
+    expect(offBranch).toMatchObject({ reasonCode: 'CLEANUP_FAILED', worktreeRemoved: false, branchDeleted: false });
+    expect(offBranch.cleanup.failures).toEqual([expect.objectContaining({ step: 'preflight', cause: expect.stringContaining('is on refs/heads/fixture-other, not hive/adhoc/off-branch') })]);
+    expect(await pathExists(switched.path)).toBe(true);
+    expect(await pathExists(path.join(group, 'off-branch.json'))).toBe(true);
+    expect(await branchExists(fx.repoGit, switched.branch)).toBe(true);
+    expect(await branchExists(fx.repoGit, 'fixture-other')).toBe(true);
+  }, 30_000);
+
+  it('creates and cleans up runs whose IDs differ only by a doubled hyphen, since their branches differ', async () => {
+    const fx = await targetedFixture();
+    const plain = await fx.core.create({ runId: 'foo-bar' });
+    const dashed = await fx.core.create({ runId: 'foo--bar' });
+    expect([plain.branch, dashed.branch]).toEqual(['hive/adhoc/foo-bar', 'hive/adhoc/foo--bar']);
+    for (const runId of ['foo-bar', 'foo--bar']) expect((await fx.core.cleanup(runId, true)).cleanup).toMatchObject({ outcome: 'complete' });
+    for (const created of [plain, dashed]) {
+      expect(await pathExists(created.path)).toBe(false);
+      expect(await branchExists(fx.repoGit, created.branch)).toBe(false);
+    }
+  });
+
+  it('refuses to delete a branch that a record at another placement of the group names, from either service', async () => {
+    const fx = await targetedFixture();
+    const tasks = new WorktreeService({ baseDir: fx.repoPath, hiveDir: fx.hiveDir });
+    const group = path.join(fx.hiveDir, '.worktrees', 'adhoc');
+    const writeTaskStatus = async (task: string) => {
+      const taskPath = path.join(fx.hiveDir, 'features', 'adhoc', 'tasks', task);
+      await fs.mkdir(taskPath, { recursive: true });
+      await fs.writeFile(path.join(taskPath, 'status.json'), JSON.stringify({ origin: 'plan', status: 'in_progress' }));
+    };
+    const kept = async (created: { path: string; branch: string }) => ({
+      record: await fs.readFile(`${created.path}.json`, 'utf8'),
+      tip: (await fx.repoGit.revparse([created.branch])).trim(),
+    });
+
+    // Candidate b of task adhoc/01-a, kept by a worktree-only cleanup, uses branch hive/adhoc/01-a-b, which is also
+    // the branch run 01-a-b would use. Run 01-a-b has no record of its own.
+    await writeTaskStatus('01-a');
+    const candidate = await tasks.create('adhoc', '01-a', undefined, 'b');
+    await fx.commitIn(candidate.path, 'candidate.txt');
+    expect((await tasks.remove('adhoc', '01-a', false, {}, 'b')).cleanup.outcome).toBe('complete');
+    const candidateKept = await kept(candidate);
+    await expect(fx.core.cleanup('01-a-b', true, { discard: true })).rejects.toThrow(`${candidate.path}.json records a worker on branch ${candidate.branch}`);
+    // Create refuses an existing branch without its checkout and never reattaches it.
+    await expect(fx.core.create({ runId: '01-a-b' })).rejects.toThrow(`Branch collision: ${candidate.branch} already exists`);
+    expect(await fs.readFile(`${candidate.path}.json`, 'utf8')).toBe(candidateKept.record);
+    expect((await fx.repoGit.revparse([candidate.branch])).trim()).toBe(candidateKept.tip);
+    expect(await pathExists(path.join(group, '01-a-b'))).toBe(false);
+    expect(await pathExists(path.join(group, '01-a-b.json'))).toBe(false);
+
+    // A run made from a linked checkout of the same repository records another repository path, and is refused too.
+    const linkedParent = await fs.mkdtemp(path.join(os.tmpdir(), 'hive-adhoc-linked-'));
+    tempDirs.push(linkedParent);
+    const linkedPath = path.join(linkedParent, 'linked');
+    await fx.repoGit.raw(['worktree', 'add', '--detach', linkedPath]);
+    const linked = new CoreAdhocWorktreeService({ baseDir: linkedPath, hiveDir: fx.hiveDir });
+    await expect(linked.cleanup('01-a-b', true, { discard: true })).rejects.toThrow(`${candidate.path}.json records a worker on branch ${candidate.branch}`);
+    expect((await fx.repoGit.revparse([candidate.branch])).trim()).toBe(candidateKept.tip);
+
+    // Once the kept record's branch is gone, a create would make a new branch that record still names; it is refused
+    // and makes nothing.
+    await fx.repoGit.raw(['branch', '-D', candidate.branch]);
+    await expect(fx.core.create({ runId: '01-a-b' })).rejects.toThrow(`${candidate.path}.json records a worker on branch ${candidate.branch}`);
+    expect(await fs.readFile(`${candidate.path}.json`, 'utf8')).toBe(candidateKept.record);
+    expect(await branchExists(fx.repoGit, candidate.branch)).toBe(false);
+    expect([await pathExists(path.join(group, '01-a-b')), await pathExists(path.join(group, '01-a-b.json'))]).toEqual([false, false]);
+
+    // The symmetric task call: run 02-c-d is kept, and candidate d of task adhoc/02-c, which has no record, would delete its branch.
+    const run = await fx.core.create({ runId: '02-c-d' });
+    await fx.commitIn(run.path, 'run.txt');
+    expect((await fx.core.cleanup('02-c-d')).cleanup.outcome).toBe('complete');
+    const runKept = await kept(run);
+    await writeTaskStatus('02-c');
+    await expect(tasks.remove('adhoc', '02-c', true, { discard: true }, 'd')).rejects.toThrow(`${run.path}.json records a worker on branch ${run.branch}`);
+    expect(await fs.readFile(`${run.path}.json`, 'utf8')).toBe(runKept.record);
+    expect((await fx.repoGit.revparse([run.branch])).trim()).toBe(runKept.tip);
+    const markers = path.join(fx.hiveDir, '.locks', 'operations');
+    expect(await pathExists(markers) ? await fs.readdir(markers) : []).toEqual([]);
+  }, 30_000);
+
+  it('refuses a branch a targeted sidecar of the group names, or whose targeted record it cannot read', async () => {
+    const fx = await targetedFixture();
+    const group = path.join(fx.hiveDir, '.worktrees', 'adhoc');
+    // A sidecarless run whose owner no record settles, so its cleanup must decide the branch from the group's records.
+    const run = await fx.core.create({ runId: 'claimless' });
+    await fs.rm(`${run.path}.json`);
+    const sidecar = path.join(group, 'other.json');
+    const targeted = (branch: string) => JSON.stringify({
+      schemaVersion: 1, mode: 'targeted', feature: 'adhoc', task: 'other', repoId: 'root', worktreePath: path.join(group, 'other'),
+      repositoryPath: fx.repoPath, branch, baseCommit: run.commit, target: { id: 'root/x', path: path.join(fx.hiveDir, 'checkouts', 'root', 'x'), ref: 'refs/heads/x' },
+      createdAt: new Date(0).toISOString(),
+    });
+    for (const [record, refusal] of [
+      [JSON.stringify({ schemaVersion: 1, mode: 'targeted' }), `${sidecar} cannot be read`],
+      [targeted(run.branch), `${sidecar} records a worker on branch ${run.branch}`],
+    ] as const) {
+      await fs.writeFile(sidecar, record);
+      await expect(fx.core.cleanup('claimless', true, { discard: true })).rejects.toThrow(refusal);
+      expect(await pathExists(run.path)).toBe(true);
+      expect(await branchExists(fx.repoGit, run.branch)).toBe(true);
+    }
+    // A readable targeted record of another branch claims nothing.
+    await fs.writeFile(sidecar, targeted('hive-targeted/task/adhoc/other'));
+    expect((await fx.core.cleanup('claimless', true, { discard: true })).cleanup.outcome).toBe('complete');
+    expect(await branchExists(fx.repoGit, run.branch)).toBe(false);
+  });
+
+  it('refuses at preflight to integrate a run without a record that sits on a branch another record of the group names', async () => {
+    const fx = await targetedFixture();
+    const tasks = new WorktreeService({ baseDir: fx.repoPath, hiveDir: fx.hiveDir });
+    const group = path.join(fx.hiveDir, '.worktrees', 'adhoc');
+    const taskPath = path.join(fx.hiveDir, 'features', 'adhoc', 'tasks', '03-e');
+    await fs.mkdir(taskPath, { recursive: true });
+    await fs.writeFile(path.join(taskPath, 'status.json'), JSON.stringify({ origin: 'plan', status: 'in_progress' }));
+    // Candidate f of task adhoc/03-e is kept with its branch hive/adhoc/03-e-f; another Git client then attaches that
+    // branch at run 03-e-f's placement, which has no record.
+    const candidate = await tasks.create('adhoc', '03-e', undefined, 'f');
+    const tip = await fx.commitIn(candidate.path, 'candidate.txt');
+    expect((await tasks.remove('adhoc', '03-e', false, {}, 'f')).cleanup.outcome).toBe('complete');
+    const record = await fs.readFile(`${candidate.path}.json`, 'utf8');
+    await fx.repoGit.raw(['worktree', 'add', path.join(group, '03-e-f'), candidate.branch]);
+    const target = await readWorktreeTargetIdentity(fx.repoPath);
+
+    const result = await fx.core.merge('03-e-f', 'merge', mergeMessage, { historyIntent: 'preserve-source', sourceCommit: tip, expectedTarget: target, cleanup: 'worktree+branch' });
+    expect(result).toMatchObject({ success: false, merged: false, reasonCode: 'WORKTREE_LINKAGE_INVALID', mutation: 'none' });
+    expect(result.error).toContain(`${candidate.path}.json records a worker on branch ${candidate.branch}`);
+    expect(await readWorktreeTargetIdentity(fx.repoPath)).toEqual(target);
+    expect((await fx.repoGit.revparse([candidate.branch])).trim()).toBe(tip);
+    expect(await fs.readFile(`${candidate.path}.json`, 'utf8')).toBe(record);
+    expect(await pathExists(path.join(group, '03-e-f'))).toBe(true);
+    const markers = path.join(fx.hiveDir, '.locks', 'operations');
+    expect(await pathExists(markers) ? await fs.readdir(markers) : []).toEqual([]);
+
+    // Create does not hand that checkout out as run 03-e-f either.
+    await expect(fx.core.create({ runId: '03-e-f' })).rejects.toThrow(`${candidate.path}.json records a worker on branch ${candidate.branch}`);
+    expect((await fx.repoGit.revparse([candidate.branch])).trim()).toBe(tip);
+    expect(await fs.readFile(`${candidate.path}.json`, 'utf8')).toBe(record);
+    expect(await pathExists(path.join(group, '03-e-f.json'))).toBe(false);
+    // Once no record claims the branch, the recordless checkout is the run's and create returns it.
+    await fs.rm(`${candidate.path}.json`);
+    expect(await fx.core.create({ runId: '03-e-f' })).toMatchObject({ path: path.join(group, '03-e-f'), branch: candidate.branch, commit: tip });
+  });
+
+  it('reads task records from the Hive root, not the foreign checkout a run was made from', async () => {
+    const fx = await targetedFixture();
+    // Runs made from a foreign checkout keep their worker metadata under the governing project's Hive root.
+    const { repoPath: foreignPath, repoGit: foreignGit } = await createTempRepo();
+    const foreign = new CoreAdhocWorktreeService({ baseDir: foreignPath, hiveDir: fx.hiveDir });
+    expect(path.dirname(fx.hiveDir)).not.toBe(foreignPath);
+    const run = await foreign.create({ runId: '01-shared' });
+    await fs.rm(`${run.path}.json`);
+    await foreignGit.raw(['worktree', 'remove', run.path]);
+    // The governing project has task adhoc/01-shared, in an indexed feature directory only its root resolves, and the
+    // task status records a worker base commit.
+    const featurePath = path.join(fx.hiveDir, 'features', '01_adhoc');
+    const taskPath = path.join(featurePath, 'tasks', '01-shared');
+    await fs.mkdir(taskPath, { recursive: true });
+    await fs.writeFile(path.join(featurePath, 'feature.json'), JSON.stringify({ name: 'adhoc', status: 'executing' }));
+    await fs.writeFile(path.join(taskPath, 'status.json'), JSON.stringify({ origin: 'plan', status: 'in_progress', baseCommit: run.commit }));
+
+    await expect(foreign.cleanup('01-shared', true, { discard: true })).rejects.toThrow(`${run.path} is the worktree of task adhoc/01-shared, not an ad-hoc run`);
+    expect(await branchExists(foreignGit, run.branch)).toBe(true);
+  });
+
+  it('refuses a composite create that would hide the kept record and branch of a single-root run of the same name', async () => {
+    const fx = await targetedFixture();
+    const run = await fx.core.create({ runId: 'reused-name' });
+    const tip = await fx.commitIn(run.path, 'single.txt');
+    expect((await fx.core.cleanup('reused-name')).cleanup.outcome).toBe('complete');
+    const sidecarPath = `${run.path}.json`;
+    const sidecar = await fs.readFile(sidecarPath, 'utf-8');
+
+    const composite = new CoreAdhocWorktreeService({ baseDir: fx.repoPath, hiveDir: fx.hiveDir, repositoryResolver: () => [{ id: 'root', path: fx.repoPath, root: fx.repoPath }] });
+    await expect(composite.create({ runId: 'reused-name', repoIds: ['root'] })).rejects.toThrow(`${sidecarPath} records a single-root worker of this name`);
+    expect(await pathExists(run.path)).toBe(false);
+    expect(await fs.readFile(sidecarPath, 'utf-8')).toBe(sidecar);
+    expect((await fx.repoGit.raw(['rev-parse', `refs/heads/${run.branch}`])).trim()).toBe(tip);
+    expect(await branchExists(fx.repoGit, 'hive/adhoc/root/reused-name')).toBe(false);
+  });
+
   it('leaves a sidecarless entry unknown while a feature named adhoc has unreadable or ambiguous metadata', async () => {
     const fx = await targetedFixture();
     const run = await fx.core.create({ runId: 'old-run' });
@@ -4352,6 +4623,50 @@ describe('AdhocWorktreeService integration receipts', () => {
     expect(await pathExists(created.repos!.web.path)).toBe(true);
   });
 
+  it('holds every repository for inspection, not a cleanup-only retry, when one repository of a composite run cannot record its receipt', async () => {
+    const fixture = await createCompositeFixture();
+    const created = await fixture.service.create({ runId: 'receipt-composite-mixed', repoIds: ['api', 'web'] });
+    await fs.writeFile(path.join(created.repos!.api.path, 'api.txt'), 'a\n', 'utf-8');
+    await fs.writeFile(path.join(created.repos!.web.path, 'web.txt'), 'w\n', 'utf-8');
+    await commitAdhocChanges(fixture.service, created.runId, testCommitMessage('feat: composite mixed receipts'));
+    // api records its receipt; web, integrated second, does not.
+    const runRecorder = (fixture.service as any).runRecorder.bind(fixture.service);
+    (fixture.service as any).runRecorder = (...args: unknown[]) => {
+      const record = runRecorder(...args);
+      let calls = 0;
+      return async (applied: unknown) => (++calls === 2 ? { status: 'failed', error: 'injected receipt failure' } : record(applied));
+    };
+
+    const result = await fixture.service.merge(created.runId, 'squash', mergeMessage, { historyIntent: 'rewrite-private', cleanup: 'worktree+branch' });
+
+    expect(result).toMatchObject({ success: true, merged: true, mutation: 'applied', action: 'inspect_state', provenance: { status: 'failed' } });
+    expect(result.repos!.api).toMatchObject({ merged: true, mutation: 'applied', action: 'inspect_state', provenance: { status: 'recorded' }, cleanup: { worktreeRemoval: { status: 'not_attempted' } } });
+    expect(result.repos!.web).toMatchObject({ merged: true, mutation: 'applied', action: 'inspect_state', provenance: { status: 'failed' } });
+    expect(await pathExists(created.repos!.api.path)).toBe(true);
+    expect(await pathExists(created.repos!.web.path)).toBe(true);
+  });
+
+  it('still reports an already integrated composite run as already_integrated when its deferred cleanup fails', async () => {
+    const fixture = await createCompositeFixture();
+    const created = await fixture.service.create({ runId: 'contained-cleanup-failure', repoIds: ['api', 'web'] });
+    const originalRemove = (fixture.service as any).removeWorktreeStep.bind(fixture.service);
+    const removeSpy = spyOn(fixture.service as any, 'removeWorktreeStep').mockImplementation(async (...args: any[]) => {
+      if (String(args[1]) === created.repos!.web.path) throw Object.assign(new Error('EACCES: simulated lstat failure'), { code: 'EACCES' });
+      return originalRemove(...args);
+    });
+    let result: Awaited<ReturnType<typeof fixture.service.merge>>;
+    try {
+      result = await fixture.service.merge(created.runId, 'squash', undefined, { historyIntent: 'rewrite-private', cleanup: 'worktree+branch' });
+    } finally {
+      removeSpy.mockRestore();
+    }
+
+    // The source histories were contained either way; the cleanup failure is a separate, derived fact.
+    expect(result).toMatchObject({ success: true, merged: false, reason: 'already_integrated', reasonCode: 'CLEANUP_FAILED', mutation: 'none', action: 'cleanup_only' });
+    expect(result.repos!.api).toMatchObject({ reason: 'already_integrated', reasonCode: 'ALREADY_INTEGRATED', action: 'none' });
+    expect(result.repos!.web).toMatchObject({ reason: 'already_integrated', reasonCode: 'CLEANUP_FAILED', mutation: 'none', action: 'cleanup_only' });
+  });
+
   it('keeps an earlier repository\'s failed receipt visible when a later repository stops the composite', async () => {
     const fixture = await createCompositeFixture();
     const created = await fixture.service.create({ runId: 'receipt-composite-partial', repoIds: ['api', 'web'] });
@@ -4370,5 +4685,100 @@ describe('AdhocWorktreeService integration receipts', () => {
     expect(result).toMatchObject({ success: false, partial: true, reasonCode: 'COMPOSITE_PARTIAL', mutation: 'partial', action: 'inspect_state', provenance: { status: 'failed' } });
     expect(result.repos!.api).toMatchObject({ merged: true, provenance: { status: 'failed' } });
     expect(result.repos!.web.provenance).toBeUndefined();
+  });
+});
+
+describe('AdhocWorktreeService run record ownership', () => {
+  /** Commit one file in a run's checkout so its branch holds work only it has. */
+  async function commitWork(checkout: string): Promise<string> {
+    await fs.writeFile(path.join(checkout, 'work.txt'), 'run work\n');
+    await simpleGit(checkout).add('work.txt');
+    await simpleGit(checkout).commit(testCommitMessage('feat: run work'));
+    return (await simpleGit(checkout).revparse(['HEAD'])).trim();
+  }
+
+  /**
+   * Make `branch` in `repoPath` reappear at its old commit once, right after a ref transaction deletes it, as another
+   * Git client would.
+   */
+  async function recreateBranchAfterDeletion(repoPath: string, branch: string): Promise<void> {
+    const marker = path.join(repoPath, '.git', 'hive-test-recreated');
+    const zero = '0'.repeat(40);
+    await fs.writeFile(path.join(repoPath, '.git', 'hooks', 'reference-transaction'), [
+      '#!/bin/sh',
+      '[ "$1" = committed ] || exit 0',
+      `[ -e '${marker}' ] && exit 0`,
+      'while read old new ref; do',
+      `  if [ "$ref" = 'refs/heads/${branch}' ] && [ "$new" = ${zero} ] && [ "$old" != ${zero} ]; then : > '${marker}'; git update-ref "$ref" "$old"; fi`,
+      'done',
+      'exit 0',
+      '',
+    ].join('\n'), { mode: 0o755 });
+  }
+
+  it('refuses a single-root create over a run record another source repository or an unconfirmed create left', async () => {
+    const { repoPath } = await createTempRepo();
+    const hiveDir = path.join(repoPath, '.hive');
+    const first = await createTempRepo();
+    const second = await createTempRepo();
+    // Two foreign source repositories share the project's Hive root.
+    const fromFirst = new AdhocWorktreeService({ baseDir: first.repoPath, hiveDir });
+    const run = await fromFirst.create({ runId: 'shared' });
+    const tip = await commitWork(run.path);
+    expect((await fromFirst.cleanup('shared')).cleanup.outcome).toBe('complete');
+    const recordPath = `${run.path}.json`;
+    const record = await fs.readFile(recordPath, 'utf8');
+
+    for (const { repoPath: source, repoGit } of [second, { repoPath, repoGit: simpleGit(repoPath) }]) {
+      await expect(new AdhocWorktreeService({ baseDir: source, hiveDir }).create({ runId: 'shared' })).rejects.toThrow('does not match the requested ad-hoc worktree');
+      expect(await fs.readFile(recordPath, 'utf8')).toBe(record);
+      expect(await branchExists(repoGit, run.branch)).toBe(false);
+    }
+    expect((await first.repoGit.revparse([run.branch])).trim()).toBe(tip);
+
+    // A run's own record whose create was never confirmed is not replaced either, even with its branch gone.
+    const service = new AdhocWorktreeService({ baseDir: repoPath, hiveDir });
+    const placement = path.join(hiveDir, '.worktrees', 'adhoc', 'unconfirmed');
+    const unconfirmed = JSON.stringify({ schemaVersion: 1, mode: 'adhoc-single', runId: 'unconfirmed', worktreePath: placement, repositoryPath: repoPath, branch: 'hive/adhoc/unconfirmed', baseCommit: tip, createUnconfirmed: true });
+    await fs.writeFile(`${placement}.json`, unconfirmed);
+    await expect(service.create({ runId: 'unconfirmed' })).rejects.toThrow('was left by a create that never confirmed it');
+    expect(await fs.readFile(`${placement}.json`, 'utf8')).toBe(unconfirmed);
+  });
+
+  it('keeps a single-root or targeted run record and reports cleanup incomplete when its deleted branch exists again', async () => {
+    const fixture = await createFixture();
+    await new RetainedCheckoutService({ baseDir: fixture.repoPath, hiveDir: fixture.hiveDir }).create({ id: 'root/feature', branch: 'feat/x', baseRef: 'main' });
+    const single = await fixture.service.create({ runId: 'again' });
+    const targeted = await fixture.service.create({ runId: 'bound', target: 'root/feature' });
+
+    for (const run of [single, targeted]) {
+      const recordPath = `${run.path}.json`;
+      const record = await fs.readFile(recordPath, 'utf8');
+      await recreateBranchAfterDeletion(fixture.repoPath, run.branch);
+      const reappeared = await fixture.service.cleanup(run.runId, true);
+      expect(reappeared).toMatchObject({ reasonCode: 'CLEANUP_FAILED', branchDeleted: true, cleanup: { outcome: 'partial' } });
+      expect(reappeared.cleanup.failures).toEqual([{ step: 'metadata-removal', cause: `Kept ${recordPath}: branch ${run.branch} exists at ${run.commit} after this cleanup deleted it or found it gone` }]);
+      expect(await fs.readFile(recordPath, 'utf8')).toBe(record);
+      expect((await fixture.repoGit.revparse([run.branch])).trim()).toBe(run.commit);
+
+      // The hook recreates a branch once; the next cleanup deletes it, reads it gone and releases the record.
+      expect((await fixture.service.cleanup(run.runId, true)).cleanup.outcome).toBe('complete');
+      expect(await pathExists(recordPath)).toBe(false);
+      await fs.rm(path.join(fixture.repoPath, '.git', 'hive-test-recreated'));
+    }
+  });
+
+  it('releases a targeted run record once its exact branch is gone, though a branch below its name exists', async () => {
+    const fixture = await createFixture();
+    await new RetainedCheckoutService({ baseDir: fixture.repoPath, hiveDir: fixture.hiveDir }).create({ id: 'root/feature', branch: 'feat/x', baseRef: 'main' });
+    const run = await fixture.service.create({ runId: 'bound', target: 'root/feature' });
+    expect((await fixture.service.cleanup('bound')).cleanup.outcome).toBe('complete');
+    expect(await pathExists(`${run.path}.json`)).toBe(true);
+
+    await fixture.repoGit.raw(['branch', '-D', run.branch]);
+    await fixture.repoGit.raw(['branch', `${run.branch}/backup`, run.commit]);
+    expect((await fixture.service.cleanup('bound')).cleanup.outcome).toBe('complete');
+    expect(await pathExists(`${run.path}.json`)).toBe(false);
+    expect(await branchExists(fixture.repoGit, `${run.branch}/backup`)).toBe(true);
   });
 });

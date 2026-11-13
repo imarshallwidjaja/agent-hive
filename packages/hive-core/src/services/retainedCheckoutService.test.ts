@@ -434,6 +434,51 @@ describe('RetainedCheckoutService', () => {
     expect(await fx.checkouts.removeMissingRecord('root/feature', proposal.record)).toMatchObject({ recordRemoved: true });
   });
 
+  it('clears the readiness of missing checkouts that name each other only against their inspected records, so their records can then go', async () => {
+    const fx = await createFixture();
+    const alpha = await fx.checkouts.create({ id: 'root/alpha', branch: 'alpha', baseRef: 'main' });
+    const beta = await fx.checkouts.create({ id: 'root/beta', branch: 'beta', baseRef: 'main' });
+    const live = await fx.checkouts.create({ id: 'root/live', branch: 'live', baseRef: 'main' });
+    await fx.checkouts.setReadiness('root/alpha', await readWorktreeTargetIdentity(alpha.path), { state: 'ready', nextTarget: 'root/beta' });
+    await fx.checkouts.setReadiness('root/beta', await readWorktreeTargetIdentity(beta.path), { state: 'ready', nextTarget: 'root/alpha' });
+    await fx.checkouts.setReadiness('root/live', await readWorktreeTargetIdentity(live.path), { state: 'not_ready' });
+    fs.rmSync(alpha.path, { recursive: true, force: true });
+    fs.rmSync(beta.path, { recursive: true, force: true });
+    const alphaRecord = (await fx.checkouts.inspectCleanup('root/alpha')).record;
+    expect(((await rejection(fx.checkouts.removeMissingRecord('root/alpha', alphaRecord))) as RetainedCheckoutError).reason).toBe('referenced');
+
+    // A record changed since inspection, and a checkout that is present, keep their readiness.
+    const liveRecord = (await fx.checkouts.inspectCleanup('root/live')).record;
+    for (const [id, record] of [['root/alpha', { ...alphaRecord, purpose: 'other' }], ['root/live', liveRecord]] as const) {
+      expect(((await rejection(fx.checkouts.clearMissingReadiness(id, record))) as RetainedCheckoutError).reason).toBe('binding_mismatch');
+    }
+    expect((await readRetainedCheckoutRecord(fx.hiveDir, 'root/alpha'))?.readiness?.nextTarget).toBe('root/beta');
+    expect((await readRetainedCheckoutRecord(fx.hiveDir, 'root/live'))?.readiness?.state).toBe('not_ready');
+
+    const cleared = await fx.checkouts.clearMissingReadiness('root/alpha', alphaRecord);
+    expect(cleared).not.toHaveProperty('readiness');
+    expect(await readRetainedCheckoutRecord(fx.hiveDir, 'root/alpha')).toEqual(cleared);
+    expect(await fx.checkouts.clearMissingReadiness('root/alpha', cleared)).toEqual(cleared);
+    expect(await fx.checkouts.removeMissingRecord('root/beta', (await fx.checkouts.inspectCleanup('root/beta')).record)).toMatchObject({ recordRemoved: true });
+    expect(await fx.checkouts.removeMissingRecord('root/alpha', cleared)).toMatchObject({ recordRemoved: true });
+  });
+
+  it('refuses a registration while a record path of that repository that could hold one is not a readable entry', async () => {
+    const fx = await createFixture();
+    const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'hive-retained-register-hidden-')));
+    tempDirs.push(outside);
+    fs.writeFileSync(path.join(outside, 'old.json'), '{}');
+    const repositoryDirectory = path.join(fx.hiveDir, 'checkouts', 'root');
+    fs.mkdirSync(repositoryDirectory, { recursive: true });
+    const hidden = path.join(repositoryDirectory, 'old.json');
+    fs.symlinkSync(path.join(outside, 'old.json'), hidden);
+
+    await expect(fx.checkouts.register({ id: 'root/main' })).rejects.toThrow(`Repository root may already be registered in a record that cannot be read: ${hidden}`);
+    expect(fs.existsSync(path.join(repositoryDirectory, 'main.json'))).toBe(false);
+    fs.rmSync(hidden);
+    expect(await fx.checkouts.register({ id: 'root/main' })).toMatchObject({ ownership: 'registered' });
+  });
+
   it('checks the record and placement again after the reference scan, so a change made during the scan is refused', async () => {
     const fx = await createFixture();
     const feature = await fx.checkouts.create({ id: 'root/feature', branch: 'feat/x', baseRef: 'main' });
@@ -442,14 +487,14 @@ describe('RetainedCheckoutService', () => {
     const proposal = await fx.checkouts.inspectCleanup('root/feature');
     const scan = fx.checkouts.findReferences.bind(fx.checkouts);
     // Another writer acts while the scan runs, after the first record and placement checks passed.
-    const duringScan = async (change: () => Promise<void> | void) => {
+    const duringScan = async (change: () => Promise<void> | void, remove = () => fx.checkouts.removeMissingRecord('root/feature', proposal.record)) => {
       fx.checkouts.findReferences = async (id: string) => {
         const result = await scan(id);
         await change();
         return result;
       };
       try {
-        return await rejection(fx.checkouts.removeMissingRecord('root/feature', proposal.record));
+        return await rejection(remove());
       } finally {
         fx.checkouts.findReferences = scan;
       }
@@ -466,6 +511,18 @@ describe('RetainedCheckoutService', () => {
     });
     expect(recreated.message).toContain('it is not missing');
     expect(fs.existsSync(recordPath)).toBe(true);
+
+    // Cleanup of the checkout as missing (expected: null) also refuses one reattached during its scan, and leaves the
+    // reattached worktree, its branch and the record as they are.
+    fs.rmSync(feature.path, { recursive: true, force: true });
+    await fx.git.raw(['worktree', 'prune']);
+    const reattached = await duringScan(async () => {
+      await fx.git.raw(['worktree', 'add', '-f', feature.path, 'feat/x']);
+    }, () => fx.checkouts.cleanup('root/feature', { expected: null, deleteBranch: { discard: true, commit: fx.base } }));
+    expect((reattached as RetainedCheckoutError).reason).toBe('binding_mismatch');
+    expect(fs.readFileSync(recordPath, 'utf8')).toBe(JSON.stringify(proposal.record));
+    expect(fs.existsSync(path.join(feature.path, '.git'))).toBe(true);
+    expect((await fx.git.raw(['show-ref', '--verify', '--hash', 'refs/heads/feat/x'])).trim()).toBe(fx.base);
   });
 
   it('counts persisted references and refuses cleanup while any reference source is unreadable or unknown', async () => {
@@ -498,12 +555,16 @@ describe('RetainedCheckoutService', () => {
     // Targeted work whose sidecar is gone still names a target nobody can read.
     const lost = await fx.adhoc.create({ runId: 'lost', target: 'root/feature' });
     fs.rmSync(path.join(fx.hiveDir, '.worktrees', 'adhoc', 'lost.json'));
-    // A stray file that is no worker record is not a reference source.
+    // A stray file that is no worker record, or a temporary file of an atomic sidecar write, is not a reference source.
     fs.writeFileSync(path.join(fx.hiveDir, '.worktrees', 'adhoc', 'notes.txt'), 'scratch\n');
+    fs.writeFileSync(path.join(fx.hiveDir, '.worktrees', 'adhoc', 'pending.json.tmp.1.2'), '{');
+    // A sidecar whose mode is damaged could be a binding that names this checkout.
+    fs.writeFileSync(path.join(fx.hiveDir, '.worktrees', 'adhoc', 'damaged.json'), JSON.stringify({ schemaVersion: 1, mode: 'adhoc-targetted', target: { id: 'root/feature' } }));
 
     const proposal = await fx.checkouts.inspectCleanup('root/feature');
     expect(proposal.references).toEqual([]);
     expect(proposal.unreadableReferences.map((source) => source.path.replace(`${fx.hiveDir}${path.sep}`, '')).sort()).toEqual([
+      path.join('.worktrees', 'adhoc', 'damaged.json'),
       path.join('.worktrees', 'adhoc', 'planted.json'),
       path.join('checkouts', 'root', 'broken.json'),
       path.join('features', 'demo', 'tasks', '01-ship', 'status.json'),
@@ -513,7 +574,8 @@ describe('RetainedCheckoutService', () => {
       `${fx.repoPath}:refs/heads/hive-targeted/adhoc/lost`,
     ].sort());
     expect(proposal.unreadableReferences.find((source) => source.path.endsWith('adhoc/lost'))?.reason).toContain('in repository root has no binding metadata');
-    expect(proposal.blockers).toHaveLength(7);
+    expect(proposal.unreadableReferences.find((source) => source.path.endsWith('damaged.json'))?.reason).toBe('worker metadata declares no supported mode ("adhoc-targetted")');
+    expect(proposal.blockers).toHaveLength(8);
     expect(fs.existsSync(lost.path)).toBe(true);
     const refused = await rejection(fx.checkouts.cleanup('root/feature', { expected: proposal.identity }));
     expect((refused as RetainedCheckoutError).reason).toBe('references_unknown');

@@ -531,6 +531,43 @@ export async function readBranchOid(git: SimpleGit, branchName: string): Promise
 }
 
 /**
+ * Finish a single-placement worker's cleanup (single-root or targeted) by releasing the record that names the
+ * worker branch's owner. The record goes only after the worktree removal completed and the exact branch is read as
+ * absent now; that read covers this moment, not what another Git client does afterwards. A branch that remains keeps
+ * the record: a worktree-only cleanup means to keep it, while a branch that exists after this cleanup deleted it or
+ * found it gone, or one that cannot be read, also makes the returned outcome incomplete.
+ */
+export async function releaseWorkerRecord(
+  git: SimpleGit,
+  branchName: string,
+  recordPath: string,
+  outcome: WorktreeCleanupOutcome,
+): Promise<WorktreeCleanupOutcome> {
+  if (!cleanupStepDone(outcome.worktreeRemoval)) return outcome;
+  const kept = (cause: string) => buildCleanupOutcome(outcome.requested, {
+    worktreeRemoval: outcome.worktreeRemoval,
+    branchDeletion: outcome.branchDeletion,
+    prune: outcome.prune,
+    failures: [...outcome.failures, { step: 'metadata-removal', cause: `Kept ${recordPath}: ${cause}` }],
+  });
+  let tip: string | null;
+  try {
+    tip = await readBranchOid(git, branchName);
+  } catch (error) {
+    return kept(`branch ${branchName} could not be read, so it is not shown gone (${error instanceof Error ? error.message : String(error)})`);
+  }
+  if (tip !== null) {
+    return outcome.requested === 'worktree+branch' && cleanupStepDone(outcome.branchDeletion)
+      ? kept(`branch ${branchName} exists at ${tip} after this cleanup deleted it or found it gone`)
+      : outcome;
+  }
+  await fs.unlink(recordPath).catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== 'ENOENT') throw new CleanupActionError(outcome, 'metadata-removal', error);
+  });
+  return outcome;
+}
+
+/**
  * Create a branch at `commit` in one ref transaction that fails when the branch
  * already exists. Hive's operation locks do not bind other Git clients, so a
  * branch a preflight saw absent can exist by the time it is created; only a
@@ -610,25 +647,21 @@ export async function removeUnconfirmedWorktreeStep(git: SimpleGit, worktreePath
 }
 
 /**
- * Why a composite workspace whose manifest a create never confirmed keeps its
- * root and manifest once its checkouts are gone, or null when it need not.
- * While a worker branch remains, or cannot be read, a checkout another Git
- * client attaches to it under the root must still read as unconfirmed, not as
- * a placement without a manifest.
+ * Which worker branches of a composite workspace still exist and which cannot be read, each as
+ * `<branch> in repository <repoId>` (an unreadable one with its error). A branch that cannot be read is not shown
+ * gone.
  */
-export async function unconfirmedCompositeRetention(
-  workspaceRoot: string,
-  manifestPath: string,
-  branches: Array<{ repoId: string; git: SimpleGit; name: string }>,
-  cleanupTool: string,
-): Promise<string | null> {
-  const remaining: string[] = [];
+export async function workerBranchPresence(branches: Array<{ repoId: string; git: SimpleGit; name: string }>): Promise<{ present: string[]; unreadable: string[] }> {
+  const present: string[] = [];
+  const unreadable: string[] = [];
   for (const { repoId, git, name } of branches) {
-    if (await readBranchOid(git, name).then((tip) => tip !== null, () => true)) remaining.push(`${name} in repository ${repoId}`);
+    try {
+      if (await readBranchOid(git, name) !== null) present.push(`${name} in repository ${repoId}`);
+    } catch (error) {
+      unreadable.push(`${name} in repository ${repoId} (${error instanceof Error ? error.message : String(error)})`);
+    }
   }
-  if (remaining.length === 0) return null;
-  return `Kept ${workspaceRoot} with its manifest ${manifestPath}, which a create never confirmed (createUnconfirmed), while worker branches remain: ${remaining.join(', ')}. `
-    + `A checkout attached to one of them later still reads as unconfirmed. Inspect those branches, then delete them with ${cleanupTool} and branch deletion, or remove them yourself; cleanup then removes the workspace.`;
+  return { present, unreadable };
 }
 
 /**
