@@ -347,6 +347,11 @@ describe('skill content', () => {
     expect(design.template).toContain('existing scope, authority, and output contract');
     expect(how.template).toContain('primary owns the explanation');
     expect(how.template).toContain('"Where should this live?"');
+    // /walkthrough defers depth, pacing, history and the no-quiz rule to this skill instead of restating them.
+    expect(how.template).toContain('Historical motivation belongs to `why` when explicitly requested or assigned');
+    expect(how.template).toContain('rather than quizzing the user');
+    expect(how.template).toContain('Give the smallest complete account that answers the request, then add depth when asked');
+    expect(how.template).toContain('A request for a thorough one-shot explanation still deserves the complete answer');
     expect(why.description).toContain('explicitly asks for historical design rationale');
     expect(why.template).toContain('not operator constraints');
     expect(why.template).toContain('unavailable source is not a negative search result');
@@ -1595,7 +1600,17 @@ describe('skill content', () => {
       'newer instructions overriding older ones',
       'Scope is what was agreed, not everything mentioned',
       'Reuse design decisions and advice the conversation already settled',
-      'A change that follows an established pattern needs neither alternatives nor advice',
+      // Risk-triggered challenge: a consequential choice gets a bounded attempt to break it; only a choice a pattern already settles with evidence skips it.
+      'Ask them to look for what would make your preferred route wrong, and keep the request bounded to the consequential choice',
+      'Uncertainty about a consequential choice is a reason for that challenge, never a reason to skip it',
+      'A choice an established pattern already settles, with evidence and no consequential uncertainty left, needs neither alternatives nor advice',
+      'Reviews or advice the operator explicitly required still apply',
+      // Destination: placement policy owns the immediate target; a named onward destination is a separate Closure step.
+      'the immediate target your repository-backed placement rules resolve, and, recorded separately, any onward destination the operator named',
+      'the current directory and the root checkout become a destination only through those rules or the operator\'s words',
+      'The work completes in its immediate target',
+      'a request to implement and land there carries the work on through Closure in `orchestrating-ad-hoc-work` without asking again',
+      'when the operator named it without asking you to land the work there, report the onward step as pending',
       'ask one at a time',
       'say what is unready, why it matters, and the recommended next step',
       'proceed without asking for approval again',
@@ -1617,6 +1632,10 @@ describe('skill content', () => {
     expect(skill!.template).not.toContain('<!-- hive-host');
     expect(skill!.template).not.toMatch(/hive_(?:feature|plan|tasks|worktree)_|hive_adhoc_worktree_(?:create|merge|cleanup)/);
     expect(skill!.template).not.toContain('Review Routing');
+    // Review selection, complexity, parallel lanes and stopping stay with their owners, and no directory is a fallback destination.
+    expect(skill!.template).not.toContain('complexity-review');
+    expect(skill!.template).not.toContain('or else the checkout the work started from');
+    expect(skill!.template).not.toContain('A change that follows an established pattern needs neither');
   });
 
   it('defines outcome-first ownership and safe worktree placement', () => {

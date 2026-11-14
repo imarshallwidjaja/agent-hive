@@ -8,7 +8,17 @@ export const HIVE_COMMANDS = [
   {
     key: 'grill',
     name: '/grill',
-    description: 'Reach plan-ready alignment on supplied context, ready for /hive-plan',
+    description: 'Pressure-test supplied context until scope and acceptance criteria are agreed, then recommend the next step',
+  },
+  {
+    key: 'investigate',
+    name: '/investigate',
+    description: 'Diagnose a problem from evidence and propose a fix with success criteria, without changing code',
+  },
+  {
+    key: 'walkthrough',
+    name: '/walkthrough',
+    description: 'Walk through how a subsystem works now, or what a finished change did',
   },
   {
     key: 'implementation-brief',
@@ -34,6 +44,11 @@ export const HIVE_COMMANDS = [
     key: 'implement',
     name: '/implement',
     description: 'Implement the work this conversation scoped as ad-hoc work, with any extra steering you add',
+  },
+  {
+    key: 'merge-to-main',
+    name: '/merge-to-main',
+    description: 'Merge the intended work into its main branch, reviewed and verified on the result',
   },
   {
     key: 'council-directive',
@@ -67,6 +82,11 @@ export const HIVE_COMMANDS = [
     key: 'worklog',
     name: '/worklog',
     description: 'Read back where the current work stands from its Worklog',
+  },
+  {
+    key: 'handoff',
+    name: '/handoff',
+    description: 'Write a self-contained handoff another agent can pick up for the next job',
   },
   {
     key: 'compact-summary',

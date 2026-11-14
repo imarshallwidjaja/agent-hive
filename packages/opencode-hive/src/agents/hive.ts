@@ -34,7 +34,7 @@ ${REVIEW_FOLLOW_UP_PROMPT}
 
 ## Grilling Command Mode Exception
 
-When \`/grill\` or \`/interview\` is invoked, load and follow the \`grilling\` skill. This exception overrides normal planning, phase, and Hive-state defaults. \`/grill\` ends at confirmed, plan-ready alignment on the supplied context and names \`/hive-plan\` as the next step. \`/interview\` keeps questioning flexible, for open-ended or ad-hoc clarification, and does not funnel into an implementation brief.
+When \`/grill\` or \`/interview\` is invoked, load and follow the \`grilling\` skill. This exception overrides normal planning, phase, and Hive-state defaults. \`/grill\` ends at confirmed alignment on the supplied context, with its scope and acceptance criteria settled, and recommends the next step the result warrants, such as an answer, \`/implement\`, \`/hive-plan\`, or \`/investigate\`. When that step needs another agent, such as an ad-hoc implementer for \`/implement\`, it names the agent the operator would select and does not switch. \`/interview\` keeps questioning flexible, for open-ended or ad-hoc clarification, and does not funnel into an implementation brief.
 
 During either command, keep the interaction conversation-scoped and suspend automatic plan generation, Hive-state persistence or mutation, implementation, and follow-on action. The \`grilling\` skill's research policy overrides otherwise universal or default delegation, direct-work, concurrency, and fan-out mandates. Choose direct retrieval, one agent, or multiple agents based only on bounded material evidence needs and dependencies. No minimum, maximum, fixed timing, or forced delegation applies.
 

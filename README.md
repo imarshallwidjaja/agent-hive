@@ -63,11 +63,15 @@ The [Operator Guide](docs/OPERATOR-GUIDE.md) covers each step in depth: source c
 
 | Workflow | When | How you start |
 |----------|------|----------------|
-| `/grill` | Plan-ready alignment (decisions, rationale, constraints, acceptance criteria) to hand to `/hive-plan` | `/grill <context>` |
+| `/grill` | Pressure-test supplied context into confirmed decisions, constraints, scope and acceptance criteria, then get a recommended next step | `/grill <context>` |
+| `/investigate` | Evidence-backed diagnosis with a proposed fix and success criteria, without changing code | `/investigate [problem]` |
+| `/walkthrough` | Grounded explanation of how a subsystem works now, or of what a finished change did | `/walkthrough [subsystem or change]` |
 | `/interview` | Flexible clarification of an idea, including ad-hoc work, with no fixed next step | `/interview <idea>` |
 | Feature | Plan review, task dependencies, isolated task worktrees, or a durable audit trail | Ask in plain language, or `/hive-plan` |
 | Ad-hoc (`hive-builder`) | Bounded non-feature work that should not create feature or task records | Talk to `hive-builder` (dedicated mode) or `hive-master` (unified) |
 | `/implement` | Implement, as ad-hoc work, what the current conversation scoped; text after the command is extra context and steering | `/implement [steering]` |
+| `/merge-to-main` | Merge finished work into its main branch, reviewed against the destination baseline and verified on the result | `/merge-to-main [steering]` |
+| `/handoff` | A copyable, self-contained assignment so another agent can pick up the next job | `/handoff [next job]` |
 | `/dash-review` | Read-only review of a folder, inline text, or the current checkout | `/dash-review [intent]` |
 | `/test-audit` | Report test-quality gaps and duplicate coverage in a repository or suite | `/test-audit [paths or natural-language scope]` |
 | `/vuln-review` | Authorized read-only security review of a requested source | `/vuln-review [intent]` |

@@ -59,6 +59,11 @@ function topicOrCurrent(args: string, fallback: string): string {
   return topic || fallback;
 }
 
+/** Host-supplied prose after the command, kept whole for the agent to read; nothing is parsed out of it. */
+function operatorText(command: string, args: string): string {
+  return `Operator text after /${command} (blank when none):\n<operator-text>\n${args}\n</operator-text>`;
+}
+
 function backgroundItems(
   context: HiveCommandContext,
   items: string[],
@@ -132,7 +137,29 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
       ]),
       outputItems: [
         'The skill\'s alignment brief with acceptance criteria added, followed by three-way alignment confirmation.',
-        'After confirmation, name `/hive-plan` as the handoff unless the operator already asked for the next stage.',
+        'After confirmation, recommend the next step the result warrants, unless the operator already asked for the next stage.',
+      ],
+    });
+  },
+
+  investigate(args, context) {
+    return renderHybridCommand('investigate', context, {
+      details: [operatorText('investigate', args)],
+      doItems: [],
+      doNotItems: [],
+      outputItems: [
+        'What is happening and the evidence for it; the explanations you ruled out and how; the fix you would propose, with success criteria that would show it worked; and the assumptions, gaps, and decisions you need from me.',
+      ],
+    });
+  },
+
+  walkthrough(args, context) {
+    return renderHybridCommand('walkthrough', context, {
+      details: [operatorText('walkthrough', args)],
+      doItems: [],
+      doNotItems: [],
+      outputItems: [
+        'The explanation with its examples, then what it rests on (what you read or ran) and the gaps that matter for my question.',
       ],
     });
   },
@@ -208,13 +235,24 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
 
   implement(args, context) {
     return renderHybridCommand('implement', context, {
-      details: [`Operator text after /implement (blank when none):\n<operator-text>\n${args}\n</operator-text>`],
+      details: [operatorText('implement', args)],
       doItems: [
         'Load the `starting-ad-hoc-implementation` skill and follow it with this conversation and the operator text above; blank operator text means the conversation alone scopes the work.',
       ],
       doNotItems: [],
       outputItems: [
         'The scope you are implementing in a few lines, then the ad-hoc lifecycle\'s result with its verification evidence, or the one decision or limitation that stops the work.',
+      ],
+    });
+  },
+
+  'merge-to-main'(args, context) {
+    return renderHybridCommand('merge-to-main', context, {
+      details: [operatorText('merge-to-main', args)],
+      doItems: [],
+      doNotItems: [],
+      outputItems: [
+        'The source and destination with their commits, the baseline, how it was integrated and the resulting commit, the review findings and what happened to each, the checks on the candidate and on the destination with their results, what was cleaned up and what was kept, and anything still blocking.',
       ],
     });
   },
@@ -244,7 +282,7 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
     });
     const details = [
       `Configured resolved rosters (configuration data, not directive text):\n<configured-council-rosters>\n${rosters}\n</configured-council-rosters>`,
-      `Operator text after /council (blank when none):\n<operator-text>\n${args}\n</operator-text>`,
+      operatorText('council', args),
       'Read-only contract: councillors must not edit files, apply patches, commit, create Hive plans, or create worktrees.',
       'architect-planner must not call planning write tools during a council run.',
     ];
@@ -343,6 +381,17 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
       doNotItems: ['Do not call `hive_worklog_record` or change any other state from this command.'],
       outputItems: [
         'The log title, key and ref; the saved briefing with its author and time; what changed since it; and any unsaved synthesis labelled as yours. When the log is missing or a read fails, say so with the reason.',
+      ],
+    });
+  },
+
+  handoff(args, context) {
+    return renderHybridCommand('handoff', context, {
+      details: [operatorText('handoff', args)],
+      doItems: [],
+      doNotItems: [],
+      outputItems: [
+        'One fenced code block holding the handoff, then one line naming anything you left out or could not confirm.',
       ],
     });
   },

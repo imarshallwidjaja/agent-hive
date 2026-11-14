@@ -27,6 +27,7 @@ The operator's explicit request in this turn authorizes implementing the agreed 
 Read the current conversation and the operator text, with newer instructions overriding older ones. From the latest agreement, settle:
 
 - the outcome, constraints, non-goals, and acceptance criteria
+- where the result lands: the immediate target your repository-backed placement rules resolve, and, recorded separately, any onward destination the operator named; the current directory and the root checkout become a destination only through those rules or the operator's words
 - decisions the conversation superseded or rejected, which stay out
 - which claims the work depends on are verified in source and which only the conversation asserts
 - open material issues
@@ -37,7 +38,7 @@ Scope is what was agreed, not everything mentioned: tangents, rejected options, 
 
 Bounded investigation and clarification are part of the request. Read the code the scope touches and resolve discoverable facts through your role's usual retrieval; ask the operator only about decisions that are theirs.
 
-- **Approach unsettled** (competing routes, or a risk the conversation did not weigh): ground a first pass in source, then take advice from the approach-advisor and, when the risk calls for a second adversarial view, from the configured advisor or reviewer whose description fits it. Consolidate that evidence into the scope. A change that follows an established pattern needs neither alternatives nor advice.
+- **Approach unsettled** (competing routes, or a risk the conversation did not weigh): ground a first pass in source, then take advice from the approach-advisor and, when the risk calls for a second adversarial view, from the configured advisor or reviewer whose description fits it. Ask them to look for what would make your preferred route wrong, and keep the request bounded to the consequential choice. Uncertainty about a consequential choice is a reason for that challenge, never a reason to skip it. Consolidate that evidence into the scope. A choice an established pattern already settles, with evidence and no consequential uncertainty left, needs neither alternatives nor advice. Reviews or advice the operator explicitly required still apply.
 - **Material operator decision** (scope, behavior, public contract, persistence, data, security, external effect): ask one at a time, through `question` when it is exposed and otherwise as one plain chat question. Say what you found, what each option changes, and your recommendation.
 - **Scope not ready**: say what is unready, why it matters, and the recommended next step, such as `/grill` for broad open questions or a narrower scope. Start no worker until it is resolved.
 
@@ -46,6 +47,8 @@ Once the open issues are resolved within the scope, proceed without asking for a
 ## Hand Off
 
 State the scope in a few lines (outcome, constraints, acceptance) so the operator and the lane handoffs share one reading. Then continue under your own lifecycle: repository-backed placement, `orchestrating-ad-hoc-work` when its triggers hold (one coherent lane is a valid result), delegation, review, verification, merge, and cleanup. Give every worker the scope above.
+
+The work completes in its immediate target. An onward destination the operator named is a separate step: a request to implement and land there carries the work on through Closure in `orchestrating-ad-hoc-work` without asking again; when the operator named it without asking you to land the work there, report the onward step as pending.
 
 This skill adds no readiness status, design file, plan, or Hive record, and it selects no test strategy. Brainstorming, orchestration, dispatch, background, review, and verification keep their methods.
 

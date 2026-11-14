@@ -1190,7 +1190,10 @@ describe('/grill and /interview primary-agent mode exception', () => {
     for (const [name, prompt] of routedPrimaryPrompts) {
       expect(prompt, name).toContain('## Grilling Command Mode Exception');
       expect(prompt, name).toContain('When `/grill` or `/interview` is invoked');
-      expect(prompt, name).toContain('`/grill` ends at confirmed, plan-ready alignment on the supplied context and names `/hive-plan` as the next step');
+      expect(prompt, name).toContain('`/grill` ends at confirmed alignment on the supplied context, with its scope and acceptance criteria settled, and recommends the next step the result warrants, such as an answer, `/implement`, `/hive-plan`, or `/investigate`');
+      // Architect and plan-first unified Hive cannot run /implement themselves, so the recommendation names the selection instead of switching.
+      expect(prompt, name).toContain('When that step needs another agent, such as an ad-hoc implementer for `/implement`, it names the agent the operator would select and does not switch');
+      expect(prompt, name).not.toContain('names `/hive-plan` as the next step');
       expect(prompt, name).toContain('`/interview` keeps questioning flexible, for open-ended or ad-hoc clarification, and does not funnel into an implementation brief');
       expect(prompt, name).not.toContain('brief-ready context');
       expect(prompt, name).toContain('suspend automatic plan generation, Hive-state persistence or mutation, implementation, and follow-on action');
@@ -3424,7 +3427,8 @@ describe('README.md documentation', () => {
         expect(content).toContain('each plain chat question waits for your reply and the next turn resumes the same loop');
       }
 
-      expect(rootReadmeContent).toContain('Plan-ready alignment');
+      expect(rootReadmeContent).toContain('Pressure-test supplied context into confirmed decisions, constraints, scope and acceptance criteria, then get a recommended next step');
+      expect(rootReadmeContent).not.toContain('Plan-ready alignment');
       expect(rootReadmeContent).toContain('Flexible clarification of an idea, including ad-hoc work');
       expect(rootReadmeContent).not.toContain('implementation-brief handoff');
     });

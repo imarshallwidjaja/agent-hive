@@ -19,7 +19,17 @@ const EXPECTED_COMMANDS = [
   {
     key: 'grill',
     name: '/grill',
-    description: 'Reach plan-ready alignment on supplied context, ready for /hive-plan',
+    description: 'Pressure-test supplied context until scope and acceptance criteria are agreed, then recommend the next step',
+  },
+  {
+    key: 'investigate',
+    name: '/investigate',
+    description: 'Diagnose a problem from evidence and propose a fix with success criteria, without changing code',
+  },
+  {
+    key: 'walkthrough',
+    name: '/walkthrough',
+    description: 'Walk through how a subsystem works now, or what a finished change did',
   },
   {
     key: 'implementation-brief',
@@ -45,6 +55,11 @@ const EXPECTED_COMMANDS = [
     key: 'implement',
     name: '/implement',
     description: 'Implement the work this conversation scoped as ad-hoc work, with any extra steering you add',
+  },
+  {
+    key: 'merge-to-main',
+    name: '/merge-to-main',
+    description: 'Merge the intended work into its main branch, reviewed and verified on the result',
   },
   {
     key: 'council-directive',
@@ -80,6 +95,11 @@ const EXPECTED_COMMANDS = [
     description: 'Read back where the current work stands from its Worklog',
   },
   {
+    key: 'handoff',
+    name: '/handoff',
+    description: 'Write a self-contained handoff another agent can pick up for the next job',
+  },
+  {
     key: 'compact-summary',
     name: '/compact-summary',
     description: 'Produce a recovery summary for the current OpenCode session',
@@ -93,7 +113,7 @@ function uniqueCount(values: string[]): number {
 describe('HIVE_COMMANDS', () => {
   it('defines the canonical command metadata in stable order', () => {
     expect(HIVE_COMMANDS).toEqual(EXPECTED_COMMANDS);
-    expect(HIVE_COMMANDS).toHaveLength(14);
+    expect(HIVE_COMMANDS).toHaveLength(18);
     expect(HIVE_COMMANDS.map((command) => command.name)).not.toContain('/hive');
   });
 
@@ -198,13 +218,20 @@ describe('HIVE_COMMANDS', () => {
           expect(output, methodPhrase).not.toContain(methodPhrase);
         }
       }
-      // /grill aims at a plan: constraints and acceptance criteria, then a /hive-plan handoff, with no run of the plan itself.
-      expect(grill).toContain('Reach plan-ready shared understanding of the supplied context');
-      expect(grill).toContain('settling the constraints, non-goals, and acceptance criteria a plan needs and skipping questions planning would not use');
+      // /grill settles scope and acceptance criteria on supplied context, then recommends the step the result warrants
+      // instead of always handing off to /hive-plan; it still runs none of those steps itself.
+      expect(grill).toContain('settle the scope, constraints, non-goals, and acceptance criteria the next step will need');
       expect(grill).toContain("The skill's alignment brief with acceptance criteria added, followed by three-way alignment confirmation");
-      expect(grill).toContain('name `/hive-plan` as the handoff unless the operator already asked for the next stage');
-      expect(grill).toContain('During grilling, do not implement, create a Hive feature or other Hive state, persist grilling state');
+      expect(grill).toContain('After confirmation, recommend the next step the result warrants, unless the operator already asked for the next stage');
+      for (const nextStep of ['a direct answer when that settles it', '/implement when the scope is clear enough to build as ad-hoc work', '/hive-plan when it needs a reviewed plan and task breakdown', '/investigate when an open question needs evidence first']) {
+        expect(grill, nextStep).toContain(nextStep);
+      }
+      // Under a role that cannot run the recommended step, /grill names the selection instead of switching.
+      expect(grill).toContain("Recommend it with the agent I'm on in mind: if that step needs another agent, such as one that can implement ad-hoc work for /implement, tell me which one to select; don't switch for me");
+      expect(grill).toContain("During grilling, don't implement anything, create a Hive feature or other Hive state, persist grilling state");
       expect(grill).toContain("Follow-on work after alignment follows the skill's separate-action boundary");
+      expect(grill).not.toContain('name `/hive-plan` as the handoff');
+      expect(grill).not.toContain('plan-ready');
       expect(grill).not.toContain('grilling does not run it');
       expect(grill).not.toContain('Aim the alignment at a plan');
       expect(grill).not.toContain('disagreements, and open questions');
@@ -402,14 +429,147 @@ describe('HIVE_COMMANDS', () => {
       for (const required of [
         'Load the `starting-ad-hoc-implementation` skill and follow it with this conversation and the operator text above',
         'blank operator text means the conversation alone scopes the work',
-        'further context and natural-language steering and not options to parse',
-        'The invocation is the authority to implement that scope; loading the skill, earlier history, or a bare alignment confirmation is not',
-        'The invocation does not by itself authorize creating a Hive feature, plan, or task, and an approved feature plan runs through /start-execution',
-        'The command runs under the agent and model selected for this session',
-        'state the exact limitation and stop instead of substituting another capability; choosing another agent belongs to the operator',
+        'Treat the text I typed after /implement as further context and steering in plain words, not options to parse',
+        'This request is your authority to implement that scope; loading the skill, earlier history, or a bare alignment confirmation is not',
+        "It doesn't authorize creating a Hive feature, plan, or task, and an approved feature plan runs through /start-execution",
+        // The operator's intended outcome, stated once; the skill and the primary own how each part is done.
+        'rebuild exactly what we agreed and where it should land',
+        'get the choices that carry real risk or uncertainty challenged before you commit to them',
+        "run independent pieces in parallel only where they can't collide",
+        'get the result reviewed and work through the findings that matter',
+        'check complexity and verification in proportion to the change, and stop once the evidence and the required gates hold',
+        'Stay on the agent and model I selected for this session',
+        "tell me exactly what's missing and stop instead of substituting another capability; choosing another agent is my call",
       ]) expect(output, required).toContain(required);
       // The command is an adapter; the lifecycle policy stays with the skill and the primary.
       expect(output).not.toMatch(/hive_adhoc_worktree|orchestrating-ad-hoc-work|Review Routing|\btask\(|subagent\(/);
+    }
+  });
+
+  it('delivers /investigate, /walkthrough, /handoff and /merge-to-main unbound, as operator requests carrying their own guards, on every host', () => {
+    const keys = ['investigate', 'walkthrough', 'handoff', 'merge-to-main'] as const;
+    for (const key of keys) {
+      // Like /implement, these run under the session's selected agent and model.
+      expect(Object.keys(HIVE_COMMANDS.find((command) => command.key === key)!).sort(), key).toEqual(['description', 'key', 'name']);
+    }
+    const obligations: Record<(typeof keys)[number], { opening: string; required: string[]; absent?: string[] }> = {
+      investigate: {
+        opening: "Let's investigate this properly before anyone changes code.",
+        required: [
+          'try to knock down the competing explanations instead of settling on the first plausible one',
+          'When one structural change could explain or remove several symptoms at once, weigh it beside the local fix',
+          'load the `systematic-debugging` skill',
+          'use the Experiments method in your instructions if you have it, sending an Investigator where your role can',
+          // The active role's run authorization stays in force; the command is no blanket approval to run code.
+          "Your role's rules for running code still decide what you may run: the Authority rule under Experiments, or Runtime Exercise where your instructions have it",
+          "This command doesn't approve running code those rules don't already cover; when a run you need isn't covered, ask me once, naming its purpose, the candidate, and its effects",
+          "Keep this to diagnosis. Don't fix product code or start implementation from this command",
+          'anything that changes source runs in a disposable placement, the evidence goes somewhere that survives cleanup, and you clean up what you started',
+          'Anything paid, external, or non-disposable needs my explicit go-ahead first',
+          "don't switch agents or models or improvise an equivalent tool",
+          'the fix you would propose, with success criteria that would show it worked; and the assumptions, gaps, and decisions you need from me',
+        ],
+      },
+      walkthrough: {
+        opening: 'Walk me through this.',
+        required: [
+          "The subject is what I wrote after /walkthrough, or what we've been discussing when that is blank",
+          'If it is a finished change',
+          'reading the diff against its base as well as the code as it stands',
+          // Depth, pacing, history and the no-quiz rule come from the `how` skill (pinned in skill-content.test.ts).
+          'Use the `how` skill to ground the explanation in the actual source, and follow it for depth, pacing, and when history comes in',
+          'Include practical examples',
+          "Tell me what you actually read or ran and what you didn't",
+          "Don't change any code.",
+        ],
+        absent: ['No quizzes', 'smallest complete account', 'with the `why` skill'],
+      },
+      handoff: {
+        opening: 'Write me a handoff I can paste to another agent so it can pick this up cold.',
+        required: [
+          'one self-contained assignment for the next job I named after /handoff',
+          "use that job and say which you picked; when it isn't clear, ask me",
+          'what is verified, with its evidence, kept apart from what is only claimed',
+          'the exact checkout, branch or ref, path, and commit or source pin where they matter',
+          'every worker, run, worktree, or other resource whose state is still open or uncertain',
+          "don't say a worker has stopped or that anyone holds authority unless that was established",
+          "don't present a check as passing unless it ran and passed",
+          "don't dispatch anyone, don't write it into a task handoff or any other Hive record, and don't change any state",
+          'One fenced code block holding the handoff',
+        ],
+        // The distinction from neighbouring commands lives in the docs, not the runtime body.
+        absent: ['/compact-summary', '/implementation-brief'],
+      },
+      'merge-to-main': {
+        opening: "Let's get this merged into the intended main branch.",
+        required: [
+          'the real main destination, and any dirty state on either side',
+          // Role authority is checked before any placement or Git command; the command grants no implementation or merge authority.
+          'Before you create a placement or run any Git command, check that your role can do this integration and any repair it needs',
+          'it gives no implementation or merge authority to a role that lacks it, such as a planning or review-only agent',
+          "tell me what's missing, leave everything as it is, and let me pick the agent",
+          "Don't switch agents, write a plan, feature, or task in its place, or do the same thing with raw Git or the shell",
+          "Use the repository's normal Git workflow only for a source Hive doesn't manage, and only when your role can run it",
+          // The route is chosen by source type: a retained checkout given directly has no worker binding or first leg,
+          // so the worktree-only steps are scoped to worktree sources.
+          'A retained checkout you were given directly goes to main through the Closure in the `orchestrating-ad-hoc-work` skill, with its own retained checkout ID as the source',
+          "It has no worker binding to inspect and no first leg, so the worktree steps below don't apply to it",
+          'Delivery between two retained checkouts needs a retained checkout ID on both sides, because hive_checkout_brief compares two retained IDs and won\'t find main for you',
+          "Resolve one for the actual main checkout, registering it or creating a managed one through the owning tools when none exists",
+          'When the source is a Hive task or ad-hoc worktree, go through its owning tools and lifecycle, and inspect the worktree first',
+          // Only targeted worktrees carry a frozen binding; legacy single-root and untargeted composites
+          // report the live checkout, so the intended target comes from the record and is compared with it.
+          'A targeted worktree stays bound to the retained checkout it was created for',
+          'A legacy single-root or untargeted composite worktree saved no target',
+          'the path, full ref, and commit recorded at creation or at the last accepted handoff, with the complete per-repository set for a composite',
+          'A different branch at the same commit is still a different target',
+          "don't adopt whatever is checked out now as what was meant",
+          "If you can't establish the original target, tell me what evidence is missing and stop delivering that worktree",
+          // Two-hop topology: the first leg lands in the worktree's own target, then retained-checkout delivery reaches main.
+          'that merge is only the first leg: finish the worktree into its own target, then deliver that target on to main through the Closure in the `orchestrating-ad-hoc-work` skill',
+          "Until the second leg lands, main isn't done, so report it as pending and keep the retained source",
+          "An untargeted worktree's target may not be a retained checkout yet, so resolve a retained checkout ID for the first leg's target the same way as for main",
+          'goes into that same worktree through a fresh worker once the previous writer has stopped',
+          'as a scalar pin or the full per-repository map the worktree uses, never with the old pin or a fix made in another placement',
+          "record the destination's current commit as the baseline",
+          // Correctness and simplicity are both requested outright, so an agent without Review Routing still gets both lenses.
+          'reviewed against that baseline for both correctness and simplicity, with complexity covered inside the simplicity review, following your role\'s review routing where it has one',
+          "A simplicity review doesn't cover correctness",
+          "If a review you need isn't available to you, tell me which one and why instead of skipping it",
+          'Add a separate pass only when I asked for one or a named risk needs it, and keep every configured or required reviewer',
+          "your own read doesn't replace a required independent review",
+          'Triage the findings, fix the material ones, and re-review whatever a fix or conflict resolution changed',
+          'have an advisor or reviewer try to break it before you go on',
+          'squash or rebase only private history you have authority to rewrite',
+          'Rewriting published history, discarding a branch, or anything your host asks permission for still needs my explicit go-ahead',
+          "Matching file trees don't prove ancestry, so check it with git merge-base --is-ancestor",
+          'run the required checks on the actual destination result before you call it done or clean anything up',
+          'retire only the temporary resources this work owns that pass their ownership and retention checks, through their owning tools and within the authority you already have',
+          "Don't push unless I ask",
+        ],
+        // The universal bound-target claim is false for legacy and untargeted worktrees.
+        // The universal Hive-managed opener would send a direct retained checkout through worktree inspection.
+        absent: ['complexity-review', 'otherwise as a separate read-only pass', 'merges only into the target it was bound to', 'When the source is Hive-managed'],
+      },
+    };
+    const prose = '  the retry loop "hangs" -- after $ARGUMENTS-style input\n\nonly on v2\n';
+    for (const host of [OPENCODE_V1_PROFILE, createHostProfile('opencode-v2'), createHostProfile('opencode-v2', { readTransport: 'direct' })]) {
+      const commands = buildHiveCommandMap(hiveCommandRenderers, () => ({
+        agentMode: 'dedicated', host, backgroundGuidance: { available: false }, council: {} as never, agents: {},
+        dashReviewLanes: [], vulnerabilityReviewLanes: [],
+      }));
+      for (const key of keys) {
+        expect(commands[key].agent, key).toBeUndefined();
+        const output = commands[key].run(prose) as string;
+        expect(output, key).toContain(`Operator text after /${key} (blank when none):\n<operator-text>\n${prose}\n</operator-text>`);
+        expect(output.split('<operator-text>').length, key).toBe(2);
+        expect(commands[key].run('') as string, key).toContain('<operator-text>\n\n</operator-text>');
+        // The static body speaks as the operator asking for an outcome.
+        expect(output.split('\n---\n\n')[1].startsWith(obligations[key].opening), key).toBe(true);
+        for (const phrase of obligations[key].required) expect(output, `${key}: ${phrase}`).toContain(phrase);
+        for (const phrase of obligations[key].absent ?? []) expect(output, `${key}: ${phrase}`).not.toContain(phrase);
+        expect(output, key).not.toMatch(/\btask\(|subagent\(|subagent_type|skill\(\{/);
+      }
     }
   });
 

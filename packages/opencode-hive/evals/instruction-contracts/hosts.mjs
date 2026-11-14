@@ -46,8 +46,9 @@ export const HIVE_ROLES = [
 ];
 
 export const HIVE_COMMANDS = [
-  'interview', 'grill', 'implementation-brief', 'hive-plan', 'approve-sync-plan', 'start-execution', 'implement',
-  'council-directive', 'council', 'dash-review', 'test-audit', 'vuln-review', 'worklog', 'compact-summary',
+  'interview', 'grill', 'investigate', 'walkthrough', 'implementation-brief', 'hive-plan', 'approve-sync-plan', 'start-execution',
+  'implement', 'merge-to-main', 'council-directive', 'council', 'dash-review', 'test-audit', 'vuln-review', 'worklog', 'handoff',
+  'compact-summary',
 ];
 
 // A non-usable placeholder; the real refresh token never leaves the host auth store.
