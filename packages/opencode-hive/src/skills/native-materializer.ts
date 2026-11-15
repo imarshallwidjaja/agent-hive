@@ -6,7 +6,7 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import matter from 'gray-matter';
 import type { HostProfile } from '../runtime/host-profile.js';
-import { renderStagedHostMarkdown } from './host-renderer.js';
+import { renderHostMarkdown, renderStagedHostMarkdown } from './host-renderer.js';
 
 const DEFAULT_URL_FETCH_TIMEOUT_MS = 1500;
 
@@ -536,19 +536,20 @@ async function scanUrlNativeSkills(
   };
 }
 
-async function buildGeneratedHash(stagedRoot: string): Promise<string> {
-  const hash = createHash('sha256');
-  const entriesToHash: Array<{
-    outputPath: string;
-    sourcePath: string;
-    type: 'directory' | 'file' | 'symlink';
-    mode?: number;
-  }> = [];
+type HashRoot = { sourcePath: string; outputPath: string };
 
-  const queue = (await fsp.readdir(stagedRoot)).map((childName) => ({
-    sourcePath: path.join(stagedRoot, childName),
-    outputPath: childName,
-  }));
+/**
+ * Hashes a tree of skill directories by output path, entry type, mode bits, file bytes and symlink targets,
+ * without following symlinks. `readFileBytes` supplies the bytes a regular file contributes, so the staged
+ * tree and the in-memory prediction of it share one walk and one framing and cannot drift apart.
+ */
+async function hashSkillTree(
+  roots: HashRoot[],
+  readFileBytes: (sourcePath: string, outputPath: string) => Promise<Buffer>,
+): Promise<string> {
+  const hash = createHash('sha256');
+  const entriesToHash: Array<HashRoot & { type: 'directory' | 'file' | 'symlink'; mode?: number }> = [];
+  const queue = [...roots];
 
   while (queue.length > 0) {
     const current = queue.pop()!;
@@ -592,13 +593,99 @@ async function buildGeneratedHash(stagedRoot: string): Promise<string> {
       updateField(entry.mode.toString(8));
     }
     if (entry.type === 'file') {
-      updateField(await fsp.readFile(entry.sourcePath));
+      updateField(await readFileBytes(entry.sourcePath, entry.outputPath));
     } else if (entry.type === 'symlink') {
       updateField(await fsp.readlink(entry.sourcePath));
     }
   }
 
   return hash.digest('hex').slice(0, 16);
+}
+
+async function buildGeneratedHash(stagedRoot: string): Promise<string> {
+  const roots = (await fsp.readdir(stagedRoot)).map((childName) => ({
+    sourcePath: path.join(stagedRoot, childName),
+    outputPath: childName,
+  }));
+  return hashSkillTree(roots, (sourcePath) => fsp.readFile(sourcePath));
+}
+
+function parseStagedSkill(skill: BundledSkillSource, filePath: string, content: string, logger: Logger): ParsedNativeSkill {
+  const parsed = parseNativeSkillMarkdown(filePath, content, logger);
+  if (!parsed) {
+    throw new Error(
+      `Bundled skill source changed during materialization: staged SKILL.md for expected name "${skill.parsed.name}" in folder "${skill.directoryName}" is invalid.`,
+    );
+  }
+  if (parsed.name !== skill.parsed.name) {
+    throw new Error(
+      `Bundled skill source changed during materialization: expected name "${skill.parsed.name}" in folder "${skill.directoryName}", staged name was "${parsed.name}".`,
+    );
+  }
+  return parsed;
+}
+
+type PredictedMaterialization = {
+  hash: string;
+  stagedSkills: Array<{ source: BundledSkillSource; parsed: ParsedNativeSkill }>;
+};
+
+/**
+ * Predicts the hash the staged copy would get by reading the packaged sources directly and rendering their
+ * Markdown in memory, exactly as staging renders regular `.md` files in place. Returns undefined when a
+ * skill's SKILL.md is not a regular file, because staging would read it through a link whose rendered
+ * target this prediction does not model; that run takes the staging path.
+ */
+async function predictMaterialization(
+  bundledSkills: BundledSkillSource[],
+  host: HostProfile,
+  logger: Logger,
+): Promise<PredictedMaterialization | undefined> {
+  const renderedSkillFiles = new Map<string, string>();
+  const hash = await hashSkillTree(
+    bundledSkills.map((skill) => ({ sourcePath: skill.sourceDir, outputPath: skill.directoryName })),
+    async (sourcePath, outputPath) => {
+      const raw = await fsp.readFile(sourcePath);
+      if (!outputPath.endsWith('.md')) {
+        return raw;
+      }
+      const original = raw.toString('utf8');
+      const rendered = renderHostMarkdown(original, host, sourcePath);
+      if (/^[^/]+\/SKILL\.md$/.test(outputPath)) {
+        renderedSkillFiles.set(outputPath, rendered);
+      }
+      // Staging rewrites a file only when rendering changed it, so unchanged files keep their exact bytes.
+      return rendered === original ? raw : Buffer.from(rendered, 'utf8');
+    },
+  );
+
+  const stagedSkills: PredictedMaterialization['stagedSkills'] = [];
+  for (const skill of bundledSkills) {
+    const rendered = renderedSkillFiles.get(path.posix.join(skill.directoryName, 'SKILL.md'));
+    if (rendered === undefined) {
+      return undefined;
+    }
+    stagedSkills.push({ source: skill, parsed: parseStagedSkill(skill, skill.skillPath, rendered, logger) });
+  }
+
+  return { hash, stagedSkills };
+}
+
+function buildPreparedSkills(
+  materializedPath: string,
+  stagedSkills: Array<{ source: BundledSkillSource; parsed: ParsedNativeSkill }>,
+): Map<string, PreparedHiveSkill> {
+  const skillsByName = new Map<string, PreparedHiveSkill>();
+  for (const skill of stagedSkills) {
+    skillsByName.set(skill.parsed.name, {
+      name: skill.parsed.name,
+      description: skill.parsed.description,
+      content: skill.parsed.content,
+      sourceDir: skill.source.sourceDir,
+      materializedDir: path.join(materializedPath, skill.source.directoryName),
+    });
+  }
+  return skillsByName;
 }
 
 async function materializeSkills(
@@ -608,6 +695,21 @@ async function materializeSkills(
   logger: Logger,
 ): Promise<{ materializedPath: string; skillsByName: Map<string, PreparedHiveSkill> }> {
   await fsp.mkdir(generatedRoot, { recursive: true });
+
+  // A warm cache already holds a directory for this exact content, so reuse it without staging a copy.
+  const predicted = await predictMaterialization(bundledSkills, host, logger);
+  if (predicted) {
+    const predictedMaterializedPath = path.join(generatedRoot, predicted.hash);
+    if (await isDirectory(predictedMaterializedPath)) {
+      return {
+        materializedPath: predictedMaterializedPath,
+        skillsByName: buildPreparedSkills(predictedMaterializedPath, predicted.stagedSkills),
+      };
+    }
+  }
+
+  // On a miss, publish the staged copy under its own hash: the source can change between the prediction and
+  // the copy, and the published directory must match the bytes actually copied.
   const tempPath = path.join(generatedRoot, `.tmp-${randomUUID()}`);
   await fsp.mkdir(tempPath);
 
@@ -621,18 +723,8 @@ async function materializeSkills(
     const stagedSkills: Array<{ source: BundledSkillSource; parsed: ParsedNativeSkill }> = [];
     for (const skill of bundledSkills) {
       const stagedSkillPath = path.join(tempPath, skill.directoryName, 'SKILL.md');
-      const parsed = parseNativeSkillMarkdown(stagedSkillPath, await fsp.readFile(stagedSkillPath, 'utf8'), logger);
-      if (!parsed) {
-        throw new Error(
-          `Bundled skill source changed during materialization: staged SKILL.md for expected name "${skill.parsed.name}" in folder "${skill.directoryName}" is invalid.`,
-        );
-      }
-      if (parsed.name !== skill.parsed.name) {
-        throw new Error(
-          `Bundled skill source changed during materialization: expected name "${skill.parsed.name}" in folder "${skill.directoryName}", staged name was "${parsed.name}".`,
-        );
-      }
-      stagedSkills.push({ source: skill, parsed });
+      const content = await fsp.readFile(stagedSkillPath, 'utf8');
+      stagedSkills.push({ source: skill, parsed: parseStagedSkill(skill, stagedSkillPath, content, logger) });
     }
 
     const hash = await buildGeneratedHash(tempPath);
@@ -647,20 +739,9 @@ async function materializeSkills(
       }
     }
 
-    const skillsByName = new Map<string, PreparedHiveSkill>();
-    for (const skill of stagedSkills) {
-      skillsByName.set(skill.parsed.name, {
-        name: skill.parsed.name,
-        description: skill.parsed.description,
-        content: skill.parsed.content,
-        sourceDir: skill.source.sourceDir,
-        materializedDir: path.join(materializedPath, skill.source.directoryName),
-      });
-    }
-
     return {
       materializedPath,
-      skillsByName,
+      skillsByName: buildPreparedSkills(materializedPath, stagedSkills),
     };
   } finally {
     await fsp.rm(tempPath, { recursive: true, force: true });

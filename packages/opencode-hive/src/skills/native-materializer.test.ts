@@ -1740,3 +1740,132 @@ describe('prepareNativeHiveSkills - host rendering', () => {
     expect(failed.skipped.every((entry) => entry.reason === 'url-scan-incomplete')).toBe(true);
   });
 });
+
+describe('prepareNativeHiveSkills - warm cache', () => {
+  type PreparedResult = Awaited<ReturnType<typeof prepareNativeHiveSkillsForHost>>;
+
+  function setupRichSkill() {
+    const worktree = createTempDir();
+    const bundledSkillsDir = path.join(worktree, 'fixtures', 'bundled-skills');
+    const skillDir = createBundledSkillDir(bundledSkillsDir, 'host-skill');
+    fs.writeFileSync(path.join(skillDir, 'SKILL.md'), HOST_SECTIONED_SKILL);
+    const nestedGuide = createSkillFile(
+      skillDir,
+      'guides/css/layout.md',
+      'Layout\n<!-- hive-host opencode-v1 -->\nv1 layout\n<!-- /hive-host -->\n<!-- hive-host opencode-v2 -->\nv2 layout\n<!-- /hive-host -->\n',
+    );
+    const script = createSkillFile(skillDir, 'scripts/run.sh', '#!/bin/sh\necho run\n');
+    fs.chmodSync(script, 0o755);
+    fs.mkdirSync(path.join(skillDir, 'empty-reference'));
+    createSkillFile(skillDir, 'references/first.md', '# First\n');
+    createSkillFile(skillDir, 'references/second.md', '# Second\n');
+    const link = path.join(skillDir, 'current-reference');
+    fs.symlinkSync(path.join('references', 'first.md'), link);
+    createBundledSkillDir(bundledSkillsDir, 'plain-skill');
+    return { worktree, bundledSkillsDir, skillDir, nestedGuide, script, link };
+  }
+
+  const prepare = (worktree: string, bundledSkillsDir: string, host: HostProfile) =>
+    prepareNativeHiveSkillsForHost({ host, directory: worktree, worktree, packagedSkillsDir: bundledSkillsDir, env: { HOME: worktree } });
+
+  function generatedRootOf(worktree: string): string {
+    return path.join(worktree, '.config', 'opencode', 'agent-hive', 'generated', 'opencode-skills');
+  }
+
+  async function prepareWithStagingSpies(run: () => Promise<PreparedResult>) {
+    const cpSpy = spyOn(fsp, 'cp');
+    const rmSpy = spyOn(fsp, 'rm');
+    const mkdirSpy = spyOn(fsp, 'mkdir');
+    try {
+      const result = await run();
+      return {
+        result,
+        cpCalls: cpSpy.mock.calls.length,
+        rmCalls: rmSpy.mock.calls.length,
+        tempMkdirs: mkdirSpy.mock.calls.filter((call) => String(call[0]).includes('.tmp-')).length,
+      };
+    } finally {
+      cpSpy.mockRestore();
+      rmSpy.mockRestore();
+      mkdirSpy.mockRestore();
+    }
+  }
+
+  it('reuses a warm cache directory without staging, copying or removing anything', async () => {
+    const { worktree, bundledSkillsDir } = setupRichSkill();
+
+    for (const host of [OPENCODE_V1_PROFILE, V2_PROFILE]) {
+      const cold = await prepareWithStagingSpies(() => prepare(worktree, bundledSkillsDir, host));
+      expect(cold.cpCalls).toBeGreaterThan(0);
+      const sessionMarker = path.join(cold.result.materializedPath!, 'session-marker');
+      fs.writeFileSync(sessionMarker, 'still in use', 'utf8');
+
+      const warm = await prepareWithStagingSpies(() => prepare(worktree, bundledSkillsDir, host));
+
+      expect(warm.cpCalls).toBe(0);
+      expect(warm.rmCalls).toBe(0);
+      expect(warm.tempMkdirs).toBe(0);
+      expect(warm.result.materializedPath).toBe(cold.result.materializedPath);
+      expect(warm.result.skillsByName).toEqual(cold.result.skillsByName);
+      expect(warm.result.skillPaths).toEqual(cold.result.skillPaths);
+      expect(fs.readFileSync(sessionMarker, 'utf8')).toBe('still in use');
+      expect(fs.readdirSync(generatedRootOf(worktree)).filter((entry) => entry.includes('.tmp-'))).toEqual([]);
+    }
+  });
+
+  it('predicts the staged hash of every packaged skill on both hosts', async () => {
+    const homeDir = createTempDir();
+    const opencodeConfigDir = path.join(homeDir, 'opencode-config');
+    const generatedRoot = path.join(opencodeConfigDir, 'agent-hive', 'generated', 'opencode-skills');
+    const input = {
+      directory: homeDir,
+      worktree: homeDir,
+      packagedSkillsDir: resolvePackagedSkillsDir(),
+      env: { HOME: homeDir, OPENCODE_CONFIG_DIR: opencodeConfigDir },
+    };
+
+    for (const host of [OPENCODE_V1_PROFILE, V2_PROFILE]) {
+      const coldStart = performance.now();
+      const cold = await prepareWithStagingSpies(() => prepareNativeHiveSkillsForHost({ host, ...input }));
+      const coldMs = performance.now() - coldStart;
+      const warmStart = performance.now();
+      const warm = await prepareWithStagingSpies(() => prepareNativeHiveSkillsForHost({ host, ...input }));
+      const warmMs = performance.now() - warmStart;
+      console.log(`[warm-cache] ${host.host}: ${cold.result.skillsByName.size} skills, cold ${coldMs.toFixed(1)} ms, warm ${warmMs.toFixed(1)} ms`);
+
+      expect(cold.cpCalls).toBeGreaterThan(0);
+      expect(cold.result.skillsByName.size).toBeGreaterThan(0);
+      // A warm hit means the in-memory prediction matched the hash of the staged copy.
+      expect(warm.cpCalls).toBe(0);
+      expect(warm.tempMkdirs).toBe(0);
+      expect(warm.result.materializedPath).toBe(cold.result.materializedPath);
+      expect(warm.result.skillsByName).toEqual(cold.result.skillsByName);
+    }
+    expect(fs.readdirSync(generatedRoot).filter((entry) => entry.includes('.tmp-'))).toEqual([]);
+  });
+
+  it.each([
+    ['a nested Markdown edit', ({ nestedGuide }: ReturnType<typeof setupRichSkill>) => fs.appendFileSync(nestedGuide, 'More layout\n')],
+    ['a mode change', ({ script }: ReturnType<typeof setupRichSkill>) => fs.chmodSync(script, 0o700)],
+    ['a symlink retarget', ({ link }: ReturnType<typeof setupRichSkill>) => {
+      fs.unlinkSync(link);
+      fs.symlinkSync(path.join('references', 'second.md'), link);
+    }],
+    ['a new empty directory', ({ skillDir }: ReturnType<typeof setupRichSkill>) => fs.mkdirSync(path.join(skillDir, 'another-empty'))],
+  ])('misses the warm cache and stages a new copy after %s', async (_name, mutate) => {
+    const fixture = setupRichSkill();
+    const first = await prepare(fixture.worktree, fixture.bundledSkillsDir, V2_PROFILE);
+
+    mutate(fixture);
+    const second = await prepareWithStagingSpies(() => prepare(fixture.worktree, fixture.bundledSkillsDir, V2_PROFILE));
+
+    expect(second.cpCalls).toBeGreaterThan(0);
+    expect(second.result.materializedPath).not.toBe(first.materializedPath);
+    expect(fs.existsSync(path.join(first.materializedPath!, 'host-skill', 'SKILL.md'))).toBe(true);
+    expect(fs.readdirSync(generatedRootOf(fixture.worktree)).filter((entry) => entry.includes('.tmp-'))).toEqual([]);
+
+    const third = await prepareWithStagingSpies(() => prepare(fixture.worktree, fixture.bundledSkillsDir, V2_PROFILE));
+    expect(third.cpCalls).toBe(0);
+    expect(third.result.materializedPath).toBe(second.result.materializedPath);
+  });
+});
