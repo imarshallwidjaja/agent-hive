@@ -15,6 +15,7 @@ One invocation is one continuing loop: ask, take in the answer, investigate and 
 
 - When the `question` tool is exposed, ask every operator question through it. Its answer returns inside the same invocation, so carry on with the next research step, check, or question in the same turn.
 - When the `question` tool is not exposed, ask one plain chat question. That reply unavoidably ends the turn; when the operator answers, resume the same loop where it stopped. Never claim a tool call, answer, or check result that did not happen.
+- After each `question` call returns, record the exchange in ordinary reply text outside any tool call before the next step: the question as asked, the options offered, and the operator's answer in their own words, or the fact that no answer came. A long loop then keeps its discussion in the conversation itself instead of relying on tool-call history alone.
 - Only an operator answer settles a question. When an exposed `question` call returns no answer (rejected, cancelled, dismissed, or errored), keep that item unresolved and alignment unconfirmed. Treat an explicit operator cancellation, pause, or stop as a stop. For a transport failure or rejection, disclose it and yield with the open question in chat; do not supply an answer, retry a call already known to fail, or work around the denied interaction.
 - A progress update, a status summary, or an offer to continue is a step inside the loop; follow it with the next question, check, or the alignment brief.
 
@@ -48,7 +49,7 @@ If research is unavailable or fails, disclose the gap and keep the fact unresolv
 
 ## Coverage And Finish
 
-No fixed question cap applies. Move to the alignment brief when no unresolved item could materially change shared understanding. If the operator says `wrap up`, stop expanding the frontier, state unresolved or skipped material items, and prepare alignment from current evidence. If the operator pauses or stops, stop asking, state settled and unresolved material items, and leave alignment unconfirmed.
+No fixed question cap applies. Move to the alignment brief when no unresolved item could materially change shared understanding. If the operator says `wrap up`, stop expanding the frontier, state unresolved or skipped material items, and prepare alignment from current evidence. If the operator pauses or stops, stop asking, state settled and unresolved material items, give the closing readback of what is available, and leave alignment unconfirmed.
 
 Finish with a compact alignment brief covering:
 
@@ -65,13 +66,24 @@ The invoking command may name further content its endpoint needs.
 
 Then require an explicit three-way alignment confirmation, asked through the same question transport as the loop. Give each outcome its cost and benefit, and recommend Aligned only when no material item is open; otherwise recommend the outcome that closes the gap:
 
-1. Aligned: the brief is accurate. It ends the interaction at once; any error left in the brief carries forward.
+1. Aligned: the brief is accurate. Give the closing readback, which ends the interaction; any error left in the brief carries forward.
 2. Aligned with named corrections: apply them, check any factual claims they introduce, ask any question they make material, then restate the corrected brief and ask for confirmation again. It costs another round and keeps the brief accurate.
 3. Not aligned: return to the loop with the single most material unresolved question, and confirm again once it settles. It costs the most time and is right when a material item is wrong or missing.
 
+### Closing Readback
+
+The closing response reads back, in order, every question asked in this invocation and its outcome, ending with the alignment confirmation and its answer when one was asked. The brief summarizes decisions; the readback keeps the exchange itself, so the operator can check what was actually asked and answered. For each question give:
+
+- the question as asked, and every option offered, whether the operator selected one, wrote a custom answer, or gave no answer
+- the operator's answer in their own words: any selected option or options, any custom or plain-chat text, and every reason and qualifier they stated; when a selected option label alone does not say what it meant, add its meaning
+- an answer later revised or corrected, kept in place and followed by the change and the answer that now stands
+- a question that got no answer, marked as unanswered, cancelled, dismissed, or errored, never written as an answer
+
+Build the readback from your recorded exchanges. When an earlier question or answer is no longer available to you, say which part is missing instead of reconstructing it.
+
 ## Separate Action Boundary
 
-Confirmed alignment ends the interaction. A bare confirmation is understanding only: planning, implementation, or any other follow-on work requires a separate operator request. Grilling itself creates no Hive feature, plan, or other Hive state.
+Confirmed alignment ends the interaction once the closing readback is given. A bare confirmation is understanding only: planning, implementation, or any other follow-on work requires a separate operator request. Grilling itself creates no Hive feature, plan, or other Hive state.
 
 An explicit instruction given upfront to continue after alignment, such as "then create a plan after alignment", is that request in advance. It authorizes the one next stage it names, only once alignment is confirmed, and you do not ask for authorization a second time. That stage runs under the active role's existing planning, approval, and tool boundaries; the instruction never implies approval, task sync, or execution.
 

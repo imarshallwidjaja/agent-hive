@@ -212,7 +212,7 @@ describe('HIVE_COMMANDS', () => {
       for (const output of [grill, interview]) {
         expect(output).toContain('Load the `grilling` skill and use its shared interaction engine.');
         expect(output).toContain("Run the whole interaction as the skill's continuous loop in this invocation.");
-        expect(output).toContain("End with the skill's explicit three-way alignment confirmation.");
+        expect(output).toContain("End with the skill's explicit three-way alignment confirmation and its closing readback.");
         // The wrappers defer to the skill instead of restating its method, transport and falsification policy.
         for (const methodPhrase of ['Falsify before settling', 'per turn', 'Get your bearings', 'a short pro, a short con', 'does not settle a decision', 'highest-ambiguity', 'compact progress']) {
           expect(output, methodPhrase).not.toContain(methodPhrase);
@@ -221,7 +221,7 @@ describe('HIVE_COMMANDS', () => {
       // /grill settles scope and acceptance criteria on supplied context, then recommends the step the result warrants
       // instead of always handing off to /hive-plan; it still runs none of those steps itself.
       expect(grill).toContain('settle the scope, constraints, non-goals, and acceptance criteria the next step will need');
-      expect(grill).toContain("The skill's alignment brief with acceptance criteria added, followed by three-way alignment confirmation");
+      expect(grill).toContain("The skill's alignment brief with acceptance criteria added, followed by three-way alignment confirmation and the skill's closing readback");
       expect(grill).toContain('After confirmation, recommend the next step the result warrants, unless the operator already asked for the next stage');
       for (const nextStep of ['a direct answer when that settles it', '/implement when the scope is clear enough to build as ad-hoc work', '/hive-plan when it needs a reviewed plan and task breakdown', '/investigate when an open question needs evidence first']) {
         expect(grill, nextStep).toContain(nextStep);
@@ -237,7 +237,7 @@ describe('HIVE_COMMANDS', () => {
       expect(grill).not.toContain('disagreements, and open questions');
       expect(grill).not.toContain('implementation-brief');
       // /interview stays flexible: no mandatory brief funnel, any fitting next step, and its own output contract.
-      expect(interview).toContain('## Interview Summary and ## Recommended Next Step, followed by three-way alignment confirmation');
+      expect(interview).toContain('## Interview Summary and ## Recommended Next Step, followed by three-way alignment confirmation and the skill\'s closing readback');
       expect(interview).toContain('such as an answer, ad-hoc work, `/hive-plan`, or none');
       expect(interview).toContain('let the idea decide the endpoint: an answer, a decision, ad-hoc work, or a plan');
       expect(interview).toContain('a pro and con for each when more than one next step is reasonable');

@@ -109,7 +109,7 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
       doItems: [
         'Load the `grilling` skill and use its shared interaction engine.',
         'Run the whole interaction as the skill\'s continuous loop in this invocation.',
-        'End with the skill\'s explicit three-way alignment confirmation.',
+        'End with the skill\'s explicit three-way alignment confirmation and its closing readback.',
       ],
       doNotItems: [],
       backgroundItems: backgroundItems(context, [
@@ -117,7 +117,7 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
         'Continue asking independent operator decisions while research runs; wait only when all remaining material decisions depend on pending evidence.',
       ]),
       outputItems: [
-        '## Interview Summary and ## Recommended Next Step, followed by three-way alignment confirmation. The next step is whatever the clarified idea calls for, such as an answer, ad-hoc work, `/hive-plan`, or none.',
+        '## Interview Summary and ## Recommended Next Step, followed by three-way alignment confirmation and the skill\'s closing readback. The next step is whatever the clarified idea calls for, such as an answer, ad-hoc work, `/hive-plan`, or none.',
       ],
     });
   },
@@ -128,7 +128,7 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
       doItems: [
         'Load the `grilling` skill and use its shared interaction engine.',
         'Run the whole interaction as the skill\'s continuous loop in this invocation.',
-        'End with the skill\'s explicit three-way alignment confirmation.',
+        'End with the skill\'s explicit three-way alignment confirmation and its closing readback.',
       ],
       doNotItems: [],
       backgroundItems: backgroundItems(context, [
@@ -136,7 +136,7 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
         'Continue asking independent operator decisions while research runs; wait only when all remaining material decisions depend on pending evidence.',
       ]),
       outputItems: [
-        'The skill\'s alignment brief with acceptance criteria added, followed by three-way alignment confirmation.',
+        'The skill\'s alignment brief with acceptance criteria added, followed by three-way alignment confirmation and the skill\'s closing readback.',
         'After confirmation, recommend the next step the result warrants, unless the operator already asked for the next stage.',
       ],
     });

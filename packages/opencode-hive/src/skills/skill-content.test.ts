@@ -491,6 +491,12 @@ describe('skill content', () => {
     ]) expect(skill!.template, requirement).toContain(requirement);
     // The turn-ending rules are not a closed list: a legitimate native completion wait must stay available.
     expect(skill!.template).not.toContain('End the turn only');
+    // Aligned no longer ends the interaction before the readback, and the skill promises nothing about what the host keeps.
+    expect(skill!.template).not.toContain('ends the interaction at once');
+    expect(skill!.template).not.toMatch(/prun|guarantee/i);
+    // The readback neither drops options for an unselected answer nor condenses the answer to its gist.
+    expect(skill!.template).not.toContain('when the operator chose among them');
+    expect(skill!.template).not.toContain("the answer's substance");
     // Static text-consistency scenarios for the paths a live run can take; they are not model-behavior evidence.
     const scenarios: Record<string, string[]> = {
       'background research pending after the last independent question': [
@@ -508,7 +514,43 @@ describe('skill content', () => {
       ],
       'operator cancels, pauses, or stops': [
         'Treat an explicit operator cancellation, pause, or stop as a stop',
-        'If the operator pauses or stops, stop asking, state settled and unresolved material items, and leave alignment unconfirmed',
+        'If the operator pauses or stops, stop asking, state settled and unresolved material items, give the closing readback of what is available, and leave alignment unconfirmed',
+      ],
+      // The exchange lives in reply text as well as tool history, and the close reads all of it back.
+      'question tool returns an answer': [
+        'After each `question` call returns, record the exchange in ordinary reply text outside any tool call before the next step',
+        "the operator's answer in their own words, or the fact that no answer came",
+        'instead of relying on tool-call history alone',
+      ],
+      'operator confirms Aligned': [
+        'Aligned: the brief is accurate. Give the closing readback, which ends the interaction',
+        'Confirmed alignment ends the interaction once the closing readback is given',
+        'reads back, in order, every question asked in this invocation and its outcome, ending with the alignment confirmation and its answer',
+        'The brief summarizes decisions; the readback keeps the exchange itself',
+      ],
+      'readback preserves wording, revisions, and non-answers': [
+        "the operator's answer in their own words: any selected option or options",
+        'when a selected option label alone does not say what it meant, add its meaning',
+        'kept in place and followed by the change and the answer that now stands',
+        'marked as unanswered, cancelled, dismissed, or errored, never written as an answer',
+      ],
+      // A custom answer such as "neither" or "not option 1" only makes sense beside the options it rejects.
+      'custom answer rejects the offered options': [
+        'every option offered, whether the operator selected one, wrote a custom answer, or gave no answer',
+        'any custom or plain-chat text',
+      ],
+      'question cancelled after options were offered': [
+        'every option offered, whether the operator selected one, wrote a custom answer, or gave no answer',
+        'marked as unanswered, cancelled, dismissed, or errored, never written as an answer',
+      ],
+      // Plain chat has no per-answer echo, so the readback itself must carry the operator's wording and caveats.
+      'qualified plain-chat answer keeps its wording and caveats': [
+        "the operator's answer in their own words",
+        'any custom or plain-chat text, and every reason and qualifier they stated',
+      ],
+      'earlier exchange no longer available': [
+        'Build the readback from your recorded exchanges',
+        'say which part is missing instead of reconstructing it',
       ],
     };
     for (const [scenario, phrases] of Object.entries(scenarios)) {
@@ -594,7 +636,6 @@ describe('skill content', () => {
     expect(skill!.template).toContain('unresolved material items');
     expect(skill!.template).toContain('counts for facts marked');
     expect(skill!.template).toContain('- operator decisions, each with its reason when the operator or the evidence gave one\n- operator preferences');
-    expect(skill!.template).toContain('Confirmed alignment ends the interaction');
     expect(skill!.template).toContain('requires a separate operator request');
     expect(skill!.template).toContain('A named destination authorizes writing only the confirmed alignment brief there');
     expect(skill!.template).toContain('No minimum, maximum, fixed research timing, or forced delegation applies');

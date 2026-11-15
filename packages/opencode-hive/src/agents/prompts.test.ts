@@ -1197,7 +1197,7 @@ describe('/grill and /interview primary-agent mode exception', () => {
       expect(prompt, name).toContain('`/interview` keeps questioning flexible, for open-ended or ad-hoc clarification, and does not funnel into an implementation brief');
       expect(prompt, name).not.toContain('brief-ready context');
       expect(prompt, name).toContain('suspend automatic plan generation, Hive-state persistence or mutation, implementation, and follow-on action');
-      expect(prompt, name).toContain("Confirmed alignment ends the interaction; the `grilling` skill's Separate Action Boundary governs what may follow, including a named destination for the brief");
+      expect(prompt, name).toContain("Confirmed alignment ends the interaction after the `grilling` skill's closing readback; its Separate Action Boundary governs what may follow, including a named destination for the brief");
       // The boundary text lives once, in the skill; the prompt points to it instead of restating it.
       expect(prompt, name).not.toContain('A named destination authorizes writing only the confirmed alignment brief there');
       expect(prompt, name).not.toContain('a bare confirmation is understanding only');
@@ -3425,6 +3425,7 @@ describe('README.md documentation', () => {
         expect(content).toContain('never guessed');
         expect(content).toContain('each answer returns to the same run, which keeps researching, checking, and asking until you confirm alignment or stop it');
         expect(content).toContain('each plain chat question waits for your reply and the next turn resumes the same loop');
+        expect(content).toContain('its closing response reads back every question and answer in order, the confirmation included; if you stop early, you get the readback so far with alignment unconfirmed');
       }
 
       expect(rootReadmeContent).toContain('Pressure-test supplied context into confirmed decisions, constraints, scope and acceptance criteria, then get a recommended next step');
