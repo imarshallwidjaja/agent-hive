@@ -1825,13 +1825,8 @@ describe('prepareNativeHiveSkills - warm cache', () => {
     };
 
     for (const host of [OPENCODE_V1_PROFILE, V2_PROFILE]) {
-      const coldStart = performance.now();
       const cold = await prepareWithStagingSpies(() => prepareNativeHiveSkillsForHost({ host, ...input }));
-      const coldMs = performance.now() - coldStart;
-      const warmStart = performance.now();
       const warm = await prepareWithStagingSpies(() => prepareNativeHiveSkillsForHost({ host, ...input }));
-      const warmMs = performance.now() - warmStart;
-      console.log(`[warm-cache] ${host.host}: ${cold.result.skillsByName.size} skills, cold ${coldMs.toFixed(1)} ms, warm ${warmMs.toFixed(1)} ms`);
 
       expect(cold.cpCalls).toBeGreaterThan(0);
       expect(cold.result.skillsByName.size).toBeGreaterThan(0);
@@ -1842,6 +1837,35 @@ describe('prepareNativeHiveSkills - warm cache', () => {
       expect(warm.result.skillsByName).toEqual(cold.result.skillsByName);
     }
     expect(fs.readdirSync(generatedRoot).filter((entry) => entry.includes('.tmp-'))).toEqual([]);
+  });
+
+  it('stages a skill whose SKILL.md links to a host-sectioned sibling and renders it for the selected host', async () => {
+    const worktree = createTempDir();
+    const bundledSkillsDir = path.join(worktree, 'fixtures', 'bundled-skills');
+    const skillDir = createBundledSkillDir(bundledSkillsDir, 'host-skill');
+    fs.rmSync(path.join(skillDir, 'SKILL.md'));
+    fs.writeFileSync(path.join(skillDir, 'body.md'), HOST_SECTIONED_SKILL);
+    fs.symlinkSync('body.md', path.join(skillDir, 'SKILL.md'));
+
+    for (const [host, kept, dropped] of [
+      [OPENCODE_V1_PROFILE, 'Dispatch with `task()`.', 'subagent()'],
+      [V2_PROFILE, 'Dispatch with `subagent()`.', 'task()'],
+    ] as const) {
+      const first = await prepareWithStagingSpies(() => prepare(worktree, bundledSkillsDir, host));
+      // The prediction does not model a linked SKILL.md, so every run stages a copy and lands on the same hash.
+      const second = await prepareWithStagingSpies(() => prepare(worktree, bundledSkillsDir, host));
+      expect(first.cpCalls).toBeGreaterThan(0);
+      expect(second.cpCalls).toBeGreaterThan(0);
+      expect(second.result.materializedPath).toBe(first.result.materializedPath);
+
+      const staged = path.join(second.result.materializedPath!, 'host-skill');
+      expect(fs.lstatSync(path.join(staged, 'SKILL.md')).isSymbolicLink()).toBe(true);
+      expect(fs.readFileSync(path.join(staged, 'SKILL.md'), 'utf8')).toContain(kept);
+      expect(second.result.skillsByName.get('host-skill')?.content).toContain(kept);
+      expect(second.result.skillsByName.get('host-skill')?.content).not.toContain(dropped);
+      expect(second.result.skillsByName.get('host-skill')?.content).not.toContain('hive-host');
+    }
+    expect(fs.readdirSync(generatedRootOf(worktree)).filter((entry) => entry.includes('.tmp-'))).toEqual([]);
   });
 
   it.each([

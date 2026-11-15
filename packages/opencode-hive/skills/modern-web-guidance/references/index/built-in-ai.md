@@ -1,0 +1,10 @@
+# built-in-ai guides
+
+<!-- Generated from GoogleChrome/modern-web-guidance v1.0.0 guide metadata (CC-BY 4.0); see ../../UPSTREAM.md -->
+
+4 guides. Each entry gives the guide link, its line count, a gate tag when the guide carries an Origin Trial or volatile-feature caution, the upstream description, and the platform symbols the guide covers.
+
+- [`language-detection`](../../guides/built-in-ai/language-detection.md) (100L) [volatile]: Detect the language of user-generated content or already present site content. Keywords/APIs: `Language detector`, `LanguageDetector.create()`, `LanguageDetector`, `NotAllowedError`.
+- [`language-model`](../../guides/built-in-ai/language-model.md) (408L; large guide, grep its `^## ` headings and read the matching sections with offset and limit) [volatile]: Run on-device natural language inference in the browser using the Prompt API, with streaming output, structured JSON responses, and multi-turn session management. Keywords/APIs: `LanguageModel`, `promptStreaming()`, `LanguageModel.create()`, `<progress>`, `prompt()`, `innerHTML`, `aria-busy="true"`, `JSON.parse()`, `NotAllowedError`, `textContent`, `initialPrompts`, `responseConstraint`, `AbortController`, `create()`, `AbortError`, `IndexedDB`.
+- [`summarizer`](../../guides/built-in-ai/summarizer.md) (166L) [volatile]: Summarize text content using the on-device Summarizer API. Keywords/APIs: `Summarizer`, `Summarizer.create()`, `Summarizer.availability()`, `window.ai.summarizer`, `NotAllowedError`, `key-points`, `plain-text`, `outputLanguage`, `built-in-ai-task-apis-polyfills`, `prompt-api-polyfill`, `monitor()`, `downloadprogress`, `availability`, `tldr`, `teaser`, `headline`.
+- [`translator`](../../guides/built-in-ai/translator.md) (195L) [volatile]: Translate text between languages using the on-device Translator API. Keywords/APIs: `Translator`, `Translator.create()`, `Translator.availability()`, `window.Translator`, `self.Translator`, `window.ai.translator`, `NotAllowedError`, `sourceLanguage`, `targetLanguage`, `built-in-ai-task-apis-polyfills`, `prompt-api-polyfill`, `monitor()`, `availability()`, `downloadprogress`.
