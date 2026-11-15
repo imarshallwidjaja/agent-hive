@@ -69,7 +69,7 @@ function expectInSessionDesignDocumentationPolicy(content: string) {
 describe('skill content', () => {
   it('packages the design, explanation, and writing families with self-contained references and provenance', () => {
     const root = resolvePackagedSkillsDir();
-    const names = ['code-design-principles', 'how', 'why', 'unslop', 'stop-design-slop', 'writing-for-humans', 'stop-slop', 'humanizer'];
+    const names = ['code-design-principles', 'how', 'why', 'unslop', 'stop-design-slop', 'writing-for-humans', 'stop-slop', 'humanizer', 'modern-web-guidance'];
     for (const name of names) {
       const skill = BUILTIN_SKILLS.find((entry) => entry.name === name);
       expect(skill, name).toBeDefined();
@@ -2927,6 +2927,145 @@ describe('skill content', () => {
       expect(skill.name.trim().length).toBeGreaterThan(0);
       expect(skill.description.trim().length).toBeGreaterThan(0);
     }
+  });
+});
+
+// Description, UPSTREAM.md presence, and relative-link containment for this skill live in the shared
+// 'packages the design, explanation, and writing families' test above.
+describe('modern-web-guidance skill contracts', () => {
+  const directory = path.join(resolvePackagedSkillsDir(), 'modern-web-guidance');
+  const read = (relative: string) => readFileSync(path.join(directory, relative), 'utf8');
+  const markdownFiles = readdirSync(directory, { recursive: true, encoding: 'utf8' }).filter((relative) => relative.endsWith('.md'));
+  const guideFiles = markdownFiles.filter((relative) => relative.startsWith('guides/')).sort();
+  const indexFiles = markdownFiles.filter((relative) => relative.startsWith('references/index/'));
+  const skill = readSkillTemplate('modern-web-guidance');
+  const originTrialGuides = [
+    'security/verify-email-ownership', 'visual-design/apply-webgl-shaders', 'visual-design/export-html-media-from-canvas',
+    'visual-design/expose-canvas-content-to-browser-features', 'visual-design/interactive-content-in-3d-scenes',
+    'webmcp/agentic-forms', 'webmcp/agentic-javascript-tools', 'webmcp/webmcp',
+  ];
+  const volatileGuides = [
+    'built-in-ai/language-detection', 'built-in-ai/language-model', 'built-in-ai/summarizer', 'built-in-ai/translator',
+    'performance/out-of-order-html-streaming', 'security/client-side-encryption', 'security/digital-signatures',
+    'security/restrict-outbound-connections', 'ui-behaviors/2d-panning', 'visual-design/custom-text-decorations',
+  ];
+
+  it('triggers on UI/UX audits and browser-facing work and excludes backend, infrastructure, build-tool, and copy-only changes', () => {
+    // Guards downstream consumers that parse frontmatter line by line: name and description must each stay on one line.
+    const frontmatter = read('SKILL.md').split('\n').slice(0, 4);
+    expect(frontmatter[0]).toBe('---');
+    expect(frontmatter[1]).toBe('name: modern-web-guidance');
+    expect(frontmatter[2]).toMatch(/^description: Use when \S/);
+    expect(frontmatter[3]).toBe('---');
+    const description = BUILTIN_SKILLS.find((entry) => entry.name === 'modern-web-guidance')!.description;
+    for (const trigger of [
+      "auditing a codebase's UI and UX", 'modernizing a frontend', 'HTML, CSS, DOM and UI components',
+      'Core Web Vitals', 'client-side security',
+    ]) expect(description, trigger).toContain(trigger);
+    expect(description).toContain('Not for backend, SQL, or API routes, infrastructure or CI, build-tool configuration, or copy-only changes.');
+  });
+
+  it('ships both licenses, upstream attribution, the legacy rubrics, every category index, and exactly the indexed guides', () => {
+    expect(read('LICENSE.apache-2.0')).toContain('licensed under the Apache License, Version 2.0');
+    expect(read('LICENSE.cc-by-4.0')).toContain('Creative Commons Attribution 4.0 International Public License');
+    expect(read('UPSTREAM.md')).toContain('derived from MDN Web Docs by Mozilla Contributors and W3C, WHATWG, and IETF specifications');
+    expect(indexFiles.map((relative) => path.basename(relative, '.md')).sort()).toEqual([
+      'accessibility', 'built-in-ai', 'css', 'forms', 'html', 'js', 'performance', 'privacy', 'pwa', 'security',
+      'ui-atoms', 'ui-behaviors', 'ui-components', 'user-experience', 'visual-design', 'wasm', 'webmcp',
+    ]);
+    // The indexes are the search surface, so every shipped guide must be reachable from exactly one index entry.
+    const indexed = indexFiles.flatMap((relative) =>
+      [...read(relative).matchAll(/^- \[`[^`]+`\]\(\.\.\/\.\.\/(guides\/[^)]+\.md)\)/gm)].map((match) => match[1]!));
+    expect(guideFiles).toHaveLength(208);
+    expect([...indexed].sort()).toEqual(guideFiles);
+    expect(existsSync(path.join(directory, 'guides/built-in-ai/prompt-api.md'))).toBe(false);
+
+    // The shared family test above resolves this file's links; its rule list and dropWhen preamble are owned by
+    // scripts/sync-modern-web-guidance.test.ts, next to the generator that writes them.
+    expect(existsSync(path.join(directory, 'references/legacy-patterns.md'))).toBe(true);
+  });
+
+  it('carries the Apache-2.0 modification notice and no CLI, host-runtime, or escaped-backtick residue outside attribution files', () => {
+    expect(read('SKILL.md')).toContain('<!-- Adapted from GoogleChrome/modern-web-guidance v1.0.0 (Apache-2.0)');
+    expect(read('references/legacy-patterns.md')).toContain('<!-- Adapted from GoogleChrome/modern-web-guidance v1.0.0 legacy-scan.mjs (Apache-2.0)');
+    const residue = [/npx /, /pnpx /, /modern-web-guidance@/, /\bHive\b/, /\bOpenCode\b/, /\boc-arkive\b/, /\bnative skill\b/, /\\`/];
+    const shipped = markdownFiles.filter((relative) => !/(^|\/)(UPSTREAM|LICENSE[^/]*)\.md$/.test(relative));
+    expect(shipped.length).toBe(208 + 17 + 2);
+    const hits = shipped.flatMap((relative) => {
+      const content = read(relative);
+      return residue.filter((pattern) => pattern.test(content)).map((pattern) => `${relative}: ${pattern}`);
+    });
+    expect(hits).toEqual([]);
+  });
+
+  it('puts the three-way .mwgrc caution under the title of exactly the gated guides and tags them in the indexes', () => {
+    const gated = new Map<string, string>([
+      ...originTrialGuides.map((guide) => [guide, 'allowOriginTrials'] as const),
+      ...volatileGuides.map((guide) => [guide, 'allowVolatileFeatures'] as const),
+    ]);
+    expect(gated.size).toBe(18);
+    for (const relative of guideFiles) {
+      const guide = relative.slice('guides/'.length, -'.md'.length);
+      const head = read(relative).split('\n').slice(0, 10).join('\n');
+      const key = gated.get(guide);
+      if (!key) {
+        expect(head, relative).not.toMatch(/\*\*(Origin Trial|Volatile feature):\*\*/);
+        continue;
+      }
+      expect(head, relative).toContain('> [!CAUTION]');
+      expect(head, relative).toContain(key === 'allowOriginTrials' ? '> **Origin Trial:**' : '> **Volatile feature:**');
+      expect(head, relative).toContain(
+        `> When the project's \`.mwgrc\` sets \`"${key}": false\`, do not adopt this API. Otherwise adopt it only when \`.mwgrc\` sets \`"${key}": true\` or the user explicitly requested this API by name; when neither holds, implement a standard cross-browser solution.`,
+      );
+    }
+    const tagged = (tag: string) => indexFiles.flatMap((relative) =>
+      [...read(relative).matchAll(new RegExp(`^- \\[\`[^\`]+\`\\]\\(\\.\\./\\.\\./guides/([^)]+)\\.md\\)[^:]*\\[${tag}\\]:`, 'gm'))].map((match) => match[1]!)).sort();
+    expect(tagged('origin-trial')).toEqual([...originTrialGuides].sort());
+    expect(tagged('volatile')).toEqual([...volatileGuides].sort());
+    const gate = skill.slice(skill.indexOf('**Origin Trial** guides'));
+    const optOut = gate.indexOf('"allowOriginTrials": false');
+    const optIn = gate.indexOf('"allowOriginTrials": true');
+    const fallback = gate.indexOf('implement a standard cross-browser solution');
+    expect(optOut).toBeGreaterThan(-1);
+    expect(optOut).toBeLessThan(optIn);
+    expect(optIn).toBeLessThan(fallback);
+  });
+
+  it('separates the scoped workflow from the two-pass codebase audit and keeps the supply-chain and role guardrails', () => {
+    for (const phrase of [
+      '## Workflow 1: author, update, or review a feature or component',
+      '## Workflow 2: codebase UI/UX audit and modernization',
+      '**Pass 1: legacy-pattern sweep.** Read [`references/legacy-patterns.md`](references/legacy-patterns.md)',
+      '**Pass 2: seven-axis UI/UX and platform sweep.**',
+      'use it alongside this one: `stop-design-slop` governs product-derived visual composition and hierarchy',
+      'without demanding unrelated repository-wide rewrites of an established accessible component system',
+      'In an explicit UI/UX audit or modernization task, evaluate the entire requested scope against these guides',
+      'unpinned `@latest` CDN URLs',
+      'pinned to an exact version and protected with Subresource Integrity',
+      'this skill adds no `### Modern Web Guidance` section',
+    ]) expect(skill, phrase).toContain(phrase);
+    const axes = [
+      '**UX and form factor**', '**HTML semantics and overlays**', '**CSS architecture, visual design, and dark mode**',
+      '**Forms and validation**', '**Motion and view continuity**', '**Accessibility and Core Web Vitals**',
+      '**Security, authentication, and privacy**',
+    ];
+    const pass2 = skill.slice(skill.indexOf('**Pass 2:'), skill.indexOf('4. **Deliver the audit or the refactor.**'));
+    expect([...pass2.matchAll(/^ {3}- (\*\*[^*]+\*\*)/gm)].map((match) => match[1])).toEqual(axes);
+  });
+
+  it('pairs stop-design-slop with modern-web-guidance and has hex pairs resolved before the contrast script runs', () => {
+    const stopDesignSlop = readSkillTemplate('stop-design-slop');
+    expect(stopDesignSlop).toContain('load `modern-web-guidance` alongside this skill when it is available');
+    expect(stopDesignSlop).toContain('native `<dialog>` and `popover` overlays');
+    expect(stopDesignSlop).toContain(
+      'This skill governs product-derived visual composition, hierarchy, and anti-slop diagnostics; `modern-web-guidance` governs web-platform primitives, UX ergonomics, and compatibility fallbacks.',
+    );
+    expect(stopDesignSlop).toContain('The script accepts `#RGB` or `#RRGGBB` hex colors');
+    expect(stopDesignSlop).toContain('resolve modern CSS color expressions such as `oklch()`, `color-mix()`, or `light-dark()` to a hex pair before running it');
+    expect(stopDesignSlop).not.toMatch(/\bOpenCode\b|\bHive\b|\boc-arkive\b|\bnative skill\b|skill\(\{|hive-host/);
+    // The script rejects a functional color, which is why the pair must be resolved to hex first.
+    const script = path.join(resolvePackagedSkillsDir(), 'stop-design-slop', 'scripts', 'contrast_check.py');
+    expect(spawnSync('python3', [script, 'oklch(0.5 0.1 200)', '#FFFFFF'], { encoding: 'utf8' }).status).toBe(2);
   });
 });
 

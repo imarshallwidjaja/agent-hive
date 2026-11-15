@@ -628,6 +628,42 @@ describe(`release ${releaseVersion} artifact contract on main`, () => {
         assertPackedFile(packedFiles, `skills/${reference}`, 'oc-arkive');
         assert.ok(fs.statSync(path.join(packageRoot, 'skills', reference)).size > 0, `packed ${reference} should not be empty`);
       }
+      // The vendored web-platform corpus ships with both license texts; its repository-only sync script does not.
+      // Every guide an index links to must be in the tarball, so a skill that reaches it through the index never hits a missing file.
+      const webGuidance = 'skills/modern-web-guidance';
+      const indexCategories = [
+        'accessibility', 'built-in-ai', 'css', 'forms', 'html', 'js', 'performance', 'privacy', 'pwa', 'security',
+        'ui-atoms', 'ui-behaviors', 'ui-components', 'user-experience', 'visual-design', 'wasm', 'webmcp',
+      ];
+      const indexedGuides = new Set();
+      for (const category of indexCategories) {
+        const index = `${webGuidance}/references/index/${category}.md`;
+        assertPackedFile(packedFiles, index, 'oc-arkive');
+        const text = fs.readFileSync(path.join(packageRoot, index), 'utf8');
+        for (const match of text.matchAll(/\]\(\.\.\/\.\.\/(guides\/[a-z0-9-]+\/[a-z0-9-]+\.md)\)/g)) indexedGuides.add(match[1]);
+      }
+      assert.equal(
+        [...packedFiles].filter((filePath) => filePath.startsWith(`${webGuidance}/references/index/`)).length,
+        indexCategories.length,
+        'packed modern-web-guidance should ship exactly the 17 category indexes'
+      );
+      assert.equal(indexedGuides.size, 208, 'packed modern-web-guidance indexes should link 208 unique guides');
+      for (const vendored of [
+        `${webGuidance}/SKILL.md`,
+        `${webGuidance}/UPSTREAM.md`,
+        `${webGuidance}/LICENSE.apache-2.0`,
+        `${webGuidance}/LICENSE.cc-by-4.0`,
+        `${webGuidance}/references/legacy-patterns.md`,
+        ...[...indexedGuides].map((guide) => `${webGuidance}/${guide}`),
+      ]) {
+        assertPackedFile(packedFiles, vendored, 'oc-arkive');
+        assert.ok(fs.statSync(path.join(packageRoot, vendored)).size > 0, `packed ${vendored} should not be empty`);
+      }
+      assert.equal(
+        [...packedFiles].filter((filePath) => filePath.startsWith('scripts/') || filePath.includes('sync-modern-web-guidance')).length,
+        0,
+        'the modern-web-guidance sync script should not ship in the oc-arkive tarball'
+      );
       assert.equal(
         [...packedFiles].filter((filePath) => filePath.startsWith('evals/') || /(^|\/)(credentials|auth)[^/]*\.(json|mjs)$|(^|\/)\.env/.test(filePath)).length,
         0,

@@ -168,8 +168,18 @@ describe('legacy-scan rule extraction', () => {
     const ruleIds = [...text.matchAll(/^### `([^`]+)`$/gm)].map((match) => match[1]);
     const guideLinks = [...text.matchAll(/^Guide: \[`[^`]+`\]\(([^)]+)\)$/gm)].map((match) => match[1]);
 
-    expect(ruleIds).toHaveLength(35);
-    expect(new Set(ruleIds).size).toBe(35);
+    // Pinned to legacy-scan.mjs in modern-web-guidance v1.0.0, in source order.
+    expect(ruleIds).toEqual([
+      'animate-to-intrinsic-sizes', 'child-state-based-styling/js-parent-class', 'autofill-address-form', 'autofill-payment-form',
+      'autofill-sign-in-form', 'autofill-sign-up-form', 'form-fields-automatically-fit-contents', 'ime-safe-enter-submit',
+      'select-menu-interaction/css-select-invalid', 'slider/js-slider', 'validate-input-after-interaction', 'styling-web-components',
+      'format-human-readable-durations/js-duration-formatter', 'deliver-optimized-decorative-images', 'flicker-free-client-side-ab-testing',
+      'sanitize-untrusted-html/js-dompurify-innerhtml', 'secure-external-subresources', 'icons', 'declarative-dialog-popover-control/click-listener',
+      'dynamic-sibling-animations', 'interest-triggered-tooltips/js-tooltip', 'scroll-entry-exit-effects/js-scroll-reveal',
+      'scroll-entry-exit-effects/package-scroll-reveal', 'checkbox', 'dark-mode-toggle', 'dialog', 'progress', 'scrollspy',
+      'custom-text-decorations', 'customize-scrollbar-color-and-thickness', 'dark-mode', 'equal-width-text-lines/js-fittext',
+      'improve-text-layout-and-legibility/js-text-balance', 'improve-text-layout-and-legibility/package-text-balance', 'soft-edge-content-fade',
+    ]);
     expect(guideLinks).toHaveLength(35);
     for (const link of guideLinks) expect(existsSync(path.join(skill, 'references', link)), link).toBe(true);
     expect(text).toContain('dangerouslySetInnerHTML={ { __html: ... } }');
@@ -181,6 +191,7 @@ describe('legacy-scan rule extraction', () => {
     const preamble = text.slice(0, text.indexOf('\n## '));
     const rule = text.slice(text.indexOf('### `autofill-payment-form`'), text.indexOf('### `autofill-sign-in-form`'));
 
+    expect(preamble).toContain('conditions that dismiss **that specific rule match**');
     expect(preamble).toContain('Dismissing one rule match does not suppress an independent defect on the same element');
     expect(preamble).toContain('`autocomplete="cc-number"` skips the missing-autofill check, while `type="number"` on that card field still violates `autofill-payment-form`');
     expect(preamble).not.toContain('When any of them applies, the code stays unchanged');

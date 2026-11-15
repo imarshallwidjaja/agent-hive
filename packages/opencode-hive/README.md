@@ -624,6 +624,7 @@ Generated/managed shape (for inspection) at `<project>/.hive/repositories.json`:
 | `hive-config` | Hive runtime layout, state-tool ownership, read-only session forensics, and Agent Hive configuration reference |
 | `how` | Explain current source-grounded behavior and subsystem flow |
 | `humanizer` | Rewrite existing prose without changing its facts or commitments, interview the writer or work from their notes, audit your own or supplied draft, and repair vocabulary, register, attribution, and formatting |
+| `modern-web-guidance` | Vendored web-platform guides for HTML, CSS, DOM and UI components, forms, accessibility, Core Web Vitals, and client-side security, plus a codebase UI/UX audit and modernization workflow |
 | `orchestrating-ad-hoc-work` | Coordinate qualifying ad-hoc work for Hive Builder or unified Hive |
 | `parallel-exploration` | Researcher fan-out for read-only research |
 | `pr-writing` | Draft PR titles, descriptions, and general or inline review comments |
@@ -660,6 +661,8 @@ The writing and visual family is maintained in oc-arkive. `unslop` is the shared
 `writing-policy` no longer ships and has no alias: `unslop` replaced it. A personal copy at `~/.agents/skills/writing-policy/` is outside the package, is not migrated or removed, and nothing in oc-arkive loads it now; references to `writing-policy` in your own instructions, constraints, or agent configuration find only that personal copy, if you keep one. A personal `stop-design-slop` skill (for example `~/.agents/skills/stop-design-slop/`) is a same-name native skill, so it takes precedence over the bundled `stop-design-slop` until you remove it. Moving to the bundled foundation is a separate step that the operator takes by hand; oc-arkive migrates nothing automatically.
 
 `code-design-principles` deepens the existing Engineering Judgment block at material design decisions without another workflow or finding bar. `how` and `why` serve explicit explanation and historical-rationale requests; ordinary debugging, future design selection, and routine implementation orientation retain their existing owners.
+
+`modern-web-guidance` holds 208 guides from GoogleChrome's modern-web-guidance v1.0.0 release as local Markdown, with category indexes for search and no CLI or network access. The Engineering Judgment block names it as a conditional load for UI/UX audits, frontend modernization, and browser-facing HTML, CSS, DOM, forms, client-side JavaScript, accessibility, Core Web Vitals, and browser security work; backend, infrastructure, build-tool configuration, and copy-only edits do not trigger it. For a named component or a scoped change, it enforces the guides on touched code. For a codebase UI/UX audit or modernization, it runs a legacy-pattern pass and then a seven-axis pass over UX, semantics, CSS, forms, motion, accessibility and performance, and security. `stop-design-slop` pairs with it there: `stop-design-slop` decides visual composition and hierarchy, and `modern-web-guidance` decides the platform primitives and their fallbacks. A project's `.mwgrc` sets its browser-support baseline and whether Origin Trial or volatile APIs may be adopted.
 
 See [Skill ownership](docs/SKILL-OWNERSHIP.md) for the responsibility map and source-preserving maintenance guidance.
 

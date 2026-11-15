@@ -415,6 +415,24 @@
       "skills": ["unslop", "writing-for-humans"],
       "prompt": "The operator's runbook, which they quoted earlier in the conversation, says the request timeout is 60 s. The current config sets it to 30 s. Write one sentence for the operator stating the current timeout.",
       "expected": ["States that the timeout is 30 s", "Keeps the correction to the 60 s value the operator has seen, for example \"30 s, not the 60 s in the runbook\"", "Does not invent when or why the value changed"]
+    },
+    {
+      "id": "modern-web-ui-ux-codebase-audit-and-refactor",
+      "skills": ["modern-web-guidance", "stop-design-slop"],
+      "prompt": "Audit the UI and UX of this React app and modernize what you find. Facts: the modal component sets document.body.style.overflow = 'hidden' while open; the FAQ accordion animates max-height; the checkout form uses type=\"number\" for the card number and has no autocomplete attributes; the settings page has a fixed 120px header bar and cards with identical gradient headers; the project's design-system tooltip already uses Radix; there is no .mwgrc file.",
+      "expected": ["Chooses the codebase audit workflow because no single component is named", "Runs the legacy-pattern pass from references/legacy-patterns.md and checks each candidate against its keep and drop rubrics before reporting it", "Runs the seven-axis pass and catches semantic and UX issues the legacy rules miss, such as the fixed header height", "Replaces the body { overflow: hidden } scroll lock with a native <dialog> opened by showModal(), which makes the page inert and contains focus without the root-scrollbar layout shift, plus overscroll-behavior: contain on dialog:modal and dialog::backdrop and overflow: hidden on dialog::backdrop", "Treats overscroll-behavior on the non-scrollable backdrop as progressive enhancement that Safari does not yet enforce, and keeps the root lock removed unless strict backdrop scroll-blocking in Safari is an explicit requirement", "Replaces the max-height transition with interpolate-size or calc-size and its fallback, and the card field with type=\"text\", inputmode, and cc-* autocomplete tokens", "Uses stop-design-slop for the repeated gradient card treatment and leaves platform primitives to modern-web-guidance", "Keeps the Radix tooltip unless a guide rule it breaks is named", "Treats Newly available features as needing the guide's fallback because no .mwgrc waives it"]
+    },
+    {
+      "id": "modern-web-scoped-pr-and-cdn-sri",
+      "skills": ["modern-web-guidance"],
+      "prompt": "Review this PR, which adds a popover-based user menu to an app built on shadcn/ui. Facts: the new menu loads @oddbird/popover-polyfill from https://unpkg.com/@oddbird/popover-polyfill@latest with a plain script tag; the menu's Escape handler is hand-written; the rest of the app uses Tailwind Preflight and shadcn dialogs, and the PR does not touch them.",
+      "expected": ["Uses the scoped workflow and enforces the guides on the touched menu code only", "Does not demand a repository-wide rewrite of the shadcn components or Tailwind Preflight", "Flags the unpinned @latest CDN URL and asks for an exact version with Subresource Integrity, or a package-manager dependency loaded behind feature detection", "Reads the popover or menu guide before recommending native light dismiss in place of the hand-written Escape handler", "Keeps the reviewer's verdict bar and output format and adds no Modern Web Guidance section"]
+    },
+    {
+      "id": "modern-web-mwgrc-feature-gates",
+      "skills": ["modern-web-guidance"],
+      "prompt": "Three projects ask for on-device summarization of support tickets in the browser. Project A's .mwgrc sets \"allowVolatileFeatures\": false and the user asks for the Summarizer API by name. Project B has no .mwgrc and the user asks for 'a summary feature' without naming an API. Project C's .mwgrc sets \"allowVolatileFeatures\": true. Decide what each project should implement.",
+      "expected": ["Project A does not adopt the Summarizer API even though the user named it, because the .mwgrc opt-out comes first", "Project B uses the summarizer guide for background only and implements a standard cross-browser solution", "Project C may adopt the Summarizer API with the guide's feature detection and fallback", "Keeps the requested on-device boundary in all three projects: where local summarization is unavailable, it degrades progressively or tells the user the feature is unavailable, and sends ticket text to a remote server or cloud-backed polyfill only with explicit user or product consent, because the guide says those fallbacks remove the on-device privacy guarantee", "Shows fast results without the artificial delay the language-model guide suggests"]
     }
   ]
 }

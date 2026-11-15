@@ -4,6 +4,8 @@ Use this guidance within the role's existing scope, decision bar, and output con
 
 For material state/type representations, API or trust boundaries, shared writers, retry semantics, internal migration choices, or structure that lets an edit made with partial context break a distant invariant (duplicate routes, importable internals, split ownership, hand-synced lists), load the native skill \`code-design-principles\` when available. It supplies depth, not another workflow or finding bar. Routine typed or mechanical edits do not trigger it. If disabled or unavailable, retain this guidance without searching suppressed caches or installing a substitute.
 
+For UI/UX codebase audits, frontend modernization, or browser-facing HTML, CSS, DOM and UI components, forms, client-side JavaScript and browser APIs, accessibility, Core Web Vitals, or browser security and sign-in, load the native skill \`modern-web-guidance\` when available. It sets the web-platform bar inside the role's existing workflow, finding bar, and output contract. Backend, infrastructure, build-tool configuration, and copy-only edits do not trigger it. If disabled or unavailable, the same fallback applies.
+
 - Confirm the present need before adding machinery. Trace call sites and sibling routes; fix the first shared wrong behavior at its owning boundary.
 - Prefer a semantically and ownership-compatible local solution, then stdlib/native or an already-installed dependency, before custom machinery.
 - Design from the call site inward: make valid use clear and misuse difficult with clear names, domain types, constrained mutability, explicit errors, visible side effects, and risk-bearing policy visible to callers.

@@ -101,7 +101,26 @@ describe('Engineering judgment prompt reach', () => {
 
   it('keeps the canonical fragment compact', () => {
     expect(ENGINEERING_JUDGMENT_PROMPT.split('\n').length).toBeLessThanOrEqual(40);
-    expect(Buffer.byteLength(ENGINEERING_JUDGMENT_PROMPT, 'utf8')).toBeLessThanOrEqual(3_000);
+    expect(Buffer.byteLength(ENGINEERING_JUDGMENT_PROMPT, 'utf8')).toBeLessThanOrEqual(3_500);
+  });
+
+  it('routes UI/UX audits and browser-facing work to the web-platform depth skill without widening the role', () => {
+    expect(ENGINEERING_JUDGMENT_PROMPT).toContain('load the native skill `modern-web-guidance` when available');
+    for (const scope of [
+      'UI/UX codebase audits, frontend modernization',
+      'browser-facing HTML, CSS, DOM and UI components, forms, client-side JavaScript and browser APIs',
+      'accessibility, Core Web Vitals, or browser security and sign-in',
+    ]) {
+      expect(ENGINEERING_JUDGMENT_PROMPT, scope).toContain(scope);
+    }
+    expect(ENGINEERING_JUDGMENT_PROMPT).toContain("inside the role's existing workflow, finding bar, and output contract");
+    expect(ENGINEERING_JUDGMENT_PROMPT).toContain(
+      'Backend, infrastructure, build-tool configuration, and copy-only edits do not trigger it',
+    );
+    // The web trigger reuses the code-design-principles fallback stated just before it.
+    const webTrigger = ENGINEERING_JUDGMENT_PROMPT.indexOf('`modern-web-guidance`');
+    expect(ENGINEERING_JUDGMENT_PROMPT.indexOf('If disabled or unavailable, retain this guidance')).toBeLessThan(webTrigger);
+    expect(ENGINEERING_JUDGMENT_PROMPT.slice(webTrigger)).toContain('If disabled or unavailable, the same fallback applies');
   });
 
   it('routes material design choices to one depth skill without selecting it for routine edits', () => {
