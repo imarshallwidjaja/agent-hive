@@ -245,6 +245,14 @@ describe('v2 tool registration', () => {
     expect(await info.output['~standard'].validate({ a: [1, null] })).toEqual({ value: { a: [1, null] } });
     expect((await info.output['~standard'].validate({ a: undefined })).issues).toBeDefined();
     expect(host.tools().get('hive_task_create').output).toBeUndefined();
+
+    // A refined argument validates through Standard Schema too: the checkout discard accepts only true.
+    const cleanup = host.tools().get('hive_checkout_cleanup').input['~standard'];
+    const cleanupInput = (deleteBranch: unknown) => ({ id: 'root/x', expectedTarget: null, deleteBranch });
+    expect(await cleanup.validate(cleanupInput({ discard: true, commit: 'abc' }))).toEqual({ value: cleanupInput({ discard: true, commit: 'abc' }) });
+    for (const invalid of [{ discard: false, commit: 'abc' }, { discard: 'true', commit: 'abc' }, { discard: true }]) {
+      expect((await cleanup.validate(cleanupInput(invalid))).issues, JSON.stringify(invalid)).toBeDefined();
+    }
   });
 
   it('delivers each ordinary operation description and field descriptions unchanged through the JSON Schema export', async () => {

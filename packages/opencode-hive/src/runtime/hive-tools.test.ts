@@ -110,7 +110,7 @@ const ORDINARY_OPERATION_SIGNATURES = [
   'hive_checkout_create(id:string, branch:string, baseRef?:string, purpose?:string)',
   'hive_checkout_register(id:string, purpose?:string)',
   'hive_checkout_readiness(id:string, expectedTarget:{path:string, ref:string|null, commit:string}|null, expectedRecord?:{id:string}, readiness:{state:ready|not_ready, nextTarget?:string, waitingFor?:string}|null)',
-  'hive_checkout_cleanup(id:string, expectedTarget:{path:string, ref:string|null, commit:string}|null, removeIgnored?:boolean, deleteBranch?:{containedIn:string}|{discard:true, commit:string})',
+  'hive_checkout_cleanup(id:string, expectedTarget:{path:string, ref:string|null, commit:string}|null, removeIgnored?:boolean, deleteBranch?:{containedIn:string}|{discard:boolean, commit:string})',
   'hive_context_read(name?:string, scope?:feature|project, feature?:string, view?:summary|catalog, query?:string, limit?:number, cursor?:string, maxBytes?:number, scanChars?:boolean)',
   'hive_context_write(name:string, content:string, kind?:durable|evidence, task?:string, expectedRevision?:number, expectedContentHash?:string, scope?:feature|project, feature?:string)',
   'hive_context_append(name:string, content:string, section?:string, task?:string, expectedRevision:number, expectedContentHash:string, scope?:feature|project, feature?:string)',
@@ -161,6 +161,76 @@ describe('ordinary Hive operation arguments', () => {
     const schema = z.object((hooks.tool as any).hive_feature_select.args);
     expect(schema.parse({ feature: null })).toEqual({ feature: null });
     expect(schema.safeParse({}).success).toBe(false);
+  });
+});
+
+// The JSON Schema exports a host or provider may build from tool arguments: the default (output, draft 2020-12),
+// input, and the OpenAPI 3.0 dialect some providers convert to. The v2 registrar exports the same arguments with
+// io input and output (draft 2020-12), so these cover both hosts.
+const JSON_SCHEMA_EXPORTS = [{}, { io: 'input' }, { target: 'openapi-3.0' }, { io: 'input', target: 'openapi-3.0' }] as const;
+
+// Keywords whose values are schemas (or maps or lists of schemas). Everything else, such as const, enum, default,
+// examples and required, holds data and is not walked as a schema.
+const SUBSCHEMA_KEYWORDS = ['items', 'additionalProperties', 'not', 'contains', 'propertyNames', 'if', 'then', 'else', 'unevaluatedItems', 'unevaluatedProperties'];
+const SUBSCHEMA_LIST_KEYWORDS = ['anyOf', 'oneOf', 'allOf', 'prefixItems'];
+const SUBSCHEMA_MAP_KEYWORDS = ['properties', 'patternProperties', '$defs', 'definitions', 'dependentSchemas'];
+
+// Every const or enum value that is not a string, with its schema path. Google's legacy Schema/OpenAPI conversion
+// accepts enum only on strings, so registered tools keep non-string literals out of every export.
+function nonStringLiterals(schema: unknown, at = '$'): string[] {
+  if (typeof schema !== 'object' || schema === null) return [];
+  const node = schema as Record<string, unknown>;
+  const found: string[] = [];
+  if ('const' in node && typeof node.const !== 'string') found.push(`${at}.const=${JSON.stringify(node.const)}`);
+  if (Array.isArray(node.enum) && node.enum.some((value) => typeof value !== 'string')) found.push(`${at}.enum=${JSON.stringify(node.enum)}`);
+  for (const key of SUBSCHEMA_KEYWORDS) {
+    const child = node[key];
+    if (Array.isArray(child)) child.forEach((item, index) => found.push(...nonStringLiterals(item, `${at}.${key}[${index}]`)));
+    else found.push(...nonStringLiterals(child, `${at}.${key}`));
+  }
+  for (const key of SUBSCHEMA_LIST_KEYWORDS) {
+    if (Array.isArray(node[key])) (node[key] as unknown[]).forEach((item, index) => found.push(...nonStringLiterals(item, `${at}.${key}[${index}]`)));
+  }
+  for (const key of SUBSCHEMA_MAP_KEYWORDS) {
+    const children = node[key];
+    if (typeof children === 'object' && children !== null) {
+      for (const [name, child] of Object.entries(children)) found.push(...nonStringLiterals(child, `${at}.${key}.${name}`));
+    }
+  }
+  return found;
+}
+
+function exportedLiterals(args: z.ZodRawShape): string[] {
+  return JSON_SCHEMA_EXPORTS.flatMap((options) => nonStringLiterals(z.toJSONSchema(z.object(args), options as any)).map((entry) => `${JSON.stringify(options)} ${entry}`));
+}
+
+describe('registered tool schemas', () => {
+  it('export no non-string const or enum from any registered tool, in every JSON Schema export', async () => {
+    const { hooks } = await createRuntime();
+    const registered = Object.entries(hooks.tool as Record<string, { args: z.ZodRawShape }>);
+    expect(registered.map(([name]) => name).sort()).toEqual([...HIVE_TOOL_NAMES].sort());
+    const offending = registered.flatMap(([name, definition]) => exportedLiterals(definition.args).map((entry) => `${name} ${entry}`));
+    expect(offending).toEqual([]);
+
+    // The check reads each export: a true literal fails in all four, a number literal nested in array items is found,
+    // and string literals and enums stay allowed.
+    expect(exportedLiterals({ discard: z.literal(true) })).toHaveLength(4);
+    expect(exportedLiterals({ kind: z.literal('feature'), mode: z.enum(['full', 'outline']), list: z.array(z.literal(1)) })).toEqual(
+      JSON_SCHEMA_EXPORTS.map((options) => `${JSON.stringify(options)} $.properties.list.items.${'target' in options ? 'enum=[1]' : 'const=1'}`),
+    );
+  });
+
+  it('declares the checkout discard as a boolean that must be true and says how to keep the branch', async () => {
+    const { hooks } = await createRuntime();
+    for (const options of JSON_SCHEMA_EXPORTS) {
+      const discard = (z.toJSONSchema(z.object((hooks.tool as any).hive_checkout_cleanup.args), options as any) as any)
+        .properties.deleteBranch.anyOf[1].properties.discard;
+      expect(discard.type, JSON.stringify(options)).toBe('boolean');
+      expect(discard, JSON.stringify(options)).not.toHaveProperty('const');
+      expect(discard, JSON.stringify(options)).not.toHaveProperty('enum');
+      expect(discard.description).toContain('Must be true');
+      expect(discard.description).toContain('omit deleteBranch');
+    }
   });
 });
 
@@ -696,7 +766,7 @@ describe('retained checkout operations', () => {
   });
 
   it('pins readiness to an inspected commit and cleans up only an unreferenced checkout at the proposed identity', async () => {
-    const { root, callJson, failure } = await createRuntime();
+    const { root, hooks, callJson, failure } = await createRuntime();
     const created = await callJson('hive_checkout_create', { id: 'root/release', branch: 'release', baseRef: 'main' });
     const head = (await callJson('hive_checkout_inspect', { id: 'root/release' })).checkout.head;
     expect(head).toEqual({ path: created.checkout.path, ref: 'refs/heads/release', commit: gitIn(root, 'rev-parse', 'HEAD') });
@@ -738,6 +808,25 @@ describe('retained checkout operations', () => {
 
     const proposal = (await callJson('hive_checkout_inspect', { id: 'root/release', cleanup: true })).cleanup;
     expect(proposal).toMatchObject({ references: [], unreadableReferences: [], blockers: [], identity: moved.head });
+
+    // Host validation of the deletion option: containment, discard: true and omission parse; false, a string or a
+    // missing field do not. A containment object keeps stripping extra keys, as the union always has.
+    const cleanupArgs = z.object((hooks.tool as any).hive_checkout_cleanup.args);
+    const withOption = (deleteBranch?: unknown) => ({ id: 'root/release', expectedTarget: proposal.identity, ...(deleteBranch === undefined ? {} : { deleteBranch }) });
+    const tip = moved.head.commit;
+    expect(cleanupArgs.parse(withOption()).deleteBranch).toBeUndefined();
+    expect(cleanupArgs.parse(withOption({ containedIn: 'root/main' })).deleteBranch).toEqual({ containedIn: 'root/main' });
+    expect(cleanupArgs.parse(withOption({ discard: true, commit: tip })).deleteBranch).toEqual({ discard: true, commit: tip });
+    expect(cleanupArgs.parse(withOption({ containedIn: 'root/main', discard: false, commit: tip })).deleteBranch).toEqual({ containedIn: 'root/main' });
+    for (const invalid of [{ discard: false, commit: tip }, { discard: 'true', commit: tip }, { discard: true }, { commit: tip }, false, null]) {
+      expect(cleanupArgs.safeParse(withOption(invalid)).success, JSON.stringify(invalid)).toBe(false);
+    }
+    expect(JSON.stringify(cleanupArgs.safeParse(withOption({ discard: false, commit: tip })).error)).toContain('discard must be true');
+    // A raw executor call skips that parse; the service still refuses discard: false at the current tip and keeps the checkout.
+    expect(await failure('hive_checkout_cleanup', withOption({ discard: false, commit: tip }))).toContain('deleteBranch.discard must be true');
+    expect(fs.existsSync(created.checkout.path)).toBe(true);
+    expect(gitIn(root, 'rev-parse', 'refs/heads/release')).toBe(tip);
+
     expect(await callJson('hive_checkout_cleanup', { id: 'root/release', expectedTarget: proposal.identity }))
       .toEqual({ success: true, id: 'root/release', ownership: 'managed', worktreeRemoved: true, branchDeleted: false, recordRemoved: true });
     expect(fs.existsSync(created.checkout.path)).toBe(false);

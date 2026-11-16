@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it, spyOn } from 'bun:test';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -154,12 +154,28 @@ describe('RetainedCheckoutService', () => {
     // A wholly ignored tree is one entry, not every file under it.
     expect(ignored.local?.ignored).toEqual(['build/']);
     expect(ignored.blockers).toEqual([]);
-    expect((await rejection(fx.checkouts.cleanup('root/feature', { expected: ignored.identity }))).message).toContain('ignored content');
+    // Cleanup acts on the request as it was when called: authorizing ignored content on the same request object once
+    // cleanup has started does not authorize this cleanup.
+    const unauthorized = { expected: ignored.identity, removeIgnored: false };
+    const ignoredRefusal = rejection(fx.checkouts.cleanup('root/feature', unauthorized));
+    unauthorized.removeIgnored = true;
+    const refusedIgnored = await ignoredRefusal;
+    expect((refusedIgnored as RetainedCheckoutError).reason).toBe('local_data');
+    expect(refusedIgnored.message).toContain('ignored content');
     expect(fs.existsSync(path.join(placement, 'build', 'out.bin'))).toBe(true);
+    expect(fs.existsSync(path.join(placement, 'build', 'deep', 'more.bin'))).toBe(true);
 
-    // A stale expectation is refused before anything is removed.
+    // A stale expectation is refused before anything is removed, including when the caller corrects the same
+    // expectation object once cleanup has started.
+    const record = await readRetainedCheckoutRecord(fx.hiveDir, 'root/feature');
     const stale = { ...ignored.identity!, commit: '0'.repeat(40) };
-    expect(((await rejection(fx.checkouts.cleanup('root/feature', { expected: stale, removeIgnored: true }))) as RetainedCheckoutError).reason).toBe('binding_mismatch');
+    const staleRefusal = rejection(fx.checkouts.cleanup('root/feature', { expected: stale, removeIgnored: true }));
+    stale.commit = ignored.identity!.commit;
+    expect(((await staleRefusal) as RetainedCheckoutError).reason).toBe('binding_mismatch');
+    expect(await readWorktreeTargetIdentity(placement)).toEqual(ignored.identity);
+    expect(fs.existsSync(path.join(placement, 'build', 'out.bin'))).toBe(true);
+    expect(await readRetainedCheckoutRecord(fx.hiveDir, 'root/feature')).toEqual(record);
+    expect((await fx.git.raw(['show-ref', '--verify', '--hash', 'refs/heads/feat/x'])).trim()).toBe(fx.base);
 
     // Worktree-only removal keeps the branch.
     const removed = await fx.checkouts.cleanup('root/feature', { expected: ignored.identity, removeIgnored: true });
@@ -197,7 +213,45 @@ describe('RetainedCheckoutService', () => {
     expect(await fx.git.raw(['branch', '--list', 'feat/x'])).toBe('');
 
     const spike = await fx.checkouts.inspectCleanup('root/spike');
-    expect(((await rejection(fx.checkouts.cleanup('root/spike', { expected: spike.identity, deleteBranch: { discard: true, commit: fx.base } }))) as RetainedCheckoutError).reason).toBe('binding_mismatch');
+    // Callers that skip schema validation reach the service directly. A deletion option other than the two declared
+    // shapes is refused before the mutation starts, even with the current tip: no lock, and the checkout, its branch
+    // and its record stay as they were. A falsy option is not read as "keep the branch".
+    const spikeRecord = await readRetainedCheckoutRecord(fx.hiveDir, 'root/spike');
+    const mutate = spyOn(fx.checkouts as any, 'mutate');
+    for (const deleteBranch of [
+      { discard: false, commit: spikeTip },
+      { discard: undefined, commit: spikeTip },
+      { discard: 'true', commit: spikeTip },
+      { containedIn: 'root/release', discard: false, commit: spikeTip },
+      { discard: true },
+      {},
+      false,
+      null,
+    ]) {
+      const refused = await rejection(fx.checkouts.cleanup('root/spike', { expected: spike.identity, deleteBranch: deleteBranch as never }));
+      expect(refused.message, JSON.stringify(deleteBranch)).toContain('omit');
+    }
+    expect(mutate).not.toHaveBeenCalled();
+    mutate.mockRestore();
+    expect(await readWorktreeTargetIdentity(spikePath)).toEqual(spike.identity);
+    expect((await fx.git.raw(['show-ref', '--verify', '--hash', 'refs/heads/spike'])).trim()).toBe(spikeTip);
+    expect(await readRetainedCheckoutRecord(fx.hiveDir, 'root/spike')).toEqual(spikeRecord);
+
+    // Cleanup acts on the option as it was when called. A caller that edits the same object once cleanup has started
+    // changes neither the chosen shape nor its values: the release branch lacks the spike, so containment still fails,
+    // and a discard still compares the commit it was given.
+    const shared: Record<string, unknown> = { containedIn: 'root/release' };
+    const containment = rejection(fx.checkouts.cleanup('root/spike', { expected: spike.identity, deleteBranch: shared as never }));
+    Object.assign(shared, { discard: false, commit: spikeTip });
+    expect(((await containment) as RetainedCheckoutError).reason).toBe('not_contained');
+    const discard = { discard: true as const, commit: fx.base };
+    const staleDiscard = rejection(fx.checkouts.cleanup('root/spike', { expected: spike.identity, deleteBranch: discard }));
+    discard.commit = spikeTip;
+    expect(((await staleDiscard) as RetainedCheckoutError).reason).toBe('binding_mismatch');
+    expect(await readWorktreeTargetIdentity(spikePath)).toEqual(spike.identity);
+    expect((await fx.git.raw(['show-ref', '--verify', '--hash', 'refs/heads/spike'])).trim()).toBe(spikeTip);
+    expect(await readRetainedCheckoutRecord(fx.hiveDir, 'root/spike')).toEqual(spikeRecord);
+
     expect(await fx.checkouts.cleanup('root/spike', { expected: spike.identity, deleteBranch: { discard: true, commit: spikeTip } })).toMatchObject({ branchDeleted: true });
 
     const root = await fx.checkouts.inspectCleanup('root/main');

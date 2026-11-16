@@ -624,6 +624,36 @@ export class RetainedCheckoutService {
    * that need the checkout to stay unreferenced stop them until cleanup returns.
    */
   async cleanup(id: string, input: RetainedCheckoutCleanupInput): Promise<RetainedCheckoutCleanupResult> {
+    // Callers that skip schema validation can pass any value, so the branch decision is checked before any lock or
+    // Git change. Anything but an omitted option must be one of the two declared shapes: a falsy value never means
+    // "keep the branch", and a `discard` key other than true never falls through to containment. The validated
+    // decision is copied before the first await, so a caller that changes its option object afterwards cannot change
+    // which branch decision this cleanup carries out.
+    const option: unknown = input.deleteBranch;
+    let deleteBranch: RetainedCheckoutCleanupInput['deleteBranch'];
+    if (option !== undefined) {
+      if (typeof option !== 'object' || option === null) {
+        throw new Error('deleteBranch must be { containedIn } or { discard: true, commit }; omit it to keep the branch');
+      }
+      if ('discard' in option) {
+        const { discard, commit } = option as { discard: unknown; commit?: unknown };
+        if (discard !== true || typeof commit !== 'string') {
+          throw new Error('deleteBranch.discard must be true, with the branch tip as commit; omit deleteBranch to keep the branch');
+        }
+        deleteBranch = { discard: true, commit };
+      } else {
+        const { containedIn } = option as { containedIn?: unknown };
+        if (typeof containedIn !== 'string') {
+          throw new Error('deleteBranch.containedIn must name a surviving retained checkout; omit deleteBranch to keep the branch');
+        }
+        deleteBranch = { containedIn };
+      }
+    }
+    // The expected identity and ignored-content authorization are copied here too. A falsy expectation stays as given,
+    // so null still means "missing" and any other falsy value still mismatches.
+    const given = input.expected;
+    const expected = given ? { path: given.path, ref: given.ref, commit: given.commit } : given;
+    const removeIgnored = input.removeIgnored === true;
     return this.mutate('cleanup', id, async (guard) => {
       await resolveRetainedCheckout(this.context(), id);
       await this.assertUnreferenced(id);
@@ -634,17 +664,17 @@ export class RetainedCheckoutService {
       let identity: WorktreeTargetIdentity | null = null;
       if (resolved.present) {
         ({ identity } = await observeRetainedCheckout(resolved));
-        if (!input.expected || !sameWorktreeTarget(input.expected, identity)) {
+        if (!expected || !sameWorktreeTarget(expected, identity)) {
           throw new RetainedCheckoutError('binding_mismatch', `Retained checkout ${id} is now ${identity.ref ?? 'detached'} at ${identity.commit}; inspect cleanup again`);
         }
-      } else if (input.expected !== null) {
+      } else if (expected !== null) {
         throw new RetainedCheckoutError('binding_mismatch', `Retained checkout ${id} is missing; pass expected: null after inspecting cleanup`);
       }
       const { recordPath, placementPath } = retainedCheckoutPaths(this.config.hiveDir, id);
       const result: RetainedCheckoutCleanupResult = { id, ownership: record.ownership, worktreeRemoved: false, branchDeleted: false, recordRemoved: false };
 
       if (record.ownership === 'registered') {
-        if (input.deleteBranch) throw new RetainedCheckoutError('user_owned', `Registered checkout ${id} belongs to the project configuration; Hive does not delete its branch`);
+        if (deleteBranch !== undefined) throw new RetainedCheckoutError('user_owned', `Registered checkout ${id} belongs to the project configuration; Hive does not delete its branch`);
         await fs.unlink(recordPath);
         return { ...result, recordRemoved: true };
       }
@@ -653,18 +683,18 @@ export class RetainedCheckoutService {
       if (identity !== null) {
         const { problems, local } = await this.managedRemovalProblems(resolved, identity);
         if (problems.length > 0) throw new RetainedCheckoutError(problems[0]!.reason, `Retained checkout ${id} cannot be removed: ${problems.map((problem) => problem.message).join('; ')}`);
-        if (local.ignored.length > 0 && input.removeIgnored !== true) {
+        if (local.ignored.length > 0 && !removeIgnored) {
           throw new RetainedCheckoutError('local_data', `Retained checkout ${id} holds ignored content that removal would delete: ${local.ignored.join(', ')}${local.truncated ? ', ...' : ''}. Pass removeIgnored after confirming it can go.`);
         }
       }
       const branch = record.ref.slice('refs/heads/'.length);
       let branchPin: string | null = null;
-      if (input.deleteBranch) {
+      if (deleteBranch !== undefined) {
         const tip = await branchCommit(git, record.ref);
-        if ('discard' in input.deleteBranch) {
-          if (tip !== input.deleteBranch.commit) throw new RetainedCheckoutError('binding_mismatch', `Branch ${record.ref} is at ${tip ?? '(missing)'}, not the commit to discard ${input.deleteBranch.commit}`);
+        if ('discard' in deleteBranch) {
+          if (tip !== deleteBranch.commit) throw new RetainedCheckoutError('binding_mismatch', `Branch ${record.ref} is at ${tip ?? '(missing)'}, not the commit to discard ${deleteBranch.commit}`);
         } else {
-          const survivor = input.deleteBranch.containedIn;
+          const survivor = deleteBranch.containedIn;
           if (survivor === id || parseRetainedCheckoutId(survivor).repoId !== record.repoId) {
             throw new Error('containedIn must name another retained checkout in the same repository');
           }

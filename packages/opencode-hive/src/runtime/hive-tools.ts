@@ -790,7 +790,14 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
         removeIgnored: z.boolean().optional().describe('Authorizes removing ignored content, such as dependencies or build output, inside a managed checkout.'),
         deleteBranch: z.union([
           z.object({ containedIn: z.string().describe('A surviving retained checkout in the same repository, on its intended branch, whose branch contains this branch\'s tip.') }),
-          z.object({ discard: z.literal(true), commit: z.string().describe('The branch tip to discard, deleted only while the branch is still exactly there.') }),
+          z.object({
+            // A boolean refined to true instead of z.literal(true), which exports as a boolean const or enum. Google's
+            // legacy Schema/OpenAPI conversion accepts enum only on strings; a plain boolean is portable.
+            discard: z.boolean()
+              .refine((value) => value === true, 'discard must be true to delete an unmerged branch; omit deleteBranch to keep the branch')
+              .describe('Must be true: explicitly authorizes deleting the branch at commit even though nothing contains it. To keep the branch, omit deleteBranch instead of passing false.'),
+            commit: z.string().describe('The branch tip to discard, deleted only while the branch is still exactly there.'),
+          }),
         ]).optional().describe('Managed checkouts only. Omitted, the branch is kept.'),
       },
       execute: ({ id, expectedTarget, removeIgnored, deleteBranch }) => checkoutCall(() => retainedCheckoutService.cleanup(id, {
