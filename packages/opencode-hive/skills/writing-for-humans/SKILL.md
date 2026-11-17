@@ -12,16 +12,31 @@ This is the generative discipline for software and product writing. Apply it whi
 ## Principles
 
 1. **Start from the reader.** Give them what they need in order to act or decide. Make that information findable, understandable, and usable. Leave out decoration. Do not omit a condition, exception, or uncertainty the reader needs.
-2. **Name things stably.** Pick one term for each thing and keep it. Preserve necessary technical vocabulary. If the likely reader may not know a term, define it once in context. A name should still make sense when encountered in isolation.
+2. **Name things stably.** Pick one term for each thing and keep it. Preserve necessary technical vocabulary. If the reader may not know a term, explain it briefly at first use using only what the source supports. Expand an unfamiliar abbreviation once. If no accurate short explanation exists, state the specific behavior instead of a loose gloss. A name should still make sense when encountered in isolation.
 3. **Keep subjects, verbs, and relationships explicit.** Name the actor when the actor matters, and give a non-human subject only a verb it can literally perform. Say what depends on what, what runs when, and who owns which responsibility. Prefer verbs for actions. Put the new, important information at the end of the sentence, and end the sentence there.
-4. **Give enough context, then the point.** A reader who arrives mid-document should still understand why a statement matters. If the reader needs a frame to follow an explanation, supply a short one.
-5. **Use structure for navigation.** Headings, lists, and tables help when they match the information. Do not convert continuous reasoning into bullets, tiny paragraphs, or a template just to look organized. A heading names what its section contains and withholds nothing: a noun phrase the reader would search for, or the finding stated in full. Turn a label heading that starts with What, Why, How, Where, or When into a noun phrase ("Retry limits"). A question heading belongs to the reader's own question, as in a how-to or FAQ. Headings that a role's fixed output format, a required template, numbered plan tasks, or procedure steps require keep their form.
+4. **Put the specific point first.** Open a document and each section with its answer, decision, finding, or instruction. Give a short frame first only when the reader cannot follow the point without it. An explanation or argument can build to its conclusion when the reader must see the evidence first. A writer's own notes keep their order. Do not open with a general statement of a point the text then repeats. Keep one topic per paragraph.
+5. **Use structure for navigation.** Headings, lists, and tables help when they match the information.
+   - Do not convert continuous reasoning into bullets, tiny paragraphs, or a template just to look organized. Keep reasoning that runs from one sentence to the next in prose.
+   - Put several independent rules, exceptions, conditions, or steps in a list or separate short paragraphs rather than one long paragraph.
+   - Use bold for labels readers scan for in reference material, not to stress words in running prose. Required role and template formats stay.
+   - A heading names what its section contains and withholds nothing: a noun phrase the reader would search for, or the finding stated in full. Turn a label heading that starts with What, Why, How, Where, or When into a noun phrase ("Retry limits"). A question heading belongs to the reader's own question, as in a how-to or FAQ. Headings that a role's fixed output format, a required template, numbered plan tasks, or procedure steps require keep their form.
 6. **Keep meaning intact.** Preserve necessary qualifiers, scope, trade-offs, constraints, and causal explanation in relevant claims. Do not make a claim sound more certain because a shorter sentence would. Do not collapse distinct ideas into one slogan.
 7. **Match the job of the document.** A how-to should help a competent person do a job. An explanation should help someone understand why. Reference should state facts. Requirements should be testable statements of need, not designs, observations, or product principles.
 
 ## Cadence
 
-Write prose that can be read continuously. Paragraphs may contain several related sentences. Sentence length may vary; a semicolon is allowed when it joins two closely related clauses.
+Write prose that can be read continuously. Paragraphs may contain several related sentences.
+
+A sentence carries one main point with the conditions it needs to be true. Restructure it when it has any of these signals:
+
+- A second main point.
+- A chain of exceptions.
+- A list inside a list.
+- A subject far from its verb.
+
+Length is a cue, never a limit or target. Past about 25 words, check for those signals. Keep a long sentence with one clear core. A split keeps the stated relation, such as because, but, so, or for example, and adds no relation the source lacks.
+
+In technical prose, prefer two sentences or a named relation to a semicolon. A supplied voice, quotation, or imported wording keeps its semicolons.
 
 Brevity is useful when it improves understanding. Cutting words is not the goal.
 
@@ -47,9 +62,13 @@ Exact quotations, actual literals, identifiers, schema and protocol values, and 
 
 ## Boundaries and alternatives
 
-Describe each thing by what it is, does, accepts, needs, or produces. A supported affirmative description may be sufficient without claiming exhaustive scope. For each standalone exclusion, identify the concrete consequence for this reader's action, decision, interpretation, or explicit question, grounded in the request, visible context, or actual contract, state, or behavior. Keep it where it matters; a hypothetical misunderstanding, prior presence, or extra explicitness alone is insufficient. If the source gives only a negative, keep it when necessary, omit it when irrelevant, or retrieve a supported positive when needed; never invent its converse. The same test covers a contrast attached to a sentence, such as a trailing ", not Y": keep it when it answers the reader's question or corrects a value the reader has seen. State a limit that a contract requires, such as an unrun check or an unknown, as its own fact in the field the contract names. An evidence classification written as a contrast, such as "a static finding, not a reproduced failure", becomes two plain statements: what the evidence is, and what was not done or observed.
+Describe each thing by what it is, does, accepts, needs, or produces. A supported affirmative description may be sufficient without claiming exhaustive scope. For each standalone exclusion, identify the concrete consequence for this reader's action, decision, interpretation, or explicit question, grounded in the request, visible context, or actual contract, state, or behavior. Keep it where it matters. A hypothetical misunderstanding, prior presence, or extra explicitness alone is insufficient.
 
-Attached qualifiers stay when evidence requires their uncertainty, scope, or commitment. Preserve binding normative guards and their logical force, including safety prohibitions at each applicable step. Apply the same consequence test to non-guarantees, open decisions, missing coverage, evidence gaps, and unruled hypotheses. An unknown that bounds a retained expectation or live operational decision can matter; deleting an unsupported savings claim alone does not require narrating the missing evidence. Unsupported or irrelevant claims and whole paragraphs can go. When naming open decisions or missing coverage, give an owner or date only if the source does.
+If the source gives only a negative, keep it when necessary, omit it when irrelevant, or retrieve a supported positive when needed; never invent its converse. The same test covers a contrast attached to a sentence, such as a trailing ", not Y". Keep it when it answers the reader's question or corrects a value the reader has seen. State a limit that a contract requires, such as an unrun check or an unknown, as its own fact in the field the contract names. An evidence classification written as a contrast, such as "a static finding, not a reproduced failure", becomes two plain statements: what the evidence is, and what was not done or observed.
+
+Attached qualifiers stay when evidence requires their uncertainty, scope, or commitment. Preserve binding normative guards and their logical force, including safety prohibitions at each applicable step. Apply the same consequence test to non-guarantees, open decisions, missing coverage, evidence gaps, and unruled hypotheses. An unknown that bounds a retained expectation or live operational decision can matter. Deleting an unsupported savings claim alone does not require narrating the missing evidence.
+
+Unsupported or irrelevant claims and whole paragraphs can go. When naming open decisions or missing coverage, give an owner or date only if the source does.
 
 Evidence, requirements, and human stance constrain meaning; a draft is candidate material even when human-authored, and repeated agent wording has no authority. Respect explicit light-edit, faithful-copy, and voice contracts. An affirmative rewrite must not broaden each, all, only, actors, guarantees, or verification level.
 
@@ -76,6 +95,8 @@ Scratch paths that will be deleted can be messy. Git-tracked and exported names 
 ## Artifact instincts
 
 **Code and systems.** Name concrete objects. Say what must exist before something runs. Prefer inputs, outputs, state, handoff points, and failure boundaries over capability claims.
+
+**Procedures.** Put the condition before the instruction. Name each prerequisite, such as a host, flag, or prior step, before the step that needs it. Give each step one instruction unless the actions happen together. Put a warning before the step it guards. State what to do or avoid, then the risk. In a guard you write, spell out "do not" and "cannot". Keep quoted or imported guards' wording. Keep every guard's logical force.
 
 **Architecture.** Make responsibilities, relationships, runtime behavior, assumptions, trade-offs, constraints, and reasons understandable. Start from context and the problem being solved. State the trade-off an operator must live with. Boxes, layers, and "components" are not a substitute for those facts.
 

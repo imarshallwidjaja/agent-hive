@@ -116,7 +116,7 @@ Keep the uncertainty of retained dates, time bounds, and hypotheses. Uncertainty
 
 Before: "The service could potentially have failed during the deploy; the logs are unavailable."
 
-After: "The service may have failed during the deploy; the logs are unavailable."
+After: "The service may have failed during the deploy. The logs are unavailable."
 
 Do not turn missing logs into proof of either success or failure.
 
@@ -155,7 +155,7 @@ Use only facts the source supplies. If it gives no number, name what the table l
 ## Mechanical formatting
 
 - Use sentence case in headings, except required titles or the selected author's style. "Strategic Negotiations And Global Partnerships" becomes "Strategic negotiations and global partnerships".
-- Bold should mark useful emphasis, not every noun or acronym. Bold-label paragraph starts ("**Speed.** The new engine...") become plain sentences outside reference documents a reader returns to.
+- Remove bold applied to every noun or acronym, or used only for emphasis in running prose. Bold-label paragraph starts ("**Speed.** The new engine...") become plain sentences outside reference documents a reader returns to. Required role and template formats stay. `writing-for-humans` explains what bold is for.
 - Inline-header vertical lists such as `- **Thing:** sentence` can read like auto-generated changelogs. Convert unnecessary labels to sentences; vary structure. Preserve a required output schema or a list whose labels genuinely help scan distinct items.
 - Labels that say nothing: when every item carries the same label ("Mitigation:", "Benefit:", "Impact:") or the label repeats its sentence, drop the labels and write the items as sentences. Keep lists and headings where the reader will scan or come back: release notes, specs, steps, options to compare, a reference page.
 - Remove decorative emoji and emoji bullets unless the audience expects them.
@@ -188,7 +188,7 @@ Substitute only when the referent and meaning stay intact. Empty filler differs 
 
 ## Cadence handoff
 
-Staging and rhythm belong to `stop-slop`: contrast with a claim nobody made, antithesis, pause-and-point lines and colon reveals, restating and engagement closers, the crafted-line budget and aphorism formulas, fragment stacks, invented metaphor labels, forced triplets, the sentence-length band, repeated openers, the shuffle test, filler transitions, signposting announcements, fake-candid openers, and section restatements. When they are also present, load that overlay instead of maintaining another cadence policy here.
+Staging and rhythm belong to `stop-slop`: contrast with a claim nobody made, antithesis, pause-and-point lines and colon reveals, restating and engagement closers, the crafted-line budget and aphorism formulas, fragment stacks, invented metaphor labels, forced triplets, the sentence-length band, repeated openers, the shuffle test, filler transitions, signposting announcements, fake-candid openers, and section restatements. Its rhythm guidance distinguishes narrative from steps, reference entries, and reported facts. When applicable tells are also present, load that overlay instead of maintaining another cadence policy here.
 
 ## Sources
 

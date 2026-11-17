@@ -2,6 +2,30 @@
   "purpose": "Representative fresh-review scenarios for the integrated skills. Expected items are grading criteria, not observed results. Use fixed source and candidate identities; a static walkthrough is not a runtime activation test.",
   "cases": [
     {
+      "id": "reader-context-outside-conversation",
+      "skills": ["unslop", "writing-for-humans"],
+      "prompt": "Write a handoff to the parent who wrote the brief. The brief calls the operation an upload. In this conversation only, 'green path' means the worker retries a failed upload once.",
+      "expected": ["Replaces the conversation-only label with the actual retry behavior", "Keeps upload without explaining a term used in the parent's brief", "Adds no unsupported behavior"]
+    },
+    {
+      "id": "packed-rule-conditions",
+      "skills": ["unslop", "writing-for-humans"],
+      "prompt": "Rewrite for a reference page: A reviewer may approve a report after all checks pass except when the source is missing, the owner has not signed, or the dataset is restricted and either the access record or the release record is missing, including when the review is complete and all other records are present.",
+      "expected": ["States the main approval condition first without making it unconditional, and separates the exceptions", "Keeps may, every exception, and the checks prerequisite at their original strength", "Adds no unsupported relation"]
+    },
+    {
+      "id": "procedure-warning-before-step",
+      "skills": ["writing-for-humans", "humanizer"],
+      "prompt": "Write a procedure. Failover uses the standby host. If failover is needed, check lag on the standby host first. Do not fail over while replication lag exceeds 30 s. Do not call the promote endpoint again without checking the replica role: a 504 may mean promotion succeeded. Call the endpoint to promote the standby.",
+      "expected": ["Names the standby host as a prerequisite and the condition before the lag check", "Places the lag guard before promotion and keeps its wording and logical force", "Places the retry guard before any repeated call, keeps its wording, and retains the may-qualified risk", "Does not convert the failover prohibition into an automatic trigger"]
+    },
+    {
+      "id": "uniform-procedure-steps",
+      "skills": ["writing-for-humans", "stop-slop"],
+      "prompt": "Review these procedure steps for cadence: Check the host. Check the flag. Start the job. Record the result. Each step is independent and required.",
+      "expected": ["Keeps the four short independent steps", "Does not merge or add steps merely to vary rhythm", "Adds no relationship absent from the source"]
+    },
+    {
       "id": "domain-and-boundary",
       "skills": ["code-design-principles"],
       "prompt": "Review two changes. A adds completed:boolean beside completedAt?:Date and requires callers to keep them synchronized. B keeps a one-caller module that owns validation policy and rechecks a Git ref after releasing a lock. Suggest only justified in-scope improvements.",

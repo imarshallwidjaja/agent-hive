@@ -50,3 +50,7 @@ The main rewrite step deliberately adapts the upstream deletion test for doing t
 ## Non-human subjects and figures (2026-11-13)
 
 An oc-arkive policy change, not from an imported source, replaces "Inanimate subjects with human verbs" in `references/patterns.md` with "Non-human subjects": a subject gets only a verb it can literally perform, and the sentence states the finding. The vocabulary section gains a table of recurring figures with literal replacements and keeps a field's own terms. In `SKILL.md`, the headings "What you must not change" and "What to return" became noun phrases, and the shorter-option check states its threshold literally. Retained source wording: the hard rules, modes, rewrite steps, and final checks, apart from those phrases. `check.py` is unchanged by this note.
+
+## Guards and rhythm diagnostics (2026-11-18)
+
+Retained source wording includes the hard rules, rewrite modes, and notes route. The policy changes the imported rewrite step 1: evidence-first applies when the reader must see evidence before the point, and other explanations are answer-first. Host adaptation: none. The policy spells out negative contractions in guards the writer creates, preserves quoted or imported guards, and aligns bold labels and rhythm checks with the writing family. The existing sentence-band detector now reports uniformity without prescribing a repair. No detector was added.

@@ -42,7 +42,7 @@ Drop an unneeded trailing contrast. Keep one the reader asked for, or a correcti
 
 ### Deferred reveal
 
-"Five of those six rows are one cluster. The sixth is not." withholds the names so the next sentence can deliver them. Name them where they first appear: given a log that tags each failing row with its cluster ID, five with `eu-2` and one with `us-1`, write "Five of the six failing rows come from cluster `eu-2`; the sixth comes from `us-1`." A sequence may unfold step by step when the order of discovery is the point, as in an incident timeline.
+"Five of those six rows are one cluster. The sixth is not." withholds the names so the next sentence can deliver them. Name them where they first appear: given a log that tags each failing row with its cluster ID, five with `eu-2` and one with `us-1`, write "Five of the six failing rows come from cluster `eu-2`. The sixth comes from `us-1`." A sequence may unfold step by step when the order of discovery is the point, as in an incident timeline.
 
 ## Dramatic fragmentation
 

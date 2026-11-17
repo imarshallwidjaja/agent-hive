@@ -162,6 +162,29 @@ describe('skill content', () => {
     }
   });
 
+  it('preserves reader context, conditions, procedure guards, and passage-specific rhythm', () => {
+    const unslop = readSkillTemplate('unslop');
+    const writing = readSkillTemplate('writing-for-humans');
+    const stop = readSkillTemplate('stop-slop');
+    const humanizer = readSkillTemplate('humanizer');
+    expect(unslop).toContain('In text read outside the conversation');
+    expect(unslop).toContain('A reader who used the term, such as a parent in a brief they wrote, needs no explanation');
+    expect(unslop).toContain('Keeping every condition does not require one sentence');
+    expect(writing).toContain('Open a document and each section with its answer, decision, finding, or instruction');
+    expect(writing).toContain('An explanation or argument can build to its conclusion');
+    expect(writing).toContain('A writer\'s own notes keep their order');
+    expect(writing).toContain('Length is a cue, never a limit or target');
+    expect(writing).toContain('adds no relation the source lacks');
+    expect(writing).toContain('Put the condition before the instruction');
+    expect(writing).toContain('Put a warning before the step it guards');
+    expect(humanizer).toContain('In a guard you write, spell out "do not" and "cannot"');
+    expect(humanizer).toContain("Keep quoted or imported guards' wording");
+    expect(stop).toContain('Steps, reference entries, and reported facts can keep short uniform sentences');
+    expect(stop).not.toContain('around 25 to 40 words');
+    const script = readFileSync(path.join(resolvePackagedSkillsDir(), 'humanizer', 'check.py'), 'utf8');
+    expect(script).not.toContain('merge short ones');
+  });
+
   it('keeps humanizer focused on a draft audit apart from the full rewrite and limits the shorter option', () => {
     const humanizer = readSkillTemplate('humanizer');
     expect(humanizer).toContain('Apply the deletion test in rewrite step 5');
@@ -270,6 +293,8 @@ describe('skill content', () => {
     const punctuation = sweep('The release \u2014 finally \u2014 shipped; users noticed.');
     expect(punctuation).toContain('em/en dashes: 2');
     expect(punctuation).toContain('semicolons: 1');
+    const uniform = sweep('Check the host. Check the flag. Start the job. Record the result.');
+    expect(uniform).toContain('100% within 5 words of the median (uniform length)');
 
     const vocabulary = sweep('We delve into a vibrant tapestry that will seamlessly empower your team.');
     expect(vocabulary).toContain('AI words');

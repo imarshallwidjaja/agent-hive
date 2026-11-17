@@ -5,10 +5,10 @@ Usage: python3 check.py <file>   (or - for stdin)
 
 Counts what eyes miss in a final read: dashes, semicolons, stock AI words,
 filler transitions, pause-and-point lines, closers, bold-label starts, and the
-sentence-length band, plus trailing exclusions, rather-than tails, two-sentence
-negations, question-word headings, figures, significance crowns, label openers,
-and intensifiers. It flags; it never rewrites. A hit is a prompt to look,
-not a verdict.
+sentence-length band as a neutral observation, plus trailing exclusions,
+rather-than tails, two-sentence negations, question-word headings, figures,
+significance crowns, label openers, and intensifiers. It flags; it never
+rewrites. A hit is a prompt to look, not a verdict.
 
 Ported from check.py in phuryn/work-humanizer (MIT, see LICENSE.workhumanizer).
 This copy writes dash characters as escapes so the file stays ASCII, and skips
@@ -182,7 +182,7 @@ def check(text):
         mean = statistics.mean(lens)
         note = ""
         if band >= 0.7:
-            note = " (uniform: merge short ones)" if mean < 11 else " (uniform: vary)"
+            note = " (uniform length)"
         out.append(f"sentences: {len(lens)}, mean {mean:.1f} words, "
                    f"{band:.0%} within 5 words of the median{note}")
         starts = [s.split()[0].lower().strip('"\'') for s in sentences(text)]
