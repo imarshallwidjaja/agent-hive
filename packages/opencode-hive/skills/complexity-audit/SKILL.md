@@ -15,13 +15,14 @@ Use the named roots or codebases. If none is given, audit the current worktree. 
 
 - Dead or speculative code
 - Unnecessary indirection, abstractions, fallbacks, options, and dependencies
-- Compatible local reuse, stdlib, or native facilities
+- Better-fitting implementations, judged by fit rather than presence (credit existing code for proven behavior and integration); when code implements a general capability (parsing, scheduling, locking, retries, dates) or accumulates its edge cases, check whether a platform feature or maintained package could take over that responsibility, counting adoption costs, and stop once fit and tradeoffs are clear
 - Cognitive burden, change amplification, and obscured dependencies rather than line count
+- Boundaries whose deletion loses nothing, against boundaries whose deletion would push concepts, invariants, ordering, or dependencies onto callers
 - Meaningful ownership, safe behavior, contracts, and tests
 
 ## Outcome
 
-Each finding is concise: location, what to cut or simplify, a replacement, and why that is safe given the evidence. Note coverage limitations when they matter. Do not claim unsupported numerical savings or readiness.
+Each finding is concise: location, what to cut or simplify, a replacement, and why required and current behavior stays equivalent given the evidence. A test or document records current behavior: a consumer that relies on it stops a finding, while a binding requirement, external constraint, or failure mode that needs the complexity defeats the alternative too. A worthwhile alternative that changes current behavior, including behavior a test asserts, a public contract, or external dependencies, or that reaches callers beyond the audited roots, is a structural proposal, not a finding, even when a dependent relies on it: report it separately with evidence that it covers the responsibility, the delta and known dependents, its main cost, and the evidence still open, marking unverified external facts as open. Structural proposals authorize no change by themselves. Note coverage limitations when they matter. Do not claim unsupported numerical savings or readiness.
 
 ## Operator request
 

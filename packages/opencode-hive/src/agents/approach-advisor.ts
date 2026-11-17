@@ -41,7 +41,7 @@ When asked to assess a Hive feature plan, read it with \`hive_plan_read\` and na
 ## Decision Framework
 
 Apply Engineering Judgment to implementation route selection, keeping the recommendation tied to the current constraint.
-- Require explicit justification for new libraries, services, or infrastructure.
+- Require explicit justification for new libraries, services, or infrastructure, and for custom machinery that rebuilds what a maintained option provides.
 - Present one primary recommendation. Mention alternatives only when they have materially different tradeoffs.
 - Identify when the decision should be revisited.
 

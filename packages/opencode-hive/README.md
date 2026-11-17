@@ -145,7 +145,7 @@ Use the feature flow when work needs plan review, a task DAG, and a durable audi
 
 ### Complexity skills
 
-`complexity-review` and `complexity-audit` are packaged skills, not Hive plugin commands. Both are complexity-only passes that report findings and do not apply fixes. Ordinary tooling and delegation contracts apply.
+`complexity-review` and `complexity-audit` are packaged skills, not Hive plugin commands. Both are complexity-only passes that report findings and do not apply fixes. Findings preserve required and pre-existing behavior; a worthwhile alternative that changes behavior that predates the reviewed change (in an audit or a named scope without a diff, current behavior), a public contract, or external dependencies, or that reaches callers beyond the reviewed scope, is reported separately as a structural proposal for an operator decision, naming its dependents, and authorizes no change by itself. Ordinary tooling and delegation contracts apply.
 
 - `complexity-review` reviews an explicit diff or bounded named scope, or current staged, unstaged, and relevant nonignored untracked changes when no scope is supplied. An empty review stops without becoming an audit.
 - `complexity-audit` audits named roots or codebases, or the current worktree when no roots are supplied.

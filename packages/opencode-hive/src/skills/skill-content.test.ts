@@ -2898,7 +2898,26 @@ describe('skill content', () => {
       expect(skill.template).not.toContain('same agent');
       expect(skill.template).not.toContain('fan out');
       expect(skill.template).not.toContain(conversationFallback);
+      expect(skill.template).toContain('judged by fit rather than presence');
+      expect(skill.template).toContain('credit existing code for proven behavior and integration');
+      expect(skill.template).toContain('implements a general capability (parsing, scheduling, locking, retries, dates) or accumulates its edge cases');
+      expect(skill.template).toContain('check whether a platform feature or maintained package could take over that responsibility, counting adoption costs, and stop once fit and tradeoffs are clear');
+      expect(skill.template).not.toContain('Compatible local reuse, stdlib, or native facilities');
+      expect(skill.template).toContain('deletion would push concepts, invariants, ordering, or dependencies onto callers');
+      expect(skill.template).toContain('A test or document records current behavior: a consumer that relies on it stops a finding, while a binding requirement, external constraint, or failure mode that needs the complexity defeats the alternative too.');
+      expect(skill.template).not.toContain('justifies complexity only when');
+      expect(skill.template).toContain('A worthwhile alternative that changes ');
+      expect(skill.template).toContain('including behavior a test asserts, a public contract, or external dependencies');
+      expect(skill.template).toContain('is a structural proposal, not a finding, even when a dependent relies on it');
+      expect(skill.template).toContain('marking unverified external facts as open');
+      expect(skill.template).toContain('Structural proposals authorize no change by themselves');
     }
+    expect(review!.template).toContain('why required and pre-existing behavior stays equivalent given the evidence; removing unrequested behavior the reviewed change itself added stays a finding.');
+    expect(audit!.template).toContain('why required and current behavior stays equivalent given the evidence.');
+    expect(review!.template).toContain('changes behavior that predates the reviewed change (for a named scope without a diff, current behavior), including behavior a test asserts');
+    expect(review!.template).toContain('reaches callers beyond the reviewed scope, is a structural proposal');
+    expect(audit!.template).toContain('changes current behavior, including behavior a test asserts');
+    expect(audit!.template).toContain('reaches callers beyond the audited roots, is a structural proposal');
 
     for (const content of [
       readRepoFile('README.md'),

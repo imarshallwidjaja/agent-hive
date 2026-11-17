@@ -328,6 +328,7 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
       ],
       outputItems: [
         'Severity-ordered findings with confidence and source locations; a compact Review Basis, unresolved questions, and required-review or proof gaps.',
+        'Structural proposals kept separate as operator decisions; they do not block No action.',
       ],
     });
   },

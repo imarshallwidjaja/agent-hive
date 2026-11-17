@@ -101,7 +101,7 @@ describe('Engineering judgment prompt reach', () => {
 
   it('keeps the canonical fragment compact', () => {
     expect(ENGINEERING_JUDGMENT_PROMPT.split('\n').length).toBeLessThanOrEqual(40);
-    expect(Buffer.byteLength(ENGINEERING_JUDGMENT_PROMPT, 'utf8')).toBeLessThanOrEqual(3_500);
+    expect(Buffer.byteLength(ENGINEERING_JUDGMENT_PROMPT, 'utf8')).toBeLessThanOrEqual(3_750);
   });
 
   it('routes UI/UX audits and browser-facing work to the web-platform depth skill without widening the role', () => {
@@ -137,10 +137,19 @@ describe('Engineering judgment prompt reach', () => {
       'present need before adding machinery',
       'call sites and sibling routes',
       'owning boundary',
-      'stdlib/native or an already-installed dependency',
+      'Choose implementations by fit, not presence',
+      'credit existing code for proven behavior, integration, and avoided migration',
+      'after adaptation, upkeep, and work left to callers',
+      'implements a general capability (parsing, scheduling, locking, retries, dates) or accumulates its edge cases',
+      'check whether platform features or maintained packages could take it over',
+      'stop once fit and tradeoffs are clear',
       'cognitive load',
-      'meaningful one-caller boundaries',
-      'make valid use clear and misuse difficult',
+      'Keep a boundary, even with one caller, when deleting it would push its concept, invariants, ordering, or dependencies onto callers',
+      'merge it away when nothing would be lost',
+      'keep side effects, I/O, and caller-owned policy or authority visible',
+      'When a simpler design makes unrequested behavior, contract, or external-dependency changes, state the delta and dependents for an operator decision before code or tests change',
+      'A test alone bars no proposal',
+      'binding requirements hold until their owner changes them',
       'abstractions, fallbacks, options, validation, and comments',
       'security, accessibility, data integrity',
       'public contracts',
@@ -172,6 +181,7 @@ describe('Engineering judgment prompt reach', () => {
     expect(HIVE_BUILDER_PROMPT).toContain('does not grant authority to implement');
     expect(APPROACH_ADVISOR_PROMPT).toContain('Apply Engineering Judgment to implementation route selection');
     expect(APPROACH_ADVISOR_PROMPT).toContain('explicit justification for new libraries, services, or infrastructure');
+    expect(APPROACH_ADVISOR_PROMPT).toContain('and for custom machinery that rebuilds what a maintained option provides');
     expect(DASH_REVIEWER_PROMPT).toContain('Apply Engineering Judgment to reviewer selection and finding synthesis');
     // The test-placement rule has one owner; Forager consumes it through the shared fragment instead of restating it.
     expect(FORAGER_BEE_PROMPT).toContain(ENGINEERING_JUDGMENT_PROMPT);
@@ -300,6 +310,7 @@ describe('Decision carry and worker adaptation', () => {
     expect(WORKER_ASSIGNMENT_PROMPT).toContain('Binding decision:');
     expect(WORKER_ASSIGNMENT_PROMPT).toContain('returns a conflict with a binding decision before making the conflicting change, and keeps working on independent authorized scope');
     expect(WORKER_ASSIGNMENT_PROMPT).toContain('Decide each returned conflict yourself');
+    expect(WORKER_ASSIGNMENT_PROMPT).toContain("A returned unrequested behavior, public-contract, or external-dependency change needs the operator's decision before you authorize it.");
     expect(WORKER_ASSIGNMENT_PROMPT).toContain('friction that recurs across the work is evidence about the design');
   });
 
@@ -556,6 +567,11 @@ describe('Review follow-up contract', () => {
       'Fold accepted in-scope minor corrections into the same remediation round',
       'decline other optional suggestions with a one-line reason',
       'Neither declined suggestions nor minor-only results reopen review',
+      'Report structural proposals separately, each with a disposition and reason',
+      'Implement one only within the applicable authority and scope',
+      "one that changes behavior, a contract, or external dependencies first needs the operator's approval, and a plan amendment where a plan governs",
+      'Verify and re-review an implemented proposal like accepted material work',
+      'A deferred or declined proposal does not block acceptance or reopen review',
       'The primary confirms a minor-only fix against its fix diff instead of re-reviewing',
       'Re-review accepted unresolved material work',
       'in a fresh reviewer session given the re-review packet',
@@ -784,7 +800,7 @@ describe('Review investigation contract', () => {
     expect(CODE_REVIEWER_PROMPT).toContain('[file:line] `quoted line` - [issue and consequence]');
     expect(CODE_REVIEWER_PROMPT).toContain('[discriminating check that would settle it]');
     expect(SIMPLICITY_REVIEWER_PROMPT).toContain('consumer, requirement, external constraint, or failure mode');
-    expect(SIMPLICITY_REVIEWER_PROMPT).toContain('A simplification survives only when none does and behavior stays equivalent');
+    expect(SIMPLICITY_REVIEWER_PROMPT).toContain('A simplification survives as a finding only when none does and required and pre-existing behavior stays equivalent; removing unrequested behavior that the reviewed change itself added stays a finding');
     expect(SIMPLICITY_REVIEWER_PROMPT).not.toContain('### Not Worth Changing');
   });
 });
@@ -920,6 +936,7 @@ describe('Dash review investigation and challenge', () => {
     expect(sequence).toContain('discriminating reproduction or test');
     expect(sequence).toContain('source path or authoritative contract can suffice without execution');
     expect(sequence).toContain('no material gap remains');
+    expect(sequence).toContain('Report structural proposals from reviewers separately from severity-graded findings and gaps, as operator decisions; they skip the challenge step, their open evidence is not a review gap, and they do not block No action');
   });
 });
 
@@ -2349,6 +2366,29 @@ describe('Specialized reviewer prompts', () => {
     expect(SIMPLICITY_REVIEWER_PROMPT).toContain('Do not claim builds, tests, or behavior pass');
   });
 
+  it('routes non-equivalent simplicity alternatives to structural proposals that are not findings', () => {
+    const method = sectionBetween(SIMPLICITY_REVIEWER_PROMPT, '## Review Method', '## Simplicity Passes');
+    expect(method).toContain('A test, document, or prior presence that only records current behavior is a lead to who relies on it');
+    expect(method).toContain('A failure mode, external constraint, or binding requirement that needs the complexity defeats the candidate; a dependent that relies on the changed behavior stops only the finding');
+    expect(method).not.toContain('verified dependent');
+    expect(method).toContain('A candidate that changes behavior that predates the reviewed change (in an audit or a named scope without a diff, current behavior), including behavior a test asserts, a public contract, or external dependencies, or that reaches callers beyond the reviewed scope, is never a finding: report it');
+    expect(method).toContain('report it as a structural proposal that names its dependents when it meets the bar under Finding Bar, and otherwise clear it in Coverage');
+    expect(method).not.toContain('even when a dependent relies on it');
+    const bar = sectionBetween(SIMPLICITY_REVIEWER_PROMPT, '## Finding Bar', '## Output Format');
+    expect(bar).toContain('- You can explain why required and pre-existing behavior should remain equivalent.');
+    expect(bar).toContain('A structural proposal is an alternative for the reviewed code that would remove or transfer substantial owned responsibility, such as collapsing a layer across its callers');
+    expect(bar).toContain('cannot be a finding because it changes behavior that predates the reviewed change, a public contract, or external dependencies, or reaches callers beyond the reviewed scope');
+    expect(bar).not.toContain('in-scope alternative');
+    expect(bar).toContain('Report one only with evidence that it covers the responsibility');
+    expect(bar).toContain('marking unverified external facts as open');
+    expect(bar).toContain('It is not a finding: it does not change the assessment label, may accompany ALREADY_MINIMAL and No action, and authorizes no change by itself');
+    expect(SIMPLICITY_REVIEWER_PROMPT).toContain('Do not provide strategic architecture advice beyond a structural proposal');
+    const output = SIMPLICITY_REVIEWER_PROMPT.slice(SIMPLICITY_REVIEWER_PROMPT.indexOf('## Output Format'));
+    expect(output).toContain('### Structural Proposals\n- [anchor] `quoted line` - [alternative] - [responsibility it removes or transfers]; Delta: [behavior or contract change and known dependents]; Cost: [main adoption cost]; Open: [evidence still open]');
+    expect(output.indexOf('### Redundancy / Defensive Code')).toBeLessThan(output.indexOf('### Structural Proposals'));
+    expect(output.indexOf('### Structural Proposals')).toBeLessThan(output.indexOf('### Coverage'));
+  });
+
   it('keeps approach-advisor advisory rather than a gate', () => {
     expect(APPROACH_ADVISOR_PROMPT).toContain('Is this the right path, given the constraints?');
     expect(APPROACH_ADVISOR_PROMPT).toContain('Do not return `OKAY` or `REJECT`');
@@ -3125,6 +3165,13 @@ describe('Forager (Worker/Coder) prompt', () => {
     }
     expect(FORAGER_BEE_PROMPT).toContain('check each acceptance criterion against recorded evidence for the candidate you verified');
     expect(FORAGER_BEE_PROMPT).toContain('Done, Blocked, or Cancelled');
+  });
+
+  it('adds a new external dependency only when the assignment or plan explicitly authorizes it', () => {
+    expect(FORAGER_BEE_PROMPT).toContain(
+      'Add a new external dependency only when the assignment or plan explicitly authorizes it; otherwise return it to the primary for an operator decision',
+    );
+    expect(FORAGER_BEE_PROMPT).not.toContain('using local conventions and existing helpers');
   });
 
   it('directs forager to honor declared repository scope and escalate out-of-scope files through the blocker protocol', () => {

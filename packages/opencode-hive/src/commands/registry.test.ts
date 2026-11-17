@@ -602,6 +602,7 @@ describe('HIVE_COMMANDS', () => {
     expect(output).toContain('preserve explicitly requested reviewer scope');
     expect(output).toContain('required configured reviewer or claim a clean review while that obligation or material challenge is open');
     expect(output).toContain('Review Basis');
+    expect(output).toContain('Structural proposals kept separate as operator decisions; they do not block No action.');
   });
 
   it('delivers the report-only suite audit scope and skill loading on both hosts', () => {
