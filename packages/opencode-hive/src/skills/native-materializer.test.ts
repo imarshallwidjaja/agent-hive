@@ -332,7 +332,7 @@ describe('prepareNativeHiveSkills - materialization behavior', () => {
     for (const host of [OPENCODE_V1_PROFILE, createHostProfile('opencode-v2')]) {
       const worktree = createTempDir();
       const result = await prepareNativeHiveSkills({ directory: worktree, worktree, packagedSkillsDir: resolvePackagedSkillsDir(), env: { HOME: worktree }, host });
-      for (const [skill, file] of Object.entries(pointed)) {
+      for (const [skill, file] of [...Object.entries(pointed), ['test-quality', 'prune.md']]) {
         const dir = path.join(result.materializedPath!, skill);
         expect(fs.readFileSync(path.join(dir, 'SKILL.md'), 'utf8'), `${host.host}/${skill}`).toContain(`](references/${file})`);
         const resolved = path.resolve(dir, 'references', file);

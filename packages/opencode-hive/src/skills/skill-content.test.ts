@@ -406,9 +406,23 @@ describe('skill content', () => {
     expect(quality).toContain('Prompt, configuration, and packaging pins can be legitimate');
     expect(quality).not.toContain('returned `undefined`');
     expect(quality).toContain('Loading it does not select TDD');
-    for (const contract of ['public observable result, exercised subject and path, independent oracle', 'valid metamorphic relation', 'Reading a fixture after the product mutates it can prove observable state', "asserting only the fixture's setup data cannot", 'credible observability', 'distinct faults', 'not LLM compliance or model behavior', 'Audit is report-only', 'separate implementation request', 'Establish the baseline, preserve unique coverage, and run affected checks']) {
+    for (const contract of ['public observable result, exercised subject and path, independent oracle', 'valid metamorphic relation', 'Reading a fixture after the product mutates it can prove observable state', "asserting only the fixture's setup data cannot", 'credible observability', 'distinct faults', 'not LLM compliance or model behavior', 'Audit is report-only', 'is the implementation request; no separate follow-up request is needed', 'Establish the baseline, preserve unique coverage, and run affected checks']) {
       expect(quality, contract).toContain(contract);
     }
+    // Mode authority stays in SKILL.md; the prune reference adds method only.
+    expect(BUILTIN_SKILLS.find((entry) => entry.name === 'test-quality')!.description).toContain('pruning weak or redundant tests when explicitly asked');
+    for (const authority of ['Suite audit covers `/test-audit`, explicit audit requests, and questions such as "which tests should we remove?"', 'report within the assigned scope and never enter prune mode', 'to prune, rewrite, or remove weak or redundant tests is the implementation request', 'A request to review, audit, investigate, or fix failing tests is not one', 'when no scope is settled, ask instead of defaulting to the whole repository', 'a role that plans before implementing keeps that rule', 'names `test-quality` as a required skill for the worker', 'Pre-existing failures stay findings', 'remove support code only inside the settled scope after checking its consumers and public contracts', 'keep the test or code and report the question that would settle it', 'grants no write access to a reviewer or planner', '](references/prune.md)']) {
+      expect(quality, authority).toContain(authority);
+    }
+    for (const lead of ['the contract and the observed product path decide', 'misses the behavior break or fails the behavior-preserving refactor', 'Ask what would be wrong if they came back', 'An absence check that observes a continuing requirement stays', "an invariant the repository's instructions require to stay pinned", 'neither establishes nor rules out the requirement', 'redundant only when it exercises no repository-owned behavior, integration, configuration, or runtime boundary', 'a retained owner at the same layer', 'stays until a contract test replaces it']) {
+      expect(quality, lead).toContain(lead);
+    }
+    const prune = readSkillReference('test-quality', 'prune.md');
+    for (const method of ['before deleting it', 'also read the governing instructions, provenance notes, and the history of the removal', 'one fault per run, never batched', 'isolated clean placement', 'rebuild it after introducing the fault', 'Restore the exact original bytes immediately after each probe, before the next probe or any edit', 'does not prove two tests equivalent', 'when its file is inside the writable scope and only after checking its remaining consumers and public contracts', 'published or workspace-internal', 'protocol methods called indirectly', 'Keep dependency-injection seams, such as an injected clock or client, whether or not a retained test uses them', 'removed, folded, rewritten, or uncertain test', 'count of kept tests', 'No probe edit remains']) {
+      expect(prune, method).toContain(method);
+    }
+    expect(prune.indexOf('**Probe')).toBeGreaterThan(-1);
+    expect(prune.indexOf('**Probe')).toBeLessThan(prune.indexOf('**Act.**'));
     const audit = readSkillReference('test-quality', 'suite-audit.md');
     for (const contract of ['when none is named, use the current repository', 'owning layer (unit, integration, or end-to-end)', 'Test and source anchors', 'plausible undetected fault', "duplicate's retained canonical owner", 'Unique coverage that must survive', '**keep**, **rewrite**, **fold**, or **remove**', 'Do not describe a sample as exhaustive', 'Test count and coverage percentage alone are not quality verdicts', 'does not authorize remediation']) {
       expect(audit, contract).toContain(contract);
@@ -432,6 +446,8 @@ describe('skill content', () => {
       expect(upstream, skill).toContain('0.15.5');
       expect(existsSync(path.join(root, skill, skill === 'code-design-principles' ? 'LICENSE' : 'LICENSE.pstack')), skill).toBe(true);
     }
+    expect(readFileSync(path.join(root, 'test-quality/UPSTREAM.md'), 'utf8')).toContain('bd73b2ea5eb854ab8f0553fb41f77c8786f28f82');
+    expect(readFileSync(path.join(root, 'test-quality/LICENSE.caldoai'), 'utf8')).toContain('MIT License');
   });
 
   it('carries plan decisions, points to the plan assessment, and keeps planning and execution cues conditional', () => {

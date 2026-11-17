@@ -153,6 +153,13 @@
       "expected": ["Improves the changed test through observable payload or behavior", "Does not mass-delete prompt-contract pins", "Does not select TDD merely by reading test-quality criteria", "Preserves the lock and retained evidence until supported recovery establishes termination"]
     },
     {
+      "id": "prune-request-keeps-continuing-contracts",
+      "skills": ["test-quality"],
+      "references": ["skills/test-quality/references/prune.md"],
+      "prompt": "Prune the weak tests in packages/report. Facts: report.test.ts asserts that src/legacy-export.ts does not exist; that module was deleted last year and nothing requires it to stay absent. prompts.test.ts asserts the delivered reviewer prompt does not contain the retired phrase 'approve on green', which must not return. debug.test.ts only asserts the output of _dumpState, a private method that is not exported and referenced nowhere else. formatTotals is exported and imported by packages/billing, and format.test.ts asserts its computed totals. Separately, in another session the operator only asks: which tests should we remove?",
+      "expected": ["Deletes the file-absence tombstone because no continuing requirement depends on the module staying absent", "Deletes the debug.test.ts test together with _dumpState after confirming nothing else uses it", "Keeps the negative pin on the retired prompt wording and the exported formatTotals helper with its test", "Answers the which-tests-should-we-remove question with a report and makes no edits"]
+    },
+    {
       "id": "efficiency-local-speedup-not-delivery-gain",
       "skills": ["writing-plans", "verification"],
       "prompt": "A plan's stated outcome is 'cut verification time for this feature'. Proposed change: add a 40 s fail-fast focused run of the docs-inventory suite before the existing full default-CPU suite. The full suite stays an unchanged Final Verification gate and still runs after every correction and again at integration. Timings of the full suite are unknown. Write the plan's efficiency statement and the claim you would put in the completion report.",
