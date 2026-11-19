@@ -4195,11 +4195,13 @@ describe('AdhocWorktreeService targeted runs', () => {
     // A task candidate whose sidecar names it stays the task's.
     const recordedCandidate = await tasks.create('adhoc', '01-recorded', undefined, 'green');
 
-    // Listings, which nobody pointed at the entry, report its owner as unknown and leave it alone.
+    // Listings, which nobody pointed at the entry, report its owner as unknown and leave it alone. A listing follows the
+    // filesystem's directory order, which differs between hosts, so compare its entries in path order.
+    const byPath = (left: { path: string }, right: { path: string }) => left.path.localeCompare(right.path);
     for (const selector of [undefined, 'adhoc']) {
       const listed = await tasks.list(selector);
-      expect(listed.errors).toEqual([candidateShaped, ambiguous]);
-      expect(listed.worktrees.map((worktree) => [worktree.feature, worktree.step, worktree.path])).toEqual([
+      expect([...listed.errors].sort(byPath)).toEqual([candidateShaped, ambiguous]);
+      expect([...listed.worktrees].sort(byPath).map((worktree) => [worktree.feature, worktree.step, worktree.path])).toEqual([
         ['adhoc', '01-recorded', recorded.path],
         ['adhoc', '01-recorded', recordedCandidate.path],
         ['adhoc', '02-old-task', oldTask.path],
