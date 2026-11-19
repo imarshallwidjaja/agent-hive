@@ -45,8 +45,9 @@ Trace forward from each entry point: follow attacker-controlled values through p
 
 ## Frontier discipline for multi-wave audits
 
-A broad audit or a retest runs in waves. The commissioning primary keeps its state in an Exploration Frontier with `hive_explore_read` and `hive_explore_update`; read-only roles read it and return proposed updates.
+A broad audit or a retest runs in waves. The commissioning primary keeps its state in an Exploration Frontier with `hive_explore_read` and `hive_explore_update`. A read-only role calls `hive_explore_read` only when its handoff supplies `Exploration: <id>`, reads that exploration alone, and returns proposed updates.
 
+- **Read views:** the `brief` view serves orientation and status checks. Resuming an exploration and compiling the final **Coverage** use `hive_explore_read({ id, view: 'full' })`, which shows the settled keys with their `evidence` and `refs`, so no settled item is overwritten back to `open`.
 - **Seed or resume:** when creating a new exploration, each in-scope surface from the inventory becomes an `open` frontier item. When resuming an existing exploration, preserve its settled (`covered`, `blocked`, `dropped`) items and their evidence unless new evidence warrants an explicit state change.
 - **Delta updates:** after each wave, record only what changed: new findings and hypotheses, newly found chains as `open` items, and surfaces settled with the evidence that settled them.
 - **Stagnation pivot:** when `stagnantRevisions` keeps rising without new observations or settled items, the current angle is exhausted. Change the angle (another entry point, another bug class, another model or lens) or stop and report the remaining items as gaps.
@@ -54,7 +55,7 @@ A broad audit or a retest runs in waves. The commissioning primary keeps its sta
 
 ## Independent falsification
 
-Every material candidate faces a challenger that did not propose it: a fresh session, preferably on a different configured model. The challenger tries to disprove any one gate: the unreachable path, the missing attacker control, the missing new capability, or the wired defense. Give it the claim, its cited evidence, and the gates as open questions. A candidate survives only when the challenge fails with cited evidence; record what was tried as a `Survived:` note.
+Every material candidate faces a challenger that did not propose it: a fresh session, preferably on a different configured model. The challenger tries to disprove any one gate: the unreachable path, the missing attacker control, the missing new capability, or the wired defense. Give it the claim, its cited evidence, and the gates as open questions. The challenger does not list or read the Exploration Frontier, and its handoff carries no `Exploration: <id>`, so proposer conclusions and unrelated active explorations cannot anchor it. A candidate survives only when the challenge fails with cited evidence; record what was tried as a `Survived:` note.
 
 ## Sibling sweep
 
@@ -70,6 +71,7 @@ Inside such an exercise, these stop conditions always hold:
 - Keep real credentials, production data, and personal accounts out of the local instance.
 - Stub outbound egress the instance would otherwise make, such as identity providers, payment and email APIs, webhook receivers, and cloud metadata addresses.
 - If any part of the exercise, including startup, a background process, or a probe, reaches a real external service, stop the run immediately and report it.
+- External search and documentation tools may receive only public dependency names and versions or public CVE and GHSA IDs. Never send proprietary source snippets, paths, symbols, exploit inputs, or local logs to them.
 
 ## Reporting
 

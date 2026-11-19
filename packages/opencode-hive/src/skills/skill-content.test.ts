@@ -3133,6 +3133,7 @@ describe('security-audit skill contracts', () => {
   const directory = path.join(resolvePackagedSkillsDir(), 'security-audit');
   const read = (relative: string) => readFileSync(path.join(directory, relative), 'utf8');
   const entry = BUILTIN_SKILLS.find((skill) => skill.name === 'security-audit');
+  const EXTERNAL_TOOL_BOUNDARY = 'External search and documentation tools may receive only public dependency names and versions or public CVE and GHSA IDs. Never send proprietary source snippets, paths, symbols, exploit inputs, or local logs to them.';
 
   it('keeps the audit method and the local-exercise stop conditions in SKILL.md and the pentest reference behind an executing-role pointer', () => {
     expect(entry).toBeDefined();
@@ -3151,6 +3152,10 @@ describe('security-audit skill contracts', () => {
       'Clear a candidate with cited `file:line` evidence that disproves any one gate: the path is unreachable in production (or in the non-production environment the operator explicitly named as the review target), neither attacker-controlled data nor attacker-accessible capability reaches the sink, the result grants no new capability, or a defense is wired on that path and fits the sink.',
       'When a defense is the clearing reason, cite the `file:line` that proves it is wired on that path.',
       '`hive_explore_read` and `hive_explore_update`',
+      'A read-only role calls `hive_explore_read` only when its handoff supplies `Exploration: <id>`, reads that exploration alone, and returns proposed updates.',
+      "Resuming an exploration and compiling the final **Coverage** use `hive_explore_read({ id, view: 'full' })`",
+      'so no settled item is overwritten back to `open`',
+      'The challenger does not list or read the Exploration Frontier, and its handoff carries no `Exploration: <id>`',
       'When resuming an existing exploration, preserve its settled (`covered`, `blocked`, `dropped`) items and their evidence unless new evidence warrants an explicit state change.',
       '**Stagnation pivot:**',
       'set `priorExplorationId` only when the earlier exploration ID is known. An operator-supplied prior report without an exploration ID stays comparison input; do not invent an ID for it.',
@@ -3169,6 +3174,7 @@ describe('security-audit skill contracts', () => {
       'Keep real credentials, production data, and personal accounts out of the local instance.',
       'Stub outbound egress the instance would otherwise make',
       'If any part of the exercise, including startup, a background process, or a probe, reaches a real external service, stop the run immediately and report it.',
+      EXTERNAL_TOOL_BOUNDARY,
     ]) expect(pentest, phrase).toContain(phrase);
   });
 
@@ -3188,6 +3194,7 @@ describe('security-audit skill contracts', () => {
       '`browse_session_allowlist`',
       '`browse_network`',
       '**Still reproducible:**',
+      EXTERNAL_TOOL_BOUNDARY,
     ]) expect(pentest, phrase).toContain(phrase);
     for (const restated of ['hive_adhoc_worktree_create', 'hive_adhoc_worktree_cleanup', 'deleteBranch', '`question`', 'Save evidence outside the placement']) {
       expect(pentest, restated).not.toContain(restated);
