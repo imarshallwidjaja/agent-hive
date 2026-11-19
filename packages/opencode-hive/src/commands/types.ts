@@ -38,12 +38,11 @@ export interface HiveCommandDashReviewLane {
 
 export interface HiveCommandVulnerabilityReviewLane {
   taskTarget: string;
-  role: 'scope-scout' | 'baseline' | 'specialist' | 'falsifier';
+  role: 'specialist';
   sourceAgent: string;
   description: string;
   model?: string;
   variant?: string;
-  lens?: string;
 }
 
 export interface HiveCommandAgentDescriptor {

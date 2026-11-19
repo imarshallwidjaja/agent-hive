@@ -96,8 +96,7 @@ function configuredVulnerabilityReviewCandidates(context: HiveCommandContext): s
   const candidates = (context.vulnerabilityReviewLanes ?? []).map((lane) => {
     const model = lane.model ?? 'unknown';
     const variant = lane.variant ?? 'unknown';
-    const lens = lane.lens ? `; lens: ${lane.lens}` : '';
-    return `${lane.taskTarget} (role: ${lane.role}; source: ${lane.sourceAgent}${lens}; model: ${model}; variant: ${variant}; ${lane.description})`;
+    return `${lane.taskTarget} (role: ${lane.role}; source: ${lane.sourceAgent}; model: ${model}; variant: ${variant}; ${lane.description})`;
   });
   return candidates.length > 0 ? candidates.join('\n') : 'none registered';
 }
@@ -360,13 +359,14 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
         `Configured vulnerability reviewers:\n${configuredVulnerabilityReviewCandidates(context)}`,
       ],
       doItems: [
-        'Resolve the requested source with ordinary tools.',
+        `Resolve the requested source with ordinary tools, load ${skillCall(context.host, 'security-audit')} for the audit method, and follow your Review Sequence.`,
         'Run every explicitly requested specialist and preserve a snapshot source fingerprint when one is used.',
-        'Reproduce a lead locally only as a Runtime Exercise that its Authorization covers; reviewing a lead does not by itself permit running code.',
-        'Report evidenced attacker-to-impact paths and root causes.',
+        'Reproduce a lead locally, or run an active simulated pentest of a disposable local instance that the operator asked for, only as a Runtime Exercise that its Authorization covers; reviewing a lead does not by itself permit running code.',
       ],
       doNotItems: ['Do not edit source, exploit live systems, scan remote networks or hosts, or silently skip requested reviewers.'],
-      outputItems: ['Severity-ordered vulnerability findings, evidence gaps, and source identity.'],
+      outputItems: [
+        'Plain-English vulnerability findings first, severity-ordered and each labelled Observed in local run or Traced in source, with evidenced attacker-to-impact paths, root causes, locations, and source identity; then unresolved leads and Coverage, and, when a prior report is compared, each earlier finding marked Fixed, Still reproducible, or Unverified.',
+      ],
     });
   },
 

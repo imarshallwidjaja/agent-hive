@@ -3129,6 +3129,77 @@ describe('modern-web-guidance skill contracts', () => {
   });
 });
 
+describe('security-audit skill contracts', () => {
+  const directory = path.join(resolvePackagedSkillsDir(), 'security-audit');
+  const read = (relative: string) => readFileSync(path.join(directory, relative), 'utf8');
+  const entry = BUILTIN_SKILLS.find((skill) => skill.name === 'security-audit');
+
+  it('keeps the audit method and the local-exercise stop conditions in SKILL.md and the pentest reference behind an executing-role pointer', () => {
+    expect(entry).toBeDefined();
+    expect(entry!.description).toMatch(/^Use when /);
+    expect(entry!.description).toContain('Agent Hive');
+    const skill = entry!.template;
+    for (const phrase of [
+      'This skill adds method, not authority.',
+      'Explicitly named scope overrides the defaults below.',
+      'Tests and vendored code are excluded by default unless the operator names them or production ships or exposes them directly.',
+      'report each exclusion in Coverage',
+      '## Surface inventory and shared-defense catalog',
+      'A defense that exists somewhere else in the codebase clears nothing.',
+      '## Three gates',
+      'check the parameters of outbound calls',
+      'Clear a candidate with cited `file:line` evidence that disproves any one gate: the path is unreachable in production (or in the non-production environment the operator explicitly named as the review target), neither attacker-controlled data nor attacker-accessible capability reaches the sink, the result grants no new capability, or a defense is wired on that path and fits the sink.',
+      'When a defense is the clearing reason, cite the `file:line` that proves it is wired on that path.',
+      '`hive_explore_read` and `hive_explore_update`',
+      'When resuming an existing exploration, preserve its settled (`covered`, `blocked`, `dropped`) items and their evidence unless new evidence warrants an explicit state change.',
+      '**Stagnation pivot:**',
+      'set `priorExplorationId` only when the earlier exploration ID is known. An operator-supplied prior report without an exploration ID stays comparison input; do not invent an ID for it.',
+      'a fresh session, preferably on a different configured model',
+      '## Sibling sweep',
+      'report the sweep as a gap',
+      'an executing Investigator dispatched by the commissioning primary under Runtime Exercise runs it',
+      'Read-only reviewers do not load it and stay non-executing.',
+      '**Observed in local run** or **Traced in source**',
+      'No confirmed vulnerabilities found in reviewed scope',
+      '*Fixed*, *Still reproducible*, or *Unverified*',
+    ]) expect(skill, phrase).toContain(phrase);
+    const pentest = skill.slice(skill.indexOf('## Local simulated pentest'), skill.indexOf('## Reporting'));
+    for (const phrase of [
+      'Bind every listener to loopback (`127.0.0.1` or `::1`) only.',
+      'Keep real credentials, production data, and personal accounts out of the local instance.',
+      'Stub outbound egress the instance would otherwise make',
+      'If any part of the exercise, including startup, a background process, or a probe, reaches a real external service, stop the run immediately and report it.',
+    ]) expect(pentest, phrase).toContain(phrase);
+  });
+
+  it('adds security craft to the Runtime Exercise without restating its authority, placement, or cleanup', () => {
+    const pentest = read('references/local-pentest.md');
+    for (const phrase of [
+      'Authorization, scope growth, placement, evidence destination, return, and cleanup follow the Runtime Exercise and Experiments methods',
+      'grants nothing',
+      'Bind every server, database, and helper to `127.0.0.1` or `::1` only.',
+      'Stub outbound egress',
+      'If any part of the exercise, including startup, a background process, or a probe, reaches a real external service, stop the run immediately and report it.',
+      'cite the evidence of the expected access policy',
+      'Public or intentionally shared data returned across users does not confirm unauthorized access.',
+      'confirms the lead only when the expected policy forbids that access',
+      'at most three objects owned by user B or tenant B',
+      'non-destructive canaries',
+      '`browse_session_allowlist`',
+      '`browse_network`',
+      '**Still reproducible:**',
+    ]) expect(pentest, phrase).toContain(phrase);
+    for (const restated of ['hive_adhoc_worktree_create', 'hive_adhoc_worktree_cleanup', 'deleteBranch', '`question`', 'Save evidence outside the placement']) {
+      expect(pentest, restated).not.toContain(restated);
+    }
+  });
+
+  it('ships clean-room text with no external-framework vocabulary', () => {
+    const shipped = [read('SKILL.md'), read('references/vuln-classes.md'), read('references/local-pentest.md')].join('\n');
+    for (const term of [/\bPOE\b/, /\bARTEX\b/i, /\bCairn\b/i, /\bPentAGI\b/i]) expect(shipped).not.toMatch(term);
+  });
+});
+
 describe('host sections in packaged skills', () => {
   const V2 = createHostProfile('opencode-v2');
   const HOSTS: HostProfile[] = [OPENCODE_V1_PROFILE, V2];

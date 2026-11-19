@@ -629,6 +629,7 @@ Generated/managed shape (for inspection) at `<project>/.hive/repositories.json`:
 | `parallel-exploration` | Researcher fan-out for read-only research |
 | `pr-writing` | Draft PR titles, descriptions, and general or inline review comments |
 | `project-verification` | Set up, audit, or maintain a project's durable verification guidance, reusable agent controls, harness, or formal checks when requested |
+| `security-audit` | White-box security audit method for `/vuln-review`: surface and shared-defense mapping, multi-wave frontier hunting, independent falsification, sibling sweeps, findings and coverage reports, and authorized local pentest craft |
 | `starting-ad-hoc-implementation` | Turn a scoped conversation into authorized ad-hoc implementation when the operator asks to implement it |
 | `stop-design-slop` | Visual foundation for interfaces: composition from the product's task, diagnostics for generic patterns, and refinement that preserves an existing identity |
 | `stop-slop` | Repair staging, formulaic cadence, and structure in existing prose |

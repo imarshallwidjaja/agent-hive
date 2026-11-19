@@ -2,6 +2,7 @@ import { OPENCODE_V1_PROFILE, nativeCall, skillCall, type HostProfile } from '..
 import { ENGINEERING_JUDGMENT_PROMPT } from './engineering-judgment.js';
 import { renderExperimentMethodPrompt, renderBackgroundBoardHandlePrompt, renderNativeTaskContinuationPolicyPrompt, renderSubagentConcurrencyPrompt, IMPLEMENT_COMMAND_EXCEPTION_PROMPT, PLAN_APPROVAL_SYNC_PROMPT, PLAN_ASSESSMENT_PROMPT, PRIMARY_CONSTRAINT_AUTHORING_PROMPT, PRIMARY_REASONING_OWNERSHIP_PROMPT, PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT, REVIEW_FOLLOW_UP_PROMPT, REVIEW_HANDOFF_PROMPT, REVIEW_REQUEST_EXAMPLE_PROMPT, REVIEW_ROUTING_PROMPT, TASK_SPEC_FRESHNESS_PROMPT, WORKER_ASSIGNMENT_PROMPT } from './process-judgment.js';
 import { renderInterruptedWorkerRecoveryPrompt, TASK_REPORT_CONTRACT_PROMPT, TASK_REPORT_OWNERSHIP_PROMPT } from './task-reporting.js';
+import { renderPrimaryExplorationPrompt } from './exploration-guidance.js';
 import { renderPrimaryWorklogPrompt } from './worklog-guidance.js';
 
 /**
@@ -129,6 +130,8 @@ ${WORKER_ASSIGNMENT_PROMPT}
 ${TASK_SPEC_FRESHNESS_PROMPT} The bound Forager reads the spec, plan, context catalog, and dependency handoffs through the brief; do not paste their bodies.
 
 ${PRIMARY_CONSTRAINT_AUTHORING_PROMPT}
+
+${renderPrimaryExplorationPrompt()}
 
 ${renderPrimaryWorklogPrompt({ featureWork: true })}
 

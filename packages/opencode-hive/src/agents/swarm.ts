@@ -2,6 +2,7 @@ import { OPENCODE_V1_PROFILE, nativeCall, type HostProfile } from '../runtime/ho
 import { ENGINEERING_JUDGMENT_PROMPT } from './engineering-judgment.js';
 import { renderExperimentMethodPrompt, renderBackgroundBoardHandlePrompt, renderNativeTaskContinuationPolicyPrompt, renderSubagentConcurrencyPrompt, PLAN_APPROVAL_SYNC_PROMPT, PLAN_ASSESSMENT_PROMPT, PRIMARY_CONSTRAINT_AUTHORING_PROMPT, PRIMARY_REASONING_OWNERSHIP_PROMPT, PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT, REVIEW_FOLLOW_UP_PROMPT, REVIEW_HANDOFF_PROMPT, REVIEW_REQUEST_EXAMPLE_PROMPT, REVIEW_ROUTING_PROMPT, TASK_SPEC_FRESHNESS_PROMPT, WORKER_ASSIGNMENT_PROMPT } from './process-judgment.js';
 import { renderInterruptedWorkerRecoveryPrompt, TASK_REPORT_CONTRACT_PROMPT, TASK_REPORT_OWNERSHIP_PROMPT } from './task-reporting.js';
+import { renderPrimaryExplorationPrompt } from './exploration-guidance.js';
 import { renderPrimaryWorklogPrompt } from './worklog-guidance.js';
 
 /**
@@ -91,6 +92,8 @@ ${WORKER_ASSIGNMENT_PROMPT}
 ${TASK_SPEC_FRESHNESS_PROMPT} For a managed feature-task Forager, put \`Hive task: <task-folder>\` on the first non-empty line; the bound Forager reads task records through the brief and Hive state, so do not paste their bodies. Keep tightly coupled code, tests, docs, and generated outputs in one assignment.
 
 ${PRIMARY_CONSTRAINT_AUTHORING_PROMPT}
+
+${renderPrimaryExplorationPrompt()}
 
 ${renderPrimaryWorklogPrompt({ featureWork: true })}
 

@@ -1,6 +1,7 @@
 import { OPENCODE_V1_PROFILE, nativeCall, type HostProfile } from '../runtime/host-profile.js';
 import { ENGINEERING_JUDGMENT_PROMPT } from './engineering-judgment.js';
 import { renderExperimentMethodPrompt, renderNativeTaskContinuationPolicyPrompt, IMPLEMENT_COMMAND_EXCEPTION_PROMPT, PLAN_APPROVAL_SYNC_PROMPT, PLAN_ASSESSMENT_PROMPT, PROCESS_JUDGMENT_PROMPT, REVIEW_HANDOFF_PROMPT } from './process-judgment.js';
+import { renderPrimaryExplorationPrompt } from './exploration-guidance.js';
 import { renderPrimaryWorklogPrompt } from './worklog-guidance.js';
 
 /**
@@ -34,6 +35,8 @@ ${PROCESS_JUDGMENT_PROMPT}
 ${renderNativeTaskContinuationPolicyPrompt(host)}
 
 ${REVIEW_HANDOFF_PROMPT}
+
+${renderPrimaryExplorationPrompt()}
 
 ${renderPrimaryWorklogPrompt({ featureWork: true })}
 
