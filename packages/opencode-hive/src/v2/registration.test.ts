@@ -214,8 +214,8 @@ function denied(exit: Exit.Exit<unknown, unknown>): string | undefined {
 }
 
 describe('v2 tool registration', () => {
-  it('registers all 49 Hive tools once, with an explicit Code Mode flag from the selected transport', async () => {
-    expect(HIVE_TOOL_NAMES).toHaveLength(49);
+  it('registers all 51 Hive tools once, with an explicit Code Mode flag from the selected transport', async () => {
+    expect(HIVE_TOOL_NAMES).toHaveLength(51);
     for (const transport of ['codemode', 'direct'] as const) {
       const host = await activate({ readTransport: transport });
       const tools = host.tools();
@@ -436,6 +436,22 @@ describe('v2 execution guards', () => {
     ['hive-helper', 'child', 'hive_worklog_record', {}, false],
     ['general', 'child', 'hive_worklog_record', {}, false],
     ['build', 'child', 'hive_worklog_record', {}, false],
+    // Explorations: every Hive role reads; only primary sessions of authoring roles write.
+    ['forager-worker', 'child', 'hive_explore_read', {}, true],
+    ['scout-researcher', 'child', 'hive_explore_read', {}, true],
+    ['forager-investigator', 'child', 'hive_explore_read', {}, true],
+    ['vulnerability-reviewer', 'child', 'hive_explore_read', {}, true],
+    ['general', 'child', 'hive_explore_read', {}, false],
+    ['explore', 'child', 'hive_explore_read', {}, false],
+    ['hive-builder', 'primary', 'hive_explore_update', {}, true],
+    ['architect-planner', 'primary', 'hive_explore_update', {}, true],
+    ['vulnerability-review-primary', 'primary', 'hive_explore_update', {}, true],
+    ['architect-planner', 'child', 'hive_explore_update', {}, false],
+    ['hive-builder', 'child', 'hive_explore_update', {}, false],
+    ['forager-worker', 'primary', 'hive_explore_update', {}, false],
+    ['vulnerability-reviewer', 'child', 'hive_explore_update', {}, false],
+    ['general', 'child', 'hive_explore_update', {}, false],
+    ['build', 'child', 'hive_explore_update', {}, false],
     // Retained checkouts: every Hive role lists them and inspection follows worktree inspection; who changes them is
     // pinned under a global allow below.
     ['scout-researcher', 'child', 'hive_checkouts_list', {}, true],
@@ -611,6 +627,22 @@ describe('v2 execution guards', () => {
     expect(denied(await host.execute('hive_worklog_record', { ...args, ref: { ...childRef, sessionId: 'gone' } }, { sessionID: 'gone', agent: 'hive-builder' }))).toContain('could not read session gone');
     expect(files()).toEqual(before);
     expect(fs.readdirSync(logPath)).toHaveLength(1);
+  });
+
+  it('stamps the v2 owner on exploration updates, presents compact JSON, and writes nothing for a child or unreadable session', async () => {
+    const host = await activate();
+    const primary = { sessionID: 'primary', agent: 'vulnerability-review-primary' };
+    const args = { id: 'audit', expectedRevision: 0, goal: 'Audit the login surface', frontier: [{ key: 'login', target: 'POST /login', state: 'open' }], createdBy: { owner: 'opencode-v1', sessionId: 'x', agent: 'forged' } };
+    const created = (await host.execute('hive_explore_update', args, primary) as Exit.Success<{ output: any; content: string }>).value;
+    expect(created.output.createdBy).toEqual({ owner: 'opencode-v2', sessionId: 'primary', agent: 'vulnerability-review-primary' });
+    expect(created.content).toBe(JSON.stringify(created.output));
+    const directory = path.join(host.root, '.hive', 'explorations');
+    const before = fs.readdirSync(directory, { recursive: true });
+    expect(denied(await host.execute('hive_explore_update', { ...args, id: 'child-audit' }, { sessionID: 'child', agent: 'hive-builder' }))).toContain('primary-only');
+    expect(denied(await host.execute('hive_explore_update', { ...args, id: 'gone-audit' }, { sessionID: 'gone', agent: 'hive-builder' }))).toContain('could not read session gone');
+    expect(fs.readdirSync(directory, { recursive: true })).toEqual(before);
+    const read = (await host.execute('hive_explore_read', { id: 'audit' }, { sessionID: 'child', agent: 'forager-worker' }) as Exit.Success<{ output: any }>).value.output;
+    expect(read).toMatchObject({ view: 'brief', revision: 1, gaps: { total: 1 } });
   });
 
   it('presents Worklog results as compact JSON, with the same structured output, so maxBytes bounds the content text', async () => {

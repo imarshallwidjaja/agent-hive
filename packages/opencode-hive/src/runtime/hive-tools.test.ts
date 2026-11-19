@@ -5,7 +5,7 @@ import * as path from 'node:path';
 import plugin from '../index.js';
 import { HIVE_TOOL_NAMES } from '../utils/plugin-manifest.js';
 import { createPluginWithHome } from '../e2e/plugin-test-home.js';
-import { WorklogError } from 'hive-core';
+import { EXPLORATION_LIMITS, EXPLORATION_UNTRUSTED_NOTICE, ExplorationError, WorklogError } from 'hive-core';
 import { createHiveServices } from './hive-services.js';
 import { createHiveOperations } from './hive-tools.js';
 import { z } from './schema.js';
@@ -123,6 +123,8 @@ const ORDINARY_OPERATION_SIGNATURES = [
   'hive_worklog_list(kind?:feature|session, limit?:number, cursor?:string, maxBytes?:number)',
   'hive_worklog_read(ref?:{kind:"feature", featureName:string}|{kind:"session", owner:opencode-v1|opencode-v2, sessionId:string}, view?:brief|history|facts, limit?:number, cursor?:string, maxBytes?:number)',
   'hive_worklog_record(ref:{kind:"feature", featureName:string}|{kind:"session", owner:opencode-v1|opencode-v2, sessionId:string}, operationId:string, title?:string, checkpoint:{summary:string, detail?:string, references?:{kind:"path", path:string, label?:string}|{kind:"url", url:string, label?:string}[], corrects?:number[]}, briefing?:string, expectedRevision?:number)',
+  'hive_explore_read(id?:string, view?:brief|full)',
+  'hive_explore_update(id:string, expectedRevision:number, operationId?:string, goal?:string, subject?:string, priorExplorationId?:string, status?:concluded|abandoned, conclusion?:string, reason?:string, frontier?:{key:string, target:string, state:open|covered|blocked|dropped, question?:string, evidence?:string, reason?:string, refs?:string[]}[], observations?:{key:string, summary:string, status:confirmed|hypothesis|refuted, refs?:string[], supersedes?:string}[])',
   'hive_status(feature?:string)',
   'hive_git_snapshot(directory?:string, repositoryIds?:string[], baseRef?:string, targetRef?:string, range?:string, paths?:string[], maxFiles?:number, maxPatchBytes?:number)',
 ];
@@ -133,7 +135,7 @@ const NATIVE_TRACE_AND_BACKGROUND_TOOLS = [
 ];
 
 describe('ordinary Hive operation arguments', () => {
-  it('registers the 43 ordinary operations after the trace and background tools, with their argument shapes', async () => {
+  it('registers the 45 ordinary operations after the trace and background tools, with their argument shapes', async () => {
     const { hooks } = await createRuntime();
     const registered = Object.entries(hooks.tool as Record<string, { args: any }>);
     const ordinary = registered.filter(([name]) => !NATIVE_TRACE_AND_BACKGROUND_TOOLS.includes(name));
@@ -261,6 +263,8 @@ const DESCRIBED_FIELDS: Record<string, string[]> = {
   hive_worklog_list: ['kind', 'limit', 'cursor', 'maxBytes'],
   hive_worklog_read: ['ref', 'view', 'limit', 'cursor', 'maxBytes'],
   hive_worklog_record: ['ref', 'operationId', 'title', 'checkpoint', 'briefing', 'expectedRevision'],
+  hive_explore_read: ['id', 'view'],
+  hive_explore_update: ['id', 'expectedRevision', 'operationId', 'goal', 'subject', 'priorExplorationId', 'status', 'conclusion', 'reason', 'frontier', 'observations'],
   ...Object.fromEntries(['hive_worktree_merge', 'hive_adhoc_worktree_merge'].map((name) => [name, [
     'historyIntent', 'strategy', 'message', 'preserveConflicts', 'cleanup', 'sourceCommit', 'sourceCommits', 'expectedTarget', 'expectedTargets',
   ]])),
@@ -998,5 +1002,86 @@ describe('Worklog operations', () => {
     for (const agent of ['architect-planner', 'dash-reviewer']) {
       expect((await callJson('hive_worklog_record', record(agent), agent, agent)).entry.author).toEqual({ owner: 'opencode-v1', sessionId: agent, agent });
     }
+  });
+});
+
+describe('Exploration operations', () => {
+  it('creates, reads, upserts and closes an exploration with the host author and the untrusted notice', async () => {
+    const { root, call, callJson } = await createRuntime();
+    expect(await callJson('hive_explore_read', {})).toEqual({ view: 'list', explorations: [], totalActive: 0, truncated: false, errors: [], untrustedNotice: EXPLORATION_UNTRUSTED_NOTICE });
+    expect(fs.existsSync(path.join(root, '.hive', 'explorations'))).toBe(false);
+
+    const forged = { owner: 'opencode-v2', sessionId: 'someone', agent: 'forged' };
+    const created = await callJson('hive_explore_update', {
+      id: 'slow-build', expectedRevision: 0, operationId: 'create', goal: 'Find why the build takes four minutes', subject: 'root/main (packages/web)',
+      frontier: [{ key: 'bundler', target: 'scripts/build.ts', state: 'open', question: 'Which phase dominates?' }],
+      createdBy: forged, author: forged,
+    }, 's1', 'hive-builder');
+    expect(created).toMatchObject({
+      replayed: false, committedRevision: 1, currentRevision: 1, status: 'active', scopeMapped: true,
+      createdBy: { owner: 'opencode-v1', sessionId: 's1', agent: 'hive-builder' }, untrustedNotice: EXPLORATION_UNTRUSTED_NOTICE,
+    });
+
+    const updated = await callJson('hive_explore_update', {
+      id: 'slow-build', expectedRevision: 1,
+      frontier: [{ key: 'bundler', target: 'scripts/build.ts', state: 'covered', evidence: 'Type declaration emit takes 80% of the time.', refs: ['scripts/build.ts:30'] }],
+      observations: [{ key: 'dts', summary: 'Declaration emit dominates the build', status: 'confirmed' }],
+    }, 's2', 'swarm-orchestrator');
+    expect(updated).toMatchObject({ revision: 2, lastProgressRevision: 2, updatedBy: { sessionId: 's2', agent: 'swarm-orchestrator' }, gaps: { items: [], total: 0 } });
+
+    // Results are compact JSON, so the brief budget bounds the text the host receives.
+    const text = await call('hive_explore_read', { id: 'slow-build' });
+    expect(text).toBe(JSON.stringify(JSON.parse(text)));
+    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(EXPLORATION_LIMITS.briefMaxBytes);
+    expect((await callJson('hive_explore_read', { id: 'slow-build', view: 'full' })).frontier[0]).toMatchObject({ refs: ['scripts/build.ts:30'] });
+    expect((await callJson('hive_explore_read', {})).explorations.map((entry: { id: string }) => entry.id)).toEqual(['slow-build']);
+
+    const close = { id: 'slow-build', expectedRevision: 2, operationId: 'close', status: 'concluded', conclusion: 'Emit declarations in a separate step.' };
+    expect(await callJson('hive_explore_update', close, 's1')).toMatchObject({ status: 'concluded', replayed: false });
+    expect(await callJson('hive_explore_update', close, 's1')).toMatchObject({ status: 'concluded', replayed: true, committedRevision: 3 });
+    expect(await callJson('hive_explore_read', {})).toMatchObject({ explorations: [], totalActive: 0 });
+  });
+
+  it('returns domain refusals in the shared Hive failure envelope', async () => {
+    const { root, callJson } = await createRuntime();
+    expect(await callJson('hive_explore_read', { view: 'full' })).toEqual({ success: false, reason: 'invalid_argument', error: expect.stringContaining('view needs an id'), details: { field: 'view' } });
+    expect(await callJson('hive_explore_read', { id: 'missing' })).toEqual({ success: false, reason: 'not_found', error: "No exploration 'missing'.", details: { id: 'missing' } });
+    expect(await callJson('hive_explore_update', { id: 'Bad Id', expectedRevision: 0, goal: 'g' }, 's1')).toMatchObject({ success: false, reason: 'invalid_argument' });
+    expect(await callJson('hive_explore_update', { id: 'x', expectedRevision: 0, goal: 'g', frontier: [{ key: 'k', target: 't', state: 'covered' }] }, 's1'))
+      .toMatchObject({ success: false, reason: 'invalid_argument', error: expect.stringContaining('needs evidence') });
+    // Rejected calls create nothing, not even a lock anchor.
+    expect(fs.existsSync(path.join(root, '.hive', 'explorations'))).toBe(false);
+    expect(fs.existsSync(path.join(root, '.hive', '.locks'))).toBe(false);
+
+    await callJson('hive_explore_update', { id: 'x', expectedRevision: 0, goal: 'g' }, 's1');
+    expect(await callJson('hive_explore_update', { id: 'x', expectedRevision: 0, goal: 'g' }, 's1')).toMatchObject({ success: false, reason: 'already_exists' });
+    expect(await callJson('hive_explore_update', { id: 'x', expectedRevision: 5, goal: 'g' }, 's1')).toMatchObject({ success: false, reason: 'stale_revision', details: { currentRevision: 1 } });
+    expect(await callJson('hive_explore_update', { id: 'x', expectedRevision: 1, subject: 'late' }, 's1')).toMatchObject({ success: false, reason: 'immutable_field' });
+
+    const operations = createHiveOperations({ explorationService: { update: () => { throw new ExplorationError('io_error', 'write failed', { stage: 'write', publication: 'uncertain' }); } }, sessionActor: () => ({ owner: 'opencode-v1', sessionId: 's1', agent: 'hive-master' }) } as any);
+    expect(operations.hive_explore_update!.execute({ id: 'x', expectedRevision: 1, goal: 'g' }, { sessionID: 's1', agent: 'hive-master' }))
+      .toEqual({ success: false, reason: 'io_error', error: 'write failed', details: { stage: 'write', publication: 'uncertain' } });
+    // A refusal without details carries no empty details object.
+    const bare = createHiveOperations({ explorationService: { read: () => { throw new ExplorationError('exploration_corrupt', 'bad file'); } } } as any);
+    expect(bare.hive_explore_read!.execute({ id: 'x' }, {})).toEqual({ success: false, reason: 'exploration_corrupt', error: 'bad file' });
+    const anonymous = createHiveOperations({ explorationService: {}, sessionActor: () => undefined } as any);
+    expect(() => anonymous.hive_explore_update!.execute({ id: 'x', expectedRevision: 0, goal: 'g' }, {})).toThrow('calling session and agent');
+  });
+
+  it('lets every Hive role read and only live primary sessions of authoring roles write', async () => {
+    const { root, sessions, callJson, failure } = await createRuntime();
+    const create = (id: string) => ({ id, expectedRevision: 0, goal: 'Explore' });
+    sessions.set('child', { id: 'child', parentID: 'primary' });
+    sessions.set('broken', new Error('gone'));
+    for (const agent of ['hive-master', 'architect-planner']) expect(await failure('hive_explore_update', create('child'), 'child', agent)).toContain('primary-only operation');
+    expect(await failure('hive_explore_update', create('broken'), 'broken')).toContain('could not read session broken');
+    expect(await failure('hive_explore_update', create('root'), 'root', 'forager-worker')).toContain('not granted to the forager-worker role');
+    expect(await failure('hive_explore_update', create('root'), 'root', 'general')).toContain('native general subagent has no Hive tool access');
+    expect(fs.existsSync(path.join(root, '.hive', 'explorations'))).toBe(false);
+    for (const agent of ['hive-master', 'swarm-orchestrator', 'hive-builder', 'architect-planner', 'dash-reviewer', 'vulnerability-review-primary']) {
+      expect((await callJson('hive_explore_update', create(agent), agent, agent)).createdBy).toEqual({ owner: 'opencode-v1', sessionId: agent, agent });
+    }
+    // Children still read.
+    expect((await callJson('hive_explore_read', { id: 'hive-master' }, 'child', 'forager-worker')).id).toBe('hive-master');
   });
 });

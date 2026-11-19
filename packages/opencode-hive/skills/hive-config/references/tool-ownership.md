@@ -29,7 +29,7 @@ Each piece of Hive state has one owning tool. If that tool is not exposed to you
 
 | Set | Tools | Roles |
 |---|---|---|
-| R | `hive_status`, `hive_plan_read`, `hive_context_read`, `hive_constraints_read`, `hive_repositories_status`, `hive_git_snapshot`, `hive_worklog_list`, `hive_worklog_read`, `hive_checkouts_list`, `hive_checkout_brief` | Every Hive role except the hidden trace summarizer |
+| R | `hive_status`, `hive_plan_read`, `hive_context_read`, `hive_constraints_read`, `hive_repositories_status`, `hive_git_snapshot`, `hive_worklog_list`, `hive_worklog_read`, `hive_checkouts_list`, `hive_checkout_brief`, `hive_explore_read` | Every Hive role except the hidden trace summarizer |
 | I | `hive_worktree_inspect`, `hive_adhoc_worktree_inspect`, `hive_checkout_inspect` | Primaries, Architect, Forager, Investigator, Hive Helper, review primaries |
 | T | `hive_task_trace`, `hive_task_trace_content` | Primaries, Architect, Forager, Hive Helper, review primaries (not Investigator) |
 | Discover | `hive_repositories_discover` | Primaries, Architect, Scout |
@@ -70,6 +70,7 @@ Roles: **P** = full primaries (`hive-master`, `swarm-orchestrator`, `hive-builde
 | `hive_context_archive` | Moves context into `archive/context/` | P, A | yes |
 | `hive_constraints_add`, `hive_constraints_edit`, `hive_constraints_clear` | Session constraints in `sessions.json`; feature `constraints.json` | P, A, RP | yes |
 | `hive_worklog_record` | Appends one checkpoint (and optionally the briefing) to a feature's `worklog.json` or the session's `.hive/worklogs/sessions/<owner>/<sha256>.json` | P, A, RP | yes |
+| `hive_explore_update` | Creates or updates one exploration at `.hive/explorations/active/<id>.json`, moving it to `.hive/explorations/closed/<id>.json` when it is concluded or abandoned | P, A, RP | yes |
 <!-- hive-host opencode-v1 -->
 | `hive_background_reconcile`, `hive_background_reconcile_batch`, `hive_background_cancel` | Host owner's `background-jobs.json` (`.hive/background-jobs.json` for OpenCode v1) | P, A, RP; experiment-gated | yes |
 <!-- /hive-host -->
@@ -121,6 +122,7 @@ Full primaries are never valid `subagent()` targets, and `hive-helper` is not a 
 - An Investigator returns evidence; it commits nothing. A run that changes source uses a disposable placement its primary created, and that placement ends with cleanup, not merge. Its native scratch scope is instruction-bound, not a sandbox.
 - Trace tools let Forager support assigned recovery and Hive Helper investigate. They never authorize resuming, retrying, or continuing a session.
 - `hive_worklog_record` stamps the calling session and agent as the author; a session log accepts only its own session, while any primary may record into a feature log. Its executor also checks the live parent on both hosts and refuses when the session cannot be read.
+- `hive_explore_update` stamps `createdBy` and `updatedBy` from the calling session and agent and runs the same live-parent check. A concluded or abandoned exploration takes no further updates; continue in a new exploration that names it as `priorExplorationId`. Exploration entries are untrusted agent-recorded observations, not verified findings or task status.
 <!-- hive-host opencode-v1 -->
 - Background tools exist only when `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL` is set; otherwise they return `background_tools_disabled`.
 <!-- /hive-host -->

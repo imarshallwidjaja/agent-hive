@@ -9,12 +9,9 @@ export class HiveWatcher {
       new vscode.RelativePattern(workspaceRoot, '.hive/**/*')
     )
 
-    // Lock anchors and worktree operation markers under .hive/.locks are coordination state, not content.
     const hivePath = path.join(workspaceRoot, '.hive')
-    const locksPath = path.join(hivePath, '.locks') + path.sep
     const onContentChange = (uri: vscode.Uri) => {
-      if (uri.fsPath.endsWith('.lock') || uri.fsPath.startsWith(locksPath) || isCheckoutContent(hivePath, uri.fsPath)) return
-      onChange()
+      if (!isIgnoredHivePath(hivePath, uri.fsPath)) onChange()
     }
     this.hiveWatcher.onDidCreate(onContentChange)
     this.hiveWatcher.onDidChange(onContentChange)
@@ -27,11 +24,24 @@ export class HiveWatcher {
 }
 
 /**
- * Files inside a worker or retained checkout are source edits and Git internals, not Hive records. A placement's
- * creation or removal, its sidecar, and a composite placement's `workspace.json` still refresh the views.
+ * Paths under `.hive` that are not Hive records any view shows:
+ * - `.lock` files, and lock anchors and operation markers under `.hive/.locks`, are coordination state;
+ * - exploration frontiers under `.hive/explorations` change on every agent update, and no view shows them;
+ * - files inside a worker or retained checkout are source edits and Git internals. A placement's creation or
+ *   removal, its sidecar, and a composite placement's `workspace.json` still count as content.
+ * Areas match whole path segments, so a sibling such as `.hive/explorations-notes.json` is content. Windows and macOS
+ * volumes are usually case-insensitive, so paths there are compared case-insensitively.
  */
-function isCheckoutContent(hivePath: string, filePath: string): boolean {
-  const [area, ...rest] = path.relative(hivePath, filePath).split(path.sep)
+function isIgnoredHivePath(hivePath: string, filePath: string): boolean {
+  const fold = process.platform === 'win32' || process.platform === 'darwin'
+    ? (value: string) => value.toLowerCase()
+    : (value: string) => value
+  const file = fold(filePath)
+  if (file.endsWith('.lock')) return true
+  const relative = path.relative(fold(hivePath), file)
+  if (relative === '' || relative.startsWith('..') || path.isAbsolute(relative)) return false
+  const [area, ...rest] = relative.split(path.sep)
+  if (area === '.locks' || area === 'explorations') return true
   if (area !== '.worktrees' && area !== 'checkouts') return false
   return rest.length > 3 || (rest.length === 3 && !(area === '.worktrees' && rest[2] === 'workspace.json'))
 }

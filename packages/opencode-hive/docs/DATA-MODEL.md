@@ -10,6 +10,7 @@
 ├── background-jobs.json       # Background board (observational bookkeeping, OpenCode v1 owner)
 ├── runtime/opencode-v2/       # OpenCode v2 owner: its own sessions.json and background-jobs.json
 ├── worklogs/sessions/{owner}/ # Session Worklogs: {sha256(sessionId)}.json per primary session
+├── explorations/{active,closed}/ # Exploration frontiers: {id}.json, moved to closed/ when concluded or abandoned
 ├── provenance/integrations/   # Integration receipts: {afterCommit}.json per applied worktree merge
 ├── context/                    # Project-wide managed knowledge
 │   ├── index.json              # Schema-v1 operational index

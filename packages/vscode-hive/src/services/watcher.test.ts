@@ -50,6 +50,48 @@ describe('HiveWatcher', () => {
     expect(changes).toEqual(['refresh']);
   });
 
+  it('ignores exploration frontier writes, which no view shows', () => {
+    const root = '/workspace';
+    const explorations = path.join(root, '.hive', 'explorations');
+    const changes: string[] = [];
+    new HiveWatcher(root, () => changes.push('refresh'));
+    ui.watchers[0].create({ fsPath: explorations });
+    ui.watchers[0].create({ fsPath: path.join(explorations, 'active', 'flaky-login.json') });
+    ui.watchers[0].change({ fsPath: path.join(explorations, 'active', 'flaky-login.json.tmp.1.2') });
+    ui.watchers[0].delete({ fsPath: path.join(explorations, 'active', 'flaky-login.json') });
+    ui.watchers[0].create({ fsPath: path.join(explorations, 'closed', 'flaky-login.json') });
+    expect(changes).toEqual([]);
+    // A sibling whose name only starts with the same letters is still content.
+    ui.watchers[0].change({ fsPath: path.join(root, '.hive', 'explorations-notes.json') });
+    expect(changes).toEqual(['refresh']);
+  });
+
+  it('matches ignored areas case-insensitively on case-insensitive volumes', () => {
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    Object.defineProperty(process, 'platform', { value: 'darwin' });
+    try {
+      const root = '/Workspace';
+      const changes: string[] = [];
+      new HiveWatcher(root, () => changes.push('refresh'));
+      ui.watchers[0].change({ fsPath: '/workspace/.HIVE/Explorations/active/flaky-login.json' });
+      ui.watchers[0].change({ fsPath: '/workspace/.hive/.LOCKS/operations/marker.json' });
+      ui.watchers[0].change({ fsPath: '/workspace/.hive/features/01_feature/status.json.LOCK' });
+      ui.watchers[0].change({ fsPath: '/workspace/.hive/CHECKOUTS/root/feature/src/index.ts' });
+      expect(changes).toEqual([]);
+      ui.watchers[0].change({ fsPath: '/workspace/.hive/Explorations-notes.json' });
+      ui.watchers[0].change({ fsPath: '/workspace/.hive/Features/01_feature/plan.md' });
+      expect(changes).toEqual(['refresh', 'refresh']);
+    } finally {
+      Object.defineProperty(process, 'platform', platform);
+    }
+    // Elsewhere, a differently cased directory is a different path.
+    if (process.platform === 'win32' || process.platform === 'darwin') return;
+    const changes: string[] = [];
+    new HiveWatcher('/workspace', () => changes.push('refresh'));
+    ui.watchers[1].change({ fsPath: '/workspace/.hive/Explorations/active/flaky-login.json' });
+    expect(changes).toEqual(['refresh']);
+  });
+
   it('refreshes on placement and sidecar changes but not on files inside worker or retained checkouts', () => {
     const root = '/workspace';
     const hive = path.join(root, '.hive');

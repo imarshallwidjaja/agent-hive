@@ -270,5 +270,36 @@ export type {
   WorklogServiceOptions,
   WorklogSummary,
 } from './worklogService.js';
+export {
+  ExplorationService,
+  ExplorationError,
+  EXPLORATION_LIMITS,
+  EXPLORATION_SCHEMA_VERSION,
+  EXPLORATION_UNTRUSTED_NOTICE,
+} from './explorationService.js';
+export type {
+  ExplorationBriefView,
+  ExplorationClosingStatus,
+  ExplorationCounts,
+  ExplorationErrorReason,
+  ExplorationFullView,
+  ExplorationGapSummary,
+  ExplorationHeader,
+  ExplorationListEntry,
+  ExplorationListError,
+  ExplorationListView,
+  ExplorationObservationSummary,
+  ExplorationReadResult,
+  ExplorationServiceOptions,
+  ExplorationStatus,
+  ExplorationUpdateInput,
+  ExplorationUpdateResult,
+  FrontierItem,
+  FrontierItemInput,
+  FrontierItemState,
+  Observation,
+  ObservationInput,
+  ObservationStatus,
+} from './explorationService.js';
 export { buildEffectiveDependencies, computeRunnableAndBlocked } from './taskDependencyGraph.js';
 export type { TaskWithDeps, RunnableBlockedResult } from './taskDependencyGraph.js';

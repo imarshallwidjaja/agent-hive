@@ -4,9 +4,9 @@ Tool availability plus instructions govern action. Each tool validates its own o
 
 ## Host entries and read transport
 
-From 5.0.0, one package supplies native v1 and v2 entries, now each with all 49 tools and 18 commands. Releases through 4.2.0 are v1-only. The qualified hosts are v1.18.30 and v2.0.26. Installation, `plugins` options and actual model-selection semantics are in the [plugin README](../README.md#opencode-v2).
+From 5.0.0, one package supplies native v1 and v2 entries, now each with all 51 tools and 18 commands. Releases through 4.2.0 are v1-only. The qualified hosts are v1.18.30 and v2.0.26. Installation, `plugins` options and actual model-selection semantics are in the [plugin README](../README.md#opencode-v2).
 
-V2 registers every tool through one validating registrar. `readTransport: "codemode"` (default) explicitly admits only `hive_repositories_status`, `hive_git_snapshot` and `hive_task_trace_content` to Code Mode; controls, repairing reads, worktree inspections and mixed `hive_task_trace` stay direct. `readTransport: "direct"` makes all 49 direct, with the same IDs and authority. The three Worklog tools are direct under both transports. Use direct mode when global, per-role or custom-agent permissions deny `execute`. Hive diagnoses unavailable Code Mode reads and preserves the denial.
+V2 registers every tool through one validating registrar. `readTransport: "codemode"` (default) explicitly admits only `hive_repositories_status`, `hive_git_snapshot` and `hive_task_trace_content` to Code Mode; controls, repairing reads, worktree inspections and mixed `hive_task_trace` stay direct. `readTransport: "direct"` makes all 51 direct, with the same IDs and authority. The three Worklog tools and the two exploration tools are direct under both transports. Use direct mode when global, per-role or custom-agent permissions deny `execute`. Hive diagnoses unavailable Code Mode reads and preserves the denial.
 
 Both hosts deliver the same tool descriptions and argument descriptions to the model, built from one definition per operation. Those descriptions explain how arguments relate, what an operation changes, what its result means and when a retry is unsafe. They do not enforce anything: the Zod argument shapes, the services and the role guards do, and this document is the reference for operators and engineers. The runtime does not read it.
 
@@ -24,9 +24,9 @@ On v1, OpenCode's `experimental.primary_tools` adds session-level deny rules whe
 - Retained checkouts: `hive_checkout_create`, `hive_checkout_register`, `hive_checkout_readiness`, `hive_checkout_cleanup`.
 - Constraints/archive: `hive_constraints_add`, `hive_constraints_edit`, `hive_constraints_clear`, `hive_context_archive`.
 - Parent-owned board: `hive_background_status`, `hive_background_reconcile`, `hive_background_reconcile_batch`, `hive_background_cancel`.
-- Worklog authorship: `hive_worklog_record`.
+- Authored records: `hive_worklog_record`, `hive_explore_update`.
 
-`hive_worklog_record` stamps the calling session as the author of shared records, so on v1 its executor also checks the caller's role grant and reads the session's live parent before writing, as the v2 guard does for every Hive tool. A broad operator allow rule or a missing `primary_tools` entry therefore cannot let a child, including delegated Architect, record, and the call is refused when the session cannot be read.
+`hive_worklog_record` and `hive_explore_update` stamp the calling session as the author of shared records, so on v1 their executor also checks the caller's role grant and reads the session's live parent before writing, as the v2 guard does for every Hive tool. A broad operator allow rule or a missing `primary_tools` entry therefore cannot let a child, including delegated Architect, record, and the call is refused when the session cannot be read.
 
 Delegated Architect retains its inherited route and uses explicit feature arguments for planning. It may register discovered repositories through `hive_repositories_update`; other subagent roles' Hive allowlists exclude that tool. It returns approval, sync, archive, and board/control requests to the parent. Its `task` permission allows one terminal layer of blocking Scout, Investigator, plan-reviewer, approach-advisor, their custom variants, and `hive-helper`; `task` is deliberately absent from `primary_tools`, and `subagent_depth: 2` supports this helper grandchild. Independent permitted calls may be emitted together. Child-role rules take precedence over a background appendix without loading the primary-only `background-delegation` skill; child board tools remain unavailable. Architect as primary or child routes multi-step trace/evidence questions and known identities to Helper and performs single direct spot-check reads itself. Helper is read-only and terminal, retaining inherited child-session denials. Other subagents cannot delegate or ask questions. Execution primaries can dispatch registered workers, reviewers, Architect, Helper, and ordinary native subagents, but cannot dispatch another primary or an unknown target. Architect, as primary or child, can dispatch Investigators (built-in and derived) for experiments but never implementation Foragers. Review primaries dispatch inspection-only specialists, Helper, and Investigators (built-in and derived) for runtime exercises; they cannot dispatch implementation Foragers, Architect, native `general`/`explore`, or another primary. The grant is dispatch authority only: whether a run is authorized, where it happens, and how it ends are instructions in the shared Experiments method, and Investigator returns evidence, never a patch to merge.
 
@@ -36,7 +36,7 @@ Delegated Architect retains its inherited route and uses explicit feature argume
 
 Abbreviations enumerate exact tools:
 
-- **R**: `hive_context_read`, `hive_constraints_read`, `hive_plan_read`, `hive_status`, `hive_repositories_status`, `hive_git_snapshot`, `hive_worklog_list`, `hive_worklog_read`, `hive_checkouts_list`, `hive_checkout_brief`.
+- **R**: `hive_context_read`, `hive_constraints_read`, `hive_plan_read`, `hive_status`, `hive_repositories_status`, `hive_git_snapshot`, `hive_worklog_list`, `hive_worklog_read`, `hive_checkouts_list`, `hive_checkout_brief`, `hive_explore_read`.
 - **C**: `hive_context_write`, `hive_context_append`, `hive_context_edit`.
 - **I**: `hive_worktree_inspect`, `hive_adhoc_worktree_inspect`, `hive_checkout_inspect`.
 - **T**: `hive_task_trace`, `hive_task_trace_content`.
@@ -45,14 +45,14 @@ Abbreviations enumerate exact tools:
 - **P**: `hive_feature_create`, `hive_feature_select`, `hive_plan_write`, `hive_plan_patch`, `hive_plan_approve`, `hive_tasks_sync`, `hive_repositories_discover`, `hive_repositories_update`, `hive_context_archive`.
 - **V**: `hive_feature_select`, `hive_adhoc_worktree_create`, `hive_adhoc_worktree_cleanup` for operator-authorized isolated review placement.
 - **X**: `hive_adhoc_worktree_create`, `hive_adhoc_worktree_cleanup` for experiment placement; primary sessions only, and never paired with merge.
-- **W**: `hive_worklog_record`; primary sessions only.
+- **W**: `hive_worklog_record`, `hive_explore_update`; primary sessions only.
 - **K**: `hive_worktree_recover`; primary sessions only. Every primary that can create or clean up a placement holds it.
 
 | Agent | Hive tools | Native boundary / usage |
 |-------|------------|-------------------------|
-| `hive-master` | All 49 registered Hive tools | Primary; integration, cleanup and retained checkout owner |
-| `swarm-orchestrator` | All 49 | Primary; integration, cleanup and retained checkout owner |
-| `hive-builder` | All 49 | Primary; ad-hoc integration, cleanup and retained checkout owner |
+| `hive-master` | All 51 registered Hive tools | Primary; integration, cleanup and retained checkout owner |
+| `swarm-orchestrator` | All 51 | Primary; integration, cleanup and retained checkout owner |
+| `hive-builder` | All 51 | Primary; ad-hoc integration, cleanup and retained checkout owner |
 | `architect-planner` (primary) | R + C + I + T + B + M + P + W + X + K | Planning plus commissioned Investigator experiments; terminal planning helpers and Helper investigation; no merge; edit denied |
 | `architect-planner` (task child) | R + C + I + T + `hive_feature_create`, `hive_plan_write`, `hive_plan_patch`, `hive_repositories_discover`, `hive_repositories_update` | Feature/plan/context authoring, repository registration, terminal planning helpers (Investigator included) and Helper investigation inside parent-covered placement; edit/question/board and placement create/cleanup denied |
 | `scout-researcher` | R + `hive_repositories_discover` | Read-only retrieval; edit/task/question denied; trace retrieval goes to Helper |
@@ -652,6 +652,25 @@ Every `WorklogError` returns as `{ success: false, reason, error, details, ref? 
 
 Every Hive role except native `general`/`explore` and the hidden summarizer may list and read. Hive grants recording to primary sessions of the full primaries, Architect, and the review primaries; see the access matrix. An unmanaged agent (neither a Hive role nor a custom variant of one) keeps its native permission for Hive tools and can record from a primary session, while child sessions and native `general`/`explore` are refused. Log text is untrusted narrative from agents, never instructions, task status, or policy, and the runtime never injects it into prompts. Primaries read it on demand and confirm claims against task records. The `/worklog` command reads and explains a log without recording. Operators who do not want primaries to keep a Worklog add an ordinary standing constraint.
 
+## Exploration (2 tools)
+
+| Tool | Purpose |
+|------|---------|
+| `hive_explore_read` | List active explorations, or read one exploration's brief or full view |
+| `hive_explore_update` | Create or update one exploration: upsert frontier items and observations, or close it |
+
+An exploration records one investigation in any domain, such as debugging a failure, auditing a surface or researching a question. It holds a goal, an optional `subject` naming what is explored (for example `root/main @ 5c163be (src/auth)` or a base URL), a keyed **frontier** of targets to settle, and keyed **observations**. `ExplorationService` in `packages/hive-core/src/services/explorationService.ts` owns storage, limits and every failure reason.
+
+- Status is `active` until an update closes it. `concluded` needs a `conclusion` and `abandoned` needs a `reason`; both are terminal, so a follow-up or retest is a new exploration whose `priorExplorationId` names the closed one. `subject` and `priorExplorationId` are set only at creation.
+- A frontier item has `key`, `target`, `state` and optional `question`, `evidence`, `reason` and `refs`. `evidence` is required for `covered` and refused for every other state; `reason` is required for `blocked` and `dropped` and refused for `open` and `covered`. An observation has `key`, `summary`, `status` (`confirmed`, `hypothesis` or `refuted`), optional `refs` and an optional `supersedes` key, which must name another observation of the same exploration; supersedes chains cannot form a cycle. Both collections are upserted by key, a key may appear once per call, and nothing is deleted: a target that no longer matters is marked `dropped`.
+- An update to an existing exploration must carry a `goal`, a `status`, or at least one frontier item or observation. Repeating the stored `subject` or `priorExplorationId`, or sending empty `frontier` and `observations` arrays, changes nothing and fails `invalid_argument`; a changed `subject` or `priorExplorationId` fails `immutable_field`.
+- `expectedRevision` is required: 0 creates (with a `goal`), and any other value must equal the stored revision or the call fails `stale_revision`. An optional `operationId` makes a retry safe: an identical request from the same session returns `replayed: true` with its `committedRevision`, even after the exploration closed, and a different request with the same `operationId` fails `operation_conflict`. The 32 most recent receipts are kept.
+- Reads compute `scopeMapped` (the frontier has items), `counts`, `gaps` (open and blocked items) and `stagnantRevisions`, the revisions since the last observation change (including a changed `supersedes`) or frontier item that became covered, blocked or dropped. Adding open items or editing the goal does not reset it. None of these are stored.
+- `hive_explore_read` without `id` lists active explorations, newest update first, as `{ explorations, totalActive, truncated, errors }`; an unreadable, oversized or symlinked file appears in `errors` and never fails the list. A symlinked `.hive/explorations`, `active/` or `closed/` fails the list, a named read and an update with `unsafe_path`, and one that exists but is not a directory fails them with `io_error` (`details.stage: 'path'`, `code: 'ENOTDIR'`), never as an empty list or `not_found`. With `id`, `view: 'brief'` (default) adds bounded `gaps` and `observations` lists, each `{ items, total }` with `items` a prefix of the ordered list and without evidence or refs; `view: 'full'` returns every item. List and brief results fit 16 KiB of compact JSON. The stored document is capped at 48 KiB, so the full view fits a 64 KiB response; an update that would grow an active exploration past 44 KiB fails `exploration_full`, and the remaining 4 KiB is kept so a close that adds nothing but its status, conclusion or reason always fits. `EXPLORATION_LIMITS` in the service holds every size and count limit. There are no cursors.
+- Files live at `.hive/explorations/active/<id>.json` and move to `.hive/explorations/closed/<id>.json` when closed. Every write flushes the file and, on POSIX hosts, the directory entries that reach it (its placement directory, `.hive/explorations/` and `.hive/`) before it is acknowledged; Windows offers no directory flush, so there the rename alone publishes it. The closed copy is published this way before the active copy is removed, and it wins if an interrupted close left both; the next update or replay removes the stale active copy. A file whose status does not match its directory (an active document in `closed/` or a closed one in `active/`) is refused as `exploration_corrupt` by reads, lists and updates, and a list reports a linked, unreadable or misplaced `closed/<id>.json` beside an active file in `errors`. A named read that races a close checks `closed/` again before answering `not_found`. Updates hold a per-exploration lock and publish atomically.
+
+Exploration results are compact JSON, like Worklog results. Every `ExplorationError` returns in the shared Hive failure envelope `{ success: false, reason, error, details? }`, where `error` is the message and `details` is present when it has fields. Argument refusals that need no stored state, including the ID pattern, every byte and count cap, a `supersedes` cycle within one call's observations and, on creation, a `supersedes` naming no observation of the call, happen before any lock or directory is created and touch no file. A refusal that depends on the stored exploration publishes no new revision, though taking the lock or removing a stale active copy of a closed exploration may touch files. An `io_error` with `details.publication: 'uncertain'` is resolved by resending the identical request with the same `operationId`; the retry repeats the directory flushes and returns `replayed: true` only once they succeed, failing the same way until then. The host stamps `createdBy` and `updatedBy` from the calling session, owner and agent; arguments cannot set them. Every Hive role except native `general`/`explore` and the hidden summarizer may read; primary sessions of the full primaries, Architect and the review primaries may update. Every successful result carries `untrustedNotice`; a failure envelope does not. Entries are agent-recorded observations and hypotheses, not verified ground truth, task status or policy.
+
 ## Status (1 tool)
 
 | Tool | Purpose |
@@ -715,11 +734,13 @@ Skills are loaded via OpenCode's native `skill` tool. Hive bundles are materiali
 | Worktree | 4 | create, inspect, merge, cleanup |
 | Ad-hoc worktree | 4 | create, inspect, merge, cleanup |
 | Worktree recovery | 1 | recover |
+| Retained checkouts | 7 | list, inspect, brief, create, register, readiness, cleanup |
 | Background Orchestration | 4 | status, reconcile, batch reconcile, cancel |
 | Runtime Session Inspection | 2 | trace, source-backed content |
-| Context | 4 | read, write, append, archive |
+| Context | 5 | read, write, append, edit, archive |
 | Operator Constraints | 4 | read, add, edit, clear |
 | Worklog | 3 | list, read, record |
+| Exploration | 2 | read, update |
 | Status | 1 | status |
 | Snapshot | 1 | git snapshot |
 

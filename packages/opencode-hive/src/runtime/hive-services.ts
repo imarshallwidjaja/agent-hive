@@ -6,6 +6,7 @@ import {
   CheckoutInspector,
   ConfigService,
   ContextService,
+  ExplorationService,
   FeatureConstraintService,
   FeatureResolutionError,
   FeatureService,
@@ -77,6 +78,7 @@ export function createHiveServices(options: { projectRoot: string; detectedFeatu
   const repositoryManifestService = new RepositoryManifestService(projectRoot);
   const backgroundJobService = new BackgroundJobService(projectRoot, nativeObservationOwner);
   const worklogService = new WorklogService(projectRoot);
+  const explorationService = new ExplorationService(projectRoot);
   // Loading the config is what records a fallback warning, so read it once here for status and startup reporting.
   configService.get();
   const configFallbackWarning = configService.getLastFallbackWarning()?.message;
@@ -226,6 +228,7 @@ export function createHiveServices(options: { projectRoot: string; detectedFeatu
     repositoryManifestService,
     backgroundJobService,
     worklogService,
+    explorationService,
     worktreeService,
     worktreeRecoveryService,
     retainedCheckoutService,

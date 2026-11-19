@@ -18,6 +18,7 @@ PROBLEM  -> CONTEXT  -> EXECUTION -> REPORT
 ├── sessions.json         <- Global session metadata, session constraints, and selected routes (OpenCode v1)
 ├── runtime/opencode-v2/  <- OpenCode v2 native stores: sessions.json and background-jobs.json
 ├── worklogs/sessions/{owner}/ <- Session Worklogs, one file per primary session (sha256 of the session ID)
+├── explorations/{active,closed}/ <- Exploration frontiers, one file per exploration; closed/ holds concluded or abandoned ones
 ├── features/             <- Feature-scoped work
 │   └── 01_feature-name/
 │       ├── feature.json  <- Feature metadata and state
@@ -55,7 +56,7 @@ packages/
 A project runs under one host at a time. [Switching OpenCode hosts and rollback](OPERATOR-GUIDE.md#switching-opencode-hosts-and-rollback) covers the handover.
 
 - `hive-core` owns feature, plan, task, context, repository-manifest, session, constraint, background-board, Worklog, and worktree services. `TaskService` parses tasks and persists status and reports; `WorktreeService` and `AdhocWorktreeService` inspect and integrate Git workspaces without assigning workers or updating task state.
-- `opencode-hive` ships one package with two native entries. `src/runtime.ts` registers the v1 `hive_*` tools, builds agent and command configuration, captures route and constraint snapshots for native `task()` calls, and connects background observation. It delegates to three host-neutral modules under `src/runtime/`: `hive-services.ts` binds the domain services and feature, session and constraint routing to one canonical project root; `hive-tools.ts` defines the 43 ordinary operations (the 49 registered tools less the four background-board operations in `src/background/operations.ts` and the two trace tools in `src/task-trace.ts`) with their Zod argument schemas and structured results, including the three Worklog tools; `role-policy.ts` holds each role's Hive tool grants, delegation allowlists and primary-only operations. The v2 entry under `src/v2/` registers the same operations through one validating registrar that also runs the role and child-session guard, and `src/runtime/host-profile.ts` supplies each host's native call names to prompts and skills. Bundled skills are discovered and materialized from packaged `SKILL.md` files.
+- `opencode-hive` ships one package with two native entries. `src/runtime.ts` registers the v1 `hive_*` tools, builds agent and command configuration, captures route and constraint snapshots for native `task()` calls, and connects background observation. It delegates to three host-neutral modules under `src/runtime/`: `hive-services.ts` binds the domain services and feature, session and constraint routing to one canonical project root; `hive-tools.ts` defines the 45 ordinary operations (the 51 registered tools less the four background-board operations in `src/background/operations.ts` and the two trace tools in `src/task-trace.ts`) with their Zod argument schemas and structured results, including the three Worklog tools and the two exploration tools; `role-policy.ts` holds each role's Hive tool grants, delegation allowlists and primary-only operations. The v2 entry under `src/v2/` registers the same operations through one validating registrar that also runs the role and child-session guard, and `src/runtime/host-profile.ts` supplies each host's native call names to prompts and skills. Bundled skills are discovered and materialized from packaged `SKILL.md` files.
 - `vscode-hive` displays feature and task state, plans, comments, scoped context, and Worklogs (read-only, offline, through `WorklogService`); its plan comment controller writes review threads while its filesystem watcher triggers UI refresh.
 
 ### Execution ownership
@@ -268,10 +269,11 @@ Hive uses file-based state with clear ownership boundaries:
 | `context/index.json` and managed Markdown | `ContextService` via `hive_context_*` | Agent roles according to tool permissions |
 | `repositories.json` | `RepositoryManifestService` | Worktree services (read) |
 | Feature `worklog.json` and `.hive/worklogs/sessions/**` | `WorklogService` record, under the log's lock, called by `hive_worklog_record` from primary sessions | `hive_worklog_list` and `hive_worklog_read` for every Hive role; VS Code Worklogs viewer (read-only) |
+| `.hive/explorations/{active,closed}/*.json` | `ExplorationService` update, under the exploration's lock, called by `hive_explore_update` from primary sessions | `hive_explore_read` for every Hive role; the VS Code watcher ignores these writes |
 
 ### VS Code watcher
 
-The VS Code `HiveWatcher` watches `.hive/**/*` and calls the sidebar refresh callback on create, change, and delete events, excluding `.lock` files. Review comments are written by the plan comment controller, not by the watcher.
+The VS Code `HiveWatcher` watches `.hive/**/*` and calls the sidebar refresh callback on create, change, and delete events, excluding `.lock` files, lock anchors and operation markers under `.hive/.locks/`, files inside worker and retained checkouts, and exploration frontiers under `.hive/explorations/`, which no view shows. Review comments are written by the plan comment controller, not by the watcher.
 
 ## Field Ownership
 

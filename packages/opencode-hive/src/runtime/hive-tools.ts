@@ -3,6 +3,9 @@ import * as path from 'node:path';
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import {
   ContextMutationError,
+  EXPLORATION_LIMITS,
+  EXPLORATION_UNTRUSTED_NOTICE,
+  ExplorationError,
   NATIVE_OBSERVATION_OWNERS,
   PlanApprovalError,
   RetainedCheckoutError,
@@ -32,6 +35,7 @@ import {
   readCompositeWorkspaceManifest,
   resolveExistingFeaturePath,
   type AdhocMergeOptions,
+  type ExplorationUpdateInput,
   type MergeOptions,
   type PlanApprovalResult,
   type PlanReadResult,
@@ -223,6 +227,44 @@ function worklogCall(ref: WorklogRef | undefined, run: () => unknown): unknown {
   }
 }
 
+// Exploration arguments are plain shapes; ExplorationService enforces integers, patterns, byte caps and state invariants
+// and reports them as ExplorationError reasons.
+const explorationFrontierItemSchema = z.object({
+  key: z.string().describe(`Stable identity of this frontier item within the exploration, at most ${EXPLORATION_LIMITS.keyMaxBytes} UTF-8 bytes; an item with an existing key replaces it.`),
+  target: z.string().describe(`What must be examined: a path, symbol, endpoint, component or question area. Single line, at most ${EXPLORATION_LIMITS.targetMaxBytes} UTF-8 bytes.`),
+  state: z.enum(['open', 'covered', 'blocked', 'dropped']).describe("'open' still to examine; 'covered' examined (needs evidence); 'blocked' cannot be examined yet (needs reason); 'dropped' deliberately out of scope (needs reason)."),
+  question: z.string().optional().describe(`What examining the target should answer. Single line, at most ${EXPLORATION_LIMITS.questionMaxBytes} UTF-8 bytes.`),
+  evidence: z.string().optional().describe(`Required when state is 'covered' and accepted only then: what was examined and what it showed. At most ${EXPLORATION_LIMITS.noteMaxBytes} UTF-8 bytes; newlines allowed.`),
+  reason: z.string().optional().describe(`Required when state is 'blocked' or 'dropped' and accepted only then: why. At most ${EXPLORATION_LIMITS.noteMaxBytes} UTF-8 bytes; newlines allowed.`),
+  refs: z.array(z.string()).optional().describe(`Up to ${EXPLORATION_LIMITS.refsMax} citations (path:line, URL, commit, request ID), each at most ${EXPLORATION_LIMITS.refMaxBytes} bytes; never opened.`),
+});
+
+const explorationObservationSchema = z.object({
+  key: z.string().describe(`Stable identity of this observation, at most ${EXPLORATION_LIMITS.keyMaxBytes} UTF-8 bytes; an observation with an existing key replaces it.`),
+  summary: z.string().describe(`One line of at most ${EXPLORATION_LIMITS.summaryMaxBytes} UTF-8 bytes.`),
+  status: z.enum(['confirmed', 'hypothesis', 'refuted']).describe("'confirmed' backed by evidence you observed; 'hypothesis' not yet tested; 'refuted' tested and false."),
+  refs: z.array(z.string()).optional().describe(`Up to ${EXPLORATION_LIMITS.refsMax} citations, each at most ${EXPLORATION_LIMITS.refMaxBytes} bytes; never opened.`),
+  supersedes: z.string().optional().describe('Key of another observation in this exploration that this one replaces; it must exist after the update, and supersedes chains cannot form a cycle.'),
+});
+
+/**
+ * Runs one exploration call. An ExplorationError becomes the shared Hive failure envelope, `{ success: false, reason,
+ * error, details? }`, so a model gets an actionable refusal; any other error propagates as a tool error.
+ */
+function explorationCall(run: () => unknown): unknown {
+  try {
+    return run();
+  } catch (error) {
+    if (!(error instanceof ExplorationError)) throw error;
+    return {
+      success: false,
+      reason: error.reason,
+      error: error.message,
+      ...(Object.keys(error.details).length > 0 ? { details: error.details } : {}),
+    };
+  }
+}
+
 function mergeDescription(subject: string, inspectTool: string): string {
   return `Integrate the committed source of ${subject} into its destination checkout as a local integration commit; nothing is pushed. `
     + `Requires a clean source and a destination with a clean index and tracked working tree, and exactly one target expectation copied unchanged from ${inspectTool}. `
@@ -349,7 +391,7 @@ function createNamedContextReader(services: HiveServices) {
 }
 
 /**
- * The 43 ordinary Hive operations, keyed by tool name in registration order. Trace and background tools stay with
+ * The 45 ordinary Hive operations, keyed by tool name in registration order. Trace and background tools stay with
  * their own owners. Each operation takes the caller's identity explicitly and resolves feature or session state
  * only through the services it needs.
  */
@@ -357,7 +399,7 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
   const {
     projectRoot, featureService, planService, taskService, sessionService, featureConstraintService, contextService,
     repositoryManifestService, worktreeService, worktreeRecoveryService, retainedCheckoutService, checkoutInspector, checkoutBrief,
-    worklogService, nativeObservationOwner, configFallbackWarning, hasManifest,
+    worklogService, explorationService, nativeObservationOwner, configFallbackWarning, hasManifest,
     repositoryResolver, adhocService, requireFeature, contextScope, constraintTarget, resolveWorklogRef, readConstraints,
     assertTaskRepoIds, sessionActor, adhocRunOrigin,
   } = services;
@@ -968,6 +1010,37 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
         if (!invocation.sessionID || !invocation.agent) throw new Error('hive_worklog_record needs the calling session and agent from the host runtime.');
         const author = { owner: nativeObservationOwner, sessionId: invocation.sessionID, agent: invocation.agent };
         return worklogCall(ref as WorklogRef, () => worklogService.record(ref as WorklogRef, input, author));
+      },
+    }),
+    hive_explore_read: operation({
+      compact: true,
+      description: `Read exploration frontiers without writing anything. An exploration tracks one investigation in any domain (debugging, auditing, research): its goal, a keyed frontier of targets to settle, and keyed observations. Without id, lists active explorations, newest update first, within ${EXPLORATION_LIMITS.briefMaxBytes} bytes ({ explorations, totalActive, truncated, errors }); an unreadable file appears in errors beside the good ones. With id, view 'brief' (default) returns metadata, counts, scopeMapped (the frontier has items), stagnantRevisions (revisions since the last observation change or settled frontier item) and bounded gaps (open, then blocked items) and observations (confirmed first), each { items, total } within ${EXPLORATION_LIMITS.briefMaxBytes} bytes; view 'full' returns every frontier item and observation with evidence and refs. A closed exploration stays readable. ${EXPLORATION_UNTRUSTED_NOTICE} A failure returns success: false with reason, error (the message) and details when there are any.`,
+      args: {
+        id: z.string().optional().describe("Exploration ID: 1 to 64 lowercase letters, digits, '.', '_' or '-', starting with a letter or digit. Omitted, lists active explorations."),
+        view: z.enum(['brief', 'full']).optional().describe("Needs id. Default 'brief'; 'full' adds evidence, refs and every item."),
+      },
+      execute: ({ id, view }) => explorationCall(() => explorationService.read({ id, view })),
+    }),
+    hive_explore_update: operation({
+      compact: true,
+      description: `Create or update one exploration frontier. Primary sessions only; the host stamps createdBy and updatedBy from the calling session and agent. expectedRevision 0 creates it (goal required; subject and priorExplorationId are set only now); otherwise pass the revision from your latest read. frontier items and observations are upserted by key; omitted items stay unchanged and nothing is deleted (mark an item dropped instead). status 'concluded' (with conclusion) or 'abandoned' (with reason) closes it for good; continue later work in a new exploration naming this one as priorExplorationId. Retries: after a lost or failed result, resend the identical request with the same operationId; when it already committed it returns replayed: true, even after closure. operation_conflict means that operationId was used for a different request. stale_revision means another update landed: read again, reconcile, and update with a new operationId. exploration_full means an active exploration would pass ${EXPLORATION_LIMITS.activeMaxDocBytes} bytes; the remaining room up to ${EXPLORATION_LIMITS.maxDocBytes} is kept so a close that adds nothing else always fits. Condense, or conclude and continue in a new exploration. The result is the brief view plus replayed, committedRevision and currentRevision. A failure returns success: false with reason, error (the message) and details when there are any. A refusal that needs no stored state (most invalid_argument and every input_too_large) happens before any lock and touches no file; a refusal that depends on the stored exploration publishes no new revision, though taking the lock or removing a stale active copy of a closed exploration may touch files; an io_error may have published. ${EXPLORATION_UNTRUSTED_NOTICE}`,
+      args: {
+        id: z.string().describe("Exploration ID: 1 to 64 lowercase letters, digits, '.', '_' or '-', starting with a letter or digit. Choose a descriptive slug when creating."),
+        expectedRevision: z.number().describe('0 to create; otherwise the revision from your latest hive_explore_read or update result.'),
+        operationId: z.string().optional().describe("Your retry key: 1 to 128 letters, digits, '.', '_', ':' and '-', starting with a letter or digit. New for each new update; repeated unchanged for a retry."),
+        goal: z.string().optional().describe(`What the exploration must establish. Required when creating; may be revised later. Single line, at most ${EXPLORATION_LIMITS.goalMaxBytes} UTF-8 bytes.`),
+        subject: z.string().optional().describe(`What is being explored, such as "root/main @ 5c163be (src/auth)" or a base URL. Set only when creating; repeating the stored value later is accepted, changing it fails immutable_field. Single line, at most ${EXPLORATION_LIMITS.subjectMaxBytes} UTF-8 bytes.`),
+        priorExplorationId: z.string().optional().describe('ID of an earlier exploration this one follows up or retests. Set only when creating.'),
+        status: z.enum(['concluded', 'abandoned']).optional().describe("Closes the exploration permanently: 'concluded' needs conclusion, 'abandoned' needs reason."),
+        conclusion: z.string().optional().describe(`Required with status 'concluded' and accepted only then. At most ${EXPLORATION_LIMITS.noteMaxBytes} UTF-8 bytes; newlines allowed.`),
+        reason: z.string().optional().describe(`Required with status 'abandoned' and accepted only then. At most ${EXPLORATION_LIMITS.noteMaxBytes} UTF-8 bytes; newlines allowed.`),
+        frontier: z.array(explorationFrontierItemSchema).optional().describe(`Up to ${EXPLORATION_LIMITS.batchMax} frontier items to add or replace by key; a key may appear once per call.`),
+        observations: z.array(explorationObservationSchema).optional().describe(`Up to ${EXPLORATION_LIMITS.batchMax} observations to add or replace by key; a key may appear once per call.`),
+      },
+      execute: (input, invocation) => {
+        const author = sessionActor(invocation);
+        if (!author) throw new Error('hive_explore_update needs the calling session and agent from the host runtime.');
+        return explorationCall(() => explorationService.update(input as ExplorationUpdateInput, author));
       },
     }),
     hive_status: operation({

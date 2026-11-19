@@ -14,6 +14,8 @@ Everything below is relative to the project root, the directory that holds `.hiv
 ├── background-jobs.json       background board: observational bookkeeping only (OpenCode v1)
 ├── runtime/opencode-v2/       OpenCode v2 owner: sessions.json, background-jobs.json
 ├── worklogs/sessions/<owner>/<sha256(sessionId)>.json  per-session Worklog for ad-hoc work
+├── explorations/active/<id>.json  exploration frontier still accepting updates (`hive_explore_update`)
+├── explorations/closed/<id>.json  concluded or abandoned exploration; terminal
 ├── provenance/integrations/<afterCommit>.json  write-once integration receipt: links a merge's resulting commit to its task or run, Worklog and caller
 ├── context/                   project-scope managed context
 │   ├── index.json             revisioned control index
