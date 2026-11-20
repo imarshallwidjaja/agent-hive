@@ -210,23 +210,19 @@
     "councilConfig": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Global council command settings.",
+      "description": "Global council settings, read by the hive_councils_list tool.",
       "properties": {
         "defaultGroup": {
           "type": "string",
-          "description": "Default council group name to use when a command does not specify one. The referenced group is resolved later by command rendering."
+          "description": "Council group used when the operator does not name one (default: decision). The referenced group is resolved when hive_councils_list is called."
         },
         "maxMembers": {
-          "type": "integer",
-          "minimum": 1,
-          "description": "Maximum number of council members selected for a command."
+          "deprecated": true,
+          "description": "Deprecated and ignored: a council seats every usable member of its group. The key no longer invalidates the file."
         },
         "excludedAgents": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "description": "Agent names excluded from council selection. Names are structurally accepted here and resolved later by command rendering."
+          "deprecated": true,
+          "description": "Deprecated and ignored: seat eligibility comes from the agent's base role. The key no longer invalidates the file."
         },
         "groups": {
           "type": "object",
@@ -243,7 +239,7 @@
       "required": [
         "members"
       ],
-      "description": "Council group declaration. Member names are structurally accepted here and resolved later by command rendering.",
+      "description": "Council group declaration. Member names are structurally accepted here and resolved when hive_councils_list is called.",
       "properties": {
         "description": {
           "type": "string",
@@ -258,9 +254,8 @@
           "description": "Agent names available in this council group."
         },
         "maxMembers": {
-          "type": "integer",
-          "minimum": 1,
-          "description": "Maximum number of members selected from this group."
+          "deprecated": true,
+          "description": "Deprecated and ignored: a council seats every usable member of its group. The key no longer invalidates the file."
         }
       }
     },

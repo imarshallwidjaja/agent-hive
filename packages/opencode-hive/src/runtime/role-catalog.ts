@@ -1,4 +1,4 @@
-import { DEFAULT_COUNCIL_CONFIG, type ConfigService, type CustomAgentBase, type ResolvedCustomAgentConfig } from 'hive-core';
+import { type ConfigService, type CustomAgentBase, type ResolvedCustomAgentConfig } from 'hive-core';
 import { renderQueenBeePrompt, hiveBeeAgent } from '../agents/hive.js';
 import { renderArchitectBeePrompt, architectBeeAgent } from '../agents/architect.js';
 import { renderSwarmBeePrompt, swarmBeeAgent } from '../agents/swarm.js';
@@ -15,12 +15,11 @@ import { renderVulnerabilityReviewerPrompt } from '../agents/vulnerability-revie
 import { renderDashReviewerPrompt } from '../agents/dash-reviewer.js';
 import { renderVulnerabilityReviewPrimaryPrompt } from '../agents/vulnerability-review-primary.js';
 import { buildCustomSubagents, type RuntimeSubagentConfig } from '../agents/custom-agents.js';
-import { isReadOnlyCouncilEligibleBase } from '../commands/council.js';
 import type { HiveCommandAgentDescriptor, HiveCommandContext } from '../commands/types.js';
 import { renderAutoLoadSkillsAppendix, renderHiveSystemPrompt } from '../hooks/system-hook.js';
 import { renderBackgroundFirstOrchestrationAppendix, resolveBackgroundDelegationAvailability } from '../utils/background-gate.js';
 import { renderSkillNameLookup, type HostProfile, type NativeSkillIdentity } from './host-profile.js';
-import { ROUTING_BASES, agentPermission, createRolePolicy, type BuiltInRole } from './role-policy.js';
+import { ARCHITECT_PLANNING_BASES, ROUTING_BASES, agentPermission, createRolePolicy, type BuiltInRole } from './role-policy.js';
 
 const BACKGROUND_DELEGATION_SKILL_ID = 'background-delegation';
 
@@ -177,7 +176,7 @@ export function buildRoleCatalog(host: HostProfile, configService: ConfigService
   const sources: Record<BuiltInRole, { body: string; routing?: string }> = {
     'hive-master': { body: renderQueenBeePrompt(host) + systemPrompt, routing: agentMode === 'unified' ? routingAppendix(ROUTING_BASES) : '' },
     // Architect also runs delegated under unified Hive, so its helper cards do not depend on the mode.
-    'architect-planner': { body: renderArchitectBeePrompt(host) + systemPrompt, routing: routingAppendix(['scout-researcher', 'forager-investigator', 'plan-reviewer', 'approach-advisor']) },
+    'architect-planner': { body: renderArchitectBeePrompt(host) + systemPrompt, routing: routingAppendix(ARCHITECT_PLANNING_BASES) },
     'swarm-orchestrator': { body: renderSwarmBeePrompt(host) + systemPrompt, routing: agentMode === 'dedicated' ? routingAppendix(ROUTING_BASES) : '' },
     'hive-builder': { body: renderHiveBuilderPrompt(host) + systemPrompt, routing: routingAppendix(['scout-researcher', 'forager-worker', 'forager-investigator', 'code-reviewer', 'simplicity-reviewer']) },
     'scout-researcher': { body: renderScoutBeePrompt(host) + systemPrompt },
@@ -231,7 +230,7 @@ export function buildRoleCatalog(host: HostProfile, configService: ConfigService
     registerRuntimePrompt: (name, prompt) => requestPrompts.set(name, prompt),
   });
   Object.assign(agents, customAgents);
-  const commandAgents = Object.fromEntries(Object.entries(agents).map(([name, value]) => [name, { baseAgent: custom[name]?.baseAgent ?? name, available: true, description: custom[name]?.description ?? value.description ?? 'Registered Hive agent', readOnlyCouncilEligible: isReadOnlyCouncilEligibleBase(custom[name]?.baseAgent ?? name), model: value.model, variant: value.variant }]));
+  const commandAgents = Object.fromEntries(Object.entries(agents).map(([name, value]) => [name, { baseAgent: custom[name]?.baseAgent ?? name, available: true, description: custom[name]?.description ?? value.description ?? 'Registered Hive agent', model: value.model, variant: value.variant }]));
   return { agents, requestPrompts, commandAgents, customAgents: custom, defaultAgent: agentMode === 'unified' ? 'hive-master' : 'architect-planner', skillGuidance };
 }
 
@@ -250,8 +249,6 @@ export function createCommandContext(input: {
     host,
     agentMode: configService.get().agentMode ?? 'dedicated',
     backgroundGuidance,
-    council: configService.get().council ?? DEFAULT_COUNCIL_CONFIG,
-    agents,
     dashReviewLanes: Object.entries(agents).filter(([, value]) => value.available && ['code-reviewer', 'simplicity-reviewer', 'approach-advisor'].includes(value.baseAgent)).map(([name, value]) => ({ taskTarget: name, sourceAgent: name, baseAgent: value.baseAgent as any, description: value.description, model: value.model, variant: value.variant })),
     vulnerabilityReviewLanes: Object.entries(agents).filter(([, value]) => value.available && value.baseAgent === 'vulnerability-reviewer').map(([name, value]) => ({ taskTarget: name, sourceAgent: name, role: 'specialist' as const, description: value.description, model: value.model, variant: value.variant })),
   };

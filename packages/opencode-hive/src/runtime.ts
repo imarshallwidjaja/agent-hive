@@ -126,8 +126,8 @@ const plugin: Plugin = async (ctx) => {
     }
   };
 
-  // Permissions decide v1 access for most tools; the few that stamp shared authorship also check the caller's role
-  // and live parent here, failing closed when the session cannot be read. The session is read in its own directory.
+  // Permissions decide v1 access for most tools; the authored writes and the council roster also check the caller's
+  // role and live parent here, failing closed when the session cannot be read. The session is read in its own directory.
   const guardLiveParent = async (name: string, context: { sessionID?: string; agent?: string; directory?: string } | undefined): Promise<void> => {
     if (!LIVE_PARENT_CHECKED_TOOLS.includes(name)) return;
     const sessionID = context?.sessionID;
@@ -139,13 +139,21 @@ const plugin: Plugin = async (ctx) => {
     if ('reason' in decision) throw new Error(decision.reason);
   };
 
+  // The agents commands and council rosters read, built by the config hook. V1 configuration is fixed after startup,
+  // so the catalog that hook builds, with each operator `disable`, is the live one; before it runs there is none.
+  let runtimeCommandAgents: Record<string, HiveCommandAgentDescriptor> | undefined;
+  const readCouncilAgents = async () => {
+    if (!runtimeCommandAgents) throw new Error('Hive agent catalog not initialized');
+    return runtimeCommandAgents;
+  };
+
   // V1 registration: each shared operation becomes a plugin tool whose result is the operation's JSON presentation.
-  const hiveTools = Object.fromEntries(Object.entries(createHiveOperations(services)).map(([name, operation]) => [name, tool({
+  const hiveTools = Object.fromEntries(Object.entries(createHiveOperations(services, readCouncilAgents)).map(([name, operation]) => [name, tool({
     description: operation.description,
     args: operation.args,
     execute: async (input, context) => {
       await guardLiveParent(name, context);
-      return presentHiveResult(operation, await operation.execute(input, { sessionID: context?.sessionID, agent: context?.agent }));
+      return presentHiveResult(operation, await operation.execute(input, { sessionID: context?.sessionID, agent: context?.agent, signal: context?.abort }));
     },
   })]));
   const tools: Record<string, any> = {
@@ -164,11 +172,10 @@ const plugin: Plugin = async (ctx) => {
     ...hiveTools,
   };
 
-  let runtimeCommandAgents: Record<string, HiveCommandAgentDescriptor> = {};
   const createCommandContext = (): HiveCommandContext => createSharedCommandContext({
     host,
     configService,
-    agents: runtimeCommandAgents,
+    agents: runtimeCommandAgents ?? {},
     backgroundGuidance: { available: isBackgroundSubagentsExperimentEnabled(), reason: isBackgroundSubagentsExperimentEnabled() ? undefined : 'experiment-disabled' } as any,
   });
 
@@ -256,8 +263,15 @@ const plugin: Plugin = async (ctx) => {
       runtimeAgentPrompts.clear();
       for (const [name, prompt] of catalog.requestPrompts) runtimeAgentPrompts.set(name, prompt);
       // Config hooks run after OpenCode's deprecated tools normalization. Ordered permissions are enforced at agent construction.
-      const agents: Record<string, any> = catalog.agents;
-      runtimeCommandAgents = catalog.commandAgents;
+      // An operator's `disable: true` on a Hive subagent survives the merge below and marks that agent unavailable.
+      const agents: Record<string, any> = {};
+      const commandAgents: Record<string, HiveCommandAgentDescriptor> = {};
+      for (const [name, entry] of Object.entries(catalog.agents)) {
+        const disabled = entry.mode === 'subagent' && mutableConfig.agent?.[name]?.disable === true;
+        agents[name] = disabled ? { ...entry, disable: true } : entry;
+        commandAgents[name] = disabled ? { ...catalog.commandAgents[name]!, available: false } : catalog.commandAgents[name]!;
+      }
+      runtimeCommandAgents = commandAgents;
       const nativeAgents = Object.fromEntries((['general', 'explore'] as const).map((name) => {
         const existing = mutableConfig.agent?.[name] ?? {};
         const boundary = nativeSubagentBoundary(name, existing.permission);

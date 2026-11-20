@@ -33,6 +33,7 @@ Each piece of Hive state has one owning tool. If that tool is not exposed to you
 | I | `hive_worktree_inspect`, `hive_adhoc_worktree_inspect`, `hive_checkout_inspect` | Primaries, Architect, Forager, Investigator, Hive Helper, review primaries |
 | T | `hive_task_trace`, `hive_task_trace_content` | Primaries, Architect, Forager, Hive Helper, review primaries (not Investigator) |
 | Discover | `hive_repositories_discover` | Primaries, Architect, Scout |
+| Council | `hive_councils_list` | Full primaries, Architect as a primary, review primaries. Primary-only (denied in child sessions, so a delegated Architect returns a council request to its parent); its v1 executor also checks the live parent, refusing a child whose stored permissions predate the tool and refusing when the session cannot be read; not part of R. It reads council rosters and dispatches nobody; `name` is matched exactly (an unmatched or blank name returns `unknown_council`) and `selected` reports the council the call resolved |
 <!-- hive-host opencode-v1 -->
 | Board | `hive_background_status` | Full primaries, Architect as a primary, review primaries. Primary-only (denied in child sessions) and experiment-gated (see below); not part of R |
 <!-- /hive-host -->
@@ -99,7 +100,7 @@ Each role's `subagent` permission denies every agent, then allows named targets 
 | Caller | May dispatch |
 |---|---|
 | Full primaries | Scout, Forager, Investigator, every reviewer and advisor, `architect-planner`, `hive-helper`, native `general` and `explore` |
-| Architect, as primary or task child | One terminal layer of `scout-researcher`, `forager-investigator`, `plan-reviewer`, `approach-advisor`, and `hive-helper`; never `forager-worker` |
+| Architect, as primary or task child | One terminal layer of `scout-researcher`, `forager-investigator`, `plan-reviewer`, `approach-advisor`, `code-reviewer`, `simplicity-reviewer`, `vulnerability-reviewer` (and their derivatives) and `hive-helper`; never `forager-worker`. Dispatching the code, simplicity and vulnerability reviewers only as council seats under the `council` skill is instruction-bound, not a permission. Only a primary Architect convenes: a delegated Architect lacks `hive_councils_list`, returns a council request to its parent and does not dispatch those three reviewers |
 | Review primaries | Scout, every reviewer and advisor, `hive-helper`, and Investigators (built-in and derived) for runtime exercises; never `forager-worker` or its derivatives |
 <!-- hive-host opencode-v1 -->
 | Every other role, including `hive-helper` | Nothing (`task` denied) |

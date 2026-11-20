@@ -828,15 +828,16 @@ export class ConfigService {
       return undefined;
     }
 
+    // Effective config carries only the live keys: retired `maxMembers` and `excludedAgents` are ignored wherever a
+    // stored file still has them, so nothing downstream can read them.
+    const groups = { ...defaults?.groups, ...stored?.groups };
+    const defaultGroup = stored?.defaultGroup ?? defaults?.defaultGroup;
     return {
-      ...defaults,
-      ...(stored?.defaultGroup !== undefined ? { defaultGroup: stored.defaultGroup } : {}),
-      ...(stored?.maxMembers !== undefined ? { maxMembers: stored.maxMembers } : {}),
-      ...(stored?.excludedAgents !== undefined ? { excludedAgents: stored.excludedAgents } : {}),
-      groups: {
-        ...defaults?.groups,
-        ...stored?.groups,
-      },
+      ...(defaultGroup !== undefined ? { defaultGroup } : {}),
+      groups: Object.fromEntries(Object.entries(groups).map(([name, group]) => [name, {
+        ...(group.description !== undefined ? { description: group.description } : {}),
+        members: group.members,
+      }])),
     };
   }
 
@@ -965,14 +966,6 @@ export class ConfigService {
       return false;
     }
 
-    if (council.maxMembers !== undefined && !this.isPositiveInteger(council.maxMembers)) {
-      return false;
-    }
-
-    if (council.excludedAgents !== undefined && !this.isStringArray(council.excludedAgents)) {
-      return false;
-    }
-
     if (council.groups !== undefined && !this.isObjectRecord(council.groups)) {
       return false;
     }
@@ -1000,10 +993,6 @@ export class ConfigService {
     }
 
     if (group.description !== undefined && typeof group.description !== 'string') {
-      return false;
-    }
-
-    if (group.maxMembers !== undefined && !this.isPositiveInteger(group.maxMembers)) {
       return false;
     }
 

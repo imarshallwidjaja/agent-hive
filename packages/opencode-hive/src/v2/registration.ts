@@ -14,6 +14,7 @@ import { prepareNativeHiveSkills, type PreparedNativeHiveSkills } from '../skill
 import { resolveBackgroundDelegationAvailability } from '../utils/background-gate.js';
 import { createHiveServices, type HiveServices } from '../runtime/hive-services.js';
 import { createHiveOperations } from '../runtime/hive-tools.js';
+import type { CouncilAgentDescriptor } from '../runtime/councils.js';
 import { CODEMODE_READ_TOOLS, createHostProfile, type HostProfile } from '../runtime/host-profile.js';
 import { buildRoleCatalog, createCommandContext, type RoleCatalog, type SkillLookups } from '../runtime/role-catalog.js';
 import {
@@ -96,7 +97,8 @@ export function registerCatalog(input: { context: Plugin.Context; identity: Iden
       }
     });
     yield* registerCommands(context, { host, configService, roles, skills });
-    yield* registrar.register(createHiveOperations(services));
+    yield* registrar.register(createHiveOperations(services, (signal) => Effect.runPromise(context.agent.list(), { signal })
+      .then(({ data }) => councilAgents(roles, data))));
     yield* context.tool.hook('execute.before', (event) => event.tool.startsWith('hive_')
       ? authority.guardHive(event.tool, { sessionID: event.sessionID, agent: event.agent })
       : authority.guardNative(event.tool, event.input, { sessionID: event.sessionID, agent: event.agent }));
@@ -197,22 +199,39 @@ function effectiveSkills(context: Plugin.Context, prepared: PreparedNativeHiveSk
   );
 }
 
+/** Whether the host can call an installed Hive agent: a role Hive registers as a subagent cannot be called as one after the operator makes it a primary. */
+function isCallable(roles: RoleCatalog, name: string, agent: Agent.Info | undefined): agent is Agent.Info {
+  return agent !== undefined && (roles.agents[name]?.mode === 'primary' || agent.mode !== 'primary');
+}
+
 /** The roster commands render against, from the agents the host has now (disabled or overridden agents included). */
 function effectiveCommandAgents(roles: RoleCatalog, installed: ReadonlyArray<Agent.Info>): Record<string, HiveCommandAgentDescriptor> {
   const byId = new Map(installed.map((agent) => [agent.id as string, agent]));
   return Object.fromEntries(Object.entries(roles.commandAgents).map(([name, canonical]) => {
     const agent = byId.get(name);
     if (!agent) return [name, { ...canonical, available: false }];
-    // A role Hive registers as a subagent cannot be called as one after the operator makes it a primary.
-    const callable = roles.agents[name]?.mode === 'primary' || agent.mode !== 'primary';
     return [name, {
       ...canonical,
-      available: callable,
+      available: isCallable(roles, name, agent),
       description: agent.description ?? canonical.description,
       model: agent.model ? `${agent.model.providerID}/${agent.model.id}` : undefined,
       variant: agent.model?.variant,
     }];
   }));
+}
+
+/**
+ * The agents a council may seat, from the agents the host has now. Availability follows the host as for commands,
+ * but each description stays the canonical Hive one, so a native description override cannot turn a starter template
+ * into a seat or rewrite the configuration data a council roster reports.
+ */
+function councilAgents(roles: RoleCatalog, installed: ReadonlyArray<Agent.Info>): Record<string, CouncilAgentDescriptor> {
+  const byId = new Map(installed.map((agent) => [agent.id as string, agent]));
+  return Object.fromEntries(Object.entries(roles.commandAgents).map(([name, canonical]) => [name, {
+    baseAgent: canonical.baseAgent,
+    available: isCallable(roles, name, byId.get(name)),
+    description: canonical.description,
+  }]));
 }
 
 /**

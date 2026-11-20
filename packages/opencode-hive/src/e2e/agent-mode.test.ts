@@ -27,7 +27,7 @@ describe('agent registration', () => {
       council: {
         defaultGroup: 'decision',
         groups: {
-          review: { members: ['plan-risk-reviewer', rosterSyntax, 'implementation-specialist', 'docs-researcher'], maxMembers: 1 },
+          review: { members: ['plan-risk-reviewer', rosterSyntax, 'implementation-specialist', 'docs-researcher'] },
           [groupSyntax]: { members: ['docs-researcher'] },
         },
       },
@@ -118,23 +118,16 @@ describe('agent registration', () => {
       expect(unboundTemplate, name).not.toMatch(/\$\d+/);
     }
     expect(hooks).not.toHaveProperty('command.execute.before');
-    // The v1 template must already carry non-default configured rosters before native substitution.
+    // The council roster comes from hive_councils_list at run time, so the template carries no configured names.
     const councilTemplate: string = config.command.council.template;
     expect(Object.keys(config.command.council).sort()).toEqual(['description', 'template']);
     expect(councilTemplate).toContain('<operator-text>\n$ARGUMENTS\n</operator-text>');
     expect(councilTemplate.match(/\$ARGUMENTS/g)).toHaveLength(1);
-    const councilRosters = JSON.parse(councilTemplate.split('<configured-council-rosters>\n')[1].split('\n</configured-council-rosters>')[0]);
-    expect(councilRosters.defaultGroup).toBe('decision');
-    expect(councilRosters.groups.find((group: any) => group.requestedGroup === 'review')).toMatchObject({
-      groupName: 'review', maxMembers: 1, members: [{ name: 'plan-risk-reviewer', baseAgent: 'plan-reviewer', description: rosterSyntax }],
-    });
-    expect(councilRosters.groups.find((group: any) => group.requestedGroup === groupSyntax).members.map((member: any) => member.name)).toEqual(['docs-researcher']);
-    expect(councilRosters.groups.flatMap((group: any) => group.members.map((member: any) => member.name))).not.toContain(groupSyntax);
-    const directiveTemplate: string = config.command['council-directive'].template;
-    expect(directiveTemplate.match(/\$ARGUMENTS/g)).toHaveLength(1);
-    const configuredGroups = JSON.parse(directiveTemplate.split('Configured council groups: ')[1].split('\n\n')[0]);
-    expect(configuredGroups).toContain('review');
-    expect(configuredGroups).toContain(groupSyntax);
+    expect(councilTemplate).not.toMatch(/\$\d+/);
+    for (const configured of ['plan-risk-reviewer', 'docs-researcher', rosterSyntax, groupSyntax, 'configured-council-rosters']) {
+      expect(councilTemplate, configured).not.toContain(configured);
+    }
+    expect(config.command).not.toHaveProperty('council-directive');
     // Native command order: positional replacement, $ARGUMENTS replacement, then shell/file scanning.
     // Source: OpenCode src/session/prompt.ts (SessionPrompt.command) and src/config/markdown.ts.
     // Scan only: never execute shell commands or resolve files in this regression.
@@ -143,21 +136,10 @@ describe('agent registration', () => {
     expect([...rosterSyntax.matchAll(shellRegex)]).toHaveLength(1);
     expect([...rosterSyntax.matchAll(fileRegex)]).toHaveLength(1);
     const operatorText = 'Use the decision group to assess "quoted choices"\n\nKeep --strict and $1 $ARGUMENTS as prose.';
-    for (const commandTemplate of [councilTemplate, directiveTemplate]) {
-      expect(commandTemplate).not.toMatch(/\$\d+/);
-      const substituted = commandTemplate.replaceAll('$ARGUMENTS', operatorText);
-      expect([...substituted.matchAll(shellRegex)]).toHaveLength(0);
-      expect([...substituted.matchAll(fileRegex)]).toHaveLength(0);
-      expect(substituted).toContain(operatorText);
-    }
-    const deliveredDirective = directiveTemplate.replaceAll('$ARGUMENTS', operatorText);
-    expect(deliveredDirective).toContain(`Rough input: ${operatorText}`);
-    expect(JSON.parse(deliveredDirective.split('Configured council groups: ')[1].split('\n\n')[0])).toEqual(configuredGroups);
     const delivered = councilTemplate.replaceAll('$ARGUMENTS', operatorText);
+    expect([...delivered.matchAll(shellRegex)]).toHaveLength(0);
+    expect([...delivered.matchAll(fileRegex)]).toHaveLength(0);
     expect(delivered).toContain(`<operator-text>\n${operatorText}\n</operator-text>`);
-    const deliveredRosters = JSON.parse(delivered.split('<configured-council-rosters>\n')[1].split('\n</configured-council-rosters>')[0]);
-    expect(deliveredRosters).toEqual(councilRosters);
-    expect(deliveredRosters.groups.find((group: any) => group.requestedGroup === 'review').warnings).toContain(`Skipped ${rosterSyntax}: not registered for this agent mode.`);
     expect(config.command['dash-review'].template).toContain('$ARGUMENTS');
     expect(config.command['test-audit'].template).toContain('Test audit scope: $ARGUMENTS');
     const dashCommand: string = await hooks.command!['dash-review'].run('src/runtime.ts');

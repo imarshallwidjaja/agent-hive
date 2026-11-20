@@ -10,10 +10,14 @@ import { SUBAGENT_CLARIFICATION_PROMPT } from '../hooks/system-hook.js';
 import { HIVE_COMMANDS } from '../commands/registry.js';
 import { CODEMODE_READ_TOOLS } from '../runtime/host-profile.js';
 import { createHiveOperations } from '../runtime/hive-tools.js';
+import { COUNCIL_SEAT_BASES } from '../runtime/role-policy.js';
 import { HIVE_TOOL_NAMES } from '../utils/plugin-manifest.js';
 import { createHiveAuthority, toModelRef } from './registration.js';
 import { codemodeFlag, standardSchema, toToolInfo } from './tools.js';
 import { z } from '../runtime/schema.js';
+
+/** For operation sets whose tests never read a council roster. */
+const unusedCouncilReader = async (): Promise<never> => { throw new Error('council agent reader called unexpectedly'); };
 
 // Registration owns the v2 catalog contract: Code Mode flags, validators and structured results, the execution
 // guards, request-time instructions and the native-precedence split. These tests drive the real activation through a
@@ -214,8 +218,7 @@ function denied(exit: Exit.Exit<unknown, unknown>): string | undefined {
 }
 
 describe('v2 tool registration', () => {
-  it('registers all 51 Hive tools once, with an explicit Code Mode flag from the selected transport', async () => {
-    expect(HIVE_TOOL_NAMES).toHaveLength(51);
+  it('registers every Hive tool once, with an explicit Code Mode flag from the selected transport', async () => {
     for (const transport of ['codemode', 'direct'] as const) {
       const host = await activate({ readTransport: transport });
       const tools = host.tools();
@@ -256,7 +259,7 @@ describe('v2 tool registration', () => {
   });
 
   it('delivers each ordinary operation description and field descriptions unchanged through the JSON Schema export', async () => {
-    const operations = createHiveOperations({} as any);
+    const operations = createHiveOperations({} as any, unusedCouncilReader);
     const tools = (await activate()).tools();
     for (const [name, operation] of Object.entries(operations)) {
       const info = tools.get(name);
@@ -279,7 +282,7 @@ describe('v2 tool registration', () => {
     expect(result.output).toMatchObject({ mode: 'legacy-root' });
     expect(JSON.parse(result.content)).toEqual(result.output);
 
-    const operations = createHiveOperations({} as any);
+    const operations = createHiveOperations({} as any, unusedCouncilReader);
     const text = toToolInfo('hive_task_create', { ...operations.hive_task_create, execute: () => 'created 01-x' }, 'codemode', () => Effect.void);
     const created = await Effect.runPromise(text.execute({ name: 'x' }, { sessionID: 's', agent: 'a' } as any));
     expect(created).toEqual({ content: 'created 01-x' });
@@ -557,6 +560,26 @@ describe('v2 execution guards', () => {
     for (const tool of ['hive_adhoc_worktree_create', 'hive_adhoc_worktree_cleanup', 'hive_worktree_recover']) {
       expect(denied(await host.before({ tool, sessionID: 'experiment', agent: 'architect-planner', input: {} })), tool).toBeDefined();
     }
+  });
+
+  it('lets primary and child Architect dispatch every council seat base and its derivatives, under a user global allow', async () => {
+    const host = await activate({}, { customAgents: {
+      'security-specialist': { baseAgent: 'vulnerability-reviewer', description: 'Security seat.' },
+      'ui-forager': { baseAgent: 'forager-worker', description: 'Browser-visible UI implementation.' },
+    } });
+    host.useAgentConfig({ permissions: [{ action: '*', resource: '*', effect: 'allow' }] });
+    host.sessions.set('delegated', { id: 'delegated', parentID: 'primary', agent: 'architect-planner' });
+    const allowedTargets = [...COUNCIL_SEAT_BASES, 'security-specialist'];
+    const deniedTargets = ['forager-worker', 'ui-forager', 'architect-planner', 'hive-master', 'swarm-orchestrator', 'hive-builder'];
+    for (const sessionID of ['primary', 'delegated']) {
+      const dispatch = async (target: string) => denied(await host.before({ tool: 'subagent', sessionID, agent: 'architect-planner', input: { agent: target } }));
+      for (const target of allowedTargets) expect(await dispatch(target), `${sessionID} -> ${target}`).toBeUndefined();
+      for (const target of deniedTargets) expect(await dispatch(target), `${sessionID} -> ${target}`).toBeDefined();
+    }
+    const rules = host.agents().registry.get('architect-planner')!.permissions.filter((rule) => rule.action === 'subagent');
+    for (const target of allowedTargets) expect(rules, target).toContainEqual({ action: 'subagent', resource: target, effect: 'allow' });
+    for (const target of deniedTargets) expect(rules, target).not.toContainEqual({ action: 'subagent', resource: target, effect: 'allow' });
+    expect(rules).toContainEqual({ action: 'subagent', resource: '*', effect: 'deny' });
   });
 
   it('applies a child Forager bounded context edit through the v2 executor', async () => {
@@ -984,11 +1007,11 @@ describe('v2 skills, commands and models', () => {
     const councilProse = 'use the review group to assess "is this safe?"\nKeep --strict as prose.';
     await Effect.runPromise(commands.get('council').execute({ sessionID: 's1', prompt: { text: councilProse }, delivery: 'steer' }));
     expect(host.prompts[0].text).toContain(`<operator-text>\n${councilProse}\n</operator-text>`);
-    const councilRosters = JSON.parse(host.prompts[0].text.split('<configured-council-rosters>\n')[1].split('\n</configured-council-rosters>')[0]);
-    expect(councilRosters.defaultGroup).toBe('decision');
-    expect(councilRosters.groups.find((group: any) => group.requestedGroup === 'review').members.map((member: any) => member.name)).toEqual(['code-reviewer']);
+    // The roster comes from hive_councils_list when the council runs; the command carries none.
+    expect(host.prompts[0].text).toContain('skill({ id })` for the catalog entry named "council"');
+    expect(host.prompts[0].text).not.toContain('configured-council-rosters');
+    expect(host.prompts[0].text).not.toContain('primary-simplicity');
     expect(host.switches).toEqual([]);
-    expect(host.prompts[0].text).toContain('Skipped approach-advisor: agent is not available');
     await Effect.runPromise(commands.get('dash-review').execute({ sessionID: 's1', prompt: { text: 'HEAD~1..HEAD' }, delivery: 'steer' }));
     expect(host.prompts[1].text).toContain('code-reviewer (base: code-reviewer; model: user/reviewer; variant: max; USER REVIEWER DESCRIPTION');
     expect(host.prompts[1].text).not.toContain('approach-advisor (base:');
@@ -1001,6 +1024,52 @@ describe('v2 skills, commands and models', () => {
     expect(host.prompts[2].text).not.toContain('vulnerability-reviewer (');
     expect(host.prompts[2].text).toContain('Run every explicitly requested specialist');
     expect(host.prompts[2].text).toContain('or silently skip requested reviewers');
+  });
+
+  it('resolves council rosters from the agents the host has now, with canonical descriptions, for primaries that hold the tool', async () => {
+    const host = await activate({}, {
+      council: { defaultGroup: 'review', groups: { review: { members: ['primary-simplicity', 'code-reviewer', 'approach-advisor', 'disabled-security', 'security-specialist'] } } },
+      customAgents: {
+        'primary-simplicity': { baseAgent: 'simplicity-reviewer', description: 'custom simplicity' },
+        'disabled-security': { baseAgent: 'vulnerability-reviewer', description: 'disabled security' },
+        'security-specialist': { baseAgent: 'vulnerability-reviewer', description: 'security specialist' },
+      },
+    });
+    host.useAgentConfig({ agents: {
+      'approach-advisor': { disabled: true },
+      'code-reviewer': { description: 'USER REVIEWER DESCRIPTION' },
+      'primary-simplicity': { mode: 'primary' },
+      'disabled-security': { disabled: true },
+    } });
+    const call = (agent: string, sessionID = 'primary', args: Record<string, unknown> = {}) => host.execute('hive_councils_list', args, { sessionID, agent });
+
+    const exit = await call('architect-planner');
+    expect(Exit.isSuccess(exit)).toBe(true);
+    expect((exit as Exit.Success<any>).value.output).toMatchObject({
+      selected: 'review', ok: true,
+      members: [
+        { name: 'code-reviewer', baseAgent: 'code-reviewer', description: expect.not.stringContaining('USER REVIEWER DESCRIPTION') },
+        { name: 'security-specialist', baseAgent: 'vulnerability-reviewer', description: 'security specialist' },
+      ],
+      skipped: [
+        { name: 'primary-simplicity', reason: 'not_available' },
+        { name: 'approach-advisor', reason: 'not_available' },
+        { name: 'disabled-security', reason: 'not_available' },
+      ],
+    });
+
+    for (const agent of ['hive-master', 'swarm-orchestrator', 'hive-builder', 'dash-reviewer', 'vulnerability-review-primary', 'security-specialist']) {
+      const allowed = agent !== 'security-specialist';
+      expect(denied(await call(agent)), agent).toBe(allowed ? undefined : 'hive_councils_list is not granted to the vulnerability-reviewer role.');
+    }
+    for (const agent of ['scout-researcher', 'forager-worker', 'forager-investigator', 'hive-helper', 'plan-reviewer', 'code-reviewer', 'simplicity-reviewer', 'approach-advisor', 'vulnerability-reviewer']) {
+      expect(denied(await call(agent, 'child')), agent).toBe(`hive_councils_list is not granted to the ${agent} role.`);
+    }
+    expect(denied(await call('architect-planner', 'child'))).toBe('hive_councils_list is a primary-only operation and is denied in child sessions.');
+    expect(Exit.isSuccess(await host.before({ tool: 'hive_councils_list', sessionID: 'child', agent: 'architect-planner' }))).toBe(false);
+
+    (host.context as any).agent.list = () => Effect.fail(new Error('agent list failed'));
+    expect(denied(await call('hive-master', 'primary', { name: 'review' }))).toContain('agent list failed');
   });
 
   it('switches an agent-bound command to the agent and its effective model and variant, as native commands do', async () => {

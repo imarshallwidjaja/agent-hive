@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import {
   ContextMutationError,
+  DEFAULT_COUNCIL_CONFIG,
   EXPLORATION_LIMITS,
   EXPLORATION_UNTRUSTED_NOTICE,
   ExplorationError,
@@ -46,6 +47,7 @@ import {
   type WorktreeTargetIdentity,
 } from 'hive-core';
 import { GitSnapshotError, inspectGitSnapshot, isExactGitTopLevel } from '../utils/git-snapshot.js';
+import { COUNCIL_ROSTER_NOTICE, resolveCouncilRoster, type CouncilAgentDescriptor } from './councils.js';
 import type { HiveInvocation, HiveServices } from './hive-services.js';
 import { z, type ArgInput, type ArgShape } from './schema.js';
 
@@ -391,13 +393,19 @@ function createNamedContextReader(services: HiveServices) {
 }
 
 /**
- * The 45 ordinary Hive operations, keyed by tool name in registration order. Trace and background tools stay with
+ * The agents a council may seat, as the host has them when the call runs: Hive role and custom agent descriptors with
+ * whether each is available now. It throws when the host catalog cannot be read.
+ */
+export type CouncilAgentReader = (signal?: AbortSignal) => Promise<Readonly<Record<string, CouncilAgentDescriptor>>>;
+
+/**
+ * The 46 ordinary Hive operations, keyed by tool name in registration order. Trace and background tools stay with
  * their own owners. Each operation takes the caller's identity explicitly and resolves feature or session state
  * only through the services it needs.
  */
-export function createHiveOperations(services: HiveServices): Record<string, HiveOperation> {
+export function createHiveOperations(services: HiveServices, readCouncilAgents: CouncilAgentReader): Record<string, HiveOperation> {
   const {
-    projectRoot, featureService, planService, taskService, sessionService, featureConstraintService, contextService,
+    projectRoot, configService, featureService, planService, taskService, sessionService, featureConstraintService, contextService,
     repositoryManifestService, worktreeService, worktreeRecoveryService, retainedCheckoutService, checkoutInspector, checkoutBrief,
     worklogService, explorationService, nativeObservationOwner, configFallbackWarning, hasManifest,
     repositoryResolver, adhocService, requireFeature, contextScope, constraintTarget, resolveWorklogRef, readConstraints,
@@ -1041,6 +1049,24 @@ export function createHiveOperations(services: HiveServices): Record<string, Hiv
         const author = sessionActor(invocation);
         if (!author) throw new Error('hive_explore_update needs the calling session and agent from the host runtime.');
         return explorationCall(() => explorationService.update(input as ExplorationUpdateInput, author));
+      },
+    }),
+    hive_councils_list: operation({
+      description: 'List the configured councils and resolve the seats of one: the council the operator explicitly named, '
+        + 'else the default council. Primary sessions only; child sessions are denied this tool. '
+        + 'Returns notice, councils [{ name, description? }] in configuration order, selected (the resolved council name) and skipped [{ name, reason }]; '
+        + "then ok: true with members [{ name, baseAgent, description }], or ok: false with reason 'unknown_council' or 'no_usable_seats' "
+        + 'and no members. A name is matched exactly; an unmatched name returns unknown_council. A skip reason is not_registered, not_available, '
+        + 'example_template, ineligible_base or duplicate. A failed read of the host agent catalog fails the call; it never '
+        + `returns an empty or guessed roster. ${COUNCIL_ROSTER_NOTICE}`,
+      args: {
+        name: z.string()
+          .optional()
+          .describe('A council name, passed only when the operator explicitly named that council. Omitted, the default council is used.'),
+      },
+      execute: async ({ name }, invocation) => {
+        const agents = await readCouncilAgents(invocation.signal);
+        return resolveCouncilRoster(configService.get().council ?? DEFAULT_COUNCIL_CONFIG, agents, name);
       },
     }),
     hive_status: operation({

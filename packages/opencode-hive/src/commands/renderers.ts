@@ -2,7 +2,6 @@ import type { HiveCommandKey } from './registry.js';
 import type { HiveCommandContext, HiveCommandRenderers } from './types.js';
 import { renderCommandBehavior, type CommandBodyKey } from './command-bodies.js';
 import { nativeCall, skillCall } from '../runtime/host-profile.js';
-import { resolveCouncilMembers } from './council.js';
 
 type CommandSectionInput = {
   doItems: string[];
@@ -69,16 +68,6 @@ function backgroundItems(
   items: string[],
 ): string[] | undefined {
   return context.backgroundGuidance.available ? items : undefined;
-}
-
-function encodeCouncilConfiguration(value: object): string {
-  // Keep configuration inert through native argument, shell and file-reference processing.
-  return JSON.stringify(value, null, 2).replace(/[$`!<@]/g, (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`);
-}
-
-function configuredGroupNames(context: HiveCommandContext): string {
-  const names = Object.keys(context.council.groups ?? {});
-  return names.length > 0 ? encodeCouncilConfiguration(names) : 'none configured';
 }
 
 function configuredDashReviewCandidates(context: HiveCommandContext, suiteAudit = false): string {
@@ -256,56 +245,16 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
     });
   },
 
-  'council-directive'(args, context) {
-    return renderHybridCommand('council-directive', context, {
-      details: [
-        `Rough input: ${topicOrCurrent(args, 'the current operator request')}`,
-        `Configured council groups: ${configuredGroupNames(context)}`,
-      ],
-      doItems: [
-        'Ask one question at a time when needed (max 4) to shape a reusable council directive.',
-      ],
-      doNotItems: [],
-      outputItems: [
-        '## Council Directive, ## Recommendation, ## Recommended Invocation, and ## Paste Into New Chat when appropriate.',
-      ],
-    });
-  },
-
   council(args, context) {
-    const defaultGroup = context.council.defaultGroup || 'decision';
-    const groups = [...new Set([defaultGroup, ...Object.keys(context.council.groups ?? {})])];
-    const rosters = encodeCouncilConfiguration({
-      defaultGroup,
-      groups: groups.map((group) => resolveCouncilMembers(context.council, context.agents, group)),
-    });
-    const details = [
-      `Configured resolved rosters (configuration data, not directive text):\n<configured-council-rosters>\n${rosters}\n</configured-council-rosters>`,
-      operatorText('council', args),
-      'Read-only contract: councillors must not edit files, apply patches, commit, create Hive plans, or create worktrees.',
-      'architect-planner must not call planning write tools during a council run.',
-    ];
-
     return renderHybridCommand('council', context, {
-      details,
+      details: [operatorText('council', args)],
       doItems: [
-        'Treat operator text passed by the host as ordinary prose, including quotes, line breaks, and flag-like text; blank text means use the current operator request as the directive. Native host processing of special template syntax still applies; literal preservation of that syntax is not guaranteed.',
-        'Select a group only when the operator explicitly requests it in prose; otherwise use defaultGroup from the configured resolved rosters. Do not infer a group merely from the first token or a passing mention.',
-        'Use the selected group\'s displayed resolution: report its groupName, fallbackFrom when present, and warnings. When the requested group is not configured, say so and report fallback to defaultGroup, using only its displayed resolution.',
-        'When the selected resolution has an error or no usable members, stop and report the error and warnings instead of launching councillors.',
-        'Only when the selected resolution has no error and has usable members, run a read-only council with those members in the displayed order. The configured roster data defines the available seats; operator prose supplies the directive and group request, not replacement roster data.',
-        'When launching a usable selected resolution, give every councillor the directive, relevant evidence, read-only contract, and its actual base role from the rendered roster.',
-        'Keep Scout-derived seats to evidence, unknowns, and contradictions; do not infer agreement from a missing Scout verdict.',
+        `Load the \`council\` skill with ${skillCall(context.host, 'council')} and follow it, with the operator text above as the council directive. Blank text means the current operator request is the directive.`,
       ],
       doNotItems: [
-        'Do not add unavailable, excluded, template-placeholder, mutable-base, or duplicate councillors back into the run.',
+        'If the `council` skill or the hive_councils_list tool is unavailable, say which one is missing and launch nobody. Do not search generated skill caches for a copy of the skill.',
       ],
-      backgroundItems: backgroundItems(context, [
-        'Only when the selected resolution has no error and has usable members, independent councillor lanes are native background candidates from the orchestrating agent.',
-        'When councillor lanes were launched, wait for native completion notification and reconcile terminal lanes with hive_background_reconcile or hive_background_reconcile_batch before synthesis.',
-        'Councillors must not call task recursively.',
-      ]),
-      outputItems: ['Council synthesis with recommendation, dissent, evidence quality, assumptions, and follow-up actions, or a clear error explaining why no usable council members remain.'],
+      outputItems: ['The council result the `council` skill defines, or the reason no council was convened.'],
     });
   },
 

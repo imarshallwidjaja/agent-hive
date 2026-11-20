@@ -500,13 +500,10 @@ export interface RepositoryConfig {
 export interface CouncilGroupConfig {
   description?: string;
   members: string[];
-  maxMembers?: number;
 }
 
 export interface CouncilConfig {
   defaultGroup?: string;
-  maxMembers?: number;
-  excludedAgents?: string[];
   groups?: Record<string, CouncilGroupConfig>;
 }
 
@@ -575,8 +572,6 @@ export interface HiveConfig {
 
 export const DEFAULT_COUNCIL_CONFIG: CouncilConfig = {
   defaultGroup: 'decision',
-  maxMembers: 4,
-  excludedAgents: ['hive-master', 'swarm-orchestrator', 'forager-worker', 'forager-investigator', 'hive-builder', 'hive-helper'],
   groups: {
     design: {
       description: 'Architecture and implementation-shape advice',

@@ -45,9 +45,9 @@ The config hook intentionally mutates these OpenCode fields:
 
 ### OpenCode v2
 
-The same package loads through its `server` entry on v1 and its synchronous `effect` entry on v2. On v2 it registers every Hive tool and all **18 commands**, dedicated and unified modes, custom agents, packaged skills, native dispatch and background observation, and the forensic and recovery tools. Qualification ran against stock v1.18.30 and v2.0.26 with scripted model providers, which establishes wiring rather than real-model judgment. On both hosts it loaded a package already installed with plain npm; host-side registry resolution at first use was not part of it.
+The same package loads through its `server` entry on v1 and its synchronous `effect` entry on v2. On v2 it registers every Hive tool and all **17 commands**, dedicated and unified modes, custom agents, packaged skills, native dispatch and background observation, and the forensic and recovery tools. Qualification ran against stock v1.18.30 and v2.0.26 with scripted model providers, which establishes wiring rather than real-model judgment. On both hosts it loaded a package already installed with plain npm; host-side registry resolution at first use was not part of it.
 
-The current plugin manifest declares 51 Hive tools and 18 commands on both hosts. The qualification above does not cover the seven [retained checkout tools](docs/HIVE-TOOLS.md#retained-checkouts-7-tools) or the `/investigate`, `/walkthrough`, `/merge-to-main` and `/handoff` commands.
+The current plugin manifest declares 52 Hive tools and 17 commands on both hosts. The qualification above does not cover the seven [retained checkout tools](docs/HIVE-TOOLS.md#retained-checkouts-7-tools), `hive_councils_list`, or the `/investigate`, `/walkthrough`, `/merge-to-main` and `/handoff` commands.
 
 Install the released package with npm into a dedicated directory that the v2 host can read:
 

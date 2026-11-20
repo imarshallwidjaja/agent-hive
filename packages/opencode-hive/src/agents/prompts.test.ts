@@ -1165,8 +1165,8 @@ describe('Multi-plan feature routing guidance', () => {
   it('reuses route selection only with visible same-session evidence and selects when uncertain', () => {
     const workspaceRoot = path.resolve(import.meta.dir, '..', '..', '..', '..');
     const commands = buildHiveCommandMap(hiveCommandRenderers, () => ({
-      agentMode: 'unified', host: OPENCODE_V1_PROFILE, backgroundGuidance: { available: false }, council: {} as never,
-      agents: {}, dashReviewLanes: [], vulnerabilityReviewLanes: [],
+      agentMode: 'unified', host: OPENCODE_V1_PROFILE, backgroundGuidance: { available: false },
+      dashReviewLanes: [], vulnerabilityReviewLanes: [],
     }));
     const startExecution = commands['start-execution'].run('');
     expect(countOccurrences(startExecution, 'Reuse a matching selection')).toBe(1);
@@ -2334,7 +2334,7 @@ describe('Specialized reviewer prompts', () => {
       expect(primary).toContain(`Load ${skillCall(host, 'security-audit')} for the audit method`);
       expect(primary).toContain(`parallel blocking batches of native \`${host.nativeTask.tool}()\` calls`);
       expect(renderVulnerabilityReviewerPrompt(host)).toContain(`load it with ${skillCall(host, 'security-audit')}`);
-      const context: any = { agentMode: 'unified', host, backgroundGuidance: { available: false }, council: {}, agents: {}, dashReviewLanes: [], vulnerabilityReviewLanes: [] };
+      const context: any = { agentMode: 'unified', host, backgroundGuidance: { available: false }, dashReviewLanes: [], vulnerabilityReviewLanes: [] };
       const command = hiveCommandRenderers['vuln-review']('', context) as string;
       expect(command).toContain(`load ${skillCall(host, 'security-audit')} for the audit method, and follow your Review Sequence`);
     }
@@ -2698,6 +2698,8 @@ describe('Architect (Planner) prompt', () => {
     it('permits research and review delegation via task()', () => {
       expect(ARCHITECT_BEE_PROMPT).toContain('one layer of permitted planning and investigation helpers: Scout, Investigator (`forager-investigator`), plan-reviewer, approach-advisor, custom agents derived from those roles, and `hive-helper`');
       expect(ARCHITECT_BEE_PROMPT).toContain('Never invoke Architect recursively or use this path for implementation Foragers (`forager-worker` and its derivatives) or other implementation or coding workers.');
+      expect(ARCHITECT_BEE_PROMPT).toContain('Your task permission also allows code, simplicity and vulnerability reviewers and custom agents derived from them, as primary and as child; dispatch them only as council seats under the `council` skill. That limit is an instruction, not a permission.');
+      expect(ARCHITECT_BEE_PROMPT).toContain('as a delegated child you lack the primary-only council roster tool, so return a council request to your parent and do not dispatch those three reviewers.');
     });
 
     it('commissions experiments as planning evidence, with placement only as a primary and parent-owned requests as a child', () => {
@@ -2745,7 +2747,7 @@ describe('Architect (Planner) prompt', () => {
     it('documents simplicity-reviewer boundaries for planner awareness', () => {
       expect(ARCHITECT_BEE_PROMPT).toContain('simplicity-reviewer');
       expect(ARCHITECT_BEE_PROMPT).toContain('post-implementation cleanup pass');
-      expect(ARCHITECT_BEE_PROMPT).toContain('Do not use `simplicity-reviewer` while planning');
+      expect(ARCHITECT_BEE_PROMPT).toContain('Do not use `simplicity-reviewer` while planning, except as a seat in a council run under the `council` skill.');
     });
 
     it('tells planners to hand Scouts known findings instead of rediscovery', () => {
@@ -4326,7 +4328,7 @@ describe('host-rendered policy', () => {
 
   it('renders command wrappers with the host call and continuation field', () => {
     for (const host of hostProfiles) {
-      const context: any = { agentMode: 'unified', host, backgroundGuidance: { available: false }, council: {}, agents: {}, dashReviewLanes: [], vulnerabilityReviewLanes: [] };
+      const context: any = { agentMode: 'unified', host, backgroundGuidance: { available: false }, dashReviewLanes: [], vulnerabilityReviewLanes: [] };
       const text = hiveCommandRenderers['start-execution']('', context) as string;
       expect(text).toContain(`issue the native Forager ${host.nativeTask.tool}() call`);
       expect(text).toContain(`Pass ${host.nativeTask.continuationField} only when`);

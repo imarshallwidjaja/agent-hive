@@ -28,6 +28,19 @@ export const ROUTING_BASES = [
   'scout-researcher', 'forager-worker', 'forager-investigator', 'plan-reviewer', 'code-reviewer', 'simplicity-reviewer', 'approach-advisor', 'vulnerability-reviewer',
 ] as const satisfies readonly CustomAgentBase[];
 
+/** The helper bases Architect routes planning and investigation work to; its routing appendix lists these. */
+export const ARCHITECT_PLANNING_BASES = [
+  'scout-researcher', 'forager-investigator', 'plan-reviewer', 'approach-advisor',
+] as const satisfies readonly CustomAgentBase[];
+
+/**
+ * The base roles a council seat may derive from: the read-only specialists. Architect's delegation grant and the
+ * council resolver both read this list, so who may sit and who Architect may convene cannot drift apart.
+ */
+export const COUNCIL_SEAT_BASES = [
+  'scout-researcher', 'plan-reviewer', 'code-reviewer', 'simplicity-reviewer', 'approach-advisor', 'vulnerability-reviewer',
+] as const satisfies readonly CustomAgentBase[];
+
 const READ_TOOLS = ['hive_context_read', 'hive_constraints_read', 'hive_plan_read', 'hive_status', 'hive_repositories_status', 'hive_git_snapshot',
   'hive_worklog_list', 'hive_worklog_read', 'hive_checkouts_list', 'hive_checkout_brief', 'hive_explore_read'];
 /** Writes that stamp the calling primary session as the author of shared records. */
@@ -43,7 +56,9 @@ const CHECKOUT_MUTATIONS = ['hive_checkout_create', 'hive_checkout_register', 'h
 const BACKGROUND_TOOLS = ['hive_background_status', 'hive_background_reconcile', 'hive_background_reconcile_batch', 'hive_background_cancel'];
 /** Acknowledges an interrupted worktree operation; every primary that can create or clean up a placement holds it. */
 const WORKTREE_RECOVERY = 'hive_worktree_recover';
-const REVIEW_PRIMARY_TOOLS = [...REVIEW_TOOLS, ...TASK_TRACE_TOOLS, ...INSPECTION_TOOLS, ...CONSTRAINT_MUTATIONS, ...BACKGROUND_TOOLS,
+/** Reads the configured council rosters; a delegated child returns a council request to its parent instead. */
+const COUNCIL_ROSTER = 'hive_councils_list';
+const REVIEW_PRIMARY_TOOLS = [...REVIEW_TOOLS, ...TASK_TRACE_TOOLS, ...INSPECTION_TOOLS, ...CONSTRAINT_MUTATIONS, ...BACKGROUND_TOOLS, COUNCIL_ROSTER,
   'hive_feature_select', 'hive_adhoc_worktree_create', 'hive_adhoc_worktree_cleanup', WORKTREE_RECOVERY, ...AUTHORED_PRIMARY_WRITES];
 
 /** Operations only a primary session may run; child sessions deny them. */
@@ -52,16 +67,18 @@ export const PRIMARY_ONLY_TOOLS = [
   'hive_plan_approve', 'hive_tasks_sync', 'hive_task_create',
   'hive_worktree_merge', 'hive_worktree_cleanup',
   'hive_adhoc_worktree_create', 'hive_adhoc_worktree_merge', 'hive_adhoc_worktree_cleanup', WORKTREE_RECOVERY, ...CHECKOUT_MUTATIONS,
-  ...CONSTRAINT_MUTATIONS, 'hive_context_archive', ...BACKGROUND_TOOLS, ...AUTHORED_PRIMARY_WRITES,
+  ...CONSTRAINT_MUTATIONS, 'hive_context_archive', ...BACKGROUND_TOOLS, ...AUTHORED_PRIMARY_WRITES, COUNCIL_ROSTER,
 ];
 
 /**
  * Primary-only operations whose OpenCode v1 executor also checks the role grant and the session's live parent before
  * running, so neither a broad operator allow rule nor a missing `primary_tools` entry can let a child call them.
- * They stamp the caller as the author of shared records. The check fails closed when the session cannot be read.
- * OpenCode v2 runs the same check for every Hive tool in its registrar guard.
+ * The authored writes stamp the caller as the author of shared records. The council roster is a primary-only read whose
+ * role grant a delegated Architect child shares; v1 writes `primary_tools` into a child only when it is created, so a
+ * child created before the tool existed and later continued has no stored deny. The check fails closed when the
+ * session cannot be read. OpenCode v2 runs the same check for every Hive tool in its registrar guard.
  */
-export const LIVE_PARENT_CHECKED_TOOLS: readonly string[] = [...AUTHORED_PRIMARY_WRITES];
+export const LIVE_PARENT_CHECKED_TOOLS: readonly string[] = [...AUTHORED_PRIMARY_WRITES, COUNCIL_ROSTER];
 
 export function mergePrimaryOnlyTools(existing: readonly string[] | undefined): string[] {
   return [...new Set([...(existing ?? []), ...PRIMARY_ONLY_TOOLS])];
@@ -76,8 +93,9 @@ export function createRolePolicy(customAgents: Record<string, ResolvedCustomAgen
       .filter(([, config]) => bases.includes(config.baseAgent))
       .map(([name]) => [name, 'allow'])),
   });
-  // Architect commissions experiments through Investigators; implementation Foragers stay with execution primaries.
-  const architectTaskPermission = taskPermission(['scout-researcher', 'forager-investigator', 'plan-reviewer', 'approach-advisor'], ['hive-helper']);
+  // Architect convenes council seats and commissions experiments through Investigators; implementation Foragers stay
+  // with execution primaries.
+  const architectTaskPermission = taskPermission([...new Set([...ARCHITECT_PLANNING_BASES, ...COUNCIL_SEAT_BASES])], ['hive-helper']);
   const primaryTaskPermission = taskPermission(ROUTING_BASES, ['architect-planner', 'hive-helper', 'general', 'explore']);
   // Review primaries run candidates through Investigators for runtime exercises; edit stays denied for the primary.
   const reviewTaskPermission = taskPermission(ROUTING_BASES.filter((base) => base !== 'forager-worker'), ['hive-helper']);
@@ -88,7 +106,7 @@ export function createRolePolicy(customAgents: Record<string, ResolvedCustomAgen
   return {
     'hive-master': primary,
     'architect-planner': {
-      hiveTools: [...REVIEW_TOOLS, ...CONSTRAINT_MUTATIONS, ...INSPECTION_TOOLS, ...BACKGROUND_TOOLS, ...TASK_TRACE_TOOLS,
+      hiveTools: [...REVIEW_TOOLS, ...CONSTRAINT_MUTATIONS, ...INSPECTION_TOOLS, ...BACKGROUND_TOOLS, ...TASK_TRACE_TOOLS, COUNCIL_ROSTER,
         'hive_feature_create', 'hive_feature_select', 'hive_plan_write', 'hive_plan_patch', 'hive_plan_approve', 'hive_tasks_sync',
         'hive_repositories_discover', 'hive_repositories_update', 'hive_context_archive', ...AUTHORED_PRIMARY_WRITES,
         // Experiment placement only: Architect never merges, and child sessions deny both as primary-only operations.

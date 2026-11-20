@@ -45,10 +45,6 @@
       "description": "Merge the intended work into its main branch, reviewed and verified on the result"
     },
     {
-      "name": "/council-directive",
-      "description": "Turn a rough request into a reusable council directive"
-    },
-    {
       "name": "/council",
       "description": "Run a read-only council and synthesize a recommendation"
     },
@@ -127,6 +123,7 @@
     "hive_worklog_record",
     "hive_explore_read",
     "hive_explore_update",
+    "hive_councils_list",
     "hive_status",
     "hive_git_snapshot"
   ]

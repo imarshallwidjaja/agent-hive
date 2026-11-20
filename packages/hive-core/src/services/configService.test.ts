@@ -87,7 +87,7 @@ describe("ConfigService defaults", () => {
         fs.mkdirSync(path.dirname(service.getPath()), { recursive: true });
         const bytes = JSON.stringify({
           agentMode: 'unified',
-          council: { maxMembers: 2 },
+          council: { defaultGroup: 'documents' },
           agents: {
             'forager-worker': { model: 'github-copilot/gpt-5.2-codex', variant: 'high', temperature: legacy, autoLoadSkills: ['extra'] },
             'scout-researcher': { temperature: legacy, description: 'Scout routing' },
@@ -102,7 +102,7 @@ describe("ConfigService defaults", () => {
         const config = service.get();
         expect(service.getLastFallbackWarning()).toBeNull();
         expect(config.agentMode).toBe('unified');
-        expect(config.council?.maxMembers).toBe(2);
+        expect(config.council?.defaultGroup).toBe('documents');
         expect(config.agents?.['forager-worker']).toEqual({ model: 'github-copilot/gpt-5.2-codex', variant: 'high', autoLoadSkills: ['extra'] });
         expect(config.agents?.['scout-researcher']).toEqual({ autoLoadSkills: [], description: 'Scout routing' });
         expect(config.taskTraceSummarizer).toEqual({ model: 'provider/summary', variant: 'low' });
@@ -172,8 +172,8 @@ describe("ConfigService defaults", () => {
 
     expect(config.council).toEqual(DEFAULT_HIVE_CONFIG.council);
     expect(config.council?.defaultGroup).toBe('decision');
-    expect(config.council?.maxMembers).toBe(4);
-    expect(config.council?.excludedAgents).toEqual(['hive-master', 'swarm-orchestrator', 'forager-worker', 'forager-investigator', 'hive-builder', 'hive-helper']);
+    expect(config.council).not.toHaveProperty('maxMembers');
+    expect(config.council).not.toHaveProperty('excludedAgents');
     expect(config.council?.groups).toEqual({
       design: {
         description: 'Architecture and implementation-shape advice',
@@ -196,7 +196,7 @@ describe("ConfigService defaults", () => {
     expect(Object.values(config.council?.groups ?? {}).flatMap((group) => group.members)).not.toContain('hive-master');
   });
 
-  it('merges partial global council config with defaults deterministically', () => {
+  it('merges partial global council config with defaults and drops the retired council keys', () => {
     const service = new ConfigService();
     const configPath = service.getPath();
 
@@ -221,15 +221,44 @@ describe("ConfigService defaults", () => {
 
     const config = service.get();
 
+    expect(service.getLastFallbackWarning()).toBeNull();
     expect(config.council?.defaultGroup).toBe('documents');
-    expect(config.council?.maxMembers).toBe(2);
-    expect(config.council?.excludedAgents).toEqual(['simplicity-reviewer']);
+    expect(config.council).not.toHaveProperty('maxMembers');
+    expect(config.council).not.toHaveProperty('excludedAgents');
     expect(Object.keys(config.council?.groups ?? {})).toEqual(['design', 'decision', 'minimal-change', 'documents', 'custom']);
     expect(config.council?.groups?.custom).toEqual({
       description: 'Custom structural member references',
       members: ['unknown-specialist'],
-      maxMembers: 1,
     });
+  });
+
+  it('ignores wrong-typed retired council keys without falling back or losing other settings', () => {
+    const service = new ConfigService();
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      fs.mkdirSync(path.dirname(service.getPath()), { recursive: true });
+      fs.writeFileSync(service.getPath(), JSON.stringify({
+        agentMode: 'unified',
+        council: {
+          defaultGroup: 'review',
+          maxMembers: 'many',
+          excludedAgents: [123],
+          groups: { review: { description: 'Review seats', members: ['code-reviewer'], maxMembers: 0 } },
+        },
+      }));
+
+      const config = service.get();
+
+      expect(service.getLastFallbackWarning()).toBeNull();
+      expect(warn).not.toHaveBeenCalled();
+      expect(config.agentMode).toBe('unified');
+      expect(config.council?.defaultGroup).toBe('review');
+      expect(config.council).not.toHaveProperty('maxMembers');
+      expect(config.council).not.toHaveProperty('excludedAgents');
+      expect(config.council?.groups?.review).toEqual({ description: 'Review seats', members: ['code-reviewer'] });
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('replaces only the declared council group while preserving omitted default groups', () => {
@@ -1122,15 +1151,11 @@ describe('ConfigService global-only read source selection', () => {
   it.each([
     { name: 'a non-object council value', council: [] },
     { name: 'a non-string defaultGroup', council: { defaultGroup: 123 } },
-    { name: 'a non-positive maxMembers', council: { maxMembers: 0 } },
-    { name: 'a non-integer maxMembers', council: { maxMembers: 1.5 } },
-    { name: 'non-string excludedAgents', council: { excludedAgents: ['code-reviewer', 123] } },
     { name: 'a non-object groups value', council: { groups: [] } },
     { name: 'a group without members', council: { groups: { review: { description: 'missing members' } } } },
     { name: 'a group with empty members', council: { groups: { review: { members: [] } } } },
     { name: 'a group with non-string members', council: { groups: { review: { members: ['code-reviewer', 123] } } } },
     { name: 'a group with non-string description', council: { groups: { review: { description: 123, members: ['code-reviewer'] } } } },
-    { name: 'a group with invalid maxMembers', council: { groups: { review: { members: ['code-reviewer'], maxMembers: 0 } } } },
   ])('falls back to defaults when global config has $name', ({ council }) => {
     const globalConfigPath = path.join(tempHome, '.config', 'opencode', 'agent_hive.json');
 

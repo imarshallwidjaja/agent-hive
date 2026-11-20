@@ -1,4 +1,3 @@
-import type { CouncilConfig } from 'hive-core';
 import type { HostProfile } from '../runtime/host-profile.js';
 import type { BackgroundDelegationAvailability } from '../utils/background-gate.js';
 
@@ -21,8 +20,6 @@ export interface HiveCommandContext {
   host: HostProfile;
   agentMode: 'unified' | 'dedicated';
   backgroundGuidance: BackgroundDelegationAvailability;
-  council: CouncilConfig;
-  agents: Record<string, HiveCommandAgentDescriptor>;
   dashReviewLanes: HiveCommandDashReviewLane[];
   vulnerabilityReviewLanes: HiveCommandVulnerabilityReviewLane[];
 }
@@ -49,7 +46,6 @@ export interface HiveCommandAgentDescriptor {
   baseAgent: string;
   available: boolean;
   description: string;
-  readOnlyCouncilEligible: boolean;
   model?: string;
   variant?: string;
 }

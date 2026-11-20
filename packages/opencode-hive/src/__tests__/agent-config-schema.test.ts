@@ -286,7 +286,7 @@ describe('agent_hive schema council contract', () => {
     expect(schema.properties.repositoryRoot.description).toContain('Deprecated migration-only');
     expect(schema.properties.repositories.description).toContain('Deprecated migration-only');
     expect(schema.$defs.repositoryConfig.properties.path.description).toBe('Project-relative path to a git repository.');
-    expect(schema.$defs.councilConfig.description).toBe('Global council command settings.');
+    expect(schema.$defs.councilConfig.description).toBe('Global council settings, read by the hive_councils_list tool.');
   });
 
   it('validates the relevant global config contract through the published schema', () => {
@@ -317,8 +317,6 @@ describe('agent_hive schema council contract', () => {
     expect(validateConfigShape({
       council: {
         defaultGroup: 'decision',
-        maxMembers: 4,
-        excludedAgents: ['hive-master', 'swarm-orchestrator', 'forager-worker', 'forager-investigator', 'hive-builder', 'hive-helper'],
         groups: {
           design: {
             description: 'Architecture and implementation-shape advice',
@@ -337,6 +335,31 @@ describe('agent_hive schema council contract', () => {
             members: ['scout-researcher', 'code-reviewer', 'plan-reviewer'],
           },
         },
+      },
+    })).toBe(true);
+  });
+
+  it('keeps the retired council keys as deprecated, ignored properties so existing files still validate', () => {
+    const retired = [
+      schema.$defs.councilConfig.properties.maxMembers,
+      schema.$defs.councilConfig.properties.excludedAgents,
+      schema.$defs.councilGroupConfig.properties.maxMembers,
+    ];
+    for (const property of retired) {
+      expect(property.deprecated).toBe(true);
+      expect(property.description).toContain('Deprecated and ignored');
+    }
+    // The schema accepts whatever the runtime ignores, including the wrong-typed values the core config test pins.
+    for (const property of retired) expect(Object.keys(property).toSorted()).toEqual(['deprecated', 'description']);
+    expect(validateConfigShape({
+      council: { maxMembers: 4, excludedAgents: ['hive-master'], groups: { review: { members: ['code-reviewer'], maxMembers: 2 } } },
+    })).toBe(true);
+    expect(validateConfigShape({
+      council: {
+        defaultGroup: 'review',
+        maxMembers: 'many',
+        excludedAgents: [123],
+        groups: { review: { description: 'Review seats', members: ['code-reviewer'], maxMembers: 0 } },
       },
     })).toBe(true);
   });
@@ -366,7 +389,7 @@ describe('agent_hive schema council contract', () => {
 
   it.each([
     { name: 'bad members', config: { council: { groups: { review: { members: [] } } } } },
-    { name: 'bad maxMembers', config: { council: { maxMembers: 0 } } },
+    { name: 'unknown council property', config: { council: { maxSeats: 2 } } },
     { name: 'unknown top-level schema property', config: { unknown: true } },
   ])('rejects $name', ({ config }) => {
     expect(validateConfigShape(config)).toBe(false);

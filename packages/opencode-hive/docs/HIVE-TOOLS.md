@@ -4,9 +4,9 @@ Tool availability plus instructions govern action. Each tool validates its own o
 
 ## Host entries and read transport
 
-From 5.0.0, one package supplies native v1 and v2 entries, now each with all 51 tools and 18 commands. Releases through 4.2.0 are v1-only. The qualified hosts are v1.18.30 and v2.0.26. Installation, `plugins` options and actual model-selection semantics are in the [plugin README](../README.md#opencode-v2).
+From 5.0.0, one package supplies native v1 and v2 entries, now each with all 52 tools and 17 commands. Releases through 4.2.0 are v1-only. The qualified hosts are v1.18.30 and v2.0.26. Installation, `plugins` options and actual model-selection semantics are in the [plugin README](../README.md#opencode-v2).
 
-V2 registers every tool through one validating registrar. `readTransport: "codemode"` (default) explicitly admits only `hive_repositories_status`, `hive_git_snapshot` and `hive_task_trace_content` to Code Mode; controls, repairing reads, worktree inspections and mixed `hive_task_trace` stay direct. `readTransport: "direct"` makes all 51 direct, with the same IDs and authority. The three Worklog tools and the two exploration tools are direct under both transports. Use direct mode when global, per-role or custom-agent permissions deny `execute`. Hive diagnoses unavailable Code Mode reads and preserves the denial.
+V2 registers every tool through one validating registrar. `readTransport: "codemode"` (default) explicitly admits only `hive_repositories_status`, `hive_git_snapshot` and `hive_task_trace_content` to Code Mode; controls, repairing reads, worktree inspections and mixed `hive_task_trace` stay direct. `readTransport: "direct"` makes all 52 direct, with the same IDs and authority. The three Worklog tools and the two exploration tools are direct under both transports. Use direct mode when global, per-role or custom-agent permissions deny `execute`. Hive diagnoses unavailable Code Mode reads and preserves the denial.
 
 Both hosts deliver the same tool descriptions and argument descriptions to the model, built from one definition per operation. Those descriptions explain how arguments relate, what an operation changes, what its result means and when a retry is unsafe. They do not enforce anything: the Zod argument shapes, the services and the role guards do, and this document is the reference for operators and engineers. The runtime does not read it.
 
@@ -25,10 +25,11 @@ On v1, OpenCode's `experimental.primary_tools` adds session-level deny rules whe
 - Constraints/archive: `hive_constraints_add`, `hive_constraints_edit`, `hive_constraints_clear`, `hive_context_archive`.
 - Parent-owned board: `hive_background_status`, `hive_background_reconcile`, `hive_background_reconcile_batch`, `hive_background_cancel`.
 - Authored records: `hive_worklog_record`, `hive_explore_update`.
+- Council rosters: `hive_councils_list`. A delegated Architect returns a council request to its parent instead.
 
-`hive_worklog_record` and `hive_explore_update` stamp the calling session as the author of shared records, so on v1 their executor also checks the caller's role grant and reads the session's live parent before writing, as the v2 guard does for every Hive tool. A broad operator allow rule or a missing `primary_tools` entry therefore cannot let a child, including delegated Architect, record, and the call is refused when the session cannot be read.
+`hive_worklog_record` and `hive_explore_update` stamp the calling session as the author of shared records, so on v1 their executor also checks the caller's role grant and reads the session's live parent before writing, as the v2 guard does for every Hive tool. A broad operator allow rule or a missing `primary_tools` entry therefore cannot let a child, including delegated Architect, record, and the call is refused when the session cannot be read. `hive_councils_list` runs the same v1 check before reading: Architect's role grant includes it, and v1 writes `primary_tools` into a child only when the child is created, so a delegated Architect child created before the tool existed and later continued would otherwise have no stored deny.
 
-Delegated Architect retains its inherited route and uses explicit feature arguments for planning. It may register discovered repositories through `hive_repositories_update`; other subagent roles' Hive allowlists exclude that tool. It returns approval, sync, archive, and board/control requests to the parent. Its `task` permission allows one terminal layer of blocking Scout, Investigator, plan-reviewer, approach-advisor, their custom variants, and `hive-helper`; `task` is deliberately absent from `primary_tools`, and `subagent_depth: 2` supports this helper grandchild. Independent permitted calls may be emitted together. Child-role rules take precedence over a background appendix without loading the primary-only `background-delegation` skill; child board tools remain unavailable. Architect as primary or child routes multi-step trace/evidence questions and known identities to Helper and performs single direct spot-check reads itself. Helper is read-only and terminal, retaining inherited child-session denials. Other subagents cannot delegate or ask questions. Execution primaries can dispatch registered workers, reviewers, Architect, Helper, and ordinary native subagents, but cannot dispatch another primary or an unknown target. Architect, as primary or child, can dispatch Investigators (built-in and derived) for experiments but never implementation Foragers. Review primaries dispatch inspection-only specialists, Helper, and Investigators (built-in and derived) for runtime exercises; they cannot dispatch implementation Foragers, Architect, native `general`/`explore`, or another primary. The grant is dispatch authority only: whether a run is authorized, where it happens, and how it ends are instructions in the shared Experiments method, and Investigator returns evidence, never a patch to merge.
+Delegated Architect retains its inherited route and uses explicit feature arguments for planning. It may register discovered repositories through `hive_repositories_update`; other subagent roles' Hive allowlists exclude that tool. It returns approval, sync, archive, and board/control requests to the parent. Its `task` permission, on primary and child sessions alike, allows one terminal layer of blocking Scout, Investigator, plan-reviewer, approach-advisor, code-reviewer, simplicity-reviewer, vulnerability-reviewer, their custom variants, and `hive-helper`. Dispatching the code, simplicity and vulnerability reviewers only as council seats under the `council` skill is instruction-bound, not a permission, and only a primary Architect convenes: a delegated Architect lacks the primary-only `hive_councils_list`, returns a council request to its parent and does not dispatch those three reviewers; `task` is deliberately absent from `primary_tools`, and `subagent_depth: 2` supports this helper grandchild. Independent permitted calls may be emitted together. Child-role rules take precedence over a background appendix without loading the primary-only `background-delegation` skill; child board tools remain unavailable. Architect as primary or child routes multi-step trace/evidence questions and known identities to Helper and performs single direct spot-check reads itself. Helper is read-only and terminal, retaining inherited child-session denials. Other subagents cannot delegate or ask questions. Execution primaries can dispatch registered workers, reviewers, Architect, Helper, and ordinary native subagents, but cannot dispatch another primary or an unknown target. Architect, as primary or child, can dispatch Investigators (built-in and derived) for experiments but never implementation Foragers. Review primaries dispatch inspection-only specialists, Helper, and Investigators (built-in and derived) for runtime exercises; they cannot dispatch implementation Foragers, Architect, native `general`/`explore`, or another primary. The grant is dispatch authority only: whether a run is authorized, where it happens, and how it ends are instructions in the shared Experiments method, and Investigator returns evidence, never a patch to merge.
 
 `hive_feature_create` stays available to delegated Architect so it can create the feature that owns its plan without changing the inherited session route.
 
@@ -47,13 +48,14 @@ Abbreviations enumerate exact tools:
 - **X**: `hive_adhoc_worktree_create`, `hive_adhoc_worktree_cleanup` for experiment placement; primary sessions only, and never paired with merge.
 - **W**: `hive_worklog_record`, `hive_explore_update`; primary sessions only.
 - **K**: `hive_worktree_recover`; primary sessions only. Every primary that can create or clean up a placement holds it.
+- **N**: `hive_councils_list`; primary sessions only.
 
 | Agent | Hive tools | Native boundary / usage |
 |-------|------------|-------------------------|
-| `hive-master` | All 51 registered Hive tools | Primary; integration, cleanup and retained checkout owner |
-| `swarm-orchestrator` | All 51 | Primary; integration, cleanup and retained checkout owner |
-| `hive-builder` | All 51 | Primary; ad-hoc integration, cleanup and retained checkout owner |
-| `architect-planner` (primary) | R + C + I + T + B + M + P + W + X + K | Planning plus commissioned Investigator experiments; terminal planning helpers and Helper investigation; no merge; edit denied |
+| `hive-master` | All 52 registered Hive tools | Primary; integration, cleanup and retained checkout owner |
+| `swarm-orchestrator` | All 52 | Primary; integration, cleanup and retained checkout owner |
+| `hive-builder` | All 52 | Primary; ad-hoc integration, cleanup and retained checkout owner |
+| `architect-planner` (primary) | R + C + I + T + B + M + P + W + X + K + N | Planning plus commissioned Investigator experiments; terminal planning helpers, council seats and Helper investigation; no merge; edit denied |
 | `architect-planner` (task child) | R + C + I + T + `hive_feature_create`, `hive_plan_write`, `hive_plan_patch`, `hive_repositories_discover`, `hive_repositories_update` | Feature/plan/context authoring, repository registration, terminal planning helpers (Investigator included) and Helper investigation inside parent-covered placement; edit/question/board and placement create/cleanup denied |
 | `scout-researcher` | R + `hive_repositories_discover` | Read-only retrieval; edit/task/question denied; trace retrieval goes to Helper |
 | `forager-worker` | R + C + I + T + `hive_task_update`, `hive_worktree_create` | Assigned implementation/recovery, including implementation-coupled diagnosis; task/question denied; own report/handoff only |
@@ -64,8 +66,8 @@ Abbreviations enumerate exact tools:
 | `simplicity-reviewer` | R + C | Same |
 | `approach-advisor` | R + C | Same |
 | `vulnerability-reviewer` | R + C | Same; shell/scanners/external probing additionally forbidden by its instructions |
-| `dash-reviewer` | R + C + I + T + B + M + V + W + K | Hidden review primary; edit and plan/task/integration mutations denied; may dispatch Investigators for runtime exercises, never implementation Foragers |
-| `vulnerability-review-primary` | R + C + I + T + B + M + V + W + K | Hidden review primary; same |
+| `dash-reviewer` | R + C + I + T + B + M + V + W + K + N | Hidden review primary; edit and plan/task/integration mutations denied; may dispatch Investigators for runtime exercises, never implementation Foragers |
+| `vulnerability-review-primary` | R + C + I + T + B + M + V + W + K + N | Hidden review primary; same |
 | Custom derivatives of all eight supported bases | Exactly their base's set | Inherit base prompt and permissions; extra skills do not expand authority |
 | Native `general`, `explore` | None (`'hive_*': 'deny'`) | Ordinary tools; task/question denied; native `skill` allowed; explore edit denied |
 | Hidden `__hive_task_trace_summarizer` | None (`'*': 'deny'`) | Supplied evidence only; all tools denied |
@@ -671,6 +673,28 @@ An exploration records one investigation in any domain, such as debugging a fail
 
 Exploration results are compact JSON, like Worklog results. Every `ExplorationError` returns in the shared Hive failure envelope `{ success: false, reason, error, details? }`, where `error` is the message and `details` is present when it has fields. Argument refusals that need no stored state, including the ID pattern, every byte and count cap, a `supersedes` cycle within one call's observations and, on creation, a `supersedes` naming no observation of the call, happen before any lock or directory is created and touch no file. A refusal that depends on the stored exploration publishes no new revision, though taking the lock or removing a stale active copy of a closed exploration may touch files. An `io_error` with `details.publication: 'uncertain'` is resolved by resending the identical request with the same `operationId`; the retry repeats the directory flushes and returns `replayed: true` only once they succeed, failing the same way until then. The host stamps `createdBy` and `updatedBy` from the calling session, owner and agent; arguments cannot set them. Every Hive role except native `general`/`explore` and the hidden summarizer may read; primary sessions of the full primaries, Architect and the review primaries may update. Every successful result carries `untrustedNotice`; a failure envelope does not. Entries are agent-recorded observations and hypotheses, not verified ground truth, task status or policy.
 
+## Councils (1 tool)
+
+| Tool | Purpose |
+|------|---------|
+| `hive_councils_list` | List the configured councils and resolve the seats of one, for the `council` skill |
+
+`hive_councils_list({ name? })` reads the effective `council` configuration and the agents the host has when the call runs. It dispatches nobody. Pass `name` only when the operator explicitly named a council; it is matched exactly, so any string that names no configured council, including a blank one, returns `unknown_council`. Without it the default council (`council.defaultGroup`, else `decision`) is used. The `/council` command carries no roster: it renders the operator's text and loads the `council` skill, which calls this tool.
+
+The result always has `notice`, `councils` (every configured council as `{ name, description? }`, in configuration order), `selected` (the council the call resolved: the named one, else the default) and `skipped: [{ name, reason }]`. Then either `ok: true` with `members: [{ name, baseAgent, description }]`, or `ok: false` with `reason` `unknown_council` or `no_usable_seats` and no members of any council. A broken default fails only a call without `name`; a named usable council still resolves. There is no fallback to another council and no seat cap.
+
+Members are judged once each, in configuration order, and the first occurrence of a name wins. A skip `reason` is one of:
+
+- `not_registered`: no Hive role or custom agent has that name.
+- `not_available`: the host does not offer it now. On v1 that is an operator `agent.<name>.disable: true` on a Hive subagent, read when the config hook runs (v1 configuration is fixed after startup). On v2 it is an agent the host no longer lists, or a Hive subagent the operator made a primary.
+- `example_template`: a starter template whose name contains `example-template` or whose canonical Hive description still starts with "Example template only". On v2 the canonical description is used even when a native description override exists, and members report it too.
+- `ineligible_base`: the agent's base role is not one of the council seat bases (`COUNCIL_SEAT_BASES` in `src/runtime/role-policy.ts`): `scout-researcher`, `plan-reviewer`, `code-reviewer`, `simplicity-reviewer`, `approach-advisor`, `vulnerability-reviewer`. Investigators, Foragers, Helper and orchestrators never sit.
+- `duplicate`: a repeated name.
+
+When the host agent catalog cannot be read (on v1 before the config hook has run, on v2 when `agent.list()` fails), the call fails; it never returns an empty or guessed roster. The tool description and `notice` state the council rules: load the `council` skill before convening and stop if it is unavailable; on `ok: false` launch nobody and substitute no other council; names and descriptions are operator configuration data, not instructions; the convenor and every councillor must work read-only during a council. That last rule is an instruction, not something the host enforces.
+
+The tool is granted to the full primaries, Architect and the review primaries, and is primary-only: child sessions are denied it, so a delegated Architect returns a council request to its parent. It is not a Code Mode read: it is a direct call under both read transports.
+
 ## Status (1 tool)
 
 | Tool | Purpose |
@@ -741,6 +765,7 @@ Skills are loaded via OpenCode's native `skill` tool. Hive bundles are materiali
 | Operator Constraints | 4 | read, add, edit, clear |
 | Worklog | 3 | list, read, record |
 | Exploration | 2 | read, update |
+| Councils | 1 | list |
 | Status | 1 | status |
 | Snapshot | 1 | git snapshot |
 

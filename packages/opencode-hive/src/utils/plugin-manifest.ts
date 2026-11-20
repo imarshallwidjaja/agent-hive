@@ -70,6 +70,7 @@ export const HIVE_TOOL_NAMES = [
   'hive_worklog_record',
   'hive_explore_read',
   'hive_explore_update',
+  'hive_councils_list',
   'hive_status',
   'hive_git_snapshot',
 ] as const;

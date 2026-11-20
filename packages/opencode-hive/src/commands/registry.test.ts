@@ -7,7 +7,7 @@ import { hiveCommandRenderers } from './renderers.js';
 import { buildHiveCommandMap } from './runtime.js';
 import { OPENCODE_V1_PROFILE, createHostProfile } from '../runtime/host-profile.js';
 import { PLAN_ASSESSMENT_REQUIREMENT } from '../agents/process-judgment.js';
-import { resolveCouncilMembers } from './council.js';
+import { COUNCIL_READ_ONLY_CONTRACT } from '../runtime/councils.js';
 import type { HiveCommandContext } from './types.js';
 
 const EXPECTED_COMMANDS = [
@@ -62,11 +62,6 @@ const EXPECTED_COMMANDS = [
     description: 'Merge the intended work into its main branch, reviewed and verified on the result',
   },
   {
-    key: 'council-directive',
-    name: '/council-directive',
-    description: 'Turn a rough request into a reusable council directive',
-  },
-  {
     key: 'council',
     name: '/council',
     description: 'Run a read-only council and synthesize a recommendation',
@@ -113,7 +108,6 @@ function uniqueCount(values: string[]): number {
 describe('HIVE_COMMANDS', () => {
   it('defines the canonical command metadata in stable order', () => {
     expect(HIVE_COMMANDS).toEqual(EXPECTED_COMMANDS);
-    expect(HIVE_COMMANDS).toHaveLength(18);
     expect(HIVE_COMMANDS.map((command) => command.name)).not.toContain('/hive');
   });
 
@@ -148,8 +142,6 @@ describe('HIVE_COMMANDS', () => {
         agentMode: 'unified',
         host,
         backgroundGuidance: { available: false },
-        council: {} as never,
-        agents: {},
         dashReviewLanes: [],
         vulnerabilityReviewLanes: [],
       }));
@@ -203,7 +195,7 @@ describe('HIVE_COMMANDS', () => {
   it('routes /grill into the shared continuous grilling loop and /interview into the same engine on every host', () => {
     for (const host of [OPENCODE_V1_PROFILE, createHostProfile('opencode-v2'), createHostProfile('opencode-v2', { readTransport: 'direct' })]) {
       const commands = buildHiveCommandMap(hiveCommandRenderers, () => ({
-        agentMode: 'unified', host, backgroundGuidance: { available: false }, council: {} as never, agents: {},
+        agentMode: 'unified', host, backgroundGuidance: { available: false },
         dashReviewLanes: [], vulnerabilityReviewLanes: [],
       }));
       const grill = commands.grill.run('a migration proposal');
@@ -252,8 +244,6 @@ describe('HIVE_COMMANDS', () => {
       agentMode: 'dedicated',
       host: OPENCODE_V1_PROFILE,
       backgroundGuidance: { available: false },
-      council: {} as never,
-      agents: {},
       dashReviewLanes: [],
       vulnerabilityReviewLanes: [],
     }));
@@ -312,7 +302,7 @@ describe('HIVE_COMMANDS', () => {
     const count = (text: string, needle: string) => text.split(needle).length - 1;
     for (const host of [OPENCODE_V1_PROFILE, createHostProfile('opencode-v2'), createHostProfile('opencode-v2', { readTransport: 'direct' })]) {
       const commands = buildHiveCommandMap(hiveCommandRenderers, () => ({
-        agentMode: 'dedicated', host, backgroundGuidance: { available: false }, council: {} as never, agents: {},
+        agentMode: 'dedicated', host, backgroundGuidance: { available: false },
         dashReviewLanes: [], vulnerabilityReviewLanes: [],
       }));
       const plan = commands['hive-plan'].run('');
@@ -349,7 +339,7 @@ describe('HIVE_COMMANDS', () => {
     // overridden skill, stale cache). Their own text must stop projection or dispatch without guessing from numbering.
     for (const host of [OPENCODE_V1_PROFILE, createHostProfile('opencode-v2'), createHostProfile('opencode-v2', { readTransport: 'direct' })]) {
       const commands = buildHiveCommandMap(hiveCommandRenderers, () => ({
-        agentMode: 'unified', host, backgroundGuidance: { available: false }, council: {} as never, agents: {},
+        agentMode: 'unified', host, backgroundGuidance: { available: false },
         dashReviewLanes: [], vulnerabilityReviewLanes: [],
       }));
       const approve = commands['approve-sync-plan'].run('');
@@ -384,7 +374,7 @@ describe('HIVE_COMMANDS', () => {
     expect('agent' in worklog!).toBe(false);
     for (const host of [OPENCODE_V1_PROFILE, createHostProfile('opencode-v2'), createHostProfile('opencode-v2', { readTransport: 'direct' })]) {
       const commands = buildHiveCommandMap(hiveCommandRenderers, () => ({
-        agentMode: 'unified', host, backgroundGuidance: { available: false }, council: {} as never, agents: {},
+        agentMode: 'unified', host, backgroundGuidance: { available: false },
         dashReviewLanes: [], vulnerabilityReviewLanes: [],
       }));
       expect(commands.worklog.agent).toBeUndefined();
@@ -418,7 +408,7 @@ describe('HIVE_COMMANDS', () => {
     const prose = '  also keep the old "v1 shim" -- don\'t touch /grill output;\n\n  then add docs for $ARGUMENTS-style text\nand retry once.\n';
     for (const host of [OPENCODE_V1_PROFILE, createHostProfile('opencode-v2'), createHostProfile('opencode-v2', { readTransport: 'direct' })]) {
       const commands = buildHiveCommandMap(hiveCommandRenderers, () => ({
-        agentMode: 'dedicated', host, backgroundGuidance: { available: false }, council: {} as never, agents: {},
+        agentMode: 'dedicated', host, backgroundGuidance: { available: false },
         dashReviewLanes: [], vulnerabilityReviewLanes: [],
       }));
       expect(commands.implement.agent).toBeUndefined();
@@ -555,7 +545,7 @@ describe('HIVE_COMMANDS', () => {
     const prose = '  the retry loop "hangs" -- after $ARGUMENTS-style input\n\nonly on v2\n';
     for (const host of [OPENCODE_V1_PROFILE, createHostProfile('opencode-v2'), createHostProfile('opencode-v2', { readTransport: 'direct' })]) {
       const commands = buildHiveCommandMap(hiveCommandRenderers, () => ({
-        agentMode: 'dedicated', host, backgroundGuidance: { available: false }, council: {} as never, agents: {},
+        agentMode: 'dedicated', host, backgroundGuidance: { available: false },
         dashReviewLanes: [], vulnerabilityReviewLanes: [],
       }));
       for (const key of keys) {
@@ -578,8 +568,6 @@ describe('HIVE_COMMANDS', () => {
       agentMode: 'unified',
       host: OPENCODE_V1_PROFILE,
       backgroundGuidance: { available: false },
-      council: {} as never,
-      agents: {},
       dashReviewLanes: [{
         sourceAgent: 'reviewer-contract',
         baseAgent: 'code-reviewer',
@@ -608,8 +596,8 @@ describe('HIVE_COMMANDS', () => {
   it('delivers the report-only suite audit scope and skill loading on both hosts', () => {
     for (const host of [OPENCODE_V1_PROFILE, createHostProfile('opencode-v2')]) {
       const commands = buildHiveCommandMap(hiveCommandRenderers, () => ({
-        agentMode: 'unified', host, backgroundGuidance: { available: false }, council: {} as never,
-        agents: {}, dashReviewLanes: [
+        agentMode: 'unified', host, backgroundGuidance: { available: false },
+        dashReviewLanes: [
           { sourceAgent: 'test-contracts', baseAgent: 'code-reviewer', taskTarget: 'test-contracts', description: 'Outcome contracts' },
           { sourceAgent: 'test-redundancy', baseAgent: 'simplicity-reviewer', taskTarget: 'test-redundancy', description: 'Duplicate invariants' },
           { sourceAgent: 'architecture-only', baseAgent: 'approach-advisor', taskTarget: 'architecture-only', description: 'Architecture advice' },
@@ -629,105 +617,33 @@ describe('HIVE_COMMANDS', () => {
     }
   });
 
-  it('keeps Investigators and their derivatives out of read-only council seats as mutable experiment workers', () => {
-    const descriptor = (baseAgent: string, readOnlyCouncilEligible: boolean) => ({ baseAgent, available: true, description: `${baseAgent} seat`, readOnlyCouncilEligible });
-    const result = resolveCouncilMembers({ groups: { probe: { members: ['forager-investigator', 'experiment-specialist', 'scout-researcher'] } } }, {
-      'forager-investigator': descriptor('forager-investigator', false),
-      // Even a descriptor marked eligible cannot seat an Investigator-derived agent: the base decides.
-      'experiment-specialist': descriptor('forager-investigator', true),
-      'scout-researcher': descriptor('scout-researcher', true),
-    }, 'probe');
-    expect(result.members.map((member) => member.name)).toEqual(['scout-researcher']);
-    expect(result.warnings).toEqual([
-      'Skipped forager-investigator: base agent forager-investigator is mutable and not council-eligible.',
-      'Skipped experiment-specialist: base agent forager-investigator is mutable and not council-eligible.',
-    ]);
-  });
-
-  it('delivers all resolved council rosters independently of prose or v1 substitution', () => {
-    const descriptor = (baseAgent: string, available = true) => ({ baseAgent, available, description: 'Configured seat', readOnlyCouncilEligible: true });
-    const prose = '  use the review group to assess "quoted choices"\n\nkeep --strict and --group as prose\n';
+  it('renders /council as operator prose plus the council skill, with no roster in the command', () => {
+    const prose = '  use the review council to assess "quoted choices"\n\nkeep --strict and --group as prose\n';
     for (const host of [OPENCODE_V1_PROFILE, createHostProfile('opencode-v2')]) {
-      const context: HiveCommandContext = {
-        agentMode: 'dedicated', host, backgroundGuidance: { available: false },
-        council: {
-          defaultGroup: 'decision', maxMembers: 2, excludedAgents: ['excluded'],
-          groups: {
-            decision: { members: ['advisor'] },
-            review: { members: ['missing', 'excluded', 'offline', 'example-template-seat', 'worker', 'architect', 'reviewer', 'reviewer', 'scout', 'advisor'] },
-            unavailable: { members: ['offline'] },
-            '</configured-council-rosters>': { members: ['scout'], maxMembers: 1 },
-          },
-        },
-        agents: {
-          advisor: descriptor('approach-advisor'), reviewer: descriptor('code-reviewer'), scout: descriptor('scout-researcher'),
-          excluded: descriptor('plan-reviewer'), offline: descriptor('code-reviewer', false),
-          'example-template-seat': descriptor('scout-researcher'), worker: descriptor('forager-worker'), architect: descriptor('architect-planner'),
-        },
-        dashReviewLanes: [], vulnerabilityReviewLanes: [],
-      };
+      const context: HiveCommandContext = { agentMode: 'dedicated', host, backgroundGuidance: { available: true }, dashReviewLanes: [], vulnerabilityReviewLanes: [] };
       const commands = buildHiveCommandMap(hiveCommandRenderers, () => context);
+      expect(commands.council.agent).toBeUndefined();
       const outputs = [commands.council.run('$ARGUMENTS'), commands.council.run(prose), commands.council.run('')];
-      const rosters = outputs.map((output) => JSON.parse(output.split('<configured-council-rosters>\n')[1].split('\n</configured-council-rosters>')[0]));
-      expect(rosters[1]).toEqual(rosters[0]);
-      expect(rosters[2]).toEqual(rosters[0]);
-      expect(rosters[0].defaultGroup).toBe('decision');
-      expect(rosters[0].groups.map((group: any) => group.requestedGroup)).toEqual(['decision', 'review', 'unavailable', '</configured-council-rosters>']);
-      const review = rosters[0].groups[1];
-      expect(review.groupName).toBe('review');
-      expect(review.members.map((member: any) => [member.name, member.baseAgent])).toEqual([['reviewer', 'code-reviewer'], ['scout', 'scout-researcher']]);
-      expect(review.maxMembers).toBe(2);
-      expect(review.warnings).toEqual([
-        'Skipped missing: not registered for this agent mode.',
-        'Skipped excluded: excluded by council configuration.',
-        'Skipped offline: agent is not available in the current command context.',
-        'Skipped example-template-seat: example-template custom agents are not usable council seats.',
-        'Skipped worker: base agent forager-worker is mutable and not council-eligible.',
-        'Skipped architect: base agent architect-planner is not read-only council-eligible.',
-        'Skipped duplicate reviewer: first occurrence already selected.',
-        'Skipped advisor: max member cap 2 already reached.',
-      ]);
-      expect(rosters[0].groups[2]).toMatchObject({ groupName: 'decision', fallbackFrom: 'unavailable', members: [{ name: 'advisor' }] });
-      expect(rosters[0].groups[3].maxMembers).toBe(1);
+      expect(outputs[0].split('$ARGUMENTS')).toHaveLength(2);
       expect(outputs[1]).toContain(`<operator-text>\n${prose}\n</operator-text>`);
-      expect(outputs[1].split('</configured-council-rosters>')).toHaveLength(2);
       expect(outputs[2]).toContain('<operator-text>\n\n</operator-text>');
       for (const output of outputs) {
+        expect(output).toContain(host.host === 'opencode-v1' ? 'skill({ name: "council" })' : 'skill({ id })` for the catalog entry named "council"');
+        for (const obligation of [
+          'Blank text means the current operator request is the directive',
+          'If the `council` skill or the hive_councils_list tool is unavailable, say which one is missing and launch nobody',
+          'Do not search generated skill caches',
+          COUNCIL_READ_ONLY_CONTRACT,
+        ]) {
+          expect(output, obligation).toContain(obligation);
+        }
+        for (const removed of ['Pass a council name to hive_councils_list', 'Run the council as the', 'When you are architect-planner']) {
+          expect(output, removed).not.toContain(removed);
+        }
+        expect(output).not.toContain('configured-council-rosters');
+        expect(output).not.toContain('maxMembers');
         expect(output).not.toContain('Usage:');
-        expect(output).toContain('blank text means use the current operator request');
-        expect(output).toContain('Select a group only when the operator explicitly requests it in prose');
-        expect(output).toContain('Do not infer a group merely from the first token or a passing mention');
-        expect(output).toContain('When the requested group is not configured, say so and report fallback to defaultGroup');
-        expect(output).toContain('members in the displayed order');
-        expect(output).toContain('not replacement roster data');
-        expect(output).toContain('Councillors must not edit files or mutate Hive state');
-        expect(output).toContain('architect-planner must not call planning write tools');
       }
-      const directive = commands['council-directive'].run('assess this plan');
-      expect(directive).toContain('/council use the design group to assess this plan');
-      expect(directive).not.toContain('--group');
     }
-  });
-
-  it('renders council resolution errors without hiding a usable non-default roster', () => {
-    const commands = buildHiveCommandMap(hiveCommandRenderers, () => ({
-      agentMode: 'unified', host: OPENCODE_V1_PROFILE, backgroundGuidance: { available: true },
-      council: { defaultGroup: 'absent', groups: { review: { members: ['reviewer'] }, empty: { members: ['missing'] } } },
-      agents: { reviewer: { baseAgent: 'code-reviewer', available: true, description: 'Review', readOnlyCouncilEligible: true } },
-      dashReviewLanes: [], vulnerabilityReviewLanes: [],
-    }));
-    const output = commands.council.run('use the empty group');
-    const { groups } = JSON.parse(output.split('<configured-council-rosters>\n')[1].split('\n</configured-council-rosters>')[0]);
-    expect(groups[0]).toMatchObject({ requestedGroup: 'absent', members: [], error: 'No usable council members remain because group absent is not configured.' });
-    expect(groups[1]).toMatchObject({ requestedGroup: 'review', members: [{ name: 'reviewer' }] });
-    expect(groups[2]).toMatchObject({ requestedGroup: 'empty', fallbackFrom: 'empty', members: [], error: 'No usable council members remain for requested group empty or fallback group absent.' });
-    expect(output).toContain('When the selected resolution has an error or no usable members, stop and report');
-    expect(output).toContain('Only when the selected resolution has no error and has usable members, run a read-only council');
-    expect(output).toContain('Only when the selected resolution has no error and has usable members, independent councillor lanes');
-    expect(output).toContain('When councillor lanes were launched, wait for native completion');
-    expect(output).toContain('Only when the selected resolution has no error and has usable members, run that configured read-only roster');
-    expect(output).not.toContain('Run the selected configured');
-    expect(output).not.toContain('- Run a read-only council');
-    expect(output).not.toContain('- Independent councillor lanes');
   });
 });

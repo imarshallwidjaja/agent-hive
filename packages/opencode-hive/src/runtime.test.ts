@@ -1310,15 +1310,15 @@ describe('coordinated runtime hard cut', () => {
       'hive_feature_complete', 'hive_feature_select', 'hive_plan_approve', 'hive_tasks_sync', 'hive_task_create',
       'hive_worktree_merge', 'hive_worktree_cleanup', 'hive_adhoc_worktree_create', 'hive_adhoc_worktree_merge', 'hive_adhoc_worktree_cleanup',
       'hive_worktree_recover', 'hive_checkout_create', 'hive_checkout_register', 'hive_checkout_readiness', 'hive_checkout_cleanup',
-      ...constraints, 'hive_context_archive', ...background, 'hive_worklog_record', 'hive_explore_update',
+      ...constraints, 'hive_context_archive', ...background, 'hive_worklog_record', 'hive_explore_update', 'hive_councils_list',
     ];
-    const reviewPrimaries = [...reads, ...contextWrites, ...traces, ...inspections, ...constraints, ...background,
+    const reviewPrimaries = [...reads, ...contextWrites, ...traces, ...inspections, ...constraints, ...background, 'hive_councils_list',
       'hive_feature_select', 'hive_adhoc_worktree_create', 'hive_adhoc_worktree_cleanup', 'hive_worktree_recover', 'hive_worklog_record', 'hive_explore_update'];
     const matrix: Record<string, readonly string[]> = {
       'hive-master': HIVE_TOOL_NAMES,
       'swarm-orchestrator': HIVE_TOOL_NAMES,
       'hive-builder': HIVE_TOOL_NAMES,
-      'architect-planner': [...reads, ...contextWrites, ...traces, ...inspections, ...constraints, ...background,
+      'architect-planner': [...reads, ...contextWrites, ...traces, ...inspections, ...constraints, ...background, 'hive_councils_list',
         'hive_feature_create', 'hive_feature_select', 'hive_plan_write', 'hive_plan_patch', 'hive_plan_approve', 'hive_tasks_sync',
         'hive_repositories_discover', 'hive_repositories_update', 'hive_context_archive', 'hive_worklog_record', 'hive_explore_update',
         'hive_adhoc_worktree_create', 'hive_adhoc_worktree_cleanup', 'hive_worktree_recover'],
@@ -1337,7 +1337,7 @@ describe('coordinated runtime hard cut', () => {
     };
     for (const base of CUSTOM_AGENT_BASES) matrix[`audit-${base}`] = matrix[base]!;
 
-    expect(HIVE_TOOL_NAMES).toHaveLength(51);
+    expect(HIVE_TOOL_NAMES).toHaveLength(52);
     // The operator's entries stay first and `question` is not repeated; the policy's entries follow in policy order.
     expect(config.experimental.primary_tools).toEqual(['operator_tool', 'question', ...primaryOnly]);
     const bare: any = {};
@@ -1384,7 +1384,8 @@ describe('coordinated runtime hard cut', () => {
       expect(action(agent, 'bash'), agent).toBe(agent === TASK_TRACE_SUMMARIZER_AGENT ? 'deny' : 'allow');
     }
 
-    const planningHelpers = ['scout-researcher', 'forager-investigator', 'plan-reviewer', 'approach-advisor'];
+    // Architect convenes every council seat base and commissions Investigators, never implementation Foragers.
+    const planningHelpers = ['scout-researcher', 'plan-reviewer', 'code-reviewer', 'simplicity-reviewer', 'approach-advisor', 'vulnerability-reviewer', 'forager-investigator'];
     // Review primaries dispatch every routing base except implementation Foragers; Investigators run their runtime exercises.
     const reviewHelpers = CUSTOM_AGENT_BASES.filter((base) => base !== 'forager-worker');
     const executors = ['hive-master', 'swarm-orchestrator', 'hive-builder'];
@@ -1412,6 +1413,50 @@ describe('coordinated runtime hard cut', () => {
     }
     for (const base of CUSTOM_AGENT_BASES) expect(config.agent[`audit-${base}`].permission).toEqual(config.agent[base].permission);
     expect(wildcardMatch('audit-code-reviewer', 'audit-*-reviewe?')).toBe(true);
+  });
+
+  it('resolves council rosters from the catalog the config hook built, keeping an operator disable only on a Hive subagent', async () => {
+    const { hooks, sessions } = createRuntime({ hiveConfig: {
+      customAgents: { 'audit-scout': { baseAgent: 'scout-researcher', description: 'Audit scout.' } },
+      council: { defaultGroup: 'review', groups: { review: { members: ['code-reviewer', 'plan-reviewer', 'audit-scout', 'forager-worker'] } } },
+    } });
+    const loaded = await hooks;
+    const call = (args: Record<string, unknown>, sessionID = 'parent', agent = 'architect-planner') =>
+      loaded.tool!.hive_councils_list.execute(args as never, context(sessionID, agent) as never);
+    await expect(call({})).rejects.toThrow('Hive agent catalog not initialized');
+
+    const config: any = { agent: Object.fromEntries([
+      ...['code-reviewer', 'audit-scout', 'architect-planner', 'hive-master', 'dash-reviewer'].map((name) => [name, { disable: true }]),
+      ['plan-reviewer', { disable: false }],
+    ]) };
+    await loaded.config!(config);
+    expect(config.agent['code-reviewer'].disable).toBe(true);
+    expect(config.agent['code-reviewer'].prompt).toBeString();
+    expect(config.agent['audit-scout'].disable).toBe(true);
+    expect(config.agent['plan-reviewer'].disable).toBeUndefined();
+    // Only subagents keep the operator's disable; a primary or all-mode Hive role stays enabled.
+    for (const name of ['architect-planner', 'hive-master', 'dash-reviewer']) expect(config.agent[name].disable, name).toBeUndefined();
+    expect(config.command['dash-review'].template).toContain('simplicity-reviewer (base: simplicity-reviewer;');
+    expect(config.command['dash-review'].template).not.toContain('code-reviewer (base: code-reviewer;');
+
+    const roster = JSON.parse(await call({}) as string);
+    expect(roster).toMatchObject({
+      selected: 'review', ok: true,
+      members: [{ name: 'plan-reviewer', baseAgent: 'plan-reviewer' }],
+      skipped: [{ name: 'code-reviewer', reason: 'not_available' }, { name: 'audit-scout', reason: 'not_available' }, { name: 'forager-worker', reason: 'ineligible_base' }],
+    });
+    expect(roster.councils.map((council: { name: string }) => council.name)).toEqual(['design', 'decision', 'minimal-change', 'documents', 'review']);
+    expect(roster.notice).toContain('dispatches nobody');
+    expect(JSON.parse(await call({ name: 'absent' }) as string)).toMatchObject({ selected: 'absent', ok: false, reason: 'unknown_council', skipped: [] });
+
+    // A delegated Architect child created before this tool existed has no stored primary_tools deny and holds the role
+    // grant; calling the executor directly stands for that permission gap, and the live-parent check refuses it.
+    sessions.set('arch-child', { id: 'arch-child', parentID: 'parent' });
+    sessions.set('broken', new Error('gone'));
+    await expect(call({}, 'arch-child')).rejects.toThrow('hive_councils_list is a primary-only operation and is denied in child sessions.');
+    await expect(call({}, 'broken')).rejects.toThrow('Hive could not read session broken');
+    // An unmanaged top-level agent keeps its native access.
+    expect(JSON.parse(await call({}, 'build-root', 'build') as string)).toMatchObject({ selected: 'review', ok: true });
   });
 
   it('warns with the native permission keys dropped and the managed boundary reason', async () => {
@@ -1448,7 +1493,7 @@ describe('coordinated runtime hard cut', () => {
   });
 
   it('inherits session denials through child Architect while preserving terminal helper allowlists', async () => {
-    const planningHelpers = ['scout-researcher', 'plan-reviewer', 'approach-advisor'];
+    const planningHelpers = ['scout-researcher', 'plan-reviewer', 'approach-advisor', 'code-reviewer', 'simplicity-reviewer', 'vulnerability-reviewer'];
     const { hooks } = createRuntime({ hiveConfig: {
       customAgents: Object.fromEntries(planningHelpers.map((baseAgent) => [`nested-${baseAgent}`, {
         baseAgent, description: `Nested ${baseAgent} specialist.`,

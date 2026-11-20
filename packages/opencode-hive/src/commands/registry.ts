@@ -51,11 +51,6 @@ export const HIVE_COMMANDS = [
     description: 'Merge the intended work into its main branch, reviewed and verified on the result',
   },
   {
-    key: 'council-directive',
-    name: '/council-directive',
-    description: 'Turn a rough request into a reusable council directive',
-  },
-  {
     key: 'council',
     name: '/council',
     description: 'Run a read-only council and synthesize a recommendation',
