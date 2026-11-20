@@ -15,12 +15,13 @@ import { classifySession, createVariantHook } from './hooks/variant-hook.js';
 import { buildHiveCommandMap } from './commands/runtime.js';
 import { HIVE_COMMANDS } from './commands/registry.js';
 import { hiveCommandRenderers } from './commands/renderers.js';
-import type { HiveCommandAgentDescriptor, HiveCommandContext } from './commands/types.js';
+import type { HiveCommandContext } from './commands/types.js';
 import { createTaskTraceTools, injectTaskTraceHint, isDirectChildSession, TASK_TRACE_SUMMARIZER_AGENT, TASK_TRACE_SUMMARIZER_PROMPT } from './task-trace.js';
 import { childAssociation, childRouteRecord, composeDispatchPrompt, provenChildBinding, resolveAssignment } from './task-brief.js';
 import { createHiveServices, type RouteSnapshot } from './runtime/hive-services.js';
 import { createHiveOperations, presentHiveResult } from './runtime/hive-tools.js';
 import { buildRoleCatalog, createCommandContext as createSharedCommandContext } from './runtime/role-catalog.js';
+import type { HostCheckedHiveAgent } from './runtime/role-catalog.js';
 import { LIVE_PARENT_CHECKED_TOOLS, authorizeHiveCall, createRolePolicy, mergePrimaryOnlyTools, nativeSubagentBoundary, resolveCallerAuthority } from './runtime/role-policy.js';
 import { isRootSession } from './trace/v1-source.js';
 
@@ -141,10 +142,10 @@ const plugin: Plugin = async (ctx) => {
 
   // The agents commands and council rosters read, built by the config hook. V1 configuration is fixed after startup,
   // so the catalog that hook builds, with each operator `disable`, is the live one; before it runs there is none.
-  let runtimeCommandAgents: Record<string, HiveCommandAgentDescriptor> | undefined;
+  let hostCheckedAgents: Record<string, HostCheckedHiveAgent> | undefined;
   const readCouncilAgents = async () => {
-    if (!runtimeCommandAgents) throw new Error('Hive agent catalog not initialized');
-    return runtimeCommandAgents;
+    if (!hostCheckedAgents) throw new Error('Hive agent catalog not initialized');
+    return hostCheckedAgents;
   };
 
   // V1 registration: each shared operation becomes a plugin tool whose result is the operation's JSON presentation.
@@ -175,7 +176,7 @@ const plugin: Plugin = async (ctx) => {
   const createCommandContext = (): HiveCommandContext => createSharedCommandContext({
     host,
     configService,
-    agents: runtimeCommandAgents ?? {},
+    agents: hostCheckedAgents ?? {},
     backgroundGuidance: { available: isBackgroundSubagentsExperimentEnabled(), reason: isBackgroundSubagentsExperimentEnabled() ? undefined : 'experiment-disabled' } as any,
   });
 
@@ -265,13 +266,13 @@ const plugin: Plugin = async (ctx) => {
       // Config hooks run after OpenCode's deprecated tools normalization. Ordered permissions are enforced at agent construction.
       // An operator's `disable: true` on a Hive subagent survives the merge below and marks that agent unavailable.
       const agents: Record<string, any> = {};
-      const commandAgents: Record<string, HiveCommandAgentDescriptor> = {};
+      const checkedAgents: Record<string, HostCheckedHiveAgent> = {};
       for (const [name, entry] of Object.entries(catalog.agents)) {
         const disabled = entry.mode === 'subagent' && mutableConfig.agent?.[name]?.disable === true;
         agents[name] = disabled ? { ...entry, disable: true } : entry;
-        commandAgents[name] = disabled ? { ...catalog.commandAgents[name]!, available: false } : catalog.commandAgents[name]!;
+        checkedAgents[name] = { ...catalog.declaredAgents[name]!, available: !disabled };
       }
-      runtimeCommandAgents = commandAgents;
+      hostCheckedAgents = checkedAgents;
       const nativeAgents = Object.fromEntries((['general', 'explore'] as const).map((name) => {
         const existing = mutableConfig.agent?.[name] ?? {};
         const boundary = nativeSubagentBoundary(name, existing.permission);

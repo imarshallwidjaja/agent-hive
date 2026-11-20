@@ -9,14 +9,14 @@ import { canonicalProjectRoot, detectContext, type ConfigService, type ResolvedC
 import { HIVE_COMMANDS } from '../commands/registry.js';
 import { hiveCommandRenderers } from '../commands/renderers.js';
 import { SUBAGENT_CLARIFICATION_PROMPT } from '../hooks/system-hook.js';
-import type { HiveCommandAgentDescriptor } from '../commands/types.js';
 import { prepareNativeHiveSkills, type PreparedNativeHiveSkills } from '../skills/native-materializer.js';
 import { resolveBackgroundDelegationAvailability } from '../utils/background-gate.js';
 import { createHiveServices, type HiveServices } from '../runtime/hive-services.js';
 import { createHiveOperations } from '../runtime/hive-tools.js';
 import type { CouncilAgentDescriptor } from '../runtime/councils.js';
 import { CODEMODE_READ_TOOLS, createHostProfile, type HostProfile } from '../runtime/host-profile.js';
-import { buildRoleCatalog, createCommandContext, type RoleCatalog, type SkillLookups } from '../runtime/role-catalog.js';
+import { buildRoleCatalog, createCommandContext } from '../runtime/role-catalog.js';
+import type { HostCheckedHiveAgent, RoleCatalog, SkillLookups } from '../runtime/role-catalog.js';
 import {
   NATIVE_LIFECYCLE_BYPASS_TOOLS,
   PRIMARY_ONLY_TOOLS,
@@ -205,9 +205,9 @@ function isCallable(roles: RoleCatalog, name: string, agent: Agent.Info | undefi
 }
 
 /** The roster commands render against, from the agents the host has now (disabled or overridden agents included). */
-function effectiveCommandAgents(roles: RoleCatalog, installed: ReadonlyArray<Agent.Info>): Record<string, HiveCommandAgentDescriptor> {
+function effectiveCommandAgents(roles: RoleCatalog, installed: ReadonlyArray<Agent.Info>): Record<string, HostCheckedHiveAgent> {
   const byId = new Map(installed.map((agent) => [agent.id as string, agent]));
-  return Object.fromEntries(Object.entries(roles.commandAgents).map(([name, canonical]) => {
+  return Object.fromEntries(Object.entries(roles.declaredAgents).map(([name, canonical]) => {
     const agent = byId.get(name);
     if (!agent) return [name, { ...canonical, available: false }];
     return [name, {
@@ -227,7 +227,7 @@ function effectiveCommandAgents(roles: RoleCatalog, installed: ReadonlyArray<Age
  */
 function councilAgents(roles: RoleCatalog, installed: ReadonlyArray<Agent.Info>): Record<string, CouncilAgentDescriptor> {
   const byId = new Map(installed.map((agent) => [agent.id as string, agent]));
-  return Object.fromEntries(Object.entries(roles.commandAgents).map(([name, canonical]) => [name, {
+  return Object.fromEntries(Object.entries(roles.declaredAgents).map(([name, canonical]) => [name, {
     baseAgent: canonical.baseAgent,
     available: isCallable(roles, name, byId.get(name)),
     description: canonical.description,

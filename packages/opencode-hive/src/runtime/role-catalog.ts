@@ -15,7 +15,7 @@ import { renderVulnerabilityReviewerPrompt } from '../agents/vulnerability-revie
 import { renderDashReviewerPrompt } from '../agents/dash-reviewer.js';
 import { renderVulnerabilityReviewPrimaryPrompt } from '../agents/vulnerability-review-primary.js';
 import { buildCustomSubagents, type RuntimeSubagentConfig } from '../agents/custom-agents.js';
-import type { HiveCommandAgentDescriptor, HiveCommandContext } from '../commands/types.js';
+import type { HiveCommandContext } from '../commands/types.js';
 import { renderAutoLoadSkillsAppendix, renderHiveSystemPrompt } from '../hooks/system-hook.js';
 import { renderBackgroundFirstOrchestrationAppendix, resolveBackgroundDelegationAvailability } from '../utils/background-gate.js';
 import { renderSkillNameLookup, type HostProfile, type NativeSkillIdentity } from './host-profile.js';
@@ -37,6 +37,17 @@ export type HiveAgentEntry = Omit<RuntimeSubagentConfig, 'mode'> & {
   permission: NonNullable<RuntimeSubagentConfig['permission']>;
 };
 
+/** Hive's base role and configured presentation for one agent, before a host checks whether it can call it. */
+type DeclaredHiveAgent = { baseAgent: string; description: string; model?: string; variant?: string };
+
+/** What host adapters produce by setting `available`, so command rendering can exclude agents the host cannot call. */
+export type HostCheckedHiveAgent = DeclaredHiveAgent & { available: boolean };
+
+// Compile-time guard, here because the package type check excludes test files: the build fails if the declared
+// catalog ever becomes assignable to the agents command rendering requires.
+type AssertFalse<T extends false> = T;
+type DeclaredCatalogIsNotCommandInput = AssertFalse<RoleCatalog['declaredAgents'] extends Parameters<typeof createCommandContext>[0]['agents'] ? true : false>;
+
 /**
  * Every Hive agent with its composed instructions, for one host. `prompt` is the agent's own prompt; agents
  * without one carry their instructions in `requestPrompts`, which the host adds at request time on top of its
@@ -45,7 +56,7 @@ export type HiveAgentEntry = Omit<RuntimeSubagentConfig, 'mode'> & {
 export type RoleCatalog = {
   agents: Record<string, HiveAgentEntry>;
   requestPrompts: Map<string, string>;
-  commandAgents: Record<string, HiveCommandAgentDescriptor>;
+  declaredAgents: Record<string, DeclaredHiveAgent>;
   customAgents: Record<string, ResolvedCustomAgentConfig>;
   defaultAgent: 'hive-master' | 'architect-planner';
   /**
@@ -230,8 +241,8 @@ export function buildRoleCatalog(host: HostProfile, configService: ConfigService
     registerRuntimePrompt: (name, prompt) => requestPrompts.set(name, prompt),
   });
   Object.assign(agents, customAgents);
-  const commandAgents = Object.fromEntries(Object.entries(agents).map(([name, value]) => [name, { baseAgent: custom[name]?.baseAgent ?? name, available: true, description: custom[name]?.description ?? value.description ?? 'Registered Hive agent', model: value.model, variant: value.variant }]));
-  return { agents, requestPrompts, commandAgents, customAgents: custom, defaultAgent: agentMode === 'unified' ? 'hive-master' : 'architect-planner', skillGuidance };
+  const declaredAgents: Record<string, DeclaredHiveAgent> = Object.fromEntries(Object.entries(agents).map(([name, value]) => [name, { baseAgent: custom[name]?.baseAgent ?? name, description: custom[name]?.description ?? value.description ?? 'Registered Hive agent', model: value.model, variant: value.variant }]));
+  return { agents, requestPrompts, declaredAgents, customAgents: custom, defaultAgent: agentMode === 'unified' ? 'hive-master' : 'architect-planner', skillGuidance };
 }
 
 /**
@@ -241,7 +252,7 @@ export function buildRoleCatalog(host: HostProfile, configService: ConfigService
 export function createCommandContext(input: {
   host: HostProfile;
   configService: ConfigService;
-  agents: Record<string, HiveCommandAgentDescriptor>;
+  agents: Record<string, HostCheckedHiveAgent>;
   backgroundGuidance: HiveCommandContext['backgroundGuidance'];
 }): HiveCommandContext {
   const { host, configService, agents, backgroundGuidance } = input;

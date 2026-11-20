@@ -42,14 +42,6 @@ export interface HiveCommandVulnerabilityReviewLane {
   variant?: string;
 }
 
-export interface HiveCommandAgentDescriptor {
-  baseAgent: string;
-  available: boolean;
-  description: string;
-  model?: string;
-  variant?: string;
-}
-
 export type HiveCommandContextFactory = () => HiveCommandContext;
 
 export type HiveCommandRenderer = (
