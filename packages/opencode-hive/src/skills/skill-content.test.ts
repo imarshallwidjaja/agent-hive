@@ -3534,5 +3534,6 @@ describe('council skill', () => {
     expect(template).toContain('returns evidence, unknowns and contradictions only, with no verdict. A missing Scout verdict is not agreement.');
     expect(template).toContain('Its "no confirmed vulnerabilities" on something not yet implemented is not security clearance. It runs no shell commands at all.');
     expect(template).toContain('When no seat returned usable evidence, say that no recommendation is supported.');
+    expect(template).toContain('Count agreement and dissent only among the seats that gave a recommendation, and say how many seats that is. When a seat returned evidence without a recommendation, as a seat based on `scout-researcher` does, cite it as evidence, never as agreeing or disagreeing.');
   });
 });
