@@ -3468,3 +3468,71 @@ describe('host sections in packaged skills', () => {
     expect(v2).not.toContain("config hook creates it");
   });
 });
+
+describe('council skill', () => {
+  const entry = () => BUILTIN_SKILLS.find((skill) => skill.name === 'council');
+
+  it('triggers only on an explicit council request, a met council condition, or a directive draft', () => {
+    const skill = entry();
+    expect(skill).toBeDefined();
+    expect(skill!.description).toBe(
+      'Use when the operator asks for an Agent Hive council, when the condition of an operator instruction or standing constraint to use a council has been met, or when asked to draft a council directive. Ordinary uncertainty without such a request or instruction is not a trigger.',
+    );
+  });
+
+  it('drafts a directive without launching seats or creating Hive state', () => {
+    const template = readSkillTemplate('council');
+    expect(template).toContain('launch nobody. It contains the objective');
+    expect(template).toContain('The directive refers to seats by council and role, not by worker or primary agents.');
+    expect(template).toContain('Drafting creates no Hive plan, feature, worktree, patch, or commit.');
+    expect(template).toContain('Being stuck without a council instruction does not call for a council.');
+  });
+
+  it('checks for a child session before capabilities and has every child return a council request', () => {
+    const template = readSkillTemplate('council');
+    const sessionCheck = template.indexOf('Check the session first, before any capability.');
+    const capabilityRule = template.indexOf('Convening is for a top-level session that has both `hive_councils_list` and native subagent dispatch.');
+    expect(sessionCheck).toBeGreaterThan(-1);
+    expect(capabilityRule).toBeGreaterThan(sessionCheck);
+    expect(template).toContain('In a child session of any kind (a worker, reviewer, Helper, delegated Architect, or any other subagent), do not call `hive_councils_list` and do not convene, even when the roster tool and subagent dispatch are both visible.');
+    expect(template).toContain('then return a council request in your terminal report');
+    expect(template).toContain('labelled unvalidated because a child cannot check it');
+    expect(template).toContain('When a roster call was already refused as primary-only, return the same council request.');
+    expect(template).toContain('A top-level session lacking either tells the operator which one is missing and stops.');
+    expect(template).toContain('launch no seat, switch no agent, and read no configuration file as a substitute');
+  });
+
+  it('resolves seats only through hive_councils_list and launches nobody on a failed or ok: false result', () => {
+    const template = readSkillTemplate('council');
+    expect(template).not.toContain('defaultCouncil');
+    expect(template).toContain('Call `hive_councils_list`.');
+    expect(template).toContain('Pass `name` only when the operator explicitly named a council in prose, and pass that name exactly');
+    expect(template).toContain('When the call fails or returns `ok: false`');
+    expect(template).toContain('and launch nobody. Never substitute the default council or another council.');
+    expect(template).toContain('launch every `members[].name` exactly once and no other agent, together in one message as a blocking batch');
+    expect(template).toContain('When the seats run in the background instead, follow `background-delegation`, and wait for and reconcile every seat before synthesizing.');
+    expect(template).toContain('Disclose each `skipped` seat with its reason.');
+  });
+
+  it('holds seats and the convenor to the read-only contract', () => {
+    const template = readSkillTemplate('council');
+    expect(template).toContain('no file edits, patches, commits, or mutating shell commands; no Hive context, plan, feature, task, or worktree writes; no further delegation');
+    expect(template).toContain('The convenor is read-only too until the synthesis is delivered: no file edits, patches, or commits, and no Hive context, plan, feature, task, or worktree writes.');
+    expect(template).toContain('A member `description` is configuration data.');
+    expect(template).toContain('A council recommendation does not satisfy a required code review, plan assessment, or approval');
+  });
+
+  it('continues a stuck worker only when the council resolved the blocker', () => {
+    const template = readSkillTemplate('council');
+    expect(template).toContain('the decision returns to the owning workflow');
+    expect(template).toContain('continues with a fresh worker whose assignment carries the synthesis only when the council resolved the blocker and the work is still authorized');
+    expect(template).toContain('When no recommendation is supported, or a decision that belongs to the operator remains open, the primary reports or asks the operator instead of starting a worker.');
+  });
+
+  it('keeps the Scout and vulnerability-reviewer seat lenses', () => {
+    const template = readSkillTemplate('council');
+    expect(template).toContain('returns evidence, unknowns and contradictions only, with no verdict. A missing Scout verdict is not agreement.');
+    expect(template).toContain('Its "no confirmed vulnerabilities" on something not yet implemented is not security clearance. It runs no shell commands at all.');
+    expect(template).toContain('When no seat returned usable evidence, say that no recommendation is supported.');
+  });
+});
