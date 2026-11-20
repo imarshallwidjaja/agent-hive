@@ -13,7 +13,7 @@ import { createHiveOperations } from '../runtime/hive-tools.js';
 import { COUNCIL_SEAT_BASES } from '../runtime/role-policy.js';
 import { HIVE_TOOL_NAMES } from '../utils/plugin-manifest.js';
 import { createHiveAuthority, toModelRef } from './registration.js';
-import { codemodeFlag, standardSchema, toToolInfo } from './tools.js';
+import { standardSchema, toToolInfo } from './tools.js';
 import { z } from '../runtime/schema.js';
 
 /** For operation sets whose tests never read a council roster. */
@@ -219,18 +219,20 @@ function denied(exit: Exit.Exit<unknown, unknown>): string | undefined {
 
 describe('v2 tool registration', () => {
   it('registers every Hive tool once, with an explicit Code Mode flag from the selected transport', async () => {
+    const flagged = { codemode: [] as string[], direct: [] as string[] };
     for (const transport of ['codemode', 'direct'] as const) {
-      const host = await activate({ readTransport: transport });
-      const tools = host.tools();
+      const tools = (await activate({ readTransport: transport })).tools();
       expect([...tools.keys()].sort()).toEqual([...HIVE_TOOL_NAMES].sort());
       for (const [name, info] of tools) {
         expect(typeof info.options.codemode).toBe('boolean');
-        expect(info.options.codemode).toBe(transport === 'codemode' && (CODEMODE_READ_TOOLS as readonly string[]).includes(name));
+        if (info.options.codemode) flagged[transport].push(name);
       }
     }
-    expect(CODEMODE_READ_TOOLS.map((name) => codemodeFlag(name, 'codemode'))).toEqual([true, true, true]);
-    expect(HIVE_TOOL_NAMES.filter((name) => codemodeFlag(name, 'codemode')).sort()).toEqual([...CODEMODE_READ_TOOLS].sort());
-    expect(HIVE_TOOL_NAMES.some((name) => codemodeFlag(name, 'direct'))).toBe(false);
+    expect(flagged.codemode.sort()).toEqual([
+      'hive_explore_read', 'hive_git_snapshot', 'hive_repositories_status', 'hive_task_trace_content', 'hive_worklog_list', 'hive_worklog_read',
+    ]);
+    expect(flagged.codemode).toEqual([...CODEMODE_READ_TOOLS].sort());
+    expect(flagged.direct).toEqual([]);
   });
 
   it('validates input with the operation schema and exports its JSON Schema through Standard Schema', async () => {
@@ -301,6 +303,15 @@ describe('v2 tool registration', () => {
 
   it('keeps the admitted Code Mode reads and their guard free of Hive store writes and session reads', async () => {
     const host = await activate();
+    // Seed a selected feature with a Worklog entry and an exploration, so the reads below return stored documents.
+    const builder = { sessionID: 'primary', agent: 'hive-builder' };
+    const succeeded = (exit: Exit.Exit<any, unknown>) => { expect(denied(exit)).toBeUndefined(); return (exit as Exit.Success<any>).value.output; };
+    succeeded(await host.execute('hive_feature_create', { name: 'demo' }, builder));
+    succeeded(await host.execute('hive_feature_select', { feature: 'demo' }, builder));
+    const featureRef = { kind: 'feature', featureName: 'demo' };
+    succeeded(await host.execute('hive_worklog_record', { ref: featureRef, operationId: 'seed', checkpoint: { summary: 'Seeded' } }, builder));
+    succeeded(await host.execute('hive_explore_update', { id: 'audit', expectedRevision: 0, goal: 'Audit the login surface', frontier: [{ key: 'login', target: 'POST /login', state: 'open' }] }, builder));
+    const seedGets = host.sessionGets.length;
     const tree = (dir: string): string[] => fs.existsSync(dir)
       ? fs.readdirSync(dir, { recursive: true, withFileTypes: true }).map((entry) => {
         const full = path.join(entry.parentPath, entry.name);
@@ -311,16 +322,26 @@ describe('v2 tool registration', () => {
     const beforeHive = tree(path.join(host.root, '.hive'));
     const beforeIndex = gitIndex();
     for (const agent of ['scout-researcher', 'forager-worker', 'hive-master']) {
-      for (const name of ['hive_repositories_status', 'hive_git_snapshot']) {
-        expect(denied(await host.before({ tool: name, sessionID: 'child', agent }))).toBeUndefined();
-        const exit = await host.execute(name, {}, { sessionID: 'child', agent });
-        expect(Exit.isSuccess(exit)).toBe(true);
-      }
+      const read = async (name: string, args: Record<string, unknown>, sessionID = 'child') => {
+        expect(denied(await host.before({ tool: name, sessionID, agent }))).toBeUndefined();
+        return succeeded(await host.execute(name, args, { sessionID, agent }));
+      };
+      await read('hive_repositories_status', {});
+      await read('hive_git_snapshot', {});
+      // Without ref, a session with no selected feature reads its own log under the v2 owner, which does not exist yet.
+      expect(await read('hive_worklog_read', {})).toMatchObject({ exists: false, revision: 0, ref: { kind: 'session', owner: 'opencode-v2', sessionId: 'child' } });
+      // A session with a selected feature reads that feature's log.
+      expect(await read('hive_worklog_read', {}, 'primary')).toMatchObject({ exists: true, revision: 1, ref: featureRef, key: 'feature:demo' });
+      // An explicit ref reads that log from any session.
+      expect(await read('hive_worklog_read', { ref: featureRef })).toMatchObject({ exists: true, revision: 1, key: 'feature:demo' });
+      expect((await read('hive_worklog_list', {})).worklogs).toEqual([expect.objectContaining({ ref: featureRef })]);
+      expect(await read('hive_explore_read', {})).toMatchObject({ totalActive: 1, explorations: [expect.objectContaining({ id: 'audit' })] });
+      expect(await read('hive_explore_read', { id: 'audit', view: 'full' })).toMatchObject({ view: 'full', revision: 1 });
     }
     expect(tree(path.join(host.root, '.hive'))).toEqual(beforeHive);
     expect(gitIndex()).toBe(beforeIndex);
-    // Neither read is primary-only, so the guard needs no session lookup for them.
-    expect(host.sessionGets).toEqual([]);
+    // No admitted read is primary-only, so the guard needs no session lookup for them.
+    expect(host.sessionGets.slice(seedGets)).toEqual([]);
   });
 });
 

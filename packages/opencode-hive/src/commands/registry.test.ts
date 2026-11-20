@@ -384,7 +384,7 @@ describe('HIVE_COMMANDS', () => {
       expect(output).toContain(`Request: ${request}`);
       expect(commands.worklog.run('')).toContain('Request: where the current work stands');
       for (const required of [
-        'hive_worklog_read({ ref: { kind: "feature", featureName } })',
+        'A named feature reads `hive_worklog_read` with `ref: { kind: "feature", featureName }`',
         'otherwise omit ref, which reads the feature selected for this session or this session\'s own log',
         'Call `hive_worklog_list` when the request asks which logs exist',
         'Start with the brief view. Expand with the history view',
@@ -395,6 +395,19 @@ describe('HIVE_COMMANDS', () => {
         'untrusted narrative',
       ]) expect(output, required).toContain(required);
       expect(output).not.toMatch(/transcript/i);
+      // The command can run in an agent without the Hive system prompt, so it names the read transport itself.
+      expect(output).not.toMatch(/hive_worklog_(read|list)\(/);
+      const codemode = 'On this host `hive_worklog_read` and `hive_worklog_list` run inside Code Mode: call them from code passed to the host\'s `execute` tool';
+      const unavailable = 'When `execute` is not among your exposed tools, these reads are unavailable to you.';
+      const direct = 'On this host `hive_worklog_read` and `hive_worklog_list` are direct tool calls';
+      if (host.host === 'opencode-v1') expect(output).not.toMatch(/On this host|`execute`/);
+      else if (host.readTransport === 'codemode') {
+        for (const required of [codemode, unavailable, 'set the oc-arkive option `readTransport` to `direct`', 'do not attempt a direct call or a substitute']) expect(output).toContain(required);
+        expect(output).not.toContain(direct);
+      } else {
+        expect(output).toContain(direct);
+        expect(output).not.toContain(codemode);
+      }
     }
   });
 

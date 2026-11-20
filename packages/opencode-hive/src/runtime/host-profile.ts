@@ -12,8 +12,18 @@ export type HostId = NativeObservationOwner;
 /** How agents reach the Hive reads that v2 can run inside Code Mode (`execute`). */
 export type ReadTransport = 'codemode' | 'direct';
 
-/** The only Hive tools a codemode transport carries; every other Hive tool is a direct call on every host. */
-export const CODEMODE_READ_TOOLS = ['hive_repositories_status', 'hive_git_snapshot', 'hive_task_trace_content'] as const;
+/**
+ * The only Hive tools a codemode transport carries; every other Hive tool is a direct call on every host. Each one
+ * writes no Hive state, and its guard needs no host session read because none is primary-only.
+ */
+export const CODEMODE_READ_TOOLS = [
+  'hive_repositories_status',
+  'hive_git_snapshot',
+  'hive_task_trace_content',
+  'hive_worklog_list',
+  'hive_worklog_read',
+  'hive_explore_read',
+] as const;
 
 export interface HostProfile {
   readonly host: HostId;
@@ -125,4 +135,17 @@ export function renderReadTransport(profile: HostProfile): string {
     return `\n## Hive Read Transport\n\nHive tools, including ${reads}, are direct tool calls. The host's \`execute\` tool is not their transport.\n`;
   }
   return `\n## Hive Read Transport\n\nWhen your role exposes them, ${reads} run inside the host's Code Mode: call them from code passed to \`execute\`, using the exact paths its Code Mode catalog lists. They are not direct tool calls. Every other Hive tool is a direct call. When \`execute\` is not among your exposed tools, these reads are unavailable to you; report the missing capability and what it blocks instead of attempting a direct call or a substitute.\n`;
+}
+
+/**
+ * One instruction naming how the given Code Mode reads are reached, for text that an agent without the Hive system
+ * prompt can receive, such as an unbound command. Empty on v1, where every Hive tool is a direct call.
+ */
+export function readTransportInstruction(profile: HostProfile, tools: readonly (typeof CODEMODE_READ_TOOLS)[number][]): string {
+  if (profile.host !== 'opencode-v2') return '';
+  const reads = tools.map((name) => `\`${name}\``).join(' and ');
+  if (profile.readTransport === 'direct') {
+    return `On this host ${reads} are direct tool calls; the host's \`execute\` tool is not their transport.`;
+  }
+  return `On this host ${reads} run inside Code Mode: call them from code passed to the host's \`execute\` tool, using the exact paths its Code Mode catalog lists, not as direct tool calls. When \`execute\` is not among your exposed tools, these reads are unavailable to you. In that case, report the missing capability and what it blocks, and say that the operator can set the oc-arkive option \`readTransport\` to \`direct\` or allow \`execute\`; do not attempt a direct call or a substitute.`;
 }

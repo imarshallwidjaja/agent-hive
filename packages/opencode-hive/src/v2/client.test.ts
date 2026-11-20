@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import { IDENTITY_RPC_ID } from './identity.js';
 import { ReadAccessError, createVerifiedReadAccess } from './client.js';
 import { parseV2Options } from './options.js';
+import { CODEMODE_READ_TOOLS } from '../runtime/host-profile.js';
 
 const identity = { nonce: 'held-nonce' };
 const directory = '/work/project';
@@ -261,6 +262,7 @@ describe('v2 plugin options', () => {
     expect(Object.keys(schema.properties).sort()).toEqual(['readTransport', 'server']);
     expect(schema.properties.readTransport.enum).toEqual(['codemode', 'direct']);
     expect(schema.properties.readTransport.default).toBe('codemode');
+    for (const name of CODEMODE_READ_TOOLS) expect(schema.properties.readTransport.description).toContain(name);
     expect(schema.properties.server.additionalProperties).toBe(false);
     expect(Object.keys(schema.properties.server.properties).sort()).toEqual(['passwordEnv', 'url', 'username']);
     expect(schema.properties.server.required).toEqual(['url']);

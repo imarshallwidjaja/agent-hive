@@ -3163,7 +3163,7 @@ describe('security-audit skill contracts', () => {
       'When a defense is the clearing reason, cite the `file:line` that proves it is wired on that path.',
       '`hive_explore_read` and `hive_explore_update`',
       'A read-only role calls `hive_explore_read` only when its handoff supplies `Exploration: <id>`, reads that exploration alone, and returns proposed updates.',
-      "Resuming an exploration and compiling the final **Coverage** use `hive_explore_read({ id, view: 'full' })`",
+      "Resuming an exploration and compiling the final **Coverage** use its full view, read with `hive_explore_read` by passing `id` and `view: 'full'`",
       'so no settled item is overwritten back to `open`',
       'The challenger does not list or read the Exploration Frontier, and its handoff carries no `Exploration: <id>`',
       'When resuming an existing exploration, preserve its settled (`covered`, `blocked`, `dropped`) items and their evidence unless new evidence warrants an explicit state change.',

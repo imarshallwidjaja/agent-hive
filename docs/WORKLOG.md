@@ -412,7 +412,7 @@ The OpenCode plugin (tools, the `/worklog` command, and primary prompt guidance)
 | `hive_worklog_read` | `read` | Read-only; every Hive role; default view `brief` |
 | `hive_worklog_record` | `record` | Primary sessions only. Managed grants: Hive, Swarm, Hive Builder, Architect, and the review primaries. An unmanaged root agent follows its native permission. Child sessions are always refused |
 
-OpenCode v1 and v2 register all three from one definition, and both hosts deliver the same descriptions and argument shapes. The v2 Code Mode transport does not carry them: they are direct tools under both read transports. Argument and role-grant detail is in [Worklog tools](../packages/opencode-hive/docs/HIVE-TOOLS.md#worklog-3-tools).
+OpenCode v1 and v2 register all three from one definition, and both hosts deliver the same descriptions and argument shapes. On v2, the default `codemode` read transport registers `hive_worklog_list` and `hive_worklog_read` as Code Mode reads, and the host offers them only inside Code Mode, so an agent calls them from code passed to `execute`. The `/worklog` command names the active transport in its own text. `hive_worklog_record` is a direct tool under both read transports, and `readTransport: "direct"` makes the two reads direct as well. Argument and role-grant detail is in [Worklog tools](../packages/opencode-hive/docs/HIVE-TOOLS.md#worklog-3-tools).
 
 - `hive_worklog_list` takes optional `kind`, `limit`, `cursor`, and `maxBytes`.
 - `hive_worklog_read` takes optional `ref`, `view`, `limit`, `cursor`, and `maxBytes`.
