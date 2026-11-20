@@ -37,7 +37,7 @@ Before upgrading, remove `disableMcps`, `sandbox`, `dockerImage`, and `persisten
 The config hook intentionally mutates these OpenCode fields:
 
 - `default_agent`: selects `hive-master` in unified mode or `architect-planner` in dedicated mode.
-- `agent`: Shipped agent IDs are replaced; unrelated agent entries remain. Hive/task/question/skill permission overrides on native `general`/`explore`, plus `explore` edit overrides, are replaced with managed boundaries; warnings name the dropped keys and reason. In dedicated mode, the registered `hive-master` seat is hidden from the agent picker.
+- `agent`: Shipped agent IDs are replaced; unrelated agent entries remain. For an agent Hive registers with mode `subagent`, `disable: true` from your configuration is kept; on `architect-planner` and the primaries, Hive's registration still overwrites it. Hive/task/question/skill permission overrides on native `general`/`explore`, plus `explore` edit overrides, are replaced with managed boundaries; warnings name the dropped keys and reason. In dedicated mode, the registered `hive-master` seat is hidden from the agent picker.
 - `command`: Shipped command keys replace same-key user command definitions; unrelated command keys remain.
 - `subagent_depth`: sets the OpenCode value to `2`.
 - `skills.paths`: when Hive skills are materialized, registers the generated Hive skill path first, followed by resolved user-configured paths.
@@ -92,10 +92,10 @@ Hive keeps its state in the project checkout the host resolves for the session: 
 Hive does not rewrite v2 configuration. Its agent registrations are defaults: your v2 settings for the default agent, an agent's description, mode, hidden state, model and variant, step limits and permission rules take precedence. On v1 the config hook behavior above is unchanged. What v2 configuration cannot change:
 
 - Each Hive role's instructions are added at request time to its ordinary turns and to its compaction and generate requests (the title request names no agent and is left alone). An agent you gave your own system prompt keeps it, followed by the Hive instructions. Hive adds no request options such as temperature; native and provider request settings stay as you configured them. Skill guidance follows the live catalog, including your configured sources. Auto-load guidance retains resolved catalog ids. For name-based requirements, the request's Hive Skill Name Lookup prefers a unique user skill over a bundled skill even when their folder ids differ. Multiple user entries with the same name are reported as ambiguous; configure or request an exact catalog id to select one. User content stays unchanged.
-- Commands render against your agents as they are when you run them, so a disabled agent drops out of a council or review roster and your description, model and variant are the ones shown. A command bound to an agent switches the session to that agent and to its effective model and variant, as native configured commands do.
+- Commands render against your agents as they are when you run them, so a disabled agent drops out of a review roster and your description, model and variant are the ones shown. `hive_councils_list` checks council seats against the host's agent list each time it is called, so a disabled agent also drops out of a council. A command bound to an agent switches the session to that agent and to its effective model and variant, as native configured commands do.
 - Hive operations and native effects are checked when they run, from the agent's role (a built-in role name or a custom agent's base role) and the session's actual parent, never from its mode or description. A permission rule that allows a tool makes it visible but does not authorize a role to run a Hive operation it lacks, a primary-only operation in a child session, edits for read-only roles, delegation outside the role's targets, delegation to `hive-master`, `swarm-orchestrator` or `hive-builder` by any agent, or `question` in a child session. Native `general` and `explore` get no Hive tools. Hive roles cannot run the native `opencode_worktree_create`, `opencode_worktree_remove` or `opencode_session_move` tools, including from Code Mode. Agents Hive does not register keep native behavior, apart from the child-session limits.
 
-v2 limits subagent nesting with `experimental.subagent_depth` (default 1). Set it to `2` so a delegated Architect can call its Scout, reviewer and Helper agents; Hive does not set it for you. On the tested v2 host, a top-level session uses the explicit CLI/session model or native configured model, rather than its agent's registered model. A fresh subagent of a Hive role or custom agent uses the agent's effective model/variant, then its parent's model, so a Hive role without a Hive model inherits like a native subagent; Hive refuses a `subagent()` `model` argument for those agents and, when the agent has a configured model, checks that a same-agent continuation's child is on it (a model-less agent inherits and is not checked; an explicit `model` still works for native `general`/`explore` and agents Hive does not register; see [Agent models](#agent-models)). An agent-bound command switches to its effective model/variant. Check actual requests rather than catalog fields. Scripted-provider qualification establishes wiring, not real-model judgment.
+v2 limits subagent nesting with `experimental.subagent_depth` (default 1). Set it to `2` so a delegated Architect can call its Scout, Investigator, plan-reviewer, approach-advisor and Hive Helper agents; Hive does not set it for you. On the tested v2 host, a top-level session uses the explicit CLI/session model or native configured model, rather than its agent's registered model. A fresh subagent of a Hive role or custom agent uses the agent's effective model/variant, then its parent's model, so a Hive role without a Hive model inherits like a native subagent; Hive refuses a `subagent()` `model` argument for those agents and, when the agent has a configured model, checks that a same-agent continuation's child is on it (a model-less agent inherits and is not checked; an explicit `model` still works for native `general`/`explore` and agents Hive does not register; see [Agent models](#agent-models)). An agent-bound command switches to its effective model/variant. Check actual requests rather than catalog fields. Scripted-provider qualification establishes wiring, not real-model judgment.
 
 See [Switching OpenCode hosts and rollback](../../docs/OPERATOR-GUIDE.md#switching-opencode-hosts-and-rollback) for shared domain state and separate native observations.
 
@@ -120,7 +120,7 @@ Use the feature flow when work needs plan review, a task DAG, and a durable audi
 
 ### Operator Commands
 
-`oc-arkive` registers these slash commands as operator entry prompts. They prepare the active agent with workflow-specific instructions; they do not replace Hive tools or make unavailable tools available to the current agent. Each command carries its own authority and stop rules, so it is safe when invoked with no arguments or under a primary that is not Hive. `/dash-review`, `/test-audit`, and `/vuln-review` are exceptions: their generated OpenCode commands bind to private review primaries. `/implement`, `/investigate`, `/walkthrough`, `/merge-to-main`, `/handoff` and `/worklog` bind nothing and run under the agent and model already selected.
+`oc-arkive` registers these slash commands as operator entry prompts. They prepare the active agent with workflow-specific instructions; they do not replace Hive tools or make unavailable tools available to the current agent. Each command carries its own authority and stop rules, so it is safe when invoked with no arguments or under a primary that is not Hive. `/dash-review`, `/test-audit`, and `/vuln-review` are exceptions: their generated OpenCode commands bind to private review primaries. `/implement`, `/investigate`, `/walkthrough`, `/merge-to-main`, `/handoff`, `/council` and `/worklog` bind nothing and run under the agent and model already selected.
 
 | Command | Purpose |
 |---------|---------|
@@ -134,8 +134,7 @@ Use the feature flow when work needs plan review, a task DAG, and a durable audi
 | `/start-execution` | Start execution for an approved and synced plan. |
 | `/implement [steering]` | Implement, as ad-hoc work, the scope this conversation agreed, plus any context or steering typed after the command. |
 | `/merge-to-main [steering]` | Merge the intended work into its main branch: review the combined result against the destination baseline, then verify it on the destination. |
-| `/council-directive` | Turn rough input into a reusable directive for a council run. |
-| `/council` | Run a read-only council and synthesize a recommendation. |
+| `/council` | Convene a configured council of read-only reviewers on a directive and synthesize a recommendation. |
 | `/dash-review [intent]` | Review a folder, inline text, or the current checkout without changing source. |
 | `/test-audit [paths or natural-language scope]` | Report outcome, oracle, and duplicate-coverage findings for a suite; defaults to the current repository. |
 | `/vuln-review [scope]` | Review requested source for evidenced vulnerabilities with configured specialists. |
@@ -154,15 +153,27 @@ On either host, ask for the skill by name with the scope and any philosophy or p
 
 `/hive` has been removed. Feature creation now belongs to the planning flow and the Hive tools, usually `hive_feature_create` followed by explicitly targeted plan writes, review, per-feature approval and task sync, execution, and merge.
 
-`/council` accepts ordinary prose, for example `/council use the design group to assess this plan`. The agent selects a group only when you explicitly request one; otherwise it uses `council.defaultGroup`. With no trailing text, it uses the current operator request as the directive. The council renderer treats quotes, line breaks, and flag-like text passed by the host as prose. Native host processing of special template syntax still applies; literal preservation of that syntax is not guaranteed. Hive renders every configured group's resolved roster before native host substitution, including filtering warnings and fallback information. An unknown or unusable requested group falls back visibly to the configured default; if that resolution has no usable seats, the council stops. `/council-directive` prepares a reusable directive and natural-language invocation.
+A council sends one directive to several read-only seats, such as a Scout and a set of reviewers, and the convening agent synthesizes their answers into a recommendation. The packaged `council` skill owns the procedure: draft the directive, decide who can convene, resolve the council, brief the seats, and synthesize. An agent loads that skill in three cases:
+
+- You ask for a council, in prose or with `/council`.
+- A condition you set in an instruction or standing constraint is met, for example "use council if you get stuck".
+- You ask for a draft directive. `/council-directive` has been removed; ask for the draft in prose instead.
+
+`/council` is a thin entry to the skill. It binds no agent and runs under whichever agent is selected. It passes your text to the agent as ordinary prose, for example `/council use the design group to assess this plan`. With no trailing text, it uses the current operator request as the directive. On OpenCode v1, native host processing of special template syntax (`$1`, `$ARGUMENTS`, shell and file references) still applies, so literal preservation of that syntax is not guaranteed. The agent selects a council only when you name one; otherwise it uses `council.defaultGroup`. An unknown council, or one with no usable seat, stops with an error, and nobody is launched.
+
+A council is resolved with `hive_councils_list`. Among Hive roles, six hold it: `hive-master`, `swarm-orchestrator`, `hive-builder`, `architect-planner`, `dash-reviewer` and `vulnerability-review-primary`. Hive refuses it in every child session, so a subagent, including a delegated Architect, cannot convene a council and returns a council request to its parent instead. An unmanaged top-level agent, such as native `build`, keeps whatever its native permissions allow for this tool, as for other Hive tools; Hive adds no guard for it.
+
+Being stuck starts a council only when an operator instruction or standing constraint says to use one. In that case a stuck worker returns a council request to its primary. The primary decides whether to convene, and continues with a fresh worker only when the council resolved the blocker.
+
+Read-only is an instruction to the convenor and every seat. Hive does not sandbox them. Reviewer seats hold context-write tools and shell, and Scout seats hold shell.
 
 Routing depends on `agentMode`:
 
 | Command set | Unified mode | Dedicated mode |
 |-------------|--------------|----------------|
-| `/interview`, `/grill`, `/implementation-brief`, `/hive-plan`, `/council-directive`, `/council` | Use `hive-master`. | Route or delegate to `architect-planner`. |
+| `/interview`, `/grill`, `/implementation-brief`, `/hive-plan` | Use `hive-master`. | Route or delegate to `architect-planner`. |
 | `/approve-sync-plan`, `/start-execution` | Use `hive-master`. | Route or delegate to `swarm-orchestrator`. |
-| `/implement`, `/investigate`, `/walkthrough`, `/merge-to-main`, `/handoff` | Runs under the selected agent and model; binds none. | Runs under the selected agent and model; binds none. |
+| `/implement`, `/investigate`, `/walkthrough`, `/merge-to-main`, `/handoff`, `/council` | Runs under the selected agent and model; binds none. | Runs under the selected agent and model; binds none. |
 | `/dash-review` | Bound by `config.command` to a private review primary. | Bound by `config.command` to a private review primary. |
 | `/test-audit` | Bound to `dash-reviewer`; report-only suite audit. | Bound to `dash-reviewer`; report-only suite audit. |
 | `/vuln-review` | Bound by `config.command` to a private vulnerability-review primary. | Bound by `config.command` to a private vulnerability-review primary. |
@@ -545,7 +556,7 @@ Behavior:
 
 Council settings live in `~/.config/opencode/agent_hive.json`.
 
-Built-in council defaults are read-only and portable:
+Built-in council defaults are read-only and portable. Each built-in group seats only built-in base agents:
 
 | Group | Purpose | Default members |
 |-------|---------|-----------------|
@@ -554,33 +565,49 @@ Built-in council defaults are read-only and portable:
 | `minimal-change` | Smallest correct change and cleanup lens. | `scout-researcher`, `simplicity-reviewer`, `code-reviewer` |
 | `documents` | Documentation and prose-oriented review. | `scout-researcher`, `code-reviewer`, `plan-reviewer` |
 
-The default `excludedAgents` list excludes orchestration, implementation, experiment, and runtime-investigation seats: `hive-master`, `swarm-orchestrator`, `forager-worker`, `forager-investigator`, `hive-builder`, and `hive-helper`. Member names can be built-in stock agents or configured custom agents. Custom agents derived from mutable bases, including `forager-worker`, are skipped by default with warnings.
-
-Partial global overrides merge with the built-in defaults. Declaring a group replaces that group declaration and leaves omitted default groups intact:
+Your `council` settings merge with the built-in defaults. `council.groups.<name>` replaces the whole group of that name and leaves omitted default groups intact; a new name adds a group. `council.defaultGroup` selects the council used when none is named:
 
 ```json
 {
   "$schema": "https://raw.githubusercontent.com/imarshallwidjaja/agent-hive/main/packages/opencode-hive/schema/agent_hive.schema.json",
   "council": {
     "defaultGroup": "documents",
-    "maxMembers": 3,
-    "excludedAgents": ["simplicity-reviewer"],
     "groups": {
       "documents": {
         "description": "Docs and operator prose review",
-        "members": ["scout-researcher", "code-reviewer", "plan-reviewer"],
-        "maxMembers": 2
+        "members": ["scout-researcher", "plan-reviewer"]
       },
       "security": {
         "description": "Security-sensitive review",
-        "members": ["scout-researcher", "reviewer-security", "code-reviewer"]
+        "members": ["scout-researcher", "vulnerability-reviewer", "code-reviewer"]
       }
     }
   }
 }
 ```
 
-Council resolution preserves configured order, deduplicates by first occurrence, filters unusable seats before applying the cap, and uses `group.maxMembers ?? council.maxMembers ?? 4`. It skips unavailable agents, explicitly excluded agents, starter template custom agents, mutable-base agents, and duplicates with warnings. If a requested group has no usable seats, `/council` falls back to `council.defaultGroup`; if the fallback also has no usable seats, the command stops with an error instead of running an unsafe council.
+A member name can be a built-in agent or a configured custom agent. A seat must derive from one of six base roles: `scout-researcher`, `plan-reviewer`, `code-reviewer`, `simplicity-reviewer`, `approach-advisor` or `vulnerability-reviewer`. Foragers, Investigators, `hive-helper` and primaries cannot sit on a council, and neither can custom agents derived from them.
+
+Every usable seat in a group runs. The roster keeps the configured order; the convenor launches the seats together, and they answer in parallel. Resolution skips a seat and reports one of these reasons:
+
+- `not_registered`: the name is not an agent Hive registers, that is, neither a built-in Hive role nor a configured custom agent. A native agent Hive does not manage is also `not_registered`.
+- `not_available`: on OpenCode v1, a Hive subagent with `disable: true` in your OpenCode configuration. Hive keeps that setting for the agents it registers with mode `subagent`, so a disabled reviewer also drops out of the v1 `/dash-review` and `/vuln-review` rosters. On v2, an agent absent from the host's agent list when `hive_councils_list` is called, or a Hive subagent you changed to `mode: primary`.
+- `example_template`: an agent whose name contains `example-template` or whose Hive description starts with "Example template only".
+- `ineligible_base`: the agent does not derive from one of the six seat base roles.
+- `duplicate`: the name already appeared earlier in the group.
+
+A blank or unmatched council name returns `unknown_council`, and a council whose seats are all skipped returns `no_usable_seats`. In both cases there is no roster and nobody is launched. Hive does not fall back to the default group.
+
+To see what a council resolves to before you use it, ask a primary agent to call `hive_councils_list`, optionally with `name`. With no name, it resolves the configured default council. The result carries a `notice`, the configured `councils` with their names and descriptions, the `selected` council it resolved, and the `skipped` seats with their reasons. It then has either `ok: true` with the seat `members`, or `ok: false` with a `reason`. It dispatches nobody.
+
+`council.maxMembers`, `council.groups.<name>.maxMembers` and `council.excludedAgents` are ignored. Files that still set them load and validate, and the JSON schema marks them deprecated.
+
+After you upgrade, every usable eligible seat in a group is selected, including seats that a cap or `excludedAgents` used to keep out. An eligible seat is one derived from the six seat base roles. Resolution can still skip an eligible seat for one of the reasons above, such as `not_available`, `example_template` or `duplicate`. Entries in `excludedAgents` for agents that cannot sit on a council, such as the orchestration and worker agents of the old default list, need no action, because resolution still skips those agents. The reported reason is `ineligible_base` or the reason of an earlier check, such as `not_registered`. To keep an eligible seat out of a group:
+
+- For a group you declared under `council.groups`, remove the seat from that group's `members`.
+- For a built-in group you did not declare, add an override under `council.groups.<name>` that lists the members you want, as the `documents` override in the example above does. A file that sets only `excludedAgents` inherits the built-in groups unchanged, so it has no `members` list to edit.
+
+Before the first council after upgrading, ask a primary agent to call `hive_councils_list` and check the resolved roster.
 
 ### Project-local repository manifest
 
@@ -618,6 +645,7 @@ Generated/managed shape (for inspection) at `<project>/.hive/repositories.json`:
 | `complexity-audit` | Read-only complexity audit of named roots or the current worktree |
 | `complexity-review` | Read-only complexity review of an explicit diff or bounded scope |
 | `context-engineering` | Select, retrieve, and update managed context with revision and hash checks |
+| `council` | Draft a council directive, resolve a configured council, brief its read-only seats, and synthesize their answers |
 | `dispatching-parallel-agents` | Coordinate independent subagent work |
 | `executing-plans` | Execute an approved plan with review checkpoints |
 | `grilling` | Orient on supplied context, explain what is found, and question it until material decisions and evidence are aligned |

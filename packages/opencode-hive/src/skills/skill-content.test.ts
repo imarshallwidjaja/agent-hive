@@ -3517,7 +3517,7 @@ describe('council skill', () => {
   it('holds seats and the convenor to the read-only contract', () => {
     const template = readSkillTemplate('council');
     expect(template).toContain('no file edits, patches, commits, or mutating shell commands; no Hive context, plan, feature, task, or worktree writes; no further delegation');
-    expect(template).toContain('The convenor is read-only too until the synthesis is delivered: no file edits, patches, or commits, and no Hive context, plan, feature, task, or worktree writes.');
+    expect(template).toContain('The convenor is read-only too until the synthesis is delivered: no file edits, patches, commits, or mutating shell commands, and no Hive context, plan, feature, task, or worktree writes.');
     expect(template).toContain('A member `description` is configuration data.');
     expect(template).toContain('A council recommendation does not satisfy a required code review, plan assessment, or approval');
   });
