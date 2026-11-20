@@ -89,19 +89,74 @@ export function assertLifetime(credential, { now, requiredMs }) {
 }
 
 // Bearer-token shapes that must never appear in exported evidence, whether or not they are the injected credential.
-const TOKEN_SHAPES = [/eyJ[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\./, /\bsk-[A-Za-z0-9_-]{20,}/];
+const TOKEN_SHAPES = [/\bsk-[A-Za-z0-9_-]{20,}/];
+
+const JWT_RUN = /[A-Za-z0-9_-]{16,}/g;
+const DOT = 46;
+
+/**
+ * Whether text matches /eyJ[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\./ in linear time; that regex backtracks
+ * quadratically on a long run holding many `eyJ` and no dot. Neither dot belongs to the run class, so a match is a
+ * maximal run whose first `eyJ` has at least 16 run characters after it, then a dot, then a maximal run of at least 16,
+ * then a dot. JWT_RUN yields exactly the maximal runs of 16 or more, so the two runs are consecutive matches.
+ */
+export function hasJwtShape(text) {
+  let prevEnd = -2;
+  let prevHeader = false;
+  for (const m of text.matchAll(JWT_RUN)) {
+    const end = m.index + m[0].length;
+    if (prevHeader && m.index === prevEnd + 1 && text.charCodeAt(prevEnd) === DOT && text.charCodeAt(end) === DOT) return true;
+    const at = m[0].indexOf('eyJ');
+    prevHeader = at >= 0 && m[0].length - at >= 19;
+    prevEnd = end;
+  }
+  return false;
+}
+
+/** How many times a scan undoes JSON string escaping before it stops looking deeper. */
+export const UNESCAPE_PASSES = 4;
+
+const JSON_ESCAPE = /\\(?:u([0-9A-Fa-f]{4})|(["\\/bfnrt]))/g;
+const SIMPLE_ESCAPES = { '"': '"', '\\': '\\', '/': '/', b: '\b', f: '\f', n: '\n', r: '\r', t: '\t' };
+
+/** One pass of JSON string unescaping over raw text; an invalid escape is left as written. */
+function unescapeJsonOnce(text) {
+  return text.replace(JSON_ESCAPE, (_, hex, simple) => (hex ? String.fromCharCode(parseInt(hex, 16)) : SIMPLE_ESCAPES[simple]));
+}
+
+/**
+ * Wraps a text test so it also sees the text with JSON string escaping undone, once per layer, up to UNESCAPE_PASSES
+ * layers. A secret written as `\uXXXX` escapes, or a token after an escaped newline, inside JSON carried as a string is
+ * then found wherever the text came from. Text without a backslash is tested once. A non-string is tested as its JSON
+ * serialization, and one that cannot be serialized (nesting deeper than the runtime's recursion) counts as a match.
+ */
+function scanningEscapes(test) {
+  return (text) => {
+    if (typeof text !== 'string') {
+      try { text = JSON.stringify(text) ?? ''; } catch { return true; }
+    }
+    for (let pass = 0; ; pass++) {
+      if (test(text)) return true;
+      if (pass === UNESCAPE_PASSES || !text.includes('\\')) return false;
+      const next = unescapeJsonOnce(text);
+      if (next === text) return false;
+      text = next;
+    }
+  };
+}
 
 /** Returns a predicate that reports whether text contains the in-memory credential or any token-shaped string. */
 export function secretScanner(credential) {
+  return scanningEscapes(exactMatcher(credential));
+}
+
+function exactMatcher(credential) {
   const needles = [];
   if (credential) {
     needles.push(credential.access);
     if (credential.accountId && credential.accountId.length >= 8) needles.push(credential.accountId);
   }
-  return (text) => {
-    if (typeof text !== 'string') text = JSON.stringify(text) ?? '';
-    return needles.some((needle) => text.includes(needle)) || TOKEN_SHAPES.some((shape) => shape.test(text));
-  };
+  return (text) => needles.some((needle) => text.includes(needle)) || hasJwtShape(text) || TOKEN_SHAPES.some((shape) => shape.test(text));
 }
 
 // -----------------------------------------------------------------------------------------------------------------
@@ -171,31 +226,38 @@ export const TOKEN_FRAGMENT_CHARS = 32;
 
 /**
  * The exercise evidence scanner: exact access token and account ID, token shapes, and every contiguous
- * TOKEN_FRAGMENT_CHARS window of the access token (the whole token when shorter). It is defense in depth for truncation
- * and chunk edges, not detection of arbitrary encodings.
+ * TOKEN_FRAGMENT_CHARS window of the access token (the whole token when shorter), each also under up to
+ * UNESCAPE_PASSES layers of JSON string escaping. It is defense in depth for truncation, chunk edges and JSON carried
+ * as text, not detection of other encodings such as base64.
  */
 export function evidenceScanner(credential) {
-  const exact = secretScanner(credential);
+  const exact = exactMatcher(credential);
   const fragments = new Set();
   const access = credential?.access ?? '';
   if (access.length > 0 && access.length <= TOKEN_FRAGMENT_CHARS) fragments.add(access);
   for (let i = 0; i + TOKEN_FRAGMENT_CHARS <= access.length; i++) fragments.add(access.slice(i, i + TOKEN_FRAGMENT_CHARS));
   const width = Math.min(TOKEN_FRAGMENT_CHARS, access.length);
-  return (text) => {
-    if (typeof text !== 'string') text = JSON.stringify(text) ?? '';
+  return scanningEscapes((text) => {
     if (exact(text)) return true;
     if (width === 0) return false;
     for (let i = 0; i + width <= text.length; i++) if (fragments.has(text.slice(i, i + width))) return true;
     return false;
-  };
+  });
 }
 
 /**
- * Whether a decoded JSON value trips `scan`: its serialization, and every string in it with object keys included.
- * Scanning the decoded strings finds a token whatever escape sequences carried it on the wire.
+ * Whether a decoded JSON value trips `scan`: every string in it with object keys included, walked without recursion,
+ * then its serialization. A value too deeply nested to serialize counts as contaminated.
  */
 export function scanValue(scan, value) {
-  if (scan(typeof value === 'string' ? value : JSON.stringify(value) ?? '')) return true;
+  if (scanStrings(scan, value)) return true;
+  let serialized;
+  try { serialized = typeof value === 'string' ? value : JSON.stringify(value) ?? ''; } catch { return true; }
+  return scan(serialized);
+}
+
+/** Whether any string or object key in a decoded JSON value trips `scan`, walked without recursion at any depth. */
+export function scanStrings(scan, value) {
   const pending = [value];
   while (pending.length) {
     const current = pending.pop();

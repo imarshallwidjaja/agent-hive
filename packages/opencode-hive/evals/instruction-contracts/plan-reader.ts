@@ -121,10 +121,15 @@ export async function readPlan(projectRoot: string, feature: string, load: () =>
   }
 }
 
-/** The fields of two full plan reads that a revision-bound approval relies on; equal reads show no differences. */
+/**
+ * The fields of two full plan reads that a revision-bound approval relies on; equal reads show no differences.
+ * Comments that cannot be serialized (nested deeper than the runtime's recursion) on either side are a difference.
+ */
 export function planReadDifferences(plugin: Json, core: Json): string[] {
   const out: string[] = [];
   for (const field of ['revision', 'contentHash', 'status', 'content']) if (plugin?.[field] !== core?.[field]) out.push(field);
-  if (JSON.stringify(plugin?.comments ?? null) !== JSON.stringify(core?.comments ?? null)) out.push('comments');
+  const serialized = (value: unknown): string | null => { try { return JSON.stringify(value ?? null); } catch { return null; } };
+  const pluginComments = serialized(plugin?.comments);
+  if (pluginComments === null || pluginComments !== serialized(core?.comments)) out.push('comments');
   return out;
 }

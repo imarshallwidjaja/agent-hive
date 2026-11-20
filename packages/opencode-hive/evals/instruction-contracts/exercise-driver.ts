@@ -1,6 +1,8 @@
 // In-container driver for supervised exercises. Runs only inside an exercise container (Node type stripping), always
 // through `docker exec -i` from exercise.mjs. Every command reads one JSON document from stdin and prints exactly one
-// JSON line. Failures are fixed codes; no exception text, stack, native error string or subprocess output is printed.
+// JSON line. Driver failures are fixed codes and print no exception text, stack or subprocess output; native tools'
+// error text is never exported. The one native error text that leaves is an allowlisted Hive tool's error message,
+// which is scanned and bounded like its result.
 //
 // It owns supervised control and evidence policy: the native session tree and its quiescence, pending questions and
 // permissions with their exact IDs, one validated submission per call, exact-ID resolution of an unknown submission,
@@ -12,7 +14,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSy
 import { dirname, join, relative, sep } from 'node:path';
 import { evidenceScanner, scanValue } from './credentials.mjs';
 import { sharedClockMs } from './guard.mjs';
-import { REFRESH_SENTINEL, exerciseHiveConfig, exerciseHostConfig, exerciseRoutes, hostSpec, nativeStorePath, serveArgs } from './hosts.mjs';
+import { HIVE_RESULT_OMITTED_TOOLS, HIVE_TOOL_NAMES, REFRESH_SENTINEL, exerciseHiveConfig, exerciseHostConfig, exerciseRoutes, hostSpec, nativeStorePath, serveArgs } from './hosts.mjs';
 import {
   HOME, MOCK_PORT, PROJ, SERVER_PORT, STATE, WORK, detach, payload, strictApi, succeeded, wholeMs,
   type ApiResult,
@@ -125,14 +127,14 @@ function nativeReaders(remaining: () => number) {
  * credential stopped matching the expectation. Raw texts were already scanned when collected; the final serialized
  * reply is scanned here, and the host scans it again.
  */
-async function release(input: Json, value: Json, remaining: () => number): Promise<Json> {
+export async function release(input: Json, value: Json, remaining: () => number): Promise<Json> {
   const scan = scannerFor(input);
   if (input.trusted) {
     if (!(await nativeCredentialMatches(input.host, input.expected, nativeReaders(remaining)))) return { ok: false, failure: 'native_auth_changed' };
   }
-  const text = JSON.stringify(value);
-  if (text.length > LIMITS.exportBytes) return { ok: false, failure: 'export_oversize' };
+  // Contamination is checked first, so a contaminated export is always reported (and latched) as contaminated.
   if (scanValue(scan, value)) return { ok: false, failure: 'evidence_contaminated' };
+  if (JSON.stringify(value).length > LIMITS.exportBytes) return { ok: false, failure: 'export_oversize' };
   return value;
 }
 
@@ -146,6 +148,28 @@ function bounded(text: unknown, cap: number, scan: (t: string) => boolean): { te
   const raw = typeof text === 'string' ? text : '';
   if (scan(raw)) fail('evidence_contaminated');
   return { text: raw.slice(0, cap), chars: raw.length, clipped: raw.length > cap };
+}
+
+/**
+ * A decoded value that may leave the container as JSON text: its keys and strings scanned decoded, then serialized and
+ * bounded. A value too deeply nested to serialize is contaminated, so serialization never throws past the scan.
+ */
+function boundedJson(value: unknown, cap: number, scan: (t: string) => boolean): { text: string; chars: number; clipped: boolean } {
+  if (scanValue(scan, value)) fail('evidence_contaminated');
+  return bounded(JSON.stringify(value) ?? '', cap, scan);
+}
+
+/**
+ * Native text that may leave the container whole or clipped: scanned as the host returned it (the scan undoes JSON
+ * string escaping itself, so a value a duplicate key shadows or a document nested in a string is seen), then kept as
+ * compact JSON when it is JSON (any value, not only an object) and as the raw text otherwise, and bounded. JSON nested
+ * too deeply to re-serialize is kept as raw text.
+ */
+function boundedNativeText(raw: string, cap: number, scan: (t: string) => boolean): { text: string; chars: number; clipped: boolean; json: boolean } {
+  if (scan(raw)) fail('evidence_contaminated');
+  let compact: string | null;
+  try { compact = JSON.stringify(JSON.parse(raw)); } catch { compact = null; }
+  return compact === null ? { ...bounded(raw, cap, scan), json: false } : { ...bounded(compact, cap, scan), json: true };
 }
 
 // -----------------------------------------------------------------------------------------------------------------
@@ -208,7 +232,11 @@ export async function sessionTree(host: string, rootId: string, get: (request: J
 
 export type Message = { id: string; role: string; agent: string | null; model: Json; error: string | null; text: string; tools: Json[] };
 
-/** One native message in a host-neutral shape. Tool outputs stay raw here and are reduced before export. */
+/**
+ * One native message in a host-neutral shape. Tool outputs stay raw here and are reduced before export. A tool's
+ * `output` is its result text (v1 `output`, v2 `content` text) and `error` the host's error message for an errored call
+ * (v1 `error` string, v2 `message` of the `error` object); neither stands in for the other.
+ */
 export function normalizeMessage(host: string, m: Json): Message | null {
   if (host === 'v1') {
     const info = m?.info;
@@ -219,7 +247,10 @@ export function normalizeMessage(host: string, m: Json): Message | null {
       model: info.role === 'assistant' ? { providerID: word(info.providerID), modelID: word(info.modelID), variant: word(info.variant) } : null,
       error: info.error ? 'message_error' : null,
       text: parts.filter((p: Json) => p?.type === 'text').map((p: Json) => p.text ?? '').join(''),
-      tools: parts.filter((p: Json) => p?.type === 'tool').map((p: Json) => ({ id: p.callID ?? p.id ?? null, name: p.tool, status: p.state?.status ?? null, input: p.state?.input, output: p.state?.output ?? p.state?.error, metadata: p.state?.metadata ?? null })),
+      tools: parts.filter((p: Json) => p?.type === 'tool').map((p: Json) => ({
+        id: p.callID ?? p.id ?? null, name: p.tool, status: p.state?.status ?? null, input: p.state?.input, output: p.state?.output,
+        error: p.state?.status === 'error' && typeof p.state?.error === 'string' ? p.state.error : null, metadata: p.state?.metadata ?? null,
+      })),
     };
   }
   if (!m || typeof m.id !== 'string' || !NATIVE_ID.test(m.id)) return null;
@@ -229,10 +260,15 @@ export function normalizeMessage(host: string, m: Json): Message | null {
     model: m.type === 'assistant' ? { providerID: word(m.model?.providerID), modelID: word(m.model?.id), variant: word(m.model?.variant) } : null,
     error: m.error ? 'message_error' : null,
     text: m.type === 'user' && typeof m.text === 'string' ? m.text : content.filter((p: Json) => p?.type === 'text').map((p: Json) => p.text ?? '').join(''),
-    tools: content.filter((p: Json) => p?.type === 'tool').map((p: Json) => ({
-      id: p.callID ?? p.id ?? null, name: p.name, status: p.state?.status ?? null, input: p.state?.input,
-      output: p.state?.output ?? (Array.isArray(p.state?.content) ? p.state.content.map((c: Json) => c?.text ?? '').join('') : p.state?.error), metadata: p.state?.metadata ?? null,
-    })),
+    tools: content.filter((p: Json) => p?.type === 'tool').map((p: Json) => {
+      // Only the error's message: its `response.body` is a provider reply and never travels.
+      const v2ToolError = p.state?.status === 'error' ? p.state.error : null;
+      return {
+        id: p.callID ?? p.id ?? null, name: p.name, status: p.state?.status ?? null, input: p.state?.input,
+        output: p.state?.output ?? (Array.isArray(p.state?.content) ? p.state.content.map((c: Json) => c?.text ?? '').join('') : undefined),
+        error: typeof v2ToolError?.message === 'string' ? v2ToolError.message : null, metadata: p.state?.metadata ?? null,
+      };
+    }),
   };
 }
 
@@ -1015,11 +1051,25 @@ function exportConversation(observed: Json, scan: (t: string) => boolean): Json 
 
 const SAFE_WORD = /^[A-Za-z][A-Za-z0-9_.:-]{0,79}$/;
 
-/** One tool call as exported: name, status, exact call ID and a structured outcome. Raw outputs never leave. */
-function toolRecord(t: Json, scan: (t: string) => boolean): Json {
+/** Per-call cap on a Hive tool's exported result text: the largest text cap any other tool-call field already uses. */
+export const HIVE_RESULT_CHARS = 4000;
+/** Cap on an exported skill identifier, the native name limit used elsewhere in the export. */
+const SKILL_ID_CHARS = 200;
+const HIVE_TOOLS = new Set<string>(HIVE_TOOL_NAMES);
+const HIVE_RESULT_OMITTED = new Set<string>(HIVE_RESULT_OMITTED_TOOLS);
+
+/**
+ * One tool call as exported: name, status, exact call ID and a structured outcome. A `skill` call keeps the name (v1)
+ * or catalog id (v2) it selected as bounded text. A tool in the plugin's exact Hive tool list also keeps its result and
+ * error message text, compact JSON when the text is JSON and the raw text otherwise, scanned whole with JSON string escaping undone before
+ * it is clipped to HIVE_RESULT_CHARS; trace and Git snapshot results carry native content and are replaced by an
+ * omission marker. Native tools' outputs and errors (files, shell, web) never leave.
+ */
+export function toolRecord(t: Json, scan: (t: string) => boolean): Json {
   const out: Json = { id: typeof t.id === 'string' && NATIVE_ID.test(t.id) ? t.id : null, name: typeof t.name === 'string' && SAFE_WORD.test(t.name) ? t.name : 'other', status: typeof t.status === 'string' && SAFE_WORD.test(t.status) ? t.status : null };
   const input = t.input && typeof t.input === 'object' ? t.input : {};
   const boundedString = (value: unknown, max: number) => (typeof value === 'string' && value.length <= max ? value : null);
+  const hiveText = (value: unknown) => (typeof value === 'string' ? boundedNativeText(value, HIVE_RESULT_CHARS, scan) : value && typeof value === 'object' ? { ...boundedJson(value, HIVE_RESULT_CHARS, scan), json: true } : null);
   if (t.name === 'task' || t.name === 'subagent') {
     out.agent = word(input.subagent_type ?? input.agent);
     const child = t.metadata?.sessionId ?? t.metadata?.sessionID;
@@ -1030,20 +1080,30 @@ function toolRecord(t: Json, scan: (t: string) => boolean): Json {
     out.exit = Number.isInteger(t.metadata?.exit) ? t.metadata.exit : null;
   } else if (t.name === 'execute') {
     // Code Mode: the code is exported as written; its output is model-written, so it is never read as a Hive result.
-    out.args = bounded(JSON.stringify(input), 2000, scan);
-  } else if (typeof t.name === 'string' && t.name.startsWith('hive_')) {
+    out.args = boundedJson(input, 2000, scan);
+  } else if (HIVE_TOOLS.has(t.name)) {
     const result = t.status === 'completed' ? parseToolResult(t.output) : null;
-    out.args = bounded(JSON.stringify(input), 2000, scan);
+    out.args = boundedJson(input, 2000, scan);
     out.result = result === null ? null : {
       success: typeof result.success === 'boolean' ? result.success : null,
       approval: result.approval ? { success: typeof result.approval.success === 'boolean' ? result.approval.success : null, reason: SAFE_WORD.test(result.approval.reason ?? '') ? result.approval.reason : null, revision: boundedString(result.approval.revision, 200) } : null,
       sync: result.sync ? { success: typeof result.sync.success === 'boolean' ? result.sync.success : null } : null, revision: boundedString(result.revision, 200),
     };
+    if (HIVE_RESULT_OMITTED.has(t.name)) out.output = { omitted: 'native_content' };
+    else {
+      out.output = hiveText(t.output);
+      out.error = hiveText(t.error);
+    }
+  } else if (t.name === 'skill') {
+    // The whole input is scanned before anything is taken from it.
+    if (scanValue(scan, input)) fail('evidence_contaminated');
+    const id = (value: unknown) => (typeof value === 'string' ? bounded(value, SKILL_ID_CHARS, scan) : null);
+    out.skill = { name: id(input.name), id: id(input.id) };
   } else if (['read', 'write', 'edit', 'glob', 'grep'].includes(t.name)) {
     out.path = bounded(input.filePath ?? input.path ?? input.pattern ?? '', 500, scan);
   } else if (t.name === 'question') {
-    out.questions = bounded(JSON.stringify(input.questions ?? []), 4000, scan);
-    out.answers = bounded(JSON.stringify(t.metadata?.answers ?? null), 2000, scan);
+    out.questions = boundedJson(input.questions ?? [], 4000, scan);
+    out.answers = boundedJson(t.metadata?.answers ?? null, 2000, scan);
   }
   return out;
 }
@@ -1074,6 +1134,21 @@ export function lineDiff(path: string, before: string | null, after: string | nu
 }
 
 /**
+ * The plan section of an export: the candidate core's read with bounded comments and content, and the primary's plugin
+ * read beside it. The whole plugin read is scanned before anything is taken from it or compared, so a read too deeply
+ * nested to serialize is contaminated rather than an exception that skips the scan.
+ */
+export function planExport(core: Json, plugin: Json, scan: (t: string) => boolean): Json {
+  if (!core.ok) return { ok: false, failure: core.failure };
+  if (plugin && scanValue(scan, plugin.result)) fail('evidence_contaminated');
+  return {
+    ok: true, featurePath: core.featurePath, planPath: core.planPath, revision: core.result.revision, contentHash: core.result.contentHash, status: core.result.status,
+    comments: boundedJson(core.result.comments ?? [], 32 * 1024, scan), content: bounded(core.result.content, LIMITS.artifactBytes, scan),
+    pluginRead: plugin ? { sessionId: plugin.sessionId, messageId: plugin.messageId, callId: plugin.callId, revision: plugin.result.revision, differences: planReadDifferences(plugin.result, core.result) } : null,
+  };
+}
+
+/**
  * Observation and optional export. With `resolve`, also decides one earlier unknown submission from exact native
  * evidence. Inspect never runs project commands or tests.
  */
@@ -1097,14 +1172,7 @@ async function observe(input: Json): Promise<Json> {
   if (want.conversation) out.conversation = exportConversation(observed, scan);
   if (want.plan) {
     const core = await readPlan(PROJ, want.plan.feature);
-    const plugin = latestPluginPlanRead(observed.tree, observed.histories, want.plan.feature);
-    out.plan = core.ok
-      ? {
-        ok: true, featurePath: core.featurePath, planPath: core.planPath, revision: core.result.revision, contentHash: core.result.contentHash, status: core.result.status,
-        comments: bounded(JSON.stringify(core.result.comments ?? []), 32 * 1024, scan), content: bounded(core.result.content, LIMITS.artifactBytes, scan),
-        pluginRead: plugin ? { sessionId: plugin.sessionId, messageId: plugin.messageId, callId: plugin.callId, revision: plugin.result.revision, differences: planReadDifferences(plugin.result, core.result) } : null,
-      }
-      : { ok: false, failure: core.failure };
+    out.plan = planExport(core, latestPluginPlanRead(observed.tree, observed.histories, want.plan.feature), scan);
   }
   if (Array.isArray(want.artifacts)) out.artifacts = want.artifacts.slice(0, LIMITS.artifacts).map((p: string) => artifactRecord(p, scan));
   if (Array.isArray(want.list)) out.list = want.list.slice(0, LIMITS.artifacts).map((p: string) => listPrefix(p, scan));

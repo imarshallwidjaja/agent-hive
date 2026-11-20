@@ -34,10 +34,10 @@ import {
   scriptDirective, skillReferencePointers, switchIdleChildren, toolFieldContract, toolOutcome, treeFrom,
 } from './fixture.ts';
 import {
-  credentialFromSnapshot, evidenceScanner, fingerprintWire, scanValue, snapshotAuthFile,
+  credentialFromSnapshot, evidenceScanner, fingerprintWire, hasJwtShape, scanValue, secretScanner, snapshotAuthFile,
 } from './credentials.mjs';
 import { GuardState, parseWireFingerprint, sharedClockMs } from './guard.mjs';
-import { MESSAGE_ID, exerciseHiveConfig, exerciseHostConfig, exerciseMessageId, exerciseRoutes, nativeStorePath } from './hosts.mjs';
+import { HIVE_RESULT_OMITTED_TOOLS, HIVE_TOOL_NAMES as EXERCISE_HIVE_TOOL_NAMES, MESSAGE_ID, exerciseHiveConfig, exerciseHostConfig, exerciseMessageId, exerciseRoutes, nativeStorePath } from './hosts.mjs';
 import { exerciseCoreFailures } from './runtime.mjs';
 import {
   ACTIONS, CLOCK_MARGIN_MS, DRIVER_FAILURES, DRIVER_REFUSALS, EXIT, INTERRUPT_FLOOR_MS, LIVE_MAX_SECONDS, NO_NEW_WORK_MS, PROJECT_ROOT, QUALIFICATION_CHECKS, acquireRunLock, actionReserveMs,
@@ -46,9 +46,10 @@ import {
   validateAuthorization, validateInspection, validateOperation, validateRequest,
 } from './exercise.mjs';
 import {
-  approvalObserved, approvalPrecondition, artifactRecord, budget as driverBudget, latestPluginPlanRead, lineDiff, listPrefix, nativeCredentialMatches, normalizeMessage, observeWith,
-  observedApprovals, pendingInteractions, quiescence, readHistory, releasedPending, resolveOperation, sessionTree, submit as driverSubmit,
+  HIVE_RESULT_CHARS, approvalObserved, approvalPrecondition, artifactRecord, budget as driverBudget, latestPluginPlanRead, lineDiff, listPrefix, nativeCredentialMatches, normalizeMessage, observeWith,
+  observedApprovals, pendingInteractions, planExport, quiescence, readHistory, release as driverRelease, releasedPending, resolveOperation, sessionTree, submit as driverSubmit, toolRecord,
 } from './exercise-driver.ts';
+import { HIVE_TOOL_NAMES as MANIFEST_HIVE_TOOL_NAMES } from '../../src/utils/plugin-manifest.ts';
 import { PLAN_READ_LIMITS, planReadDifferences, readPlan } from './plan-reader.ts';
 
 const SCENARIOS = JSON.parse(readFileSync(join(import.meta.dir, 'scenarios.json'), 'utf8'));
@@ -4166,6 +4167,358 @@ describe('supervised exercise native adapters', () => {
     expect(latestPluginPlanRead(tree, wrapped as any, 'f')).toBeNull();
   });
 
+  // Assistant messages in the pinned host shapes. v1 (1.x): a tool part has `callID` and `tool`; a completed state has an
+  // `output` string, an errored one an `error` string. v2 (@opencode/schema 2.0.26): a tool part has `id` and `name`; a
+  // completed state has `content` blocks and no `output`; an errored state has `error: { type, message, response? }` and
+  // optional `content`.
+  const pinnedV1 = (tools: any[]) => ({ info: { id: 'm', role: 'assistant', agent: 'hive-builder' }, parts: tools.map((t) => ({
+    type: 'tool', id: `prt_${t.id}`, callID: t.id, tool: t.name,
+    state: t.status === 'error' ? { status: 'error', input: t.input ?? {}, error: t.error } : { status: t.status ?? 'completed', input: t.input ?? {}, output: t.output ?? '' },
+  })) });
+  const pinnedV2 = (tools: any[]) => ({ id: 'm', type: 'assistant', agent: 'hive-builder', content: tools.map((t) => ({
+    type: 'tool', id: t.id, name: t.name,
+    state: t.status === 'error'
+      ? { status: 'error', input: t.input ?? {}, error: { type: 'tool_error', message: t.error, response: { body: 'RESPONSE-BODY' } }, ...(t.output === undefined ? {} : { content: [{ type: 'text', text: t.output }] }) }
+      : { status: t.status ?? 'completed', input: t.input ?? {}, content: [{ type: 'text', text: t.output ?? '' }] },
+  })) });
+  const exportedOn = (host: string, tools: any[], scan = evidenceScanner({ access: FAKE_ACCESS, expires: 1 })) => normalizeMessage(host, host === 'v1' ? pinnedV1(tools) : pinnedV2(tools))!.tools.map((t) => toolRecord(t, scan));
+  const escapeAll = (text: string) => text.split('').map((ch) => '\\u' + ch.charCodeAt(0).toString(16).padStart(4, '0')).join('');
+  const observeReply = (tools: any[]) => ({
+    ok: true, quiescent: true, reasons: [], pending: [], approvals: [], tree: { sessions: [], complete: true, failure: null }, busy: [],
+    conversation: { sessions: [{ id: 'ses_a', parentId: null, agent: null, historyComplete: true, historyFailure: null, turns: [{ id: 'm', role: 'assistant', agent: null, model: null, error: null, text: '', chars: 0, clipped: false, tools }], finalReturn: { text: '', chars: 0, clipped: false } }], toolRecordsCapped: false },
+  });
+
+  test('an exported tool call keeps the skill it loaded and a Hive tool result up to its cap on both hosts; native results stay out; the scan still rejects', () => {
+    const clean = evidenceScanner({ access: FAKE_ACCESS, expires: 1 });
+    const councils = { notice: 'n', councils: [{ name: 'default', members: [{ agent: 'code-reviewer' }] }], selected: 'default', skipped: [], ok: true };
+    const text = (value: string, cap = HIVE_RESULT_CHARS) => ({ text: value.slice(0, cap), chars: value.length, clipped: value.length > cap });
+    const calls = (skill: any) => [
+      { id: 'c1', name: 'skill', input: skill, output: '<skill_content name="council">' },
+      { id: 'c2', name: 'hive_councils_list', input: {}, output: JSON.stringify(councils, null, 2) },
+      { id: 'c3', name: 'read', input: { filePath: 'README.md' }, output: 'file body' },
+      { id: 'c4', name: 'hive_status', status: 'error', input: {}, error: 'plain failure text' },
+      { id: 'c5', name: 'hive_task_trace', input: { task_id: 'ses_x' }, output: JSON.stringify({ events: [{ output: 'other session file body' }] }) },
+      { id: 'c6', name: 'hive_git_snapshot', input: {}, output: JSON.stringify({ patch: '+secret diff line' }) },
+      { id: 'c7', name: 'hive_unregistered', input: {}, output: 'unregistered result' },
+      { id: 'c8', name: 'bash', status: 'error', input: { command: 'ls' }, error: 'native error text' },
+    ];
+    for (const [host, skill] of [['v1', { name: 'council' }], ['v2', { id: 'council' }]] as const) {
+      const [loaded, listed, read, failed, traced, snapshot, unregistered, shell] = exportedOn(host, calls(skill));
+      expect([host, loaded]).toEqual([host, { id: 'c1', name: 'skill', status: 'completed', skill: { name: host === 'v1' ? text('council', 200) : null, id: host === 'v2' ? text('council', 200) : null } }]);
+      expect(listed.output).toEqual({ ...text(JSON.stringify(councils)), json: true });
+      expect(listed.error).toBeNull();
+      // The plan-approval projection is still there beside the new result text.
+      expect(listed.result).toEqual({ success: null, approval: null, sync: null, revision: null });
+      expect(read).toEqual({ id: 'c3', name: 'read', status: 'completed', path: text('README.md', 500) });
+      expect(JSON.stringify(read)).not.toContain('file body');
+      // An errored call keeps the host's error message text, never the v2 response body.
+      expect([host, failed]).toEqual([host, { id: 'c4', name: 'hive_status', status: 'error', args: text('{}', 2000), result: null, output: null, error: { ...text('plain failure text'), json: false } }]);
+      expect(JSON.stringify(failed)).not.toContain('RESPONSE-BODY');
+      // Trace and Git snapshot results carry native content: the call stays, the result is replaced by a marker.
+      expect(traced).toEqual({ id: 'c5', name: 'hive_task_trace', status: 'completed', args: text('{"task_id":"ses_x"}', 2000), result: { success: null, approval: null, sync: null, revision: null }, output: { omitted: 'native_content' } });
+      expect(snapshot.output).toEqual({ omitted: 'native_content' });
+      expect(JSON.stringify([traced, snapshot])).not.toMatch(/other session file body|secret diff line/);
+      // A name outside the plugin's Hive tools gets no result text, and native errors stay out.
+      expect(unregistered.output).toBeUndefined();
+      expect(JSON.stringify(unregistered)).not.toContain('unregistered result');
+      expect(shell).toEqual({ id: 'c8', name: 'bash', status: 'error', command: text('ls', 1000), exit: null });
+    }
+    // On v2, error content does not mask the error: both the content text and the message are kept.
+    const [v2Partial] = exportedOn('v2', [{ id: 'c9', name: 'hive_status', status: 'error', input: {}, error: 'boom', output: 'partial result' }]);
+    expect(v2Partial).toMatchObject({ output: { ...text('partial result'), json: false }, error: { ...text('boom'), json: false } });
+    // A skill identifier the host accepts is kept as text however it is spelled; absent and clipped are distinct.
+    const [spaced, clippedId, absent] = exportedOn('v2', [
+      { id: 's1', name: 'skill', input: { name: 'my skill (draft)' } },
+      { id: 's2', name: 'skill', input: { id: 'k'.repeat(250) } },
+      { id: 's3', name: 'skill', input: {} },
+    ]);
+    expect(spaced.skill).toEqual({ name: text('my skill (draft)', 200), id: null });
+    expect(clippedId.skill).toEqual({ name: null, id: text('k'.repeat(250), 200) });
+    expect(absent.skill).toEqual({ name: null, id: null });
+    const big = JSON.stringify({ content: 'x'.repeat(HIVE_RESULT_CHARS * 2) });
+    expect(HIVE_RESULT_CHARS).toBe(4000);
+    expect(exportedOn('v1', [{ id: 'c5', name: 'hive_plan_read', input: {}, output: big }])[0].output).toEqual({ ...text(big), json: true });
+    // The host rebuilds the new fields from its allowlist and refuses one over the cap.
+    const records = [...exportedOn('v1', calls({ name: 'council' })), ...exportedOn('v2', calls({ id: 'council' })), v2Partial, spaced, clippedId, absent];
+    expect(parseDriverReply('observe', observeReply(records))!.conversation.sessions[0].turns[0].tools).toEqual(records);
+    expect(parseDriverReply('observe', observeReply([{ ...records[1], output: { text: 'x'.repeat(HIVE_RESULT_CHARS + 1), chars: 4001, clipped: false, json: false } }]))).toBeNull();
+    // Negative control: a Hive result carrying the credential, plainly, escaped or beyond the cap, is rejected whole in the container.
+    for (const output of [JSON.stringify({ ok: true, note: FAKE_ACCESS }), `{"note":"${escapeAll(FAKE_ACCESS)}"}`, 'y'.repeat(HIVE_RESULT_CHARS) + FAKE_ACCESS]) {
+      expect(() => exportedOn('v1', [{ id: 'c6', name: 'hive_councils_list', input: {}, output }])).toThrow('evidence_contaminated');
+    }
+    // So is an errored call whose message carries it, on either host.
+    for (const host of ['v1', 'v2']) expect(() => exportedOn(host, [{ id: 'c6', name: 'hive_status', status: 'error', input: {}, error: `failed: ${FAKE_ACCESS}` }])).toThrow('evidence_contaminated');
+  });
+
+  // Each of these carries a credential or token that a scan of re-serialized text alone does not see.
+  const TOKEN_LINE = 'sk-' + 'A'.repeat(24);
+  test('a driver reply whose JSON result text hides the credential or a token behind JSON string escapes is contaminated on the host', () => {
+    const clean = evidenceScanner({ access: FAKE_ACCESS, expires: 1 });
+    const [listed] = exportedOn('v1', [{ id: 'c2', name: 'hive_councils_list', input: {}, output: '{"ok":true}' }]);
+    const reply = (output: any) => JSON.stringify(observeReply([{ ...listed, output }])) + '\n';
+    const whole = (text: string) => ({ text, chars: text.length, clipped: false, json: true });
+    const escaped = `{"note":"${escapeAll(FAKE_ACCESS)}"}`;
+    const tokenLine = JSON.stringify({ note: `line\n${TOKEN_LINE}` });
+    const long = `{"note":"${escapeAll(FAKE_ACCESS)}","pad":"${'x'.repeat(HIVE_RESULT_CHARS)}"}`;
+    const clippedJson = { text: long.slice(0, HIVE_RESULT_CHARS), chars: long.length, clipped: true, json: true };
+    for (const output of [whole(escaped), whole(tokenLine), clippedJson]) {
+      // Each record is otherwise valid: without the hidden secret the host would accept the reply.
+      expect(parseDriverReply('observe', JSON.parse(reply(output)))).not.toBeNull();
+      expect(reply(output)).not.toContain(FAKE_ACCESS);
+      expect(interpretReply(clean, 'observe', { stdout: reply(output), timedOut: false })).toMatchObject({ value: null, contaminated: true });
+    }
+    expect(interpretReply(clean, 'observe', { stdout: reply(whole('{"note":"harmless"}')), timedOut: false }).contaminated).toBe(false);
+  });
+  test('an honest driver rejects a credential escaped inside a JSON document carried as a string value, in a result or in arguments', () => {
+    const inner = `{"auth":"${escapeAll(FAKE_ACCESS)}"}`;
+    for (const host of ['v1', 'v2']) {
+      expect(() => exportedOn(host, [{ id: 'c1', name: 'hive_context_read', input: {}, output: JSON.stringify({ file: { content: inner } }) }])).toThrow('evidence_contaminated');
+      expect(() => exportedOn(host, [{ id: 'c1', name: 'hive_context_write', input: { content: inner }, output: '{}' }])).toThrow('evidence_contaminated');
+    }
+  });
+  test('an honest driver rejects a credential escaped inside a JSON literal within non-JSON result or error text', () => {
+    const text = `Validation failed: {"auth":"${escapeAll(FAKE_ACCESS)}"}`;
+    for (const host of ['v1', 'v2']) {
+      expect(() => exportedOn(host, [{ id: 'c1', name: 'hive_status', status: 'error', input: {}, error: text }])).toThrow('evidence_contaminated');
+      expect(() => exportedOn(host, [{ id: 'c1', name: 'hive_status', input: {}, output: text }])).toThrow('evidence_contaminated');
+    }
+  });
+  test('exported plan comments are scanned decoded, so a token at the start of a comment line is contaminated', () => {
+    const scan = evidenceScanner({ access: FAKE_ACCESS, expires: 1 });
+    const core = (comments: any[]) => ({ ok: true, featurePath: 'f', planPath: 'p', result: { revision: 'r', contentHash: 'h', status: 'planning', content: 'c', comments } });
+    expect(planExport(core([{ body: 'fine' }]), null, scan).comments).toEqual({ text: '[{"body":"fine"}]', chars: 17, clipped: false });
+    expect(() => planExport(core([{ body: `first line\n${TOKEN_LINE}` }]), null, scan)).toThrow('evidence_contaminated');
+  });
+  test('a result nested too deeply to re-serialize fails closed when it carries the credential, and is exported as clipped raw text when harmless', () => {
+    const scan = evidenceScanner({ access: FAKE_ACCESS, expires: 1 });
+    // 5000 levels overflow Node's recursive JSON.stringify (the container's runtime); Bun's needs more, so both run here.
+    // Each overflow at 100,000 levels takes about a second under Bun, hence the longer timeout.
+    for (const depth of [5000, 100_000]) {
+      const deep = (leaf: string) => '['.repeat(depth) + leaf + ']'.repeat(depth);
+      const tainted = deep(`"${escapeAll(FAKE_ACCESS)}"`);
+      for (const host of ['v1', 'v2']) expect(() => exportedOn(host, [{ id: 'c1', name: 'hive_context_read', input: {}, output: tainted }])).toThrow('evidence_contaminated');
+      const harmless = deep('"fine"');
+      const serializable = (() => { try { JSON.stringify(JSON.parse(harmless)); return true; } catch { return false; } })();
+      if (depth === 100_000) expect(serializable).toBe(false);
+      // Compact JSON of nested arrays is the raw text, so only `json` tells the two outcomes apart.
+      const [record] = exportedOn('v1', [{ id: 'c1', name: 'hive_context_read', input: {}, output: harmless }]);
+      expect(record.output).toEqual({ text: harmless.slice(0, HIVE_RESULT_CHARS), chars: harmless.length, clipped: true, json: serializable });
+      // A value that cannot be serialized is contaminated for the shared scan, and a driver reply carrying one is refused on the host.
+      expect(scanValue(scan, JSON.parse(harmless))).toBe(!serializable);
+      if (!serializable) expect(interpretReply(scan, 'observe', { stdout: `{"ok":true,"deep":${harmless}}\n`, timedOut: false })).toMatchObject({ value: null, contaminated: true });
+    }
+  }, 30_000);
+  test('a plugin plan read whose comments nest too deeply to serialize latches the plan export and reads as a comments difference', () => {
+    const scan = evidenceScanner({ access: FAKE_ACCESS, expires: 1 });
+    // 100,000 levels overflow JSON.stringify under Bun as well as under Node, which overflows at 5000.
+    const depth = 100_000;
+    const deepComments = JSON.parse('['.repeat(depth) + ']'.repeat(depth));
+    const coreRead = { revision: 'r', contentHash: 'h', status: 'planning', content: 'c', comments: [] };
+    const core = { ok: true, featurePath: 'f', planPath: 'p', result: coreRead };
+    const plugin = (revision: string) => ({ sessionId: 'ses_a', messageId: 'msg_a', callId: 'c1', result: { ...coreRead, revision, comments: deepComments } });
+    // The credential sits in a field the comparison would never reach before it threw.
+    expect(() => planExport(core, plugin(FAKE_ACCESS), scan)).toThrow('evidence_contaminated');
+    // A value the scan cannot serialize counts as contaminated, so a clean one latches too instead of escaping as a crash.
+    expect(() => planExport(core, plugin('r'), scan)).toThrow('evidence_contaminated');
+    // The approval precondition compares the same reads: an unserializable side is a difference, never an exception.
+    expect(planReadDifferences(plugin('r').result, coreRead)).toEqual(['comments']);
+    expect(planReadDifferences(coreRead, plugin('r').result)).toEqual(['comments']);
+    expect(planReadDifferences(plugin('r').result, plugin('r').result)).toEqual(['comments']);
+  }, 30_000);
+  test('the shared string scan finds a secret under up to four layers of JSON string escaping, and not past them', () => {
+    const escapeOnce = (text: string) => JSON.stringify(text).slice(1, -1);
+    // Each layer of \uXXXX escaping needs one unescape pass; each layer of ordinary escaping keeps the token after `\n`
+    // without a word boundary until it is undone.
+    let unicode = FAKE_ACCESS;
+    let line = `line\n${TOKEN_LINE}`;
+    for (let layer = 1; layer <= 5; layer++) {
+      unicode = escapeAll(unicode);
+      line = escapeOnce(line);
+      for (const scan of [secretScanner({ access: FAKE_ACCESS }), evidenceScanner({ access: FAKE_ACCESS, expires: 1 })]) {
+        expect([layer, scan(unicode)]).toEqual([layer, layer <= 4]);
+        expect([layer, scan(line)]).toEqual([layer, layer <= 4]);
+      }
+    }
+    // Text without a secret stays clean however it is escaped.
+    expect(evidenceScanner({ access: FAKE_ACCESS, expires: 1 })(escapeOnce(escapeOnce('plain "quoted" \\ text\n')))).toBe(false);
+  });
+
+  test('the JWT token shape matches exactly what its original regex matched', () => {
+    // The regex the linear scan replaced, kept as the oracle.
+    const oracle = /eyJ[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\./;
+    let seed = 0x5eed;
+    const rand = () => {
+      seed = (seed + 0x6d2b79f5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    const pick = <T,>(items: T[]): T => items[Math.floor(rand() * items.length)];
+    const RUN_CHARS = ['e', 'y', 'J', '-', '_', '7', 'a'];
+    const run = (length: number) => Array.from({ length }, () => pick(RUN_CHARS)).join('');
+    // A run of the given length with `eyJ` at the given offset.
+    const header = (length: number, at: number) => run(at) + 'eyJ' + run(length - at - 3);
+    const cases: string[] = [];
+    // Boundaries: header runs of eyJ plus 15, 16 or 17 characters with eyJ at or after the start of the run, payload
+    // runs of 15, 16 or 17, each with and without the closing dot.
+    for (const after of [15, 16, 17]) for (const at of [0, 1, 4]) for (const payload of [15, 16, 17]) for (const close of ['.', '', 'a', ' ']) {
+      cases.push(header(at + 3 + after, at) + '.' + run(payload) + close);
+      cases.push(run(2) + ' ' + header(at + 3 + after, at) + '.' + run(payload) + close + run(3));
+    }
+    // Chains of three or more segments, where only a later pair may qualify.
+    for (let i = 0; i < 3000; i++) {
+      const segments = Array.from({ length: 3 + Math.floor(rand() * 3) }, () => {
+        const length = pick([15, 16, 17, 18, 19, 19, 20, 20, 21, Math.floor(rand() * 24)]);
+        return length >= 3 && rand() < 0.7 ? header(length, pick([0, 0, 1, 2, Math.floor(rand() * (length - 2))])) : run(length);
+      });
+      cases.push(segments.map((s, j) => (j ? pick(['.', '.', '.', '.', '..', ' ']) : '') + s).join('') + pick(['.', '.', '', ' ']));
+    }
+    // Free strings over the small alphabet.
+    for (let i = 0; i < 3000; i++) cases.push(Array.from({ length: Math.floor(rand() * 90) }, () => pick([...RUN_CHARS, '.', '.'])).join(''));
+    let matched = 0;
+    for (const text of cases) {
+      const expected = oracle.test(text);
+      if (expected) matched++;
+      expect([text, hasJwtShape(text)]).toEqual([text, expected]);
+    }
+    // The corpus exercises both outcomes heavily.
+    expect(cases.length).toBeGreaterThan(4000);
+    expect(matched).toBeGreaterThan(500);
+    expect(cases.length - matched).toBeGreaterThan(500);
+  });
+  test('token-shape scans stay linear on long runs that hold many token prefixes and no match', () => {
+    const scan = evidenceScanner({ access: FAKE_ACCESS, expires: 1 });
+    // Base64url-encoded JSON produces long runs like these; the old JWT regex took about 49 s on 127 KiB of them under Node.
+    const twoMiB = 2 * 1024 * 1024;
+    const cases: [string, boolean][] = [
+      ['eyJ'.repeat(twoMiB / 3), false],
+      ['eyJ'.repeat(twoMiB / 3) + '.' + 'a'.repeat(30), false],
+      [('sk-' + 'a'.repeat(19) + ' ').repeat(twoMiB / 23), false],
+      ['sk-'.repeat(twoMiB / 3), true],
+    ];
+    for (const [text, contaminated] of cases) {
+      const started = performance.now();
+      expect(scan(text)).toBe(contaminated);
+      // Generous against the 48 s inspect budget so a loaded machine does not flake it.
+      expect(performance.now() - started).toBeLessThan(10_000);
+    }
+  });
+  test('a Hive result with a token-shaped string at the start of a line inside a JSON string is contaminated', () => {
+    const output = JSON.stringify({ ok: true, note: `first line\n${TOKEN_LINE}` });
+    // The escaped newline leaves no word boundary before the token in the raw text; the scan finds it by undoing the escape.
+    expect(/\bsk-/.test(output)).toBe(false);
+    expect(evidenceScanner({ access: FAKE_ACCESS, expires: 1 })(output)).toBe(true);
+    for (const host of ['v1', 'v2']) expect(() => exportedOn(host, [{ id: 'c1', name: 'hive_context_read', input: {}, output }])).toThrow('evidence_contaminated');
+  });
+  test('a Hive result that is a JSON string primitive of the escaped credential is contaminated', () => {
+    const output = `"${escapeAll(FAKE_ACCESS)}"`;
+    expect(output).not.toContain(FAKE_ACCESS);
+    for (const host of ['v1', 'v2']) expect(() => exportedOn(host, [{ id: 'c1', name: 'hive_context_read', input: {}, output }])).toThrow('evidence_contaminated');
+  });
+  test('a Hive result whose duplicate key shadows the credential is contaminated, plain or escaped', () => {
+    for (const first of [FAKE_ACCESS, escapeAll(FAKE_ACCESS)]) {
+      const output = `{"note":"${first}","note":"harmless"}`;
+      expect(JSON.parse(output)).toEqual({ note: 'harmless' });
+      for (const host of ['v1', 'v2']) expect(() => exportedOn(host, [{ id: 'c1', name: 'hive_context_read', input: {}, output }])).toThrow('evidence_contaminated');
+    }
+  });
+  test('Hive arguments with a token-shaped line, and a skill call carrying the credential in any input field, are contaminated', () => {
+    for (const host of ['v1', 'v2']) {
+      expect(() => exportedOn(host, [{ id: 'c1', name: 'hive_context_write', input: { content: `notes\n${TOKEN_LINE}` }, output: '{}' }])).toThrow('evidence_contaminated');
+      expect(() => exportedOn(host, [{ id: 'c2', name: 'skill', input: { name: 'council', extra: FAKE_ACCESS } }])).toThrow('evidence_contaminated');
+    }
+  });
+  test('a contaminated export over the size limit is reported as contaminated, not oversize', async () => {
+    const value = { ok: true, padding: 'x'.repeat(2 * 1024 * 1024), note: `line\n${TOKEN_LINE}` };
+    expect(await driverRelease({ trusted: false }, value, () => 1000)).toEqual({ ok: false, failure: 'evidence_contaminated' });
+    expect(await driverRelease({ trusted: false }, { ok: true, padding: 'x'.repeat(2 * 1024 * 1024) }, () => 1000)).toEqual({ ok: false, failure: 'export_oversize' });
+  });
+
+  test('the host refuses result text on a non-Hive or omitted-result tool, skill fields on another tool, and inconsistent result sizes', () => {
+    const [skill, listed] = exportedOn('v1', [{ id: 'c1', name: 'skill', input: { name: 'council' } }, { id: 'c2', name: 'hive_councils_list', input: {}, output: '{"ok":true}' }]);
+    const accepted = (tools: any[]) => parseDriverReply('observe', observeReply(tools)) !== null;
+    expect(accepted([skill, listed])).toBe(true);
+    const result = (text: string, extra: any = {}) => ({ text, chars: text.length, clipped: false, json: false, ...extra });
+    expect(accepted([{ id: 'c3', name: 'read', status: 'completed', output: result('file body') }])).toBe(false);
+    expect(accepted([{ id: 'c3', name: 'hive_unregistered', status: 'completed', output: result('x') }])).toBe(false);
+    expect(accepted([{ id: 'c3', name: 'bash', status: 'error', error: result('x') }])).toBe(false);
+    expect(accepted([{ ...listed, name: 'hive_task_trace' }])).toBe(false);
+    expect(accepted([{ ...listed, name: 'hive_task_trace', output: { omitted: 'native_content' }, error: undefined }])).toBe(true);
+    expect(accepted([{ ...listed, output: { omitted: 'native_content' } }])).toBe(false);
+    expect(accepted([{ ...listed, name: 'hive_git_snapshot', output: { omitted: 'native_content' }, error: null }])).toBe(false);
+    expect(accepted([{ ...listed, skill: skill.skill }])).toBe(false);
+    expect(accepted([{ ...skill, name: 'read' }])).toBe(false);
+    // Sizes must agree with the text: unclipped means whole, clipped means cut at the cap.
+    expect(accepted([{ ...listed, output: result('abc', { chars: 4 }) }])).toBe(false);
+    expect(accepted([{ ...listed, output: result('abc', { chars: 2 }) }])).toBe(false);
+    expect(accepted([{ ...listed, output: result('abc', { chars: 9, clipped: true }) }])).toBe(false);
+    expect(accepted([{ ...listed, output: result('x'.repeat(HIVE_RESULT_CHARS), { chars: HIVE_RESULT_CHARS + 5, clipped: true, json: true }) }])).toBe(true);
+    expect(accepted([{ ...listed, error: result('abc', { clipped: true }) }])).toBe(false);
+    expect(accepted([{ ...skill, skill: { name: { text: 'council', chars: 8, clipped: false }, id: null } }])).toBe(false);
+    // Unclipped JSON must parse.
+    expect(accepted([{ ...listed, output: result('{"ok":', { json: true }) }])).toBe(false);
+    expect(accepted([{ ...listed, output: result('{"ok":true}', { json: true }) }])).toBe(true);
+  });
+
+  test('the host accepts every record shape the driver produces, on both hosts and in every status, and only the key set the driver gives that tool', () => {
+    const atCap = JSON.stringify({ text: 'y'.repeat(HIVE_RESULT_CHARS - 11) });
+    expect(atCap.length).toBe(HIVE_RESULT_CHARS);
+    const calls = [
+      { id: 'a1', name: 'task', input: { subagent_type: 'forager-worker', prompt: 'p' } },
+      { id: 'a2', name: 'subagent', input: { agent: 'forager-worker', prompt: 'p' } },
+      { id: 'a3', name: 'bash', input: { command: 'ls' } },
+      { id: 'a4', name: 'shell', status: 'error', input: { command: 'ls' }, error: 'native error' },
+      { id: 'a5', name: 'execute', input: { code: 'return 1' } },
+      { id: 'a6', name: 'hive_status', input: {}, output: '{"ok":true}' },
+      { id: 'a7', name: 'hive_status', status: 'error', input: {}, error: 'plain failure' },
+      { id: 'a8', name: 'hive_plan_read', input: {}, output: atCap },
+      { id: 'a9', name: 'hive_plan_read', input: {}, output: 'r'.repeat(HIVE_RESULT_CHARS) },
+      { id: 'a10', name: 'hive_plan_read', input: {}, output: 'r'.repeat(HIVE_RESULT_CHARS + 1) },
+      ...HIVE_RESULT_OMITTED_TOOLS.map((name: string, i: number) => ({ id: `o${i}`, name, input: {}, output: '{"events":[]}' })),
+      { id: 'a11', name: 'hive_task_trace', status: 'error', input: {}, error: 'trace failure' },
+      { id: 'a12', name: 'skill', input: { name: 'council' } },
+      ...['read', 'write', 'edit', 'glob', 'grep'].map((name, i) => ({ id: `f${i}`, name, input: { filePath: 'a.md' } })),
+      { id: 'a13', name: 'question', input: { questions: [{ question: 'q?' }] } },
+      { id: 'a14', name: 'webfetch', input: { url: 'https://example.invalid' }, output: 'page' },
+      { id: 'a15', name: 'hive_unregistered', input: {}, output: 'x' },
+      { id: 'a16', name: 'not a safe name!', input: {} },
+    ];
+    const statuses = ['completed', 'running', 'pending', 'streaming', 'error'];
+    const records = ['v1', 'v2'].flatMap((host) => statuses.flatMap((status) => exportedOn(host, calls.map((c) => ({ ...c, status: c.status ?? status })))));
+    const accepted = (tools: any[]) => parseDriverReply('observe', JSON.parse(JSON.stringify(observeReply(tools))));
+    expect(accepted(records)!.conversation.sessions[0].turns[0].tools).toEqual(JSON.parse(JSON.stringify(records)));
+    // The key sets the driver produces, which the host requires exactly.
+    const keysOf = (name: string) => Object.keys(records.find((r) => r.name === name)!).sort();
+    const base = ['id', 'name', 'status'];
+    expect(keysOf('task')).toEqual([...base, 'agent', 'childSessionId', 'prompt'].sort());
+    expect(keysOf('hive_status')).toEqual([...base, 'args', 'result', 'output', 'error'].sort());
+    expect(keysOf('hive_git_snapshot')).toEqual([...base, 'args', 'result', 'output'].sort());
+    expect(keysOf('hive_unregistered')).toEqual(base.sort());
+    expect(keysOf('other')).toEqual(base.sort());
+    const pick = (name: string, status = 'completed') => records.find((r) => r.name === name && r.status === status)!;
+    const refused = (record: any) => accepted([record]) === null;
+    const hive = pick('hive_status');
+    // A missing key, an extra key from another tool, or a field on a tool that never carries it.
+    expect(refused({ ...hive, error: undefined })).toBe(true);
+    expect(refused({ ...hive, path: { text: 'a', chars: 1, clipped: false } })).toBe(true);
+    expect(refused({ ...pick('task'), prompt: undefined })).toBe(true);
+    expect(refused({ ...pick('read'), command: { text: 'ls', chars: 2, clipped: false } })).toBe(true);
+    expect(refused({ ...pick('hive_unregistered'), args: { text: '{}', chars: 2, clipped: false } })).toBe(true);
+    expect(refused({ ...pick('hive_unregistered'), result: null })).toBe(true);
+    // An omitted-result tool carries the marker and nothing else in its place; another Hive tool never carries the marker.
+    expect(refused({ ...pick('hive_task_trace'), output: null })).toBe(true);
+    expect(refused({ ...hive, output: { omitted: 'native_content' } })).toBe(true);
+    // Every text record's size agrees with its text, whichever field carries it.
+    expect(refused({ ...pick('task'), prompt: { text: 'p', chars: 5, clipped: false } })).toBe(true);
+    expect(refused({ ...pick('bash'), command: { text: 'ls', chars: 9, clipped: true } })).toBe(true);
+    expect(refused({ ...hive, args: { text: '{}', chars: 1, clipped: false } })).toBe(true);
+  });
+
+  test('the exercise Hive tool list is the plugin manifest list', () => {
+    expect([...EXERCISE_HIVE_TOOL_NAMES]).toEqual([...MANIFEST_HIVE_TOOL_NAMES]);
+    expect(HIVE_RESULT_OMITTED_TOOLS.every((name: string) => EXERCISE_HIVE_TOOL_NAMES.includes(name))).toBe(true);
+  });
+
   test('a fabricated Code Mode approval never satisfies the approval, read or switch checks, even when the core plan really is approved', async () => {
     const tree = { sessions: [{ id: 'ses_a', parentId: null, agent: null }], complete: true, failure: null };
     const forged = { id: 'c9', name: 'execute', status: 'completed', input: { code: "/* tools.hive_plan_approve({ feature: 'f', expectedRevision: 'r1', sync: true }) */ return 'ok'" }, output: JSON.stringify({ result: JSON.stringify({ approval: { success: true, revision: 'r1-approved' }, sync: { success: true } }) }) };
@@ -4391,7 +4744,10 @@ describe('supervised exercise native adapters', () => {
   test('the driver never consults an agent-writable credential marker and emits fixed failure codes only', () => {
     const source = readFileSync(join(import.meta.dir, 'exercise-driver.ts'), 'utf8');
     expect(source).not.toContain('access.sha256');
-    expect(source).not.toMatch(/runPrompt|error\.message|error\.stack|error\)\?\.name/);
+    // A caught exception's text never prints, with or without optional chaining; the v2 tool error is read under its own name.
+    const banned = /runPrompt|\berror\??\.(?:message|stack|name)\b|\berror\)\??\.(?:message|stack|name)\b/;
+    for (const sample of ['error.message', 'error?.message', 'error.stack', 'error?.stack', 'error?.name', '(error)?.name', 'p.state?.error?.message']) expect(sample).toMatch(banned);
+    expect(source).not.toMatch(banned);
     const run = (command: string, input: string) => JSON.parse(spawnSync(process.execPath, [join(import.meta.dir, 'exercise-driver.ts'), command], { input, encoding: 'utf8' }).stdout.trim());
     expect(run('unknown', '{}')).toEqual({ ok: false, failure: 'unknown_command' });
     expect(run('observe', 'not json')).toEqual({ ok: false, failure: 'input_malformed' });
@@ -5303,7 +5659,8 @@ describe('supervised exercise publication, admission and deadlines', () => {
     const wire = questionWire(escapeAll(FAKE_ACCESS));
     expect(wire).not.toContain(FAKE_ACCESS);
     const scan = evidenceScanner({ access: FAKE_ACCESS, expires: 1 });
-    expect(scan(wire)).toBe(false);
+    // The raw wire text holds only escapes; the shared scan undoes them itself.
+    expect(scan(wire)).toBe(true);
     expect(interpretReply(scan, 'observe', { stdout: wire + '\n', timedOut: false })).toMatchObject({ value: null, contaminated: true });
     const dropped = questionWire('fine', `,"note":"${escapeAll(FAKE_ACCESS)}"`);
     expect(interpretReply(scan, 'observe', { stdout: dropped + '\n', timedOut: false })).toMatchObject({ value: null, contaminated: true });

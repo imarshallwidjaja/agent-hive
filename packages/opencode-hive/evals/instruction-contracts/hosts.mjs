@@ -51,6 +51,25 @@ export const HIVE_COMMANDS = [
   'compact-summary',
 ];
 
+// Hive tool names registered by the plugin (src/utils/plugin-manifest.ts HIVE_TOOL_NAMES), kept here because the
+// exercise container carries only the harness. harness.test.ts pins this list to the manifest. A supervised export keeps
+// result text only for tools in this list.
+export const HIVE_TOOL_NAMES = Object.freeze([
+  'hive_feature_create', 'hive_feature_select', 'hive_feature_complete', 'hive_repositories_status', 'hive_repositories_discover', 'hive_repositories_update',
+  'hive_plan_write', 'hive_plan_patch', 'hive_plan_read', 'hive_plan_approve', 'hive_tasks_sync', 'hive_task_create', 'hive_task_update',
+  'hive_worktree_create', 'hive_worktree_inspect', 'hive_worktree_merge', 'hive_worktree_cleanup', 'hive_adhoc_worktree_create', 'hive_adhoc_worktree_inspect',
+  'hive_adhoc_worktree_merge', 'hive_adhoc_worktree_cleanup', 'hive_worktree_recover', 'hive_checkouts_list', 'hive_checkout_inspect', 'hive_checkout_brief',
+  'hive_checkout_create', 'hive_checkout_register', 'hive_checkout_readiness', 'hive_checkout_cleanup', 'hive_background_status', 'hive_background_reconcile',
+  'hive_background_reconcile_batch', 'hive_background_cancel', 'hive_task_trace', 'hive_task_trace_content', 'hive_context_read', 'hive_context_write',
+  'hive_context_append', 'hive_context_edit', 'hive_context_archive', 'hive_constraints_read', 'hive_constraints_add', 'hive_constraints_edit',
+  'hive_constraints_clear', 'hive_worklog_list', 'hive_worklog_read', 'hive_worklog_record', 'hive_explore_read', 'hive_explore_update', 'hive_councils_list',
+  'hive_status', 'hive_git_snapshot',
+]);
+
+// Hive tools whose results carry other sessions' native tool output (traces) or file diffs (Git snapshots). A supervised
+// export keeps their call records and replaces the result with an omission marker.
+export const HIVE_RESULT_OMITTED_TOOLS = Object.freeze(['hive_task_trace', 'hive_task_trace_content', 'hive_git_snapshot']);
+
 // A non-usable placeholder; the real refresh token never leaves the host auth store.
 export const REFRESH_SENTINEL = 'ic-access-only-refresh-disabled';
 

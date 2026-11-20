@@ -27,7 +27,7 @@ import {
   CredentialError, credentialFromSnapshot, evidenceScanner, fingerprintWire, hostAuthPath, scanValue, snapshotAuthFile,
 } from './credentials.mjs';
 import { GUARD_EXIT_CODE } from './guard.mjs';
-import { HOST_IDS, HIVE_ROLES, authRequest, exerciseMessageId, nativeStorePath, requiredLifetimeMs, splitModelRef } from './hosts.mjs';
+import { HIVE_RESULT_OMITTED_TOOLS, HIVE_TOOL_NAMES, HOST_IDS, HIVE_ROLES, authRequest, exerciseMessageId, nativeStorePath, requiredLifetimeMs, splitModelRef } from './hosts.mjs';
 import {
   AGENT_USER, Docker, GUARD, GUARD_USER, HarnessError, ISOLATION, Journal, Resources, assessContainerIsolation, build,
   containerCreateArgs, createRunDir, exerciseCoreFailures, gitOut, outstandingFromLedger, resolveIdentities, runtimeFailures,
@@ -540,7 +540,18 @@ const obj = (shape) => (v) => {
   return out;
 };
 
-const textRecord = (max) => obj({ text: str(max), chars: int, clipped: bool });
+/**
+ * A bounded text with its original size: whole when not clipped (`chars` is its length), cut exactly at `max` when
+ * clipped (`chars` beyond it). `extra` adds fields beside the text.
+ */
+const textRecord = (max, extra = {}) => {
+  const shape = obj({ text: str(max), chars: int, clipped: bool, ...extra });
+  return (v) => {
+    const record = shape(v);
+    if (record === INVALID) return INVALID;
+    return (record.clipped ? record.text.length === max && record.chars > max : record.chars === record.text.length) ? record : INVALID;
+  };
+};
 const nativeName = nullable(match(NAME, 200));
 const featureName = match(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/, 128);
 // A pending interaction carries every text's original size and every list's original count next to the bounded text, so
@@ -588,7 +599,13 @@ function pendingItem(value) {
   }
   return item.complete && !whole ? INVALID : item;
 }
-const toolRecord = obj({
+// A Hive result or error text: a text record whose unclipped JSON parses.
+const hiveResultText = (v) => {
+  const record = textRecord(4000, { json: bool })(v);
+  if (record === INVALID || !record.json || record.clipped) return record;
+  try { JSON.parse(record.text); return record; } catch { return INVALID; }
+};
+const toolFields = obj({
   id: nullable(match(/^[A-Za-z0-9_.:-]{1,200}$/, 200)), name: match(SAFE_WORD, 80), status: nullable(match(SAFE_WORD, 80)),
   agent: opt(nativeName), childSessionId: opt(nullable(match(SESSION, 80))), prompt: opt(textRecord(4000)), command: opt(textRecord(1000)), exit: opt(nullable(anyInt)),
   args: opt(textRecord(2000)), path: opt(textRecord(500)), questions: opt(textRecord(4000)), answers: opt(textRecord(2000)),
@@ -596,11 +613,58 @@ const toolRecord = obj({
     success: nullable(bool), approval: nullable(obj({ success: nullable(bool), reason: nullable(match(SAFE_WORD, 80)), revision: nullable(str(200)) })),
     sync: nullable(obj({ success: nullable(bool) })), revision: nullable(str(200)),
   }))),
+  output: opt((v) => v),
+  error: opt(nullable(hiveResultText)),
+  skill: opt(obj({ name: nullable(textRecord(200)), id: nullable(textRecord(200)) })),
 });
-const turn = obj({
+const HIVE_TOOLS = new Set(HIVE_TOOL_NAMES);
+const HIVE_RESULT_OMITTED = new Set(HIVE_RESULT_OMITTED_TOOLS);
+const FILE_TOOLS = new Set(['read', 'write', 'edit', 'glob', 'grep']);
+const BASE_TOOL_KEYS = ['id', 'name', 'status'];
+
+/**
+ * The exact fields the driver's `toolRecord` (exercise-driver.ts) gives a record with this exported name; a test
+ * feeds every shape it produces through `toolRecordItem` to keep the two in step. A name outside the Hive tool list,
+ * including one that only starts with `hive_`, gets the base fields alone.
+ */
+function toolRecordKeys(name) {
+  if (name === 'task' || name === 'subagent') return [...BASE_TOOL_KEYS, 'agent', 'childSessionId', 'prompt'];
+  if (name === 'bash' || name === 'shell') return [...BASE_TOOL_KEYS, 'command', 'exit'];
+  if (name === 'execute') return [...BASE_TOOL_KEYS, 'args'];
+  if (HIVE_RESULT_OMITTED.has(name)) return [...BASE_TOOL_KEYS, 'args', 'result', 'output'];
+  if (HIVE_TOOLS.has(name)) return [...BASE_TOOL_KEYS, 'args', 'result', 'output', 'error'];
+  if (name === 'skill') return [...BASE_TOOL_KEYS, 'skill'];
+  if (FILE_TOOLS.has(name)) return [...BASE_TOOL_KEYS, 'path'];
+  if (name === 'question') return [...BASE_TOOL_KEYS, 'questions', 'answers'];
+  return BASE_TOOL_KEYS;
+}
+
+/**
+ * A tool record with exactly the fields the driver gives its tool and honest sizes, otherwise INVALID. An
+ * omitted-result Hive tool's `output` is the omission marker; every other Hive tool's is a result text or null.
+ */
+function toolRecordItem(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return INVALID;
+  const keys = Object.keys(value).filter((key) => value[key] !== undefined).sort();
+  const expected = toolRecordKeys(value.name).slice().sort();
+  if (keys.length !== expected.length || keys.some((key, i) => key !== expected[i])) return INVALID;
+  const item = toolFields(value);
+  if (item === INVALID) return INVALID;
+  if (HIVE_RESULT_OMITTED.has(item.name)) {
+    const marker = obj({ omitted: exactly('native_content') })(item.output);
+    if (marker === INVALID) return INVALID;
+    item.output = marker;
+  } else if (HIVE_TOOLS.has(item.name)) {
+    const output = nullable(hiveResultText)(item.output);
+    if (output === INVALID) return INVALID;
+    item.output = output;
+  }
+  return item;
+}
+const turn = textRecord(16 * 1024, {
   id: match(/^[A-Za-z0-9_.:-]{1,200}$/, 200), role: match(NAME, 200), agent: nativeName,
   model: nullable(obj({ providerID: nativeName, modelID: nativeName, variant: nativeName })), error: nullable(str(40)),
-  text: str(16 * 1024), chars: int, clipped: bool, tools: arr(toolRecord, 2000),
+  tools: arr(toolRecordItem, 2000),
 });
 const conversation = obj({
   sessions: arr(obj({
