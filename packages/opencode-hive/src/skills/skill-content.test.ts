@@ -395,6 +395,11 @@ describe('skill content', () => {
     for (const preserved of ['These are leads, not findings', 'intentional API variants', 'public and persisted compatibility', 'one-caller boundaries that own real knowledge', 'repeated trust or mutation checks', 'not a duplicate route']) {
       expect(modeling).toContain(preserved);
     }
+    expect(modeling).toContain('Limit test seams to natural boundaries');
+    expect(modeling).toContain('scoped hooks needed to prove a real failure mode deterministically');
+    expect(modeling).toContain('added purely to mock internals');
+    expect(modeling).toContain('every affected caller is inside the authorized scope, reshape the helper and callers together');
+    expect(modeling).toContain('remove any dead bindings, redundant checks, or intermediate variables left at the call sites');
 
     const quality = BUILTIN_SKILLS.find((entry) => entry.name === 'test-quality')!.template;
     expect(quality).toContain('Judge a changed behavior test against two imagined edits');
@@ -2944,6 +2949,11 @@ describe('skill content', () => {
       expect(skill.template).toContain('implements a general capability (parsing, scheduling, locking, retries, dates) or accumulates its edge cases');
       expect(skill.template).toContain('check whether a platform feature or maintained package could take over that responsibility, counting adoption costs, and stop once fit and tradeoffs are clear');
       expect(skill.template).not.toContain('Compatible local reuse, stdlib, or native facilities');
+      expect(skill.template).toContain('production shims added purely to mock internals');
+      expect(skill.template).toContain('keeping natural seams and scoped hooks needed for deterministic failure-mode proof');
+      expect(skill.template).toContain('rather than line count, function size, or file count');
+      expect(skill.template).toContain('when its signature forces glue or flags and every affected caller is in scope');
+      expect(skill.template).toContain('existing determinism');
       expect(skill.template).toContain('deletion would push concepts, invariants, ordering, or dependencies onto callers');
       expect(skill.template).toContain('A test or document records current behavior: a consumer that relies on it stops a finding, while a binding requirement, external constraint, or failure mode that needs the complexity defeats the alternative too.');
       expect(skill.template).not.toContain('justifies complexity only when');

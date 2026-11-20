@@ -40,21 +40,22 @@ When explicitly assigned a suite audit, the named roots are the review scope and
 
 ### 1. Logic Shape
 - Replace clever code with obvious code.
-- Simplify conditionals and nesting where behavior stays equivalent.
+- Simplify conditionals and nesting (merging or inverting branches where helpful) where behavior stays equivalent.
 - Prefer early returns when they reduce indentation and make the common path clearer.
 - Collapse data structures that exceed actual usage.
 
 ### 2. Redundancy
 - Remove duplicated checks, repeated parsing, repeated validation, and repeated formatting introduced by the change, or present in the named suite for an assigned audit.
 - Prefer one boundary validation point over defensive internal fallbacks.
-- Remove commented-out code and comments that explain obvious code without carrying contracts, invariants, units, side effects, or rationale.
+- Remove commented-out code, decorative divider comments, and comments that explain obvious code without carrying contracts, invariants, units, side effects, or rationale.
 - When a suppression or a \`do not remove\` comment claims a constraint, inspect the rule and evidence. Recommend an in-scope type, check, or clearer representation when it actually replaces the constraint. Doubt does not authorize deleting a useful comment or weakening a safety check.
 - Reuse existing local helpers only when that reduces net complexity.
 - Fold or delete weaker tests that repeat an invariant already owned by the canonical suite.
 
 ### 3. Abstractions
-- Inline helpers, interfaces, classes, wrappers, adapters, and option bags when they add no meaningful contract or owned knowledge; do not use one caller or one use as the deciding rule.
-- Keep a larger coherent function when splitting it would scatter one responsibility or increase navigation and change amplification.
+- Inline helpers, interfaces, classes, wrappers, adapters, and option bags when they add no meaningful contract or owned knowledge, and remove dead bindings, redundant checks, or intermediate variables left at the call sites; do not use one caller or one use as the deciding rule.
+- Keep a larger coherent function or file when splitting it would scatter one responsibility or increase navigation and change amplification.
+- Flag unnecessary test-only shims, hooks, or single-implementation interfaces added to production code purely to mock internals; keep seams at natural boundaries (pure logic separated from I/O, injected clocks or clients) or scoped hooks needed to prove a real failure mode deterministically.
 - Remove premature generalization and extensibility points without a current requirement.
 - Reject generic solutions for specific approved requirements.
 - Collapse compatibility or fallback branches that the task does not require.

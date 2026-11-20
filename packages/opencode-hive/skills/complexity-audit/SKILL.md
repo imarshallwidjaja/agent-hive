@@ -14,11 +14,11 @@ Use the named roots or codebases. If none is given, audit the current worktree. 
 ## Consider
 
 - Dead or speculative code
-- Unnecessary indirection, abstractions, fallbacks, options, and dependencies
+- Unnecessary indirection, abstractions, fallbacks, options, dependencies, and production shims added purely to mock internals (keeping natural seams and scoped hooks needed for deterministic failure-mode proof)
 - Better-fitting implementations, judged by fit rather than presence (credit existing code for proven behavior and integration); when code implements a general capability (parsing, scheduling, locking, retries, dates) or accumulates its edge cases, check whether a platform feature or maintained package could take over that responsibility, counting adoption costs, and stop once fit and tradeoffs are clear
-- Cognitive burden, change amplification, and obscured dependencies rather than line count
-- Boundaries whose deletion loses nothing, against boundaries whose deletion would push concepts, invariants, ordering, or dependencies onto callers
-- Meaningful ownership, safe behavior, contracts, and tests
+- Cognitive burden, change amplification, and obscured dependencies rather than line count, function size, or file count
+- Boundaries whose deletion loses nothing (cleaning up dead bindings or redundant checks left at call sites, and reshaping a shared internal helper with its callers when its signature forces glue or flags and every affected caller is in scope), against boundaries whose deletion would push concepts, invariants, ordering, or dependencies onto callers
+- Meaningful ownership, safe behavior, existing determinism, contracts, and tests
 
 ## Outcome
 

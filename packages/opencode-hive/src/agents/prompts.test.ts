@@ -102,7 +102,7 @@ describe('Engineering judgment prompt reach', () => {
 
   it('keeps the canonical fragment compact', () => {
     expect(ENGINEERING_JUDGMENT_PROMPT.split('\n').length).toBeLessThanOrEqual(40);
-    expect(Buffer.byteLength(ENGINEERING_JUDGMENT_PROMPT, 'utf8')).toBeLessThanOrEqual(3_750);
+    expect(Buffer.byteLength(ENGINEERING_JUDGMENT_PROMPT, 'utf8')).toBeLessThanOrEqual(4_050);
   });
 
   it('routes UI/UX audits and browser-facing work to the web-platform depth skill without widening the role', () => {
@@ -145,14 +145,20 @@ describe('Engineering judgment prompt reach', () => {
       'check whether platform features or maintained packages could take it over',
       'stop once fit and tradeoffs are clear',
       'cognitive load',
+      'not line count, function size, or file count',
       'Keep a boundary, even with one caller, when deleting it would push its concept, invariants, ordering, or dependencies onto callers',
       'merge it away when nothing would be lost',
+      'clean up the call site',
+      'when an internal helper forces caller glue or flags and every affected caller is in scope, reshape them together',
+      'limit test seams to natural boundaries or deterministic failure-mode proof',
+      'not shims to mock internals',
       'keep side effects, I/O, and caller-owned policy or authority visible',
       'When a simpler design makes unrequested behavior, contract, or external-dependency changes, state the delta and dependents for an operator decision before code or tests change',
       'A test alone bars no proposal',
       'binding requirements hold until their owner changes them',
       'abstractions, fallbacks, options, validation, and comments',
       'security, accessibility, data integrity',
+      'existing determinism',
       'public contracts',
       'required or mission-selected verification',
       'cross-package/monorepo changes',
@@ -2434,6 +2440,11 @@ describe('Specialized reviewer prompts', () => {
     expect(SIMPLICITY_REVIEWER_PROMPT).toContain('ALREADY_MINIMAL');
     expect(SIMPLICITY_REVIEWER_PROMPT).toContain('Do not perform plan readiness review');
     expect(SIMPLICITY_REVIEWER_PROMPT).toContain('Do not claim builds, tests, or behavior pass');
+    expect(SIMPLICITY_REVIEWER_PROMPT).toContain('decorative divider comments');
+    expect(SIMPLICITY_REVIEWER_PROMPT).toContain('remove dead bindings, redundant checks, or intermediate variables left at the call sites');
+    expect(SIMPLICITY_REVIEWER_PROMPT).toContain('Keep a larger coherent function or file');
+    expect(SIMPLICITY_REVIEWER_PROMPT).toContain('added to production code purely to mock internals');
+    expect(SIMPLICITY_REVIEWER_PROMPT).toContain('scoped hooks needed to prove a real failure mode deterministically');
   });
 
   it('routes non-equivalent simplicity alternatives to structural proposals that are not findings', () => {

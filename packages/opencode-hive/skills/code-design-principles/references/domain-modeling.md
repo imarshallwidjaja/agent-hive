@@ -28,6 +28,8 @@ Track two axes: layers the reader must trace and hidden or mutable state they mu
 - Shrink state scope: prefer pure functions, locals over fields, fields over module state, and module state over globals. Derive instead of sync.
 - Name the invariant at the boundary, not in every consumer, so the reader learns it once.
 - Before adding a layer or a piece of state, ask: does this reduce reader load somewhere else by at least as much?
+- Limit test seams to natural boundaries (pure logic separated from I/O, explicit clocks or clients) or scoped hooks needed to prove a real failure mode deterministically; avoid unnecessary shims or single-implementation interfaces added purely to mock internals.
+- When an internal helper's signature forces adapter glue onto callers or optional flags onto the helper, and every affected caller is inside the authorized scope, reshape the helper and callers together. After collapsing a thin wrapper whose affected callers are in scope, remove any dead bindings, redundant checks, or intermediate variables left at the call sites.
 
 Ask "where does X come from?" and "what can change X?" Preserve a one-caller boundary that owns real knowledge or policy. Caller count, file length, and call depth alone are not simplification criteria.
 
