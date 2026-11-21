@@ -98,6 +98,8 @@ describe('agent_hive schema customAgents contract', () => {
       'swarm-orchestrator',
       'hive-helper',
       'hive-builder',
+      'dash-reviewer',
+      'vulnerability-review-primary',
     ];
 
     for (const name of customizable) {
@@ -202,7 +204,16 @@ describe('agent_hive schema customAgents contract', () => {
       expectReservedNameToFail(name);
       expect(validateConfigShape({ customAgents: { [name]: { baseAgent: 'forager-worker', description: 'Cannot replace a managed identity.' } } })).toBe(false);
     }
-    expect(schema.properties.agents.properties).not.toHaveProperty('dash-reviewer');
+  });
+
+  it('configures review primaries like other non-routing built-in primaries', () => {
+    for (const name of ['dash-reviewer', 'vulnerability-review-primary']) {
+      expect(validateConfigShape({
+        agents: { [name]: { model: 'provider/review', variant: 'high', autoLoadSkills: ['verification'] } },
+      })).toBe(true);
+      expect(validateConfigShape({ agents: { [name]: { description: 'Not configurable' } } })).toBe(false);
+      expect(validateConfigShape({ customAgents: { 'review-overlay': { baseAgent: name, description: 'Not a base.' } } })).toBe(false);
+    }
   });
 
   it('accepts vulnerability reviewer model overrides and derived specialists', () => {

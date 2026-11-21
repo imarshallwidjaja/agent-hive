@@ -2622,8 +2622,7 @@ describe('skill content', () => {
       );
 
       const builtInSection = section(configuration, '## Built-in agents (`agents.<name>`)');
-      expect(new Set(codeNames(lineStarting(builtInSection, 'Names: ')).filter((name) => !['dash-reviewer', 'vulnerability-review-primary'].includes(name))))
-        .toEqual(new Set(BUILT_IN_AGENT_NAMES));
+      expect(new Set(codeNames(lineStarting(builtInSection, 'Names: ')))).toEqual(new Set(BUILT_IN_AGENT_NAMES));
       const defaults = lineStarting(builtInSection, 'Defaults (shipped):');
       for (const [agent, config] of Object.entries(DEFAULT_HIVE_CONFIG.agents!)) {
         for (const skill of config?.autoLoadSkills ?? []) {

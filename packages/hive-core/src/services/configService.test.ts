@@ -42,6 +42,7 @@ describe("ConfigService defaults", () => {
       "approach-advisor",
       "architect-planner",
       "code-reviewer",
+      "dash-reviewer",
       "forager-investigator",
       "forager-worker",
       "hive-builder",
@@ -51,6 +52,7 @@ describe("ConfigService defaults", () => {
       "scout-researcher",
       "simplicity-reviewer",
       "swarm-orchestrator",
+      "vulnerability-review-primary",
       "vulnerability-reviewer",
     ]);
     for (const [agentName, agentConfig] of Object.entries(config.agents ?? {})) {
@@ -2121,5 +2123,65 @@ describe('ConfigService effective model settings', () => {
     expect(initialized.agents?.['forager-worker']?.model).toBe('project/forager');
     expect(initialized.agents?.['scout-researcher']).not.toHaveProperty('model');
     expect(fs.readFileSync(service.getPath(), 'utf-8')).not.toContain('"model"');
+  });
+});
+
+describe('ConfigService review primaries', () => {
+  const REVIEW_PRIMARIES: Array<'dash-reviewer' | 'vulnerability-review-primary'> = ['dash-reviewer', 'vulnerability-review-primary'];
+  const writeGlobal = (service: ConfigService, value: unknown) => {
+    fs.mkdirSync(path.dirname(service.getPath()), { recursive: true });
+    fs.writeFileSync(service.getPath(), JSON.stringify(value));
+  };
+
+  it.each(REVIEW_PRIMARIES)('leaves %s on the native model with only empty skill defaults when omitted', (name) => {
+    const service = new ConfigService();
+    writeGlobal(service, { agents: { 'hive-builder': { model: 'provider/builder' } } });
+
+    expect(service.getAgentConfig(name)).toEqual({ autoLoadSkills: [] });
+    expect(service.hasConfiguredAgent(name)).toBe(true);
+    expect(service.getLastFallbackWarning()).toBeNull();
+  });
+
+  it.each(REVIEW_PRIMARIES)('applies a configured %s model, variant and autoLoadSkills', (name) => {
+    const service = new ConfigService();
+    writeGlobal(service, {
+      agents: { [name]: { model: 'provider/review', variant: 'high', autoLoadSkills: ['verification'] } },
+    });
+
+    expect(service.getAgentConfig(name)).toEqual({
+      model: 'provider/review',
+      variant: 'high',
+      autoLoadSkills: ['verification'],
+    });
+  });
+
+  it.each(REVIEW_PRIMARIES)('applies a project override for %s when global config is missing', (name) => {
+    const projectRoot = path.join(tempHome, 'project');
+    const service = new ConfigService(projectRoot);
+    writeProjectOverride(projectRoot, { agents: { [name]: { model: 'project/review', variant: 'max' } } });
+
+    expect(fs.existsSync(service.getPath())).toBe(false);
+    expect(service.getAgentConfig(name)).toEqual({ model: 'project/review', variant: 'max', autoLoadSkills: [] });
+    expect(service.getLastFallbackWarning()).toBeNull();
+  });
+
+  it.each(REVIEW_PRIMARIES)('rejects a %s variant without a Hive model in global and project files', (name) => {
+    const global = new ConfigService();
+    writeGlobal(global, { agents: { [name]: { variant: 'high' } } });
+    expect(() => global.get()).toThrow(`agents.${name}.variant is set without a Hive model`);
+
+    fs.rmSync(global.getPath());
+    const projectRoot = path.join(tempHome, 'project');
+    const project = new ConfigService(projectRoot);
+    writeProjectOverride(projectRoot, { agents: { [name]: { variant: 'high' } } });
+    expect(() => project.get()).toThrow(`agents.${name}.variant is set without a Hive model`);
+  });
+
+  it.each(REVIEW_PRIMARIES)('rejects a routing description on %s', (name) => {
+    const service = new ConfigService();
+    writeGlobal(service, { agents: { [name]: { description: 'Not configurable' } } });
+
+    expect(service.get()).toEqual(DEFAULT_HIVE_CONFIG);
+    expect(service.getLastFallbackWarning()?.reason).toBe('validation_error');
   });
 });

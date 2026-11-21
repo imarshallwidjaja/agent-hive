@@ -76,7 +76,9 @@ After editing, check that the JSON parses and that every top-level key is in the
 
 ## Built-in agents (`agents.<name>`)
 
-Names: `hive-master`, `architect-planner`, `swarm-orchestrator`, `hive-builder`, `scout-researcher`, `forager-worker`, `forager-investigator`, `hive-helper`, `plan-reviewer`, `code-reviewer`, `simplicity-reviewer`, `approach-advisor`, `vulnerability-reviewer`. The hidden review primaries `dash-reviewer` and `vulnerability-review-primary` are not configurable here.
+Names: `hive-master`, `architect-planner`, `swarm-orchestrator`, `hive-builder`, `scout-researcher`, `forager-worker`, `forager-investigator`, `hive-helper`, `plan-reviewer`, `code-reviewer`, `simplicity-reviewer`, `approach-advisor`, `vulnerability-reviewer`, `dash-reviewer`, `vulnerability-review-primary`.
+
+The last two are the hidden review primaries that `/dash-review`, `/test-audit` and `/vuln-review` switch to. They accept `model`, `variant` and `autoLoadSkills` like the other primaries, take no `description`, and cannot be `customAgents` bases.
 
 | Field | Meaning |
 |---|---|
@@ -113,7 +115,7 @@ No role has a shipped model. A stored `model` is kept as written, including one 
 - `model`, `variant`: each one omitted inherits the base agent's resolved Hive value, including the base's project override. With no model on the custom agent or its base, it uses the native OpenCode model. This is Hive configuration inheritance; a native OpenCode override of the base agent is not inherited.
 - `autoLoadSkills`: merged with the base agent's effective list.
 - Tools and permissions: exactly the base's. Config cannot add tools.
-- IDs must not contain `*` or `?`, and must not be reserved: every built-in name, `dash-reviewer`, `vulnerability-review-primary`, `__hive_task_trace_summarizer`, `general`, `explore`, `hive`, `architect`, `swarm`, `scout`, `forager`, `hygienic`, `hygienic-reviewer`, `receiver`, `build`, `builder`, `plan`, `code`. Reserved or invalid entries are skipped with a warning.
+- IDs must not contain `*` or `?`, and must not be reserved: every built-in name, `__hive_task_trace_summarizer`, `general`, `explore`, `hive`, `architect`, `swarm`, `scout`, `forager`, `hygienic`, `hygienic-reviewer`, `receiver`, `build`, `builder`, `plan`, `code`. Reserved or invalid entries are skipped with a warning.
 - The `*-example-template` entries that a v1 startup seeds into a new file are placeholders; rename or delete them before use.
 
 ## Project override (`.hive/agent-hive.override.json`)

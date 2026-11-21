@@ -788,8 +788,12 @@ describe('v2 native precedence and canonical instructions', () => {
     expect(defaults.registry.get('scout-fast')!.model).toEqual({ providerID: 'hive-provider', id: 'scout-model', variant: 'low' });
     expect(defaults.registry.get('forager-worker')!.model).toEqual({ providerID: 'project', id: 'forager', variant: 'low' });
     // Roles and custom agents without Hive model settings register no model, so OpenCode's own selection applies.
-    for (const id of ['hive-builder', 'swarm-orchestrator', 'code-reviewer', 'reviewer-native', 'dash-reviewer']) {
+    for (const id of ['hive-builder', 'swarm-orchestrator', 'code-reviewer', 'reviewer-native', 'dash-reviewer', 'vulnerability-review-primary']) {
       expect(defaults.registry.get(id)!.model, id).toBeUndefined();
+    }
+    for (const id of ['dash-reviewer', 'vulnerability-review-primary']) {
+      expect(defaults.registry.get(id)!.mode, id).toBe('primary');
+      expect(defaults.registry.get(id)!.hidden, id).toBe(true);
     }
     expect(scout.system).toContain('Scout');
     expect(scout.permissions).toContainEqual({ action: 'hive_*', resource: '*', effect: 'deny' });
@@ -1143,6 +1147,53 @@ describe('v2 skills, commands and models', () => {
     await Effect.runPromise(host.commands().get('interview').execute({ sessionID: 's1', prompt: { text: 'idea' }, delivery: 'queue' }));
     expect(host.switches.at(-1)).toEqual({ sessionID: 's1', agent: 'vulnerability-review-primary' });
     expect(host.modelSwitches).toHaveLength(1);
+  });
+
+  it('registers Agent Hive models for the review primaries and switches their commands to them, with native settings winning', async () => {
+    const host = await activate({}, {
+      agents: {
+        'dash-reviewer': { model: 'hive/dash', variant: 'high', autoLoadSkills: ['verification'] },
+        'vulnerability-review-primary': { model: 'hive/vuln', autoLoadSkills: ['hive-config'] },
+      },
+    });
+    const { registry } = host.agents();
+    for (const id of ['dash-reviewer', 'vulnerability-review-primary']) {
+      expect(registry.get(id)!.mode, id).toBe('primary');
+      expect(registry.get(id)!.hidden, id).toBe(true);
+    }
+    for (const [agent, skill] of [['dash-reviewer', 'verification'], ['vulnerability-review-primary', 'hive-config']] as const) {
+      const guidance = (await host.request({ sessionID: 's1', agent, system: ['x'], tools: ['read'] })).join('\n');
+      expect(guidance.split('skill({ id: "unslop" })').length - 1, agent).toBe(1);
+      expect(guidance, agent).toContain(`skill({ id: "${skill}" })`);
+    }
+    expect(registry.get('dash-reviewer')!.model).toEqual({ providerID: 'hive', id: 'dash', variant: 'high' });
+    expect(registry.get('vulnerability-review-primary')!.model).toEqual({ providerID: 'hive', id: 'vuln' });
+
+    host.sessions.set('s1', { id: 's1', agent: 'swarm-orchestrator' });
+    await Effect.runPromise(host.commands().get('dash-review').execute({ sessionID: 's1', prompt: { text: 'HEAD' }, delivery: 'steer' }));
+    await Effect.runPromise(host.commands().get('vuln-review').execute({ sessionID: 's1', prompt: { text: 'scope' }, delivery: 'steer' }));
+    expect(host.modelSwitches).toEqual([
+      { sessionID: 's1', model: { providerID: 'hive', id: 'dash', variant: 'high' } },
+      { sessionID: 's1', model: { providerID: 'hive', id: 'vuln' } },
+    ]);
+
+    host.useAgentConfig({ agents: { 'dash-reviewer': { model: { providerID: 'user', id: 'dash', variant: 'low' } } } });
+    await Effect.runPromise(host.commands().get('dash-review').execute({ sessionID: 's1', prompt: { text: 'HEAD' }, delivery: 'steer' }));
+    expect(host.modelSwitches.at(-1)).toEqual({ sessionID: 's1', model: { providerID: 'user', id: 'dash', variant: 'low' } });
+  });
+
+  it('registers a project-override model for the review primaries without a global Agent Hive file', async () => {
+    const host = await activate({}, undefined, { seed: (root) => {
+      fs.mkdirSync(path.join(root, '.hive'), { recursive: true });
+      fs.writeFileSync(path.join(root, '.hive', 'agent-hive.override.json'), JSON.stringify({ agents: {
+        'dash-reviewer': { model: 'project/dash', variant: 'max' },
+        'vulnerability-review-primary': { model: 'project/vuln' },
+      } }));
+    } });
+    const { registry } = host.agents();
+    expect(registry.get('dash-reviewer')!.model).toEqual({ providerID: 'project', id: 'dash', variant: 'max' });
+    expect(registry.get('vulnerability-review-primary')!.model).toEqual({ providerID: 'project', id: 'vuln' });
+    expect(registry.get('dash-reviewer')!.hidden).toBe(true);
   });
 
   it('fails an agent-bound command whose agent the configuration removed, instead of prompting the wrong agent', async () => {

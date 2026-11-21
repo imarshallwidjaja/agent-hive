@@ -1859,9 +1859,8 @@ describe('model-selection probes', () => {
 
   test('wiring and cases keep pinning every Hive role to the one frozen model', () => {
     const pinned = hiveConfig({ provider: 'openai', model: 'gpt-test', variant: 'high', agentMode: 'dedicated' });
-    const roles = HIVE_ROLES.filter((role) => role !== 'dash-reviewer' && role !== 'vulnerability-review-primary');
-    expect(Object.keys(pinned.agents).sort()).toEqual([...roles].sort());
-    for (const role of roles) expect(pinned.agents[role]).toEqual({ model: 'openai/gpt-test', variant: 'high' });
+    expect(Object.keys(pinned.agents).sort()).toEqual([...HIVE_ROLES].sort());
+    for (const role of HIVE_ROLES) expect(pinned.agents[role]).toEqual({ model: 'openai/gpt-test', variant: 'high' });
     for (const id of ['v1', 'v2'] as const) {
       expect(native(id, undefined as any).agents).toBeUndefined();
       expect(Object.keys(native(id, undefined as any).models)).toEqual([model]);

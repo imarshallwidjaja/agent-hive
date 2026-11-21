@@ -425,6 +425,8 @@ export const BUILT_IN_AGENT_NAMES = [
   'approach-advisor',
   'vulnerability-reviewer',
   'hive-builder',
+  'dash-reviewer',
+  'vulnerability-review-primary',
 ] as const;
 
 export type BuiltInAgentName = (typeof BUILT_IN_AGENT_NAMES)[number];
@@ -455,8 +457,6 @@ export const DEFAULT_ROUTING_AGENT_DESCRIPTIONS: Record<CustomAgentBase, string>
 
 export const CUSTOM_AGENT_RESERVED_NAMES = [
   ...BUILT_IN_AGENT_NAMES,
-  'dash-reviewer',
-  'vulnerability-review-primary',
   '__hive_task_trace_summarizer',
   'hive',
   'architect',
@@ -556,6 +556,10 @@ export interface HiveConfig {
     'vulnerability-reviewer'?: RoutingAgentConfig;
     /** Hive Builder (ad-hoc executor) */
     'hive-builder'?: AgentModelConfig;
+    /** Dash Reviewer (hidden /dash-review primary) */
+    'dash-reviewer'?: AgentModelConfig;
+    /** Vulnerability Review Primary (hidden /vuln-review primary) */
+    'vulnerability-review-primary'?: AgentModelConfig;
   };
   customAgents?: Record<string, CustomAgentConfig>;
   /** Global council command group configuration. */
@@ -656,6 +660,12 @@ export const DEFAULT_HIVE_CONFIG: HiveConfig = {
     },
     'hive-builder': {
       autoLoadSkills: ['verification', 'parallel-exploration'],
+    },
+    'dash-reviewer': {
+      autoLoadSkills: [],
+    },
+    'vulnerability-review-primary': {
+      autoLoadSkills: [],
     },
   },
 };

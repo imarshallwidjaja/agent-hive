@@ -1,4 +1,8 @@
-import { describe, it, expect } from 'bun:test';
+import { afterEach, beforeEach, describe, it, expect } from 'bun:test';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { ConfigService } from 'hive-core';
 import { createVariantHook, classifySession } from './variant-hook.js';
 
 const createMockConfigService = (
@@ -294,5 +298,55 @@ describe('createVariantHook with session tracking', () => {
     await hook({ sessionID: 'sess-no-agent' }, output);
 
     expect(tracked.length).toBe(0);
+  });
+});
+
+describe('createVariantHook with review primaries in Agent Hive configuration', () => {
+  const REVIEW_PRIMARIES = ['dash-reviewer', 'vulnerability-review-primary'];
+  let originalHome: string | undefined;
+  let tempHome: string;
+
+  beforeEach(() => {
+    originalHome = process.env.HOME;
+    tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-variant-review-'));
+    process.env.HOME = tempHome;
+  });
+
+  afterEach(() => {
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+    fs.rmSync(tempHome, { recursive: true, force: true });
+  });
+
+  const run = async (agent: string, configService: ConfigService) => {
+    const output = createOutput('provider/review');
+    await createVariantHook(configService)({ sessionID: 'sess-review', agent }, output);
+    return output.message.model;
+  };
+
+  it.each(REVIEW_PRIMARIES)('fills the configured variant for %s from the global file', async (agent) => {
+    const configService = new ConfigService();
+    fs.mkdirSync(path.dirname(configService.getPath()), { recursive: true });
+    fs.writeFileSync(configService.getPath(), JSON.stringify({ agents: { [agent]: { model: 'provider/review', variant: 'high' } } }));
+
+    const model = await run(agent, configService);
+
+    expect(model.variant).toBe('high');
+  });
+
+  it.each(REVIEW_PRIMARIES)('fills the variant from a project override for %s without a global file', async (agent) => {
+    const projectRoot = path.join(tempHome, 'project');
+    fs.mkdirSync(path.join(projectRoot, '.hive'), { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, '.hive', 'agent-hive.override.json'), JSON.stringify({ agents: { [agent]: { model: 'provider/review', variant: 'max' } } }));
+
+    const model = await run(agent, new ConfigService(projectRoot));
+
+    expect(model.variant).toBe('max');
+  });
+
+  it.each(REVIEW_PRIMARIES)('leaves the native selection for %s when it is not configured', async (agent) => {
+    const model = await run(agent, new ConfigService());
+
+    expect(model).toEqual({ providerID: 'provider', modelID: 'review' });
   });
 });

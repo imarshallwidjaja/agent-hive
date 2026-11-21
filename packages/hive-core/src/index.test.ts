@@ -24,11 +24,15 @@ describe("hive-core", () => {
     expect(BUILT_IN_AGENT_NAMES).toContain('hive-builder');
   });
 
-  it('reserves dash-reviewer as a custom-agent name without making it a configurable built-in', () => {
-    expect(BUILT_IN_AGENT_NAMES).not.toContain('dash-reviewer');
-    expect(CUSTOM_AGENT_RESERVED_NAMES).toContain('dash-reviewer');
-    expect(DEFAULT_HIVE_CONFIG.agents).not.toHaveProperty('dash-reviewer');
-  });
+  it.each<'dash-reviewer' | 'vulnerability-review-primary'>(['dash-reviewer', 'vulnerability-review-primary'])(
+    'makes %s a configurable built-in that stays reserved and is not a custom-agent base',
+    (name) => {
+      expect(BUILT_IN_AGENT_NAMES).toContain(name);
+      expect(CUSTOM_AGENT_RESERVED_NAMES.filter((reserved) => reserved === name)).toHaveLength(1);
+      expect(CUSTOM_AGENT_BASES as readonly string[]).not.toContain(name);
+      expect(DEFAULT_HIVE_CONFIG.agents?.[name]).toEqual({ autoLoadSkills: [] });
+    },
+  );
 
   it("includes simplicity-reviewer as built-in and as a custom-agent base", () => {
     expect(BUILT_IN_AGENT_NAMES).toContain('simplicity-reviewer');

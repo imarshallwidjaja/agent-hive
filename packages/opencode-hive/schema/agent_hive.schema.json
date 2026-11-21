@@ -132,6 +132,14 @@
         "hive-builder": {
           "$ref": "#/$defs/agentConfig",
           "description": "Hive Builder (ad-hoc orchestrator)"
+        },
+        "dash-reviewer": {
+          "$ref": "#/$defs/agentConfig",
+          "description": "Dash Reviewer (hidden review primary for /dash-review and /test-audit; not a customAgents base)"
+        },
+        "vulnerability-review-primary": {
+          "$ref": "#/$defs/agentConfig",
+          "description": "Vulnerability Review Primary (hidden review primary for /vuln-review; not a customAgents base)"
         }
       }
     },

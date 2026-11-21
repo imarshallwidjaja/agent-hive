@@ -89,6 +89,10 @@ describe('agent registration', () => {
 
     for (const name of ['dash-reviewer', 'vulnerability-review-primary']) {
       expect(config.agent[name].hidden, name).toBe(true);
+      expect(config.agent[name].mode, name).toBe('primary');
+      // Unconfigured review primaries run on the session's model, as other built-in primaries without settings do.
+      expect(config.agent[name], name).not.toHaveProperty('model');
+      expect(config.agent[name], name).not.toHaveProperty('variant');
     }
     expect(config.agent['hive-master'].hidden).toBe(true);
     expect(config.default_agent).toBe('architect-planner');

@@ -743,8 +743,10 @@ See [Skill ownership](docs/SKILL-OWNERSHIP.md) for the responsibility map and so
 | `simplicity-reviewer` | (none) |
 | `approach-advisor` | (none) |
 | `vulnerability-reviewer` | (none) |
+| `dash-reviewer` | (none) |
+| `vulnerability-review-primary` | (none) |
 
-Every role in this table, `dash-reviewer`, `vulnerability-review-primary`, and every custom agent are also asked to load `unslop` first. It is added when guidance is composed rather than listed in `autoLoadSkills`, so it does not appear in the table, listing it adds nothing, and a custom agent does not repeat it. `disableSkills: ["unslop"]` removes the bundled skill from materialization and guidance without a warning per role; a native or user skill named `unslop` takes precedence, as for any name. The guidance asks the agent to load the skill before covered work and does not preload or enforce it; the skill's own routing then decides which depth skills a case needs.
+Every role in this table and every custom agent are also asked to load `unslop` first. It is added when guidance is composed rather than listed in `autoLoadSkills`, so it does not appear in the table, listing it adds nothing, and a custom agent does not repeat it. `disableSkills: ["unslop"]` removes the bundled skill from materialization and guidance without a warning per role; a native or user skill named `unslop` takes precedence, as for any name. The guidance asks the agent to load the skill before covered work and does not preload or enforce it; the skill's own routing then decides which depth skills a case needs.
 
 `background-delegation` is not a default `autoLoadSkills` entry for any agent. For ad-hoc orchestration, delegation-first guidance is in the base prompt; the v1 env flag (`OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL`), or native background support on v2, only appends background wait-mode and board guidance without adding it to the default autoload set.
 
@@ -817,7 +819,7 @@ The same eight built-in bases allow an optional routing-description override und
 | `approach-advisor` | Default for ordinary read-only approach advice on technical direction, architecture, debugging, and tradeoffs. |
 | `vulnerability-reviewer` | Default for application-security review focused on evidenced attacker-to-impact paths and root-cause triage. |
 
-Primary orchestrators, `hive-builder`, `hive-helper`, `architect-planner`, private `__hive_*` identities, and generated review lanes do not expose description overrides.
+Primary orchestrators, `hive-builder`, `hive-helper`, `architect-planner`, the hidden review primaries `dash-reviewer` and `vulnerability-review-primary`, private `__hive_*` identities, and generated review lanes do not expose description overrides.
 
 `hive-helper` is not a custom base agent. Its runtime-only investigation role covers both feature and ad-hoc work; primaries own integration, cleanup, and follow-up task creation.
 
@@ -872,8 +874,8 @@ Inheritance rules when a custom agent field is omitted:
 
 ID guardrails:
 
-- `customAgents` keys cannot reuse built-in Hive agent IDs
-- native `general`/`explore` and review primaries `dash-reviewer`/`vulnerability-review-primary` are reserved; rename a colliding custom reviewer (for example to `reviewer-dashboard`) while retaining its supported base
+- `customAgents` keys cannot reuse built-in Hive agent IDs, including the hidden review primaries `dash-reviewer` and `vulnerability-review-primary`; neither review primary can be a `baseAgent`
+- native `general`/`explore` are reserved; rename a colliding custom reviewer (for example to `reviewer-dashboard`) while retaining its supported base
 - custom agent IDs cannot contain native permission wildcard characters (`*` or `?`)
 - plugin-reserved aliases are blocked (`hive`, `architect`, `swarm`, `scout`, `forager`, `hygienic`, `hygienic-reviewer`, `receiver`)
 - operational IDs are blocked (`build`, `builder`, `plan`, `code`)
@@ -894,6 +896,7 @@ Hive ships no model for any role. A built-in role, custom agent or recovery summ
 - **Native inheritance.** On v1, a role without a Hive model gets no `model` in its agent entry, so OpenCode uses the model chosen for the prompt or session, or your configured default, and a child task uses its parent's model and variant. On v2, a primary session uses the session model or the host default, a fresh subagent of a Hive role or custom agent uses the agent's effective model, then its parent's model (a continued child keeps its model unless the call switches its agent), and an agent-bound command uses the agent's effective native model. Hive never pins an unconfigured role at startup or request time.
 - **Explicit choices.** Set `model` (`provider/model-id`) to pin a role, optionally with a `variant`. A variant needs an explicit Hive model on the same effective declaration: the role's global entry, its project override, or, for a custom agent, its Hive base role. An OpenCode agent, session or default model never completes it. If it is incomplete, or a supplied `model` or `variant` is blank or malformed, the plugin stops at startup with an error that names the file, the property path and the fix (set the model, or remove the variant), without echoing values.
 - **Project overrides and global writes.** A project override can complete a global fragment: a project `model` for a global `variant`, or the reverse. When Hive itself writes the global file (first-run creation on v1, or a settings update), it checks that file on its own, so the stored global configuration never depends on one project.
+- **Review primaries.** `dash-reviewer` and `vulnerability-review-primary` accept `model`, `variant` and `autoLoadSkills` under `agents` in `agent_hive.json`, and `model` and `variant` in `.hive/agent-hive.override.json`, like the other primaries. When one of them has a configured model, `/dash-review` and `/test-audit` (for `dash-reviewer`) or `/vuln-review` (for `vulnerability-review-primary`) switch the session to that model; without one, the command keeps the session's current model.
 - **Custom agents.** An omitted custom `model` or `variant` inherits the base role's Hive value, including the base's project override. A native OpenCode override of the base agent is not copied into the custom agent.
 - **Native precedence.** On v2, your native settings for an agent still win over a valid Hive model and replace the whole model reference, including its variant. On v1, Hive's entries replace native entries with the same agent ID.
 - **Subagent model control (v2).** A `subagent()` call that sets `model` for a built-in Hive role or a custom agent is refused before the host runs it, whichever agent calls and whatever the value, including the configured model itself or a `#variant`; no child, binding or board row is created, and the call succeeds when repeated without `model`. A continuation (`sessionID`) on the child's current agent must find the child on that agent's effective model and variant, as the host's agent entry reports it with your native settings applied; a missing variant means the model's default variant. Otherwise Hive refuses it with the expected and actual model, and a fresh call without `sessionID` runs on the configured model. If the agent entry cannot be read, the continuation is refused. A continuation that switches the child to another agent takes that agent's configured model from the host and, like any agent change, needs an idle child; the agent change is judged from the host's session agent as well as the Hive binding. A managed agent with no configured model is not pinned: a fresh child inherits its parent's model and a resumed child keeps the model it had. Native `general`/`explore` and agents Hive does not register accept `model` as the host defines it. This covers the dispatch argument only: configuration files, agent-bound commands, and session APIs or UI that change a session's model directly are outside it.

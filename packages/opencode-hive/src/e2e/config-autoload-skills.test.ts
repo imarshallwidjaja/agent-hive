@@ -671,6 +671,27 @@ describe('config hook autoLoadSkills guidance', () => {
     expect(fs.existsSync(path.join(generatedPath, 'writing-policy'))).toBe(false);
   });
 
+  it('applies configured model, variant and autoLoadSkills to the hidden review primaries', async () => {
+    writeHiveConfig(testRoot, {
+      agentMode: 'dedicated',
+      agents: {
+        'dash-reviewer': { model: 'provider/dash', variant: 'high', autoLoadSkills: ['verification'] },
+        'vulnerability-review-primary': { model: 'provider/vuln', autoLoadSkills: ['hive-config'] },
+      },
+    });
+
+    const opencodeConfig = await applyConfigHook(testRoot);
+    const registered = opencodeConfig.agent as Record<string, { model?: string; variant?: string; mode?: string; hidden?: boolean; prompt?: string }>;
+    expect(registered['dash-reviewer']).toMatchObject({ model: 'provider/dash', variant: 'high', mode: 'primary', hidden: true });
+    expect(registered['vulnerability-review-primary']).toMatchObject({ model: 'provider/vuln', mode: 'primary', hidden: true });
+    expect(registered['vulnerability-review-primary']).not.toHaveProperty('variant');
+    for (const [role, skill] of [['dash-reviewer', 'verification'], ['vulnerability-review-primary', 'hive-config']] as const) {
+      const guidance = getAutoLoadSkillsGuidance(getAgentPrompt(opencodeConfig, role));
+      expect(countOccurrences(guidance, skillToolCall('unslop')), role).toBe(1);
+      expect(guidance, role).toContain(skillToolCall(skill));
+    }
+  });
+
   it('lets a native unslop skill take over the universal default without copying the bundle', async () => {
     createFileSkill(
       path.join(testRoot, '.opencode', 'skills'),

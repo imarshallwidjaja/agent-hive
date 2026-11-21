@@ -361,7 +361,6 @@ export function hiveConfig({ provider, model, variant, agentMode, selection }) {
   const modelRef = provider === 'mock' ? `mock/${model}` : `openai/${model}`;
   const agents = {};
   for (const role of HIVE_ROLES) {
-    if (role === 'dash-reviewer' || role === 'vulnerability-review-primary') continue;
     agents[role] = variant ? { model: modelRef, variant } : { model: modelRef };
   }
   return { agentMode, agents, customAgents: {} };
