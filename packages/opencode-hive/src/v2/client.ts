@@ -18,13 +18,13 @@ import { IDENTITY_RPC_ID, type Identity } from './identity.js';
  */
 
 type RawClient = ReturnType<typeof OpenCode.make>;
-type VerifiedClient = Pick<RawClient, 'rpc' | 'session' | 'message'>;
+type VerifiedClient = Pick<RawClient, 'rpc' | 'session' | 'message' | 'experimental'>;
 /** The per-request options the public client accepts, reduced to what reads pass. */
 type RequestOptions = { signal: AbortSignal } | undefined;
 
 export type ReadAccessErrorCode =
   | 'not_configured' | 'unauthorized' | 'unreachable' | 'wrong_location' | 'wrong_instance'
-  | 'caller_unavailable' | 'caller_displaced' | 'target_unavailable' | 'inconsistent_lookup';
+  | 'caller_unavailable' | 'caller_displaced' | 'target_unavailable' | 'inconsistent_lookup' | 'malformed_response';
 
 export class ReadAccessError extends Error {
   override name = 'ReadAccessError';
@@ -40,6 +40,14 @@ export type TargetCheck = {
   placement: 'this-location' | 'other-location';
 };
 
+/**
+ * Whether the host could still run work in a child's session tree without a new prompt. `settled: false` names the
+ * first signal that showed work: `job` (the host still lists the child's own subagent job, or a job of the child or a
+ * descendant: running, or settled with a notice not yet delivered), `inbox` (the child or a descendant holds queued
+ * input) or `active` (the child or a descendant holds an execution now).
+ */
+export type ChildSettlement = { settled: true } | { settled: false; signal: 'job' | 'inbox' | 'active'; detail: string };
+
 export interface VerifiedReadAccess {
   sessionActive(signal?: AbortSignal): ReturnType<RawClient['session']['active']>;
   sessionGet(sessionID: string, signal?: AbortSignal): ReturnType<RawClient['session']['get']>;
@@ -52,6 +60,16 @@ export interface VerifiedReadAccess {
    * reported, never rerouted.
    */
   checkTarget(input: { callerID: string; targetID: string }, signal?: AbortSignal): Promise<TargetCheck>;
+  /**
+   * Reads, between the identity checks, whether child `childID` of `parentID` has settled. Work moves from a job to an
+   * inbox to an active execution, so the reads run in that order (as the host's own `run` command does) and a hand-off
+   * between two reads is still seen by the later one: the parent's subagent jobs for the child, then the jobs of the
+   * child and its descendants (any listed job, running or not, is pending), then the session tree under the child from
+   * the session list, then the inbox of every session in that tree, then the active executions, each matched to the tree
+   * or traced up its parent chain. A response that does not have the documented shape is refused, never read as empty.
+   * The answer is a sample: it says nothing about work another client starts after the last read.
+   */
+  childSettlement(input: { parentID: string; childID: string }, signal?: AbortSignal): Promise<ChildSettlement>;
 }
 
 type ClientFactory = (options: { baseUrl: string; headers: Record<string, string> }) => VerifiedClient;
@@ -60,6 +78,8 @@ type ClientFactory = (options: { baseUrl: string; headers: Record<string, string
 export type ReadServerOptions = { url: string; username: string; passwordEnv?: string };
 
 const MAX_LINEAGE_DEPTH = 32;
+/** Children read per session list page, the page size the official client uses for a session family. */
+const SESSION_PAGE = 200;
 
 export function createVerifiedReadAccess(input: {
   server: ReadServerOptions | undefined;
@@ -148,6 +168,85 @@ export function createVerifiedReadAccess(input: {
     return { relationship: 'other', placement };
   };
 
+  /** Whether `sessionID` is `ancestorID` or descends from it; every session on the way is read from the server. */
+  const descendsFrom = async (client: VerifiedClient, options: RequestOptions, sessionID: string, ancestorID: string) => {
+    const seen = new Set<string>();
+    let current: string | undefined = sessionID;
+    while (current !== undefined) {
+      if (current === ancestorID) return true;
+      if (seen.has(current) || seen.size > MAX_LINEAGE_DEPTH) throw new ReadAccessError('inconsistent_lookup', `The parent chain of session ${sessionID} is not a finite chain.`);
+      seen.add(current);
+      current = (await getSession(client, options, current, 'target_unavailable')).parentID;
+    }
+    return false;
+  };
+
+  /**
+   * The session `rootID` and every session below it, read level by level through the public session list filtered by
+   * parent. Pages run oldest update first, so a session updated while the pages are read moves to a later page instead
+   * of being skipped. A page that answers for another parent, a full page without a next cursor, or a full page that adds
+   * no session is refused.
+   */
+  const sessionTree = async (client: VerifiedClient, options: RequestOptions, rootID: string): Promise<Set<string>> => {
+    const depth = new Map([[rootID, 0]]);
+    const queue = [rootID];
+    for (let next = 0; next < queue.length; next++) {
+      const parentID = queue[next]!;
+      if (depth.get(parentID)! > MAX_LINEAGE_DEPTH) throw new ReadAccessError('inconsistent_lookup', `The session tree under ${rootID} is deeper than ${MAX_LINEAGE_DEPTH} levels.`);
+      let cursor: string | undefined;
+      while (true) {
+        const page = await client.session.list(cursor === undefined ? { parentID, order: 'asc', limit: SESSION_PAGE } : { cursor, limit: SESSION_PAGE }, options) as unknown;
+        const { sessions, next: following } = sessionPage(page, parentID);
+        let added = 0;
+        for (const id of sessions) {
+          if (depth.has(id)) continue;
+          depth.set(id, depth.get(parentID)! + 1);
+          queue.push(id);
+          added += 1;
+        }
+        if (sessions.length < SESSION_PAGE || following === undefined) break;
+        if (added === 0) throw new ReadAccessError('inconsistent_lookup', `The server repeated a full page of the children of session ${parentID}.`);
+        cursor = following;
+      }
+    }
+    return new Set(depth.keys());
+  };
+
+  /**
+   * Every job the host lists is unconsumed: a running job still works, and a settled one still has a notice to admit to
+   * its owner's inbox, which wakes that session (job.ts `completeBackground` removes the row only after admission).
+   */
+  const pendingJob = (job: JobRecord, subject: string): ChildSettlement => ({
+    settled: false,
+    signal: 'job',
+    detail: job.status === 'running' ? `${subject} is running` : `${subject} is ${job.status}, and its notice has not been delivered yet`,
+  });
+
+  const settlement = async (client: VerifiedClient, options: RequestOptions, parentID: string, childID: string): Promise<ChildSettlement> => {
+    const own = jobsFrom(await client.experimental.job.list({ sessionID: parentID, kind: 'subagent' }, options), 'the parent\'s subagent jobs');
+    const ownJob = own.find((job) => job.id === childID || job.childSessionID === childID);
+    if (ownJob) return pendingJob(ownJob, `the host's subagent job for child session ${childID}`);
+    const descendants = jobsFrom(await client.experimental.job.list({ sessionID: childID, descendants: true }, options), `the jobs of child session ${childID} and its descendants`);
+    if (descendants.length > 0) return pendingJob(descendants[0]!, `${descendants[0]!.kind} job ${descendants[0]!.id} of session ${descendants[0]!.sessionID}`);
+    // A session can hold queued input with no job and no execution (a prompt admitted without waking it), so every
+    // session of the tree is read, not only the sessions jobs name.
+    const tree = await sessionTree(client, options, childID);
+    for (const sessionID of tree) {
+      const inbox = await client.session.inbox.list({ sessionID }, options);
+      if (!Array.isArray(inbox)) throw new ReadAccessError('malformed_response', `The server answered the inbox of session ${sessionID} with something other than a list.`);
+      if (inbox.length > 0) return { settled: false, signal: 'inbox', detail: `session ${sessionID} has ${inbox.length} queued inbox item(s)` };
+    }
+    const active = await client.session.active(options);
+    if (active === null || typeof active !== 'object' || Array.isArray(active)) throw new ReadAccessError('malformed_response', 'The server answered the active sessions with something other than a record.');
+    for (const sessionID of Object.keys(active)) {
+      // A session created after the tree was read is still traced up its parent chain.
+      if (tree.has(sessionID) || await descendsFrom(client, options, sessionID, childID)) {
+        return { settled: false, signal: 'active', detail: sessionID === childID ? `child session ${childID} has an active execution` : `descendant session ${sessionID} of ${childID} has an active execution` };
+      }
+    }
+    return { settled: true };
+  };
+
   return {
     sessionActive: (signal) => verified((client, options) => client.session.active(options), signal),
     sessionGet: (sessionID, signal) => verified(async (client, options) => answeredFor(await client.session.get({ sessionID } as Parameters<RawClient['session']['get']>[0], options), sessionID), signal),
@@ -167,7 +266,45 @@ export function createVerifiedReadAccess(input: {
       }
       return check;
     }, signal),
+    childSettlement: ({ parentID, childID }, signal) => verified((client, options) => settlement(client, options, parentID, childID), signal),
   };
+}
+
+/** The job fields a settlement read relies on. */
+type JobRecord = { id: string; kind: string; sessionID: string; status: string; childSessionID?: string };
+
+/**
+ * One page of the children of `parentID`: their IDs and the next cursor, or a refusal when the page has another shape.
+ * The 2.3.2 SessionsResponse always has `cursor`, whose `next` is a cursor string, null or absent, and a page that lists
+ * any session always has `next` (core session.ts `list`). A full page without one would end the tree read early.
+ */
+function sessionPage(value: unknown, parentID: string): { sessions: string[]; next: string | undefined } {
+  const page = (value ?? {}) as { data?: unknown; cursor?: { next?: unknown } | null };
+  // The JSON codec writes an absent cursor as null, so null and absence both mean no next page.
+  const next = page.cursor?.next ?? undefined;
+  if (!Array.isArray(page.data) || page.cursor === null || typeof page.cursor !== 'object'
+    || (next !== undefined && (typeof next !== 'string' || next === '')) || (page.data.length >= SESSION_PAGE && next === undefined)) {
+    throw new ReadAccessError('malformed_response', `The server answered the children of session ${parentID} with something other than a session page.`);
+  }
+  const sessions = page.data.map((session: unknown) => {
+    const record = (session ?? {}) as { id?: unknown; parentID?: unknown };
+    if (typeof record.id !== 'string') throw new ReadAccessError('malformed_response', `The server listed a child of session ${parentID} without an ID.`);
+    if (record.parentID !== parentID) throw new ReadAccessError('inconsistent_lookup', `The server listed session ${record.id} as a child of ${parentID}, but its parent is ${String(record.parentID)}.`);
+    return record.id;
+  });
+  return { sessions, next: typeof next === 'string' ? next : undefined };
+}
+
+/** A job list that has the documented shape, or a refusal: an unexpected answer is never read as no jobs. */
+function jobsFrom(value: unknown, what: string): JobRecord[] {
+  if (!Array.isArray(value)) throw new ReadAccessError('malformed_response', `The server answered ${what} with something other than a list.`);
+  return value.map((job: unknown) => {
+    const record = (job ?? {}) as Record<string, unknown>;
+    const valid = typeof record.id === 'string' && typeof record.kind === 'string' && typeof record.sessionID === 'string' && typeof record.status === 'string'
+      && (record.kind !== 'subagent' || typeof record.childSessionID === 'string');
+    if (!valid) throw new ReadAccessError('malformed_response', `The server answered ${what} with a job record that lacks its id, kind, session, status or child.`);
+    return record as JobRecord;
+  });
 }
 
 function classifyBindingFailure(error: unknown, url: string): ReadAccessError {

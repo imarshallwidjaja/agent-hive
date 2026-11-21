@@ -14,9 +14,11 @@ import type { HiveToolRegistrar } from './tools.js';
  * - acknowledgement: `hive_background_cancel` asked the host to interrupt the child (resume disabled) and the host
  *   accepted. The row keeps its cancel request; nothing is recorded as cancelled.
  * - settlement: the child's execution ended (`session.execution.*`).
- * - notification: the host's completion message to the parent (a synthetic inbox item whose metadata names the child
- *   and its state). It names the child but not the launching call, so with a reused child it cannot say which launch
- *   ended, and arrival order is no substitute for that identity.
+ * - notification: the host's report message to the parent (a synthetic inbox item whose metadata names the child and
+ *   its state). It names the child but not the launching call, so with a reused child it cannot say which launch it
+ *   reports, and arrival order is no substitute for that identity. It does not establish that the child ended either:
+ *   the host sends one each time the child stops, and a `completed` metadata state can come with a report the parent
+ *   reads as interim (`state="running"`) while the child's own background work continues.
  *   A notification therefore marks every live row of that child uncertain with the state the host reported, and
  *   settlement marks those still shown running; rows already terminal or archived are left as they were. The parent
  *   receives the notification itself.
@@ -59,8 +61,9 @@ export function createV2BackgroundLifecycle(input: { projectRoot: string; servic
   const { projectRoot, service, runtimeId } = input;
   const warn = input.warn ?? ((message: string) => console.warn(message));
   const observer = createBoardObserver({ projectRoot, service, runtimeId, warn });
-  // A child the user backgrounds from a foreground call can finish before its row exists. Its notification is held
-  // by parent and child until that launch is recorded; it is never applied to any other parent or child.
+  // A child whose barrier write failed can report before the call's retry records its row. Its notification is held by
+  // parent and child until that launch is recorded, and only while such an unrecorded launch exists; it is never
+  // applied to any other parent or child. A child session's helpers are never recorded, so nothing is held for them.
   const early = new Map<string, string>();
   const earlyKey = (parent: string, child: string) => `${parent}\u0000${child}`;
   // Set once Hive can no longer trust that it sees every notification for this activation's launches.
@@ -195,13 +198,15 @@ export function createV2BackgroundLifecycle(input: { projectRoot: string; servic
       case 'session.inbox.enqueued': {
         const completion = completionFrom(sessionID, data);
         if (!completion) return;
-        const diagnostic = `The host notified the parent that child ${completion.child} ended (${completion.state}). The notification names the child, not the launching call, so Hive does not record it as this launch's outcome; inspect the child and archive this observation with decision "ignored".`;
+        const diagnostic = `The host sent the parent a report for child ${completion.child} (state ${completion.state}). A report names the child, not the launching call, and does not establish that the child ended, so Hive does not record it as this launch's outcome; inspect the child and archive this observation with decision "ignored".`;
         const rows = liveRows((job) => job.scope?.parentSessionId === completion.parent && job.sessionId === completion.child, `the completion notification for ${completion.child}`);
         if (rows === undefined) return;
         if (rows.length > 0) {
           markUncertain(rows.map((job) => job.alias), diagnostic);
           return;
         }
+        // Hold it only for a launch of this parent whose row the barrier could not write; that same call retries the row.
+        if (!observer.unrecordedLaunches(completion.parent).some((launch) => launch.childSessionId === completion.child)) return;
         const key = earlyKey(completion.parent, completion.child);
         early.delete(key);
         early.set(key, diagnostic);

@@ -9,7 +9,8 @@ import { FORAGER_BEE_PROMPT } from './forager';
 import { INVESTIGATOR_PROMPT } from './investigator';
 import { SCOUT_BEE_PROMPT } from './scout';
 import { HIVE_HELPER_PROMPT } from './hive-helper';
-import { CODEMODE_READ_TOOLS, OPENCODE_V1_PROFILE, createHostProfile, renderReadTransport, renderSkillResolution, requiredSkillIdentity, skillCall, type HostProfile } from '../runtime/host-profile';
+import { CODEMODE_READ_TOOLS, OPENCODE_V1_PROFILE, createHostProfile, renderReadTransport, renderSkillResolution, renderSubagentWait, requiredSkillIdentity, skillCall } from '../runtime/host-profile';
+import type { HostProfile } from '../runtime/host-profile';
 import { HIVE_TOOL_NAMES } from '../utils/plugin-manifest';
 import { renderBackgroundFirstOrchestrationAppendix } from '../utils/background-gate';
 import { renderCommandBehavior } from '../commands/command-bodies';
@@ -3671,13 +3672,14 @@ describe('README.md documentation', () => {
       expect(hiveToolsContent).toContain('Cancel acknowledgement does not prove the worker stopped');
       expect(hiveToolsContent).toContain('On v1 it calls OpenCode\'s session abort, and `runtimeCancelled: true` means the abort request succeeded');
       expect(hiveToolsContent).toContain('`interruptAcknowledged: true` means the host accepted the interruption; `runtimeCancelled` stays `false`');
-      expect(hiveToolsContent).toContain('On v2, a blocking `subagent()` child is tied to its caller');
-      expect(hiveToolsContent).toContain('also a foreground `subagent()` call that the user moved to the background');
-      expect(hiveToolsContent).toContain('A foreground call that returned no result has no board row on either host');
+      expect(hiveToolsContent).toContain('On v2, every `subagent()` child keeps running after the parent turn is interrupted or ends');
+      expect(hiveToolsContent).toContain('On v2 every `subagent()` call from a primary session is a background launch: Hive records its row at the binding barrier, before the host prompts the child');
+      expect(hiveToolsContent).toContain('A v1 foreground call that returned no result has no board row');
+      expect(hiveToolsContent).not.toMatch(/blocking `subagent\(\)` child|moved to the background|subagent\(\{ background: true/);
       expect(hiveToolsContent).toContain('it marks the row uncertain, never cancelled');
       expect(hiveToolsContent).toContain('- On v1 only, on each later turn, the runtime adds a replay hint');
       expect(hiveToolsContent).toContain('only when the stored call records the child\'s session ID in its metadata and the runtime confirms that child belongs to the parent');
-      expect(hiveToolsContent).toContain('a foreground call that never returned may show no `child_session_id`');
+      expect(hiveToolsContent).toContain('a call a restart ended before it returned may show no `child_session_id`, though its board row, recorded at the barrier, names the child');
       expect(hiveToolsContent).toContain('a missing child ID does not show that the child stopped');
       expect(readmeContent).toContain('show a confirmed `child_session_id` only when the stored call recorded the child\'s ID; on v2 a foreground call that never returned may lack it');
       expect(readmeContent).not.toContain('which is how to find a foreground child after a restart');
@@ -4239,8 +4241,8 @@ describe('host-rendered policy', () => {
     ['native task contract', renderNativeTaskContinuationPolicyPrompt],
     ['interrupted worker recovery', renderInterruptedWorkerRecoveryPrompt],
     ['background-first appendix', renderBackgroundFirstOrchestrationAppendix],
-    // The read-transport section is host-and-mode specific text and has its own test below.
-    ['system prompt', (host) => renderHiveSystemPrompt({ ...host, readTransport: 'direct' }).replace(renderReadTransport({ ...host, readTransport: 'direct' }), '')],
+    // The read-transport and subagent-wait sections are host specific text and have their own tests below.
+    ['system prompt', (host) => renderHiveSystemPrompt({ ...host, readTransport: 'direct' }).replace(renderSubagentWait(host), '').replace(renderReadTransport({ ...host, readTransport: 'direct' }), '')],
     ...Object.keys(COMMAND_BEHAVIOR).map((key): [string, (host: HostProfile) => string] => [`command body ${key}`, (host) => renderCommandBehavior(host)[key as keyof typeof COMMAND_BEHAVIOR]]),
   ];
 
@@ -4260,14 +4262,18 @@ describe('host-rendered policy', () => {
   });
 
   it.each(policyRenders)('derives every host difference of %s from the profile slots', (_name, render) => {
-    const sentinel = render(SENTINEL);
-    for (const host of hostProfiles) expect(fill(maskSkillText(sentinel, SENTINEL), host)).toBe(maskSkillText(render(host), host));
-    // Native syntax left behind would be v1 wording that no profile slot controls.
-    expect(sentinel).not.toMatch(/\btask\(|`task\.prompt`/);
-    expect(sentinel).not.toContain('subagent_type');
-    expect(sentinel).not.toMatch(/`bash`|\bBash\b/);
-    // `task_id` stays only as the Hive trace tool's own argument.
-    expect(sentinel.replace(/hive_task_trace\(\{ task_id/g, '')).not.toContain('task_id');
+    for (const host of hostProfiles) {
+      // The background gate is a profile slot too: a render may branch on it, never on the host's identity.
+      const profile = { ...SENTINEL, backgroundGate: host.backgroundGate };
+      const sentinel = render(profile);
+      expect(fill(maskSkillText(sentinel, profile), host)).toBe(maskSkillText(render(host), host));
+      // Native syntax left behind would be v1 wording that no profile slot controls.
+      expect(sentinel).not.toMatch(/\btask\(|`task\.prompt`/);
+      expect(sentinel).not.toContain('subagent_type');
+      expect(sentinel).not.toMatch(/`bash`|\bBash\b/);
+      // `task_id` stays only as the Hive trace tool's own argument.
+      expect(sentinel.replace(/hive_task_trace\(\{ task_id/g, '')).not.toContain('task_id');
+    }
   });
 
   it('renders the native subagent call, agent field and continuation field for OpenCode v2', () => {
@@ -4294,6 +4300,10 @@ describe('host-rendered policy', () => {
     expect(renderScoutBeePrompt(V2_CODEMODE)).toContain('`shell` writes');
     expect(renderHiveSystemPrompt(V2_DIRECT)).toContain('never valid native `subagent()` targets');
     expect(renderInterruptedWorkerRecoveryPrompt(V2_CODEMODE)).toContain('Continuing the old session with `sessionID` stays limited');
+    // v2 has no foreground call that loses its child ID; what can be missing is the terminal report.
+    const recovery = renderInterruptedWorkerRecoveryPrompt(V2_CODEMODE);
+    expect(recovery).toContain('A missing terminal report, an interim `state="running"` report, or a launch call that failed after Hive bound the child does not establish termination');
+    expect(recovery).not.toContain('foreground');
   });
 
   it('keeps the readable cursor and unchanged-ref guidance on every host', () => {
@@ -4305,11 +4315,32 @@ describe('host-rendered policy', () => {
     }
   });
 
+  it('maps blocking calls onto the completion message only on a host whose subagent calls always run in the background', () => {
+    expect(renderSubagentWait(OPENCODE_V1_PROFILE)).toBe('');
+    expect(renderHiveSystemPrompt(OPENCODE_V1_PROFILE)).not.toContain('Native Subagent Wait');
+    for (const host of [V2_CODEMODE, V2_DIRECT]) {
+      const wait = renderSubagentWait(host);
+      expect(renderHiveSystemPrompt(host)).toContain(wait);
+      expect(wait).toContain('every `subagent()` call runs its child in the background: it returns at once with status `running` and the child\'s `sessionID`, and it takes no `background` field.');
+      expect(wait).toContain('That return is a launch receipt, not the worker\'s result.');
+      // An interim report is never the result; only a matching terminal state is.
+      expect(wait).toContain('- `state="running"` is an interim report: the child stopped while its own background work (a helper subagent, a shell, a script) still runs, and the host will report again. Its text is not the result.');
+      expect(wait).toContain('- `state="completed"` is the terminal report, and its text is the child\'s result.');
+      expect(wait).toContain('their text describes the failure, not a result. Handle them as a failed or interrupted worker run.');
+      expect(wait).toContain('When an instruction describes a `subagent()` call as blocking, or treats its return as the worker\'s result, wait for the matching terminal report for that child\'s `sessionID` instead.');
+      expect(wait).toContain('Do not poll, sleep, or repeat a launch while you wait, and make no lifecycle decision (accept, integrate, retry, replace, clean up) from the launch receipt or an interim report.');
+      expect(wait).toContain('A call with `sessionID` continues a settled child only; Hive refuses it while that child, or work it started, still runs or has queued work.');
+    }
+  });
+
   it('opens background mode from the environment only on a host that gates it there', () => {
-    expect(V2_CODEMODE.backgroundGate).toBe('native');
+    expect(V2_CODEMODE.backgroundGate).toBe('always');
     expect(OPENCODE_V1_PROFILE.backgroundGate).toBe('experiment-env');
-    expect(renderBackgroundFirstOrchestrationAppendix(V2_CODEMODE)).toContain('normal blocking subagent() wait mode');
-    expect(renderBackgroundFirstOrchestrationAppendix(OPENCODE_V1_PROFILE)).toContain('normal blocking task() wait mode');
+    // v2 has no gate-closed session, so its appendix names no blocking wait mode of its own; the system prompt's
+    // Native Subagent Wait section owns how v2 waits.
+    expect(renderBackgroundFirstOrchestrationAppendix(V2_CODEMODE)).not.toContain('Gate-closed');
+    expect(renderBackgroundFirstOrchestrationAppendix(V2_CODEMODE)).toContain('Native Subagent Wait');
+    expect(renderBackgroundFirstOrchestrationAppendix(OPENCODE_V1_PROFILE)).toContain('Gate-closed sessions keep normal blocking task() wait mode');
   });
 
   it('describes the selected read transport and never a direct call to a Code Mode read', () => {

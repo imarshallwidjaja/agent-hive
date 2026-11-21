@@ -60,7 +60,14 @@ export function resolveBackgroundDelegationAvailability(
   return { available: false, reason: 'skill-missing' };
 }
 
-/** Primary-session guidance that opens background wait mode and the Hive board protocol. */
+/**
+ * Primary-session guidance that opens background wait mode and the Hive board protocol. On a host whose subagent calls
+ * always run in the background there is no gate-closed session; the system prompt's Native Subagent Wait section
+ * says how a blocking wait reads there.
+ */
 export function renderBackgroundFirstOrchestrationAppendix(host: HostProfile): string {
-  return `\n\n## Background-First Orchestration\nThis appendix applies only when running as a primary. When Architect is task-spawned, use blocking calls for its permitted terminal planning-helper layer, including hive-helper. Child-role rules take precedence over this appendix: child sessions cannot use background board tools, so return board/control requests to the parent without loading the primary-only background-delegation skill. OpenCode background subagents are enabled for primary sessions. Delegation-first orchestration is the baseline; this appendix only opens background wait mode and the Hive board protocol. When this heading is present in a primary session, background-delegation governs scheduling and wait mode; other loaded skills govern domain workflow and safety. Before launching or managing background lanes, load/use ${skillCall(host, 'background-delegation', { code: false })}. Background mode is available only when useful unrelated foreground work can continue; otherwise use blocking. Detailed safety overrides and board protocol live in that skill. Gate-closed sessions keep normal blocking ${nativeCall(host)} wait mode and must launch returned blocking task calls rather than working directly in delegated worktrees.`;
+  const closing = host.backgroundGate === 'always'
+    ? 'On this host every subagent call runs in the background; a blocking wait means waiting for its terminal report as the Native Subagent Wait section describes.'
+    : `Gate-closed sessions keep normal blocking ${nativeCall(host)} wait mode and must launch returned blocking task calls rather than working directly in delegated worktrees.`;
+  return `\n\n## Background-First Orchestration\nThis appendix applies only when running as a primary. When Architect is task-spawned, use blocking calls for its permitted terminal planning-helper layer, including hive-helper. Child-role rules take precedence over this appendix: child sessions cannot use background board tools, so return board/control requests to the parent without loading the primary-only background-delegation skill. OpenCode background subagents are enabled for primary sessions. Delegation-first orchestration is the baseline; this appendix only opens background wait mode and the Hive board protocol. When this heading is present in a primary session, background-delegation governs scheduling and wait mode; other loaded skills govern domain workflow and safety. Before launching or managing background lanes, load/use ${skillCall(host, 'background-delegation', { code: false })}. Background mode is available only when useful unrelated foreground work can continue; otherwise use blocking. Detailed safety overrides and board protocol live in that skill. ${closing}`;
 }

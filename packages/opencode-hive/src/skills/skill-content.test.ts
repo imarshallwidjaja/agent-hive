@@ -2185,11 +2185,12 @@ describe('skill content', () => {
 
   it('executes each delivered legacy composite launch preflight against saved selections', async () => {
     const launches = readSkillReference('dispatching-parallel-agents', 'launch-examples.md');
-    for (const host of [OPENCODE_V1_PROFILE, createHostProfile('opencode-v2')]) {
+    // v1 shows a blocking and a gate-open background launch; v2 runs every launch in the background, so it shows one.
+    for (const [host, count] of [[OPENCODE_V1_PROFILE, 2], [createHostProfile('opencode-v2'), 1]] as const) {
       const rendered = renderHostMarkdown(launches, host, 'dispatching-parallel-agents/references/launch-examples.md');
       const section = rendered.split('## Ad-hoc launch with placement check')[1].split('## Diagnosis-only fan-out')[0];
       const examples = [...section.matchAll(/```ts\n([\s\S]*?)```/g)].map((match) => match[1]);
-      expect(examples).toHaveLength(2);
+      expect(examples).toHaveLength(count);
       for (const example of examples) {
         const execute = new Function('lane', 'repositories', 'hive_repositories_status', 'hive_adhoc_worktree_create', 'task', 'subagent', 'hive_background_status', `return (async () => { ${example} })();`);
         const valid = [['beta'], ['alpha', 'gamma']];
@@ -2437,30 +2438,35 @@ describe('skill content', () => {
       const start = text.indexOf(opening);
       return start === -1 ? undefined : text.slice(start + opening.length, text.indexOf(`\n${fence}`, start + opening.length));
     };
-    // Each host's example is complete on its own, so every assertion holds for each rendering.
-    for (const [host, label, read] of [
-      [OPENCODE_V1_PROFILE, 'OpenCode v1:', 'hive_repositories_status()'],
-      [createHostProfile('opencode-v2'), 'OpenCode v2:', '// repositories: the repositories array from the hive_repositories_status result'],
+    // Each host's example is complete on its own, so every assertion holds for each rendering. OpenCode v2 runs every
+    // subagent call in the background, so one launch serves both wait modes and no call sets `background`.
+    for (const [host, label, read, blocking, background, backgroundArgument] of [
+      [OPENCODE_V1_PROFILE, 'OpenCode v1:', 'hive_repositories_status()', 'Blocking launch (gate-closed sessions):', 'Background launch (gate-open sessions):', true],
+      [createHostProfile('opencode-v2'), 'OpenCode v2:', '// repositories: the repositories array from the hive_repositories_status result', 'Launch:', 'Launch:', false],
     ] as const) {
       const text = renderHostMarkdown(launches, host, 'dispatching-parallel-agents/references/launch-examples.md');
-      const gateClosed = launchExample(text, 'Blocking launch (gate-closed sessions):', label);
-      const example = launchExample(text, 'Background launch (gate-open sessions):', label);
+      const gateClosed = launchExample(text, blocking, label);
+      const example = launchExample(text, background, label);
       expect(gateClosed, label).toBeDefined();
       expect(example, label).toBeDefined();
+      // v2 shows the composite launch once, not two copies with identical arguments.
+      if (!backgroundArgument) expect(text.split('Resume the untargeted composite run').length - 1, label).toBe(1);
       for (const launch of [gateClosed!, example!]) {
         // Preflight behavior is executed against saved selections in the placement-preflight test.
         expect(launch).toContain(read);
         expect(launch).toContain('Placement blocker: saved lane.repoIds must be nonempty, unique, and configured');
         expect(launch).toContain('Hive run: ${lane.runId}');
       }
-      expect(example).toContain('background: true');
+      if (backgroundArgument) expect(example).toContain('background: true');
+      else expect(text).not.toMatch(/background: (true|false)/);
       // The launch stops where the board protocol starts; reconciliation is not duplicated here.
       expect(example).not.toContain('hive_background_reconcile');
 
       const board = renderHostMarkdown(protocol, host, 'background-delegation/references/board-protocol.md');
       const observation = launchExample(board, 'Launch an independent read-only lane in the background, keep doing unrelated foreground work, observe the board, then reconcile once.', label);
       expect(observation, label).toBeDefined();
-      expect(observation).toContain('background: true');
+      if (backgroundArgument) expect(observation).toContain('background: true');
+      else expect(observation).not.toContain('background:');
       expect(observation!.indexOf('hive_background_status({})')).toBeLessThan(observation!.lastIndexOf('hive_background_status({})'));
       expect(observation!.lastIndexOf('hive_background_status({})')).toBeLessThan(observation!.indexOf('hive_background_reconcile({'));
     }
@@ -2982,7 +2988,7 @@ describe('skill content', () => {
       expect(content).not.toMatch(/\/complexity-(review|audit)/);
     }
     for (const content of [readRepoFile('packages/opencode-hive/README.md'), readRepoFile('docs/OPERATOR-GUIDE.md')]) {
-      expect(content).toContain('does not register skills as slash commands');
+      expect(content).toContain('OpenCode v2.3.2 lists no skill among its commands');
     }
 
     expect(readRepoFile('docs/OPERATOR-GUIDE.md')).toContain(conversationFallback);
@@ -3253,7 +3259,7 @@ describe('host sections in packaged skills', () => {
   it('keeps every host section readable in the raw package source with no placeholders', () => {
     const raw = rawText('background-delegation/SKILL.md');
     expect(raw).toContain('`task({ background: true, ... })`');
-    expect(raw).toContain('`subagent({ background: true, ... })`');
+    expect(raw).toContain('Keep doing foreground work while a `subagent()` lane runs only when that work does not depend on the result.');
     expect(raw).not.toMatch(/\{\{|@@|%HOST%/);
     expect(parseNativeSkillMarkdown('raw', raw)?.name).toBe('background-delegation');
   });
@@ -3310,10 +3316,13 @@ describe('host sections in packaged skills', () => {
     expect(checked).toBeGreaterThan(10);
   });
 
-  it('renders the same number of complete examples for each host', () => {
+  it('renders the same number of complete examples for each host, apart from the v1 gate-open background form', () => {
     const fenceCount = (text: string) => (text.match(/^```(?:ts|typescript)$/gm) ?? []).length;
+    // Only v1 has a background gate, so only v1 shows a separate gate-open launch; on v2 one launch serves both modes.
+    const gateOpenForms = (text: string) => (text.match(/^Background launch \(gate-open sessions\):$/gm) ?? []).length;
     for (const relative of markdownFiles()) {
-      expect(fenceCount(rendered(relative, OPENCODE_V1_PROFILE)), relative).toBe(fenceCount(rendered(relative, V2)));
+      const v1 = rendered(relative, OPENCODE_V1_PROFILE);
+      expect(fenceCount(v1) - gateOpenForms(v1), relative).toBe(fenceCount(rendered(relative, V2)));
     }
   });
 
@@ -3456,10 +3465,12 @@ describe('host sections in packaged skills', () => {
     expect(v1).toContain('aborting a session also cancels its running background jobs and their descendants');
     expect(v2).toContain('`interruptAcknowledged: true` means the host accepted the interruption; `runtimeCancelled` stays `false`');
     expect(v2).toContain('the row keeps its cancel request on record. When the board later observes the execution settle or the completion notification, it marks the row uncertain, never cancelled.');
-    expect(v2).toContain('interrupting your turn also interrupts a blocking `subagent()` child and cancels its job');
-    expect(v2).toContain('Background lanes, including foreground calls moved to the background, keep running when your turn is interrupted or ends');
-    expect(v2).toContain('A foreground `subagent()` call that the user moves to the background returns `running` with its `sessionID`; Hive adds it to the board');
-    expect(rendered('hive-config/references/runtime-layout.md', V2)).toContain('It also records a foreground `subagent()` call that was moved to the background and returned `running`');
+    expect(v2).toContain('every `subagent()` lane keeps running when your turn is interrupted or ends');
+    expect(v2).toContain('Hive records a board row for every `subagent()` call a primary makes.');
+    expect(v2).toContain('Hive refuses a call with `sessionID` while that child, or work it started, still runs or has queued work');
+    expect(v2).not.toMatch(/moved to the background|blocking `subagent\(\)` child/);
+    expect(rendered('hive-config/references/runtime-layout.md', V2)).toContain('records every `subagent()` launch from a primary session in its own store');
+    expect(rendered('hive-config/references/runtime-layout.md', V2)).toContain("A child session's own helper launches have no row.");
     expect(rendered('hive-config/references/runtime-layout.md', OPENCODE_V1_PROFILE)).toContain('It never tracks foreground calls.');
   });
 

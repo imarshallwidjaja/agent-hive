@@ -1,8 +1,7 @@
 import { Cause, Effect, Exit } from 'effect';
 import type { Scope } from 'effect';
+import { Model, Provider } from '@opencode/plugin/effect';
 import type { Plugin } from '@opencode/plugin/effect';
-import { Model } from '@opencode/schema/model';
-import { Provider } from '@opencode/schema/provider';
 import { SessionID } from '@opencode/schema/session-id';
 import type { SessionGenerate } from '@opencode/plugin/effect/session';
 import type { TaskTraceSummarizerConfig } from 'hive-core';
@@ -288,31 +287,45 @@ type GenerationRequest = { system: string; observed?: { providerID?: unknown; mo
  * as its full model reference. No Hive retry or model fallback is added; host-internal provider retries are not
  * observed.
  */
-export function createV2Summarizer(context: Pick<Plugin.Context, 'session' | 'model' | 'location'>, config: TaskTraceSummarizerConfig, ephemeralSessionIDs = new Set<string>()) {
+export function createV2Summarizer(context: Pick<Plugin.Context, 'session' | 'model' | 'location' | 'agent'>, config: TaskTraceSummarizerConfig, ephemeralSessionIDs = new Set<string>()) {
   const pending = new Map<string, GenerationRequest>();
   const inFlightCreates = new Map<string, Promise<unknown>>();
   const run = <A, E>(effect: Effect.Effect<A, E>, signal: AbortSignal) => Effect.runPromiseExit(effect, { signal });
   const location = { directory: context.location.directory };
   const metadataOf = (model: { limit: unknown; variants: ReadonlyArray<{ id: string }> }) => ({ limit: model.limit, variants: model.variants.map((variant) => variant.id) });
   // The catalog default is what a session without a model runs on only when it names a provider package. The native
-  // resolver (v2.0.26 `ModelResolver.resolve`) otherwise picks another packaged model, a choice Hive does not reproduce.
+  // resolver (v2.3.2 `ModelResolver.fallback`) otherwise picks another packaged model, a choice Hive does not reproduce.
   const nativeDefaultModel = async (signal: AbortSignal) => {
     const exit = await run(context.model.default({ location }), signal);
     if (Exit.isFailure(exit)) throw Cause.squash(exit.cause);
     const selected = exit.value.data;
     return selected?.package ? selected : undefined;
   };
+  const selectionOf = (model: Model.Ref) => ({ providerID: model.providerID, modelID: model.id, ...(model.variant !== undefined && model.variant !== 'default' ? { variant: model.variant } : {}) });
   const host: SummarizerHost = {
     config,
     ephemeralSessionIDs,
-    // A session without a model runs on the host default, which the native runner resolves with no variant. When the
-    // catalog default is not the model the runner would pick, no selection is established and recovery is unavailable.
-    async callerSelection(callerSessionID, signal) {
+    // The caller's model as the native runner (v2.3.2 `SessionRunnerModel.select`) picks it: the session's own model;
+    // without one, its agent's effective configured model and variant when that model is available; otherwise the
+    // host default with no variant. A session that names no agent runs on the default agent, which the host resolved
+    // for this tool call and named as the call's agent; without that name the agent, and so the model, is not known
+    // and the lookup fails rather than guess. When the catalog default is not the model the runner would pick, no
+    // selection is established and recovery is unavailable. A plugin's `experimental.model.resolve` hook can still
+    // redirect a request; the generation records the model the host actually prepared.
+    async callerSelection(callerSessionID, signal, callerAgent) {
       const exit = await run(context.session.get({ sessionID: callerSessionID as never }), signal);
       if (Exit.isFailure(exit)) throw Cause.squash(exit.cause);
-      const model = exit.value.model;
-      if (model) {
-        return { providerID: model.providerID, modelID: model.id, ...(model.variant !== undefined && model.variant !== 'default' ? { variant: model.variant } : {}) };
+      const session = exit.value;
+      if (session.model) return selectionOf(session.model);
+      const agentID = session.agent ?? callerAgent;
+      if (agentID === undefined) throw new Error(`Caller session ${callerSessionID} names no agent and the tool call named none, so its model is not known.`);
+      const agent = await run(context.agent.get({ agentID: agentID as never }), signal);
+      if (Exit.isFailure(agent)) throw Cause.squash(agent.cause);
+      const configured = agent.value.data.model;
+      if (configured) {
+        const available = await run(context.model.list({ location }), signal);
+        if (Exit.isFailure(available)) throw Cause.squash(available.cause);
+        if (available.value.data.some((entry) => entry.providerID === configured.providerID && entry.id === configured.id)) return selectionOf(configured);
       }
       const selected = await nativeDefaultModel(signal);
       return selected ? { providerID: selected.providerID, modelID: selected.id } : undefined;
@@ -399,7 +412,7 @@ export function createV2TraceOperations(readAccess: VerifiedReadAccess, summariz
     hive_task_trace: {
       ...TRACE_TOOL_DEFINITIONS.hive_task_trace,
       output: 'text',
-      execute: (input: TraceInput, invocation: HiveInvocation) => handlers.trace(input, { sessionID: callerOf(invocation), abort: cancellationOf(invocation) }),
+      execute: (input: TraceInput, invocation: HiveInvocation) => handlers.trace(input, { sessionID: callerOf(invocation), ...(invocation.agent !== undefined ? { agent: invocation.agent } : {}), abort: cancellationOf(invocation) }),
     },
     hive_task_trace_content: {
       ...TRACE_TOOL_DEFINITIONS.hive_task_trace_content,

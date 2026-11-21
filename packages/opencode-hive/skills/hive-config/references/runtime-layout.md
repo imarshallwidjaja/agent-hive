@@ -134,7 +134,7 @@ So read the session index directly, with a shell or file read, before any sessio
 `.hive/background-jobs.json` records background `task()` launches (`schemaVersion: 1`, `jobs[]` with native `taskId`, `sessionId`, `alias`, `runtimeState`). It never tracks foreground calls.
 <!-- /hive-host -->
 <!-- hive-host opencode-v2 -->
-The OpenCode v2 background board records background `subagent()` launches in its own store (`schemaVersion: 1`, `jobs[]` with native `taskId`, `sessionId`, `alias`, `runtimeState`). It also records a foreground `subagent()` call that was moved to the background and returned `running`; other foreground calls have no row.
+The OpenCode v2 background board records every `subagent()` launch from a primary session in its own store (`schemaVersion: 1`, `jobs[]` with native `taskId`, `sessionId`, `alias`, `runtimeState`); every v2 subagent call runs in the background. A child session's own helper launches have no row.
 <!-- /hive-host -->
 It observes the originating parent and call, not feature or task status. Archive and cancel acknowledgements do not prove a worker stopped. Agents never edit it; `background-delegation` owns the protocol and the meaning of the board's status fields.
 

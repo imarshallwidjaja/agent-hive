@@ -32,20 +32,15 @@ await task({ subagent_type: "forager-worker", description: "Fix cleanup tests", 
 OpenCode v2:
 
 ```typescript
-// Gate-open only: use background: true when independent foreground work can continue.
 // Issue independent creates together; capture each destination from its create result.
 hive_worktree_create({ feature: "feature-name", task: "01-fix-abort-tests" })
 hive_worktree_create({ feature: "feature-name", task: "02-fix-batch-tests" })
 // When the route is unset/different or matching selection evidence is missing/uncertain:
 hive_feature_select({ feature: "feature-name" })
-// Issue independent task calls together; reuse this selection for both.
-subagent({ agent: "forager-worker", description: "Fix abort tests", prompt: "Hive task: 01-fix-abort-tests\n\nTargeted single-repository worktree; destination: <path, ref, commit from create>. Implement and commit assigned changes; return sourceCommit.", background: true })
-subagent({ agent: "forager-worker", description: "Fix batch tests", prompt: "Hive task: 02-fix-batch-tests\n\nTargeted single-repository worktree; destination: <path, ref, commit from create>. Implement and commit assigned changes; return sourceCommit.", background: true })
-
-// Blocking alternative, including every gate-closed session:
-hive_worktree_create({ feature: "feature-name", task: "03-fix-cleanup-tests" })
-// Capture the create result; reuse only a visible same-feature selection (see SKILL.md).
-await subagent({ agent: "forager-worker", description: "Fix cleanup tests", prompt: "Hive task: 03-fix-cleanup-tests\n\nTargeted single-repository worktree; destination: <path, ref, commit from create>. Implement and commit assigned changes; return sourceCommit." })
+// Issue independent task calls together; reuse this selection for both. Each returns a launch receipt;
+// its sourceCommit comes in that child's terminal report (Native Subagent Wait in your system prompt).
+subagent({ agent: "forager-worker", description: "Fix abort tests", prompt: "Hive task: 01-fix-abort-tests\n\nTargeted single-repository worktree; destination: <path, ref, commit from create>. Implement and commit assigned changes; return sourceCommit." })
+subagent({ agent: "forager-worker", description: "Fix batch tests", prompt: "Hive task: 02-fix-batch-tests\n\nTargeted single-repository worktree; destination: <path, ref, commit from create>. Implement and commit assigned changes; return sourceCommit." })
 ```
 <!-- /hive-host -->
 
@@ -66,7 +61,7 @@ OpenCode v2:
 
 ```ts
 hive_adhoc_worktree_create({ runId: lane.runId, target: lane.target });
-await subagent({ agent: 'forager-worker', description: 'Implement the change', prompt: `Hive run: ${lane.runId}\n\nDestination: <confirmed path, ref, commit>. Implement and commit; return sourceCommit.` });
+subagent({ agent: 'forager-worker', description: 'Implement the change', prompt: `Hive run: ${lane.runId}\n\nDestination: <confirmed path, ref, commit>. Implement and commit; return sourceCommit.` });
 ```
 <!-- /hive-host -->
 
@@ -81,9 +76,9 @@ Placement starts from repository status. These examples resume an existing untar
 `hive_repositories_status` is a Hive read, so obtain its result through the Hive read transport your system prompt names before the launch. When reads run in Code Mode, call it from code passed to `execute`, using the exact path the Code Mode catalog lists; when your system prompt says Hive reads are direct tool calls, call it directly. That result is a status envelope; the examples below bind its `repositories` array property, not the whole result, as `repositories`. The Hive control tools and the native `subagent()` call in them are direct calls.
 <!-- /hive-host -->
 
+<!-- hive-host opencode-v1 -->
 Blocking launch (gate-closed sessions):
 
-<!-- hive-host opencode-v1 -->
 OpenCode v1:
 
 ```ts
@@ -105,36 +100,11 @@ await task({
   prompt: `Hive run: ${lane.runId}\n\nResume the untargeted composite run; destinations: <per-repository path, ref, commit from create>. Complete the assigned work and commit; return the complete sourceCommits map keyed by repository ID.`,
 });
 ```
-<!-- /hive-host -->
-<!-- hive-host opencode-v2 -->
-OpenCode v2:
-
-```ts
-// repositories: the repositories array from the hive_repositories_status result, read through the Hive read transport first.
-const requestedRepoIds = lane.repoIds;
-const selectedRepoIds = repositories.filter(({ id }) => requestedRepoIds.includes(id)).map(({ id }) => id);
-if (
-  requestedRepoIds.length === 0 ||
-  new Set(requestedRepoIds).size !== requestedRepoIds.length ||
-  requestedRepoIds.some((id) => !selectedRepoIds.includes(id))
-) {
-  throw new Error('Placement blocker: saved lane.repoIds must be nonempty, unique, and configured');
-}
-const repoIds = selectedRepoIds;
-hive_adhoc_worktree_create({ runId: lane.runId, repoIds });
-await subagent({
-  agent: 'forager-worker',
-  description: 'Implement the ad-hoc change',
-  prompt: `Hive run: ${lane.runId}\n\nResume the untargeted composite run; destinations: <per-repository path, ref, commit from create>. Complete the assigned work and commit; return the complete sourceCommits map keyed by repository ID.`,
-});
-```
-<!-- /hive-host -->
 
 A background launch applies to gate-open sessions with independent foreground work. After it, observe and reconcile the lane with `background-delegation`'s board protocol.
 
 Background launch (gate-open sessions):
 
-<!-- hive-host opencode-v1 -->
 OpenCode v1:
 
 ```ts
@@ -160,6 +130,10 @@ hive_background_status({});
 ```
 <!-- /hive-host -->
 <!-- hive-host opencode-v2 -->
+Every `subagent()` launch runs in the background, so one launch serves both wait modes: wait for the child's terminal report before dependent work, or keep doing foreground work that does not depend on it. After the launch, observe and reconcile the lane with `background-delegation`'s board protocol.
+
+Launch:
+
 OpenCode v2:
 
 ```ts
@@ -177,9 +151,8 @@ const repoIds = selectedRepoIds;
 hive_adhoc_worktree_create({ runId: lane.runId, repoIds });
 const { sessionID } = subagent({
   agent: 'forager-worker',
-  description: 'Implement the independent ad-hoc change',
+  description: 'Implement the ad-hoc change',
   prompt: `Hive run: ${lane.runId}\n\nResume the untargeted composite run; destinations: <per-repository path, ref, commit from create>. Complete the assigned work and commit; return the complete sourceCommits map keyed by repository ID.`,
-  background: true,
 });
 hive_background_status({});
 ```

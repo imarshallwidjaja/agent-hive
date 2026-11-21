@@ -121,7 +121,12 @@ In feature-task mode, one implementation assignment normally maps to one numbere
 
 In feature-task mode, create each Forager worktree with `hive_worktree_create`, passing the feature explicitly, and capture the destination from its inspection-shaped result; later checkpoints remain required. Start each assignment's first non-empty line with `Hive task: <task-folder>`. Independent Forager worktrees may be created and dispatched under one parent. In ad-hoc mode, consume the ready wave from `orchestrating-ad-hoc-work`.
 
+<!-- hive-host opencode-v1 -->
 Gate-open sessions may add `background: true` when independent foreground work can continue; the blocking alternative serves every gate-closed session.
+<!-- /hive-host -->
+<!-- hive-host opencode-v2 -->
+Every `subagent()` call runs in the background; independent foreground work may continue while it runs, and the blocking form waits for each child's terminal report before dependent work.
+<!-- /hive-host -->
 <!-- hive-host opencode-v1 -->
 Before native `task()` dispatch, call `hive_feature_select` only when the selected route is unset or differs from the dispatch target, or the selection evidence below is missing or uncertain.
 <!-- /hive-host -->

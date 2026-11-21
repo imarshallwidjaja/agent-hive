@@ -85,10 +85,9 @@ const { sessionID } = subagent({
   agent: '<chosen-primary-delegated-agent>',
   description: 'Short task label',
   prompt: 'Concrete independent work with done criteria',
-  background: true,
 });
 hive_background_status({});
-// Wait for the native background completion notification, then refresh the Hive board
+// Wait for the terminal <subagent> report for sessionID, then refresh the Hive board
 // instead of repeatedly refreshing or manually mutating .hive/runtime/opencode-v2/background-jobs.json.
 hive_background_status({});
 hive_background_reconcile({

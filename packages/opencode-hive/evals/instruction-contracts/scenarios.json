@@ -819,7 +819,7 @@
           {
             "id": "no-background",
             "kind": "dispatch",
-            "background": true,
+            "waited": false,
             "count": {
               "max": 0
             },

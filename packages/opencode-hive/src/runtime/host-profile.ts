@@ -42,10 +42,12 @@ export interface HostProfile {
   readonly nativeSkill: { readonly tool: string; readonly field: 'name' | 'id' };
   readonly readTransport: ReadTransport;
   /**
-   * `experiment-env`: background subagents exist only while an `OPENCODE_EXPERIMENTAL*` variable enables them.
-   * `native`: the host's subagent call always accepts `background`.
+   * `experiment-env`: the subagent call blocks unless it sets `background`, which exists only while an
+   * `OPENCODE_EXPERIMENTAL*` variable enables it.
+   * `always`: every subagent call runs its child in the background and returns at once; the host reports the result in
+   * a later message, and there is neither a blocking call nor a `background` field.
    */
-  readonly backgroundGate: 'experiment-env' | 'native';
+  readonly backgroundGate: 'experiment-env' | 'always';
 }
 
 /** Every native name a prompt, command or skill can mention, per host. Prose takes these through the profile, never as literals. */
@@ -60,7 +62,7 @@ const HOST_SURFACE = {
     nativeTask: { tool: 'subagent', agentField: 'agent', continuationField: 'sessionID' },
     shell: { tool: 'shell', sentence: 'Shell' },
     nativeSkill: { tool: 'skill', field: 'id' },
-    backgroundGate: 'native',
+    backgroundGate: 'always',
   },
 } as const satisfies Record<HostId, Pick<HostProfile, 'nativeTask' | 'shell' | 'nativeSkill' | 'backgroundGate'>>;
 
@@ -121,6 +123,24 @@ export function renderSkillNameLookup(profile: HostProfile, names: ReadonlyMap<s
     .map(([name, skill]) => `- ${JSON.stringify(name)}: ${skillCall(profile, name, { id: skill.id })}`);
   for (const [name, ids] of ambiguous) entries.push(`- ${JSON.stringify(name)}: unresolved (multiple user catalog ids: ${ids.map((id) => JSON.stringify(id)).join(', ')}). Report the ambiguity for name-based requirements; an explicit id still selects its exact entry.`);
   return entries.length ? `\n\n## Hive Skill Name Lookup\nUse this lookup for skill names in any instruction, including canonical requirements.\n${entries.join('\n')}` : '';
+}
+
+/**
+ * How a host whose subagent calls always run in the background meets instructions written around blocking calls.
+ * Empty where a blocking call exists. Policy text stays host-neutral; this section is the one owner of the rule that
+ * maps "blocking" and "the call's result" onto the host's terminal report, and names the continuation limit Hive
+ * enforces at dispatch. Skills point here instead of restating it.
+ */
+export function renderSubagentWait(profile: HostProfile): string {
+  if (profile.backgroundGate !== 'always') return '';
+  const call = nativeCall(profile);
+  const { continuationField } = profile.nativeTask;
+  return `\n## Native Subagent Wait\n\nOn this host every \`${call}\` call runs its child in the background: it returns at once with status \`running\` and the child's \`${continuationField}\`, and it takes no \`background\` field. That return is a launch receipt, not the worker's result. The host then posts a \`<subagent ${continuationField}="..." state="...">\` message for that \`${continuationField}\` each time the child stops:
+- \`state="running"\` is an interim report: the child stopped while its own background work (a helper subagent, a shell, a script) still runs, and the host will report again. Its text is not the result.
+- \`state="completed"\` is the terminal report, and its text is the child's result.
+- \`state="error"\` and \`state="cancelled"\` are terminal too, but the work failed or was stopped: their text describes the failure, not a result. Handle them as a failed or interrupted worker run.
+
+When an instruction describes a \`${call}\` call as blocking, or treats its return as the worker's result, wait for the matching terminal report for that child's \`${continuationField}\` instead. Until it arrives, continue only work that does not depend on it, then end your turn; the host wakes you with each report. Several calls issued in one response, each followed by its terminal report, form a parallel blocking batch. Do not poll, sleep, or repeat a launch while you wait, and make no lifecycle decision (accept, integrate, retry, replace, clean up) from the launch receipt or an interim report. A call with \`${continuationField}\` continues a settled child only; Hive refuses it while that child, or work it started, still runs or has queued work.\n`;
 }
 
 /**

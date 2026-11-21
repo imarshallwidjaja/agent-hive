@@ -1,8 +1,7 @@
 import * as path from 'node:path';
 import { Effect } from 'effect';
 import type { Scope } from 'effect';
-import { Model } from '@opencode/schema/model';
-import { Tool } from '@opencode/schema/tool';
+import { Model, Tool } from '@opencode/plugin/effect';
 import type { Agent, Plugin } from '@opencode/plugin/effect';
 import type { SessionContext } from '@opencode/plugin/effect/session';
 import { canonicalProjectRoot, detectContext, type ConfigService, type ResolvedCustomAgentConfig } from 'hive-core';
@@ -18,11 +17,11 @@ import { CODEMODE_READ_TOOLS, createHostProfile, type HostProfile } from '../run
 import { buildRoleCatalog, createCommandContext } from '../runtime/role-catalog.js';
 import type { HostCheckedHiveAgent, RoleCatalog, SkillLookups } from '../runtime/role-catalog.js';
 import {
-  NATIVE_LIFECYCLE_BYPASS_TOOLS,
   PRIMARY_ONLY_TOOLS,
   authorizeHiveCall,
   authorizeNativeCall,
   createRolePolicy,
+  deniedNativeBypassTools,
   nativeCallNeedsAncestry,
   nativeSubagentBoundary,
   resolveCallerAuthority,
@@ -90,7 +89,7 @@ export function registerCatalog(input: { context: Plugin.Context; identity: Iden
     const registrar = createHiveToolRegistrar({ context, readTransport: host.readTransport, guard: authority.guardHive });
     const skills = effectiveSkills(context, prepared);
 
-    yield* registerAgents(context, roles);
+    yield* registerAgents(context, roles, authority);
     yield* context.skill.transform((editor) => {
       for (const skill of prepared.skillsByName.values()) {
         editor.add({ id: hiveSkillId(skill), name: skill.name, description: skill.description, path: path.join(skill.materializedDir, 'SKILL.md'), content: skill.content } as never);
@@ -147,11 +146,12 @@ export function toModelRef(model: string, variant: string | undefined): Model.Re
 /**
  * Registers every Hive agent as a native default. This runs before the host applies the user's agent configuration,
  * so the user's settings for an agent win. Permission rules deny every Hive tool, allow the role's grants, then add
- * the role's native rules and deny native lifecycle tools that bypass Hive worktrees; user rules come after and can
- * widen what is visible, but the execution guards still decide what runs.
+ * the role's native rules and deny the native bypass tools the execution guard refuses to that agent (the same
+ * `deniedNativeBypassTools` list); user rules come after and can widen what is visible, but the execution guards still
+ * decide what runs.
  */
-function registerAgents(context: Plugin.Context, roles: RoleCatalog) {
-  const lifecycleDeny = NATIVE_LIFECYCLE_BYPASS_TOOLS.map((action) => ({ action, resource: '*', effect: 'deny' as const }));
+function registerAgents(context: Plugin.Context, roles: RoleCatalog, authority: HiveAuthority) {
+  const bypassDeny = (agent: string) => deniedNativeBypassTools(authority.resolve(agent)).map((action) => ({ action, resource: '*', effect: 'deny' as const }));
   return context.agent.transform((editor) => {
     for (const [id, entry] of Object.entries(roles.agents)) {
       editor.update(id, (agent) => {
@@ -160,12 +160,12 @@ function registerAgents(context: Plugin.Context, roles: RoleCatalog) {
         if (entry.description !== undefined) agent.description = entry.description;
         if (entry.prompt !== undefined) agent.system = entry.prompt;
         if (entry.model !== undefined) agent.model = toModelRef(entry.model, entry.variant);
-        agent.permissions.push(...toV2PermissionRules(entry.permission), ...lifecycleDeny);
+        agent.permissions.push(...toV2PermissionRules(entry.permission), ...bypassDeny(id));
       });
     }
     for (const name of ['general', 'explore'] as const) {
       editor.update(name, (agent) => {
-        agent.permissions.push(...toV2PermissionRules(nativeSubagentBoundary(name, undefined).permission));
+        agent.permissions.push(...toV2PermissionRules(nativeSubagentBoundary(name, undefined).permission), ...bypassDeny(name));
       });
     }
     editor.default(roles.defaultAgent);

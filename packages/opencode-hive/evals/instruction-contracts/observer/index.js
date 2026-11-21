@@ -4,7 +4,7 @@
 // tool schemas and response bodies are never recorded. Baseline and candidate load the same committed file.
 //
 // v1 (opencode-ai 1.18.30): `chat.params` receives the resolved model and the final provider options.
-// v2 (@opencode/cli 2.0.26): `model.request` names every model call; `http.request` and `experimental.ws.send` expose
+// v2 (@opencode/cli 2.3.2): `model.request` names every model call; `http.request` and `experimental.ws.send` expose
 // the outbound payload for the HTTP and WebSocket transports, so a call whose payload is not observed is detectable.
 import { appendFileSync, mkdirSync } from 'node:fs';
 

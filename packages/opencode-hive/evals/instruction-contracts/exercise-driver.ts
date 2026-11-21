@@ -359,13 +359,43 @@ async function busySessions(host: string, get: (request: Json) => Promise<ApiRes
 }
 
 /**
- * Whether the tree may receive a new prompt or primary switch: a complete tree and complete histories, no busy session,
- * no running or pending tool part, and no pending interaction. Any unknown is a reason, never quiescence. The status and
- * interaction reads happen after the tree was enumerated, so a session created in between is caught three ways: a busy
- * or pending entry outside the tree, and a second enumeration (`recheck`) that differs from the first.
+ * v2 work that can still wake a session of the tree without a new prompt: every job the host still lists under the
+ * primary (running, or settled but not yet consumed), then each tree or job session with a queued inbox item. The pinned
+ * `opencode run` reads these before active executions (cli/src/run/noninteractive.ts), because work moves from a job to
+ * an inbox to an active execution. Null when a read fails or answers with the wrong shape. v1 has neither signal.
  */
-export function quiescence(tree: Tree, histories: Map<string, History>, busy: Set<string> | null, pending: Pending[] | null, recheck: Tree | null = null): { quiescent: boolean; reasons: string[] } {
+export type BackgroundWork = { jobs: string[]; queued: string[] };
+export async function backgroundWork(host: string, tree: Tree, get: (request: Json) => Promise<ApiResult>, routes = exerciseRoutes(host, PROJ)): Promise<BackgroundWork | null> {
+  const root = tree.sessions[0]?.id;
+  if (host !== 'v2' || root === undefined) return { jobs: [], queued: [] };
+  const read = async (request: Json) => {
+    const res = await get(request);
+    return succeeded(res) ? payload(host, res.body) : undefined;
+  };
+  const listed = await read(routes.jobs(root));
+  if (!Array.isArray(listed) || !listed.every((job: Json) => typeof job?.id === 'string' && typeof job?.sessionID === 'string' && typeof job?.status === 'string')) return null;
+  const sessions = new Set([...tree.sessions.map((s) => s.id), ...listed.flatMap((job: Json) => typeof job.childSessionID === 'string' ? [job.sessionID, job.childSessionID] : [job.sessionID])]);
+  const queued: string[] = [];
+  for (const id of sessions) {
+    const inbox = await read(routes.inbox(id));
+    if (!Array.isArray(inbox)) return null;
+    if (inbox.length > 0) queued.push(id);
+  }
+  return { jobs: listed.map((job: Json) => `${job.id}:${job.status}`), queued };
+}
+
+/**
+ * Whether the tree may receive a new prompt or primary switch: a complete tree and complete histories, no unsettled v2
+ * job or queued inbox item, no busy session, no running or pending tool part, and no pending interaction. Any unknown is
+ * a reason, never quiescence. The status and interaction reads happen after the tree was enumerated, so a session
+ * created in between is caught three ways: a busy or pending entry outside the tree, and a second enumeration
+ * (`recheck`) that differs from the first.
+ */
+export function quiescence(tree: Tree, histories: Map<string, History>, busy: Set<string> | null, pending: Pending[] | null, recheck: Tree | null = null, background: BackgroundWork | null = { jobs: [], queued: [] }): { quiescent: boolean; reasons: string[] } {
   const reasons: string[] = [];
+  if (background === null) reasons.push('background_unknown');
+  for (const job of background?.jobs ?? []) reasons.push(`job_unsettled:${job}`);
+  for (const id of background?.queued ?? []) reasons.push(`inbox_queued:${id}`);
   if (!tree.complete) reasons.push(`tree_incomplete:${tree.failure ?? 'cap'}`);
   else if (!recheck || !recheck.complete || recheck.sessions.length !== tree.sessions.length || recheck.sessions.some((s) => !tree.sessions.some((t) => t.id === s.id))) reasons.push('tree_changed');
   if (busy === null) reasons.push('status_unknown');
@@ -742,10 +772,13 @@ export async function observeWith(host: string, sessionId: string, get: (request
   const tree = await sessionTree(host, sessionId, get);
   const histories = new Map<string, History>();
   for (const s of tree.sessions) histories.set(s.id, await readHistory(host, s.id, get, { limit: pageLimit, pages: pageCount }));
+  // Jobs and inboxes before active executions, in the order work moves between them. An incomplete tree is already a
+  // reason, so its background is not read.
+  const background = tree.complete ? await backgroundWork(host, tree, get) : { jobs: [], queued: [] };
   const busy = await busySessions(host, get);
   const pending = tree.complete ? await pendingInteractions(host, tree, get) : null;
   const recheck = tree.complete ? await sessionTree(host, sessionId, get) : null;
-  return { tree, histories, busy, pending, ...quiescence(tree, histories, busy, pending, recheck) };
+  return { tree, histories, busy, pending, ...quiescence(tree, histories, busy, pending, recheck, background) };
 }
 
 function observeTree(input: Json, remaining: () => number, pageLimit = LIMITS.messagesPerPage, pageCount = LIMITS.pagesPerSession, api: typeof strictApi = strictApi) {

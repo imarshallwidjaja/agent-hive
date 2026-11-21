@@ -25,12 +25,12 @@ export const HOSTS = {
   v2: {
     id: 'v2',
     packageName: '@opencode/cli',
-    version: '2.0.26',
+    version: '2.3.2',
     binary: '/opt/ic/v2/node_modules/.bin/opencode2',
-    // packages/core/src/integration.ts@v2.0.26 connection.resolve refreshes when
-    // `expires <= now + 5 minutes`; `expires` is epoch milliseconds.
+    // packages/core/src/integration.ts@v2.3.2 connection.resolve refreshes when Credential.expiring
+    // (core/src/credential.ts): `expires <= now + 5 minutes`; `expires` is epoch milliseconds.
     refreshWindowMs: 5 * 60_000,
-    // packages/protocol/src/groups/credential.ts: POST /api/credential with Credential.CreateInput. The
+    // @opencode/protocol@2.3.2 groups/credential.js: POST /api/credential with Credential.CreateInput. The
     // `chatgpt-browser` method (plugin/provider/openai.ts) uses the Codex backend with metadata.accountID.
     auth: { method: 'POST', path: '/api/credential' },
     readyPath: '/api/info',
@@ -412,7 +412,8 @@ export function nativeToolCall(id, step, tools) {
     case 'dispatch':
       return id === 'v1'
         ? { tool: 'task', args: { subagent_type: step.agent, description: step.description ?? 'fixture step', prompt: step.prompt } }
-        : { tool: 'subagent', args: { agent: step.agent, description: step.description ?? 'fixture step', prompt: step.prompt, background: false } };
+        // The v2 subagent call has no `background` field: it always runs the child in the background.
+        : { tool: 'subagent', args: { agent: step.agent, description: step.description ?? 'fixture step', prompt: step.prompt } };
     case 'shell':
       return id === 'v1'
         ? { tool: 'bash', args: { command: step.command, description: 'fixture step' } }
@@ -446,7 +447,7 @@ export function nativeToolCall(id, step, tools) {
 //   session/prompt.ts SessionPrompt.command -> prompt -> loop). The turn itself runs in the instance's session runner
 //   (effect/runner.ts startRun forks into the instance scope), so a client that disconnects once the user message exists
 //   and the session is busy leaves the turn running.
-// v2 (@opencode/cli 2.0.26 = anomalyco/opencode@9b4ec5714d48, packages/protocol/src/groups/{session,permission}.ts):
+// v2 (@opencode/cli 2.3.2; routes from @opencode/protocol@2.3.2 dist/groups/{session,permission,command,agent,model}.js):
 //   POST /api/session {agent, model, location}; POST /api/session/:id/prompt {id, text}; POST /api/session/:id/agent at idle; GET /api/session?parentID&limit&cursor; GET /api/session/active; GET /api/session/:id/form,
 //   POST .../form/:formID/reply {answer}; GET /api/session/:id/permission, POST .../permission/:id/reply {decision};
 //   POST /api/session/:id/interrupt. The v2 question tool (packages/core/src/tool/plugin/question.ts) asks one form
@@ -573,7 +574,7 @@ export function exerciseRoutes(id, directory) {
       body: { title: 'exercise', agent, model: { providerID: splitModelRef(model.ref).providerID, id: splitModelRef(model.ref).modelID, ...(model.variant ? { variant: model.variant } : {}) }, location: { directory } },
     }),
     prompt: ({ sessionId, messageId, text }) => ({ method: 'POST', path: `/api/session/${sessionId}/prompt`, body: { id: messageId, text } }),
-    commands: () => ({ method: 'GET', path: `/api/command?directory=${encodeURIComponent(directory)}` }),
+    commands: () => ({ method: 'GET', path: `/api/command?${v2LocationQuery(directory)}` }),
     command: ({ sessionId, name, text }) => ({ method: 'POST', path: `/api/session/${sessionId}/command`, body: { name, text } }),
     switchAgent: (sessionId, agent) => ({ method: 'POST', path: `/api/session/${sessionId}/agent`, body: { agent } }),
     message: (sessionId, messageId) => ({ method: 'GET', path: `/api/session/${sessionId}/message/${messageId}` }),
@@ -581,15 +582,47 @@ export function exerciseRoutes(id, directory) {
     session: (sessionId) => ({ method: 'GET', path: `/api/session/${sessionId}` }),
     children: (sessionId, cursor) => ({ method: 'GET', path: `/api/session?parentID=${sessionId}&limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : '&order=asc'}` }),
     active: () => ({ method: 'GET', path: '/api/session/active' }),
+    // Jobs of the session and every descendant, settled ones included until they are consumed, and one session's
+    // queued inbox: with `active`, the signals the pinned `opencode run` reads, in that order, before it calls a run done.
+    jobs: (sessionId) => ({ method: 'GET', path: `/api/experimental/job?sessionID=${sessionId}&descendants=true` }),
+    inbox: (sessionId) => ({ method: 'GET', path: `/api/session/${sessionId}/inbox` }),
     forms: (sessionId) => ({ method: 'GET', path: `/api/session/${sessionId}/form` }),
     form: (sessionId, formId) => ({ method: 'GET', path: `/api/session/${sessionId}/form/${formId}` }),
     formReply: (sessionId, formId, answer) => ({ method: 'POST', path: `/api/session/${sessionId}/form/${formId}/reply`, body: { answer } }),
     permissions: (sessionId) => ({ method: 'GET', path: `/api/session/${sessionId}/permission` }),
     permissionReply: (sessionId, requestId, decision) => ({ method: 'POST', path: `/api/session/${sessionId}/permission/${requestId}/reply`, body: { decision } }),
     interrupt: (sessionId) => ({ method: 'POST', path: `/api/session/${sessionId}/interrupt`, body: {} }),
-    agents: () => ({ method: 'GET', path: `/api/agent?directory=${encodeURIComponent(directory)}` }),
-    models: () => ({ method: 'GET', path: `/api/model?directory=${encodeURIComponent(directory)}` }),
+    agents: () => ({ method: 'GET', path: `/api/agent?${v2LocationQuery(directory)}` }),
+    models: () => ({ method: 'GET', path: `/api/model?${v2LocationQuery(directory)}` }),
   };
+}
+
+/**
+ * The child session a dispatch call's text output names: v1's `task id="..."` or `sessionID="..."`, or the v2 launch
+ * receipt's `(sessionID: ...)` (core/src/tool/plugin/subagent.ts). Null when the output names none.
+ */
+export function dispatchedChild(output) {
+  const found = /(?:task id|sessionID)="(ses_[A-Za-z0-9]+)"|\(sessionID: (ses_[A-Za-z0-9]+)\)/.exec(typeof output === 'string' ? output : '');
+  return found ? found[1] ?? found[2] : null;
+}
+
+/**
+ * A v2 `<subagent>` report as the parent reads it (core/src/session/subagent-completion.ts): the child and the state
+ * attribute. The host sends one each time the child stops; `running` is interim (the child's own background work
+ * continues and it will report again), while `completed`, `error` and `cancelled` are terminal. Null for other text.
+ */
+export function subagentReport(text) {
+  const found = /^<subagent sessionID="(ses_[A-Za-z0-9]+)" state="(running|completed|error|cancelled)"/.exec(typeof text === 'string' ? text : '');
+  return found ? { child: found[1], state: found[2], terminal: found[2] !== 'running' } : null;
+}
+
+/**
+ * The query that selects a location on the v2 server. The pinned server reads `location[directory]` or the
+ * `x-opencode-directory` header and otherwise falls back to its own working directory (server/src/location.ts
+ * requestRef), so a wrong selector is silently ignored; every v2 catalog read names the location with this.
+ */
+export function v2LocationQuery(directory) {
+  return `location%5Bdirectory%5D=${encodeURIComponent(directory)}`;
 }
 
 /** Normalizes a native tool name to the host-neutral vocabulary used by scenario checks. */

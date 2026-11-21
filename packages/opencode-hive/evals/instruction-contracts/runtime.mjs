@@ -11,7 +11,7 @@ import {
 import { release } from 'node:os';
 import { dirname, join } from 'node:path';
 import { GUARD_UID } from './guard.mjs';
-import { HOST_IDS } from './hosts.mjs';
+import { HOST_IDS, HOSTS } from './hosts.mjs';
 
 export const HARNESS_REL = 'packages/opencode-hive/evals/instruction-contracts';
 export const GUARD = '/opt/ic/harness/guard.mjs';
@@ -21,7 +21,6 @@ export const GUARD_USER = `${GUARD_UID}:${GUARD_UID}`;
 // Bounded RAM for every scenario container, equal to its memory+swap limit so no container page can swap.
 const CONTAINER_MEMORY = '4g';
 const CONTAINER_MEMORY_BYTES = 4 * 1024 ** 3;
-const STOCK_VERSIONS = { v1: '1.18.30', v2: '2.0.26' };
 export const ISOLATION = Object.freeze({
   memory: CONTAINER_MEMORY, memorySwap: CONTAINER_MEMORY, logDriver: 'none', coreLimit: '1:1', corePatterns: ['pipe', 'file'],
   rootfs: 'read-only', tmpfs: ['/work', '/tmp'], agentUser: AGENT_USER, guardUser: GUARD_USER, init: 'docker-init',
@@ -631,7 +630,8 @@ export function runtimeFailures(runtime) {
   const failures = [];
   for (const host of HOST_IDS) {
     const observed = runtime.hosts?.[host]?.version ?? '';
-    if (!observed.includes(STOCK_VERSIONS[host])) failures.push(`stock_version_mismatch:${host}`);
+    // The installed binary reports its own version; it must be the version hosts.mjs qualifies.
+    if (!observed.includes(HOSTS[host].version)) failures.push(`stock_version_mismatch:${host}`);
   }
   if (!runtime.pluginTarballSha256) failures.push('plugin_tarball_unverified');
   return failures;

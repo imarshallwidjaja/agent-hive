@@ -176,6 +176,36 @@ export function authorizeHiveCall(policy: Record<BuiltInRole, RolePolicy>, input
  */
 export const NATIVE_LIFECYCLE_BYPASS_TOOLS = ['opencode_worktree_create', 'opencode_worktree_remove', 'opencode_session_move'] as const;
 
+/**
+ * Native OpenCode v2 tools that change project automations, which v2.3.2 registers in the `opencode` namespace when the
+ * operator enables automations. An armed automation later prompts a session or starts a subagent child outside the
+ * `subagent` call Hive wraps, without Hive's route binding, delegation limits, managed model and continuation checks,
+ * and pausing or deleting one changes the operator's schedule for the whole project. These are the operator's to use;
+ * listing automations stays native.
+ */
+export const NATIVE_AUTOMATION_TOOLS = ['opencode_automation_create', 'opencode_automation_resume', 'opencode_automation_pause', 'opencode_automation_delete'] as const;
+
+const isAutomationTool = (tool: string) => (NATIVE_AUTOMATION_TOOLS as readonly string[]).includes(tool);
+
+/**
+ * The native tools an agent may never run because they bypass what Hive owns. The same list becomes the agent's default
+ * permission denies, which hide the tools, and the execution guard's refusal, which a user allow rule does not lift.
+ * Hive roles are denied the worktree and session-placement tools and the automation tools; native `general` and
+ * `explore` are denied the automation tools. An unmanaged agent is denied none: a top-level operator agent keeps its
+ * native authority, and automations that already exist are the operator's to manage, which Hive does not inspect or
+ * stop. `authorizeNativeCall` still refuses the automation tools in every child session, whatever its agent.
+ */
+export function deniedNativeBypassTools(caller: CallerAuthority): readonly string[] {
+  if (caller.kind === 'unmanaged') return [];
+  if (caller.kind === 'native-subagent') return NATIVE_AUTOMATION_TOOLS;
+  return [...NATIVE_LIFECYCLE_BYPASS_TOOLS, ...NATIVE_AUTOMATION_TOOLS];
+}
+
+function nativeBypassReason(tool: string): string {
+  if (isAutomationTool(tool)) return `${tool} changes the operator's project automations, which run outside Hive's dispatch checks; leave automations to the operator and use the native subagent call for delegated work.`;
+  return `${tool} bypasses Hive worktree and session ownership; use the Hive worktree tools instead.`;
+}
+
 /** The role permission that governs each native OpenCode v2 tool Hive guards, keyed by the host's tool name. */
 const NATIVE_TOOL_PERMISSION: Record<string, 'edit' | 'question' | 'task'> = {
   edit: 'edit', write: 'edit', patch: 'edit', question: 'question', subagent: 'task',
@@ -183,7 +213,7 @@ const NATIVE_TOOL_PERMISSION: Record<string, 'edit' | 'question' | 'task'> = {
 
 /** Native tools whose decision depends on whether the calling session is a child. */
 export function nativeCallNeedsAncestry(tool: string): boolean {
-  return tool === 'question';
+  return tool === 'question' || isAutomationTool(tool);
 }
 
 /** Orchestrators that are never valid delegation targets, whichever agent calls and however the operator sets their mode. */
@@ -191,11 +221,12 @@ export const PRIMARY_ONLY_AGENTS: readonly string[] = ['hive-master', 'swarm-orc
 
 /**
  * The native-tool boundaries Hive owns on OpenCode v2, keyed by the host's actual tool names. A Hive role keeps the
- * edit, question and delegation limits of its policy (delegation is checked against the requested `agent`) and
- * cannot use native lifecycle tools that bypass Hive worktrees. No caller, managed or not, may delegate to a
- * primary-only orchestrator. Native `general`/`explore` cannot delegate or ask, and `explore` cannot edit. No child
- * session may ask the operator. Every other native call, and every call by an unmanaged agent outside those limits,
- * is left to native permissions.
+ * edit, question and delegation limits of its policy (delegation is checked against the requested `agent`), and no
+ * Hive role or native subagent runs the bypass tools `deniedNativeBypassTools` lists. No caller, managed or not, may
+ * delegate to a primary-only orchestrator. Native `general`/`explore` cannot delegate or ask, and `explore` cannot edit.
+ * No child session may ask the operator or change an automation. Every other native call, and every call by an unmanaged
+ * agent outside those limits, is left to native permissions. The guard reads only tool names and the subagent call's
+ * `agent`; it does not parse code, so it is a boundary on these tools, not a sandbox.
  */
 export function authorizeNativeCall(policy: Record<BuiltInRole, RolePolicy>, input: { tool: string; toolInput: unknown; caller: CallerAuthority; isChild: boolean }): CallDecision {
   const { tool, toolInput, caller, isChild } = input;
@@ -205,10 +236,11 @@ export function authorizeNativeCall(policy: Record<BuiltInRole, RolePolicy>, inp
       return { allowed: false, reason: `${requested} is a primary-only orchestrator and cannot be a delegation target.` };
     }
   }
+  if (deniedNativeBypassTools(caller).includes(tool)) return { allowed: false, reason: nativeBypassReason(tool) };
+  if (isChild && isAutomationTool(tool)) {
+    return { allowed: false, reason: `${tool} is denied in child sessions: project automations are the operator's. Return the request to the parent instead.` };
+  }
   if (caller.kind === 'role') {
-    if ((NATIVE_LIFECYCLE_BYPASS_TOOLS as readonly string[]).includes(tool)) {
-      return { allowed: false, reason: `${tool} bypasses Hive worktree and session ownership; use the Hive worktree tools instead.` };
-    }
     const key = NATIVE_TOOL_PERMISSION[tool];
     const rule = key ? policy[caller.role].permission[key] : undefined;
     const target = key === 'task' && toolInput && typeof toolInput === 'object' ? (toolInput as { agent?: unknown }).agent : undefined;

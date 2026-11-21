@@ -1267,6 +1267,7 @@ interface ModelProfile {
 async function bindSelection(
   host: SummarizerHost,
   callerID: string,
+  callerAgent: string | undefined,
   callerSignal: AbortSignal,
   deadline: number,
 ): Promise<SummarizerSelection | undefined> {
@@ -1279,7 +1280,7 @@ async function bindSelection(
   if (variant !== undefined) throw new Error('A summarizer variant without a model was not rejected by configuration validation.');
   try {
     const caller = await boundedRequest(
-      (signal) => host.callerSelection(callerID, signal),
+      (signal) => host.callerSelection(callerID, signal, callerAgent),
       callerSignal,
       deadline,
       'recovery_deadline_exceeded',
@@ -1822,6 +1823,7 @@ async function recover(
   host: SummarizerHost,
   taskID: string,
   callerID: string,
+  callerAgent: string | undefined,
   ir: TraceIR,
   relationship: TargetRelationship,
   scope: RecoveryScope,
@@ -1835,7 +1837,7 @@ async function recover(
   const substantiveSteps = new Set(ir.steps.filter((step) => isSubstantive(capabilities.get(step.number)!)).map((step) => step.number));
   // Only substantive assistant steps are worker output; a user step is context and cannot support a completed claim.
   const completionSteps = new Set(ir.steps.filter((step) => step.actor === 'assistant' && substantiveSteps.has(step.number)).map((step) => step.number));
-  const selection = await bindSelection(host, callerID, callerSignal, mapDeadline);
+  const selection = await bindSelection(host, callerID, callerAgent, callerSignal, mapDeadline);
   if (!selection) {
     return {
       recovery: {
@@ -2212,7 +2214,7 @@ export function createTraceHandlers<Target extends TraceTarget>(source: TraceSou
         null,
       ));
     }
-    const recovered = await recover(summarizer, task_id, caller.sessionID, ir, target.relationship, scope, signal);
+    const recovered = await recover(summarizer, task_id, caller.sessionID, caller.agent, ir, target.relationship, scope, signal);
     // Everything the summary relied on must still hold: authorization, parent relationship,
     // placement, source, runtime status, and the lifecycle that admitted this scope.
     const resolved = await source.resolveTarget(task_id, caller.sessionID, signal);

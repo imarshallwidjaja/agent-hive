@@ -1,6 +1,6 @@
 import { Effect } from 'effect';
 import type { Scope } from 'effect';
-import { Tool } from '@opencode/schema/tool';
+import { Tool } from '@opencode/plugin/effect';
 import type { Plugin } from '@opencode/plugin/effect';
 import { serializeHiveJson, type HiveOperation } from '../runtime/hive-tools.js';
 import { CODEMODE_READ_TOOLS, type ReadTransport } from '../runtime/host-profile.js';

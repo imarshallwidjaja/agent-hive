@@ -7,8 +7,8 @@ import { createServer } from 'node:http';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import {
-  HIVE_COMMANDS, HIVE_ROLES, REFRESH_SENTINEL, fieldContractFindings, hiveConfig, hostConfig, hostSpec, managedControlPlan, modelArgument, nativeToolCall, probeModels,
-  PROBE_VARIANTS, neutralArgs, neutralTool, runArgs, serveArgs, sessionCreateRequest,
+  HIVE_COMMANDS, HIVE_ROLES, REFRESH_SENTINEL, dispatchedChild, fieldContractFindings, hiveConfig, hostConfig, hostSpec, managedControlPlan, modelArgument, nativeToolCall, probeModels,
+  PROBE_VARIANTS, neutralArgs, neutralTool, runArgs, serveArgs, sessionCreateRequest, subagentReport, v2LocationQuery,
 } from './hosts.mjs';
 import { HOME, MOCK_PORT, PROJ, SERVER_PORT, STATE, WORK, authHeader, detach, payload, strictApi, succeeded } from './container-runtime.ts';
 import type { ApiResult } from './container-runtime.ts';
@@ -153,6 +153,17 @@ function parseToolOutput(text: string): Json {
   }
 }
 
+/**
+ * The text a scripted v2 parent answers while a child it launched has not sent its terminal report. v2 2.3.2 runs every
+ * subagent call in the background: the call returns `running` with the child's session ID (core/src/tool/plugin/
+ * subagent.ts), and the host posts a `<subagent sessionID="..." state="...">` message each time the child stops
+ * (core/src/session/subagent-completion.ts). A `state="running"` report is interim: the child stopped while its own
+ * background work continues. The parent ends its turn with this text and continues the script only when the terminal
+ * report of every launch has arrived, so a scripted step never runs ahead of a child result it may depend on. This text
+ * is not a step.
+ */
+export const SUBAGENT_WAIT_TEXT = 'Waiting for subagent results.';
+
 /** Decides the next scripted assistant turn from an OpenAI-style request body. */
 export function mockDecision(host: string, body: Json): Json {
   const messages = body.messages ?? [];
@@ -167,11 +178,31 @@ export function mockDecision(host: string, body: Json): Json {
   }
   if (!script) return { text: 'ok' };
   const after = messages.slice(scriptedIndex + 1);
-  const step = after.filter((m: Json) => m.role === 'assistant').length;
-  if (step >= script.length) return { text: 'Script complete.' };
+  const waiting = (m: Json) => m.role === 'assistant' && !(m.tool_calls ?? []).length && textOf(m.content) === SUBAGENT_WAIT_TEXT;
   const callNames = new Map<string, string>();
   for (const m of after) for (const call of m.tool_calls ?? []) callNames.set(call.id, call.function?.name);
-  const results = after.filter((m: Json) => m.role === 'tool').map((m: Json) => ({ tool: callNames.get(m.tool_call_id) ?? '', text: textOf(m.content) }));
+  // Tool results in order. On v2 each launch, in order, is answered by the first terminal report for its child that no
+  // earlier launch took; that report counts as a result of the subagent tool. A continuation reuses the child's ID, so
+  // a launch is matched to a report, not a child to a set. Interim reports are neither results nor answers.
+  const results: Array<{ tool: string; text: string }> = [];
+  const pending: string[] = [];
+  for (const m of after) {
+    if (m.role === 'tool') {
+      const tool = callNames.get(m.tool_call_id) ?? '';
+      const text = textOf(m.content);
+      results.push({ tool, text });
+      const child = host === 'v2' && tool === 'subagent' ? dispatchedChild(text) : null;
+      if (child) pending.push(child);
+    } else if (host === 'v2' && m.role === 'user') {
+      const text = textOf(m.content);
+      const report = subagentReport(text);
+      const launch = report?.terminal ? pending.indexOf(report.child) : -1;
+      if (launch !== -1) { pending.splice(launch, 1); results.push({ tool: 'subagent', text }); }
+    }
+  }
+  if (pending.length > 0) return { text: SUBAGENT_WAIT_TEXT };
+  const step = after.filter((m: Json) => m.role === 'assistant' && !waiting(m)).length;
+  if (step >= script.length) return { text: 'Script complete.' };
   const lazy = (token: string): string | null => {
     // {{match:REGEX}} searches every earlier result, newest first; {{matchIn:TOOL:REGEX}} only one tool's results.
     const scoped = /^matchIn:([a-z_]+):/.exec(token);
@@ -357,6 +388,61 @@ async function stopServer(): Promise<Json> {
 }
 
 /**
+ * Whether work a v2 run started can still wake its session, read as the pinned `opencode run` reads it
+ * (cli/src/run/noninteractive.ts `background`): the jobs of the session and its descendants started since the run began
+ * (each adds its session, and a subagent job its child, to `jobSessions`), then the inbox of every session in
+ * `jobSessions`, then the active executions, each traced up its parent chain to the run's session. Work moves from a job
+ * to an inbox to an active execution, so reading in that order cannot miss a hand-off. `jobSessions` persists across
+ * reads, so a descendant whose job has been consumed is still checked for a queued report. A failed read or a body of
+ * the wrong shape is `unknown`, never no work.
+ */
+async function v2BackgroundWork(rootId: string, since: number, jobSessions: Set<string>, signal: AbortSignal): Promise<'none' | 'pending' | 'unknown'> {
+  const get = (path: string) => api(path, { signal });
+  const read = async (path: string, valid: (value: Json) => boolean): Promise<Json> => {
+    const res = await get(path);
+    const value = res?.ok ? unwrap(res.body) : undefined;
+    return value !== undefined && valid(value) ? value : undefined;
+  };
+  const jobs = await read(`/api/experimental/job?sessionID=${rootId}&descendants=true`, (value) => Array.isArray(value)
+    && value.every((job: Json) => typeof job?.sessionID === 'string' && typeof job?.time?.started === 'number' && (job.kind !== 'subagent' || typeof job.childSessionID === 'string')));
+  if (jobs === undefined) return 'unknown';
+  const started = jobs.filter((job: Json) => job.time.started >= since);
+  for (const job of started) {
+    jobSessions.add(job.sessionID);
+    if (job.kind === 'subagent') jobSessions.add(job.childSessionID);
+  }
+  if (started.length > 0) return 'pending';
+  for (const id of jobSessions) {
+    const inbox = await read(`/api/session/${id}/inbox`, Array.isArray);
+    if (inbox === undefined) return 'unknown';
+    if (inbox.length > 0) return 'pending';
+  }
+  const active = await read('/api/session/active', (value) => value !== null && typeof value === 'object' && !Array.isArray(value));
+  if (active === undefined) return 'unknown';
+  for (const id of Object.keys(active)) {
+    const owned = await descendsFrom(id, rootId, get);
+    if (owned === null) return 'unknown';
+    if (owned) return 'pending';
+  }
+  return 'none';
+}
+
+/** Whether a session is `rootId` or under it, read up its parent chain; null when a session on the way cannot be read. */
+async function descendsFrom(sessionId: string, rootId: string, get: (path: string) => Promise<Json>): Promise<boolean | null> {
+  const seen = new Set<string>();
+  let current: string | undefined = sessionId;
+  while (current !== undefined && !seen.has(current) && seen.size <= 32) {
+    if (current === rootId) return true;
+    seen.add(current);
+    const res = await get(`/api/session/${current}`);
+    const session = res?.ok ? unwrap(res.body) : undefined;
+    if (!session || typeof session !== 'object' || session.id !== current) return null;
+    current = typeof session.parentID === 'string' ? session.parentID : undefined;
+  }
+  return current === undefined ? false : null;
+}
+
+/**
  * Runs one headless primary prompt. Pending questions or permission requests end the run as an operator stop. A new
  * session is created unless `sessionId` names an existing primary session, whose next turn this then is.
  */
@@ -377,11 +463,22 @@ export async function runPrompt(host: string, { agent, modelRef, variant, prompt
     stop = () => abort.abort();
     exited = (async () => {
       try {
+        const since = Date.now();
         const sent = await api(`/api/session/${sessionId}/command`, { method: 'POST', body: JSON.stringify({ name: command, text: prompt }), signal: abort.signal });
         if (!sent.ok) return -1;
         // An HTTP failure is a response, not an exception: only an acknowledged wait shows the session reached idle.
-        const waited = await api(`/api/experimental/session/${sessionId}/wait`, { method: 'POST', signal: abort.signal });
-        return waited.ok ? 0 : -1;
+        // The wait answers at the session's first idle, while work this run started may still run in a descendant and
+        // later wake the session with a report. The run is done only when the pinned host's own `opencode run` would
+        // call it done; an unreadable signal fails the run instead of reading as no work.
+        const jobSessions = new Set<string>([sessionId]);
+        while (true) {
+          const waited = await api(`/api/experimental/session/${sessionId}/wait`, { method: 'POST', signal: abort.signal });
+          if (!waited.ok) return -1;
+          const work = await v2BackgroundWork(sessionId, since, jobSessions, abort.signal);
+          if (work === 'unknown') return -1;
+          if (work === 'none') return 0;
+          await new Promise((resolve) => setTimeout(resolve, 500));
+        }
       } catch {
         return -1;
       }
@@ -453,7 +550,8 @@ async function hiveCall(host: string, tool: string, args: Json, agent = 'hive-bu
   const call = calls[calls.length - 1];
   const raw = call?.output ?? '';
   const output = typeof raw === 'string' ? raw : JSON.stringify(raw);
-  return { status: call?.status ?? 'missing', output, parsed: parseToolOutput(output) };
+  // `name` shows the transport: the tool itself (direct) or `execute` (a Code Mode read).
+  return { status: call?.status ?? 'missing', name: call?.name ?? null, output, parsed: parseToolOutput(output) };
 }
 
 /** A Hive tool result that reports failure in any of its documented outcome shapes. */
@@ -649,8 +747,9 @@ export async function messagePages(host: string, sessionId: string, get: (path: 
         tokens: m.tokens ?? null,
         retries: m.retry ? 1 : 0,
         error: m.error ? safeName(m.error.type ?? m.error._tag ?? m.error.name) ?? 'other' : null,
-        // A v2 user message carries its prompt as `text`; assistant messages carry text parts in `content`.
-        text: m.type === 'user' && typeof m.text === 'string' ? m.text : (m.content ?? []).filter((p: Json) => p.type === 'text').map((p: Json) => p.text).join(''),
+        // A v2 user or synthetic message (a `<subagent>` report) carries its text as `text`; assistant messages carry
+        // text parts in `content`.
+        text: (m.type === 'user' || m.type === 'synthetic') && typeof m.text === 'string' ? m.text : (m.content ?? []).filter((p: Json) => p.type === 'text').map((p: Json) => p.text).join(''),
         tools: (m.content ?? []).filter((p: Json) => p.type === 'tool').map((p: Json) => ({
           name: p.name, status: p.state?.status, input: p.state?.input, metadata: p.state?.metadata ?? null,
           output: p.state?.output ?? (Array.isArray(p.state?.content) ? p.state.content.map((c: Json) => c.text ?? '').join('') : undefined) ?? '',
@@ -731,6 +830,21 @@ export function clipText(text: string, cap: number): { text: string; truncated: 
 }
 
 /**
+ * Whether the dispatching session held its next step until the child's result, the behavior a blocking wait names on
+ * each host. v1: the call did not set `background`, so it returned only with the result. v2 runs every child in the
+ * background, so the child's terminal `<subagent>` report must arrive before the session's next message that makes a
+ * tool call; an interim `state="running"` report does not count. A v2 call that did not complete, or whose child is
+ * unknown, is `null`: not shown to have waited, which a check for waiting counts as not waiting.
+ */
+export function dispatchWaited(host: string, call: Json, history: Json[], index: number, child: string | null): boolean | null {
+  if (host === 'v1') return neutralArgs(call.name, call.input).background !== true;
+  if (call.status !== 'completed' || child === null) return null;
+  const report = history.findIndex((m, i) => i > index && m.role === 'synthetic' && subagentReport(m.text)?.child === child && subagentReport(m.text)?.terminal);
+  const next = history.findIndex((m, i) => i > index && m.role === 'assistant' && m.tools.length > 0);
+  return report !== -1 && (next === -1 || report < next);
+}
+
+/**
  * Sanitized outcome of one native tool call, derived inside the container from the call's own state. Scenario checks use
  * this instead of the attempt: `result` is 'success', 'failure' or 'unknown'. Only fixed-vocabulary codes, exit codes
  * and session identities leave the container; tool outputs never do. A Code Mode `execute` call is recorded as itself:
@@ -742,11 +856,12 @@ export function toolOutcome(call: Json, session: Json, tree: Json[]): Json {
   const output = typeof call.output === 'string' ? call.output : JSON.stringify(call.output ?? '');
   if (call.status !== 'completed') return { result: call.status === 'error' ? 'failure' : 'unknown', code: call.errorName ?? safeName(call.status) };
   if (tool === 'dispatch') {
-    const fromOutput = /(?:task id|sessionID)="(ses_[A-Za-z0-9]+)"/.exec(output)?.[1] ?? null;
-    const childSessionId = metadata.sessionId ?? metadata.sessionID ?? fromOutput;
+    const childSessionId = metadata.sessionId ?? metadata.sessionID ?? dispatchedChild(output);
     const child = tree.find((s) => s.id === childSessionId);
     const requested = neutralArgs(call.name, call.input).agent;
-    const failed = metadata.status !== undefined && metadata.status !== 'completed';
+    // A v2 2.3.2 call always reports `running`, because its child runs in the background; success still needs the
+    // child itself verified below.
+    const failed = metadata.status !== undefined && metadata.status !== 'completed' && metadata.status !== 'running';
     const verified = Boolean(child) && child.parentId === session.id && child.agent === requested && child.assistantMessages > 0 && child.errors === 0;
     return { result: failed ? 'failure' : verified ? 'success' : 'unknown', childSessionId: childSessionId ?? null, childAgent: child?.agent ?? null };
   }
@@ -919,15 +1034,17 @@ async function exportCase(input: Json): Promise<Json> {
   const toolCalls: Json[] = [];
   const toolArgsTruncated: { session: string; seq: number; fields: string[] }[] = [];
   for (const session of sessions) {
-    for (const m of histories.get(session.id) ?? []) {
+    const history = histories.get(session.id) ?? [];
+    for (const [index, m] of history.entries()) {
       if (m.role !== 'assistant') continue;
       for (const call of m.tools) {
         const seq = toolCalls.length;
         const clipped = clipToolArgs(call.name, call.input);
         if (clipped.truncated.length) toolArgsTruncated.push({ session: session.id, seq, fields: clipped.truncated });
+        const outcome = toolOutcome(call, session, sessions);
         toolCalls.push({
           seq, session: session.id, agent: session.agent, tool: neutralTool(call.name), status: call.status,
-          args: clipped.args, outcome: toolOutcome(call, session, sessions),
+          args: clipped.args, outcome: neutralTool(call.name) === 'dispatch' ? { ...outcome, waited: dispatchWaited(host, call, history, index, outcome.childSessionId ?? null) } : outcome,
         });
       }
     }
@@ -1069,7 +1186,7 @@ async function catalogOnce(host: string): Promise<Json[]> {
       }
     }
   } else {
-    const res = await api(`/api/model?directory=${encodeURIComponent(PROJ)}`);
+    const res = await api(`/api/model?${v2LocationQuery(PROJ)}`);
     for (const m of unwrap(res.body) ?? []) {
       if ((m.providerID ?? m.provider?.id) !== 'openai') continue;
       models.push({ id: m.id, toolCall: Boolean(m.capabilities?.tools ?? m.capabilities?.toolcall), variants: Array.isArray(m.variants) ? m.variants.map((v: Json) => v.id ?? v) : Object.keys(m.variants ?? {}) });
@@ -1415,6 +1532,45 @@ async function contextEditProof(host: string, mockRef: string, builder: Json): P
   };
 }
 
+const NESTED_TERMINAL = 'architect terminal result';
+
+/**
+ * A parent waits for a child's terminal result while the child's own helper still runs. A full-access primary
+ * dispatches an Architect, whose script dispatches a Scout helper that makes several reads; the Architect waits for the
+ * helper and then answers `NESTED_TERMINAL`. The parent's next step quotes the first dispatch result it matches. On v2
+ * the Architect stops while its helper runs, so the host sends the parent an interim `state="running"` report first
+ * (`interimReport` says whether that happened in this run); only the terminal report carries `NESTED_TERMINAL`. On v1 a
+ * blocking call returns the Architect's final text. Only booleans and fixed words leave the container.
+ */
+async function nestedCompletionProbe(host: string, mockRef: string): Promise<Json> {
+  const run = await runPrompt(host, {
+    agent: 'hive-builder', modelRef: mockRef,
+    prompt: `wiring nested completion\n${scriptDirective([
+      { op: 'dispatch', agent: 'architect-planner', prompt: 'wiring-nested-architect', script: [
+        { op: 'dispatch', agent: 'scout-researcher', prompt: 'wiring-nested-helper', script: [
+          { op: 'hive', tool: 'hive_constraints_read', args: {} },
+          { op: 'hive', tool: 'hive_context_read', args: { scope: 'project' } },
+          { op: 'hive', tool: 'hive_constraints_read', args: { scope: 'feature' } },
+          { op: 'text', text: 'helper done' },
+        ] },
+        { op: 'text', text: NESTED_TERMINAL },
+      ] },
+      { op: 'text', text: `parent saw {{matchIn:dispatch:(${NESTED_TERMINAL}|Waiting for subagent results)}}` },
+    ])}`,
+  }, 300_000);
+  if (run.sessionId && (run.exit !== 0 || run.timedOut || run.asked)) await interruptSession(host, run.sessionId);
+  const parentText = await assistantTextUnder(host, run.sessionId, 'hive-builder');
+  const parentHistory = run.sessionId ? await messages(host, run.sessionId) : [];
+  const tree = run.sessionId ? await sessionTree(host, run.sessionId) : [];
+  return {
+    result: run.exit, timedOut: run.timedOut, asked: run.asked?.kind ?? null,
+    helperRan: tree.some((node: Json) => node.agent === 'scout-researcher'),
+    interimReport: parentHistory.some((m) => m.role === 'synthetic' && subagentReport(m.text)?.state === 'running'),
+    parentUsedTerminal: parentText.includes(`parent saw ${NESTED_TERMINAL}`),
+    parentUsedInterim: parentText.includes('parent saw Waiting for subagent results'),
+  };
+}
+
 async function wiring(input: Json): Promise<Json> {
   const { host } = input;
   const results: Json = { host };
@@ -1440,13 +1596,32 @@ async function wiring(input: Json): Promise<Json> {
   }
   results.roleExposure = roleExposure;
   // v2 activates plugins on the first prompt, so the native catalogs are listed only after the role runs.
-  const agentsRes = host === 'v1' ? await api('/agent') : await api(`/api/agent?directory=${encodeURIComponent(PROJ)}`);
+  const agentsRes = host === 'v1' ? await api('/agent') : await api(`/api/agent?${v2LocationQuery(PROJ)}`);
   const agents = (unwrap(agentsRes.body) ?? []).map((a: Json) => a.name ?? a.id);
   results.roles = Object.fromEntries(HIVE_ROLES.map((r) => [r, agents.includes(r)]));
-  const commandsRes = host === 'v1' ? await api('/command') : await api(`/api/command?directory=${encodeURIComponent(PROJ)}`);
+  const commandsRes = host === 'v1' ? await api('/command') : await api(`/api/command?${v2LocationQuery(PROJ)}`);
   const commandList = unwrap(commandsRes.body) ?? [];
   const commands = commandList.map((c: Json) => c.name ?? c.id);
   results.commands = Object.fromEntries(HIVE_COMMANDS.map((c) => [c, commands.includes(c)]));
+  if (host === 'v2') {
+    // The server falls back to its own working directory, here the project, for a selector it does not read, so a
+    // second, empty directory shows whether the query selects the location: only then does the answer name it.
+    const other = join(WORK, 'location-probe');
+    mkdirSync(other, { recursive: true });
+    const answeredFor = async (directory: string) => (await api(`/api/agent?${v2LocationQuery(directory)}`)).body?.location?.directory ?? null;
+    results.location = {
+      agents: agentsRes.body?.location?.directory === PROJ,
+      commands: commandsRes.body?.location?.directory === PROJ,
+      otherDirectory: (await answeredFor(other)) === other,
+    };
+    // A Hive read the default `codemode` transport carries, through the host's `execute`, with an answer known here.
+    const read = await hiveCall(host, 'hive_repositories_status', {});
+    results.codeModeRead = {
+      tool: 'hive_repositories_status', transport: read.name === 'execute' ? 'execute' : read.name === null ? null : 'direct', completed: read.status === 'completed',
+      projectResolved: read.parsed?.configPath === join(PROJ, '.hive', 'repositories.json'),
+    };
+  }
+  results.nestedCompletion = await nestedCompletionProbe(host, mockRef);
 
   // Provider-facing tool contract for the full-access role, against the installed package's own tool manifest.
   const builder = requests().find((r) => r.lastUser.includes('wiring-role-hive-builder'));
@@ -1534,7 +1709,7 @@ async function wiring(input: Json): Promise<Json> {
   };
 
   // Same-name user override: listed, resolved to the user skill, and the body a role loads is the user's.
-  const skillsRes = host === 'v1' ? await api('/skill') : await api(`/api/skill?directory=${encodeURIComponent(PROJ)}`);
+  const skillsRes = host === 'v1' ? await api('/skill') : await api(`/api/skill?${v2LocationQuery(PROJ)}`);
   const skills = unwrap(skillsRes.body) ?? [];
   const override = skills.find((s: Json) => s.name === 'adversarial-review');
   const overrideRun = await runPrompt(host, { agent: 'hive-builder', modelRef: mockRef, prompt: `wiring override\n${scriptDirective([{ op: 'skill', name: 'adversarial-review' }, { op: 'text', text: 'ok' }])}` }, 120_000);
@@ -1553,7 +1728,7 @@ async function wiring(input: Json): Promise<Json> {
 
 async function listedAgents(host: string): Promise<string[]> {
   try {
-    const res = host === 'v1' ? await api('/agent') : await api(`/api/agent?directory=${encodeURIComponent(PROJ)}`);
+    const res = host === 'v1' ? await api('/agent') : await api(`/api/agent?${v2LocationQuery(PROJ)}`);
     return (unwrap(res.body) ?? []).map((a: Json) => a.name ?? a.id).filter((name: Json) => typeof name === 'string');
   } catch {
     return [];
@@ -1668,7 +1843,7 @@ export function continuationRefusalLead(child: string, agent: string, actual: st
 function childOfCall(call: Json): string | null {
   const metadata = call.metadata && typeof call.metadata === 'object' ? call.metadata : {};
   const output = typeof call.output === 'string' ? call.output : JSON.stringify(call.output ?? '');
-  const id = metadata.sessionID ?? metadata.sessionId ?? /(?:task id|sessionID)="(ses_[A-Za-z0-9]+)"/.exec(output)?.[1] ?? null;
+  const id = metadata.sessionID ?? metadata.sessionId ?? dispatchedChild(output);
   return typeof id === 'string' && /^ses_[A-Za-z0-9]+$/.test(id) ? id : null;
 }
 
@@ -1952,7 +2127,7 @@ export async function managedModelControl(input: Json, io: ProbeIo = LIVE_IO, dr
     out.turns[name] = { exit: run.exit, timedOut: run.timedOut, asked: run.asked ? run.asked.kind : null };
     return run;
   };
-  const subagent = (args: Json) => ({ op: 'native', tool: 'subagent', args: { description: 'managed model probe', background: false, ...args } });
+  const subagent = (args: Json) => ({ op: 'native', tool: 'subagent', args: { description: 'managed model probe', ...args } });
   const state = async (id: string, agent: string, parent: string) => {
     const read = await historyOf(id);
     return {
@@ -1971,7 +2146,7 @@ export async function managedModelControl(input: Json, io: ProbeIo = LIVE_IO, dr
   out.parent = parent;
   if (parent === null) return { ok: true, control: out };
   await stage('catalog', async () => {
-    const listed = unwrap((await drive.api(`/api/agent?directory=${encodeURIComponent(PROJ)}`)).body);
+    const listed = unwrap((await drive.api(`/api/agent?${v2LocationQuery(PROJ)}`)).body);
     for (const agent of Object.keys(plan.catalog)) {
       const entry = Array.isArray(listed) ? listed.find((a: Json) => (a.name ?? a.id) === agent) : undefined;
       out.catalog[agent] = entry ? { listed: true, model: modelView(entry.model, models) } : { listed: false, model: null };

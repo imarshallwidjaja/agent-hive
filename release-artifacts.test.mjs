@@ -358,9 +358,37 @@ function typeCheckPackedConsumer(tarballPath) {
       }
     }
     assertPackedNativeLock(consumerRoot);
+    assertPackedV2AdapterEvaluates(consumerRoot);
   } finally {
     fs.rmSync(consumerRoot, { recursive: true, force: true });
   }
+}
+
+// Evaluates the installed v2 adapter, whose bundled @opencode/client and @opencode/schema code runs against the external
+// Effect, under the Effect release the installed @opencode/plugin depends on, which is the one the qualified host ships.
+function assertPackedV2AdapterEvaluates(consumerRoot) {
+  fs.writeFileSync(path.join(consumerRoot, 'v2-adapter.mjs'), [
+    "import { readFileSync } from 'node:fs';",
+    "import { createRequire, findPackageJSON } from 'node:module';",
+    "import { pathToFileURL } from 'node:url';",
+    "const entry = pathToFileURL(createRequire(import.meta.url).resolve('oc-arkive/dist/v2/plugin.js'));",
+    "const adapter = await import(entry);",
+    '// The manifests of the packages the adapter itself resolves.',
+    "const manifest = (name) => JSON.parse(readFileSync(findPackageJSON(name, entry), 'utf8'));",
+    "const sdk = manifest('@opencode/plugin');",
+    "const effect = manifest('effect');",
+    "process.stdout.write(JSON.stringify({ activate: typeof adapter.activate, effect: effect.version, sdkEffect: sdk.dependencies.effect }));",
+    '',
+  ].join('\n'));
+  let output;
+  try {
+    output = execFileSync(process.execPath, [path.join(consumerRoot, 'v2-adapter.mjs')], { cwd: consumerRoot, encoding: 'utf8', stdio: 'pipe', env: { ...process.env, NODE_PATH: '' } });
+  } catch (error) {
+    assert.fail(`the installed v2 adapter should evaluate under the host's Effect release:\n${error.stdout}${error.stderr}`);
+  }
+  const observed = JSON.parse(output);
+  assert.equal(observed.activate, 'function', 'the installed v2 adapter should export activate');
+  assert.equal(observed.effect, observed.sdkEffect, 'the installed Effect should be the release @opencode/plugin depends on');
 }
 
 // Runs the installed plugin outside the workspace and takes a real Hive lock: a project context write. The Koffi
@@ -509,17 +537,26 @@ describe(`release ${releaseVersion} artifact contract on main`, () => {
         zod: devDependencies.zod,
       },
       {
-        '@opencode/client': '2.0.26',
-        '@opencode/plugin': '2.0.26',
-        '@opencode/schema': '2.0.26',
+        '@opencode/client': '2.3.2',
+        '@opencode/plugin': '2.3.2',
+        '@opencode/schema': '2.3.2',
         '@types/json-schema': '7.0.15',
-        effect: '4.0.0-rc.112',
+        effect: '4.1.0',
         zod: '4.1.8',
       },
       'oc-arkive should build against the exact v2 host libraries and the Zod version that matches tool.schema'
     );
     assert.equal(devDependencies['@opencode/plugin'], undefined, '@opencode/plugin is a dependency, not a duplicate dev dependency');
     assert.equal(devDependencies['@opencode/client'], undefined, '@opencode/client is a dependency, not a duplicate dev dependency');
+    // The bundle inlines @opencode/client and @opencode/schema code that calls the host's external Effect, so all three
+    // must be the releases the host's own plugin SDK depends on. A skew here is what failed v2 activation before.
+    const sdk = readJson('node_modules/@opencode/plugin/package.json');
+    assert.equal(sdk.version, dependencies['@opencode/plugin'], 'the installed @opencode/plugin should be the pinned release');
+    assert.deepEqual(
+      { effect: devDependencies.effect, '@opencode/client': dependencies['@opencode/client'], '@opencode/schema': devDependencies['@opencode/schema'] },
+      { effect: sdk.dependencies.effect, '@opencode/client': sdk.dependencies['@opencode/client'], '@opencode/schema': sdk.dependencies['@opencode/schema'] },
+      'Effect, client and schema should match the published @opencode/plugin manifest of the qualified host release'
+    );
   });
 
   it('distinguishes real hive-core module references from comments and ordinary strings', () => {
@@ -677,8 +714,8 @@ describe(`release ${releaseVersion} artifact contract on main`, () => {
       // Koffi is the one intentional runtime dependency the bundle leaves external: its loader selects the prebuilt
       // binary for the platform from the installed package, so the exact pin comes with every install.
       assert.deepEqual(packedManifest.dependencies, {
-        '@opencode/client': '2.0.26',
-        '@opencode/plugin': '2.0.26',
+        '@opencode/client': '2.3.2',
+        '@opencode/plugin': '2.3.2',
         '@types/json-schema': '7.0.15',
         'gray-matter': '^4.0.3',
         koffi: '2.16.3',
@@ -687,7 +724,7 @@ describe(`release ${releaseVersion} artifact contract on main`, () => {
       // effect is a peer so a v1 host can resolve the one eager import; the v2 host replaces it with its own copy.
       assert.deepEqual(packedManifest.peerDependencies, {
         '@opencode-ai/plugin': '>=1.18.30',
-        effect: '>=4.0.0-rc.112 <5',
+        effect: '>=4.1.0 <5',
       });
       assert.equal(packedManifest.peerDependenciesMeta, undefined, 'no peer dependency should be optional');
       const removedDirectDependencies = ['simple-git'];
@@ -723,6 +760,15 @@ describe(`release ${releaseVersion} artifact contract on main`, () => {
         ['effect'],
         'the shared entry should import only effect eagerly; the v2 adapter loads lazily'
       );
+      // Tool errors, model references and provider IDs come from the host through @opencode/plugin/effect. A bundled copy
+      // would define a second Tool.Error class, which the host does not recognize as its own tool failure.
+      for (const relativePath of [...packedFiles].filter((file) => file.startsWith('dist/') && file.endsWith('.js'))) {
+        assert.doesNotMatch(
+          fs.readFileSync(path.join(packageRoot, relativePath), 'utf8'),
+          /TaggedError\(\)\(["']Tool\.Error["']|identifier: ["']Model\.Ref["']|brand\(["']Provider\.ID["']\)/,
+          `${relativePath} should not bundle the host's Tool, Model or Provider schema`
+        );
+      }
       assert.match(
         executableSource,
         /import\(["']\.\/v2\/plugin\.js["']\)/,

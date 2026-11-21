@@ -78,7 +78,7 @@ describe('verified v2 read access', () => {
 
   it('exposes only read methods and no client or callback to keep', () => {
     const access = createVerifiedReadAccess({ server, identity, directory, env, makeClient: fakeServer([ok]).makeClient });
-    expect(Object.keys(access).sort()).toEqual(['checkTarget', 'messageList', 'sessionActive', 'sessionGet']);
+    expect(Object.keys(access).sort()).toEqual(['checkTarget', 'childSettlement', 'messageList', 'sessionActive', 'sessionGet']);
   });
 
   it('rejects another instance, another location and failed authentication before any read runs', async () => {
@@ -234,6 +234,136 @@ describe('target relationship and placement', () => {
     const host = fakeServer([{ nonce: 'held-nonce', directory }, { nonce: 'replacement', directory }], table());
     const access = createVerifiedReadAccess({ server, identity, directory, env, makeClient: host.makeClient });
     expect((await failure(access.checkTarget({ callerID: 'caller', targetID: 'child' }))).code).toBe('wrong_instance');
+  });
+});
+
+describe('child settlement', () => {
+  type Job = { id: string; kind: string; sessionID: string; status: string; childSessionID?: string };
+  type State = { jobs?: Job[]; inbox?: Record<string, unknown[]>; active?: unknown; jobAnswer?: unknown; inboxAnswer?: unknown; listAnswer?: unknown; extra?: Session[]; unlisted?: string[] };
+  /**
+   * A server with sessions, jobs, inboxes and active executions. `parent` owns `child` and `sibling`; `child` owns
+   * `helper`, which owns `quiet`. Job rows exist only where a test adds them, so `quiet` is a descendant no job names.
+   * The session list pages children in ID order through an opaque offset cursor. Every read is logged, so the order is
+   * visible.
+   */
+  function settlementServer(state: State) {
+    const sessions: Record<string, Session> = {
+      parent: { id: 'parent', location: { directory } },
+      child: { id: 'child', parentID: 'parent', location: { directory } },
+      helper: { id: 'helper', parentID: 'child', location: { directory } },
+      quiet: { id: 'quiet', parentID: 'helper', location: { directory } },
+      sibling: { id: 'sibling', parentID: 'parent', location: { directory } },
+    };
+    for (const session of state.extra ?? []) sessions[session.id] = session;
+    const base = fakeServer([{ nonce: 'held-nonce', directory }], sessions);
+    const descends = (id: string, ancestor: string): boolean => id === ancestor || (sessions[id]?.parentID !== undefined && descends(sessions[id]!.parentID!, ancestor));
+    const makeClient = (options: { baseUrl: string; headers: Record<string, string> }) => {
+      const client = base.makeClient(options);
+      client.experimental = { job: { list: async (input: { sessionID: string; kind?: string; status?: string; descendants?: boolean }) => {
+        base.reads.push(`jobs:${input.sessionID}${input.descendants ? '+' : ''}`);
+        if (state.jobAnswer !== undefined) return state.jobAnswer;
+        return (state.jobs ?? []).filter((job) => (input.descendants ? descends(job.sessionID, input.sessionID) : job.sessionID === input.sessionID)
+          && (input.kind === undefined || job.kind === input.kind) && (input.status === undefined || job.status === input.status));
+      } } };
+      client.session.inbox = { list: async ({ sessionID }: { sessionID: string }) => {
+        base.reads.push(`inbox:${sessionID}`);
+        return state.inboxAnswer !== undefined ? state.inboxAnswer : state.inbox?.[sessionID] ?? [];
+      } };
+      client.session.active = async () => { base.reads.push('active'); return state.active ?? {}; };
+      client.session.list = async (input: { parentID?: string; order?: string; limit: number; cursor?: string }) => {
+        const { parentID, offset } = input.cursor === undefined ? { parentID: input.parentID!, offset: 0 } : JSON.parse(input.cursor);
+        base.reads.push(`list:${parentID}${offset ? `@${offset}` : ''}`);
+        if (state.listAnswer !== undefined) return state.listAnswer;
+        expect(input.cursor === undefined ? input.order : 'asc').toBe('asc');
+        const children = Object.values(sessions).filter((session) => session.parentID === parentID && !state.unlisted?.includes(session.id)).sort((a, b) => a.id.localeCompare(b.id));
+        const data = children.slice(offset, offset + input.limit);
+        // The 2.3.2 wire shape: the JSON codec writes the cursors of an empty page as null.
+        return { data, cursor: { previous: null, next: data.length ? JSON.stringify({ parentID, offset: offset + data.length }) : null } };
+      };
+      return client;
+    };
+    return { reads: base.reads, access: createVerifiedReadAccess({ server, identity, directory, env, makeClient }) };
+  }
+  const subagentJob = (owner: string, child: string, status = 'running'): Job => ({ id: child, kind: 'subagent', sessionID: owner, status, childSessionID: child });
+  const settle = (state: State) => {
+    const host = settlementServer(state);
+    return { host, result: host.access.childSettlement({ parentID: 'parent', childID: 'child' }) };
+  };
+
+  it('finds a settled child only after reading jobs, then the session tree, then every inbox in it, then active executions', async () => {
+    const { host, result } = settle({ jobs: [subagentJob('parent', 'sibling')], active: { sibling: { type: 'running' } } });
+    expect(await result).toEqual({ settled: true });
+    // The sibling's job and execution belong to the parent, not to the child's tree.
+    expect(host.reads).toEqual(['jobs:parent', 'jobs:child+', 'list:child', 'list:helper', 'list:quiet', 'inbox:child', 'inbox:helper', 'inbox:quiet', 'active', 'get:sibling', 'get:parent']);
+  });
+
+  it('reports the first signal that shows work: a listed job of the child or a descendant, a queued inbox, then an active descendant', async () => {
+    const cases: Array<[State, string, string]> = [
+      // Absent from the active executions, the child still runs while its own job runs.
+      [{ jobs: [subagentJob('parent', 'child')] }, 'job', "the host's subagent job for child session child is running"],
+      // A settled row the host still lists is a report not yet admitted to its owner's inbox.
+      [{ jobs: [subagentJob('parent', 'child', 'completed')] }, 'job', "the host's subagent job for child session child is completed, and its notice has not been delivered yet"],
+      [{ jobs: [subagentJob('child', 'helper')] }, 'job', 'subagent job helper of session child is running'],
+      [{ jobs: [subagentJob('child', 'helper', 'cancelled')] }, 'job', 'subagent job helper of session child is cancelled, and its notice has not been delivered yet'],
+      [{ jobs: [{ id: 'sh_1', kind: 'shell', sessionID: 'quiet', status: 'error' }] }, 'job', 'shell job sh_1 of session quiet is error, and its notice has not been delivered yet'],
+      [{ inbox: { child: [{ id: 'report' }] } }, 'inbox', 'session child has 1 queued inbox item(s)'],
+      // Queued input on a descendant that no job names and that is not running is still found through the tree.
+      [{ inbox: { quiet: [{ id: 'queued' }] } }, 'inbox', 'session quiet has 1 queued inbox item(s)'],
+      [{ active: { child: { type: 'running' } } }, 'active', 'child session child has an active execution'],
+      [{ active: { quiet: { type: 'running' } } }, 'active', 'descendant session quiet of child has an active execution'],
+    ];
+    for (const [state, signal, detail] of cases) expect(await settle(state).result).toEqual({ settled: false, signal: signal as any, detail });
+  });
+
+  it('pages through every child of a session in the tree', async () => {
+    const extra = Array.from({ length: 205 }, (_, index): Session => ({ id: `w${String(index).padStart(3, '0')}`, parentID: 'child', location: { directory } }));
+    const { host, result } = settle({ extra, inbox: { w204: [{ id: 'queued' }] } });
+    expect(await result).toEqual({ settled: false, signal: 'inbox', detail: 'session w204 has 1 queued inbox item(s)' });
+    expect(host.reads).toContain('list:child@200');
+  });
+
+  it('traces an active session the tree read did not list up its parent chain', async () => {
+    // `late` is missing from the session list, as a session created after the tree was read would be.
+    const { host, result } = settle({ extra: [{ id: 'late', parentID: 'quiet', location: { directory } }], unlisted: ['late'], active: { late: { type: 'running' } } });
+    expect(await result).toEqual({ settled: false, signal: 'active', detail: 'descendant session late of child has an active execution' });
+    expect(host.reads).not.toContain('inbox:late');
+    expect(host.reads.slice(-3)).toEqual(['get:late', 'get:quiet', 'get:helper']);
+  });
+
+  it('refuses a malformed or inconsistent answer instead of reading it as no work', async () => {
+    const fullPage = Array.from({ length: 200 }, (_, index) => ({ id: `r${index}`, parentID: 'child' }));
+    const malformed: State[] = [
+      { jobAnswer: { data: [] } }, { jobAnswer: [{ id: 'x', status: 'running' }] }, { inboxAnswer: null }, { active: [] }, { active: 'idle' },
+      { listAnswer: [] }, { listAnswer: { data: [{ parentID: 'child' }], cursor: {} } }, { listAnswer: { data: [], cursor: { next: 7 } } },
+      // The 2.3.2 SessionsResponse always carries `cursor`, and `next` is a cursor string, null or absent, never empty.
+      { listAnswer: { data: [] } }, { listAnswer: { data: [], cursor: null } }, { listAnswer: { data: [], cursor: { next: '' } } },
+      // A full page always has a next cursor on 2.3.2, so one without it would end the tree read early.
+      { listAnswer: { data: fullPage, cursor: {} } }, { listAnswer: { data: fullPage, cursor: { next: null } } }, { listAnswer: { data: fullPage } },
+    ];
+    for (const state of malformed) expect((await failure(settle(state).result)).code).toBe('malformed_response');
+    const inconsistent: State[] = [
+      // A child listed under the wrong parent.
+      { listAnswer: { data: [{ id: 'stray', parentID: 'parent' }], cursor: {} } },
+      // A server that repeats the same full page forever.
+      { listAnswer: { data: Array.from({ length: 200 }, (_, index) => ({ id: `r${index}`, parentID: 'child' })), cursor: { next: JSON.stringify({ parentID: 'child', offset: 0 }) } } },
+      // A tree deeper than any parent chain Hive follows.
+      { extra: Array.from({ length: 40 }, (_, index): Session => ({ id: `d${index}`, parentID: index === 0 ? 'child' : `d${index - 1}`, location: { directory } })) },
+    ];
+    for (const state of inconsistent) expect((await failure(settle(state).result)).code).toBe('inconsistent_lookup');
+  });
+
+  it('checks the server identity around the settlement reads', async () => {
+    const host = fakeServer([{ nonce: 'held-nonce', directory }, { nonce: 'replacement', directory }]);
+    const makeClient = (options: { baseUrl: string; headers: Record<string, string> }) => {
+      const client = host.makeClient(options);
+      client.experimental = { job: { list: async () => [] } };
+      client.session.inbox = { list: async () => [] };
+      client.session.list = async () => ({ data: [], cursor: {} });
+      client.session.active = async () => ({});
+      return client;
+    };
+    const access = createVerifiedReadAccess({ server, identity, directory, env, makeClient });
+    expect((await failure(access.childSettlement({ parentID: 'parent', childID: 'child' }))).code).toBe('wrong_instance');
   });
 });
 

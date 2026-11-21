@@ -62,7 +62,7 @@ describe('v2 background observation', () => {
     const row = service.resolve('child-1')!;
     expect(row).toMatchObject({ runtimeState: 'unknown', statusUncertain: true });
     expect(row.terminalUnreconciled).toBeUndefined();
-    expect(row.lastStatusError).toBe('The host notified the parent that child child-1 ended (completed). The notification names the child, not the launching call, so Hive does not record it as this launch\'s outcome; inspect the child and archive this observation with decision "ignored".');
+    expect(row.lastStatusError).toBe('The host sent the parent a report for child child-1 (state completed). A report names the child, not the launching call, and does not establish that the child ended, so Hive does not record it as this launch\'s outcome; inspect the child and archive this observation with decision "ignored".');
   });
 
   it('keeps other projects and other owners out of scope', () => {
@@ -97,7 +97,7 @@ describe('v2 background observation', () => {
     expect(row('call-archived').lastStatusError).toBeUndefined();
     for (const callId of ['call-1', 'call-2']) {
       expect(row(callId)).toMatchObject({ runtimeState: 'unknown', statusUncertain: true });
-      expect(row(callId).lastStatusError).toContain('child child-1 ended (error)');
+      expect(row(callId).lastStatusError).toContain('child child-1 (state error)');
     }
   });
 
@@ -110,7 +110,7 @@ describe('v2 background observation', () => {
 
     background.handleEvent(completion('parent', 'child-1', 'cancelled'));
     expect(service.resolve('child-1')).toMatchObject({ runtimeState: 'unknown', statusUncertain: true });
-    expect(service.resolve('child-1')?.lastStatusError).toContain('child child-1 ended (cancelled)');
+    expect(service.resolve('child-1')?.lastStatusError).toContain('child child-1 (state cancelled)');
 
     background.recordLaunch(launch({ childSessionID: 'child-2', callID: 'call-2' }));
     background.handleEvent({ type: 'session.execution.failed', data: { sessionID: 'child-2', error: { type: 'provider', message: 'rate limited' } } });
@@ -129,11 +129,13 @@ describe('v2 background observation', () => {
     background.recordLaunch(launch({ childSessionID: 'child-5', callID: 'call-5' }));
     background.handleEvent(completion('parent', 'child-5', 'cancelled'));
     background.handleEvent({ type: 'session.execution.interrupted', data: { sessionID: 'child-5', reason: 'user' } });
-    expect(service.resolve('child-5')?.lastStatusError).toContain('child child-5 ended (cancelled)');
+    expect(service.resolve('child-5')?.lastStatusError).toContain('child child-5 (state cancelled)');
   });
 
   it('applies a notification seen before its launch row only to that parent and child, once', () => {
     const { service, background } = lifecycle();
+    // The barrier could not write call-1's row, so its report can arrive before the call's retry records it.
+    background.observer.launchNotRecorded({ parentSessionId: 'parent', callId: 'call-1', childSessionId: 'child-1', agentName: 'forager-worker' }, new Error('disk full'));
     background.handleEvent(completion('parent', 'child-1', 'completed'));
     background.recordLaunch(launch({ parentSessionID: 'other-parent', callID: 'call-other' }));
     expect(service.listScoped({}).find((job) => job.callId === 'call-other')).toMatchObject({ runtimeState: 'running' });
@@ -143,6 +145,15 @@ describe('v2 background observation', () => {
     // The held notification was used up by that row.
     background.recordLaunch(launch({ callID: 'call-later' }));
     expect(service.listScoped({}).find((job) => job.callId === 'call-later')).toMatchObject({ runtimeState: 'running' });
+  });
+
+  it('holds no report for a child it has no unrecorded launch for, such as a child session\'s helper', () => {
+    const { service, background } = lifecycle();
+    // A delegated Architect's helper reports to the Architect; Hive never records a row for it and holds nothing.
+    background.handleEvent(completion('architect', 'helper-1', 'completed'));
+    background.recordLaunch(launch({ parentSessionID: 'architect', childSessionID: 'helper-1', callID: 'call-later' }));
+    expect(service.resolve('helper-1')).toMatchObject({ runtimeState: 'running' });
+    expect(service.resolve('helper-1')?.statusUncertain).toBeUndefined();
   });
 
   it('keeps a later continuation uncertain, never terminal, when an earlier launch\'s notification arrives after its row', () => {
@@ -177,15 +188,17 @@ describe('v2 background observation', () => {
   it('discards a held completion that predates the launch bound for the same child, and keeps one that follows the barrier', () => {
     const { service, warnings, background } = lifecycle();
     // A completion for a launch that has no row (its registration failed) is held, then the child is continued.
+    background.observer.launchNotRecorded({ parentSessionId: 'parent', callId: 'call-a', childSessionId: 'child-1', agentName: 'forager-worker' }, new Error('disk full'));
     background.handleEvent(completion('parent', 'child-1', 'completed', 'older'));
     background.launchBound('parent', 'child-1');
     background.recordLaunch(launch({ callID: 'call-b' }));
     expect(service.resolve('child-1')).toMatchObject({ callId: 'call-b', runtimeState: 'running' });
     expect(warnings.join('\n')).toContain('predates');
 
-    // A completion that arrives after the barrier may belong to a call the host later moved to the background.
+    // A completion that arrives after the barrier, before a retried row write succeeds, belongs to that launch.
     background.launchBound('parent', 'child-4');
-    background.handleEvent(completion('parent', 'child-4', 'completed', 'moved'));
+    background.observer.launchNotRecorded({ parentSessionId: 'parent', callId: 'call-d', childSessionId: 'child-4', agentName: 'forager-worker' }, new Error('disk full'));
+    background.handleEvent(completion('parent', 'child-4', 'completed', 'retried'));
     background.recordLaunch(launch({ childSessionID: 'child-4', callID: 'call-d' }));
     expect(service.resolve('child-4')).toMatchObject({ callId: 'call-d', runtimeState: 'unknown', statusUncertain: true });
   });
@@ -292,7 +305,7 @@ describe('v2 background board tools', () => {
     background.handleEvent({ type: 'session.execution.interrupted', data: { sessionID: 'child-1', reason: 'user' } });
     background.handleEvent(completion('parent', 'child-1', 'cancelled'));
     expect(service.resolve('child-1')).toMatchObject({ runtimeState: 'unknown', statusUncertain: true, cancelReason: 'Wrong scope' });
-    expect(service.resolve('child-1')?.lastStatusError).toContain('ended (cancelled)');
+    expect(service.resolve('child-1')?.lastStatusError).toContain('(state cancelled)');
   });
 
   it('reports an interrupt that reached no active execution, or failed, as unconfirmed', async () => {
@@ -326,7 +339,7 @@ describe('v2 background board tools', () => {
     background.handleEvent(completion('parent', 'child-1', 'completed'));
     const parent = request('parent');
     await Effect.runPromise(host.contextHooks[0]!(parent));
-    expect(parent.system[0]!.text).toContain('runtime: unknown; status error: The host notified the parent that child child-1 ended (completed).');
+    expect(parent.system[0]!.text).toContain('runtime: unknown; status error: The host sent the parent a report for child child-1 (state completed).');
     expect(parent.system[0]!.text).toContain('diagnostic: hive_task_trace({ task_id: "child-1" })');
 
     // A terminal row (v2 records none itself, so the test sets one) is acknowledged when the parent's turn settles.
@@ -371,7 +384,7 @@ describe('v2 background board tools', () => {
     expect((ignored as Exit.Success<any>).value.output).toMatchObject({ success: true, archived: true, state: 'ignored_archived' });
     background.handleEvent(completion('parent', 'child-2', 'completed'));
     expect(service.resolve('child-2')).toMatchObject({ runtimeState: 'unknown', statusUncertain: true });
-    expect(service.resolve('child-2')?.lastStatusError).toContain('ended (completed)');
+    expect(service.resolve('child-2')?.lastStatusError).toContain('(state completed)');
 
     // The reload is a transition, not a lasting gap: launches after it stay running.
     background.recordLaunch(launch({ childSessionID: 'child-new', callID: 'call-new' }));
@@ -478,9 +491,9 @@ describe('v2 background board tools', () => {
     const scope = Effect.runSync(Scope.make());
     await Effect.runPromise(registerBackground({ context: host.context, registrar, projectRoot: root, service, lifecycle: background, runtimeId: 'runtime-a' }).pipe(Scope.provide(scope)));
     // The row predates this activation, so activation marked it uncertain; the delivered notification is recorded on it.
-    await settle(() => service.resolve('child-1')?.lastStatusError?.includes('ended (completed)') === true);
+    await settle(() => service.resolve('child-1')?.lastStatusError?.includes('(state completed)') === true);
     expect(service.resolve('child-1')).toMatchObject({ runtimeState: 'unknown', statusUncertain: true });
-    expect(service.resolve('child-1')?.lastStatusError).toContain('ended (completed)');
+    expect(service.resolve('child-1')?.lastStatusError).toContain('(state completed)');
     await Effect.runPromise(Scope.close(scope, Exit.void));
   });
 });

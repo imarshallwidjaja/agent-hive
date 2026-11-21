@@ -9,7 +9,7 @@ description: Agent Hive background wait-mode and board protocol guidance for ope
 Background delegation is the Agent Hive wait-mode and board protocol for independent primary-agent work when `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL` enables the native background task experiment.
 <!-- /hive-host -->
 <!-- hive-host opencode-v2 -->
-Background delegation is the Agent Hive wait-mode and board protocol for independent primary-agent work. OpenCode v2's native subagent call accepts `background` without an experiment variable.
+Background delegation is the Agent Hive wait-mode and board protocol for independent primary-agent work. OpenCode v2 runs every native `subagent()` child in the background, without an experiment variable; the Native Subagent Wait section of your system prompt says which `<subagent>` report is the child's terminal report.
 <!-- /hive-host -->
 
 Core rule: delegation first, independence second. Delegation-first orchestration is the baseline. Background mode only changes wait mode and board protocol.
@@ -17,7 +17,7 @@ Core rule: delegation first, independence second. Delegation-first orchestration
 Use `task({ background: true, ... })` only when useful foreground work does not depend on the result.
 <!-- /hive-host -->
 <!-- hive-host opencode-v2 -->
-Use `subagent({ background: true, ... })` only when useful foreground work does not depend on the result.
+Keep doing foreground work while a `subagent()` lane runs only when that work does not depend on the result.
 <!-- /hive-host -->
 
 Background is a wait mode, not the definition of parallelism.
@@ -36,14 +36,14 @@ Default: When `## Background-First Orchestration` is present, background-delegat
 If the next decision depends on the result, use blocking `task()` and name the escape reason in the handoff.
 <!-- /hive-host -->
 <!-- hive-host opencode-v2 -->
-If the next decision depends on the result, use blocking `subagent()` and name the escape reason in the handoff.
+If the next decision depends on the result, wait for that lane's terminal report before deciding, and name the escape reason in the handoff. This is the v2 form of a blocking call.
 <!-- /hive-host -->
 
 <!-- hive-host opencode-v1 -->
 Gate-closed sessions use normal blocking `task()` wait mode.
 <!-- /hive-host -->
 <!-- hive-host opencode-v2 -->
-Gate-closed sessions use normal blocking `subagent()` wait mode.
+OpenCode v2 has no gate-closed session: every `subagent()` call is a background lane, and blocking wait mode means waiting for its terminal report.
 <!-- /hive-host -->
 Do not simulate background orchestration from this skill alone.
 
@@ -54,7 +54,7 @@ When Architect runs as a primary, the gate-open scheduling and board protocol be
 When Architect is task-spawned, use blocking `task()` calls for its one terminal layer of permitted Scout, Investigator, plan-reviewer, or approach-advisor helpers, including configured derivatives, and `hive-helper`.
 <!-- /hive-host -->
 <!-- hive-host opencode-v2 -->
-When Architect is task-spawned, use blocking `subagent()` calls for its one terminal layer of permitted Scout, Investigator, plan-reviewer, or approach-advisor helpers, including configured derivatives, and `hive-helper`.
+When Architect is task-spawned, use blocking `subagent()` calls for its one terminal layer of permitted Scout, Investigator, plan-reviewer, or approach-advisor helpers, including configured derivatives, and `hive-helper`: launch them, then wait for each helper's terminal report before using its result. Hive records no board row for a child session's helpers.
 <!-- /hive-host -->
 Emit independent permitted calls together, then wait for their results. Background board tools and primary-control operations are denied in children; return board/control requests and parent-owned lifecycle decisions with known identities to the parent. Trace/evidence investigation may go directly to Helper, which remains read-only and terminal. Keep the inherited feature route and use explicit feature arguments for planning. This branch takes precedence over an inherited Background-First Orchestration heading.
 
@@ -81,7 +81,7 @@ If the child may still be active or its lifecycle is uncertain, inspect, wait, o
 Returned task IDs are also observe-only board handles for `hive_background_status`, `hive_background_reconcile`, and `hive_background_cancel`.
 <!-- /hive-host -->
 <!-- hive-host opencode-v2 -->
-The returned `sessionID` identifies the child session. `hive_background_status` lists the observe-only board handle for each lane, which `hive_background_reconcile` and `hive_background_cancel` take. A foreground `subagent()` call that the user moves to the background returns `running` with its `sessionID`; Hive adds it to the board, and it is a background lane under this protocol.
+The returned `sessionID` identifies the child session. Hive records a board row for every `subagent()` call a primary makes. `hive_background_status` lists the observe-only board handle for each lane, which `hive_background_reconcile` and `hive_background_cancel` take. Hive refuses a call with `sessionID` while that child, or work it started, still runs or has queued work, because the host would join the follow-up to that work.
 <!-- /hive-host -->
 
 ## Unresolved Lanes
@@ -92,7 +92,7 @@ Before any dependent decision, merge, cleanup, final report, or new overlapping 
 On v1, aborting a session also cancels its running background jobs and their descendants. Inspect each lane before treating it as stopped.
 <!-- /hive-host -->
 <!-- hive-host opencode-v2 -->
-On v2, interrupting your turn also interrupts a blocking `subagent()` child and cancels its job. Background lanes, including foreground calls moved to the background, keep running when your turn is interrupted or ends; cancel a lane that is no longer needed through its own board row.
+On v2, every `subagent()` lane keeps running when your turn is interrupted or ends; cancel a lane that is no longer needed through its own board row.
 <!-- /hive-host -->
 
 The board protocol is primary-owned. Multi-step trace or evidence questions go to `hive-helper` with one named question and known identities; Helper returns evidence, not a termination or replacement-writer decision.

@@ -1,12 +1,11 @@
 import { Cause, Effect, Exit } from 'effect';
 import type { Scope } from 'effect';
-import type { Model } from '@opencode/schema/model';
-import { Tool } from '@opencode/schema/tool';
-import type { Plugin } from '@opencode/plugin/effect';
+import { Tool } from '@opencode/plugin/effect';
+import type { Model, Plugin } from '@opencode/plugin/effect';
 import type { SessionInfo } from 'hive-core';
 import type { HiveServices } from '../runtime/hive-services.js';
 import { boundChildScope } from '../background/backgroundJobAdapter.js';
-import { childAssociation, childRouteRecord, composeDispatchPrompt, provenChildBinding, resolveAssignment, sameChildRoute, type ChildRoute } from '../task-brief.js';
+import { childAssociation, childRouteRecord, composeDispatchPrompt, provenChildBinding, resolveAssignment, sameChildRoute } from '../task-brief.js';
 import type { BackgroundLaunch, V2BackgroundLifecycle } from './background.js';
 import type { VerifiedReadAccess } from './client.js';
 import type { HiveAuthority } from './registration.js';
@@ -14,27 +13,29 @@ import type { HiveAuthority } from './registration.js';
 /** The host's native subagent tool. */
 export const NATIVE_SUBAGENT_TOOL = 'subagent';
 
-/** The server's active sessions, read through the catalog's verified read access. */
-export type NativeActivity = Pick<VerifiedReadAccess, 'sessionActive'>;
+/** Whether a child has settled in the host, read through the catalog's verified read access. */
+export type NativeActivity = Pick<VerifiedReadAccess, 'childSettlement'>;
 
 /** A refusal raised before the host continues a child, or inside the awaited progress barrier before it prompts one. */
 class ChildBindingRefused {
   constructor(readonly message: string) {}
 }
 
-type SubagentInput = { agent: string; description?: string; prompt: string; model?: string; sessionID?: string; background?: boolean };
+/** The qualified host's subagent input. It has no `background` field: every call runs the child in the background. */
+type SubagentInput = { agent: string; description?: string; prompt: string; model?: string; sessionID?: string };
 
 /**
- * Children reserved by an unfinished call of this activation, with the route that call binds. A continuation reserves
- * before any awaited activity read; a new child, which the host creates after the call starts, at its barrier. Admission
- * ends when the call returns. It keeps two local calls from binding one child to different routes; it does not queue
+ * The one unfinished call of this activation that holds each child, by call ID. A continuation reserves its child before
+ * any awaited host read; a new child, which the host creates after the call starts, at its barrier. A second call for a
+ * held child is refused whatever its route, and the reservation ends when the holding call returns. It does not queue
  * or schedule anything, and the host still decides when the child runs.
  */
-type Admissions = Map<string, { route: ChildRoute; calls: Set<string> }>;
+type Admissions = Map<string, string>;
 
 /**
- * Wraps the host's own subagent tool; the host still validates, schedules, runs, interrupts and notifies. The wrapper
- * adds what Hive owns at dispatch:
+ * Wraps the host's own subagent tool; the host still validates, schedules, runs, interrupts and notifies. On the
+ * qualified host every call starts or continues the child in the background and returns `running` at once; the host
+ * reports the child's result to the parent in a later `<subagent>` message. The wrapper adds what Hive owns at dispatch:
  *
  * - The parent's route and standing constraints, captured when the call starts, and the parent's authored prompt
  *   (before the host adds its subagent prefix) composed with the route footer and, for a Forager on a selected feature
@@ -47,10 +48,13 @@ type Admissions = Map<string, { route: ChildRoute; calls: Set<string> }>;
  *   and model before it reports progress. The child must be a native child of the caller and not bound to another
  *   parent. Continuing a managed child on its own agent requires its session model to equal that agent's configured
  *   model, because the host keeps a same-agent child's model; a switch to another agent takes the destination's
- *   configured model from the host. Adopting an unbound child or changing its bound route, constraints or agent,
- *   judged against both the binding and the host's session agent, needs an idle child: a local reservation excludes
- *   conflicting calls while the host's active-session read qualifies idle. An unreadable answer is not idle. A
- *   continuation on the same proven binding and agent needs no activity read. The `sessionID` itself is passed through
+ *   configured model from the host. Every continuation needs a settled child, because the host joins a follow-up to a
+ *   running child's current run, and Hive does not steer a running worker: a local reservation excludes other calls of
+ *   this activation, and the verified reader's settlement read (any job the host still lists for the child or its
+ *   descendants, and the inboxes and active executions of every session in the child's tree) must find no work. An unreadable signal is not settled. The read runs
+ *   again at the barrier, after any permission prompt the host awaited, so a child that started work in between is not
+ *   prompted. Neither read is atomic with the host: by the barrier the host may already have switched the child's agent
+ *   and model, and another client can start work after the last read. The `sessionID` itself is passed through
  *   unchanged.
  * - A barrier on the progress update the host awaits before it admits the child's prompt: Hive reads the child from
  *   the host again, requires that its parent is this call's session and that no other parent owns its binding, and
@@ -58,9 +62,11 @@ type Admissions = Map<string, { route: ChildRoute; calls: Set<string> }>;
  *   fails and the child is never prompted, except that a child already bound to the captured route still runs when
  *   only its new association cannot be recorded; Hive warns, and the launch row names no task or run it cannot prove.
  *   A call that returns successfully for a child it never bound at that barrier fails instead of being bound late.
- * - For a background launch, the board row, recorded at the barrier so a fast child cannot finish before its row
- *   exists. When the call then ends without returning normally, that row is marked uncertain. The board is never read
- *   to decide whether a dispatch may run.
+ * - For a call from a primary session, the board row, recorded at the barrier so a fast child cannot finish before its
+ *   row exists, and retried once when the call returns if that write failed. When the call then ends without returning
+ *   normally, that row is marked uncertain. A call from a child session (a delegated Architect's helper) records no
+ *   row: the board and its tools belong to primaries, and the host reports that helper's result to its own parent. The
+ *   board is never read to decide whether a dispatch may run.
  */
 export function registerDispatch(input: { context: Plugin.Context; services: HiveServices; authority: HiveAuthority; background: V2BackgroundLifecycle; activity: NativeActivity }): Effect.Effect<void, never, Scope.Scope> {
   const { context } = input;
@@ -95,7 +101,7 @@ function dispatchSubagent(
   let launchAlias: string | undefined;
 
   const refuse = (message: string) => Effect.fail(new ChildBindingRefused(message));
-  const running = (child: string) => `Child session ${child} is running under another dispatch, and this continuation would change its route, constraints or agent; Hive did not overwrite its binding and ${NOT_CONTINUED}.`;
+  const unsettled = (child: string, why: string, outcome: string) => `Child session ${child} has not settled (${why}). Hive does not send a follow-up to a child that still runs or has work pending, so it did not overwrite its binding and ${outcome}. Wait for its terminal <subagent> report before continuing it.`;
 
   /** The child must be the caller's native child; read from the host each time it is checked. */
   const confirmParent = (child: string, outcome: string) => context.session.get({ sessionID: child as never }).pipe(
@@ -127,49 +133,33 @@ function dispatchSubagent(
       ? Effect.succeed(stored)
       : refuse(`Child session ${child} is already bound to parent ${stored.parentSessionId}; Hive did not overwrite it and ${outcome}.`)));
 
-  /** Another unfinished local call holds the child on a different route. */
-  const heldElsewhere = (child: string, route: ChildRoute) => {
-    const held = admissions.get(child);
-    return held !== undefined && !sameChildRoute(held.route, route);
-  };
-
-  const admit = (child: string, route: ChildRoute) => {
-    const held = admissions.get(child);
-    if (held) held.calls.add(call);
-    else admissions.set(child, { route, calls: new Set([call]) });
+  /** Takes the child for this call; a child another unfinished call of this activation holds is refused. */
+  const admit = (child: string, outcome: string) => {
+    if (admissions.has(child)) return refuse(unsettled(child, 'another unfinished subagent call in this plugin activation holds it', outcome));
+    admissions.set(child, call);
     admitted = child;
+    return Effect.void;
   };
 
   const release = Effect.sync(() => {
-    if (admitted === undefined) return;
-    const held = admissions.get(admitted);
-    held?.calls.delete(call);
-    if (held?.calls.size === 0) admissions.delete(admitted);
+    if (admitted !== undefined && admissions.get(admitted) === call) admissions.delete(admitted);
   });
 
-  /** Whether the host reports the child idle. Any failure to read that is reported as unknown, never as idle. */
-  const hostActivity = (child: string) => Effect.tryPromise({ try: () => activity.sessionActive(), catch: (error) => error }).pipe(
-    Effect.map((active): { idle: boolean; unknown?: string } => ({ idle: !Object.hasOwn(active, child) })),
-    Effect.catch((error: unknown) => Effect.succeed({ idle: false, unknown: describe(error) })),
+  /** Requires the host to report the child settled. A signal Hive cannot read is reported as unknown, never as settled. */
+  const requireSettled = (child: string, outcome: string) => Effect.tryPromise({ try: () => activity.childSettlement({ parentID: parent, childID: child }), catch: (error) => error }).pipe(
+    Effect.catch((error: unknown) => refuse(`Hive could not confirm that child session ${child} has settled (${describe(error)}). Continuing a child needs a settled child, so Hive did not overwrite its binding and ${outcome}.`)),
+    Effect.flatMap((state) => 'detail' in state ? refuse(unsettled(child, state.detail, outcome)) : Effect.void),
   );
 
   /** Admits a continued child before the host runs, so a refused continuation leaves its agent and model untouched. */
-  const preflight = (child: string, route: ChildRoute) => Effect.gen(function* () {
+  const preflight = (child: string) => Effect.gen(function* () {
     const session = yield* confirmParent(child, NOT_CONTINUED);
-    const stored = yield* ownBinding(child, NOT_CONTINUED);
+    yield* ownBinding(child, NOT_CONTINUED);
     // The host's session agent decides whether it switches the child; a binding that claims the target agent is not
     // enough when the host reports another one.
-    const switching = session.agent !== args.agent;
-    if (managed && !switching) yield* confirmModel(child, session.model);
-    if (heldElsewhere(child, route)) return yield* refuse(running(child));
-    admit(child, route);
-    if (stored === undefined || !sameChildRoute(stored, route) || switching) {
-      const state = yield* hostActivity(child);
-      if (state.unknown !== undefined) {
-        return yield* refuse(`Hive could not confirm that child session ${child} is idle (${state.unknown}). Adopting an unbound child or changing its route, constraints or agent needs an idle child, so Hive did not overwrite its binding and ${NOT_CONTINUED}.`);
-      }
-      if (!state.idle) return yield* refuse(running(child));
-    }
+    if (managed && session.agent === args.agent) yield* confirmModel(child, session.model);
+    yield* admit(child, NOT_CONTINUED);
+    yield* requireSettled(child, NOT_CONTINUED);
   });
 
   return Effect.gen(function* () {
@@ -188,9 +178,11 @@ function dispatchSubagent(
       foragerDispatch: target.kind === 'role' && target.role === 'forager-worker',
     });
     const route = childRouteRecord(snapshot, parent, args.agent);
+    // The board is the primary's: a call from a child session launches its helper without a row.
+    const recordsLaunch = !(yield* authority.isChild(parent));
 
     if (args.sessionID !== undefined) {
-      yield* preflight(args.sessionID, route).pipe(Effect.mapError((refusal) => new Tool.Error({ message: refusal.message })));
+      yield* preflight(args.sessionID).pipe(Effect.mapError((refusal) => new Tool.Error({ message: refusal.message })));
     }
 
     // The child's binding once bound; the board row takes its feature, task and run from it.
@@ -198,10 +190,9 @@ function dispatchSubagent(
     const bind = (child: string) => Effect.gen(function* () {
       yield* confirmParent(child, NOT_PROMPTED);
       const stored = yield* ownBinding(child, NOT_PROMPTED);
-      if (admitted === undefined) {
-        if (heldElsewhere(child, route)) return yield* refuse(`Child session ${child} is already admitted to another dispatch with a different route; Hive did not bind it and ${NOT_PROMPTED}.`);
-        admit(child, route);
-      }
+      if (admitted === undefined) yield* admit(child, NOT_PROMPTED);
+      // A continuation is read again here, after any permission prompt the host awaited since the preflight.
+      else yield* requireSettled(child, NOT_PROMPTED);
       // The association is observation written beside the route; it takes no part in admission or the preflight. A
       // child already bound to this route needs no write to run, so failing to record only its new association is
       // reported and does not stop it; its launch row is then scoped by what the binding read before the write proves.
@@ -224,7 +215,7 @@ function dispatchSubagent(
       }
       bound = child;
       background.launchBound(parent, child);
-      if (args.background === true) launchAlias = background.recordLaunch(launchOf(child));
+      if (recordsLaunch) launchAlias = background.recordLaunch(launchOf(child));
     });
     const launchOf = (child: string): BackgroundLaunch => ({
       parentSessionID: parent,
@@ -262,8 +253,8 @@ function dispatchSubagent(
             : `after Hive bound ${bound} at the progress update`;
           return Effect.fail(new Tool.Error({ message: `The subagent call returned ${child} ${why}. Hive did not bind it after it ran, so the child may have run without its parent's route and standing constraints${reported.sessionID === undefined ? '' : `; inspect hive_task_trace({ task_id: ${JSON.stringify(reported.sessionID)} }) before relying on its result`}.` }));
         }
-        // A foreground call the user moved to the background returns `running` without a background launch.
-        if (reported.status === 'running' && launchAlias === undefined) launchAlias = background.recordLaunch(launchOf(bound));
+        // The child runs on after the call returns; a launch whose row the barrier could not write is retried once.
+        if (recordsLaunch && reported.status === 'running' && launchAlias === undefined) launchAlias = background.recordLaunch(launchOf(bound));
         return Effect.succeed(result);
       }),
       Effect.onExit((exit) => Effect.sync(() => {

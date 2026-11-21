@@ -31,7 +31,7 @@ import {
 import {
   ARTIFACT_CAP, ATTEMPT_LOG_HEADER, FINAL_TEXT_CAP, STOP_INSTRUCTION_CAP, allowlistArgs, attemptCount, clipText, clipToolArgs, codeModeBlocks, codeModeFieldDocs, commandDelivery,
   ProbeReadError, bindingFacts, boundChildren, childFacts, classifyEditAttempt, containerSecrets, continuationRefusalLead, deliveredBodySentence, dispatchCallFacts, modelRequestFacts, modelView, overrideRefusalLead, wireFacts, evidenceLimits, exportDecision, hiveResultFailed, interruptSession, managedModelControl, messagePages, mockDecision, nativeId, preflightReply, probeReads, probeStage, readHistories, render, runPrompt, safeName, refusalKind, scenarioOverrides,
-  scriptDirective, skillReferencePointers, switchIdleChildren, toolFieldContract, toolOutcome, treeFrom,
+  SUBAGENT_WAIT_TEXT, dispatchWaited, scriptDirective, skillReferencePointers, switchIdleChildren, toolFieldContract, toolOutcome, treeFrom,
 } from './fixture.ts';
 import {
   credentialFromSnapshot, evidenceScanner, fingerprintWire, hasJwtShape, scanValue, secretScanner, snapshotAuthFile,
@@ -1051,9 +1051,29 @@ describe('artifacts, runtime identity and model selection', () => {
   });
 
   test('stock host versions are fixed', () => {
-    const runtime = { hosts: { v1: { version: '1.18.30' }, v2: { version: 'opencode v2.0.26' } }, pluginTarballSha256: 'x' };
+    const runtime = { hosts: { v1: { version: '1.18.30' }, v2: { version: 'opencode v2.3.2' } }, pluginTarballSha256: 'x' };
     expect(runtimeFailures(runtime)).toEqual([]);
-    expect(runtimeFailures({ ...runtime, hosts: { ...runtime.hosts, v2: { version: '2.0.28' } } })).toContain('stock_version_mismatch:v2');
+    expect(runtimeFailures({ ...runtime, hosts: { ...runtime.hosts, v2: { version: '2.3.3' } } })).toContain('stock_version_mismatch:v2');
+    expect(runtimeFailures({ ...runtime, hosts: { ...runtime.hosts, v2: { version: 'opencode v2.0.26' } } })).toContain('stock_version_mismatch:v2');
+  });
+
+  test('every pin of a qualified host names the version hosts.mjs qualifies', () => {
+    const json = (relative: string) => JSON.parse(readFileSync(join(import.meta.dir, relative), 'utf8'));
+    const plugin = json('../../package.json');
+    for (const id of ['v1', 'v2'] as const) {
+      const { packageName, version } = HOSTS[id];
+      // The stock host the container installs: the committed manifest and the version its lockfile resolves.
+      expect(json(`runtime/${id}/package.json`).dependencies, id).toEqual({ [packageName]: version });
+      expect(json(`runtime/${id}/package-lock.json`).packages[`node_modules/${packageName}`].version, id).toBe(version);
+    }
+    // The plugin builds against the v2 host's own SDK release and keeps the v1 host as its peer floor.
+    expect(plugin.dependencies['@opencode/plugin']).toBe(HOSTS.v2.version);
+    expect(plugin.dependencies['@opencode/client']).toBe(HOSTS.v2.version);
+    expect(plugin.devDependencies['@opencode/schema']).toBe(HOSTS.v2.version);
+    expect(plugin.peerDependencies['@opencode-ai/plugin']).toBe(`>=${HOSTS.v1.version}`);
+    // The container installs the packed plugin beside the v1 SDK and the Effect release the plugin builds against.
+    const dockerfile = readFileSync(join(import.meta.dir, 'Dockerfile'), 'utf8');
+    expect(dockerfile).toContain(` @opencode-ai/plugin@${HOSTS.v1.version} effect@${plugin.devDependencies.effect}\n`);
   });
 
   test('a reused candidate artifact must match its manifest hash', () => {
@@ -1066,7 +1086,7 @@ describe('artifacts, runtime identity and model selection', () => {
   // The committed harness directory is the single archive and build root: identities refuse uncommitted harness changes,
   // and the build context holds exactly the committed harness, the subject archive and the packed candidate.
   describe('the committed harness is the one archive and build root', () => {
-    const RUNTIME_REPORT = { hosts: { v1: { version: '1.18.30' }, v2: { version: '2.0.26' } }, pluginTarballSha256: 'installed' };
+    const RUNTIME_REPORT = { hosts: { v1: { version: '1.18.30' }, v2: { version: '2.3.2' } }, pluginTarballSha256: 'installed' };
     const BUILD_REPORT = { hiveCoreResolvedInArchive: true, coreBuiltFirst: true, packEntries: ['dist/index.js'] };
 
     function harnessRepo() {
@@ -1433,6 +1453,15 @@ describe('scenario set, fixture checks and rehearsal paths', () => {
     const write = (session: string) => ({ seq: 0, session, agent: 'forager-worker', tool: 'write', status: 'completed', args: { path: '/work/proj/.hive/.worktrees/x/src/index.mjs' }, outcome: { result: 'success' } });
     expect(verdict(g, 'single-index-writer', liveRecord({ toolCalls: [write('a'), write('a')] }))).toBe('pass');
     expect(verdict(g, 'single-index-writer', liveRecord({ toolCalls: [write('a'), write('b')] }))).toBe('fail');
+  });
+
+  test('the no-background check fails a dispatch not shown to have held the parent for its result, on either host', () => {
+    const g = group('adhoc-coordination');
+    const dispatch = (waited: boolean | null) => ({ seq: 0, session: 'p', agent: 'hive-builder', tool: 'dispatch', status: 'completed', args: { agent: 'forager-worker', background: false }, outcome: { result: 'success', waited } });
+    expect(verdict(g, 'no-background', liveRecord({ toolCalls: [dispatch(true)] }))).toBe('pass');
+    // A v2 parent that moved on before the terminal report, or one whose wait could not be shown.
+    expect(verdict(g, 'no-background', liveRecord({ toolCalls: [dispatch(false)] }))).toBe('fail');
+    expect(verdict(g, 'no-background', liveRecord({ toolCalls: [dispatch(null)] }))).toBe('fail');
   });
 
   test('interrupted-writer safe stop: an overlapping writer or a destructive Git command leaves the compliant path', () => {
@@ -2076,6 +2105,8 @@ describe('managed-model control probe', () => {
       // A call that completed is never a refusal, and reports the child the host named.
       expect(facts([tool({ status: 'completed', errorText: null, metadata: { sessionID: 'ses_kid', status: 'completed' } })])).toMatchObject({ call: 'completed', refusal: null, child: 'ses_kid' });
       expect(facts([tool({ status: 'completed', errorText: null, metadata: null, output: '<subagent sessionID="ses_kid" state="completed">ok</subagent>' })]).child).toBe('ses_kid');
+      // The v2 launch receipt names its child in the form the shared dispatch parser reads.
+      expect(facts([tool({ status: 'completed', errorText: null, metadata: null, output: 'Subagent started in the background (sessionID: ses_kid).' })]).child).toBe('ses_kid');
       expect(facts([tool({ status: 'completed', errorText: null, metadata: { sessionID: 'not a session' } })]).child).toBeNull();
       expect(facts([tool({ status: 'running' })])).toMatchObject({ call: 'other', refusal: null });
     });
@@ -2191,18 +2222,79 @@ describe('managed-model control probe', () => {
     for (const bad of ['', 'a b', 'x'.repeat(201), 7, null, undefined]) expect(nativeId(bad)).toBeNull();
   });
 
+  // The v2 host's public reads that the command path polls: its background jobs and inbox are lists, its active sessions a record.
+  const quietHost = (path: string) => JSON.stringify({ data: path === '/api/experimental/job' || path.endsWith('/inbox') ? [] : {} });
+
   test('a later turn of the same primary reuses its session instead of creating one', async () => {
     const real = globalThis.fetch;
     const calls: string[] = [];
     globalThis.fetch = (async (url: any, init: any = {}) => {
-      calls.push(`${init.method ?? 'GET'} ${new URL(String(url)).pathname}`);
-      return new Response(JSON.stringify({ data: {} }), { status: 200 });
+      const path = new URL(String(url)).pathname;
+      calls.push(`${init.method ?? 'GET'} ${path}`);
+      return new Response(quietHost(path), { status: 200 });
     }) as any;
     try {
       const run = await runPrompt('v2', { agent: 'build', modelRef: 'mock/x', command: 'start-execution', prompt: 'p', sessionId: 'ses_existing' }, 60_000);
       expect(run).toMatchObject({ exit: 0, sessionId: 'ses_existing' });
       expect(calls).toContain('POST /api/session/ses_existing/command');
       expect(calls).not.toContain('POST /api/session');
+    } finally {
+      globalThis.fetch = real;
+    }
+  });
+
+  test('a v2 command turn ends only when work it started can no longer wake it, read as the pinned opencode run reads it', async () => {
+    const real = globalThis.fetch;
+    const calls: string[] = [];
+    const sessions: Record<string, unknown> = {
+      '/api/session/ses_child': { id: 'ses_child', parentID: 'ses_existing' },
+      '/api/session/ses_other': { id: 'ses_other' },
+    };
+    // Each poll reads jobs, then inboxes, then active sessions. The first idle leaves this run's child job running, the
+    // next has no job row but leaves a report queued in the child's own inbox, the next finds the child active after its
+    // job row is gone, and the fourth is quiet apart from an unrelated active session.
+    const job = { id: 'ses_child', kind: 'subagent', sessionID: 'ses_existing', childSessionID: 'ses_child', status: 'running', time: { started: Date.now() + 60_000 } };
+    const busy: Array<Record<string, unknown>> = [
+      { '/api/experimental/job': [job] },
+      { '/api/session/ses_child/inbox': [{ id: 'msg_report' }] },
+      { '/api/session/active': { ses_child: { type: 'running' } } },
+      { '/api/session/active': { ses_other: { type: 'running' } } },
+    ];
+    let poll = -1;
+    globalThis.fetch = (async (url: any, init: any = {}) => {
+      const path = new URL(String(url)).pathname;
+      calls.push(`${init.method ?? 'GET'} ${path}`);
+      if (path === '/api/experimental/session/ses_existing/wait') poll += 1;
+      const stage = busy[poll];
+      if (stage && path in stage) return new Response(JSON.stringify({ data: stage[path] }), { status: 200 });
+      if (path in sessions) return new Response(JSON.stringify({ data: sessions[path] }), { status: 200 });
+      return new Response(quietHost(path), { status: 200 });
+    }) as any;
+    try {
+      const run = await runPrompt('v2', { agent: 'build', modelRef: 'mock/x', command: 'start-execution', prompt: 'p', sessionId: 'ses_existing' }, 60_000);
+      expect(run).toMatchObject({ exit: 0, sessionId: 'ses_existing' });
+      expect(calls.filter((call) => call === 'POST /api/experimental/session/ses_existing/wait')).toHaveLength(4);
+      // Within the last poll the reads run job, then each tracked session's inbox, then active.
+      const lastPoll = calls.lastIndexOf('POST /api/experimental/session/ses_existing/wait');
+      const order = calls.slice(lastPoll).map((call) => call.endsWith('/api/experimental/job') ? 'job' : call.endsWith('/inbox') ? 'inbox' : call.endsWith('/api/session/active') ? 'active' : null).filter(Boolean);
+      expect(order).toEqual(['job', 'inbox', 'inbox', 'active']);
+    } finally {
+      globalThis.fetch = real;
+    }
+  });
+
+  test('a v2 command turn whose job, inbox or active answer is unreadable or has the wrong shape fails instead of ending quiet', async () => {
+    const real = globalThis.fetch;
+    try {
+      const cases: Array<[string, string]> = [['/api/experimental/job', '{"data":{}}'], ['/api/experimental/job', '{"data":[{"id":"x"}]}'], ['/api/session/ses_existing/inbox', 'not json'], ['/api/session/active', '{"data":[]}']];
+      for (const [path, body] of cases) {
+        globalThis.fetch = (async (url: any) => {
+          const at = new URL(String(url)).pathname;
+          return new Response(at === path ? body : quietHost(at), { status: 200 });
+        }) as any;
+        const run = await runPrompt('v2', { agent: 'build', modelRef: 'mock/x', command: 'start-execution', prompt: 'p', sessionId: 'ses_existing' }, 60_000);
+        expect(run.exit, path + ' ' + body).toBe(-1);
+      }
     } finally {
       globalThis.fetch = real;
     }
@@ -2921,12 +3013,28 @@ describe('wiring contract', () => {
     ...overrides,
   });
   // Every probe passing, so each test below judges only the observation it changes.
+  const nested = { result: 0, timedOut: false, asked: null, helperRan: true, interimReport: false, parentUsedTerminal: true, parentUsedInterim: false };
+  const v2Reads = { location: { agents: true, commands: true, otherDirectory: true }, codeModeRead: { tool: 'hive_repositories_status', transport: 'execute', completed: true, projectResolved: true } };
   const wiringFor = (results: Record<string, any>) => wiringFailures(Object.fromEntries(Object.entries(results).map(([id, w]) => [id, {
-    modelSelection: passingSelection(id), invalidModelSelection: REJECTED_INVALID_SELECTION, ...(id === 'v2' ? { managedModelControl: passingControl() } : {}), ...w,
+    modelSelection: passingSelection(id), invalidModelSelection: REJECTED_INVALID_SELECTION, nestedCompletion: nested, ...(id === 'v2' ? { managedModelControl: passingControl(), ...v2Reads } : {}), ...w,
   }])), SCENARIOS.model.mock);
 
   test('a complete observation passes', () => {
     expect(wiringFor({ v1: host(), v2: host() })).toEqual([]);
+    // An interim report the parent waited through is part of a passing run.
+    expect(wiringFor({ v2: host({ nestedCompletion: { ...nested, interimReport: true } }) })).toEqual([]);
+  });
+
+  test('a parent that acted on an interim report, a catalog read of the wrong location or a Code Mode read that missed the project fails', () => {
+    expect(wiringFor({ v2: host({ nestedCompletion: { ...nested, interimReport: true, parentUsedTerminal: false, parentUsedInterim: true } }) })).toEqual(['nested_completion_not_terminal:v2']);
+    expect(wiringFor({ v1: host({ nestedCompletion: { ...nested, result: -1 } }) })).toEqual(['nested_completion_run_unsuccessful:v1']);
+    expect(wiringFor({ v1: host({ nestedCompletion: undefined }) })).toEqual(['nested_completion_run_unsuccessful:v1']);
+    // The server's fallback answers for the project whatever the query says; only the second directory shows selection.
+    expect(wiringFor({ v2: host({ location: { ...v2Reads.location, otherDirectory: false } }) })).toEqual(['location_not_selected:v2:otherDirectory']);
+    expect(wiringFor({ v2: host({ location: undefined }) })).toEqual(['location_unobserved:v2']);
+    for (const read of [{ transport: 'direct' }, { completed: false }, { projectResolved: false }]) {
+      expect(wiringFor({ v2: host({ codeModeRead: { ...v2Reads.codeModeRead, ...read } }) })).toEqual(['codemode_read_failed:v2']);
+    }
   });
 
   test('failures name missing contract metadata, unread references, undelivered command bodies and unresolved overrides', () => {
@@ -3148,7 +3256,8 @@ describe('wiring contract', () => {
         if (path === '/api/session') return reply(200, { id: 'ses_1' });
         if (path.endsWith('/command')) return reply(200);
         if (path.endsWith('/wait')) return wait(init);
-        return reply(200, []);
+        // Jobs and inboxes are lists; the active sessions are a record.
+        return reply(200, path === '/api/session/active' ? {} : []);
       }) as any;
       try { return { run: await body(), calls }; } finally { globalThis.fetch = real; }
     };
@@ -3305,9 +3414,75 @@ describe('in-container fixture helpers', () => {
     expect(mockDecision('v1', request(['task'], script)).call.tool).toBe('task');
     const v2 = mockDecision('v2', request(['subagent'], script)).call;
     expect(v2.tool).toBe('subagent');
-    expect(v2.args.background).toBe(false);
+    expect(v2.args).not.toHaveProperty('background');
     const read = scriptDirective([{ op: 'hive', tool: 'hive_repositories_status', args: {} }]);
     expect(mockDecision('v2', request(['execute'], read)).call).toEqual({ tool: 'execute', args: { code: 'return await tools.hive_repositories_status({})' } });
+  });
+
+  test('a v2 parent waits for the report of each child it launched, which then counts as that dispatch\'s result', () => {
+    const script = scriptDirective([
+      { op: 'dispatch', agent: 'scout-researcher', prompt: 'look', script: [] },
+      { op: 'text', text: 'child said {{matchIn:dispatch:verdict=(\\w+)}}' },
+    ]);
+    const launched = [
+      { role: 'assistant', tool_calls: [{ id: 'c1', function: { name: 'subagent' } }] },
+      { role: 'tool', tool_call_id: 'c1', content: 'The subagent is working in the background (sessionID: ses_child1). You will receive a <subagent> message when it goes idle.' },
+    ];
+    expect(mockDecision('v2', request(['subagent'], script, launched))).toEqual({ text: SUBAGENT_WAIT_TEXT });
+    const waited = [...launched, { role: 'assistant', content: SUBAGENT_WAIT_TEXT }];
+    expect(mockDecision('v2', request(['subagent'], script, waited))).toEqual({ text: SUBAGENT_WAIT_TEXT });
+    // An interim report (the child stopped while its own helper runs) neither answers the launch nor is a result, even
+    // when its text would match the next step.
+    const interim = [...waited, { role: 'user', content: '<subagent sessionID="ses_child1" state="running" description="look">\nverdict=premature\n\nBackground work still running:\n- subagent (scout-researcher, sessionID: ses_helper): helper\n</subagent>' }];
+    expect(mockDecision('v2', request(['subagent'], script, interim))).toEqual({ text: SUBAGENT_WAIT_TEXT });
+    const interimWaited = [...interim, { role: 'assistant', content: SUBAGENT_WAIT_TEXT }];
+    // The terminal report wakes the parent; the wait texts were not steps, so the next step runs and reads that result.
+    const reported = [...interimWaited, { role: 'user', content: '<subagent sessionID="ses_child1" state="completed" description="look">\nverdict=approve\n</subagent>' }];
+    expect(mockDecision('v2', request(['subagent'], script, reported))).toEqual({ text: 'child said approve' });
+    // A failed or cancelled child's terminal report also answers its launch.
+    const failed = [...waited, { role: 'user', content: '<subagent sessionID="ses_child1" state="error" description="look">\nverdict=crashed\n</subagent>' }];
+    expect(mockDecision('v2', request(['subagent'], script, failed))).toEqual({ text: 'child said crashed' });
+    // v1 returns the child's result from the call itself and never waits.
+    expect(mockDecision('v1', request(['task'], script, [
+      { role: 'assistant', tool_calls: [{ id: 'c1', function: { name: 'task' } }] },
+      { role: 'tool', tool_call_id: 'c1', content: 'verdict=reject' },
+    ]))).toEqual({ text: 'child said reject' });
+  });
+
+  test('a v2 continuation of the same child waits for a terminal report that follows its own launch', () => {
+    const script = scriptDirective([
+      { op: 'dispatch', agent: 'scout-researcher', prompt: 'look', script: [] },
+      { op: 'native', tool: 'subagent', args: { agent: 'scout-researcher', description: 'more', prompt: 'more', sessionID: 'ses_child1' } },
+      { op: 'text', text: 'child said {{matchIn:dispatch:verdict=(\\w+)}}' },
+    ]);
+    const receipt = (id: string) => [
+      { role: 'assistant', tool_calls: [{ id, function: { name: 'subagent' } }] },
+      { role: 'tool', tool_call_id: id, content: 'The subagent is working in the background (sessionID: ses_child1).' },
+    ];
+    const report = (verdict: string) => ({ role: 'user', content: `<subagent sessionID="ses_child1" state="completed" description="look">\nverdict=${verdict}\n</subagent>` });
+    const first = [...receipt('c1'), { role: 'assistant', content: SUBAGENT_WAIT_TEXT }, report('first')];
+    // The first launch's report is used up; the continuation reuses the child ID and needs a report of its own.
+    const continued = [...first, ...receipt('c2')];
+    expect(mockDecision('v2', request(['subagent'], script, continued))).toEqual({ text: SUBAGENT_WAIT_TEXT });
+    expect(mockDecision('v2', request(['subagent'], script, [...continued, { role: 'assistant', content: SUBAGENT_WAIT_TEXT }, report('second')]))).toEqual({ text: 'child said second' });
+  });
+
+  test('a v2 dispatch waited only when its terminal report arrived before the session\'s next tool call', () => {
+    const call = { name: 'subagent', status: 'completed', input: { agent: 'forager-worker' } };
+    const launch = { role: 'assistant', tools: [call] };
+    const report = (state: string) => ({ role: 'synthetic', text: `<subagent sessionID="ses_w" state="${state}" description="d">\nx\n</subagent>`, tools: [] });
+    const next = { role: 'assistant', tools: [{ name: 'hive_adhoc_worktree_merge' }] };
+    const wait = { role: 'assistant', text: SUBAGENT_WAIT_TEXT, tools: [] };
+    expect(dispatchWaited('v2', call, [launch, wait, report('completed'), next], 0, 'ses_w')).toBe(true);
+    expect(dispatchWaited('v2', call, [launch, wait, report('running'), next, report('completed')], 0, 'ses_w')).toBe(false);
+    expect(dispatchWaited('v2', call, [launch, next, report('completed')], 0, 'ses_w')).toBe(false);
+    expect(dispatchWaited('v2', call, [launch, wait], 0, 'ses_w')).toBe(false);
+    expect(dispatchWaited('v2', call, [launch], 0, null)).toBeNull();
+    // An unfinished call is not shown to have waited, whatever followed it; on v1 the call's own `background` argument decides.
+    expect(dispatchWaited('v2', { ...call, status: 'error' }, [launch, next], 0, null)).toBeNull();
+    expect(dispatchWaited('v2', { ...call, status: 'running' }, [launch, wait, report('completed'), next], 0, 'ses_w')).toBeNull();
+    expect(dispatchWaited('v1', { name: 'task', status: 'completed', input: { subagent_type: 'x', background: true } }, [], 0, null)).toBe(false);
+    expect(dispatchWaited('v1', { name: 'task', status: 'completed', input: { subagent_type: 'x' } }, [], 0, null)).toBe(true);
   });
 
   test('the mock advances one step per assistant turn and resolves scoped matches', () => {
@@ -3372,6 +3547,12 @@ describe('in-container fixture helpers', () => {
     expect(toolOutcome(dispatch({ sessionId: 'missing' }), parent, tree).result).toBe('unknown');
     expect(toolOutcome({ name: 'subagent', status: 'completed', input: { agent: 'code-reviewer' }, metadata: { sessionID: 'c', status: 'failed' }, output: '' }, parent, tree).result).toBe('failure');
     expect(toolOutcome({ name: 'subagent', status: 'completed', input: { agent: 'code-reviewer' }, metadata: null, output: '<subagent sessionID="ses_child" state="completed">ok</subagent>' }, parent, tree).result).toBe('success');
+    // A v2 2.3.2 call always reports `running`; it succeeds only through its verified child, never through the status.
+    const running = (sessionID: string, agent = 'code-reviewer') => ({ name: 'subagent', status: 'completed', input: { agent }, metadata: { sessionID, status: 'running' }, output: `The subagent is working in the background (sessionID: ${sessionID}).` });
+    expect(toolOutcome(running('ses_child'), parent, tree)).toEqual({ result: 'success', childSessionId: 'ses_child', childAgent: 'code-reviewer' });
+    expect(toolOutcome(running('ses_child', 'forager-worker'), parent, tree).result).toBe('unknown');
+    expect(toolOutcome(running('ses_missing'), parent, tree).result).toBe('unknown');
+    expect(toolOutcome({ ...running('ses_child'), metadata: null }, parent, tree)).toMatchObject({ result: 'success', childSessionId: 'ses_child' });
     expect(toolOutcome({ name: 'hive_worktree_merge', status: 'completed', output: JSON.stringify({ success: false, error: { code: 'TARGET_RECONCILIATION_REQUIRED' } }) }, parent, tree))
       .toEqual({ result: 'failure', code: 'TARGET_RECONCILIATION_REQUIRED' });
     expect(toolOutcome({ name: 'hive_status', status: 'completed', output: 'not json at all' }, parent, tree).result).toBe('unknown');
@@ -4085,6 +4266,9 @@ describe('supervised exercise native adapters', () => {
     expect(quiescence(tree, idle as any, new Set(), [{ kind: 'permission', id: 'per_1', sessionId: 'b', toolCallId: 'c' }], tree).reasons).toEqual(['pending_permission:per_1']);
     // A session created after the enumeration is visible in status, in the interaction lists, or in a second enumeration.
     expect(quiescence(tree, idle as any, new Set(['ses_new']), [], tree).reasons).toEqual(['session_busy_outside_tree:ses_new']);
+    // v2: a job the host still lists, or a queued inbox item, can wake the tree without a new prompt; unread is unknown.
+    expect(quiescence(tree, idle as any, new Set(), [], tree, { jobs: ['ses_b:running'], queued: ['ses_a'] }).reasons).toEqual(['job_unsettled:ses_b:running', 'inbox_queued:ses_a']);
+    expect(quiescence(tree, idle as any, new Set(), [], tree, null).reasons).toEqual(['background_unknown']);
     expect(quiescence(tree, idle as any, new Set(), [{ kind: 'question', id: 'que_9', sessionId: 'ses_new', toolCallId: null, outsideTree: true }], tree).reasons).toEqual(['pending_outside_tree:que_9']);
     expect(quiescence(tree, idle as any, new Set(), [], { ...tree, sessions: [...tree.sessions, { id: 'ses_new', parentId: 'a', agent: null }] }).reasons).toEqual(['tree_changed']);
   });
@@ -4168,7 +4352,7 @@ describe('supervised exercise native adapters', () => {
   });
 
   // Assistant messages in the pinned host shapes. v1 (1.x): a tool part has `callID` and `tool`; a completed state has an
-  // `output` string, an errored one an `error` string. v2 (@opencode/schema 2.0.26): a tool part has `id` and `name`; a
+  // `output` string, an errored one an `error` string. v2 (@opencode/schema 2.3.2): a tool part has `id` and `name`; a
   // completed state has `content` blocks and no `output`; an errored state has `error: { type, message, response? }` and
   // optional `content`.
   const pinnedV1 = (tools: any[]) => ({ info: { id: 'm', role: 'assistant', agent: 'hive-builder' }, parts: tools.map((t) => ({
@@ -4723,7 +4907,8 @@ describe('supervised exercise native adapters', () => {
         const table: Record<string, any> = {
           '/api/session/ses_a': { data: { id: 'ses_a', agent: sends.length ? after : before } }, '/api/session?parentID=ses_a&limit=100&order=asc': { data: [], cursor: {} },
           '/api/session/ses_a/message?limit=100&order=asc': { data: [], cursor: {} }, '/api/session/active': { data: {} }, '/api/session/ses_a/form': { data: [] },
-          '/api/session/ses_a/permission': { data: [] }, [`/api/command?directory=${encodeURIComponent('/work/proj')}`]: { data: [{ name: 'implement', description: 'x' }] },
+          '/api/experimental/job?sessionID=ses_a&descendants=true': { data: [] }, '/api/session/ses_a/inbox': { data: [] },
+          '/api/session/ses_a/permission': { data: [] }, [`/api/command?location%5Bdirectory%5D=${encodeURIComponent('/work/proj')}`]: { data: [{ name: 'implement', description: 'x' }] },
         };
         return path in table ? { outcome: 'response' as const, status: 200, body: table[path], bytes: 1 } : { outcome: 'response' as const, status: 404, body: null, bytes: 0 };
       };

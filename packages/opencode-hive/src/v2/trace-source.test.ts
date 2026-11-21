@@ -3,9 +3,9 @@ import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { Effect, Exit, Fiber, Scope, Stream } from 'effect';
+import { Tool } from '@opencode/plugin/effect';
 import type { Plugin } from '@opencode/plugin/effect';
 import type { TaskTraceSummarizerConfig } from 'hive-core';
-import { Tool } from '@opencode/schema/tool';
 import plugin from '../index.js';
 import { TASK_TRACE_SUMMARIZER_AGENT, TASK_TRACE_SUMMARIZER_PROMPT } from '../trace/types.js';
 import { ReadAccessError, type TargetCheck, type VerifiedReadAccess } from './client.js';
@@ -118,7 +118,9 @@ function summarizerContext(options: {
   /** The model `model.default` returns, or null for a host without a default model. */
   defaultModel?: unknown;
   /** Caller sessions `session.get` returns by ID; an Error fails the lookup. Unknown IDs fail. */
-  sessions?: Record<string, { model?: { providerID: string; id: string; variant?: string } } | Error>;
+  sessions?: Record<string, { model?: { providerID: string; id: string; variant?: string }; agent?: string } | Error>;
+  /** Effective agent entries `agent.get` returns by ID; an Error fails the lookup. Unknown IDs have no model. */
+  agents?: Record<string, { model?: { providerID: string; id: string; variant?: string } } | Error>;
 } = {}) {
   const config = options.config ?? { model: 'p/m', variant: 'high' };
   const sessionReads: string[] = [];
@@ -134,7 +136,13 @@ function summarizerContext(options: {
       list: () => options.models?.() ?? Effect.succeed({ location: { directory: HERE }, data: [{ providerID: 'p', id: 'm', limit: { context: 100_000, output: 1_000 }, variants: [{ id: 'high' }] }] }),
       default: () => Effect.succeed({ location: { directory: HERE }, data: options.defaultModel ?? null }),
     },
-    agent: { transform: () => Effect.succeed(registration) },
+    agent: {
+      transform: () => Effect.succeed(registration),
+      get: ({ agentID }: { agentID: string }) => Effect.suspend(() => {
+        const agent = options.agents?.[agentID];
+        return agent instanceof Error ? Effect.fail(agent) : Effect.succeed({ data: { id: agentID, ...agent } });
+      }),
+    },
     tool: { transform: (callback: (editor: { add: (info: Tool.Info) => void }) => void) => Effect.sync(() => { callback({ add: (info) => tools.set(info.name, info) }); return registration; }) },
     session: {
       hook: (name: string, callback: (event: any) => Effect.Effect<void>) => Effect.sync(() => { if (name === 'generate') hook = callback; return registration; }),
@@ -201,10 +209,11 @@ function semanticReply(request: any): Effect.Effect<{ text: string }> {
 
 const parse = (text: string) => JSON.parse(text);
 
+/** `agent` is the agent the host names for the tool call; `null` calls without one. `build` has no configured model here. */
 function operations(access: VerifiedReadAccess, summarizer = summarizerContext().summarizer.host) {
   const ops = createV2TraceOperations(access, summarizer);
   return {
-    trace: async (args: Raw, sessionID = 'ses_parent') => parse(await ops.hive_task_trace.execute(args, { sessionID, signal: new AbortController().signal }) as string),
+    trace: async (args: Raw, sessionID = 'ses_parent', agent: string | null = 'build') => parse(await ops.hive_task_trace.execute(args, { sessionID, ...(agent === null ? {} : { agent }), signal: new AbortController().signal }) as string),
     content: async (args: Raw, sessionID = 'ses_parent') => parse(await ops.hive_task_trace_content.execute(args, { sessionID, signal: new AbortController().signal }) as string),
   };
 }
@@ -537,9 +546,9 @@ describe('v2 summarizer model selection', () => {
   const finished = [user('msg_u1', 'Implement the task.'), assistant('msg_a1', [{ type: 'text', text: 'Implemented and verified.' }])];
   const modelInfo = (providerID: string, id: string, variants: string[], pkg = 'provider-package') => ({ providerID, id, package: pkg, limit: { context: 100_000, output: 1_000 }, variants: variants.map((variant) => ({ id: variant })) });
   const catalog = () => Effect.succeed({ data: [modelInfo('p', 'm', ['high']), modelInfo('cp', 'cm', ['max']), modelInfo('bp', 'bm', ['low']), modelInfo('dp', 'dm', [])] });
-  const recover = async (setup: ReturnType<typeof summarizerContext>) => {
+  const recover = async (setup: ReturnType<typeof summarizerContext>, agent: string | null = 'build') => {
     const { access } = readAccessFor({ sessions: FAMILY, timelines: { ses_child: finished } });
-    return operations(access, setup.summarizer.host).trace({ task_id: 'ses_child', recovery: true });
+    return operations(access, setup.summarizer.host).trace({ task_id: 'ses_child', recovery: true }, 'ses_parent', agent);
   };
 
   it('with no summarizer settings, binds the caller session model and variant for every generation', async () => {
@@ -550,15 +559,55 @@ describe('v2 summarizer model selection', () => {
     expect(result.recovery).toMatchObject({ status: 'complete', model: { requested: { model: 'cp/cm', variant: 'max', source: 'caller' }, observed: { model: 'cp/cm', variant: 'max' } } });
   });
 
-  it('binds the host default without a variant for a caller session that has no model of its own', async () => {
+  it('binds the host default without a variant for a caller whose session and agent have no model', async () => {
     const setup = summarizerContext({ config: {}, models: catalog, defaultModel: modelInfo('dp', 'dm', []), sessions: { ses_parent: {} } });
     const result = await recover(setup);
     expect(setup.created.map((input) => input.model)).toEqual([{ providerID: 'dp', id: 'dm' }, { providerID: 'dp', id: 'dm' }]);
     expect(result.recovery).toMatchObject({ status: 'complete', model: { requested: { model: 'dp/dm', source: 'caller' } } });
   });
 
+  it('binds the caller agent\'s available configured model and variant before the host default, as the native runner does', async () => {
+    const setup = summarizerContext({ config: {}, models: catalog, defaultModel: modelInfo('dp', 'dm', []), sessions: { ses_parent: { agent: 'hive-helper' } }, agents: { 'hive-helper': { model: { providerID: 'cp', id: 'cm', variant: 'max' } } } });
+    const result = await recover(setup);
+    expect(setup.created.map((input) => input.model)).toEqual([{ providerID: 'cp', id: 'cm', variant: 'max' }, { providerID: 'cp', id: 'cm', variant: 'max' }]);
+    expect(result.recovery).toMatchObject({ status: 'complete', model: { requested: { model: 'cp/cm', variant: 'max', source: 'caller' } } });
+
+    // A configured model the host does not list as available is skipped, and the host default applies.
+    const unlisted = summarizerContext({ config: {}, models: catalog, defaultModel: modelInfo('dp', 'dm', []), sessions: { ses_parent: { agent: 'hive-helper' } }, agents: { 'hive-helper': { model: { providerID: 'gone', id: 'model' } } } });
+    await recover(unlisted);
+    expect(unlisted.created.map((input) => input.model)).toEqual([{ providerID: 'dp', id: 'dm' }, { providerID: 'dp', id: 'dm' }]);
+
+    // An agent entry that cannot be read leaves the selection unknown; Hive reports that instead of guessing.
+    const unreadable = summarizerContext({ config: {}, models: catalog, defaultModel: modelInfo('dp', 'dm', []), sessions: { ses_parent: { agent: 'hive-helper' } }, agents: { 'hive-helper': new Error('catalog offline') } });
+    const failed = await recover(unreadable);
+    expect(unreadable.created).toEqual([]);
+    expect(failed.recovery).toMatchObject({ status: 'unavailable', failures: [{ stage: 'model', diagnostics: [{ code: 'caller_model_unavailable' }] }] });
+  });
+
+  it('binds the default agent\'s configured model for a caller session that names no agent, from the agent the tool call names', async () => {
+    // The native runner gives a session without an agent the default agent; the host names that agent on the tool call.
+    // The catalog default `dp/dm` differs, so binding it would send the transcript to a model the caller does not use.
+    const agents = { 'hive-master': { model: { providerID: 'cp', id: 'cm', variant: 'max' } } };
+    const unnamed = summarizerContext({ config: {}, models: catalog, defaultModel: modelInfo('dp', 'dm', []), sessions: { ses_parent: {} }, agents });
+    const result = await recover(unnamed, 'hive-master');
+    expect(unnamed.created.map((input) => input.model)).toEqual([{ providerID: 'cp', id: 'cm', variant: 'max' }, { providerID: 'cp', id: 'cm', variant: 'max' }]);
+    expect(result.recovery).toMatchObject({ status: 'complete', model: { requested: { model: 'cp/cm', variant: 'max', source: 'caller' } } });
+
+    // The session's own agent, when it names one, is the one the runner uses.
+    const named = summarizerContext({ config: {}, models: catalog, defaultModel: modelInfo('dp', 'dm', []), sessions: { ses_parent: { agent: 'build' } }, agents });
+    await recover(named, 'hive-master');
+    expect(named.created.map((input) => input.model)).toEqual([{ providerID: 'dp', id: 'dm' }, { providerID: 'dp', id: 'dm' }]);
+
+    // Neither the session nor the call names an agent: the effective agent is unknown, so recovery is unavailable
+    // rather than run on the catalog default.
+    const unknown = summarizerContext({ config: {}, models: catalog, defaultModel: modelInfo('dp', 'dm', []), sessions: { ses_parent: {} }, agents });
+    const refused = await recover(unknown, null);
+    expect(unknown.created).toEqual([]);
+    expect(refused.recovery).toMatchObject({ status: 'unavailable', failures: [{ stage: 'model', diagnostics: [{ code: 'caller_model_unavailable' }] }] });
+  });
+
   it('reports recovery unavailable when the catalog default has no provider package, which the native runner skips', async () => {
-    // v2.0.26 `ModelResolver.resolve` runs a session without a model on the catalog default only when it has a
+    // v2.3.2 `ModelResolver.fallback` runs a session without a model on the catalog default only when it has a
     // package, else on another packaged model. Binding the package-less default would pin a model the runner never picks.
     const setup = summarizerContext({ config: {}, models: catalog, defaultModel: modelInfo('dp', 'dm', [], ''), sessions: { ses_parent: {} } });
     const result = await recover(setup);

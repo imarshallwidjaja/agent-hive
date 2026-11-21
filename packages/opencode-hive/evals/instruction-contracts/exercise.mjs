@@ -502,7 +502,7 @@ export const DRIVER_FAILURES = new Set([
 ]);
 export const DRIVER_REFUSALS = new Set(REFUSALS);
 const EFFECTS = ['accepted'];
-const REASON = new RegExp(`^(tree_incomplete:(${TREE_FAILURES.join('|')})|tree_changed|status_unknown|interactions_unknown|(session_busy|session_busy_outside_tree|history_incomplete|tool_running):ses_[A-Za-z0-9]{1,64}|(pending_question|pending_permission|pending_outside_tree):[A-Za-z0-9_.:-]{1,200})$`);
+const REASON = new RegExp(`^(tree_incomplete:(${TREE_FAILURES.join('|')})|tree_changed|status_unknown|interactions_unknown|background_unknown|(session_busy|session_busy_outside_tree|history_incomplete|tool_running|inbox_queued):ses_[A-Za-z0-9]{1,64}|(pending_question|pending_permission|pending_outside_tree|job_unsettled):[A-Za-z0-9_.:-]{1,200})$`);
 
 const str = (max) => (v) => (typeof v === 'string' && v.length <= max ? v : INVALID);
 const match = (re, max = 256) => (v) => (typeof v === 'string' && v.length <= max && re.test(v) ? v : INVALID);

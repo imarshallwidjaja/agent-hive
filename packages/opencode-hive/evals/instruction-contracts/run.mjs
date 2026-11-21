@@ -168,7 +168,8 @@ function matchingCalls(spec, record, re) {
   if (names) calls = calls.filter((c) => names.includes(c.tool));
   if (spec.agent) calls = calls.filter((c) => c.args.agent === spec.agent);
   if (spec.by) calls = calls.filter((c) => c.agent === spec.by);
-  if (spec.background !== undefined) calls = calls.filter((c) => c.args.background === spec.background);
+  // `waited: false` counts dispatches not shown to have held the session for their result (unknown included).
+  if (spec.waited !== undefined) calls = calls.filter((c) => spec.waited ? c.outcome?.waited === true : c.outcome?.waited !== true);
   if (spec.promptMatches) calls = calls.filter((c) => spec.promptMatches.every((p) => re(p).test(c.args.prompt ?? '')));
   for (const [key, pattern] of Object.entries(spec.argsMatch ?? {})) calls = calls.filter((c) => typeof c.args[key] === 'string' && re(pattern).test(c.args[key]));
   for (const key of spec.argsAbsent ?? []) calls = calls.filter((c) => c.args[key] === undefined);
@@ -875,6 +876,17 @@ export function wiringFailures(results, model) {
     if (!w.override?.listed) failures.push(`override_not_listed:${host}`);
     if (!w.override?.resolvesToUserSkill) failures.push(`override_not_user_skill:${host}`);
     if (!w.override?.loadedUserBody) failures.push(`override_body_not_loaded:${host}`);
+    if (host === 'v2') {
+      // Catalog reads answer for the location their query selects, and the default Code Mode transport carries a Hive
+      // read whose answer names this project.
+      if (!w.location) failures.push(`location_unobserved:${host}`);
+      else for (const [read, selected] of Object.entries(w.location)) if (selected !== true) failures.push(`location_not_selected:${host}:${read}`);
+      const read = w.codeModeRead;
+      if (!read || read.transport !== 'execute' || !read.completed || !read.projectResolved) failures.push(`codemode_read_failed:${host}`);
+    }
+    const nested = w.nestedCompletion;
+    if (!nested || nested.result !== 0 || nested.timedOut || nested.asked) failures.push(`nested_completion_run_unsuccessful:${host}`);
+    else if (!nested.helperRan || !nested.parentUsedTerminal || nested.parentUsedInterim) failures.push(`nested_completion_not_terminal:${host}`);
     failures.push(...modelSelectionFailures(host, w.modelSelection, w.invalidModelSelection, model));
     failures.push(...managedModelControlFailures(host, w.managedModelControl, model));
     failures.push(...contextEditFailures(host, w));

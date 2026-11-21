@@ -149,10 +149,11 @@ export interface SummarizerHost {
   /** Ephemeral sessions created and not yet confirmed removed. */
   readonly ephemeralSessionIDs: Set<string>;
   /**
-   * The model and variant the invoking caller session runs on now, read without changing that session. Undefined
-   * when the host cannot determine it; throws when the lookup fails.
+   * The model and variant the invoking caller session runs on now, read without changing that session. `callerAgent` is
+   * the agent the host named for the invoking tool call, when it named one. Undefined when the host cannot determine
+   * the selection; throws when the lookup fails.
    */
-  callerSelection(callerSessionID: string, signal: AbortSignal): Promise<ModelSelection | undefined>;
+  callerSelection(callerSessionID: string, signal: AbortSignal, callerAgent?: string): Promise<ModelSelection | undefined>;
   /** Metadata of the selected model. Undefined means the model is not found; throws when the lookup fails. */
   modelMetadata(model: ModelSelection, signal: AbortSignal): Promise<ModelMetadata | undefined>;
   /**
@@ -172,6 +173,8 @@ export interface SummarizerHost {
 
 export interface TraceCaller {
   sessionID: string;
+  /** The agent the host named for the invoking tool call; v2 supplies it, v1 does not. */
+  agent?: string;
   /** Ordinary v1 reads omit cancellation; v2 reads and recovery on either host supply it. */
   abort?: AbortSignal;
 }

@@ -3,8 +3,8 @@ import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { Effect, Exit, Scope, Stream } from 'effect';
+import { Tool } from '@opencode/plugin/effect';
 import type { Plugin } from '@opencode/plugin/effect';
-import { Tool } from '@opencode/schema/tool';
 import plugin from '../index.js';
 import { SUBAGENT_CLARIFICATION_PROMPT } from '../hooks/system-hook.js';
 import { HIVE_COMMANDS } from '../commands/registry.js';
@@ -420,6 +420,33 @@ describe('v2 execution guards', () => {
     ['swarm-orchestrator', 'primary', 'opencode_worktree_create', {}, false],
     ['swarm-orchestrator', 'primary', 'opencode_session_move', {}, false],
     ['swarm-orchestrator', 'primary', 'opencode_worktree_remove', {}, false],
+    // Automations: the four mutating tools are the operator's. Every Hive role (primary or child, editing or not),
+    // native subagent and child session is refused them; listing stays native. A top-level unmanaged agent keeps
+    // native authority.
+    ['swarm-orchestrator', 'primary', 'opencode_automation_create', {}, false],
+    ['swarm-orchestrator', 'primary', 'opencode_automation_resume', {}, false],
+    ['swarm-orchestrator', 'primary', 'opencode_automation_pause', {}, false],
+    ['swarm-orchestrator', 'primary', 'opencode_automation_delete', {}, false],
+    ['swarm-orchestrator', 'primary', 'opencode_automation_list', {}, true],
+    ['forager-worker', 'child', 'opencode_automation_create', {}, false],
+    ['forager-worker', 'child', 'opencode_automation_delete', {}, false],
+    ['forager-investigator', 'child', 'opencode_automation_pause', {}, false],
+    ['scout-researcher', 'child', 'opencode_automation_pause', {}, false],
+    ['architect-planner', 'primary', 'opencode_automation_pause', {}, false],
+    ['security-scout', 'child', 'opencode_automation_delete', {}, false],
+    ['security-scout', 'child', 'opencode_automation_list', {}, true],
+    ['general', 'child', 'opencode_automation_create', {}, false],
+    ['general', 'child', 'opencode_automation_pause', {}, false],
+    ['explore', 'child', 'opencode_automation_resume', {}, false],
+    ['build', 'primary', 'opencode_automation_create', {}, true],
+    ['build', 'primary', 'opencode_automation_resume', {}, true],
+    ['build', 'primary', 'opencode_automation_pause', {}, true],
+    ['build', 'primary', 'opencode_automation_delete', {}, true],
+    ['build', 'child', 'opencode_automation_create', {}, false],
+    ['build', 'child', 'opencode_automation_resume', {}, false],
+    ['build', 'child', 'opencode_automation_pause', {}, false],
+    ['build', 'child', 'opencode_automation_delete', {}, false],
+    ['build', 'child', 'opencode_automation_list', {}, true],
     ['swarm-orchestrator', 'primary', 'opencode_session_rename', {}, true],
     ['general', 'child', 'hive_status', {}, false],
     ['general', 'child', 'subagent', { agent: 'explore' }, false],
@@ -765,6 +792,14 @@ describe('v2 native precedence and canonical instructions', () => {
     expect(scout.system).toContain('Scout');
     expect(scout.permissions).toContainEqual({ action: 'hive_*', resource: '*', effect: 'deny' });
     expect(scout.permissions).toContainEqual({ action: 'opencode_worktree_create', resource: '*', effect: 'deny' });
+    // The default denies hide exactly the bypass tools the execution guard refuses to each agent.
+    const automationDenies = (id: string) => defaults.registry.get(id)!.permissions
+      .filter((rule: { action: string; effect: string }) => rule.action.startsWith('opencode_automation_') && rule.effect === 'deny')
+      .map((rule: { action: string }) => rule.action.slice('opencode_automation_'.length)).sort();
+    for (const id of ['scout-researcher', 'scout-fast', 'forager-worker', 'swarm-orchestrator', 'general', 'explore']) {
+      expect(automationDenies(id), id).toEqual(['create', 'delete', 'pause', 'resume']);
+    }
+    expect(automationDenies('build')).toEqual([]);
     expect(defaults.selected).toBe('architect-planner');
     expect(defaults.registry.get('swarm-orchestrator')!.system).toBeUndefined();
     expect(defaults.registry.get('general')!.permissions).toContainEqual({ action: 'hive_*', resource: '*', effect: 'deny' });

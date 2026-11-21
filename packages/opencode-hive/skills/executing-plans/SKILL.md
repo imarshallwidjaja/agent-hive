@@ -55,7 +55,7 @@ For each task in the batch:
 In gate-closed sessions use blocking native `task()`; in gate-open sessions use `background: true` only when independent foreground work can continue.
 <!-- /hive-host -->
 <!-- hive-host opencode-v2 -->
-In gate-closed sessions use blocking native `subagent()`; in gate-open sessions use `background: true` only when independent foreground work can continue.
+Every native `subagent()` call runs in the background; keep doing foreground work while it runs only when that work does not depend on its result, and otherwise wait for its terminal report before the dependent step.
 <!-- /hive-host -->
 Inspect unresolved board lanes on `hive_background_status`; `hive_status` is not that surface.
 2. Follow the approved scope, contracts, dependencies, verification boundaries, and the plan's binding decisions. Adapt nonbinding implementation details when evidence warrants it and report consequential adaptations; material scope, decision, or gate changes require the existing amendment procedure. Judge a task by its goal, responsibility, and contracts: edits beyond the files a task cites are ordinary when they serve its goal.

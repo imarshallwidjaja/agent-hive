@@ -48,7 +48,7 @@ RUN cd /opt/ic/v2 && npm ci --no-audit --no-fund && /opt/ic/v2/node_modules/.bin
 COPY plugin.tgz /opt/ic/pkg/oc-arkive.tgz
 RUN test -n "${PLUGIN_SHA256}" && echo "${PLUGIN_SHA256}  /opt/ic/pkg/oc-arkive.tgz" | sha256sum -c -
 RUN mkdir -p /opt/ic/plugin && cd /opt/ic/plugin && printf '{"name":"ic-plugin","private":true}\n' > package.json \
- && npm install --save-exact --no-audit --no-fund /opt/ic/pkg/oc-arkive.tgz @opencode-ai/plugin@1.18.30 effect@4.0.0-rc.112
+ && npm install --save-exact --no-audit --no-fund /opt/ic/pkg/oc-arkive.tgz @opencode-ai/plugin@1.18.30 effect@4.1.0
 ADD harness.tar /opt/ic/harness/
 RUN NODE_IMAGE="${NODE_IMAGE}" node /opt/ic/harness/fixture.ts runtime-report > /opt/ic/runtime-report.json
 USER 1000:1000
