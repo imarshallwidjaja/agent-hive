@@ -1,7 +1,9 @@
-import { describe, expect, it } from 'bun:test';
+import { afterAll, describe, expect, it, spyOn } from 'bun:test';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { IDENTITY_RPC_ID } from './identity.js';
+import { ClientError } from '@opencode/client';
 import { ReadAccessError, createVerifiedReadAccess } from './client.js';
 import { parseV2Options } from './options.js';
 import { CODEMODE_READ_TOOLS } from '../runtime/host-profile.js';
@@ -10,7 +12,11 @@ const identity = { nonce: 'held-nonce' };
 const directory = '/work/project';
 const server = { url: 'http://127.0.0.1:4096', username: 'opencode', passwordEnv: 'HIVE_TEST_SERVER_PASSWORD' };
 
-type Answer = { nonce?: unknown; directory?: unknown } | Error;
+/**
+ * An identity answer, a thrown error, `{ envelope }`: a whole reply sent as is instead of `{ output: answer }`, or
+ * `{ throws }`: a value thrown as it is.
+ */
+type Answer = { nonce?: unknown; directory?: unknown } | Error | { envelope: unknown } | { throws: unknown };
 type Session = { id: string; parentID?: string; location?: { directory: string } };
 
 /**
@@ -31,7 +37,8 @@ function fakeServer(answers: Answer[], sessions: Record<string, Session> = {}, o
           signals.push(options?.signal);
           const answer = answers.length > 1 ? answers.shift()! : answers[0]!;
           if (answer instanceof Error) throw answer;
-          return { output: answer };
+          if ('throws' in answer) throw answer.throws;
+          return 'envelope' in answer ? answer.envelope : { output: answer };
         },
       },
       session: {
@@ -52,6 +59,9 @@ function fakeServer(answers: Answer[], sessions: Record<string, Session> = {}, o
 }
 
 const env = { HIVE_TEST_SERVER_PASSWORD: 'secret' };
+
+/** An error as the official client raises it for a declared error status: the response body's fields, `_tag` included. */
+const declaredError = (tag: string, message: string) => Object.assign(new Error(message), { _tag: tag, name: tag, message });
 
 async function failure(promise: Promise<unknown>): Promise<ReadAccessError> {
   try { await promise; } catch (error) { return error as ReadAccessError; }
@@ -85,8 +95,14 @@ describe('verified v2 read access', () => {
     const cases: Array<[Answer, string]> = [
       [{ nonce: 'other-activation', directory }, 'wrong_instance'],
       [{ nonce: 'held-nonce', directory: '/work/other' }, 'wrong_location'],
+      // A reply of another shape cannot carry this activation's nonce.
+      [{ envelope: null }, 'wrong_instance'],
+      [{ envelope: { output: null } }, 'wrong_instance'],
       [Object.assign(new Error('No RPC handler'), { type: 'rpc.unavailable' }), 'wrong_location'],
-      [Object.assign(new Error('Authentication required'), { status: 401 }), 'unauthorized'],
+      // The official client's declared 401 and 404 answers carry their `_tag`; an undeclared 401 is a ClientError status.
+      [declaredError('UnauthorizedError', 'Authentication required'), 'unauthorized'],
+      [new ClientError('UnexpectedStatus', { cause: { status: 401 }, detail: '401' }), 'unauthorized'],
+      [declaredError('LocationNotFoundError', 'Location not found'), 'wrong_location'],
       [new Error('connect ECONNREFUSED 127.0.0.1:4096'), 'unreachable'],
     ];
     for (const [answer, code] of cases) {
@@ -96,6 +112,32 @@ describe('verified v2 read access', () => {
       expect(error).toBeInstanceOf(ReadAccessError);
       expect(error.code).toBe(code as any);
       expect(host.reads).toEqual([]);
+    }
+  });
+
+  it('formats only text from an identity reply or binding error, keeps the typed refusal and binds again on the next call', async () => {
+    // A value whose conversion to text throws: formatting it would replace the typed refusal with that throw.
+    const opaque = () => ({ toString() { throw new Error('converted'); } });
+    const cases: Array<[Answer, string, string]> = [
+      [{ nonce: 'held-nonce', directory: opaque() }, 'wrong_location', 'answered for a value that is not text'],
+      [{ nonce: 'held-nonce', directory: 42 }, 'wrong_location', 'answered for a value that is not text'],
+      // Plain objects and strings thrown as they are, as a client could throw them.
+      [{ throws: Object.assign(opaque(), { _tag: 'LocationNotFoundError', message: opaque() }) }, 'wrong_location', '(a value that is not text)'],
+      [{ throws: Object.assign(opaque(), { _tag: 'UnauthorizedError', message: opaque() }) }, 'unauthorized', 'rejected the configured credentials'],
+      [{ throws: opaque() }, 'unreachable', 'failed: a value that is not text'],
+      // Supported text keeps its detail.
+      [{ throws: 'connect ECONNREFUSED' }, 'unreachable', 'failed: connect ECONNREFUSED'],
+      [declaredError('LocationNotFoundError', 'Location not found'), 'wrong_location', '(Location not found)'],
+    ];
+    for (const [answer, code, text] of cases) {
+      const host = fakeServer([answer, ok], { s: { id: 's', location: { directory } } });
+      const access = createVerifiedReadAccess({ server, identity, directory, env, makeClient: host.makeClient });
+      const error = await failure(access.sessionGet('s'));
+      expect([error instanceof ReadAccessError, error.code, error.message.includes(text), error.message.includes('[object')]).toEqual([true, code, true, false]);
+      expect(host.reads).toEqual([]);
+      // The failed binding is forgotten, and the next call binds again without a retry inside the failed call.
+      expect(((await access.sessionGet('s')) as any).id).toBe('s');
+      expect(host.made).toHaveLength(2);
     }
   });
 
@@ -162,13 +204,357 @@ describe('verified v2 read access', () => {
     expect(created).toBe(1);
   });
 
-  it('reports a missing server option or password variable instead of guessing a server', async () => {
-    const unconfigured = createVerifiedReadAccess({ server: undefined, identity, directory, env, makeClient: fakeServer([]).makeClient });
-    expect((await failure(unconfigured.sessionActive())).code).toBe('not_configured');
-    const noPassword = createVerifiedReadAccess({ server, identity, directory, env: {}, makeClient: fakeServer([]).makeClient });
+  it('reports a missing password variable or rejected credentials for an explicit server and never reads the managed registration', async () => {
+    // A valid registration of this very process: an explicit server must still ignore it, on success and on error.
+    const file = registration({ url: 'http://127.0.0.1:5000', pid: process.pid, password: 'managed-secret' });
+    const noPasswordHost = fakeServer([]);
+    const noPassword = createVerifiedReadAccess({ server, identity, directory, env: {}, makeClient: noPasswordHost.makeClient, registrationFile: file });
     const error = await failure(noPassword.sessionActive());
     expect(error.code).toBe('not_configured');
     expect(error.message).toContain('HIVE_TEST_SERVER_PASSWORD');
+    expect(error.message).not.toContain('secret');
+    expect(noPasswordHost.made).toEqual([]);
+    const rejectedHost = fakeServer([declaredError('UnauthorizedError', 'Authentication required')]);
+    const rejected = createVerifiedReadAccess({ server, identity, directory, env, makeClient: rejectedHost.makeClient, registrationFile: file });
+    const unauthorized = await failure(rejected.sessionActive());
+    expect(unauthorized.code).toBe('unauthorized');
+    const wrongHost = fakeServer([new ClientError('Transport', { cause: new Error('connect ECONNREFUSED 127.0.0.1:4096') })]);
+    expect((await failure(createVerifiedReadAccess({ server, identity, directory, env, makeClient: wrongHost.makeClient, registrationFile: file }).sessionActive())).code).toBe('unreachable');
+    expect([...rejectedHost.made, ...wrongHost.made].map((made) => made.baseUrl)).toEqual(['http://127.0.0.1:4096', 'http://127.0.0.1:4096']);
+  });
+});
+
+const scratch: string[] = [];
+afterAll(() => { for (const dir of scratch) fs.rmSync(dir, { recursive: true, force: true }); });
+
+/** A managed service registration file in a private temporary directory; a string is written verbatim. */
+function registration(record: unknown): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-managed-'));
+  scratch.push(dir);
+  const file = path.join(dir, 'service.json');
+  fs.writeFileSync(file, typeof record === 'string' ? record : JSON.stringify({ id: 'svc', version: '2.3.2', ...(record as object) }), { mode: 0o600 });
+  return file;
+}
+
+describe('managed service read access', () => {
+  const ok = { nonce: 'held-nonce', directory };
+  const sessions = { s: { id: 's', location: { directory } } };
+  const basic = (password: string) => ({ authorization: `Basic ${Buffer.from(`opencode:${password}`).toString('base64')}` });
+
+  it('reads this process\'s registration on the first read, not at creation, and uses its credentials with redirects refused', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-managed-'));
+    scratch.push(dir);
+    const file = path.join(dir, 'service.json');
+    const host = fakeServer([ok], sessions);
+    const access = createVerifiedReadAccess({ server: undefined, identity, directory, env: {}, makeClient: host.makeClient, registrationFile: file });
+    // Written after creation: creating the access reads nothing.
+    fs.writeFileSync(file, JSON.stringify({ id: 'svc', version: '2.3.2', url: 'http://127.0.0.1:4096', pid: process.pid, password: 'managed-secret' }));
+    expect(host.made).toEqual([]);
+    expect(((await access.sessionGet('s')) as any).id).toBe('s');
+    expect(host.made).toHaveLength(1);
+    expect(host.made[0]).toMatchObject({ baseUrl: 'http://127.0.0.1:4096', headers: basic('managed-secret') });
+    expect(host.calls).toEqual([
+      { rpcID: IDENTITY_RPC_ID, method: 'get', location: { directory }, input: {} },
+      { rpcID: IDENTITY_RPC_ID, method: 'get', location: { directory }, input: {} },
+    ]);
+    // The binding is kept while its checks pass, even if the file changes.
+    fs.writeFileSync(file, 'not json');
+    await access.sessionActive();
+    expect(host.made).toHaveLength(1);
+  });
+
+  it('accepts only numeric loopback http(s) origins and sends no credentials for a registration without a password', async () => {
+    for (const [url, origin] of [['http://127.0.0.1:4096', 'http://127.0.0.1:4096'], ['http://127.0.0.2:80/', 'http://127.0.0.2'], ['https://[::1]:8443', 'https://[::1]:8443'], ['http://127.1:5', 'http://127.0.0.1:5']] as const) {
+      const host = fakeServer([ok], sessions);
+      const access = createVerifiedReadAccess({ server: undefined, identity, directory, env: {}, makeClient: host.makeClient, registrationFile: registration({ url, pid: process.pid }) });
+      await access.sessionGet('s');
+      expect(host.made[0]).toMatchObject({ baseUrl: origin, headers: {} });
+    }
+  });
+
+  it('refuses a missing, foreign, non-loopback or malformed registration as not_configured before any client or request exists', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-managed-'));
+    scratch.push(dir);
+    const valid = { url: 'http://127.0.0.1:4096', pid: process.pid, password: 'managed-secret' };
+    const files = [
+      path.join(dir, 'absent.json'),
+      dir,
+      registration({ ...valid, pid: process.pid + 1 }),
+      registration({ ...valid, pid: String(process.pid) }),
+      registration({ url: valid.url, password: valid.password }),
+      ...['http://0.0.0.0:4096', 'http://localhost:4096', 'http://192.168.1.2:4096', 'http://example.com', 'http://opencode:managed-secret@127.0.0.1:4096', 'http://127.0.0.1:4096/?', 'http://127.0.0.1:4096/#x', 'http://127.0.0.1:4096/api', 'ftp://127.0.0.1:21', 'file:///tmp/x', 'not a url', 42]
+        .map((url) => registration({ ...valid, url })),
+      registration({ ...valid, password: 42 }),
+      registration({ ...valid, password: '' }),
+      registration('managed-secret is not json'),
+      registration('[1,2]'),
+      registration('null'),
+      registration(JSON.stringify({ ...valid, padding: 'x'.repeat(70 * 1024) })),
+    ];
+    for (const file of files) {
+      const host = fakeServer([ok], sessions);
+      const error = await failure(createVerifiedReadAccess({ server: undefined, identity, directory, env: {}, makeClient: host.makeClient, registrationFile: file }).checkTarget({ callerID: 's', targetID: 's' }));
+      expect([file, error.code]).toEqual([file, 'not_configured']);
+      expect(error.message).toContain('`server` option');
+      expect(error.message).not.toContain('managed-secret');
+      expect(host.made).toEqual([]);
+      expect(host.calls).toEqual([]);
+    }
+  });
+
+  it('finds a service registered after a refused read, and reads the registration again after its binding fails a check', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-managed-'));
+    scratch.push(dir);
+    const file = path.join(dir, 'service.json');
+    const host = fakeServer([ok, { nonce: 'other-process', directory }, ok], sessions);
+    const access = createVerifiedReadAccess({ server: undefined, identity, directory, env: {}, makeClient: host.makeClient, registrationFile: file });
+    expect((await failure(access.sessionActive())).code).toBe('not_configured');
+    fs.writeFileSync(file, JSON.stringify({ url: 'http://127.0.0.1:4096', pid: process.pid }));
+    // The first read passes its first check and fails the second: the result is discarded and the binding forgotten.
+    expect((await failure(access.sessionGet('s'))).code).toBe('wrong_instance');
+    fs.writeFileSync(file, JSON.stringify({ url: 'http://127.0.0.1:4097', pid: process.pid }));
+    await access.sessionGet('s');
+    expect(host.made.map((made) => made.baseUrl)).toEqual(['http://127.0.0.1:4096', 'http://127.0.0.1:4097']);
+  });
+
+  it('refuses a FIFO at the registration path by its type, opening it without waiting for a writer', async () => {
+    if (process.platform === 'win32') return;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-managed-'));
+    scratch.push(dir);
+    const fifo = path.join(dir, 'service.json');
+    expect(Bun.spawnSync(['mkfifo', fifo]).exitCode).toBe(0);
+    // This test holds the FIFO open for writing, so even a blocking open would return instead of hanging the suite.
+    const writer = fs.openSync(fifo, fs.constants.O_RDWR | fs.constants.O_NONBLOCK);
+    const opened = spyOn(fs, 'openSync');
+    try {
+      const host = fakeServer([ok], sessions);
+      const error = await failure(createVerifiedReadAccess({ server: undefined, identity, directory, env: {}, makeClient: host.makeClient, registrationFile: fifo }).sessionActive());
+      expect(error.code).toBe('not_configured');
+      expect(error.message).toContain('not a regular file');
+      expect(host.made).toEqual([]);
+      // Without O_NONBLOCK a FIFO with no writer would block this process in the open, before its type is known.
+      const flags = opened.mock.calls.find(([file]) => file === fifo)?.[1] as number;
+      expect(flags & fs.constants.O_NONBLOCK).toBe(fs.constants.O_NONBLOCK);
+      expect(flags & (fs.constants.O_WRONLY | fs.constants.O_RDWR)).toBe(0);
+    } finally {
+      opened.mockRestore();
+      fs.closeSync(writer);
+    }
+  });
+
+  it('refuses a malformed identity reply without reading, and binds a corrected registration on the next call', async () => {
+    for (const envelope of [null, 'text', { output: null }, { output: ['held-nonce'] }, {}]) {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-managed-'));
+      scratch.push(dir);
+      const file = path.join(dir, 'service.json');
+      fs.writeFileSync(file, JSON.stringify({ url: 'http://127.0.0.1:4096', pid: process.pid }));
+      const host = fakeServer([{ envelope }, ok], sessions);
+      const access = createVerifiedReadAccess({ server: undefined, identity, directory, env: {}, makeClient: host.makeClient, registrationFile: file });
+      expect((await failure(access.sessionGet('s'))).code).toBe('wrong_instance');
+      // One identity check, no read, and no second attempt in the same call.
+      expect([host.calls.length, host.reads]).toEqual([1, []]);
+      fs.writeFileSync(file, JSON.stringify({ url: 'http://127.0.0.1:4097', pid: process.pid }));
+      expect(((await access.sessionGet('s')) as any).id).toBe('s');
+      expect(host.made.map((made) => made.baseUrl)).toEqual(['http://127.0.0.1:4096', 'http://127.0.0.1:4097']);
+    }
+  });
+
+  it('keeps endpoint and client text out of every managed failure, with fixed local diagnoses and the same codes', async () => {
+    const file = registration({ url: 'http://127.0.0.1:4096', pid: process.pid, password: 'managed-secret' });
+    const canary = 'CANARY-ENDPOINT-TEXT';
+    const leaks = (error: Error) => [canary, 'managed-secret', Buffer.from('opencode:managed-secret').toString('base64')].filter((text) => error.message.includes(text));
+    // Binding failures: each identity answer below carries the canary where the endpoint or client would put text.
+    for (const [answer, code] of [
+      [declaredError('UnauthorizedError', canary), 'unauthorized'],
+      [new ClientError('UnexpectedStatus', { cause: { status: 401, body: canary }, detail: canary }), 'unauthorized'],
+      [new ClientError('Transport', { cause: new Error(canary) }), 'unreachable'],
+      [declaredError('LocationNotFoundError', canary), 'wrong_location'],
+      [Object.assign(new Error(canary), { type: 'rpc.unavailable' }), 'wrong_location'],
+      [{ nonce: canary, directory }, 'wrong_instance'],
+      [{ nonce: 'held-nonce', directory: canary }, 'wrong_location'],
+    ] as const) {
+      const error = await failure(createVerifiedReadAccess({ server: undefined, identity, directory, env: {}, makeClient: fakeServer([answer]).makeClient, registrationFile: file }).sessionActive());
+      expect([error.code, leaks(error)]).toEqual([code, []]);
+    }
+    // Failed reads between passing checks: a client error is a plain local failure, and a Hive refusal keeps its code.
+    const reading = (sessionsTable: Record<string, Session>, patch: (client: any) => void = () => {}) => createVerifiedReadAccess({
+      server: undefined, identity, directory, env: {}, registrationFile: file,
+      makeClient: (options) => { const client = fakeServer([ok], sessionsTable).makeClient(options); patch(client); return client; },
+    });
+    const thrown = await failure(reading(sessions, (client) => { client.session.active = async () => { throw new ClientError('Transport', { cause: new Error(canary) }); }; }).sessionActive());
+    expect([thrown instanceof ReadAccessError, leaks(thrown)]).toEqual([false, []]);
+    const settlement = await failure(reading(sessions, (client) => { client.experimental = { job: { list: async () => { throw new Error(canary); } } }; }).childSettlement({ parentID: 'parent', childID: 'child' }));
+    expect([settlement instanceof ReadAccessError, leaks(settlement)]).toEqual([false, []]);
+    const missing = await failure(reading({ caller: { id: 'caller', location: { directory } } }).checkTarget({ callerID: 'caller', targetID: canary }));
+    expect([missing.code, leaks(missing)]).toEqual(['target_unavailable', []]);
+    const liar = await failure(reading({ s: { id: canary, location: { directory } } }).sessionGet('s'));
+    expect([liar.code, leaks(liar)]).toEqual(['inconsistent_lookup', []]);
+    const displaced = await failure(reading({ caller: { id: 'caller', location: { directory: canary } } }).checkTarget({ callerID: 'caller', targetID: 'caller' }));
+    expect([displaced.code, leaks(displaced)]).toEqual(['caller_displaced', []]);
+  });
+
+  it('rejects a cancelled managed read with the caller\'s own reason', async () => {
+    const file = registration({ url: 'http://127.0.0.1:4096', pid: process.pid });
+    const controller = new AbortController();
+    const reason = new Error('caller gone');
+    const access = createVerifiedReadAccess({
+      server: undefined, identity, directory, env: {}, registrationFile: file,
+      makeClient: (options) => {
+        const client = fakeServer([ok]).makeClient(options);
+        client.session.active = async () => { controller.abort(reason); throw new Error('CANARY-ENDPOINT-TEXT'); };
+        return client;
+      },
+    });
+    expect(await failure(access.sessionActive(controller.signal))).toBe(reason as any);
+    // Cancelled before it starts: the caller's reason, without reading the registration or making a client.
+    const host = fakeServer([ok]);
+    const early = new AbortController();
+    early.abort(reason);
+    const absent = path.join(path.dirname(file), 'absent.json');
+    expect(await failure(createVerifiedReadAccess({ server: undefined, identity, directory, env: {}, makeClient: host.makeClient, registrationFile: absent }).sessionActive(early.signal))).toBe(reason as any);
+    expect(host.made).toEqual([]);
+  });
+
+  it('defaults to the official client\'s registration path, fixed from the environment when the access is created', async () => {
+    const saved = process.env.XDG_STATE_HOME;
+    const state = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-managed-state-'));
+    scratch.push(state);
+    process.env.XDG_STATE_HOME = state;
+    let access;
+    try {
+      access = createVerifiedReadAccess({ server: undefined, identity, directory, env: {}, makeClient: fakeServer([ok]).makeClient });
+    } finally {
+      if (saved === undefined) delete process.env.XDG_STATE_HOME; else process.env.XDG_STATE_HOME = saved;
+    }
+    const error = await failure(access.sessionActive());
+    expect(error.code).toBe('not_configured');
+    expect(error.message).toContain(path.join(state, 'opencode', 'service.json'));
+    expect(fs.readdirSync(state)).toEqual([]);
+  });
+});
+
+describe('binding lifecycle', () => {
+  it('does not let a late failure of an old binding evict the binding that replaced it', async () => {
+    // Binding 1 answers its first identity check only when the test releases it; every other check passes at once.
+    let releaseOld: (answer: Answer) => void = () => {};
+    const made: number[] = [];
+    const makeClient = () => {
+      const id = made.push(made.length + 1);
+      let checks = 0;
+      return {
+        rpc: {
+          call: () => id === 1 && ++checks === 1
+            ? new Promise((resolve) => { releaseOld = (answer) => resolve({ output: answer }); })
+            : Promise.resolve({ output: id === 1 ? { nonce: 'other-process', directory } : { nonce: 'held-nonce', directory } }),
+        },
+        session: { active: async () => ({ client: id }) },
+      } as any;
+    };
+    const access = createVerifiedReadAccess({ server, identity, directory, env, makeClient });
+    const late = access.sessionActive();
+    // A second read on binding 1 fails its check, so binding 1 is forgotten and the next read makes binding 2.
+    expect((await failure(access.sessionActive())).code).toBe('wrong_instance');
+    expect(await access.sessionActive()).toEqual({ client: 2 } as any);
+    // The deferred check on binding 1 now fails, and binding 2 stays.
+    releaseOld({ nonce: 'other-process', directory });
+    expect((await failure(late)).code).toBe('wrong_instance');
+    expect(await access.sessionActive()).toEqual({ client: 2 } as any);
+    expect(made).toEqual([1, 2]);
+  });
+});
+
+/** A loopback HTTP server answering the official client's routes for one session family, with its own password. */
+function realServer(options: { password?: string; redirectTo?: string } = {}) {
+  const hits: string[] = [];
+  const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+  const family: Record<string, { id: string; parentID?: string; location: { directory: string } }> = {
+    parent: { id: 'parent', location: { directory } },
+    child: { id: 'child', parentID: 'parent', location: { directory } },
+  };
+  const server = Bun.serve({
+    hostname: '127.0.0.1',
+    port: 0,
+    fetch(request) {
+      const url = new URL(request.url);
+      hits.push(`${request.method} ${url.pathname}`);
+      if (options.redirectTo) return new Response(null, { status: 307, headers: { location: `${options.redirectTo}${url.pathname}${url.search}` } });
+      if (options.password !== undefined && request.headers.get('authorization') !== `Basic ${Buffer.from(`opencode:${options.password}`).toString('base64')}`) {
+        return json({ _tag: 'UnauthorizedError', message: 'Authentication required' }, 401);
+      }
+      if (request.method === 'POST' && url.pathname === `/api/rpc/${encodeURIComponent(IDENTITY_RPC_ID)}/get`) return json({ output: { nonce: 'held-nonce', directory } });
+      const session = /^\/api\/session\/([^/]+)$/.exec(url.pathname);
+      if (session && session[1] !== 'active') return family[session[1]!] ? json({ data: family[session[1]!] }) : json({ _tag: 'SessionNotFoundError', message: 'missing' }, 404);
+      if (/^\/api\/session\/[^/]+\/message$/.test(url.pathname)) return json({ data: [{ id: 'msg_1', type: 'user', text: 'hi' }], cursor: {} });
+      if (url.pathname === '/api/experimental/job') return json({ data: [] });
+      if (url.pathname === '/api/session') {
+        const parentID = url.searchParams.get('parentID');
+        return json({ data: Object.values(family).filter((entry) => entry.parentID === parentID), cursor: {} });
+      }
+      if (/^\/api\/session\/[^/]+\/inbox$/.test(url.pathname)) return json({ data: [] });
+      if (url.pathname === '/api/session/active') return json({ data: {} });
+      return json({ message: 'unexpected route' }, 500);
+    },
+  });
+  return { url: `http://127.0.0.1:${server.port}`, hits, stop: () => server.stop(true) };
+}
+
+describe('managed read access over the official client', () => {
+  it('authorizes a trace target, reads history and checks continuation settlement through the managed registration', async () => {
+    const host = realServer({ password: 'managed-secret' });
+    try {
+      const access = createVerifiedReadAccess({ server: undefined, identity, directory, registrationFile: registration({ url: host.url, pid: process.pid, password: 'managed-secret' }) });
+      expect(await access.checkTarget({ callerID: 'parent', targetID: 'child' })).toEqual({ relationship: 'child', placement: 'this-location', observed: { parentID: 'parent', directory } });
+      expect(((await access.messageList({ sessionID: 'child', limit: 1, order: 'asc' } as any)) as any).data).toEqual([{ id: 'msg_1', type: 'user', text: 'hi' }]);
+      expect(await access.childSettlement({ parentID: 'parent', childID: 'child' })).toEqual({ settled: true });
+      expect(host.hits).toContain('GET /api/session/child/inbox');
+    } finally {
+      host.stop();
+    }
+  });
+
+  it('names rejected managed credentials from the declared 401 and never follows a redirect off the registered endpoint', async () => {
+    const host = realServer({ password: 'current-secret' });
+    const target = realServer();
+    const redirecting = realServer({ redirectTo: target.url });
+    try {
+      const stale = createVerifiedReadAccess({ server: undefined, identity, directory, registrationFile: registration({ url: host.url, pid: process.pid, password: 'stale-secret' }) });
+      const unauthorized = await failure(stale.sessionActive());
+      expect(unauthorized.code).toBe('unauthorized');
+      expect(unauthorized.message).not.toContain('stale-secret');
+      const redirected = createVerifiedReadAccess({ server: undefined, identity, directory, registrationFile: registration({ url: redirecting.url, pid: process.pid, password: 'managed-secret' }) });
+      expect((await failure(redirected.sessionActive())).code).toBe('unreachable');
+      expect(redirecting.hits).toHaveLength(1);
+      expect(target.hits).toEqual([]);
+    } finally {
+      for (const server of [host, target, redirecting]) server.stop();
+    }
+  });
+});
+
+describe('identity replies of an undocumented shape over the official client', () => {
+  /** A loopback server whose identity route answers with `status` and `body`. */
+  const identityServer = (status: number, body: unknown) => Bun.serve({
+    hostname: '127.0.0.1',
+    port: 0,
+    fetch: () => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } }),
+  });
+
+  it('refuses a directory or declared error message that is not text with its typed code and no converted value', async () => {
+    const cases: Array<[number, unknown, string]> = [
+      [200, { output: { nonce: 'held-nonce', directory: { nested: ['value'] } } }, 'wrong_location'],
+      [404, { _tag: 'LocationNotFoundError', message: { nested: ['value'] }, location: { directory } }, 'wrong_location'],
+      [401, { _tag: 'UnauthorizedError', message: { nested: ['value'] } }, 'unauthorized'],
+    ];
+    for (const [status, body, code] of cases) {
+      const host = identityServer(status, body);
+      try {
+        const access = createVerifiedReadAccess({ server: { url: `http://127.0.0.1:${host.port}`, username: 'opencode' }, identity, directory });
+        const error = await failure(access.sessionActive());
+        expect([error instanceof ReadAccessError, error.code, error.message.includes('[object'), error.message.includes('nested')]).toEqual([true, code, false, false]);
+      } finally {
+        host.stop(true);
+      }
+    }
   });
 });
 
@@ -186,11 +572,12 @@ describe('target relationship and placement', () => {
 
   it('keeps relationship and placement separate', async () => {
     const access = accessFor(table());
-    expect(await access.checkTarget({ callerID: 'caller', targetID: 'caller' })).toEqual({ relationship: 'self', placement: 'this-location' });
-    expect(await access.checkTarget({ callerID: 'caller', targetID: 'child' })).toEqual({ relationship: 'child', placement: 'this-location' });
-    expect(await access.checkTarget({ callerID: 'caller', targetID: 'grandchild' })).toEqual({ relationship: 'descendant', placement: 'other-location' });
-    expect(await access.checkTarget({ callerID: 'caller', targetID: 'stranger' })).toEqual({ relationship: 'other', placement: 'this-location' });
-    expect(await access.checkTarget({ callerID: 'child', targetID: 'caller' })).toEqual({ relationship: 'other', placement: 'this-location' });
+    // `observed` is the parent and location the answer was computed from, so a caller needs no second read for it.
+    expect(await access.checkTarget({ callerID: 'caller', targetID: 'caller' })).toEqual({ relationship: 'self', placement: 'this-location', observed: { directory } });
+    expect(await access.checkTarget({ callerID: 'caller', targetID: 'child' })).toEqual({ relationship: 'child', placement: 'this-location', observed: { parentID: 'caller', directory } });
+    expect(await access.checkTarget({ callerID: 'caller', targetID: 'grandchild' })).toEqual({ relationship: 'descendant', placement: 'other-location', observed: { parentID: 'child', directory: '/work/elsewhere' } });
+    expect(await access.checkTarget({ callerID: 'caller', targetID: 'stranger' })).toEqual({ relationship: 'other', placement: 'this-location', observed: { directory } });
+    expect(await access.checkTarget({ callerID: 'child', targetID: 'caller' })).toEqual({ relationship: 'other', placement: 'this-location', observed: { directory } });
   });
 
   it('reads the caller from the server instead of trusting its ID', async () => {
@@ -246,7 +633,7 @@ describe('child settlement', () => {
    * The session list pages children in ID order through an opaque offset cursor. Every read is logged, so the order is
    * visible.
    */
-  function settlementServer(state: State) {
+  function settlementServer(state: State, registrationFile?: string) {
     const sessions: Record<string, Session> = {
       parent: { id: 'parent', location: { directory } },
       child: { id: 'child', parentID: 'parent', location: { directory } },
@@ -282,7 +669,8 @@ describe('child settlement', () => {
       };
       return client;
     };
-    return { reads: base.reads, access: createVerifiedReadAccess({ server, identity, directory, env, makeClient }) };
+    const where = registrationFile === undefined ? { server } : { server: undefined, registrationFile };
+    return { reads: base.reads, access: createVerifiedReadAccess({ ...where, identity, directory, env, makeClient }) };
   }
   const subagentJob = (owner: string, child: string, status = 'running'): Job => ({ id: child, kind: 'subagent', sessionID: owner, status, childSessionID: child });
   const settle = (state: State) => {
@@ -313,6 +701,28 @@ describe('child settlement', () => {
       [{ active: { quiet: { type: 'running' } } }, 'active', 'descendant session quiet of child has an active execution'],
     ];
     for (const [state, signal, detail] of cases) expect(await settle(state).result).toEqual({ settled: false, signal: signal as any, detail });
+  });
+
+  it('keeps the signal and replaces every returned field with local text when the managed service reports work', async () => {
+    const file = registration({ url: 'http://127.0.0.1:4096', pid: process.pid });
+    const canary = 'CANARY-RETURNED-FIELD';
+    // Each returned field the explicit detail would repeat carries the canary: job id, kind, session and status, and
+    // the IDs of the sessions whose inbox or execution shows work.
+    const cases: Array<[State, string]> = [
+      [{ jobs: [{ id: canary, kind: 'subagent', sessionID: 'parent', status: canary, childSessionID: 'child' }] }, 'job'],
+      [{ jobs: [{ id: canary, kind: canary, sessionID: canary, status: canary }], extra: [{ id: canary, parentID: 'quiet', location: { directory } }] }, 'job'],
+      [{ extra: [{ id: canary, parentID: 'quiet', location: { directory } }], inbox: { [canary]: [{ id: canary }] } }, 'inbox'],
+      [{ extra: [{ id: canary, parentID: 'quiet', location: { directory } }], unlisted: [canary], active: { [canary]: { type: canary } } }, 'active'],
+    ];
+    for (const [state, signal] of cases) {
+      const managed = await settlementServer(state, file).access.childSettlement({ parentID: 'parent', childID: 'child' });
+      expect(managed).toMatchObject({ settled: false, signal });
+      expect((managed as { detail: string }).detail).toContain('managed OpenCode service');
+      expect(JSON.stringify(managed)).not.toContain(canary);
+      // The same answer from an explicit server keeps its detail.
+      expect(await settlementServer(state).access.childSettlement({ parentID: 'parent', childID: 'child' })).toMatchObject({ settled: false, signal, detail: expect.stringContaining(canary) });
+    }
+    expect(await settlementServer({}, file).access.childSettlement({ parentID: 'parent', childID: 'child' })).toEqual({ settled: true });
   });
 
   it('pages through every child of a session in the tree', async () => {

@@ -31,7 +31,7 @@ import {
   type TraceSource,
   type TraceTarget,
 } from '../trace/types.js';
-import { ReadAccessError, type ReadAccessErrorCode, type VerifiedReadAccess } from './client.js';
+import { ReadAccessError, type ReadAccessErrorCode, type VerifiedTreeReadAccess } from './client.js';
 import type { V2Catalog } from './registration.js';
 
 /**
@@ -39,14 +39,16 @@ import type { V2Catalog } from './registration.js';
  *
  * History comes from the verified public read client (Task 5's `readAccess`), page by page through the complete
  * `message.list` timeline in ascending order; the active-context view and filtered exports are not used, because
- * they omit or rewrite recorded history. Authorization uses `checkTarget` with the caller's real session ID and reads
- * the target's parent and location for freshness. Summarization runs in-process through the public plugin session
+ * they omit or rewrite recorded history. Authorization uses `checkTarget` with the caller's real session ID; its
+ * observed parent and location, from the same checked read, are the freshness that must still hold after recovery. Summarization runs in-process through the public plugin session
  * API: an ephemeral session for a hidden deny-all agent, one `session.generate` per stage, and `session.remove`.
  * Nothing here writes Hive state; the two tools register through the catalog registrar, which owns their Code Mode
  * flags (trace false, trace_content per transport) and the role/child guard.
  */
 
 type RecordValue = Record<string, unknown>;
+/** The reads a trace makes. Its target check must report what it observed, because that is the recovery freshness. */
+export type TraceReadAccess = Pick<VerifiedTreeReadAccess, 'sessionActive' | 'sessionGet' | 'messageList' | 'checkTarget'>;
 
 const PAGE_LIMIT = 200;
 // Bounds a history read at 200 000 messages; a longer or non-terminating timeline reads as unavailable.
@@ -181,7 +183,7 @@ type Page = { data?: unknown; cursor?: { next?: string | null } };
  * but not last, a repeated ID, or a tail still moving after the follow bound is `torn`; a timeline longer than the
  * page bound is `page_limit`; a page without a message list, string IDs or an advancing cursor is `malformed`.
  */
-async function readTimeline(readAccess: VerifiedReadAccess, sessionID: string, signal?: AbortSignal): Promise<unknown[] | SourceReadFailure> {
+async function readTimeline(readAccess: TraceReadAccess, sessionID: string, signal?: AbortSignal): Promise<unknown[] | SourceReadFailure> {
   const messages: unknown[] = [];
   const seen = new Set<string>();
   let cursor: string | undefined;
@@ -222,17 +224,16 @@ async function readTimeline(readAccess: VerifiedReadAccess, sessionID: string, s
   return 'torn';
 }
 
-export function createV2TraceSource(readAccess: VerifiedReadAccess): TraceSource<V2Target> {
+export function createV2TraceSource(readAccess: TraceReadAccess): TraceSource<V2Target> {
   return {
     async resolveTarget(taskID, callerID, signal) {
       try {
         const check = await readAccess.checkTarget({ callerID, targetID: taskID }, signal);
-        const session = await readAccess.sessionGet(taskID, signal) as { parentID?: string; location?: { directory?: string } };
         return {
           relationship: check.relationship === 'self' ? 'self' : check.relationship === 'child' ? 'direct_child' : 'other_session',
           placed: true,
-          // The checked relationship, placement and the exact parent and location must all hold after recovery.
-          freshness: JSON.stringify([check.relationship, check.placement, session.parentID ?? null, session.location?.directory ?? null]),
+          // The relationship, placement, parent and location of one checked observation must all hold after recovery.
+          freshness: JSON.stringify([check.relationship, check.placement, check.observed.parentID ?? null, check.observed.directory ?? null]),
           report: { placement: check.placement },
         };
       } catch (error) {
@@ -398,7 +399,7 @@ export function createV2Summarizer(context: Pick<Plugin.Context, 'session' | 'mo
  * when the host interrupts the call; every authorization and history read, and a recovery's generation, stop with it.
  * Session cleanup keeps its own bounded deadlines.
  */
-export function createV2TraceOperations(readAccess: VerifiedReadAccess, summarizer: SummarizerHost): Record<'hive_task_trace' | 'hive_task_trace_content', HiveOperation> {
+export function createV2TraceOperations(readAccess: TraceReadAccess, summarizer: SummarizerHost): Record<'hive_task_trace' | 'hive_task_trace_content', HiveOperation> {
   const handlers = createTraceHandlers(createV2TraceSource(readAccess), summarizer);
   const callerOf = (invocation: HiveInvocation) => {
     if (!invocation.sessionID) throw new Error('Hive trace reads need the calling session.');

@@ -73,10 +73,11 @@ function fakeHost(services: HiveServices, options: { pauseBeforeProgress?: Effec
   const jobs = new Set<string>();
   const inbox = new Set<string>();
   const active = new Set<string>();
-  const activityState: { reads: number; error?: Error; gate?: Promise<void> } = { reads: 0 };
+  const activityState: { reads: number; error?: Error; gate?: Promise<void>; signals: Array<AbortSignal | undefined> } = { reads: 0, signals: [] };
   const activity = {
-    childSettlement: async ({ childID }: { parentID: string; childID: string }) => {
+    childSettlement: async ({ childID }: { parentID: string; childID: string }, abort?: AbortSignal) => {
       activityState.reads += 1;
+      activityState.signals.push(abort);
       const signal = jobs.has(childID) ? 'job' as const : inbox.has(childID) ? 'inbox' as const : active.has(childID) ? 'active' as const : undefined;
       if (activityState.gate) await activityState.gate;
       if (activityState.error) throw activityState.error;
@@ -771,7 +772,10 @@ describe('v2 native dispatch', () => {
     const matching = await host.call('parent', { agent: 'scout-researcher', prompt: 'Switch too.', sessionID: child }, 'call-B');
     expect(host.activityState.reads).toBe(1);
     expect(failureMessage(matching) ?? '').toContain('has not settled');
+    // The pending settlement read received the call's signal, and interrupting the call aborts it.
+    expect(host.activityState.signals[0]?.aborted).toBe(false);
     await Effect.runPromise(Fiber.interrupt(pending));
+    expect(host.activityState.signals[0]?.aborted).toBe(true);
     releaseActivity();
     expect(host.nativeInputs).toHaveLength(1);
     expect(host.switches).toEqual([]);
@@ -1045,8 +1049,10 @@ describe('v2 native dispatch', () => {
       event: { subscribe: () => Stream.empty },
       rpc: { register: () => Effect.succeed({ dispose: Effect.void, events: { emit: () => Effect.void } }) },
     } as unknown as Plugin.Context;
-    const saved = { HOME: process.env.HOME, OPENCODE_CONFIG_DIR: process.env.OPENCODE_CONFIG_DIR };
+    // XDG_STATE_HOME also moves: without a `server` option the reader looks for the managed service registered there.
+    const saved = { HOME: process.env.HOME, OPENCODE_CONFIG_DIR: process.env.OPENCODE_CONFIG_DIR, XDG_STATE_HOME: process.env.XDG_STATE_HOME };
     process.env.HOME = home;
+    process.env.XDG_STATE_HOME = path.join(home, '.local', 'state');
     process.env.OPENCODE_CONFIG_DIR = path.join(home, '.config', 'opencode');
     try {
       await Effect.runPromise(plugin.effect(context).pipe(Scope.provide(Effect.runSync(Scope.make()))));

@@ -1,12 +1,36 @@
-import { OpenCode } from '@opencode/client';
+import * as fs from 'node:fs';
+import { isIPv4 } from 'node:net';
+import { ClientError, OpenCode } from '@opencode/client';
+// Only the path and header helpers: the service lifecycle exports (discover, ensure, stop) are never called.
+import { fallback, headers as serviceHeaders, type Endpoint, type Info } from '@opencode/client/service';
 import { IDENTITY_RPC_ID, type Identity } from './identity.js';
 
 /**
  * Read access to the running OpenCode v2 server for the session reads the in-process plugin API lacks (active
- * sessions, message history). The public client is created lazily, on the first read after setup, never during
- * activation: activation would otherwise wait on a request to the server that is activating it.
+ * sessions, message history, jobs, inboxes). Activation connects to nothing, because it would wait on the server that
+ * is activating it: the first reader operation, a trace read or a `sessionID` continuation's settlement read, makes the
+ * binding.
  *
- * Nothing is trusted from an earlier read. Every method checks, before it reads, that the server at the configured
+ * Where the reader connects is fixed when the access is created. With the `server` option it is that URL, with the
+ * password from its environment variable, and a broken explicit setting fails without falling back. Without it, it is
+ * the managed local service, and only when this very process registered it. Each attempt to make a binding reads the
+ * registration file at the official client's default `fallback()` path once: opened without blocking, as a regular file
+ * of bounded size. The registration is accepted only when it names this process's PID and a numeric loopback http(s)
+ * URL with no credentials, path, query or fragment; the client then sends the official `headers` for that endpoint and
+ * refuses redirects. Nothing is probed, started, replaced or stopped. A missing, foreign or malformed registration is
+ * `not_configured`, is sent no request, and its contents are not repeated. The same PID only admits a candidate; the
+ * identity checks below still decide.
+ *
+ * A binding is one immutable URL and client, reused while its identity checks pass and forgotten when one fails; a
+ * failure seen by a read that started on an older binding never evicts a newer one. No call is retried: the next call
+ * makes a new binding.
+ *
+ * A managed-service failure keeps its code and carries a fixed local diagnosis, and an unsettled child keeps its signal
+ * with a fixed local detail. No text the endpoint or the official client produced reaches the caller, because callers
+ * such as continuation admission show the diagnosis to an agent. Failures and settlement details of an explicit
+ * `server` keep their detailed diagnostics.
+ *
+ * Nothing is trusted from an earlier read. Every method checks, before it reads, that the server at the bound
  * URL answers this activation's identity RPC, for this activation's location, with the nonce this activation
  * generated and still holds locally (nothing the caller sends is echoed back as proof), and checks again after it
  * reads, so evidence read across a server restart, reload or port takeover is discarded rather than returned. The
@@ -14,7 +38,8 @@ import { IDENTITY_RPC_ID, type Identity } from './identity.js';
  * fails the same checks as a fresh one. Only reads are exposed; native mutations stay on the in-process plugin context.
  *
  * Each method takes the caller's `signal`. It reaches every request the method makes, identity checks included, and an
- * aborted call rethrows its own abort error, so a cancellation is never reported as a binding or target failure.
+ * aborted call rethrows its own abort error (for the managed service, the signal's reason), so a cancellation is never
+ * reported as a binding or target failure.
  */
 
 type RawClient = ReturnType<typeof OpenCode.make>;
@@ -40,6 +65,12 @@ export type TargetCheck = {
   placement: 'this-location' | 'other-location';
 };
 
+/** The answer `createVerifiedReadAccess` returns: the target check with the facts it was computed from. */
+export type ObservedTargetCheck = TargetCheck & {
+  /** The target's native parent and location that the relationship and placement were computed from, read again unchanged. */
+  observed: { parentID?: string; directory?: string };
+};
+
 /**
  * Whether the host could still run work in a child's session tree without a new prompt. `settled: false` names the
  * first signal that showed work: `job` (the host still lists the child's own subagent job, or a job of the child or a
@@ -60,6 +91,15 @@ export interface VerifiedReadAccess {
    * reported, never rerouted.
    */
   checkTarget(input: { callerID: string; targetID: string }, signal?: AbortSignal): Promise<TargetCheck>;
+}
+
+/**
+ * What `createVerifiedReadAccess` returns and what Hive consumes: every check reports the facts it observed, and the
+ * reader can tell whether a child's session tree has settled. `VerifiedReadAccess` and `TargetCheck` keep their
+ * published shapes, so code that implements or constructs them still compiles.
+ */
+export interface VerifiedTreeReadAccess extends VerifiedReadAccess {
+  checkTarget(input: { callerID: string; targetID: string }, signal?: AbortSignal): Promise<ObservedTargetCheck>;
   /**
    * Reads, between the identity checks, whether child `childID` of `parentID` has settled. Work moves from a job to an
    * inbox to an active execution, so the reads run in that order (as the host's own `run` command does) and a hand-off
@@ -72,14 +112,52 @@ export interface VerifiedReadAccess {
   childSettlement(input: { parentID: string; childID: string }, signal?: AbortSignal): Promise<ChildSettlement>;
 }
 
-type ClientFactory = (options: { baseUrl: string; headers: Record<string, string> }) => VerifiedClient;
+type ClientFactory = (options: { baseUrl: string; headers: Record<string, string>; fetch?: typeof globalThis.fetch }) => VerifiedClient;
 
 /** Connection settings for the read-only public client, without host profile or Hive service types. */
 export type ReadServerOptions = { url: string; username: string; passwordEnv?: string };
 
+/** Where the reader connects, fixed when the access is created: the explicit `server`, or this process's managed service registration. */
+type Source = { readonly kind: 'configured'; readonly server: ReadServerOptions } | { readonly kind: 'managed'; readonly file: string };
+
+/** The client for one server. Never mutated; replaced only after it fails a check. */
+type Binding = { readonly url: string; readonly client: VerifiedClient };
+
 const MAX_LINEAGE_DEPTH = 32;
 /** Children read per session list page, the page size the official client uses for a session family. */
 const SESSION_PAGE = 200;
+/** A managed service registration is a few hundred bytes; anything larger is not one. */
+const MAX_REGISTRATION_BYTES = 64 * 1024;
+/** The user the managed service authenticates, as the official client's service probe sends it. */
+const MANAGED_USERNAME = 'opencode';
+/**
+ * Opens the registration read-only without waiting, so a FIFO or device placed at its path is refused by its type instead
+ * of blocking this process. A flag the platform does not define (Windows has neither) is left out.
+ */
+const REGISTRATION_OPEN_FLAGS = fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK ?? 0) | (fs.constants.O_NOCTTY ?? 0);
+/** What each managed-service failure says. Every diagnosis is local text: none repeats the endpoint or the client. */
+const MANAGED_DIAGNOSIS: Record<ReadAccessErrorCode, string> = {
+  not_configured: 'The managed OpenCode service registration cannot be used.',
+  unauthorized: 'The managed OpenCode service rejected the credentials in its own registration.',
+  unreachable: 'The oc-arkive identity check against the managed OpenCode service failed.',
+  wrong_location: 'The managed OpenCode service has no oc-arkive activation for this location.',
+  wrong_instance: 'The managed OpenCode service is not the OpenCode instance running this plugin activation.',
+  caller_unavailable: 'The managed OpenCode service could not read the calling session.',
+  caller_displaced: 'The calling session is no longer in this location.',
+  target_unavailable: 'The managed OpenCode service could not read a session the check needs.',
+  inconsistent_lookup: 'The managed OpenCode service answered the session reads inconsistently.',
+  malformed_response: 'The managed OpenCode service answered a read with something other than the documented shape.',
+};
+/** What a managed-service read that failed without a Hive refusal says. */
+const MANAGED_READ_FAILED = 'A read from the managed OpenCode service failed.';
+/** What an unsettled child says on the managed service, chosen by its signal alone: none repeats a field the service returned. */
+const MANAGED_PENDING: Record<Exclude<ChildSettlement, { settled: true }>['signal'], string> = {
+  job: 'the managed OpenCode service still lists a job of the child or a descendant as pending',
+  inbox: 'the managed OpenCode service reports queued inbox input in the child\'s session tree',
+  active: 'the managed OpenCode service reports an active execution in the child\'s session tree',
+};
+/** What an identity reply or binding failure says in place of a value that is not text. */
+const OPAQUE_VALUE = 'a value that is not text';
 
 export function createVerifiedReadAccess(input: {
   server: ReadServerOptions | undefined;
@@ -87,51 +165,69 @@ export function createVerifiedReadAccess(input: {
   directory: string;
   env?: Record<string, string | undefined>;
   makeClient?: ClientFactory;
-}): VerifiedReadAccess {
-  const { server, identity, directory } = input;
+  /** Test seam: the managed service registration file. Defaults to the official client's `fallback()` path. */
+  registrationFile?: string;
+}): VerifiedTreeReadAccess {
+  const { identity, directory } = input;
   const env = input.env ?? process.env;
   const makeClient = input.makeClient ?? ((options) => OpenCode.make(options));
-  let created: VerifiedClient | undefined;
+  // Resolved now, without I/O, so a later change to this process's environment cannot redirect the managed read.
+  const source: Source = input.server ? { kind: 'configured', server: input.server } : { kind: 'managed', file: input.registrationFile ?? fallback() };
+  let binding: Binding | undefined;
 
-  const connect = (): VerifiedClient => {
-    if (!server) throw new ReadAccessError('not_configured', 'Session history reads need the oc-arkive `server` option (url and passwordEnv) for this OpenCode v2 server.');
-    if (created) return created;
-    const password = server.passwordEnv ? env[server.passwordEnv] : undefined;
-    if (server.passwordEnv && !password) throw new ReadAccessError('not_configured', `The server password variable ${server.passwordEnv} is not set in the OpenCode server environment.`);
-    const headers: Record<string, string> = password ? { authorization: `Basic ${Buffer.from(`${server.username}:${password}`).toString('base64')}` } : {};
-    created = makeClient({ baseUrl: server.url, headers });
-    return created;
+  // Synchronous: no other read can interleave, so a binding is published whole or not at all, and a refused managed
+  // registration is read again on the next call (a service started later is found then).
+  const connect = (): Binding => {
+    if (binding) return binding;
+    const endpoint = source.kind === 'configured' ? configuredEndpoint(source.server, env) : managedEndpoint(source.file, process.pid);
+    const client = makeClient({ baseUrl: endpoint.url, headers: serviceHeaders(endpoint) ?? {}, ...(source.kind === 'managed' ? { fetch: withoutRedirects } : {}) });
+    return binding = { url: endpoint.url, client };
   };
 
-  const verify = async (client: VerifiedClient, options: RequestOptions) => {
-    let reply: { output?: unknown };
+  /** Forgets `failed` unless another read has already replaced it. */
+  const evict = (failed: Binding) => {
+    if (binding === failed) binding = undefined;
+  };
+
+  const verify = async (bound: Binding, options: RequestOptions) => {
+    let reply: unknown;
     try {
-      reply = await client.rpc.call({ rpcID: IDENTITY_RPC_ID, method: 'get', location: { directory }, input: {} }, options);
+      reply = await bound.client.rpc.call({ rpcID: IDENTITY_RPC_ID, method: 'get', location: { directory }, input: {} }, options);
     } catch (error) {
       // A cancelled check says nothing about the server, so the client stays.
       if (options?.signal.aborted) throw error;
-      created = undefined;
-      throw classifyBindingFailure(error, server!.url);
+      evict(bound);
+      throw classifyBindingFailure(error, bound.url);
     }
-    const answer = reply.output as { nonce?: unknown; directory?: unknown } | undefined;
-    if (answer?.nonce !== identity.nonce) {
-      created = undefined;
-      throw new ReadAccessError('wrong_instance', `The server at ${server!.url} is not the OpenCode instance running this plugin activation.`);
+    // The reply is untrusted: an envelope or answer of any other shape cannot carry this activation's nonce.
+    const answer = fields(fields(reply).output);
+    if (answer.nonce !== identity.nonce) {
+      evict(bound);
+      throw new ReadAccessError('wrong_instance', `The server at ${bound.url} is not the OpenCode instance running this plugin activation.`);
     }
     if (answer.directory !== directory) {
-      created = undefined;
-      throw new ReadAccessError('wrong_location', `The server at ${server!.url} answered for ${String(answer.directory)}, not ${directory}.`);
+      evict(bound);
+      const answered = typeof answer.directory === 'string' ? answer.directory : OPAQUE_VALUE;
+      throw new ReadAccessError('wrong_location', `The server at ${bound.url} answered for ${answered}, not ${directory}.`);
     }
   };
 
-  /** Runs reads between two identity checks; the result is returned only when both pass. */
+  /** Runs reads between two identity checks on one binding; the result is returned only when both pass. */
   const verified = async <T>(read: (client: VerifiedClient, options: RequestOptions) => Promise<T>, signal: AbortSignal | undefined): Promise<T> => {
-    const client = connect();
+    // A managed read cancelled before it starts rejects with its reason without reading the registration.
+    if (source.kind === 'managed' && signal?.aborted) throw signal.reason;
+    const bound = connect();
     const options: RequestOptions = signal ? { signal } : undefined;
-    await verify(client, options);
-    const result = await read(client, options);
-    await verify(client, options);
-    return result;
+    try {
+      await verify(bound, options);
+      const result = await read(bound.client, options);
+      await verify(bound, options);
+      return result;
+    } catch (error) {
+      if (source.kind === 'configured') throw error;
+      if (options?.signal.aborted) throw options.signal.reason;
+      throw error instanceof ReadAccessError ? new ReadAccessError(error.code, MANAGED_DIAGNOSIS[error.code]) : new Error(MANAGED_READ_FAILED);
+    }
   };
 
   /** A session read must answer to the ID it was asked for. */
@@ -152,20 +248,21 @@ export function createVerifiedReadAccess(input: {
     return answeredFor(session, sessionID) as unknown as SessionPlacement;
   };
 
-  const classify = async (client: VerifiedClient, options: RequestOptions, caller: SessionPlacement, target: SessionPlacement): Promise<TargetCheck> => {
+  const classify = async (client: VerifiedClient, options: RequestOptions, caller: SessionPlacement, target: SessionPlacement): Promise<ObservedTargetCheck> => {
     const placement = target.location?.directory === directory ? 'this-location' : 'other-location';
-    if (target.id === caller.id) return { relationship: 'self', placement };
-    if (target.parentID === caller.id) return { relationship: 'child', placement };
+    const observed = { ...(target.parentID === undefined ? {} : { parentID: target.parentID }), ...(target.location?.directory === undefined ? {} : { directory: target.location.directory }) };
+    if (target.id === caller.id) return { relationship: 'self', placement, observed };
+    if (target.parentID === caller.id) return { relationship: 'child', placement, observed };
     const seen = new Set([target.id]);
     let parentID = target.parentID;
     while (parentID !== undefined) {
       if (seen.has(parentID) || seen.size > MAX_LINEAGE_DEPTH) throw new ReadAccessError('inconsistent_lookup', `The parent chain of session ${target.id} is not a finite chain.`);
       seen.add(parentID);
       const parent = await getSession(client, options, parentID, 'target_unavailable');
-      if (parent.parentID === caller.id) return { relationship: 'descendant', placement };
+      if (parent.parentID === caller.id) return { relationship: 'descendant', placement, observed };
       parentID = parent.parentID;
     }
-    return { relationship: 'other', placement };
+    return { relationship: 'other', placement, observed };
   };
 
   /** Whether `sessionID` is `ancestorID` or descends from it; every session on the way is read from the server. */
@@ -266,7 +363,11 @@ export function createVerifiedReadAccess(input: {
       }
       return check;
     }, signal),
-    childSettlement: ({ parentID, childID }, signal) => verified((client, options) => settlement(client, options, parentID, childID), signal),
+    childSettlement: async ({ parentID, childID }, signal) => {
+      const state = await verified((client, options) => settlement(client, options, parentID, childID), signal);
+      if (!('signal' in state) || source.kind === 'configured') return state;
+      return { settled: false, signal: state.signal, detail: MANAGED_PENDING[state.signal] };
+    },
   };
 }
 
@@ -307,11 +408,108 @@ function jobsFrom(value: unknown, what: string): JobRecord[] {
   });
 }
 
+/** The managed client's fetch: a redirect is an error, so a request never leaves the validated loopback endpoint. */
+const withoutRedirects = ((request: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => fetch(request, { ...init, redirect: 'error' })) as typeof fetch;
+
+/** The fields of an untrusted value; anything that is not an object has none. */
+function fields(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === 'object' ? value as Record<string, unknown> : {};
+}
+
+/** The endpoint the `server` option names, with basic authentication when its password variable is set. */
+function configuredEndpoint({ url, username, passwordEnv }: ReadServerOptions, env: Record<string, string | undefined>): Endpoint {
+  const password = passwordEnv ? env[passwordEnv] : undefined;
+  if (passwordEnv && !password) throw new ReadAccessError('not_configured', `The server password variable ${passwordEnv} is not set in the OpenCode server environment.`);
+  return { url, ...(password ? { auth: { type: 'basic' as const, username, password } } : {}) };
+}
+
+/** A refusal of the managed service registration; `why` names the file and the problem, never its contents. */
+function unusableRegistration(why: string): ReadAccessError {
+  return new ReadAccessError('not_configured', `Session history reads need the oc-arkive \`server\` option (url and passwordEnv), or the managed local OpenCode service registered by the process running this plugin: ${why}`);
+}
+
+/**
+ * The endpoint of the managed service registered in `file`, accepted only when this process (`pid`) registered it at a
+ * numeric loopback http(s) URL. The file is untrusted: it is read once, bounded, and a refusal never repeats its
+ * contents. Absence, a foreign process or any malformed field is `not_configured`; nothing here makes a request.
+ */
+function managedEndpoint(file: string, pid: number): Endpoint {
+  let text: string;
+  try {
+    text = readRegistration(file);
+  } catch (error) {
+    if (error instanceof ReadAccessError) throw error;
+    const code = (error as NodeJS.ErrnoException | null)?.code;
+    throw unusableRegistration(code === 'ENOENT' ? `no managed service is registered at ${file}.` : `its registration at ${file} could not be read (${code ?? 'read error'}).`);
+  }
+  let record: unknown;
+  try {
+    record = JSON.parse(text);
+  } catch {
+    // Left undefined: refused below with every other value that is not a record.
+  }
+  if (record === null || typeof record !== 'object' || Array.isArray(record)) throw unusableRegistration(`its registration at ${file} is not a JSON record.`);
+  const { url, pid: registered, password } = record as Partial<Record<keyof Info, unknown>>;
+  if (registered !== pid) throw unusableRegistration(`the registration at ${file} belongs to another process.`);
+  if (password !== undefined && (typeof password !== 'string' || password === '')) throw unusableRegistration(`the registration at ${file} has an unusable password field.`);
+  const origin = loopbackOrigin(url);
+  if (origin === undefined) throw unusableRegistration(`the registration at ${file} does not name a numeric loopback http(s) URL without credentials, path, query or fragment.`);
+  return { url: origin, ...(typeof password === 'string' ? { auth: { type: 'basic' as const, username: MANAGED_USERNAME, password } } : {}) };
+}
+
+/**
+ * The text of the registration at `file`. It is opened without blocking and must be a regular file of at most
+ * `MAX_REGISTRATION_BYTES`: a larger one, including one that grows while it is read, is refused rather than truncated.
+ * The descriptor is always closed.
+ */
+function readRegistration(file: string): string {
+  const fd = fs.openSync(file, REGISTRATION_OPEN_FLAGS);
+  try {
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile()) throw unusableRegistration(`its registration at ${file} is not a regular file.`);
+    const tooLarge = () => unusableRegistration(`its registration at ${file} is larger than a registration.`);
+    if (stat.size > MAX_REGISTRATION_BYTES) throw tooLarge();
+    // One that grew past the bound since the stat fills the extra byte.
+    const buffer = Buffer.alloc(MAX_REGISTRATION_BYTES + 1);
+    let length = 0;
+    for (let read; length < buffer.length && (read = fs.readSync(fd, buffer, length, buffer.length - length, length)) > 0;) length += read;
+    if (length > MAX_REGISTRATION_BYTES) throw tooLarge();
+    return buffer.toString('utf8', 0, length);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/**
+ * The canonical origin of `value` when it is an http(s) URL on a numeric loopback address (127.0.0.0/8 or [::1]) and
+ * carries nothing else. A host name, even `localhost`, would need name resolution at the credential boundary.
+ */
+function loopbackOrigin(value: unknown): string | undefined {
+  if (typeof value !== 'string' || /[@?#]/.test(value)) return undefined;
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return undefined;
+  }
+  if ((url.protocol !== 'http:' && url.protocol !== 'https:') || url.pathname !== '/') return undefined;
+  const loopback = url.hostname === '[::1]' || (isIPv4(url.hostname) && url.hostname.startsWith('127.'));
+  return loopback ? url.origin : undefined;
+}
+
+/**
+ * Names the binding failure from the official client's error: its declared `UnauthorizedError` and
+ * `LocationNotFoundError` tags, an undeclared 401 status, and the RPC layer's `rpc.unavailable` type. Anything else is
+ * a transport or server failure. The detailed diagnostic repeats only a string error or a string `message`, which is
+ * whatever the client or the endpoint put there; any other value is replaced by local text and never converted. A
+ * managed service's failure keeps only the code (see `MANAGED_DIAGNOSIS`).
+ */
 function classifyBindingFailure(error: unknown, url: string): ReadAccessError {
-  const record = (error ?? {}) as { type?: unknown; status?: unknown; message?: unknown };
-  const message = typeof record.message === 'string' ? record.message : String(error);
-  if (record.type === 'rpc.unavailable') return new ReadAccessError('wrong_location', `The server at ${url} has no oc-arkive activation for this location (${message}).`);
-  if (record.status === 401 || /authentication required|unauthori[sz]ed/i.test(message)) return new ReadAccessError('unauthorized', `The server at ${url} rejected the configured credentials.`);
+  const record = fields(error);
+  const message = typeof error === 'string' ? error : typeof record.message === 'string' ? record.message : OPAQUE_VALUE;
+  if (record._tag === 'LocationNotFoundError' || record.type === 'rpc.unavailable') return new ReadAccessError('wrong_location', `The server at ${url} has no oc-arkive activation for this location (${message}).`);
+  const undeclared401 = error instanceof ClientError && error.reason === 'UnexpectedStatus' && fields(error.cause).status === 401;
+  if (record._tag === 'UnauthorizedError' || undeclared401) return new ReadAccessError('unauthorized', `The server at ${url} rejected the configured credentials.`);
   return new ReadAccessError('unreachable', `The oc-arkive identity check against ${url} failed: ${message}`);
 }
 

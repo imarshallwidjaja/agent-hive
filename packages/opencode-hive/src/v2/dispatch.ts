@@ -7,14 +7,14 @@ import type { HiveServices } from '../runtime/hive-services.js';
 import { boundChildScope } from '../background/backgroundJobAdapter.js';
 import { childAssociation, childRouteRecord, composeDispatchPrompt, provenChildBinding, resolveAssignment, sameChildRoute } from '../task-brief.js';
 import type { BackgroundLaunch, V2BackgroundLifecycle } from './background.js';
-import type { VerifiedReadAccess } from './client.js';
+import type { VerifiedTreeReadAccess } from './client.js';
 import type { HiveAuthority } from './registration.js';
 
 /** The host's native subagent tool. */
 export const NATIVE_SUBAGENT_TOOL = 'subagent';
 
 /** Whether a child has settled in the host, read through the catalog's verified read access. */
-export type NativeActivity = Pick<VerifiedReadAccess, 'childSettlement'>;
+export type NativeActivity = Pick<VerifiedTreeReadAccess, 'childSettlement'>;
 
 /** A refusal raised before the host continues a child, or inside the awaited progress barrier before it prompts one. */
 class ChildBindingRefused {
@@ -145,8 +145,11 @@ function dispatchSubagent(
     if (admitted !== undefined && admissions.get(admitted) === call) admissions.delete(admitted);
   });
 
-  /** Requires the host to report the child settled. A signal Hive cannot read is reported as unknown, never as settled. */
-  const requireSettled = (child: string, outcome: string) => Effect.tryPromise({ try: () => activity.childSettlement({ parentID: parent, childID: child }), catch: (error) => error }).pipe(
+  /**
+   * Requires the host to report the child settled. A signal Hive cannot read is reported as unknown, never as settled.
+   * Interrupting the call aborts the reads through the signal the effect provides.
+   */
+  const requireSettled = (child: string, outcome: string) => Effect.tryPromise({ try: (signal) => activity.childSettlement({ parentID: parent, childID: child }, signal), catch: (error) => error }).pipe(
     Effect.catch((error: unknown) => refuse(`Hive could not confirm that child session ${child} has settled (${describe(error)}). Continuing a child needs a settled child, so Hive did not overwrite its binding and ${outcome}.`)),
     Effect.flatMap((state) => 'detail' in state ? refuse(unsettled(child, state.detail, outcome)) : Effect.void),
   );

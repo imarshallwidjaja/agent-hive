@@ -8,9 +8,9 @@ import type { Plugin } from '@opencode/plugin/effect';
 import type { TaskTraceSummarizerConfig } from 'hive-core';
 import plugin from '../index.js';
 import { TASK_TRACE_SUMMARIZER_AGENT, TASK_TRACE_SUMMARIZER_PROMPT } from '../trace/types.js';
-import { ReadAccessError, type TargetCheck, type VerifiedReadAccess } from './client.js';
+import { ReadAccessError, type ObservedTargetCheck } from './client.js';
 import { createHiveToolRegistrar } from './tools.js';
-import { createV2Summarizer, createV2TraceOperations, createV2TraceSource, registerEvidence } from './trace-source.js';
+import { createV2Summarizer, createV2TraceOperations, createV2TraceSource, registerEvidence, type TraceReadAccess } from './trace-source.js';
 import type { V2Catalog } from './registration.js';
 
 // The v2 trace source owns its native mapping, complete-history paging, authorization and in-process summarizer.
@@ -57,7 +57,7 @@ function readAccessFor(input: {
     const value = input.timelines[id] ?? [];
     return typeof value === 'function' ? value(listReads) : value;
   };
-  const access: VerifiedReadAccess = {
+  const access: TraceReadAccess = {
     sessionActive: async () => {
       calls.push({ method: 'active' });
       if (input.failWith) throw input.failWith;
@@ -86,19 +86,20 @@ function readAccessFor(input: {
       const data = rest.slice(0, request.limit ?? 50);
       return { data, cursor: { ...(data.length > 0 ? { next: encodeCursor(String(data.at(-1)!.id), order) } : {}) } } as never;
     },
-    checkTarget: async ({ callerID, targetID }): Promise<TargetCheck> => {
+    checkTarget: async ({ callerID, targetID }): Promise<ObservedTargetCheck> => {
       calls.push({ method: 'check', input: { callerID, targetID } });
       if (input.failWith) throw input.failWith;
       const caller = session(callerID);
       const target = session(targetID);
       const placement = target.location.directory === HERE ? 'this-location' : 'other-location';
+      const observed = { ...(target.parentID ? { parentID: target.parentID } : {}), directory: target.location.directory };
       if (caller.location.directory !== HERE) throw new ReadAccessError('caller_displaced', 'caller moved');
-      if (target.id === caller.id) return { relationship: 'self', placement };
-      if (target.parentID === caller.id) return { relationship: 'child', placement };
+      if (target.id === caller.id) return { relationship: 'self', placement, observed };
+      if (target.parentID === caller.id) return { relationship: 'child', placement, observed };
       for (let parent = target.parentID; parent; parent = input.sessions[parent]?.parentID) {
-        if (input.sessions[parent]?.parentID === caller.id) return { relationship: 'descendant', placement };
+        if (input.sessions[parent]?.parentID === caller.id) return { relationship: 'descendant', placement, observed };
       }
-      return { relationship: 'other', placement };
+      return { relationship: 'other', placement, observed };
     },
   };
   return { access, calls };
@@ -210,7 +211,7 @@ function semanticReply(request: any): Effect.Effect<{ text: string }> {
 const parse = (text: string) => JSON.parse(text);
 
 /** `agent` is the agent the host names for the tool call; `null` calls without one. `build` has no configured model here. */
-function operations(access: VerifiedReadAccess, summarizer = summarizerContext().summarizer.host) {
+function operations(access: TraceReadAccess, summarizer = summarizerContext().summarizer.host) {
   const ops = createV2TraceOperations(access, summarizer);
   return {
     trace: async (args: Raw, sessionID = 'ses_parent', agent: string | null = 'build') => parse(await ops.hive_task_trace.execute(args, { sessionID, ...(agent === null ? {} : { agent }), signal: new AbortController().signal }) as string),
@@ -221,7 +222,7 @@ function operations(access: VerifiedReadAccess, summarizer = summarizerContext()
 const FAMILY = { ses_parent: {}, ses_child: { parentID: 'ses_parent' } };
 
 /** The trace tool as the production registrar hands it to the host, over the given read access and plugin API. */
-async function registered(access: VerifiedReadAccess, setup: ReturnType<typeof summarizerContext>, name: 'hive_task_trace' | 'hive_task_trace_content' = 'hive_task_trace') {
+async function registered(access: TraceReadAccess, setup: ReturnType<typeof summarizerContext>, name: 'hive_task_trace' | 'hive_task_trace_content' = 'hive_task_trace') {
   const catalog = {
     services: { configService: { get: () => ({ taskTraceSummarizer: setup.config }) } },
     readAccess: access,
@@ -307,6 +308,15 @@ describe('v2 trace source mapping', () => {
     expect(await operations(unconfigured.access).content({ task_id: 'ses_child', event: 'x' })).toEqual({ ok: false, reason: 'invalid_event' });
     const inconsistent = readAccessFor({ sessions, timelines, failWith: new ReadAccessError('inconsistent_lookup', 'secret detail') });
     expect(await operations(inconsistent.access).trace({ task_id: 'ses_child' })).toEqual({ ok: false, reason: 'unavailable_or_unauthorized' });
+  });
+
+  it('takes target freshness from the one checked observation, with no separate session read', async () => {
+    const { access, calls } = readAccessFor({ sessions: FAMILY, timelines: { ses_child: [user('msg_u1', 'go')] } });
+    const source = createV2TraceSource(access);
+    const signal = new AbortController().signal;
+    const resolved = await source.resolveTarget('ses_child', 'ses_parent', signal);
+    expect(resolved).toMatchObject({ relationship: 'direct_child', placed: true, freshness: JSON.stringify(['child', 'this-location', 'ses_parent', HERE]) });
+    expect(calls.map((call) => call.method)).toEqual(['check']);
   });
 
   it('reports the runtime from the active map and keeps active sessions out of recovery', async () => {
@@ -746,7 +756,7 @@ describe('v2 caller cancellation', () => {
   it('gives the caller signal to the history reads of a recovery', async () => {
     const base = readAccessFor({ sessions: FAMILY, timelines: { ses_child: finished } });
     const signals: Array<AbortSignal | undefined> = [];
-    const access: VerifiedReadAccess = {
+    const access: TraceReadAccess = {
       ...base.access,
       messageList: (request, signal) => {
         signals.push(signal);
@@ -772,7 +782,7 @@ describe('v2 caller cancellation', () => {
     let release!: () => void;
     const released = new Promise<void>((resolve) => { release = resolve; });
     let held = false;
-    const access: VerifiedReadAccess = {
+    const access: TraceReadAccess = {
       ...base.access,
       messageList: async (request, signal) => {
         if (held) return base.access.messageList(request, signal);
@@ -832,7 +842,7 @@ describe('v2 caller cancellation', () => {
       seen.push([method, args.at(-1) instanceof AbortSignal ? args.at(-1) as AbortSignal : undefined]);
       return (base.access[method] as (...input: unknown[]) => Promise<unknown>)(...args);
     });
-    const access = { ...base.access, sessionActive: spy('sessionActive'), sessionGet: spy('sessionGet'), messageList: spy('messageList'), checkTarget: spy('checkTarget') } as unknown as VerifiedReadAccess;
+    const access = { ...base.access, sessionActive: spy('sessionActive'), sessionGet: spy('sessionGet'), messageList: spy('messageList'), checkTarget: spy('checkTarget') } as unknown as TraceReadAccess;
     const trace = await registered(access, summarizerContext());
     const content = await registered(access, summarizerContext(), 'hive_task_trace_content');
 
@@ -1008,8 +1018,10 @@ async function activate(options: Record<string, unknown>) {
       }),
     },
   } as unknown as Plugin.Context;
-  const saved = { HOME: process.env.HOME, OPENCODE_CONFIG_DIR: process.env.OPENCODE_CONFIG_DIR, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME };
+  // XDG_STATE_HOME also moves: without a `server` option the reader looks for the managed service registered there.
+  const saved = { HOME: process.env.HOME, OPENCODE_CONFIG_DIR: process.env.OPENCODE_CONFIG_DIR, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, XDG_STATE_HOME: process.env.XDG_STATE_HOME };
   process.env.HOME = home;
+  process.env.XDG_STATE_HOME = path.join(home, '.local', 'state');
   process.env.OPENCODE_CONFIG_DIR = path.join(home, '.config', 'opencode');
   delete process.env.XDG_CONFIG_HOME;
   try {
@@ -1052,7 +1064,8 @@ describe('v2 evidence registration', () => {
       expect(host.agents.get(TASK_TRACE_SUMMARIZER_AGENT).permissions.at(-1)).toEqual({ action: '*', resource: '*', effect: 'deny' });
       expect(host.hooks.generate?.length).toBeGreaterThanOrEqual(2);
 
-      // Without a configured server the read reports the missing binding and writes nothing, guard included.
+      // Without a configured server or a managed service in the isolated state directory, the read reports the missing
+      // binding and writes nothing, guard included.
       const before = tree(host.root);
       for (const [name, args] of [['hive_task_trace_content', { task_id: 'child', event: 'trace-ref' }], ['hive_task_trace', { task_id: 'child' }]] as const) {
         const exit = await host.execute(name, args, { sessionID: 'primary', agent: 'hive-helper' });

@@ -48,8 +48,10 @@ function fakeContext(directory: string, projectDirectory = directory) {
 async function activate(context: Plugin.Context) {
   const home = fs.mkdtempSync(`/tmp/hive-v2-plugin-home-${process.pid}-`);
   cleanup.push(home);
-  const saved = { HOME: process.env.HOME, OPENCODE_CONFIG_DIR: process.env.OPENCODE_CONFIG_DIR };
+  // XDG_STATE_HOME also moves: without a `server` option the reader looks for the managed service registered there.
+  const saved = { HOME: process.env.HOME, OPENCODE_CONFIG_DIR: process.env.OPENCODE_CONFIG_DIR, XDG_STATE_HOME: process.env.XDG_STATE_HOME };
   process.env.HOME = home;
+  process.env.XDG_STATE_HOME = path.join(home, '.local', 'state');
   process.env.OPENCODE_CONFIG_DIR = path.join(home, '.config', 'opencode');
   try {
     const scope = Effect.runSync(Scope.make());

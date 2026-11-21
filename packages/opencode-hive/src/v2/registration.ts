@@ -31,7 +31,7 @@ import {
   type CallerAuthority,
   type RolePolicy,
 } from '../runtime/role-policy.js';
-import { createVerifiedReadAccess, type VerifiedReadAccess } from './client.js';
+import { createVerifiedReadAccess, type VerifiedTreeReadAccess } from './client.js';
 import type { Identity } from './identity.js';
 import type { V2Options } from './options.js';
 import { createHiveToolRegistrar, type HiveCaller, type HiveToolRegistrar } from './tools.js';
@@ -54,7 +54,7 @@ export interface V2Catalog {
   /** Tasks 6 and 7 register their tools here so flags and guards stay identical. */
   readonly registrar: HiveToolRegistrar;
   /** Verified, read-only access to session history on this server. */
-  readonly readAccess: VerifiedReadAccess;
+  readonly readAccess: VerifiedTreeReadAccess;
 }
 
 export interface HiveAuthority {

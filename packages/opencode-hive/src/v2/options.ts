@@ -9,7 +9,7 @@ import type { ReadServerOptions } from './client.js';
  *
  * `server` locates the running server for the reads the in-process plugin API does not offer. It holds the URL and
  * the name of an environment variable with the server password, never the password itself, so the secret stays out
- * of project and user configuration. Without `server` those reads report that they are not configured.
+ * of project and user configuration. Without `server` the reader uses the managed local service only when this process registered it (see `client.ts`).
  */
 export type V2Options = {
   readTransport: ReadTransport;

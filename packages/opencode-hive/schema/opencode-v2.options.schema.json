@@ -16,7 +16,7 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["url"],
-      "description": "The running OpenCode v2 server, for the session reads the in-process plugin API does not offer. Each binding is verified against this activation's own identity before use. Without it those reads report that they are not configured.",
+      "description": "The running OpenCode v2 server, for the session reads the in-process plugin API does not offer. Each binding is verified against this activation's own identity before use. When set, it is the only server Hive reads, and a missing password variable or rejected credentials fail without fallback. Without it, Hive uses the managed local OpenCode service with that service's own credentials, only when the service registration names the OpenCode process running this plugin and a loopback URL; otherwise those reads report that they are not configured.",
       "properties": {
         "url": {
           "type": "string",

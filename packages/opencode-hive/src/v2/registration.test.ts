@@ -193,8 +193,10 @@ async function activate(options: Record<string, unknown> = {}, hiveConfig?: Reco
   const projectDirectory = placement.projectDirectory ? path.join(root, placement.projectDirectory) : root;
   fs.mkdirSync(projectDirectory, { recursive: true });
   const host = createFakeHost(directory, options, projectDirectory);
-  const saved = { HOME: process.env.HOME, OPENCODE_CONFIG_DIR: process.env.OPENCODE_CONFIG_DIR, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME };
+  // XDG_STATE_HOME also moves: without a `server` option the reader looks for the managed service registered there.
+  const saved = { HOME: process.env.HOME, OPENCODE_CONFIG_DIR: process.env.OPENCODE_CONFIG_DIR, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, XDG_STATE_HOME: process.env.XDG_STATE_HOME };
   process.env.HOME = home;
+  process.env.XDG_STATE_HOME = path.join(home, '.local', 'state');
   process.env.OPENCODE_CONFIG_DIR = path.join(home, '.config', 'opencode');
   delete process.env.XDG_CONFIG_HOME;
   try {
