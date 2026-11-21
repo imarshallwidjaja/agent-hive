@@ -112,7 +112,7 @@ No role has a shipped model. A stored `model` is kept as written, including one 
 
 - `baseAgent` (required): one of `scout-researcher`, `forager-worker`, `forager-investigator`, `plan-reviewer`, `code-reviewer`, `simplicity-reviewer`, `approach-advisor`, `vulnerability-reviewer`. Primaries, `hive-builder`, `architect-planner`, and `hive-helper` cannot be bases.
 - `description` (required, nonblank): routing guidance shown to eligible primaries. Primaries pick a custom agent only when its description is a closer fit for the work than the base; importance, size, or a stronger model are not routing reasons. It cannot widen the base role.
-- `model`, `variant`: each one omitted inherits the base agent's resolved Hive value, including the base's project override. With no model on the custom agent or its base, it uses the native OpenCode model. This is Hive configuration inheritance; a native OpenCode override of the base agent is not inherited.
+- `model`, `variant`: each one omitted inherits the base agent's resolved Hive value, including the base's project override, under the layering rule below: a custom `model` that differs from the base model drops the base variant. With no model on the custom agent or its base, it uses the native OpenCode model. This is Hive configuration inheritance; a native OpenCode override of the base agent is not inherited.
 - `autoLoadSkills`: merged with the base agent's effective list.
 - Tools and permissions: exactly the base's. Config cannot add tools.
 - IDs must not contain `*` or `?`, and must not be reserved: every built-in name, `__hive_task_trace_summarizer`, `general`, `explore`, `hive`, `architect`, `swarm`, `scout`, `forager`, `hygienic`, `hygienic-reviewer`, `receiver`, `build`, `builder`, `plan`, `code`. Reserved or invalid entries are skipped with a warning.
@@ -128,7 +128,17 @@ No role has a shipped model. A stored `model` is kept as written, including one 
 }
 ```
 
-Only `$schema`, `agents`, and `customAgents` are allowed. Each entry needs at least one of `model` or `variant`, both strings, and nothing else. A `variant`-only entry is valid when the agent's global entry (or custom base) supplies the model. Names that do not match an effective built-in or custom agent are ignored and never create agents. An unsupported key, a non-string value or invalid JSON makes the runtime ignore the whole override file with a warning. A blank string for an agent that matches is a model-setting error that stops the plugin like a blank global value, so correct or delete it.
+Only `$schema`, `agents`, and `customAgents` are allowed. Each entry needs at least one of `model` or `variant`, both strings, and nothing else. A `variant`-only entry is valid when the agent's global entry (or custom base) supplies the model. A `model`-only entry for a different model clears the variant from the earlier layers (see [Model and variant layering](#model-and-variant-layering)). Names that do not match an effective built-in or custom agent are ignored and never create agents. An unsupported key, a non-string value or invalid JSON makes the runtime ignore the whole override file with a warning. A blank string for an agent that matches is a model-setting error that stops the plugin like a blank global value, so correct or delete it.
+
+## Model and variant layering
+
+Hive applies each agent's `model` and `variant` in layers. A built-in role has two: its global (or default) entry, then its project override. A custom agent has three: its base role's effective result (with the base's project override already applied), its global `customAgents` declaration, then its project override. At each layer:
+
+- A supplied `variant` wins.
+- A supplied `model` that differs from the model so far clears the variant so far, because a variant belongs to one model. Hive compares the complete trimmed `provider/model-id`, case and every slash included.
+- An omitted `model`, an identical `model`, or a first `model` for an entry that so far has only a `variant` keeps that variant.
+
+A cleared variant stays cleared. A project `model` that switches a custom agent back to its base model does not restore the base variant; add a project `variant` to choose one. For example, with `code-reviewer` at `openai/gpt-6.2-sol` + `xhigh`, a custom `ui-reviewer` on `9router/ag/gemini-4-neon-high` with no `variant` runs on that model's default variant. An invalid variant that a model change would clear is still reported as an error.
 
 ## Tool access is not configuration
 

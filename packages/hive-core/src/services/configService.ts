@@ -14,6 +14,7 @@ import type {
   AgentModelConfig,
   BuiltInAgentName,
   CouncilConfig,
+  CustomAgentConfig,
   CustomAgentBase,
   HiveConfig,
   RepositoryConfig,
@@ -79,15 +80,46 @@ function removedSamplingWarning(source: string): string {
     + 'native defaults apply. Delete temperature from agents, customAgents and taskTraceSummarizer.';
 }
 
-interface AgentModelVariantOverride {
+interface ModelSelection {
   model?: string;
   variant?: string;
 }
 
+/**
+ * Applies a later layer's model and variant over a role's current selection; supplied fields win, trimmed. A variant
+ * belongs to one model, so a supplied model that differs from the current model (compared as the complete trimmed
+ * `provider/model-id`) clears the current variant. An omitted or identical model keeps it, and so does a first model for
+ * a variant-only fragment. Layer precedence only: validation checks the declared values separately.
+ */
+function overlayModelSelection(current: ModelSelection, supplied: ModelSelection): ModelSelection {
+  const model = supplied.model?.trim() ?? current.model;
+  const modelChanged = supplied.model !== undefined && current.model !== undefined && model !== current.model;
+  const variant = supplied.variant?.trim() ?? (modelChanged ? undefined : current.variant);
+  return {
+    ...(model !== undefined ? { model } : {}),
+    ...(variant !== undefined ? { variant } : {}),
+  };
+}
+
+function ownValue(record: unknown, key: string): unknown {
+  return isRecord(record) && Object.prototype.hasOwnProperty.call(record, key) ? record[key] : undefined;
+}
+
 interface ProjectAgentOverrides {
   $schema?: string;
-  agents?: Record<string, AgentModelVariantOverride>;
-  customAgents?: Record<string, AgentModelVariantOverride>;
+  agents?: Record<string, ModelSelection>;
+  customAgents?: Record<string, ModelSelection>;
+}
+
+/**
+ * One validated reading: the effective configuration, whose `customAgents` keeps each declaration as its files state
+ * it, and the custom agents resolved against their effective base roles, with the warnings for skipped declarations,
+ * which the custom-agent accessor drains so each reading reports them once.
+ */
+interface EffectiveConfigSnapshot {
+  config: HiveConfig;
+  customAgents: Record<string, ResolvedCustomAgentConfig>;
+  customAgentWarnings: string[];
 }
 
 type ProjectAgentOverrideRead =
@@ -101,8 +133,7 @@ type ProjectAgentOverrideRead =
 export class ConfigService {
   private configPath: string;
   private projectAgentOverridePath: string | null;
-  private cachedConfig: HiveConfig | null = null;
-  private cachedCustomAgentConfigs: Record<string, ResolvedCustomAgentConfig> | null = null;
+  private cachedEffective: EffectiveConfigSnapshot | null = null;
   private cachedProjectAgentOverrideRead: ProjectAgentOverrideRead | null = null;
   private lastFallbackWarning: {
     message: string;
@@ -133,8 +164,12 @@ export class ConfigService {
    * Get the full config, merged with defaults.
    */
   get(): HiveConfig {
-    if (this.cachedConfig !== null) {
-      return this.cachedConfig;
+    return this.readEffective().config;
+  }
+
+  private readEffective(): EffectiveConfigSnapshot {
+    if (this.cachedEffective !== null) {
+      return this.cachedEffective;
     }
 
     if (!fs.existsSync(this.configPath)) {
@@ -197,14 +232,12 @@ export class ConfigService {
         || topology?.repositoryRoot !== repositoryRoot
         || JSON.stringify(topology.repositories) !== JSON.stringify(repositories)
       ) {
-        this.cachedConfig = null;
-        this.cachedCustomAgentConfigs = null;
+        this.cachedEffective = null;
         return 'skipped';
       }
       const { repositoryRoot: _repositoryRoot, repositories: _repositories, ...next } = document;
       writeAtomic(this.configPath, JSON.stringify(next, null, 2));
-      this.cachedConfig = null;
-      this.cachedCustomAgentConfigs = null;
+      this.cachedEffective = null;
       return 'removed';
     } finally {
       release();
@@ -277,7 +310,7 @@ export class ConfigService {
 
       const effective = this.validatePersistable(stored);
       writeAtomic(this.configPath, JSON.stringify(stored, null, 2));
-      return this.publishEffectiveConfig(effective, 'global');
+      return this.publishEffectiveConfig(effective, 'global').config;
     } finally {
       release();
     }
@@ -327,12 +360,9 @@ export class ConfigService {
   }
 
   getCustomAgentConfigs(): Record<string, ResolvedCustomAgentConfig> {
-    if (this.cachedCustomAgentConfigs !== null) {
-      return this.cachedCustomAgentConfigs;
-    }
-
-    this.cachedCustomAgentConfigs = this.resolveCustomAgentConfigs(this.get(), (message) => console.warn(message));
-    return this.cachedCustomAgentConfigs;
+    const effective = this.readEffective();
+    for (const message of effective.customAgentWarnings.splice(0)) console.warn(message);
+    return effective.customAgents;
   }
 
   private resolveBuiltInAgentConfig(config: HiveConfig, agent: BuiltInAgentName): AgentModelConfig {
@@ -353,20 +383,31 @@ export class ConfigService {
   }
 
   /**
-   * Resolves custom agents against one configuration snapshot: fieldwise inheritance from the base role's Hive
-   * settings, with invalid declarations skipped and reported through `warn`. A supplied model or variant is used as
-   * given (trimmed); only an omitted field inherits the base value.
+   * Resolves custom agents against a configuration whose built-in roles are already effective and whose custom
+   * declarations are the global ones. Each model and variant applies in order: the base role's effective selection,
+   * the global declaration, then the matching project override (see `overlayModelSelection`). Invalid declarations are
+   * skipped and reported through `warn`. Returns the resolved agents and each declaration with its project override
+   * applied, which drops a global variant the override's model change cleared.
    */
-  private resolveCustomAgentConfigs(
+  private resolveCustomAgents(
     config: HiveConfig,
+    overrides: Record<string, ModelSelection>,
     warn: (message: string) => void,
-  ): Record<string, ResolvedCustomAgentConfig> {
+  ): { declarations: Record<string, CustomAgentConfig>; resolved: Record<string, ResolvedCustomAgentConfig> } {
     const customAgents = this.isObjectRecord(config.customAgents)
       ? config.customAgents
       : {};
+    // Spread, not indexed assignment onto `{}`, so a literal JSON `__proto__` name stays an own declaration.
+    const declarations: Record<string, CustomAgentConfig> = { ...customAgents };
     const resolved: Record<string, ResolvedCustomAgentConfig> = {};
 
-    for (const [agentName, declaration] of Object.entries(customAgents)) {
+    for (const [agentName, globalDeclaration] of Object.entries(customAgents)) {
+      const override = ownValue(overrides, agentName) as ModelSelection | undefined;
+      const declaration = override
+        ? { ...globalDeclaration, ...overlayModelSelection({}, override) }
+        : globalDeclaration;
+      declarations[agentName] = declaration;
+
       if (!this.isValidCustomAgentName(agentName)) {
         warn(
           `[hive:config] Skipping custom agent \"${agentName}\": invalid name (native permission wildcard characters \"*\" and \"?\" are not allowed)`,
@@ -417,21 +458,27 @@ export class ConfigService {
         continue;
       }
 
-      const modelValue = declaration['model'];
-      const variantValue = declaration['variant'];
-      const model = typeof modelValue === 'string' ? modelValue.trim() : baseAgentConfig.model;
-      const variant = typeof variantValue === 'string' ? variantValue.trim() : baseAgentConfig.variant;
+      // Only string values take part in resolution; validation reports any other declared value.
+      const { model: globalModel, variant: globalVariant } = globalDeclaration;
+      let selection = overlayModelSelection(baseAgentConfig, {
+        model: typeof globalModel === 'string' ? globalModel : undefined,
+        variant: typeof globalVariant === 'string' ? globalVariant : undefined,
+      });
+      if (override) {
+        selection = overlayModelSelection(selection, override);
+        // `declaration` is this override's own copy, so the cleared variant is dropped from it alone.
+        if (selection.variant === undefined) delete declaration.variant;
+      }
 
       resolved[agentName] = {
         baseAgent,
         description,
-        ...(model !== undefined ? { model } : {}),
-        ...(variant !== undefined ? { variant } : {}),
+        ...selection,
         autoLoadSkills: effectiveAutoLoadSkills,
       };
     }
 
-    return resolved;
+    return { declarations, resolved };
   }
 
   hasConfiguredAgent(agent: string): boolean {
@@ -573,28 +620,26 @@ export class ConfigService {
    * Applies the project override to a base configuration and checks the effective model settings. Throws without
    * touching any cache, so a rejected candidate is never served and the next read checks the files again.
    */
-  private buildEffectiveConfig(baseConfig: HiveConfig): HiveConfig {
+  private buildEffectiveConfig(baseConfig: HiveConfig): EffectiveConfigSnapshot {
     const projectRead = this.readProjectAgentOverrides();
-    const projectApplies = projectRead.ok && projectRead.value !== null;
-    const effective = projectApplies
-      ? this.applyProjectAgentOverrides(baseConfig, projectRead.value!)
-      : baseConfig;
+    const projectOverrides = projectRead.ok ? projectRead.value : null;
+    const effective = this.resolveEffectiveConfig(baseConfig, projectOverrides);
     this.assertModelSelections(
       effective,
-      projectApplies ? [this.configPath, this.projectAgentOverridePath!] : [this.configPath],
+      baseConfig,
+      projectOverrides !== null ? [this.configPath, this.projectAgentOverridePath!] : [this.configPath],
     );
     return effective;
   }
 
   private publishEffectiveConfig(
-    effective: HiveConfig,
+    effective: EffectiveConfigSnapshot,
     baseSource: 'global' | 'defaults',
     globalFailureReason?: ConfigReadFailureReason,
-  ): HiveConfig {
+  ): EffectiveConfigSnapshot {
     const projectRead = this.readProjectAgentOverrides();
     const projectFailureReason = 'reason' in projectRead ? projectRead.reason : undefined;
-    this.cachedConfig = effective;
-    this.cachedCustomAgentConfigs = null;
+    this.cachedEffective = effective;
 
     const messages: string[] = [];
     if (globalFailureReason) {
@@ -626,15 +671,19 @@ export class ConfigService {
       };
     }
 
-    return this.cachedConfig;
+    return effective;
   }
 
-  private applyProjectAgentOverrides(
+  /**
+   * Resolves a base configuration and an optional project override without validating it: built-in roles first, then
+   * custom agents against those effective roles, so a custom agent never compares with a superseded base model.
+   */
+  private resolveEffectiveConfig(
     baseConfig: HiveConfig,
-    overrides: ProjectAgentOverrides,
-  ): HiveConfig {
+    overrides: ProjectAgentOverrides | null,
+  ): EffectiveConfigSnapshot {
     const agents = { ...(baseConfig.agents ?? {}) };
-    for (const [agentName, override] of Object.entries(overrides.agents ?? {})) {
+    for (const [agentName, override] of Object.entries(overrides?.agents ?? {})) {
       if (
         !this.isBuiltInAgent(agentName)
         || !Object.prototype.hasOwnProperty.call(agents, agentName)
@@ -642,28 +691,21 @@ export class ConfigService {
         continue;
       }
 
-      const agentConfig = { ...agents[agentName] };
-      if (override.model !== undefined) agentConfig.model = override.model.trim();
-      if (override.variant !== undefined) agentConfig.variant = override.variant.trim();
-      agents[agentName] = agentConfig;
+      const { model: _model, variant: _variant, ...rest } = agents[agentName];
+      agents[agentName] = { ...rest, ...overlayModelSelection(agents[agentName], override) };
     }
 
-    const customAgents = { ...(baseConfig.customAgents ?? {}) };
-    for (const [agentName, override] of Object.entries(overrides.customAgents ?? {})) {
-      if (!Object.prototype.hasOwnProperty.call(customAgents, agentName)) {
-        continue;
-      }
-
-      const agentConfig = { ...customAgents[agentName] };
-      if (override.model !== undefined) agentConfig.model = override.model.trim();
-      if (override.variant !== undefined) agentConfig.variant = override.variant.trim();
-      customAgents[agentName] = agentConfig;
-    }
-
+    const withEffectiveRoles = { ...baseConfig, agents };
+    const customAgentWarnings: string[] = [];
+    const { declarations, resolved } = this.resolveCustomAgents(
+      withEffectiveRoles,
+      overrides?.customAgents ?? {},
+      (message) => customAgentWarnings.push(message),
+    );
     return {
-      ...baseConfig,
-      agents,
-      customAgents,
+      config: { ...withEffectiveRoles, customAgents: declarations },
+      customAgents: resolved,
+      customAgentWarnings,
     };
   }
 
@@ -716,13 +758,17 @@ export class ConfigService {
    * The effective model rule shared by both hosts: a supplied model must be an explicit `provider/model-id`, a supplied
    * variant a non-empty name, and a variant needs a Hive model on the same effective declaration. A custom agent's
    * model may come from its base role. Neither field means the host's native model applies. Problems are reported by
-   * file and property path, never by value, and nothing is repaired: no default model, no dropped variant.
+   * file and property path, never by value, and nothing is repaired: no default model, no dropped variant. A variant
+   * that a later model change cleared is still checked as `original` (the configuration before the project override)
+   * declares it, unless the project supplied its own variant.
    */
-  private assertModelSelections(config: HiveConfig, files: readonly string[]): void {
+  private assertModelSelections(effective: EffectiveConfigSnapshot, original: HiveConfig, files: readonly string[]): void {
+    const { config } = effective;
     const problems: string[] = [];
-    const checkSupplied = (path: string, declaration: Record<string, unknown> | undefined) => {
-      const model = declaration?.model;
-      const variant = declaration?.variant;
+    const checkSupplied = (path: string, declaration: unknown, originalDeclaration?: unknown) => {
+      const model = ownValue(declaration, 'model');
+      const effectiveVariant = ownValue(declaration, 'variant');
+      const variant = effectiveVariant !== undefined ? effectiveVariant : ownValue(originalDeclaration, 'variant');
       if (model !== undefined && (typeof model !== 'string' || !MODEL_REFERENCE.test(model.trim()))) {
         problems.push(`${path}.model must be an explicit provider/model-id without spaces or "#". Correct it, or remove model and variant to inherit the native model.`);
       }
@@ -736,14 +782,14 @@ export class ConfigService {
 
     for (const agentName of BUILT_IN_AGENT_NAMES) {
       const declaration = config.agents?.[agentName] as Record<string, unknown> | undefined;
-      checkSupplied(`agents.${agentName}`, declaration);
+      checkSupplied(`agents.${agentName}`, declaration, ownValue(original.agents, agentName));
       if (declaration?.variant !== undefined && declaration.model === undefined) missingModel(`agents.${agentName}`, `agents.${agentName}.model`);
     }
 
     const declarations = this.isObjectRecord(config.customAgents) ? config.customAgents : {};
-    for (const [agentName, resolved] of Object.entries(this.resolveCustomAgentConfigs(config, () => {}))) {
+    for (const [agentName, resolved] of Object.entries(effective.customAgents)) {
       const declaration = declarations[agentName] as unknown as Record<string, unknown>;
-      checkSupplied(`customAgents.${agentName}`, declaration);
+      checkSupplied(`customAgents.${agentName}`, declaration, ownValue(original.customAgents, agentName));
       // A variant inherited from the base role is reported once, on the base.
       if (declaration.variant !== undefined && resolved.model === undefined) {
         missingModel(`customAgents.${agentName}`, `customAgents.${agentName}.model or agents.${resolved.baseAgent}.model`);
@@ -764,9 +810,9 @@ export class ConfigService {
    * project override cannot supply the model a global variant needs) and its effective project view must stay valid.
    * Returns that effective view for cache publication.
    */
-  private validatePersistable(stored: Partial<HiveConfig>): HiveConfig {
+  private validatePersistable(stored: Partial<HiveConfig>): EffectiveConfigSnapshot {
     const merged = this.mergeWithDefaults(stored);
-    this.assertModelSelections(merged, [this.configPath]);
+    this.assertModelSelections(this.resolveEffectiveConfig(merged, null), merged, [this.configPath]);
     return this.buildEffectiveConfig(merged);
   }
 

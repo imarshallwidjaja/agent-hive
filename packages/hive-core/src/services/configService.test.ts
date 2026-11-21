@@ -770,6 +770,39 @@ describe("ConfigService defaults", () => {
     });
   });
 
+  it("drops the base variant when a custom agent supplies a different model, and keeps it otherwise", () => {
+    const service = new ConfigService();
+    fs.mkdirSync(path.dirname(service.getPath()), { recursive: true });
+    const declarations = {
+      "ui-reviewer": { baseAgent: "code-reviewer", description: "UI", model: "9router/ag/gemini-4-neon-high" },
+      "same-model": { baseAgent: "code-reviewer", description: "Same", model: " openai/gpt-6.2-sol " },
+      "case-changed": { baseAgent: "code-reviewer", description: "Case", model: "OpenAI/gpt-6.2-sol" },
+      "suffix-changed": { baseAgent: "code-reviewer", description: "Suffix", model: "openai/gpt-6.2-sol/fast" },
+      "variant-only": { baseAgent: "code-reviewer", description: "Variant", variant: "low" },
+      "explicit": { baseAgent: "code-reviewer", description: "Explicit", model: "9router/ag/gemini-4-neon-high", variant: "low" },
+      "inherits": { baseAgent: "code-reviewer", description: "Inherits" },
+    } as const;
+    fs.writeFileSync(service.getPath(), JSON.stringify({
+      agents: { "code-reviewer": { model: "openai/gpt-6.2-sol", variant: "xhigh" } },
+      customAgents: declarations,
+    }));
+
+    const selection = (name: string) => {
+      const { model, variant } = service.getCustomAgentConfigs()[name]!;
+      return { model, variant };
+    };
+    expect(selection("ui-reviewer")).toEqual({ model: "9router/ag/gemini-4-neon-high", variant: undefined });
+    expect(selection("same-model")).toEqual({ model: "openai/gpt-6.2-sol", variant: "xhigh" });
+    expect(selection("case-changed")).toEqual({ model: "OpenAI/gpt-6.2-sol", variant: undefined });
+    expect(selection("suffix-changed")).toEqual({ model: "openai/gpt-6.2-sol/fast", variant: undefined });
+    expect(selection("variant-only")).toEqual({ model: "openai/gpt-6.2-sol", variant: "low" });
+    expect(selection("explicit")).toEqual({ model: "9router/ag/gemini-4-neon-high", variant: "low" });
+    expect(selection("inherits")).toEqual({ model: "openai/gpt-6.2-sol", variant: "xhigh" });
+    expect(service.getCustomAgentConfigs()["ui-reviewer"]).not.toHaveProperty("variant");
+    // The declaration view keeps what each file declares; inherited base fields appear only in resolved configs.
+    expect(service.get().customAgents).toEqual(declarations);
+  });
+
   it("skips reserved/invalid custom agent names for runtime lookups", () => {
     const service = new ConfigService();
     const configPath = service.getPath();
@@ -1668,32 +1701,126 @@ describe('ConfigService write validation and persistence', () => {
   });
 
   describe('project agent overrides', () => {
-    it('changes built-in model or variant while preserving the other global settings', () => {
+    it('changes built-in model or variant, clearing the global variant only when the model changes', () => {
       const projectRoot = path.join(tempHome, 'project');
       const service = new ConfigService(projectRoot);
       const configPath = service.getPath();
       fs.mkdirSync(path.dirname(configPath), { recursive: true });
       fs.writeFileSync(configPath, JSON.stringify({
         agents: {
-          'forager-worker': { model: 'global/forager', variant: 'medium' },
+          'forager-worker': { model: 'global/forager', variant: 'medium', autoLoadSkills: ['extra'] },
           'hive-builder': { model: 'global/builder' },
+          'scout-researcher': { model: 'global/scout', variant: 'high' },
+          'code-reviewer': { model: 'global/reviewer', variant: 'high' },
         },
       }));
       writeProjectOverride(projectRoot, {
         agents: {
           'forager-worker': { model: 'project/forager' },
           'hive-builder': { variant: 'high' },
+          'scout-researcher': { model: ' global/scout ' },
+          'code-reviewer': { model: 'project/reviewer', variant: 'low' },
         },
       });
 
-      expect(service.getAgentConfig('forager-worker')).toMatchObject({
-        model: 'project/forager',
-        variant: 'medium',
-      });
+      expect(service.getAgentConfig('forager-worker')).toMatchObject({ model: 'project/forager', autoLoadSkills: ['verification', 'extra'] });
+      expect(service.getAgentConfig('forager-worker')).not.toHaveProperty('variant');
       expect(service.getAgentConfig('hive-builder')).toMatchObject({
         model: 'global/builder',
         variant: 'high',
       });
+      expect(service.getAgentConfig('scout-researcher')).toMatchObject({ model: 'global/scout', variant: 'high' });
+      expect(service.getAgentConfig('code-reviewer')).toMatchObject({ model: 'project/reviewer', variant: 'low' });
+    });
+
+    it('resolves a project custom model change against the custom agent as the files declare it', () => {
+      const projectRoot = path.join(tempHome, 'project');
+      const service = new ConfigService(projectRoot);
+      fs.mkdirSync(path.dirname(service.getPath()), { recursive: true });
+      const custom = (fields: Record<string, string>) => ({ baseAgent: 'code-reviewer' as const, description: 'Reviewer', ...fields });
+      fs.writeFileSync(service.getPath(), JSON.stringify({
+        agents: { 'code-reviewer': { model: 'openai/gpt-6.2-sol', variant: 'xhigh' } },
+        customAgents: {
+          'back-to-base-explicit': custom({ model: 'acme/other', variant: 'medium' }),
+          'back-to-base-omitted': custom({ model: 'acme/other' }),
+          'changed': custom({ model: 'acme/other', variant: 'medium' }),
+          'same': custom({ model: 'acme/other', variant: 'medium' }),
+          'explicit': custom({ model: 'acme/other', variant: 'medium' }),
+          'variant-change': custom({ model: 'acme/other', variant: 'medium' }),
+          'declared-variant': custom({ variant: 'medium' }),
+        },
+      }));
+      writeProjectOverride(projectRoot, {
+        customAgents: {
+          'back-to-base-explicit': { model: 'openai/gpt-6.2-sol' },
+          'back-to-base-omitted': { model: 'openai/gpt-6.2-sol' },
+          'changed': { model: '9router/ag/gemini-4-neon-high' },
+          'same': { model: ' acme/other ' },
+          'explicit': { model: 'openai/gpt-6.2-sol', variant: 'low' },
+          'variant-change': { variant: 'low' },
+          'declared-variant': { model: '9router/ag/gemini-4-neon-high' },
+        },
+      });
+
+      const selection = (name: string) => {
+        const { model, variant } = service.getCustomAgentConfigs()[name]!;
+        return { model, variant };
+      };
+      // A cleared variant is final: switching back to the base model does not re-inherit the base variant.
+      expect(selection('back-to-base-explicit')).toEqual({ model: 'openai/gpt-6.2-sol', variant: undefined });
+      expect(selection('back-to-base-omitted')).toEqual({ model: 'openai/gpt-6.2-sol', variant: undefined });
+      expect(selection('changed')).toEqual({ model: '9router/ag/gemini-4-neon-high', variant: undefined });
+      expect(selection('same')).toEqual({ model: 'acme/other', variant: 'medium' });
+      expect(selection('explicit')).toEqual({ model: 'openai/gpt-6.2-sol', variant: 'low' });
+      expect(selection('variant-change')).toEqual({ model: 'acme/other', variant: 'low' });
+      expect(selection('declared-variant')).toEqual({ model: '9router/ag/gemini-4-neon-high', variant: undefined });
+      expect(service.getAgentConfig('code-reviewer')).toMatchObject({ model: 'openai/gpt-6.2-sol', variant: 'xhigh' });
+
+      const declared = service.get().customAgents!;
+      expect(declared['back-to-base-explicit']).toEqual(custom({ model: 'openai/gpt-6.2-sol' }));
+      expect(declared['declared-variant']).toEqual(custom({ model: '9router/ag/gemini-4-neon-high' }));
+      expect(declared['same']).toEqual(custom({ model: 'acme/other', variant: 'medium' }));
+    });
+
+    it('keeps a custom declaration whose name is a literal JSON __proto__ key', () => {
+      const projectRoot = path.join(tempHome, 'project');
+      const service = new ConfigService(projectRoot);
+      fs.mkdirSync(path.dirname(service.getPath()), { recursive: true });
+      fs.writeFileSync(
+        service.getPath(),
+        '{"customAgents":{"__proto__":{"baseAgent":"code-reviewer","description":"Reviewer","model":"acme/other","variant":"medium"}}}',
+      );
+      fs.mkdirSync(path.dirname(projectOverridePath(projectRoot)), { recursive: true });
+      fs.writeFileSync(projectOverridePath(projectRoot), '{"customAgents":{"__proto__":{"model":"acme/project"}}}');
+
+      const declared = service.get().customAgents!;
+      expect(Object.keys(declared)).toEqual(['__proto__']);
+      expect(Object.getOwnPropertyDescriptor(declared, '__proto__')?.value).toEqual({
+        baseAgent: 'code-reviewer',
+        description: 'Reviewer',
+        model: 'acme/project',
+      });
+    });
+
+    it('compares a custom model with the base model the project makes effective', () => {
+      const projectRoot = path.join(tempHome, 'project');
+      const service = new ConfigService(projectRoot);
+      fs.mkdirSync(path.dirname(service.getPath()), { recursive: true });
+      fs.writeFileSync(service.getPath(), JSON.stringify({
+        agents: { 'code-reviewer': { model: 'openai/gpt-6.2-sol', variant: 'xhigh' } },
+        customAgents: {
+          'project-base-model': { baseAgent: 'code-reviewer', description: 'Reviewer', model: 'acme/base-v2' },
+          'global-base-model': { baseAgent: 'code-reviewer', description: 'Reviewer', model: 'openai/gpt-6.2-sol' },
+          'inherits': { baseAgent: 'code-reviewer', description: 'Reviewer' },
+        },
+      }));
+      writeProjectOverride(projectRoot, { agents: { 'code-reviewer': { model: 'acme/base-v2', variant: 'max' } } });
+
+      const custom = service.getCustomAgentConfigs();
+      expect(custom['project-base-model']).toMatchObject({ model: 'acme/base-v2', variant: 'max' });
+      expect(custom['global-base-model']?.model).toBe('openai/gpt-6.2-sol');
+      expect(custom['global-base-model']).not.toHaveProperty('variant');
+      expect(custom['inherits']).toMatchObject({ model: 'acme/base-v2', variant: 'max' });
     });
 
     it('applies overrides over defaults when global config is missing', () => {
@@ -1976,6 +2103,60 @@ describe('ConfigService effective model settings', () => {
 
     // Without the project fragment, the global variant stands alone and is rejected.
     expect(rejection(() => new ConfigService().get())).toContain('agents.forager-worker.variant');
+  });
+
+  it('lets a project model complete a model-less custom variant without clearing it', () => {
+    const projectRoot = path.join(tempHome, 'project');
+    const service = new ConfigService(projectRoot);
+    writeGlobal(service, {
+      customAgents: { 'forager-fast': { baseAgent: 'forager-worker', description: 'Fast forager', variant: 'low' } },
+    });
+    writeProjectOverride(projectRoot, { customAgents: { 'forager-fast': { model: 'project/fast' } } });
+
+    expect(service.getCustomAgentConfigs()['forager-fast']).toMatchObject({ model: 'project/fast', variant: 'low' });
+    expect(service.get().customAgents?.['forager-fast']).toMatchObject({ model: 'project/fast', variant: 'low' });
+  });
+
+  it('still rejects an invalid global variant that a project model change would otherwise clear', () => {
+    const projectRoot = path.join(tempHome, 'project');
+    const cases: Array<[unknown, unknown, string]> = [
+      [
+        { agents: { 'forager-worker': { model: 'global/forager', variant: ' ' } } },
+        { agents: { 'forager-worker': { model: 'project/forager' } } },
+        'agents.forager-worker.variant must be a variant name',
+      ],
+      [
+        { customAgents: { 'forager-ui': { baseAgent: 'forager-worker', description: 'UI', model: 'global/ui', variant: '' } } },
+        { customAgents: { 'forager-ui': { model: 'project/ui' } } },
+        'customAgents.forager-ui.variant must be a variant name',
+      ],
+      [
+        { customAgents: { 'forager-ui': { baseAgent: 'forager-worker', description: 'UI', variant: 42 } } },
+        { customAgents: { 'forager-ui': { model: 'project/ui' } } },
+        'customAgents.forager-ui.variant must be a variant name',
+      ],
+      [
+        { customAgents: { 'forager-ui': { baseAgent: 'forager-worker', description: 'UI', variant: null } } },
+        { customAgents: { 'forager-ui': { model: 'project/ui' } } },
+        'customAgents.forager-ui.variant must be a variant name',
+      ],
+    ];
+    for (const [global, override, expected] of cases) {
+      const service = new ConfigService(projectRoot);
+      writeGlobal(service, global);
+      writeProjectOverride(projectRoot, override);
+      expect(rejection(() => service.get())).toContain(expected);
+    }
+
+    // An explicit project variant still supersedes the invalid global one, as before.
+    const superseded = new ConfigService(projectRoot);
+    writeGlobal(superseded, { agents: { 'forager-worker': { model: 'global/forager', variant: ' ' } } });
+    writeProjectOverride(projectRoot, { agents: { 'forager-worker': { model: 'project/forager', variant: 'low' } } });
+    expect(superseded.getAgentConfig('forager-worker')).toMatchObject({ model: 'project/forager', variant: 'low' });
+    const supersededCustom = new ConfigService(projectRoot);
+    writeGlobal(supersededCustom, { customAgents: { 'forager-ui': { baseAgent: 'forager-worker', description: 'UI', variant: 42 } } });
+    writeProjectOverride(projectRoot, { customAgents: { 'forager-ui': { model: 'project/ui', variant: 'low' } } });
+    expect(supersededCustom.getCustomAgentConfigs()['forager-ui']).toMatchObject({ model: 'project/ui', variant: 'low' });
   });
 
   it('rejects blank project model and variant strings for matching roles instead of ignoring the file', () => {

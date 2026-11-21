@@ -823,6 +823,18 @@ describe('v2 native precedence and canonical instructions', () => {
     expect(denied(await host.execute('hive_plan_write', { content: 'x' }, { sessionID: 'primary', agent: 'scout-researcher' }))).toContain('not granted');
   });
 
+  it('registers a custom agent on its own model without the base role variant meant for another model', async () => {
+    const host = await activate({}, {
+      agents: { 'code-reviewer': { model: 'openai/gpt-6.2-sol', variant: 'xhigh' } },
+      customAgents: { 'ui-reviewer': { baseAgent: 'code-reviewer', description: 'UI reviewer', model: '9router/ag/gemini-4-neon-high' } },
+    });
+    const registry = host.agents().registry;
+
+    expect(registry.get('ui-reviewer')!.model).toEqual({ providerID: '9router', id: 'ag/gemini-4-neon-high' });
+    expect(registry.get('ui-reviewer')!.model).not.toHaveProperty('variant');
+    expect(registry.get('code-reviewer')!.model).toEqual({ providerID: 'openai', id: 'gpt-6.2-sol', variant: 'xhigh' });
+  });
+
   it('keeps the canonical role instructions in each request, after a user system prompt, without duplicating them', async () => {
     const host = await activate();
     const registered = host.agents().registry.get('scout-researcher')!.system!;

@@ -117,12 +117,21 @@ describe('plugin config source resolution', () => {
           model: 'global/custom-forager',
           variant: 'xhigh',
         },
+        'forager-switched': {
+          baseAgent: 'forager-worker',
+          description: 'Moves to the project model without a variant.',
+          model: 'global/custom-forager',
+          variant: 'xhigh',
+        },
       },
     }));
     fs.mkdirSync(path.dirname(overridePath), { recursive: true });
     fs.writeFileSync(overridePath, JSON.stringify({
       agents: { 'forager-worker': { model: ' project/forager ', variant: ' high ' } },
-      customAgents: { 'forager-direct': { model: ' project/custom-forager ', variant: ' low ' } },
+      customAgents: {
+        'forager-direct': { model: ' project/custom-forager ', variant: ' low ' },
+        'forager-switched': { model: 'project/forager' },
+      },
     }));
 
     const aliasRoot = path.join(TEST_ROOT_BASE, 'project-alias');
@@ -150,6 +159,9 @@ describe('plugin config source resolution', () => {
       model: 'project/custom-forager',
       variant: 'low',
     });
+    // A project model change clears the global variant, and the base variant is not inherited in its place.
+    expect(opencodeConfig.agent['forager-switched'].model).toBe('project/forager');
+    expect(opencodeConfig.agent['forager-switched']).not.toHaveProperty('variant');
     // The legacy global temperature is ignored, and roles without Hive model settings leave the model to OpenCode.
     for (const entry of Object.values(opencodeConfig.agent)) expect(entry).not.toHaveProperty('temperature');
     for (const name of ['scout-researcher', 'hive-builder', 'code-reviewer', '__hive_task_trace_summarizer']) {
@@ -163,6 +175,10 @@ describe('plugin config source resolution', () => {
     expect(output.message.model.variant).toBe('low');
     expect(output.message.model.variant).toBe(opencodeConfig.agent['forager-direct'].variant);
     expect(output.message).not.toHaveProperty('variant');
+
+    const switched: any = { message: { agent: 'forager-switched', model: { providerID: 'project', modelID: 'forager' } }, parts: [] };
+    await hooks['chat.message']!({ sessionID: 'sess_project_agent_switch', agent: 'forager-switched' } as any, switched);
+    expect(switched.message.model).not.toHaveProperty('variant');
   });
 
   it('fails plugin startup with the semantic model error instead of registering an invalid Hive variant', async () => {
