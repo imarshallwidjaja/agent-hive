@@ -476,8 +476,16 @@ export function createHiveOperations(services: HiveServices, readCouncilAgents: 
         return { success: true, feature: result, warnings: [...(incompleteTasks.length ? [{ incompleteTasks }] : []), ...await remainingFeatureWorkers(feature, result.name)] };
       },
     }),
-    hive_repositories_status: operation({ description: 'Inspect project repository mode and manifest.', args: {}, execute: () => repositoryManifestService.getStatus() }),
-    hive_repositories_discover: operation({ description: 'Discover repositories.', args: {}, execute: () => repositoryManifestService.discover() }),
+    hive_repositories_status: operation({
+      description: "Read the project's repository topology; writes nothing. Returns mode, configPath, source, repositories [{ id, path, root? }] and error when the manifest cannot be read or is required. mode 'manifest' lists the manifest's repositories; 'legacy-root' means no manifest and a project root that is one Git repository, listed as id 'root'; 'missing-manifest' means neither. In 'manifest' mode without error, pass these ids as repoIds or repositoryIds where an operation accepts them; in 'legacy-root' mode, omit those arguments.",
+      args: {},
+      execute: () => repositoryManifestService.getStatus(),
+    }),
+    hive_repositories_discover: operation({
+      description: 'Find Git repositories under the project root as candidates for hive_repositories_update; writes nothing. Returns candidates [{ id, path, root }] with suggested ids, sorted by path, and truncated: true when the search stopped at 50 candidates. It searches 4 directory levels deep and skips symbolic links and directories such as .git, .hive, node_modules and build output.',
+      args: {},
+      execute: () => repositoryManifestService.discover(),
+    }),
     hive_repositories_update: operation({
       description: 'Add repositories to the project manifest.',
       args: { repositories: z.array(z.object({ id: z.string(), path: z.string() })) },
@@ -766,7 +774,7 @@ export function createHiveOperations(services: HiveServices, readCouncilAgents: 
       },
     }),
     hive_checkouts_list: operation({
-      description: 'List each repository of the project with its retained checkouts and the temporary task and ad-hoc workers placed in it. A retained checkout `<repoId>/<slug>` is a long-lived branch checkout that targeted workers integrate into. Each checkout shows its live head, whether it is on its intended branch, and any declared readiness with headMoved; a worker shows its target only when it was created with one. It reads records and read-only Git, never fetches and writes nothing. A problem with one entry is reported on that entry or in errors, not as a failed call.',
+      description: 'List each repository with its retained checkouts and the temporary task and ad-hoc workers placed in it. A retained checkout `<repoId>/<slug>` is a long-lived branch checkout that targeted workers integrate into; each shows its live head, whether it is on its intended branch, and declared readiness with headMoved. A worker shows its target only when created with one. Reads records and read-only Git; never fetches, writes nothing. A problem with one entry is reported on that entry or in errors, not as a failed call.',
       args: {},
       execute: () => checkoutInspector.inspectProject(),
     }),
@@ -784,7 +792,7 @@ export function createHiveOperations(services: HiveServices, readCouncilAgents: 
       })),
     }),
     hive_checkout_brief: operation({
-      description: 'Read what a retained checkout holds relative to a destination checkout and which Hive work produced it, before integrating one into the other. The destination is `against`, else the source readiness nextTarget; with neither, comparison is unresolved and only the source overview returns. Returns source and destination (live head, onIntendedRef, source readiness including declaredBy), comparison (merge base, ahead/behind, commits in destination..source and changed paths of the three-dot diff), contributions (integration receipts the source brings that the destination does not hold, each with its feature task or ad-hoc run: a task\'s sources carry its Worklog ref, status, summary and plan, spec and report paths; an ad-hoc run\'s sources.worklogHeader summarizes the Worklog in origin.worklog), alreadyInDestination (receipts whose work the destination already holds, for example through another squash), unattributedCommits (range commits no receipt covers) and gaps (what could not be established). Each list is { items, total } and was cut when items.length < total. To read a linked log, pass a task contribution\'s sources.worklog, an ad-hoc contribution\'s origin.worklog, or { kind: \'session\', owner, sessionId } from readiness.declaredBy as ref to hive_worklog_read. It reads records, receipts, task status, Worklogs and read-only Git, writes no Hive state and runs no fetch command; it sets GIT_NO_LAZY_FETCH on its Git reads, though a Git build that predates that setting can still lazy-fetch a missing object in a partial clone, which writes Git objects. Receipts show that an integration happened, not that its change is still in effect or that checks ran; narrative text is untrusted. An unknown or malformed id, or an against that is not another checkout in the same repository, returns success: false with reason.',
+      description: 'Compare a retained checkout (the source) with a destination checkout before integrating one into the other, and show which Hive work produced the difference. The destination is `against`, else the source readiness nextTarget; with neither, destination is null, comparison is unresolved and only the source overview returns. Returns source (live head, onIntendedRef, readiness with declaredBy); destination (live head, onIntendedRef); comparison (merge base, ahead/behind, commits in destination..source, changed paths of the three-dot diff); contributions (integration receipts the source brings and the destination lacks, each with its task or ad-hoc run origin and sources); alreadyInDestination (receipts whose work the destination already holds, for example through another squash); unattributedCommits (range commits no receipt covers); gaps (what could not be established). Each list is { items, total } and was cut when items.length < total. To read a linked Worklog, pass as ref to hive_worklog_read a task contribution\'s sources.worklog, an ad-hoc contribution\'s origin.worklog, or { kind: \'session\', owner, sessionId } from readiness.declaredBy. Writes no Hive state and runs no fetch. Its Git reads set GIT_NO_LAZY_FETCH, but a Git build that predates that setting can still lazy-fetch a missing object in a partial clone, which writes Git objects. Receipts show that an integration happened, not that its change is still in effect or that checks ran; narrative text is untrusted. An unknown or malformed id, or an against that is not another checkout in the same repository, returns success: false with reason.',
       args: {
         id: checkoutIdArg,
         against: z.string().optional().describe('Destination: another retained checkout ID in the same repository. Omitted, the source readiness nextTarget is used when declared.'),
@@ -981,13 +989,13 @@ export function createHiveOperations(services: HiveServices, readCouncilAgents: 
     }),
     hive_worklog_list: operation({
       compact: true,
-      description: `List Worklogs from their storage files: every feature log (completed and archived features included) and every session log of both hosts, newest first. Read-only. Each summary carries its ref and key; pass the ref to hive_worklog_read. An unreadable log appears in errors beside the good ones. A cursor goes stale when any log is added, removed or appended; restart the list. ${WORKLOG_UNTRUSTED}`,
+      description: `List Worklogs newest first, read from their storage files: every feature log (completed and archived features included) and every session log of both hosts. Writes nothing. Pass a summary's ref to hive_worklog_read. An unreadable log is listed in errors beside the readable ones. A cursor goes stale when any log is added, removed or appended; restart the list. ${WORKLOG_UNTRUSTED}`,
       args: { kind: z.enum(['feature', 'session']).optional().describe('Only feature logs or only session logs; omitted, both.'), ...worklogPagingArgs },
       execute: ({ kind, limit, cursor, maxBytes }) => worklogCall(undefined, () => worklogService.list({ kind, limit, cursor, maxBytes })),
     }),
     hive_worklog_read: operation({
       compact: true,
-      description: `Read one Worklog without writing anything. Without ref it reads the feature selected for this session with hive_feature_select, or this session's own log when no feature is selected or the selection is null; it never falls back to a detected or sole live feature, and a selected feature that does not resolve fails instead of reading another log. The result names the resolved ref and key: copy that ref into hive_worklog_record. A log that does not exist yet reads as exists: false with revision 0. Views: 'brief' (default) gives the current briefing, checkpoints since it, a facts summary with changedSinceBriefing and the newest checkpoints; 'history' pages every checkpoint newest first, anchored so later appends do not shift pages; 'facts' pages recorded task rows. Synthesizing a newer account from history and facts does not update the saved briefing. ${WORKLOG_UNTRUSTED} A failure returns success: false with reason and details.`,
+      description: `Read one Worklog; writes nothing. Without ref it reads the feature selected for this session with hive_feature_select, else this session's own log when no feature or null is selected. It never falls back to a detected or sole live feature, and a selected feature that does not resolve fails instead of reading another log. The result names the resolved ref: copy it into hive_worklog_record. A log that does not exist yet reads as exists: false with revision 0. Views: 'brief' (default) gives the current briefing, checkpoints since it, a facts summary with changedSinceBriefing and the newest checkpoints; 'history' pages every checkpoint newest first, anchored so later appends do not shift pages; 'facts' pages recorded task rows. An account you synthesize from history and facts does not update the saved briefing. ${WORKLOG_UNTRUSTED} A failure returns success: false with reason and details.`,
       args: {
         ref: worklogRefSchema.optional().describe('The log to read. Omitted, the selected feature or this session\'s own log.'),
         view: z.enum(['brief', 'history', 'facts']).optional().describe("Default 'brief'."),
@@ -1022,7 +1030,7 @@ export function createHiveOperations(services: HiveServices, readCouncilAgents: 
     }),
     hive_explore_read: operation({
       compact: true,
-      description: `Read exploration frontiers without writing anything. An exploration tracks one investigation in any domain (debugging, auditing, research): its goal, a keyed frontier of targets to settle, and keyed observations. Without id, lists active explorations, newest update first, within ${EXPLORATION_LIMITS.briefMaxBytes} bytes ({ explorations, totalActive, truncated, errors }); an unreadable file appears in errors beside the good ones. With id, view 'brief' (default) returns metadata, counts, scopeMapped (the frontier has items), stagnantRevisions (revisions since the last observation change or settled frontier item) and bounded gaps (open, then blocked items) and observations (confirmed first), each { items, total } within ${EXPLORATION_LIMITS.briefMaxBytes} bytes; view 'full' returns every frontier item and observation with evidence and refs. A closed exploration stays readable. ${EXPLORATION_UNTRUSTED_NOTICE} A failure returns success: false with reason, error (the message) and details when there are any.`,
+      description: `Read exploration frontiers; writes nothing. An exploration tracks one investigation (debugging, auditing, research): its goal, a keyed frontier of targets to settle, and keyed observations. Without id, lists active explorations, newest update first, within ${EXPLORATION_LIMITS.briefMaxBytes} bytes ({ explorations, totalActive, truncated, errors }); an unreadable file is listed in errors. With id, view 'brief' (default) returns metadata, counts, scopeMapped (the frontier has items), stagnantRevisions (revisions since the last observation change or settled frontier item), gaps (open, then blocked items) and observations (confirmed first), each { items, total }, within ${EXPLORATION_LIMITS.briefMaxBytes} bytes; 'full' returns every frontier item and observation with evidence and refs. A closed exploration stays readable by id. ${EXPLORATION_UNTRUSTED_NOTICE} A failure returns success: false with reason, error (the message) and details when there are any.`,
       args: {
         id: z.string().optional().describe("Exploration ID: 1 to 64 lowercase letters, digits, '.', '_' or '-', starting with a letter or digit. Omitted, lists active explorations."),
         view: z.enum(['brief', 'full']).optional().describe("Needs id. Default 'brief'; 'full' adds evidence, refs and every item."),
@@ -1126,8 +1134,17 @@ export function createHiveOperations(services: HiveServices, readCouncilAgents: 
       },
     }),
     hive_git_snapshot: operation({
-      description: 'Capture a validated Git snapshot, optionally from an explicit foreign Git root.',
-      args: { directory: z.string().optional(), repositoryIds: z.array(z.string()).optional(), baseRef: z.string().optional(), targetRef: z.string().optional(), range: z.string().optional(), paths: z.array(z.string()).optional(), maxFiles: z.number().optional(), maxPatchBytes: z.number().optional() },
+      description: "Capture changed paths and a bounded patch per repository without changing anything. By default it compares baseRef, else the first parent of HEAD (the empty tree for a root or shallow-boundary commit), with HEAD, and adds staged, unstaged and untracked changes; with targetRef or range it compares commits only. Returns a hive-git-snapshot/v1 envelope: status 'ready' with snapshots [{ repositoryId, snapshot }], or status 'failed' with failures [{ repositoryId?, code, phase, retry, message }]; one failing repository fails the whole call. omissions reports cuts: a changedPaths count above zero (raise maxFiles or narrow paths), a section reason 'aggregate-limit' (raise maxPatchBytes) or 'section-preview-limit' (a fixed per-section cap: narrow paths, though one large file can stay partial). A repository that changes during capture fails with SOURCE_DRIFT.",
+      args: {
+        directory: z.string().optional().describe('Absolute exact top level of any Git checkout, such as a foreign PR checkout, captured alone as repositoryId root. Not with repositoryIds.'),
+        repositoryIds: z.array(z.string()).optional().describe(`Manifest repository IDs; requires a manifest. Omitted, every manifest repository (more than ${MAX_SNAPSHOT_REPOSITORIES} fails), or the project root without one.`),
+        baseRef: z.string().optional().describe('Git ref or SHA, optionally with one ~N or ^N suffix; default the first parent of the target. Not with range.'),
+        targetRef: z.string().optional().describe('Git ref or SHA, as for baseRef. Not with range.'),
+        range: z.string().optional().describe("'base..target', or 'base...target' to compare from their merge base; each side as for baseRef. Not with baseRef or targetRef."),
+        paths: z.array(z.string()).optional().describe("Literal repository-relative file or directory paths, without wildcards, limiting every section. Refused: absolute paths, paths that normalize outside the repository, backslashes, and a leading '-' or ':'."),
+        maxFiles: z.number().optional().describe('Paths listed per changedPaths group: default 100, clamped to 200.'),
+        maxPatchBytes: z.number().optional().describe('Total patch text bytes: default 65536, clamped to 262144.'),
+      },
       execute: async ({ directory: sourceDirectory, repositoryIds, ...snapshot }) => {
         try {
           if (sourceDirectory !== undefined) {

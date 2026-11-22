@@ -268,6 +268,7 @@ const DESCRIBED_FIELDS: Record<string, string[]> = {
   hive_worklog_read: ['ref', 'view', 'limit', 'cursor', 'maxBytes'],
   hive_worklog_record: ['ref', 'operationId', 'title', 'checkpoint', 'briefing', 'expectedRevision'],
   hive_explore_read: ['id', 'view'],
+  hive_git_snapshot: ['directory', 'repositoryIds', 'baseRef', 'targetRef', 'range', 'paths', 'maxFiles', 'maxPatchBytes'],
   hive_councils_list: ['name'],
   hive_explore_update: ['id', 'expectedRevision', 'operationId', 'goal', 'subject', 'priorExplorationId', 'status', 'conclusion', 'reason', 'frontier', 'observations'],
   ...Object.fromEntries(['hive_worktree_merge', 'hive_adhoc_worktree_merge'].map((name) => [name, [

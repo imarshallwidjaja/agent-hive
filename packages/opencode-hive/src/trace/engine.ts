@@ -2126,13 +2126,13 @@ export const TRACE_TOOL_DEFINITIONS = {
     },
   },
   hive_task_trace_content: {
-    description: 'Read one runtime-visible non-reasoning session trace source by exactly one selector. With event (a ref from the hive_task_trace v3 index), return that guarded event with its tool input, output, and error together; add field and offset to continue an oversized field in UTF-8-safe 8 KiB chunks. With content_id (a v2 content ID from recovery output), re-read that field in chunks. Every read reauthorizes and rechecks the source; a stale event or cursor means re-index.',
+    description: 'Read one event or field of a runtime-visible non-reasoning session trace in full detail, by exactly one selector. With event (a ref from the hive_task_trace v3 index), it returns that guarded event; its fields depend on its kind (a tool event has input, output and error), and a field too large to inline returns its first chunk with next_offset. Pass event, field and that offset to read the next UTF-8-safe chunk of up to 8 KiB; stop when next_offset is null. With content_id (a v2 content ID from recovery output), it reads that field in the same chunks. Every read reauthorizes and rechecks the source: a stale event means index again, and a stale content_id needs a fresh one from recovery output. Returns JSON text: parse it before reading fields.',
     args: {
       task_id: z.string().describe('OpenCode session ID visible through the connected runtime.'),
       event: z.string().optional().describe('Event ref from a hive_task_trace v3 index row or context entry. Not valid with content_id.'),
       field: z.enum(EVENT_FIELD_NAMES).optional().describe('Field of the selected event to read in chunks. Requires event.'),
       content_id: z.string().optional().describe('v2 content ID returned by recovery output. Not valid with event or field.'),
-      offset: z.number().optional().describe('UTF-8 byte offset for content_id or event+field reads. Defaults to zero.'),
+      offset: z.number().optional().describe('UTF-8 byte offset, normally the previous next_offset; needs content_id, or event with field. Defaults to zero.'),
     },
   },
 } as const;
