@@ -3004,7 +3004,6 @@ describe('wiring contract', () => {
   const host = (overrides: any = {}) => ({
     roles: { 'forager-worker': true }, commands: { council: true }, roleExposure: { 'code-reviewer': { observed: true, contextWrites: writes() } },
     contextEdit: contextEdit(),
-    toolContract: { expected: 2, missing: [], unexpected: [], undescribed: [], paramNames: { hive_status: ['feature'] }, undescribedParams: {} },
     fieldContract: { checked: 40, absentTools: [], absentFields: [], undescribed: [] },
     references: { pointers: { 'hive-config': { pointed: ['a.md'], broken: [], unpointed: [] } }, reads: [{ skill: 'hive-config', file: 'a.md', readCompleted: true }] },
     nonHiveCommand: { command: 'start-execution', result: 0, timedOut: false, asked: null, bodyDelivered: true, skillLoaded: true, referenceReads: [] },
@@ -3014,8 +3013,19 @@ describe('wiring contract', () => {
   // Every probe passing, so each test below judges only the observation it changes.
   const nested = { result: 0, timedOut: false, asked: null, helperRan: true, interimReport: false, parentUsedTerminal: true, parentUsedInterim: false };
   const v2Reads = { location: { agents: true, commands: true, otherDirectory: true }, codeModeRead: { tool: 'hive_repositories_status', transport: 'execute', completed: true, projectResolved: true } };
+  // Each host's own live child tool schemas (src/runtime.ts on v1, src/v2/background.ts on v2), sorted as observed.
+  const liveChildParams: Record<string, Record<string, string[]>> = {
+    v1: { hive_background_status: ['sessionID'], hive_background_cancel: ['sessionID'] },
+    v2: { hive_background_status: ['adHocRunId', 'feature', 'includeSettled', 'sessionID', 'task'], hive_background_cancel: ['reason', 'sessionID'] },
+  };
+  const liveManifest = ['hive_status', 'hive_background_status', 'hive_background_cancel'];
+  // A host's observed tool contract: the installed manifest it was judged against and the direct parameters it showed.
+  const toolContract = (paramNames: Record<string, string[]>, manifestTools = liveManifest) => ({
+    expected: manifestTools.length, manifestTools, missing: [], unexpected: [], undescribed: [], paramNames, undescribedParams: {},
+  });
   const wiringFor = (results: Record<string, any>) => wiringFailures(Object.fromEntries(Object.entries(results).map(([id, w]) => [id, {
-    modelSelection: passingSelection(id), invalidModelSelection: REJECTED_INVALID_SELECTION, nestedCompletion: nested, ...(id === 'v2' ? { managedModelControl: passingControl(), ...v2Reads } : {}), ...w,
+    modelSelection: passingSelection(id), invalidModelSelection: REJECTED_INVALID_SELECTION, nestedCompletion: nested, ...(id === 'v2' ? { managedModelControl: passingControl(), ...v2Reads } : {}),
+    toolContract: toolContract({ hive_status: ['feature'], ...liveChildParams[id] }), ...w,
   }])), SCENARIOS.model.mock);
 
   test('a complete observation passes', () => {
@@ -3039,12 +3049,12 @@ describe('wiring contract', () => {
   test('failures name missing contract metadata, unread references, undelivered command bodies and unresolved overrides', () => {
     const failures = wiringFor({
       v1: host({
-        toolContract: { expected: 2, missing: ['hive_plan_read'], unexpected: [], undescribed: ['hive_status'], paramNames: { hive_status: ['feature'] } },
+        toolContract: { ...toolContract({ hive_status: ['feature'], ...liveChildParams.v1 }), missing: ['hive_plan_read'], undescribed: ['hive_status'] },
         references: { pointers: { 'hive-config': { pointed: [], broken: ['gone.md'], unpointed: [] } }, reads: [{ skill: 'hive-config', file: 'a.md', readCompleted: false }] },
         nonHiveCommand: { command: 'start-execution', result: 0, bodyDelivered: false, skillLoaded: false, referenceReads: [{ file: 'task-milestones.md', readCompleted: false }] },
         override: { listed: true, resolvesToUserSkill: false, loadedUserBody: false },
       }),
-      v2: host({ toolContract: { expected: 2, missing: [], unexpected: [], undescribed: [], paramNames: { hive_status: ['feature', 'extra'] } } }),
+      v2: host({ toolContract: toolContract({ hive_status: ['feature', 'extra'], ...liveChildParams.v2 }) }),
     });
     expect(failures).toEqual(expect.arrayContaining([
       'tool_missing:v1:hive_plan_read', 'tool_undescribed:v1:hive_status', 'reference_pointer_broken:v1:hive-config/gone.md',
@@ -3052,6 +3062,42 @@ describe('wiring contract', () => {
       'command_consumer_reference_failed:v1:task-milestones.md', 'override_not_user_skill:v1', 'override_body_not_loaded:v1', 'tool_params_differ:hive_status',
     ]));
     expect(wiringFor({ v1: host({ toolContract: { expected: 0, missing: [], unexpected: [], undescribed: [], paramNames: {} } }) })).toContain('tool_manifest_unread:v1');
+  });
+
+  test('the live child tools show each host\'s own schema while every other tool keeps cross-host parity', () => {
+    const live = (id: string, paramNames: Record<string, string[]>) => host({ toolContract: toolContract({ hive_status: ['feature'], ...liveChildParams[id], ...paramNames }) });
+    // A differing ordinary tool still fails parity next to the intended per-host schemas.
+    expect(wiringFor({ v1: host(), v2: live('v2', { hive_status: ['feature', 'extra'] }) })).toEqual(['tool_params_differ:hive_status']);
+    // A host showing the other host's schema, the shared v1 stub, no parameters, or no schema at all fails on that host.
+    expect(wiringFor({ v1: live('v1', { hive_background_status: liveChildParams.v2.hive_background_status }), v2: host() }))
+      .toEqual(['tool_params_unexpected:v1:hive_background_status']);
+    expect(wiringFor({ v1: host(), v2: live('v2', { hive_background_cancel: ['sessionID'] }) })).toEqual(['tool_params_unexpected:v2:hive_background_cancel']);
+    expect(wiringFor({ v2: live('v2', { hive_background_status: [] }) })).toEqual(['tool_params_unexpected:v2:hive_background_status']);
+    expect(wiringFor({ v1: host({ toolContract: toolContract({ hive_status: ['feature'], hive_background_status: ['sessionID'] }) }), v2: host() }))
+      .toEqual(['tool_params_unobserved:v1:hive_background_cancel']);
+    // The era comes from the manifest: a stray board tool on a current subject does not lift the per-host schema check.
+    expect(wiringFor({
+      v1: host({ toolContract: { ...toolContract({ hive_status: ['feature'], hive_background_reconcile: ['identifier'], ...liveChildParams.v2 }), unexpected: ['hive_background_reconcile'] } }),
+      v2: host(),
+    })).toEqual(['tool_unexpected:v1:hive_background_reconcile', 'tool_params_unexpected:v1:hive_background_status', 'tool_params_unexpected:v1:hive_background_cancel']);
+    // A prior subject whose manifest lists the background board shared one schema across hosts and stays under parity,
+    // also when a host dropped the board tool.
+    const boardManifest = [...liveManifest, 'hive_background_reconcile'];
+    const boardParams = {
+      hive_status: ['feature'], hive_background_reconcile: ['decision', 'identifier', 'summary'],
+      hive_background_status: ['adHocRunId', 'feature', 'includeArchived', 'task', 'workflow'], hive_background_cancel: ['identifier', 'reason'],
+    };
+    const board = (paramNames: Record<string, string[]> = {}) => host({ toolContract: toolContract({ ...boardParams, ...paramNames }, boardManifest) });
+    expect(wiringFor({ v1: board(), v2: board() })).toEqual([]);
+    expect(wiringFor({ v1: board(), v2: board({ hive_background_cancel: ['identifier'] }) })).toEqual(['tool_params_differ:hive_background_cancel']);
+    const { hive_background_reconcile: _dropped, ...withoutBoardTool } = boardParams;
+    expect(wiringFor({ v1: board(), v2: host({ toolContract: { ...toolContract(withoutBoardTool, boardManifest), missing: ['hive_background_reconcile'] } }) }))
+      .toEqual(['tool_missing:v2:hive_background_reconcile']);
+    // Hosts judged against different manifests, or a contract without its manifest, fail.
+    expect(wiringFor({ v1: board(), v2: host() }))
+      .toEqual(['tool_manifest_differs', 'tool_params_differ:hive_background_status', 'tool_params_differ:hive_background_cancel']);
+    const { manifestTools: _unlisted, ...unlisted } = toolContract({ hive_status: ['feature'], ...liveChildParams.v1 });
+    expect(wiringFor({ v1: host({ toolContract: unlisted }) })).toEqual(['tool_manifest_unread:v1']);
   });
 
   test('the installed bounded-edit proof fails when the schema, the allowed edit, a denial or exposure parity is missing', () => {

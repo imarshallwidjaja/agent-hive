@@ -44,6 +44,8 @@ describe('release documentation and runtime contract', () => {
       'hive_checkout_register',
       'hive_checkout_readiness',
       'hive_checkout_cleanup',
+      'hive_background_status',
+      'hive_background_cancel',
     ]) assert.ok(manifest.tools.includes(required), required);
     for (const removed of [
       'hive_execution_prepare',

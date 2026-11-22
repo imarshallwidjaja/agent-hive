@@ -841,19 +841,44 @@ export function contextEditFailures(host, w) {
   return failures;
 }
 
+/**
+ * The live child tools differ by host on purpose: v1 registers stubs that refuse with `unsupported_on_host`, because its
+ * `task()` calls block, and v2 reads and interrupts the caller's background children. Each host must show exactly its
+ * own parameter names, sorted as the fixture records them.
+ */
+const HOST_SPECIFIC_TOOL_PARAMS = {
+  hive_background_status: { v1: ['sessionID'], v2: ['adHocRunId', 'feature', 'includeSettled', 'sessionID', 'task'] },
+  hive_background_cancel: { v1: ['sessionID'], v2: ['reason', 'sessionID'] },
+};
+/**
+ * A subject whose installed `plugin.json` still lists this tool predates the live child tools: its board tools shared one
+ * schema across hosts. The era comes from the manifest, never from what a host exposed, so a tool a host dropped, moved
+ * to Code Mode or added cannot change which rule applies.
+ */
+const BOARD_SUBJECT_TOOL = 'hive_background_reconcile';
+
 /** Wiring requirements on each host's observation, plus cross-host parity of the direct tool parameters. */
 export function wiringFailures(results, model) {
   const failures = [];
+  const liveChildHosts = new Set();
   for (const [host, w] of Object.entries(results)) {
     for (const [role, present] of Object.entries(w.roles)) if (!present) failures.push(`role_missing:${host}:${role}`);
     for (const [command, present] of Object.entries(w.commands)) if (!present) failures.push(`command_missing:${host}:${command}`);
     for (const [role, exposure] of Object.entries(w.roleExposure)) if (!exposure.observed) failures.push(`role_not_observed:${host}:${role}`);
     const tools = w.toolContract;
-    if (!tools || tools.expected === 0) failures.push(`tool_manifest_unread:${host}`);
+    if (!tools || tools.expected === 0 || !Array.isArray(tools.manifestTools)) failures.push(`tool_manifest_unread:${host}`);
     else {
       for (const t of tools.missing) failures.push(`tool_missing:${host}:${t}`);
       for (const t of tools.unexpected) failures.push(`tool_unexpected:${host}:${t}`);
       for (const t of tools.undescribed) failures.push(`tool_undescribed:${host}:${t}`);
+      if (!tools.manifestTools.includes(BOARD_SUBJECT_TOOL)) {
+        liveChildHosts.add(host);
+        for (const [tool, byHost] of Object.entries(HOST_SPECIFIC_TOOL_PARAMS)) {
+          const observed = tools.paramNames?.[tool];
+          if (!observed) failures.push(`tool_params_unobserved:${host}:${tool}`);
+          else if (JSON.stringify(observed) !== JSON.stringify(byHost[host])) failures.push(`tool_params_unexpected:${host}:${tool}`);
+        }
+      }
     }
     // Relied-upon fields (pins, targets, approval and sync, publication, context) as the provider-facing surface showed
     // them. Undescribed fields outside the contract stay informational in `toolContract.undescribedParams`.
@@ -893,7 +918,12 @@ export function wiringFailures(results, model) {
   }
   const [a, b] = Object.values(results);
   if (a?.toolContract && b?.toolContract) {
+    // Both hosts install the same package, so their manifests must agree; the live child exemption needs both in that era.
+    const [ma, mb] = [a.toolContract.manifestTools, b.toolContract.manifestTools];
+    if (Array.isArray(ma) && Array.isArray(mb) && JSON.stringify(ma) !== JSON.stringify(mb)) failures.push('tool_manifest_differs');
+    const liveChildSubject = Object.keys(results).every((host) => liveChildHosts.has(host));
     for (const [tool, params] of Object.entries(a.toolContract.paramNames)) {
+      if (liveChildSubject && Object.hasOwn(HOST_SPECIFIC_TOOL_PARAMS, tool)) continue;
       const other = b.toolContract.paramNames[tool];
       if (other && JSON.stringify(other) !== JSON.stringify(params)) failures.push(`tool_params_differ:${tool}`);
     }

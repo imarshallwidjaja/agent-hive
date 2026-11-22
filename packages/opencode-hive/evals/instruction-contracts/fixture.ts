@@ -1632,6 +1632,8 @@ async function wiring(input: Json): Promise<Json> {
   const expectedTools: string[] = Array.isArray(manifest.tools) ? manifest.tools : [];
   results.toolContract = {
     expected: expectedTools.length,
+    // The installed manifest's own membership: the judge reads the subject's tool era from it, not from exposure.
+    manifestTools: expectedTools,
     missing: expectedTools.filter((t) => !(t in results.hiveToolSchemas) && !codeModeNames.includes(t)),
     unexpected: [...Object.keys(results.hiveToolSchemas), ...codeModeNames].filter((t) => !expectedTools.includes(t)),
     undescribed: [
