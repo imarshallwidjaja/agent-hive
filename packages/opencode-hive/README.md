@@ -5,7 +5,7 @@
 
 OpenCode workflow plugin for plan-first feature development and ad-hoc work: feature plans, approval and task sync, Git worktrees, durable `.hive/` state, and review commands.
 
-Version **5.0.0** is the first release that serves both OpenCode hosts from one package: the v1 entry, with a host floor of **1.18.30**, and a native v2 entry. The v2 entry of this checkout, which is not released yet and whose package manifest still says 5.3.0, is qualified on **2.3.2**. The published 5.0.0 through 5.3.0 releases were qualified on **2.0.26**, and the published 5.3.0 does not activate on 2.3.2. Releases through 4.2.0 are v1-only. The v2 qualification covers 2.3.2; it is not a support claim for other v2 releases.
+Version **5.0.0** is the first release that serves both OpenCode hosts from one package: the v1 entry, with a host floor of **1.18.30**, and a native v2 entry. Version **6.0.0** qualifies the v2 entry on **2.3.2** and does not support 2.0.26. The 5.0.0 through 5.3.0 releases were qualified on **2.0.26**, and 5.3.0 does not activate on 2.3.2. Releases through 4.2.0 are v1-only. The v2 qualification covers 2.3.2; it is not a support claim for other v2 releases.
 
 Human onboarding starts in the [root README](../../README.md). This README is the detailed npm and configuration reference.
 
@@ -22,7 +22,7 @@ For a brand-new config, add the plugin to `opencode.json` or `opencode.jsonc`. O
 }
 ```
 
-Pin `oc-arkive@5.3.0` instead of `@latest` when you want a fixed version. Restart OpenCode after changing plugins.
+Pin `oc-arkive@6.0.0` instead of `@latest` when you want a fixed version. Restart OpenCode after changing plugins.
 
 ### Package dependencies
 
@@ -47,27 +47,27 @@ The config hook intentionally mutates these OpenCode fields:
 
 The same package loads through its `server` entry on v1 and its synchronous `effect` entry on v2. On v2 it registers every Hive tool and all **17 commands**, dedicated and unified modes, custom agents, packaged skills, native dispatch with live child status and cancellation, and the forensic and recovery tools. Qualification ran against stock v1.18.30 and v2.3.2 with scripted model providers, which establishes wiring rather than real-model judgment. On both hosts it loaded a package already installed with plain npm; host-side registry resolution at first use was not part of it.
 
-The current plugin manifest declares 50 Hive tools and 17 commands on both hosts. The qualification above does not cover the seven [retained checkout tools](docs/HIVE-TOOLS.md#retained-checkouts-7-tools), `hive_councils_list`, or the `/investigate`, `/walkthrough`, `/merge-to-main` and `/handoff` commands.
+The current plugin manifest declares 50 Hive tools and 17 commands on both hosts. On the installed hosts, the qualification checked registration, schemas and v2 Code Mode discovery of the 50 tools, the listing of the 17 commands, selected context and repository operations, the `/start-execution` command, and model and skill wiring. It does not exercise every tool and command at runtime.
 
 Install the released package with npm into a dedicated directory that the v2 host can read:
 
 ```bash
 mkdir -p /absolute/install
 cd /absolute/install
-npm install oc-arkive@5.3.0
+npm install oc-arkive@6.0.0
 ```
 
-The published `oc-arkive@5.3.0` and the earlier 5.x releases are qualified on v2 2.0.26, and the published 5.3.0 does not activate on 2.3.2. Until a release qualifies 2.3.2, load a [contributor build](#contributor-build) of this checkout on 2.3.2.
+`oc-arkive@6.0.0` is qualified on v2 2.3.2. The 5.x releases are qualified on v2 2.0.26, and 5.3.0 does not activate on 2.3.2, so a v2 host that stays on 2.0.26 keeps `oc-arkive@5.3.0`.
 
 Point the v2 `plugins` entry at the absolute installed **dist directory**, `/absolute/install/node_modules/oc-arkive/dist`, which contains `index.js`; the tested local-directory loader needs that entry at the directory root. The host then uses the installed package without another cold registry resolution at first prompt. Preserve server logs if first use stalls before the `loading plugin` event; the cause of that stall is still unknown, and a green retry does not explain it.
 
 #### Contributor build
 
-To load a checkout instead of a release, run `bun install && bun run build` at the checkout root. Create the artifact directory before packing: in `packages/opencode-hive`, run `mkdir -p /absolute/artifact-directory && npm pack --pack-destination /absolute/artifact-directory`. The tarball name carries the package version from `packages/opencode-hive/package.json`, for example `oc-arkive-5.3.0.tgz` while this checkout's manifest still says 5.3.0; that tarball is this checkout, not the published 5.3.0. In a clean installation directory, run `npm install /absolute/artifact-directory/oc-arkive-5.3.0.tgz`, then point the v2 entry at that installation's `node_modules/oc-arkive/dist` directory as above. A package-name file specifier such as `oc-arkive@file:/absolute/artifact-directory/oc-arkive-5.3.0.tgz` worked with the v2.0.26 host loader, which resolved its dependencies into the host's cache on first use. It has not been checked on 2.3.2.
+To load a checkout instead of a release, run `bun install && bun run build` at the checkout root. Create the artifact directory before packing: in `packages/opencode-hive`, run `mkdir -p /absolute/artifact-directory && npm pack --pack-destination /absolute/artifact-directory`. The tarball name carries the package version from `packages/opencode-hive/package.json`, for example `oc-arkive-6.0.0.tgz`; that tarball is this checkout, which can differ from the published version of the same number. In a clean installation directory, run `npm install /absolute/artifact-directory/oc-arkive-6.0.0.tgz`, then point the v2 entry at that installation's `node_modules/oc-arkive/dist` directory as above. A package-name file specifier such as `oc-arkive@file:/absolute/artifact-directory/oc-arkive-<version>.tgz` worked with the v2.0.26 host loader, which resolved its dependencies into the host's cache on first use. It has not been checked on 2.3.2.
 
 #### Upgrade on v2
 
-Install the new version into the same directory (`npm install oc-arkive@<version>`), or install the new tarball, and then restart the long-lived host process that loaded the plugin. A restart reloads whatever the `plugins` entry points at, so restarting before the installed package changes keeps the old version running.
+Install the new version into the same directory (`npm install oc-arkive@<version>`), or install the new tarball, and then restart the long-lived host process that loaded the plugin. A restart reloads whatever the `plugins` entry points at, so restarting before the installed package changes keeps the old version running. When the host still runs 2.0.26, keep a copy of its native home before the first 2.3.2 start, because 2.3.2 migrates the native database in a way 2.0.26 cannot read back ([Switching OpenCode hosts and rollback](../../docs/OPERATOR-GUIDE.md#switching-opencode-hosts-and-rollback)).
 
 #### Options
 
