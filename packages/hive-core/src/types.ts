@@ -328,61 +328,6 @@ export interface SessionsJson {
   sessions: SessionInfo[];
 }
 
-export type BackgroundJobRuntimeState = 'running' | 'completed' | 'error' | 'cancelled' | 'unknown';
-
-export interface BackgroundJobScope {
-  feature?: string;
-  task?: string;
-  adHocRunId?: string;
-  workflow?: string;
-  parentSessionId?: string;
-  primaryAgent?: string;
-  projectRoot?: string;
-}
-
-export interface BackgroundJobRecord {
-  taskId: string;
-  sessionId: string;
-  callId?: string;
-  agentName: string;
-  description?: string;
-  createdAt: string;
-  updatedAt: string;
-  runtimeState: BackgroundJobRuntimeState;
-  runtimeId?: string;
-  terminalUnreconciled?: boolean;
-  statusUncertain?: boolean;
-  resultSummary?: string;
-  lastStatusError?: string;
-  runtimeCompletedAt?: string;
-  cancelRequestedAt?: string;
-  cancelReason?: string;
-  reconciledAt?: string;
-  reconciledBy?: string;
-  reconciliationSummary?: string;
-  ignoredAt?: string;
-  ignoreReason?: string;
-  archivedAt?: string;
-  archiveReason?: 'reconciled' | 'ignored';
-  staleAt?: string;
-  promptNotifiedAt?: string;
-  promptNotifiedInSessionId?: string;
-  promptAcknowledgedAt?: string;
-  promptBoardInjectionCount?: number;
-  alias: string;
-  scope?: BackgroundJobScope;
-}
-
-export function isBackgroundJobArchived(job: { archivedAt?: string; ignoredAt?: string; reconciledAt?: string }): boolean {
-  return !!(job.archivedAt || job.ignoredAt || job.reconciledAt);
-}
-
-export interface BackgroundJobsJson {
-  schemaVersion: 1;
-  jobs: BackgroundJobRecord[];
-  updatedAt?: string;
-}
-
 export interface TaskSpec {
   taskFolder: string;
   featureName: string;

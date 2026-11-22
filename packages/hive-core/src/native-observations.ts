@@ -2,14 +2,13 @@ import * as path from 'path';
 import { getFeaturePath, getHivePath } from './utils/paths.js';
 
 /**
- * The native hosts whose session and background observations Hive stores. Each owner has its own store so that
- * equal session IDs or job aliases from different hosts never address the same record. The set is closed: a
- * caller selects an owner, never a path.
+ * The native hosts whose session observations Hive stores. Each owner has its own store so that equal session
+ * IDs from different hosts never address the same record. The set is closed: a caller selects an owner, never a path.
  */
 export const NATIVE_OBSERVATION_OWNERS = ['opencode-v1', 'opencode-v2'] as const;
 export type NativeObservationOwner = (typeof NATIVE_OBSERVATION_OWNERS)[number];
 
-/** Owner of the long-standing `.hive/sessions.json` and `.hive/background-jobs.json` files. */
+/** Owner of the long-standing `.hive/sessions.json` file. */
 export const DEFAULT_NATIVE_OBSERVATION_OWNER: NativeObservationOwner = 'opencode-v1';
 
 const OWNER_LABELS: Record<NativeObservationOwner, string> = {
@@ -50,8 +49,4 @@ export function getNativeSessionsPath(projectRoot: string, owner: NativeObservat
 /** Feature-local navigation projection. It never replaces the canonical index and resolves the feature directory through `getFeaturePath`. */
 export function getNativeFeatureSessionsPath(projectRoot: string, featureName: string, owner: NativeObservationOwner): string {
   return path.join(ownerDirectory(getFeaturePath(projectRoot, featureName), owner), 'sessions.json');
-}
-
-export function getNativeBackgroundJobsPath(projectRoot: string, owner: NativeObservationOwner): string {
-  return path.join(ownerDirectory(getHivePath(projectRoot), owner), 'background-jobs.json');
 }

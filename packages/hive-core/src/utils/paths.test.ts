@@ -29,7 +29,6 @@ import type { FeatureResolutionFailure } from "./paths";
 import { isNativeLockHeld, resolveLockAnchor, windowsBackend } from "./nativeLock";
 import {
   NATIVE_OBSERVATION_OWNERS,
-  getNativeBackgroundJobsPath,
   getNativeFeatureSessionsPath,
   getNativeSessionsPath,
   isNativeObservationOwner,
@@ -839,18 +838,15 @@ describe("native observation paths", () => {
       expect(isNativeObservationOwner(value)).toBe(false);
     }
     expect(() => getNativeSessionsPath(root, "../escape" as never)).toThrow("Unknown native observation owner");
-    expect(() => getNativeBackgroundJobsPath(root, "" as never)).toThrow("Unknown native observation owner");
     expect(() => getNativeFeatureSessionsPath(root, "feature", "x" as never)).toThrow("Unknown native observation owner");
   });
 
   it("keeps the long-standing v1 locations", () => {
     expect(getNativeSessionsPath(root, "opencode-v1")).toBe(getGlobalSessionsPath(root));
-    expect(getNativeBackgroundJobsPath(root, "opencode-v1")).toBe(path.join(root, ".hive", "background-jobs.json"));
   });
 
   it("nests v2 stores under their own runtime directory", () => {
     expect(getNativeSessionsPath(root, "opencode-v2")).toBe(path.join(root, ".hive", "runtime", "opencode-v2", "sessions.json"));
-    expect(getNativeBackgroundJobsPath(root, "opencode-v2")).toBe(path.join(root, ".hive", "runtime", "opencode-v2", "background-jobs.json"));
   });
 
   it("derives feature projections from the resolved feature directory, including indexed prefixes", () => {

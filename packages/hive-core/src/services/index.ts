@@ -157,15 +157,6 @@ export type {
 } from './contextService.js';
 export { ReviewService } from './reviewService.js';
 export { SessionService, SessionContinuityError, STANDING_CONSTRAINTS_MAX_CHARS } from './sessionService.js';
-export { BackgroundBoardReadError, BackgroundJobArchiveError, BackgroundJobService } from './backgroundJobService.js';
-export type {
-  BackgroundJobArchiveRefusal,
-  BackgroundJobScopeFilter,
-  IgnoreOptions,
-  ReconcilePatch,
-  RegisterBackgroundJobInput,
-  RuntimeStatePatch,
-} from './backgroundJobService.js';
 export { ConfigService } from './configService.js';
 export type { LegacyRepositoryTopology } from './configService.js';
 export { RepositoryService } from './repositoryService.js';

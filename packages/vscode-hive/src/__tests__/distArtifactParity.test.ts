@@ -28,10 +28,6 @@ describe('shipped extension artifact parity', () => {
     expect(bundle).toContain('hive.repositories');
   });
 
-  it('does not ship the background jobs view in dist', () => {
-    expect(bundle).not.toContain('hive.backgroundJobs');
-  });
-
   it('includes the worklog viewer in dist', () => {
     expect(bundle).toContain('hive.worklogs');
     expect(bundle).toContain('hive-worklog');
