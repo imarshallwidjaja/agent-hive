@@ -416,6 +416,27 @@ describe('HIVE_COMMANDS', () => {
       else if (host.readTransport === 'codemode') {
         for (const required of [codemode, unavailable, 'set the oc-arkive option `readTransport` to `direct`', 'do not attempt a direct call or a substitute']) expect(output).toContain(required);
         expect(output).not.toContain(direct);
+        expect(output).toContain("`search({ namespace: 'hive', query: 'worklog read' })`");
+      } else {
+        expect(output).toContain(direct);
+        expect(output).not.toContain(codemode);
+      }
+    }
+  });
+
+  it('names the transport of the checkout reads /merge-to-main relies on, for an agent without the Hive system prompt', () => {
+    for (const host of [OPENCODE_V1_PROFILE, createHostProfile('opencode-v2'), createHostProfile('opencode-v2', { readTransport: 'direct' })]) {
+      const commands = buildHiveCommandMap(hiveCommandRenderers, () => ({
+        agentMode: 'unified', host,
+        dashReviewLanes: [], vulnerabilityReviewLanes: [],
+      }));
+      const output = commands['merge-to-main'].run('');
+      const codemode = 'On this host `hive_checkout_brief` and `hive_checkouts_list` run inside Code Mode';
+      const direct = 'On this host `hive_checkout_brief` and `hive_checkouts_list` are direct tool calls';
+      if (host.host === 'opencode-v1') expect(output).not.toMatch(/On this host|`execute`/);
+      else if (host.readTransport === 'codemode') {
+        for (const required of [codemode, 'so `hive_checkout_brief` is `tools.hive.checkout_brief`', "`search({ namespace: 'hive', query: 'checkout brief' })`", 'set the oc-arkive option `readTransport` to `direct`']) expect(output).toContain(required);
+        expect(output).not.toContain(direct);
       } else {
         expect(output).toContain(direct);
         expect(output).not.toContain(codemode);

@@ -4311,12 +4311,17 @@ describe('host-rendered policy', () => {
     expect(codemode).toContain('using the exact paths its Code Mode catalog lists');
     expect(codemode).toContain('When `execute` is not among your exposed tools, these reads are unavailable to you; report the missing capability');
     expect(codemode).toContain('Every other Hive tool is a direct call');
+    // One path form and a search that names the read; the read is the same tool, not a second one.
+    expect(codemode).toContain('so `hive_worklog_read` is `tools.hive.worklog_read`');
+    expect(codemode).toContain("`search({ namespace: 'hive', query: 'worklog read' })`, and call the `path` the result gives");
+    expect(codemode).toContain('a search without `query` returns every Hive read with its full description');
 
     const direct = renderHiveSystemPrompt(V2_DIRECT);
     for (const name of CODEMODE_READ_TOOLS) expect(direct).toContain(`\`${name}\``);
     expect(direct).toContain('are direct tool calls');
     expect(direct).not.toContain('call them from code passed to `execute`');
     expect(direct).not.toContain('unavailable to you');
+    expect(direct).not.toMatch(/tools\.hive|search\(/);
   });
 
   it('rejects Code Mode on a host that has none', () => {

@@ -106,7 +106,8 @@ export function authRequest(id, credential) {
 }
 
 // Relationship-bearing fields whose descriptions later instruction changes rely on: worktree pins and destination
-// targets, approval and sync, report and handoff publication, and hash-guarded context operations. Each must carry a
+// targets, approval and sync, report and handoff publication, hash-guarded context operations, and the checkout pair a
+// brief compares (a read v2 shows only in Code Mode, v1 as a direct tool). Each must carry a
 // non-empty description on the surface the host actually shows the model: the direct tool schema, or the Code Mode
 // declaration for a read exposed there. Other undescribed fields are listed for information only.
 const MERGE_FIELDS = ['historyIntent', 'strategy', 'message', 'preserveConflicts', 'cleanup', 'sourceCommit', 'sourceCommits', 'expectedTarget', 'expectedTargets'];
@@ -128,6 +129,7 @@ export const TOOL_FIELD_CONTRACT = Object.freeze({
   hive_context_append: ['content', 'section', 'task', 'expectedRevision', 'expectedContentHash', 'scope'],
   hive_context_edit: ['name', 'oldText', 'newText', 'expectedRevision', 'expectedContentHash', 'scope', 'feature'],
   hive_context_archive: ['reason', 'expectedRevision', 'expectedContentHashes', 'scope'],
+  hive_checkout_brief: ['id', 'against'],
 });
 
 /**
@@ -394,18 +396,202 @@ export function runArgs(id, { port, session, agent, modelRef, variant, prompt, c
   return args;
 }
 
+/** Effective tool ID of a Code Mode call path, as the host forms it: `tools.hive.worklog_read` -> `hive_worklog_read`. */
+export function codeModePathId(path) {
+  return path.replace(/^tools\./, '').replace('.', '_');
+}
+
+// Reading the TypeScript declarations v2 2.3.2 renders for Code Mode tools. Brackets of every kind nest; comments and
+// string literals are skipped, so a bracket, quote or `//` inside a field doc or a literal type never ends a group.
+const CLOSERS = { '(': ')', '{': '}', '[': ']', '<': '>' };
+const isOpener = (c) => Object.hasOwn(CLOSERS, c);
+
+/** Index just past the comment or string literal starting at `i`, `i` when none starts there, -1 when it never ends. */
+function skipLiteral(text, i) {
+  if (text.startsWith('/*', i)) {
+    const end = text.indexOf('*/', i + 2);
+    return end < 0 ? -1 : end + 2;
+  }
+  const quote = text[i];
+  if (quote !== '"' && quote !== "'" && quote !== '`') return i;
+  for (let j = i + 1; j < text.length; j++) {
+    if (text[j] === '\\') j++;
+    else if (text[j] === quote) return j + 1;
+  }
+  return -1;
+}
+
+/** Index just past the bracket group that opens at `i`; -1 when it is unbalanced. `=>` is an arrow, not a closer. */
+function groupEnd(text, i) {
+  const expected = [];
+  for (let j = i; j < text.length;) {
+    const skipped = skipLiteral(text, j);
+    if (skipped < 0) return -1;
+    if (skipped !== j) { j = skipped; continue; }
+    const c = text[j];
+    if (isOpener(c)) expected.push(CLOSERS[c]);
+    else if (')}]>'.includes(c) && !(c === '>' && text[j - 1] === '=')) {
+      if (expected.pop() !== c) return -1;
+      if (expected.length === 0) return j + 1;
+    }
+    j++;
+  }
+  return -1;
+}
+
+/** A doc comment's text without its `*` gutter, on one line. */
+function docText(body) {
+  return body.split('\n').map((line) => line.replace(/^\s*\*?\s?/, '')).join(' ').trim();
+}
+
+/**
+ * The top-level fields of an argument list `()` or `({ ... })`: field -> the doc comment directly before it, `''` when
+ * there is none. Nested object fields are part of their parent's type. Null when the list is not one object literal.
+ */
+function signatureParams(args) {
+  const inner = args.slice(1, -1).trim();
+  if (inner === '') return {};
+  if (inner[0] !== '{' || groupEnd(inner, 0) !== inner.length) return null;
+  const params = {};
+  let doc = '';
+  for (let j = 1; j < inner.length - 1;) {
+    if (/[\s,]/.test(inner[j])) { j++; continue; }
+    if (inner.startsWith('/*', j)) {
+      const end = skipLiteral(inner, j);
+      if (inner.startsWith('/**', j)) doc = docText(inner.slice(j + 3, end - 2));
+      j = end;
+      continue;
+    }
+    const field = /^([A-Za-z_$][\w$]*)\??:/.exec(inner.slice(j));
+    if (!field) return null;
+    params[field[1]] = doc;
+    doc = '';
+    // The field's type runs to the next comma outside any bracket group.
+    for (j += field[0].length; j < inner.length - 1 && inner[j] !== ',';) {
+      const skipped = skipLiteral(inner, j);
+      if (skipped < 0) return null;
+      if (skipped !== j) j = skipped;
+      else if (isOpener(inner[j])) {
+        j = groupEnd(inner, j);
+        if (j < 0) return null;
+      } else j++;
+    }
+  }
+  return params;
+}
+
+/**
+ * One Code Mode declaration signature starting at `start`: `tools.<namespace>.<name>(<args>): <return type>`, or the
+ * flat `tools.<name>(...)`. The return type ends at the end of its line or at the ` // ` that starts a description,
+ * which is not part of the signature. Returns the call path, the effective ID, the top-level argument fields with their
+ * doc comments, and the index just past the signature; null when the text there is not such a signature.
+ */
+function codeModeSignature(text, start = 0) {
+  const head = /^tools\.[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)?\(/.exec(text.slice(start));
+  if (!head) return null;
+  const open = start + head[0].length - 1;
+  const close = groupEnd(text, open);
+  if (close < 0 || !text.startsWith(': ', close)) return null;
+  const params = signatureParams(text.slice(open, close));
+  if (!params) return null;
+  let end = close + 2;
+  while (end < text.length && text[end] !== '\n' && !text.startsWith(' // ', end)) {
+    const skipped = skipLiteral(text, end);
+    if (skipped < 0) return null;
+    if (skipped !== end) end = skipped;
+    else if (isOpener(text[end])) {
+      end = groupEnd(text, end);
+      if (end < 0) return null;
+    } else if (')}]'.includes(text[end]) || (text[end] === '>' && text[end - 1] !== '=')) return null;
+    else end++;
+  }
+  if (!text.slice(close + 2, end).trim()) return null;
+  const path = head[0].slice(0, -1);
+  return { path, id: codeModePathId(path), params, end };
+}
+
+/** The heading v2 2.3.2 puts over its Code Mode catalog; the catalog is the contiguous entry list right after it. */
+const CODE_MODE_CATALOG_HEADING = '## Code Mode tools (call only inside `execute`)';
+
+// A namespace header line. v2 names a namespace after its MCP server or tool, so the name may hold `-` or other
+// characters a JavaScript identifier cannot; its members are then reached with bracket notation.
+const NAMESPACE_HEADER = /^- (\S+) \((\d+) tools?(?:, (?:\d+|none) shown)?\)(?: \/\/ .*)?$/;
+const isHiveNamespace = (name) => name === 'hive' || name.startsWith('hive_');
+
+/**
+ * The Code Mode catalog one v2 request showed the model, read only from the contiguous entry list under
+ * {@link CODE_MODE_CATALOG_HEADING}. `namespaces` maps every header to the tool count it states. Only Hive namespaces
+ * (`hive` and flat `hive_*`) are decoded: `members` maps each of their declared members to its call path, the full
+ * signature the host rendered, its description (the text after the signature's ` // `, `''` when there is none) and its
+ * argument fields, keyed by effective tool ID (the host joins a namespace and a local name with `_`, so
+ * `tools.hive.worklog_read` is `hive_worklog_read`, and a flat `tools.hive_worklog_read` is the same ID). Another
+ * namespace's block is skipped line by line up to the next header: a member line, or a line continuing its declaration
+ * (indented, or a closing bracket at the margin). The catalog ends at the first line that fits none of these, or at a
+ * Hive member line that is not one declaration of its namespace. A member the catalog folds away is counted in its
+ * header but declared only by `search`, so a header is never evidence that a member exists or is callable.
+ */
+export function codeModeCatalog(system) {
+  const namespaces = {};
+  const members = {};
+  const at = `\n${system}`.indexOf(`\n${CODE_MODE_CATALOG_HEADING}\n`);
+  if (at < 0) return { namespaces, members };
+  const lineEnd = (i) => (system.indexOf('\n', i) < 0 ? system.length : system.indexOf('\n', i));
+  let i = at + CODE_MODE_CATALOG_HEADING.length + 1;
+  if (system[i] === '\n') i++;
+  let namespace = null;
+  while (i < system.length) {
+    const line = system.slice(i, lineEnd(i));
+    const header = NAMESPACE_HEADER.exec(line);
+    if (header) {
+      namespace = header[1];
+      namespaces[namespace] = Number(header[2]);
+      i = lineEnd(i) + 1;
+      continue;
+    }
+    if (namespace === null) break;
+    if (!isHiveNamespace(namespace)) {
+      if (!/^(?:\s+\S|[)}\]>])/.test(line)) break;
+      i = lineEnd(i) + 1;
+      continue;
+    }
+    if (!line.startsWith('  - ')) break;
+    const declaration = codeModeSignature(system, i + 4);
+    if (!declaration || declaration.path.split('.')[1] !== namespace) break;
+    const described = system.startsWith(' // ', declaration.end);
+    const end = described ? lineEnd(declaration.end) : declaration.end;
+    const { path, id, params } = declaration;
+    members[id] = { path, signature: system.slice(i + 4, declaration.end), description: described ? system.slice(declaration.end + 4, end).trim() : '', params };
+    i = end + 1;
+  }
+  return { namespaces, members };
+}
+
+/**
+ * A member the host's `search` listed (`{ path, signature, description }`), read as strictly as a catalog declaration:
+ * its signature must be exactly one declaration of its own path. Null otherwise. A missing or blank description is
+ * `''`, never borrowed from the signature's field docs.
+ */
+export function codeModeSearchMember(item) {
+  const signature = typeof item?.signature === 'string' ? item.signature : '';
+  const declaration = codeModeSignature(signature);
+  if (!declaration || declaration.end !== signature.length || declaration.path !== item.path) return null;
+  const description = typeof item.description === 'string' ? item.description.trim() : '';
+  return { path: declaration.path, signature, description, params: declaration.params };
+}
+
 /**
  * Translates a host-neutral scripted step into the native tool call the mock provider emits. `tools` is the
- * provider-facing tool list from the current request; Hive reads that v2 exposes only through Code Mode are wrapped
- * in `execute`.
+ * provider-facing tool list from the current request. A Hive read that v2 exposes only through Code Mode is wrapped in
+ * `execute` with the call path in `codeModePaths` (effective tool ID -> path), which the host's own catalog or search
+ * supplied; a read with no known path goes out as a direct call, which the host refuses unless it is one.
  */
-export function nativeToolCall(id, step, tools) {
+export function nativeToolCall(id, step, tools, codeModePaths = {}) {
   const has = (name) => tools.includes(name);
   switch (step.op) {
     case 'hive':
       if (has(step.tool)) return { tool: step.tool, args: step.args ?? {} };
-      if (id === 'v2' && has('execute')) {
-        return { tool: 'execute', args: { code: `return await tools.${step.tool}(${JSON.stringify(step.args ?? {})})` } };
+      if (id === 'v2' && has('execute') && codeModePaths[step.tool]) {
+        return { tool: 'execute', args: { code: `return await ${codeModePaths[step.tool]}(${JSON.stringify(step.args ?? {})})` } };
       }
       return { tool: step.tool, args: step.args ?? {} };
     case 'dispatch':

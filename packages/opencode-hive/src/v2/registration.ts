@@ -294,10 +294,12 @@ function registerRequestPolicy(context: Plugin.Context, input: { host: HostProfi
     const guidance = roles.skillGuidance(agent, yield* skills, warnOnce).trim();
     if (guidance && !event.system.some((part) => 'text' in part && part.text.includes(guidance))) parts.push(guidance);
     if (ordinary) {
-      if (caller.kind === 'role' && host.readTransport === 'codemode' && !('execute' in event.tools)
-        && authority.policy[caller.role].hiveTools.some((tool) => (CODEMODE_READ_TOOLS as readonly string[]).includes(tool))) {
-        parts.push(codemodeDiagnostic(caller.role));
-        warnOnce(`[hive:config] Agent "${agent}" cannot reach Hive Code Mode reads: its permissions deny execute. Set the oc-arkive option readTransport to "direct" or allow execute for this agent.`);
+      if (caller.kind === 'role' && host.readTransport === 'codemode' && !('execute' in event.tools)) {
+        const reads = CODEMODE_READ_TOOLS.filter((tool) => authority.policy[caller.role].hiveTools.includes(tool));
+        if (reads.length > 0) {
+          parts.push(codemodeDiagnostic(caller.role, reads));
+          warnOnce(`[hive:config] Agent "${agent}" cannot reach Hive Code Mode reads: its permissions deny execute. Set the oc-arkive option readTransport to "direct" or allow execute for this agent.`);
+        }
       }
       if (yield* authority.isChild(event.sessionID).pipe(Effect.orElseSucceed(() => false))) parts.push(SUBAGENT_CLARIFICATION_PROMPT.trim());
     }
@@ -310,7 +312,8 @@ function registerRequestPolicy(context: Plugin.Context, input: { host: HostProfi
   ]).pipe(Effect.asVoid);
 }
 
-function codemodeDiagnostic(role: BuiltInRole): string {
-  const reads = CODEMODE_READ_TOOLS.map((name) => `\`${name}\``).join(', ');
+/** Names only the Code Mode reads the role is granted; the notice describes reach, and the guard still decides each call. */
+function codemodeDiagnostic(role: BuiltInRole, granted: readonly string[]): string {
+  const reads = granted.map((name) => `\`${name}\``).join(', ');
   return `## Hive Read Transport Setup\n\nThis ${role} agent's permissions deny the host's \`execute\` tool, and oc-arkive runs ${reads} inside Code Mode, so those reads are unavailable here. When a task needs them, report this missing capability and what it blocks. The operator can set the oc-arkive option \`readTransport\` to \`direct\` to make them direct tool calls, or allow \`execute\` for this agent.`;
 }

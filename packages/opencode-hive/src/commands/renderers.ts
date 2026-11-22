@@ -207,7 +207,7 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
   'merge-to-main'(args, context) {
     return renderHybridCommand('merge-to-main', context, {
       details: [operatorText('merge-to-main', args)],
-      doItems: [],
+      doItems: [readTransportInstruction(context.host, ['hive_checkout_brief', 'hive_checkouts_list'])].filter(Boolean),
       doNotItems: [],
       outputItems: [
         'The source and destination with their commits, the baseline, how it was integrated and the resulting commit, the review findings and what happened to each, the checks on the candidate and on the destination with their results, what was cleaned up and what was kept, and anything still blocking.',

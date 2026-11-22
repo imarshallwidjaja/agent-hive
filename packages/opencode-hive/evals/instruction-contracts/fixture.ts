@@ -7,7 +7,7 @@ import { createServer } from 'node:http';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import {
-  HIVE_COMMANDS, HIVE_ROLES, REFRESH_SENTINEL, dispatchedChild, fieldContractFindings, hiveConfig, hostConfig, hostSpec, managedControlPlan, modelArgument, nativeToolCall, probeModels,
+  HIVE_COMMANDS, HIVE_ROLES, REFRESH_SENTINEL, codeModeCatalog, codeModePathId, codeModeSearchMember, dispatchedChild, fieldContractFindings, hiveConfig, hostConfig, hostSpec, managedControlPlan, modelArgument, nativeToolCall, probeModels,
   PROBE_VARIANTS, neutralArgs, neutralTool, runArgs, serveArgs, sessionCreateRequest, subagentReport, v2LocationQuery,
 } from './hosts.mjs';
 import { HOME, MOCK_PORT, PROJ, SERVER_PORT, STATE, WORK, authHeader, detach, payload, strictApi, succeeded } from './container-runtime.ts';
@@ -164,6 +164,38 @@ function parseToolOutput(text: string): Json {
  */
 export const SUBAGENT_WAIT_TEXT = 'Waiting for subagent results.';
 
+/**
+ * Marks an `execute` call the v2 mock makes on its own to find a Code Mode read the catalog folded away: a search of the
+ * read's namespace, as a model would run it. It is not a scripted step, and its result is not a step's result.
+ */
+const CODEMODE_LOOKUP_MARKER = '// fixture code mode lookup';
+
+/** Whether a tool call, with its parsed input, is such a lookup. */
+function isLookup(name: unknown, input: Json): boolean {
+  return name === 'execute' && typeof input?.code === 'string' && input.code.startsWith(CODEMODE_LOOKUP_MARKER);
+}
+
+/** The same test on an OpenAI-style call, whose arguments are a JSON string. */
+function isLookupCall(call: Json): boolean {
+  try {
+    return isLookup(call?.function?.name, JSON.parse(call?.function?.arguments ?? '{}'));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The lookup for a read the catalog folds away: a search of the namespace that holds it, by name. A one-tool namespace
+ * named after the tool itself holds nothing else to narrow by name. Null when no catalog namespace can hold it.
+ */
+function codeModeLookup(catalog: Json, tool: string): Json | null {
+  const namespace = Object.keys(catalog.namespaces).find((ns) => tool === ns || tool.startsWith(`${ns}_`));
+  if (!namespace) return null;
+  const query = tool === namespace ? {} : { query: tool.slice(namespace.length + 1).replaceAll('_', ' ') };
+  const search = JSON.stringify({ namespace, ...query });
+  return { tool: 'execute', args: { code: `${CODEMODE_LOOKUP_MARKER}\nreturn await search(${search})` } };
+}
+
 /** Decides the next scripted assistant turn from an OpenAI-style request body. */
 export function mockDecision(host: string, body: Json): Json {
   const messages = body.messages ?? [];
@@ -178,16 +210,38 @@ export function mockDecision(host: string, body: Json): Json {
   }
   if (!script) return { text: 'ok' };
   const after = messages.slice(scriptedIndex + 1);
-  const waiting = (m: Json) => m.role === 'assistant' && !(m.tool_calls ?? []).length && textOf(m.content) === SUBAGENT_WAIT_TEXT;
-  const callNames = new Map<string, string>();
-  for (const m of after) for (const call of m.tool_calls ?? []) callNames.set(call.id, call.function?.name);
+  // Code Mode call paths the host itself showed: catalog declarations, then the items of every lookup search.
+  const system = messages.filter((m: Json) => m.role === 'system').map((m: Json) => textOf(m.content));
+  const catalog = codeModeCatalog(system.join('\n'));
+  const codeModePaths: Record<string, string> = {};
+  for (const [tool, member] of Object.entries(catalog.members) as [string, Json][]) codeModePaths[tool] = member.path;
+  // One pass over the history. An assistant turn is a scripted step unless it is the wait text or only lookups; a
+  // lookup since the last step means the current step's read was already searched for.
   // Tool results in order. On v2 each launch, in order, is answered by the first terminal report for its child that no
   // earlier launch took; that report counts as a result of the subagent tool. A continuation reuses the child's ID, so
   // a launch is matched to a report, not a child to a set. Interim reports are neither results nor answers.
+  const callNames = new Map<string, string>();
+  const lookupCalls = new Set<string>();
   const results: Array<{ tool: string; text: string }> = [];
   const pending: string[] = [];
+  let step = 0;
+  let lookedUp = false;
   for (const m of after) {
-    if (m.role === 'tool') {
+    if (m.role === 'assistant') {
+      const calls: Json[] = m.tool_calls ?? [];
+      for (const call of calls) {
+        callNames.set(call.id, call.function?.name);
+        if (isLookupCall(call)) lookupCalls.add(call.id);
+      }
+      if (calls.length > 0 && calls.every((call) => lookupCalls.has(call.id))) lookedUp = true;
+      else if (calls.length > 0 || textOf(m.content) !== SUBAGENT_WAIT_TEXT) {
+        step++;
+        lookedUp = false;
+      }
+    } else if (m.role === 'tool' && lookupCalls.has(m.tool_call_id)) {
+      const paths = (parseToolOutput(textOf(m.content))?.items ?? []).map((item: Json) => item?.path).filter((path: Json) => typeof path === 'string');
+      for (const path of paths) codeModePaths[codeModePathId(path)] = path;
+    } else if (m.role === 'tool') {
       const tool = callNames.get(m.tool_call_id) ?? '';
       const text = textOf(m.content);
       results.push({ tool, text });
@@ -201,7 +255,6 @@ export function mockDecision(host: string, body: Json): Json {
     }
   }
   if (pending.length > 0) return { text: SUBAGENT_WAIT_TEXT };
-  const step = after.filter((m: Json) => m.role === 'assistant' && !waiting(m)).length;
   if (step >= script.length) return { text: 'Script complete.' };
   const lazy = (token: string): string | null => {
     // {{match:REGEX}} searches every earlier result, newest first; {{matchIn:TOOL:REGEX}} only one tool's results.
@@ -249,7 +302,11 @@ export function mockDecision(host: string, body: Json): Json {
   // `json` is a text step whose body is one JSON document written as data, so scripted reports stay readable.
   if (current.op === 'text') return { text: current.json === undefined ? current.text : JSON.stringify(current.json) };
   if (current.op === 'dispatch') current.prompt = `${current.prompt}\n${scriptDirective(current.script ?? [])}`;
-  return { call: nativeToolCall(host, current, tools) };
+  // A read the catalog folds away: search for it once, then take the path the host returns on the next turn.
+  const folded = host === 'v2' && current.op === 'hive' && !tools.includes(current.tool) && tools.includes('execute') && !codeModePaths[current.tool];
+  const search = folded && !lookedUp ? codeModeLookup(catalog, current.tool) : null;
+  if (search) return { call: search };
+  return { call: nativeToolCall(host, current, tools, codeModePaths) };
 }
 
 function serveMock(host: string): void {
@@ -542,16 +599,50 @@ async function pendingInteraction(host: string): Promise<Json> {
 // Fixture setup. Hive state is created through the installed plugin's own tools, driven one call at a time by the
 // scripted mock, so the state is exactly what the subject plugin writes.
 
+/**
+ * The recorded call that carried one scripted Hive step: its last direct call, or its last `execute`. A lookup the mock
+ * made to find a folded read is not that call, so a run that only searched records no read.
+ */
+export function hiveCallRecord(calls: Json[], tool: string): Json {
+  return calls.findLast((t: Json) => t.name === tool || (t.name === 'execute' && !isLookup(t.name, t.input)));
+}
+
 async function hiveCall(host: string, tool: string, args: Json, agent = 'hive-builder'): Promise<Json> {
   const prompt = `fixture setup\n${scriptDirective([{ op: 'hive', tool, args }, { op: 'text', text: 'done' }])}`;
   const run = await runPrompt(host, { agent, modelRef: `mock/${SCENARIOS.model.mock}`, prompt }, 120_000);
   if (!run.sessionId) return { status: 'no_session', output: '', parsed: null };
-  const calls = (await messages(host, run.sessionId)).flatMap((m) => m.tools).filter((t: Json) => t.name === tool || t.name === 'execute');
-  const call = calls[calls.length - 1];
+  const call = hiveCallRecord((await messages(host, run.sessionId)).flatMap((m) => m.tools), tool);
   const raw = call?.output ?? '';
   const output = typeof raw === 'string' ? raw : JSON.stringify(raw);
   // `name` shows the transport: the tool itself (direct) or `execute` (a Code Mode read).
   return { status: call?.status ?? 'missing', name: call?.name ?? null, output, parsed: parseToolOutput(output) };
+}
+
+/**
+ * Every member of the given Code Mode namespaces as the host's own `search` lists it for the full-access role, paged to
+ * the end: call path -> `{ signature, description }`, kept apart as search returns them. Only search answers for a
+ * member the catalog folds away.
+ */
+async function hiveCodeModeSearch(host: string, namespaces: string[]): Promise<Json> {
+  if (namespaces.length === 0) return { namespaces, completed: true, members: {} };
+  const code = [
+    'const found = {};',
+    `for (const namespace of ${JSON.stringify(namespaces)}) {`,
+    '  for (let offset = 0; offset !== null;) {',
+    '    const page = await search({ namespace, limit: 50, offset });',
+    '    for (const item of page.items) found[item.path] = { signature: item.signature, description: item.description };',
+    '    offset = page.next ? page.next.offset : null;',
+    '  }',
+    '}',
+    'return found;',
+  ].join('\n');
+  const prompt = `wiring code mode search\n${scriptDirective([{ op: 'native', tool: 'execute', args: { code } }, { op: 'text', text: 'done' }])}`;
+  const run = await runPrompt(host, { agent: 'hive-builder', modelRef: `mock/${SCENARIOS.model.mock}`, prompt }, 120_000);
+  const call = run.sessionId ? (await messages(host, run.sessionId)).flatMap((m) => m.tools).findLast((t: Json) => t.name === 'execute') : undefined;
+  const raw = call?.output ?? '';
+  const parsed = parseToolOutput(typeof raw === 'string' ? raw : JSON.stringify(raw));
+  const completed = call?.status === 'completed' && parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed);
+  return { namespaces, completed, members: completed ? parsed : {} };
 }
 
 /** A Hive tool result that reports failure in any of its documented outcome shapes. */
@@ -1308,26 +1399,19 @@ export function toolDescriptors(tools: Json[]): Json {
   return out;
 }
 
-/** v2 Code Mode catalog entries: each `- name (1 tool)` block up to the next top-level entry, with field comments. */
-export function codeModeBlocks(system: string, names: string[]): Json {
+/**
+ * The Hive Code Mode reads one request exposed, keyed by effective tool ID: members its catalog declares, plus members
+ * only the host's `search` lists (path -> `{ signature, description }`). The catalog's declaration wins, since that is
+ * what the model was shown; a searched member whose signature is not one declaration of its path is not counted.
+ */
+export function hiveCodeModeDeclarations(catalog: Json, searched: Json): Json {
   const out: Json = {};
-  for (const name of names) {
-    const start = system.indexOf(`- ${name} (`);
-    if (start < 0) continue;
-    const rest = system.slice(start + 2);
-    const end = rest.search(/\n- /);
-    out[name] = (end < 0 ? rest : rest.slice(0, end)).slice(0, 6000);
+  for (const [path, item] of Object.entries(searched ?? {}) as [string, Json][]) {
+    const member = codeModeSearchMember({ ...item, path });
+    if (member) out[codeModePathId(path)] = member;
   }
-  return out;
-}
-
-/** Field documentation comments in one Code Mode declaration block: a doc comment directly before `field?: type`. */
-export function codeModeFieldDocs(block: string): Json {
-  const out: Json = {};
-  for (const m of block.matchAll(/\/\*\*((?:(?!\*\/)[\s\S])*)\*\/\s*([A-Za-z_][A-Za-z0-9_]*)\??\s*:/g)) {
-    out[m[2]] = m[1].split('\n').map((line) => line.replace(/^\s*\*?\s?/, '')).join(' ').trim();
-  }
-  return out;
+  Object.assign(out, catalog.members);
+  return Object.fromEntries(Object.entries(out).filter(([tool]) => tool.startsWith('hive_')));
 }
 
 /**
@@ -1336,11 +1420,42 @@ export function codeModeFieldDocs(block: string): Json {
  */
 export function toolFieldContract(descriptors: Json, codeModeDeclarations: Json): Json {
   const direct = Object.fromEntries(Object.entries(descriptors).map(([tool, d]: [string, Json]) => [tool, d.params]));
-  const codeMode = Object.fromEntries(Object.entries(codeModeDeclarations).map(([tool, block]: [string, Json]) => {
-    const fields = Object.fromEntries([...String(block).matchAll(/^ {2}([A-Za-z_][A-Za-z0-9_]*)\??:/gm)].map((m) => [m[1], '']));
-    return [tool, { ...fields, ...codeModeFieldDocs(String(block)) }];
-  }));
+  const codeMode = Object.fromEntries(Object.entries(codeModeDeclarations).map(([tool, d]: [string, Json]) => [tool, d.params]));
   return fieldContractFindings(direct, codeMode);
+}
+
+/**
+ * The provider-facing Hive tool contract of one request (its `tools` and the Code Mode catalog read from its joined
+ * `system` text) against the installed manifest's tool names: the direct Hive schemas, the Code Mode reads (catalog
+ * plus `searched` members), and the findings wiring judges. Parameter names cover both surfaces, so a read keeps its
+ * argument names across hosts whether a host shows it as a direct tool or only in Code Mode, and a tool without
+ * arguments has none on either.
+ */
+export function hiveToolContract(request: { tools: Json[]; catalog: Json }, searched: Json, expectedTools: string[]): Json {
+  const descriptors = toolDescriptors(request.tools);
+  const hiveToolSchemas = Object.fromEntries(Object.entries(descriptors).filter(([name]) => name.startsWith('hive_')));
+  const codeModeDeclarations = hiveCodeModeDeclarations(request.catalog, searched);
+  const codeModeNames = Object.keys(codeModeDeclarations);
+  const surfaces: Array<[string, Json]> = [...Object.entries(hiveToolSchemas), ...Object.entries(codeModeDeclarations)];
+  return {
+    hiveToolSchemas,
+    codeModeDeclarations,
+    codeModeHiveTools: codeModeNames,
+    toolContract: {
+      expected: expectedTools.length,
+      // The installed manifest's own membership: the judge reads the subject's tool era from it, not from exposure.
+      manifestTools: expectedTools,
+      missing: expectedTools.filter((t) => !(t in hiveToolSchemas) && !codeModeNames.includes(t)),
+      unexpected: surfaces.map(([t]) => t).filter((t) => !expectedTools.includes(t)),
+      undescribed: surfaces.filter(([, d]) => !String(d.description ?? '').trim()).map(([t]) => t),
+      paramNames: Object.fromEntries(surfaces.map(([t, d]) => [t, Object.keys(d.params).sort()])),
+      // Informational: undescribed fields. The relied-upon fields are judged by `fieldContract`.
+      undescribedParams: Object.fromEntries(surfaces
+        .map(([t, d]) => [t, Object.entries(d.params).filter(([, v]) => !v).map(([k]) => k)])
+        .filter(([, v]) => (v as string[]).length > 0)),
+    },
+    fieldContract: toolFieldContract(descriptors, codeModeDeclarations),
+  };
 }
 
 const PACKAGE_ROOT = '/opt/ic/plugin/node_modules/oc-arkive';
@@ -1481,11 +1596,11 @@ export function classifyEditAttempt(input: { name: string; revision: number | nu
  * actual guarded edit of a synthetic project file, and read-only children that leave another synthetic file unchanged.
  * Only booleans, fixed status words and synthetic-file hashes leave the container.
  */
-async function contextEditProof(host: string, mockRef: string, builder: Json): Promise<Json> {
+async function contextEditProof(host: string, mockRef: string, builder: Json, codeModeNames: string[]): Promise<Json> {
   const shown = (builder?.tools ?? []).map((t: Json) => t.function ?? t).find((fn: Json) => fn?.name === 'hive_context_edit');
   const schema = {
     direct: Boolean(shown),
-    codeMode: Boolean(builder && /tools\.hive_context_edit\b/.test(builder.system)),
+    codeMode: codeModeNames.includes('hive_context_edit'),
     required: Array.isArray(shown?.parameters?.required) ? [...shown.parameters.required].sort() : [],
   };
   const file = (name: string) => join(PROJ, '.hive', 'context', `${name}.md`);
@@ -1624,30 +1739,13 @@ async function wiring(input: Json): Promise<Json> {
 
   // Provider-facing tool contract for the full-access role, against the installed package's own tool manifest.
   const builder = requests().find((r) => r.lastUser.includes('wiring-role-hive-builder'));
-  const descriptors = builder ? toolDescriptors(builder.tools) : {};
-  const codeModeNames = builder ? [...new Set([...builder.system.matchAll(/tools\.(hive_[a-z_]+)/g)].map((m) => m[1]))] : [];
-  results.hiveToolSchemas = Object.fromEntries(Object.entries(descriptors).filter(([name]) => name.startsWith('hive_')));
-  results.codeModeHiveTools = codeModeNames;
-  results.codeModeDeclarations = builder ? codeModeBlocks(builder.system, codeModeNames) : {};
-  const expectedTools: string[] = Array.isArray(manifest.tools) ? manifest.tools : [];
-  results.toolContract = {
-    expected: expectedTools.length,
-    // The installed manifest's own membership: the judge reads the subject's tool era from it, not from exposure.
-    manifestTools: expectedTools,
-    missing: expectedTools.filter((t) => !(t in results.hiveToolSchemas) && !codeModeNames.includes(t)),
-    unexpected: [...Object.keys(results.hiveToolSchemas), ...codeModeNames].filter((t) => !expectedTools.includes(t)),
-    undescribed: [
-      ...Object.entries(results.hiveToolSchemas).filter(([, d]: [string, Json]) => !d.description.trim()).map(([t]) => t),
-      ...codeModeNames.filter((t) => !/\S/.test((results.codeModeDeclarations[t] ?? '').split('\n').slice(1).join('\n'))),
-    ],
-    paramNames: Object.fromEntries(Object.entries(results.hiveToolSchemas).map(([t, d]: [string, Json]) => [t, Object.keys(d.params).sort()])),
-    // Informational: undescribed fields. The relied-upon fields are judged by `fieldContract` below.
-    undescribedParams: Object.fromEntries(Object.entries(results.hiveToolSchemas)
-      .map(([t, d]: [string, Json]) => [t, Object.entries(d.params).filter(([, v]) => !v).map(([k]) => k)])
-      .filter(([, v]) => (v as string[]).length > 0)),
-  };
-  results.fieldContract = toolFieldContract(descriptors, results.codeModeDeclarations);
-  results.contextEdit = await contextEditProof(host, mockRef, builder);
+  // A namespace header only counts members; each Code Mode read counts when the catalog declares it or the host's own
+  // search lists it, since the catalog can fold members away.
+  const catalog = codeModeCatalog(builder?.system ?? '');
+  const searched = await hiveCodeModeSearch(host, Object.keys(catalog.namespaces).filter((ns) => ns === 'hive' || ns.startsWith('hive_')));
+  results.codeModeSearch = { namespaces: searched.namespaces, completed: searched.completed, members: Object.keys(searched.members).length };
+  Object.assign(results, hiveToolContract({ tools: builder?.tools ?? [], catalog }, searched.members, Array.isArray(manifest.tools) ? manifest.tools : []));
+  results.contextEdit = await contextEditProof(host, mockRef, builder, results.codeModeHiveTools);
 
   // Every reference an installed skill points to must be readable by a child under stock permissions. A same-name
   // user skill replaces the packaged one, so its packaged pointers are not reachable and are reported apart.

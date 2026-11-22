@@ -3,7 +3,7 @@ import type { Scope } from 'effect';
 import { Tool } from '@opencode/plugin/effect';
 import type { Plugin } from '@opencode/plugin/effect';
 import { serializeHiveJson, type HiveOperation } from '../runtime/hive-tools.js';
-import { CODEMODE_READ_TOOLS, type ReadTransport } from '../runtime/host-profile.js';
+import { CODEMODE_NAMESPACE, CODEMODE_READ_TOOLS, codemodeLocalName, type CodemodeRead, type ReadTransport } from '../runtime/host-profile.js';
 import { z } from '../runtime/schema.js';
 
 /**
@@ -52,12 +52,19 @@ export function codemodeFlag(tool: string, transport: ReadTransport): boolean {
   return transport === 'codemode' && (CODEMODE_READ_TOOLS as readonly string[]).includes(tool);
 }
 
+/**
+ * The Code Mode namespace the reads share, so the catalog shows them as one group and `search` finds them by
+ * namespace. The host matches query words against namespace descriptions too, so the description stays a bare label.
+ */
+const HIVE_NAMESPACE = { name: CODEMODE_NAMESPACE, description: 'Agent Hive.' } as const;
+
 export interface HiveToolRegistrar {
   readonly readTransport: ReadTransport;
   /**
    * Registers Hive tools in one tool transform for the activation's scope. Each tool validates its input with its
    * own Zod arguments, runs the guard before any effect, and returns the operation's structured result (`json`) or
-   * text (`text`). Callers do not choose Code Mode flags.
+   * text (`text`). Callers do not choose Code Mode flags. A Code Mode read joins the Hive namespace under its local
+   * name, which the host joins back into the same `hive_*` tool ID; every direct tool keeps its plain name.
    */
   register(tools: Record<string, HiveOperation>): Effect.Effect<void, never, Scope.Scope>;
 }
@@ -67,7 +74,9 @@ export function createHiveToolRegistrar(input: { context: Plugin.Context; readTr
   return {
     readTransport,
     register: (tools) => context.tool.transform((editor) => {
-      for (const [name, operation] of Object.entries(tools)) editor.add(toToolInfo(name, operation, readTransport, guard));
+      const infos = Object.entries(tools).map(([name, operation]) => toToolInfo(name, operation, readTransport, guard));
+      if (infos.some((info) => info.options?.namespace === HIVE_NAMESPACE.name)) editor.namespace(HIVE_NAMESPACE);
+      for (const info of infos) editor.add(info);
     }).pipe(Effect.asVoid),
   };
 }
@@ -87,12 +96,13 @@ export function toToolInfo(name: string, operation: HiveOperation, readTransport
       return { output: JSON.parse(text) as z.core.util.JSONType, content: text };
     }),
   );
+  const codemode = codemodeFlag(name, readTransport);
   return {
-    name,
+    name: codemode ? codemodeLocalName(name as CodemodeRead) : name,
     description: operation.description,
     input: standardSchema(z.object(operation.args)),
     ...(operation.output === 'json' ? { output: jsonResult } : {}),
-    options: { codemode: codemodeFlag(name, readTransport) },
+    options: codemode ? { namespace: HIVE_NAMESPACE.name, codemode } : { codemode },
     execute,
   } satisfies Tool.Info;
 }

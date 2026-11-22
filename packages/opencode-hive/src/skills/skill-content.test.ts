@@ -2073,7 +2073,7 @@ describe('skill content', () => {
     expect(adhoc).toContain('a worktree inspect that returns null means no complete usable worker, not that the worker\'s checkouts, branches or records are gone');
     expect(adhoc).not.toContain('means no live checkout');
     expect(adhoc).not.toContain('Retain the original source branch.');
-    expect(adhoc).toContain('When integrating one retained checkout into another, first read `hive_checkout_brief({ id, against })` for that pair');
+    expect(adhoc).toContain('When integrating one retained checkout into another, first read `hive_checkout_brief` with `id` and `against` for that pair');
     expect(adhoc).toContain('without a second approval');
     expect(adhoc).toContain('Hold no locks or unfinished merges during the wait');
     expect(adhoc).toContain('recheck Git identities, prepare and reverify integration');

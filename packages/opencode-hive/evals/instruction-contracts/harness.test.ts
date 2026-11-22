@@ -14,7 +14,7 @@ import {
 } from './credentials.mjs';
 import { GUARD_EXIT_CODE } from './guard.mjs';
 import {
-  HIVE_ROLES, HOSTS, MANAGED_CONTROL_HOST, PROBE_VARIANTS, REFRESH_SENTINEL, TOOL_FIELD_CONTRACT, authRequest, fieldContractFindings, hiveConfig, hostConfig, managedControlPlan, modelArgument,
+  HIVE_ROLES, HOSTS, MANAGED_CONTROL_HOST, PROBE_VARIANTS, REFRESH_SENTINEL, TOOL_FIELD_CONTRACT, authRequest, codeModeCatalog, codeModeSearchMember, fieldContractFindings, hiveConfig, hostConfig, managedControlPlan, modelArgument,
   nativeToolCall, probeModels, requiredLifetimeMs, runArgs, sameModelView, selectionExpectations,
 } from './hosts.mjs';
 import { payloadFacts, pickSettings } from './observer/index.js';
@@ -29,7 +29,7 @@ import {
   createRunDir, outstandingFromLedger, resolveIdentities, runtimeFailures, verifyArtifact,
 } from './runtime.mjs';
 import {
-  ARTIFACT_CAP, ATTEMPT_LOG_HEADER, FINAL_TEXT_CAP, STOP_INSTRUCTION_CAP, allowlistArgs, attemptCount, clipText, clipToolArgs, codeModeBlocks, codeModeFieldDocs, commandDelivery,
+  ARTIFACT_CAP, ATTEMPT_LOG_HEADER, FINAL_TEXT_CAP, STOP_INSTRUCTION_CAP, allowlistArgs, attemptCount, clipText, clipToolArgs, commandDelivery, hiveCallRecord, hiveCodeModeDeclarations, hiveToolContract,
   ProbeReadError, bindingFacts, boundChildren, childFacts, classifyEditAttempt, containerSecrets, continuationRefusalLead, deliveredBodySentence, dispatchCallFacts, modelRequestFacts, modelView, overrideRefusalLead, wireFacts, evidenceLimits, exportDecision, hiveResultFailed, interruptSession, managedModelControl, messagePages, mockDecision, nativeId, preflightReply, probeReads, probeStage, readHistories, render, runPrompt, safeName, refusalKind, scenarioOverrides,
   SUBAGENT_WAIT_TEXT, dispatchWaited, scriptDirective, skillReferencePointers, switchIdleChildren, toolFieldContract, toolOutcome, treeFrom,
 } from './fixture.ts';
@@ -2988,6 +2988,23 @@ describe('managed-model control probe', () => {
   });
 });
 
+// Code Mode catalog text in the shape v2 2.3.2 rendered it in the archived host-qualification and wiring runs: the
+// preamble with its own `search` declaration, the heading, flat and grouped entries, then unrelated system text.
+const CODE_MODE_PREAMBLE = '# Code Mode\n\nThe tools listed below, and `search`, cannot be called directly: they only work as JavaScript inside the `execute` tool.\n\n'
+  + '- search(query: string | {\n  query?: string,\n  namespace?: string,\n}): {\n  items: Array<{\n      path: string,\n      description: string,\n      signature: string,\n    }>,\n}\n\n';
+const codeModeSystem = (entries: string[], after = '\n\nSkills provide specialized instructions and workflows for specific tasks.') =>
+  `${CODE_MODE_PREAMBLE}## Code Mode tools (call only inside \`execute\`)\n\n${entries.join('\n')}${after}`;
+const READ_RESULT = 'Promise<string | number | boolean | null | Array<unknown> | {\n    [key: string]: unknown,\n  }>';
+const HIVE_GROUP = '- hive (9 tools, 2 shown) // Agent Hive.';
+const ID_DOC = "  /**\n   * Retained checkout ID `<repoId>/<slug>`, each part lowercase letters, digits, '.', '_' or '-'. A project without a repository manifest has the one repository `root`.\n   */\n  id: string,";
+const AGAINST_DOC = '  /**\n   * Destination: another retained checkout ID in the same repository. Omitted, the source readiness nextTarget is used when declared.\n   */\n  against?: string,';
+const briefSignature = ({ against = AGAINST_DOC } = {}) => `tools.hive.checkout_brief({\n${ID_DOC}\n${against ? `${against}\n` : ''}}): ${READ_RESULT}`;
+const BRIEF_DESCRIPTION = ' // Read what a retained checkout holds relative to a destination checkout and which Hive work produced it, before integrating one into the other.';
+const brief = ({ against = AGAINST_DOC, description = BRIEF_DESCRIPTION } = {}) => `  - ${briefSignature({ against })}${description}`;
+const checkoutsList = (args = '') => `  - tools.hive.checkouts_list(${args}): ${READ_RESULT} // List each repository of the project with its retained checkouts and the temporary task and ad-hoc workers placed in it.`;
+const FLAT_SNAPSHOT = `- hive_git_snapshot (1 tool)\n  - tools.hive_git_snapshot({\n  directory?: string,\n  repositoryIds?: Array<string>,\n  baseRef?: string,\n  targetRef?: string,\n  range?: string,\n  paths?: Array<string>,\n  maxFiles?: number,\n  maxPatchBytes?: number,\n}): ${READ_RESULT} // Capture a validated Git snapshot, optionally from an explicit foreign Git root.`;
+const OPENCODE_GROUP = "- opencode (8 tools, 1 shown) // Tools for managing OpenCode itself.\n  - tools.opencode.worktree_create({\n  name: string,\n}): Promise<{\n  directory: string,\n}> // Create a named worktree. Returns its directory.";
+
 describe('wiring contract', () => {
   const writes = (edit = true) => ({ hive_context_write: true, hive_context_append: true, hive_context_edit: edit });
   const target = { targetSha256Before: 'a'.repeat(64), targetSha256After: 'a'.repeat(64), targetUnchanged: true };
@@ -3012,7 +3029,7 @@ describe('wiring contract', () => {
   });
   // Every probe passing, so each test below judges only the observation it changes.
   const nested = { result: 0, timedOut: false, asked: null, helperRan: true, interimReport: false, parentUsedTerminal: true, parentUsedInterim: false };
-  const v2Reads = { location: { agents: true, commands: true, otherDirectory: true }, codeModeRead: { tool: 'hive_repositories_status', transport: 'execute', completed: true, projectResolved: true } };
+  const v2Reads = { location: { agents: true, commands: true, otherDirectory: true }, codeModeRead: { tool: 'hive_repositories_status', transport: 'execute', completed: true, projectResolved: true }, codeModeSearch: { namespaces: ['hive'], completed: true, members: 9 } };
   // Each host's own live child tool schemas (src/runtime.ts on v1, src/v2/background.ts on v2), sorted as observed.
   const liveChildParams: Record<string, Record<string, string[]>> = {
     v1: { hive_background_status: ['sessionID'], hive_background_cancel: ['sessionID'] },
@@ -3044,6 +3061,9 @@ describe('wiring contract', () => {
     for (const read of [{ transport: 'direct' }, { completed: false }, { projectResolved: false }]) {
       expect(wiringFor({ v2: host({ codeModeRead: { ...v2Reads.codeModeRead, ...read } }) })).toEqual(['codemode_read_failed:v2']);
     }
+    // Folded members are observed only through the host's search, so an unobserved or failed search fails on its own.
+    expect(wiringFor({ v2: host({ codeModeSearch: { ...v2Reads.codeModeSearch, completed: false } }) })).toEqual(['codemode_search_failed:v2']);
+    expect(wiringFor({ v2: host({ codeModeSearch: undefined }) })).toEqual(['codemode_search_failed:v2']);
   });
 
   test('failures name missing contract metadata, unread references, undelivered command bodies and unresolved overrides', () => {
@@ -3229,18 +3249,78 @@ describe('wiring contract', () => {
   });
 
   test('Code Mode declarations are judged by their own field doc comments when a host shows a read only there', () => {
-    const block = (doc: string) => `hive_tasks_sync (1 tool)\n  - tools.hive_tasks_sync({\n  feature?: string,\n  ${doc}\n  refreshPending?: boolean,\n}): Promise<unknown> // Sync tasks`;
-    expect(codeModeFieldDocs(block('/** Pending tasks take the current plan. */'))).toEqual({ refreshPending: 'Pending tasks take the current plan.' });
+    const declared = (doc: string) => codeModeCatalog(codeModeSystem([
+      `- hive_tasks_sync (1 tool)\n  - tools.hive_tasks_sync({\n  feature?: string,\n  ${doc}\n  refreshPending?: boolean,\n}): Promise<unknown> // Sync tasks`,
+    ])).members;
+    expect(declared('/** Pending tasks take the current plan. */').hive_tasks_sync.params).toEqual({ feature: '', refreshPending: 'Pending tasks take the current plan.' });
     const only = { hive_tasks_sync: ['refreshPending'] };
-    const docs = (text: string) => {
-      const fields = Object.fromEntries([...block(text).matchAll(/^ {2}([A-Za-z_][A-Za-z0-9_]*)\??:/gm)].map((m) => [m[1], '']));
-      return { hive_tasks_sync: { ...fields, ...codeModeFieldDocs(block(text)) } };
-    };
-    expect(fieldContractFindings({}, docs('/** Pending tasks take the current plan. */'), only)).toMatchObject({ absentTools: [], undescribed: [] });
-    expect(fieldContractFindings({}, docs(''), only).undescribed).toEqual(['hive_tasks_sync.refreshPending']);
+    expect(fieldContractFindings({}, { hive_tasks_sync: declared('/** Pending tasks take the current plan. */').hive_tasks_sync.params }, only)).toMatchObject({ absentTools: [], undescribed: [] });
+    expect(fieldContractFindings({}, { hive_tasks_sync: declared('').hive_tasks_sync.params }, only).undescribed).toEqual(['hive_tasks_sync.refreshPending']);
     // End to end through the fixture helper: the tool is shown in neither surface, then only in Code Mode.
-    expect(toolFieldContract({}, { hive_tasks_sync: block('') }).undescribed).toContain('hive_tasks_sync.refreshPending');
-    expect(toolFieldContract({}, { hive_tasks_sync: block('/** Pending tasks take the current plan. */') }).undescribed).not.toContain('hive_tasks_sync.refreshPending');
+    expect(toolFieldContract({}, declared('')).undescribed).toContain('hive_tasks_sync.refreshPending');
+    expect(toolFieldContract({}, declared('/** Pending tasks take the current plan. */')).undescribed).not.toContain('hive_tasks_sync.refreshPending');
+  });
+
+  test('a read v2 shows only in Code Mode keeps the argument names and field docs v1 shows in its direct schema', () => {
+    // Every contract tool with its fields described, plus the two checkout reads as v1 shows them.
+    const fields: Record<string, readonly string[]> = { ...TOOL_FIELD_CONTRACT, hive_checkout_brief: ['id', 'against'], hive_checkouts_list: [] };
+    const schema = ([tool, names]: [string, readonly string[]]) => ({
+      function: { name: tool, description: `about ${tool}`, parameters: { properties: Object.fromEntries(names.map((f) => [f, { description: `description of ${f}` }])) } },
+    });
+    // Each host also shows its own live child tool schemas directly, as the installed manifest lists them.
+    const manifest = [...Object.keys(fields), ...Object.keys(liveChildParams.v1)];
+    const direct = Object.entries(fields).map(schema);
+    const v1 = hiveToolContract({ tools: [...direct, ...Object.entries(liveChildParams.v1).map(schema)], catalog: codeModeCatalog('') }, {}, manifest);
+    // v2 shows the checkout reads only in Code Mode: in its catalog, or only through `search` when the catalog folds them.
+    const v2 = (entries: string[], searched: Record<string, unknown> = {}, after?: string) => hiveToolContract(
+      {
+        tools: [...direct.filter((t) => !['hive_checkout_brief', 'hive_checkouts_list'].includes(t.function.name)), ...Object.entries(liveChildParams.v2).map(schema)],
+        catalog: codeModeCatalog(codeModeSystem([HIVE_GROUP, ...entries], after)),
+      },
+      searched, manifest,
+    );
+    const judged = (shown: any) => wiringFor({ v1: host({ toolContract: v1.toolContract, fieldContract: v1.fieldContract }), v2: host({ toolContract: shown.toolContract, fieldContract: shown.fieldContract }) });
+    // The helper records the installed manifest the judge takes the tool era from.
+    expect(v1.toolContract.manifestTools).toEqual(manifest);
+    expect(v2([brief(), checkoutsList()]).codeModeHiveTools).toEqual(['hive_checkout_brief', 'hive_checkouts_list']);
+    expect(judged(v2([brief(), checkoutsList()]))).toEqual([]);
+    // The host shows the brief declaration without `against`: both the field contract and the name parity fail.
+    expect(judged(v2([brief({ against: '' }), checkoutsList()]))).toEqual(['field_contract_field_absent:v2:hive_checkout_brief.against', 'tool_params_differ:hive_checkout_brief']);
+    // A read without arguments has none on either host; one that gained an argument differs.
+    expect(judged(v2([brief(), checkoutsList('{\n  id?: string,\n}')]))).toEqual(['tool_params_differ:hive_checkouts_list']);
+    // Folded away, the brief counts through search with its own description, kept apart from the field docs.
+    const folded = (item: Record<string, unknown>) => v2([checkoutsList()], { 'tools.hive.checkout_brief': { signature: briefSignature(), ...item } });
+    expect(judged(folded({ description: 'Compare two retained checkouts.' }))).toEqual([]);
+    for (const item of [{}, { description: '' }, { description: '   ' }]) {
+      expect(judged(folded(item)), JSON.stringify(item)).toEqual(['tool_undescribed:v2:hive_checkout_brief']);
+    }
+    // The final declaration has no description: its only `// ` sits in a field doc and in the text after the catalog.
+    const noted = '  /** Destination checkout // see the readiness notes */\n  against?: string,';
+    const undescribed = v2([checkoutsList(), brief({ against: noted, description: '' })], {}, '\nRead notes: call the brief first // then merge');
+    expect(undescribed.codeModeDeclarations.hive_checkout_brief.params.against).toBe('Destination checkout // see the readiness notes');
+    expect(judged(undescribed)).toEqual(['tool_undescribed:v2:hive_checkout_brief']);
+  });
+
+  test('a live child tool shown in Code Mode fails even with its own host\'s parameter names', () => {
+    const schema = ([tool, names]: [string, readonly string[]]) => ({
+      function: { name: tool, description: `about ${tool}`, parameters: { properties: Object.fromEntries(names.map((f) => [f, { description: `description of ${f}` }])) } },
+    });
+    const declaration = ([tool, names]: [string, readonly string[]]) =>
+      `  - tools.hive.${tool.slice('hive_'.length)}({\n${names.map((f) => `  /** description of ${f} */\n  ${f}?: string,\n`).join('')}}): ${READ_RESULT} // about ${tool}`;
+    const manifest = ['hive_status', ...Object.keys(liveChildParams.v2)];
+    const status = schema(['hive_status', ['feature']]);
+    const shown = (direct: boolean) => hiveToolContract({
+      tools: [status, ...(direct ? Object.entries(liveChildParams.v2).map(schema) : [])],
+      catalog: codeModeCatalog(codeModeSystem([HIVE_GROUP, ...Object.entries(liveChildParams.v2).map(declaration)])),
+    }, {}, manifest);
+    // Moved to Code Mode, or shown there as well as directly: the recorded parameter names are the v2 ones in both cases.
+    for (const direct of [false, true]) {
+      const w = shown(direct);
+      expect(w.toolContract.paramNames).toMatchObject(liveChildParams.v2);
+      expect(w.codeModeHiveTools).toEqual(['hive_background_status', 'hive_background_cancel']);
+      expect(wiringFor({ v2: host({ toolContract: w.toolContract, codeModeHiveTools: w.codeModeHiveTools }) }), `direct: ${direct}`)
+        .toEqual(['tool_codemode_exposed:v2:hive_background_status', 'tool_codemode_exposed:v2:hive_background_cancel']);
+    }
   });
 
   test('required references come from SKILL.md pointers; planned files are never counted as delivered by presence alone', () => {
@@ -3460,8 +3540,54 @@ describe('in-container fixture helpers', () => {
     const v2 = mockDecision('v2', request(['subagent'], script)).call;
     expect(v2.tool).toBe('subagent');
     expect(v2.args).not.toHaveProperty('background');
-    const read = scriptDirective([{ op: 'hive', tool: 'hive_repositories_status', args: {} }]);
-    expect(mockDecision('v2', request(['execute'], read)).call).toEqual({ tool: 'execute', args: { code: 'return await tools.hive_repositories_status({})' } });
+  });
+
+  test('the v2 mock calls a Code Mode read only at a path the host showed, searching for a folded one first', () => {
+    const read = scriptDirective([{ op: 'hive', tool: 'hive_repositories_status', args: {} }, { op: 'text', text: 'done' }]);
+    const withSystem = (system: string, after: any[] = []) => ({ ...request(['execute'], read, after), messages: [{ role: 'system', content: system }, { role: 'user', content: read }, ...after] });
+    const status = (path: string) => `  - ${path}(): ${READ_RESULT} // Inspect project repository mode and manifest.`;
+    const shown = codeModeSystem([HIVE_GROUP, status('tools.hive.repositories_status')]);
+    expect(mockDecision('v2', withSystem(shown)).call).toEqual({ tool: 'execute', args: { code: 'return await tools.hive.repositories_status({})' } });
+    // A flat catalog entry is the same effective ID.
+    expect(mockDecision('v2', withSystem(codeModeSystem([`- hive_repositories_status (1 tool)\n${status('tools.hive_repositories_status')}`]))).call.args.code)
+      .toBe('return await tools.hive_repositories_status({})');
+
+    // Folded: the header counts the read but declares none, so the mock searches by name instead of guessing a path.
+    // A declaration in text before the catalog heading is not a path the host showed.
+    const folded = `${HIVE_GROUP}\n${status('tools.hive.decoy_before')}\n${codeModeSystem([HIVE_GROUP, checkoutsList()])}`;
+    const lookup = mockDecision('v2', withSystem(folded)).call;
+    expect(lookup.tool).toBe('execute');
+    expect(lookup.args.code).toContain('return await search({"namespace":"hive","query":"repositories status"})');
+    const lookupTurn = [
+      { role: 'assistant', tool_calls: [{ id: 'l1', function: { name: 'execute', arguments: JSON.stringify(lookup.args) } }] },
+    ];
+    const searched = (items: any[], later: any[] = []) => withSystem(folded, [
+      ...lookupTurn, { role: 'tool', tool_call_id: 'l1', content: JSON.stringify({ items, remaining: 0, next: null }) }, ...later,
+    ]);
+    // The search result supplies the path, and the lookup is not counted as the scripted step.
+    const call = { tool: 'execute', args: { code: 'return await tools.hive.repositories_status({})' } };
+    expect(mockDecision('v2', searched([{ path: 'tools.hive.repositories_status' }]))).toEqual({ call });
+    const read1 = [
+      { role: 'assistant', tool_calls: [{ id: 'r1', function: { name: 'execute', arguments: JSON.stringify(call.args) } }] },
+      { role: 'tool', tool_call_id: 'r1', content: JSON.stringify({ mode: 'legacy-root' }) },
+    ];
+    expect(mockDecision('v2', searched([{ path: 'tools.hive.repositories_status' }], read1))).toEqual({ text: 'done' });
+    // A search that does not list it leaves a direct call, which the host refuses, rather than another lookup.
+    expect(mockDecision('v2', searched([{ path: 'tools.hive.repositories_discover' }])).call).toEqual({ tool: 'hive_repositories_status', args: {} });
+    // Without any catalog entry for its namespace, nothing is assumed callable through execute.
+    expect(mockDecision('v2', request(['execute'], read)).call).toEqual({ tool: 'hive_repositories_status', args: {} });
+  });
+
+  test('a fixture Hive call is recorded by the call that carried the read, never by the mock\'s own lookup', () => {
+    const lookup = { name: 'execute', status: 'completed', input: { code: '// fixture code mode lookup\nreturn await search({"namespace":"hive"})' }, output: '{"items":[]}' };
+    const read = { name: 'execute', status: 'completed', input: { code: 'return await tools.hive.repositories_status({})' }, output: '{"mode":"legacy-root"}' };
+    const direct = { name: 'hive_repositories_status', status: 'error', input: {}, output: 'unknown tool' };
+    // A run that only searched has no read; one whose search missed ends with the refused direct call.
+    expect(hiveCallRecord([lookup], 'hive_repositories_status')).toBeUndefined();
+    expect(hiveCallRecord([lookup, direct], 'hive_repositories_status')).toBe(direct);
+    expect(hiveCallRecord([lookup, read], 'hive_repositories_status')).toBe(read);
+    expect(hiveCallRecord([read, lookup], 'hive_repositories_status')).toBe(read);
+    expect(hiveCallRecord([{ ...direct, status: 'completed' }], 'hive_repositories_status')).toMatchObject({ name: 'hive_repositories_status' });
   });
 
   test('a v2 parent waits for the report of each child it launched, which then counts as that dispatch\'s result', () => {
@@ -3620,9 +3746,70 @@ describe('in-container fixture helpers', () => {
     expect(safeName(undefined)).toBeNull();
   });
 
-  test('Code Mode catalog blocks keep field documentation for the exposure account', () => {
-    const system = '## Available tools\n\n- hive_x (1 tool)\n  - tools.hive_x({\n  /** field doc */\n  a: string,\n}) // desc\n- opencode (5 tools)\n';
-    expect(codeModeBlocks(system, ['hive_x']).hive_x).toContain('field doc');
+  test('the Code Mode catalog is the contiguous entry list under its heading, keyed by effective ID; a header proves no member', () => {
+    const decoy = (where: string) => `- hive (1 tool)\n  - tools.hive.${where}(): Promise<unknown> // A declaration-shaped line outside the catalog`;
+    const system = `${decoy('before_read')}\n${codeModeSystem(
+      ['- hive_explore_read (1 tool, none shown)', FLAT_SNAPSHOT, HIVE_GROUP, brief(), checkoutsList(), OPENCODE_GROUP],
+      `\n\nSkills provide specialized instructions.\n${decoy('after_read')}`,
+    )}`;
+    const catalog = codeModeCatalog(system);
+    expect(catalog.namespaces).toEqual({ hive_explore_read: 1, hive_git_snapshot: 1, hive: 9, opencode: 8 });
+    // Only Hive namespaces are decoded; another namespace is counted by its header and skipped.
+    expect(Object.keys(catalog.members).sort()).toEqual(['hive_checkout_brief', 'hive_checkouts_list', 'hive_git_snapshot']);
+    expect(catalog.members.hive_checkout_brief).toMatchObject({ path: 'tools.hive.checkout_brief', signature: briefSignature(), description: BRIEF_DESCRIPTION.slice(4) });
+    expect(catalog.members.hive_checkout_brief.params).toEqual({ id: expect.stringMatching(/^Retained checkout ID /), against: expect.stringMatching(/^Destination: /) });
+    expect(catalog.members.hive_checkouts_list).toMatchObject({ path: 'tools.hive.checkouts_list', signature: `tools.hive.checkouts_list(): ${READ_RESULT}`, params: {} });
+    expect(catalog.members.hive_git_snapshot.params).toEqual(Object.fromEntries(
+      ['directory', 'repositoryIds', 'baseRef', 'targetRef', 'range', 'paths', 'maxFiles', 'maxPatchBytes'].map((f) => [f, '']),
+    ));
+    // Without the heading nothing is catalog, and a declaration-shaped line ends the catalog only where it stops parsing.
+    expect(codeModeCatalog(system.replace('## Code Mode tools', '## Other tools'))).toEqual({ namespaces: {}, members: {} });
+    expect(Object.keys(codeModeCatalog(codeModeSystem([HIVE_GROUP, checkoutsList(), '  - tools.opencode.models(): Promise<unknown>', brief()])).members))
+      .toEqual(['hive_checkouts_list']);
+
+    // A member only search lists joins under its effective ID; the catalog's declaration wins where both show one.
+    const searched = { 'tools.hive.worklog_read': { signature: 'tools.hive.worklog_read({\n  ref?: string,\n}): Promise<unknown>', description: 'Read a log' } };
+    const declarations = hiveCodeModeDeclarations(catalog, { ...searched, 'tools.hive.checkout_brief': { signature: briefSignature({ against: '' }), description: 'Other' } });
+    expect(Object.keys(declarations).sort()).toEqual(['hive_checkout_brief', 'hive_checkouts_list', 'hive_git_snapshot', 'hive_worklog_read']);
+    expect(declarations.hive_checkout_brief.params).toHaveProperty('against');
+    expect(declarations.hive_worklog_read).toMatchObject({ description: 'Read a log', params: { ref: '' } });
+    // A searched signature must be exactly one declaration of its own path, and only its description describes it.
+    const member = (item: Record<string, unknown>) => codeModeSearchMember({ path: 'tools.hive.checkout_brief', signature: briefSignature(), ...item });
+    expect(member({ description: ' Compare ' })).toMatchObject({ description: 'Compare', params: { id: expect.any(String), against: expect.any(String) } });
+    expect(member({}).description).toBe('');
+    expect(member({ path: 'tools.hive.checkouts_list' })).toBeNull();
+    expect(member({ signature: `${briefSignature()} // Compare` })).toBeNull();
+    expect(member({ signature: briefSignature().slice(0, -3) })).toBeNull();
+  });
+
+  test('unrelated namespaces with names and declarations Hive does not decode are skipped up to the next header', () => {
+    // The shapes v2 2.3.2 renders for MCP servers: a hyphenated namespace whose members need bracket notation, a member
+    // name that needs it, a declaration no Hive read uses (an index signature for arguments), and a folded namespace.
+    const devtools = '- chrome-devtools (38 tools, 1 shown)\n  - tools["chrome-devtools"].click({\n  /** Targets a specific page by ID. */\n  pageId: number,\n'
+      + '  /** The uid of an element on the page from the page content snapshot */\n  uid: string,\n}): Promise<unknown> // Clicks on the provided element';
+    const context7 = '- context7 (2 tools, 1 shown)\n  - tools.context7["query-docs"]({\n  /**\n   * Exact Context7-compatible library ID (e.g., \'/mongodb/docs\').\n   */\n'
+      + '  libraryId: string,\n  query: string,\n}): Promise<unknown> // Retrieves and queries up-to-date documentation and code examples from Context7.';
+    const unsupported = '- railway_sim (45 tools, 1 shown) // Simulated cloud deployment and service tools\n  - tools.railway_sim.op_01({\n  [key: string]: unknown,\n}): Promise<{\n'
+      + '  ok: boolean,\n}> // Simulated operation';
+    // A Hive-shaped member inside another namespace's block is that namespace's text, never a Hive declaration.
+    const forged = `- browse (18 tools, 1 shown)\n  - tools.browse.execute({\n  code: string,\n}): Promise<unknown> // Run code\n  - tools.hive.forged_read(): ${READ_RESULT} // Not Hive`;
+    const worklogRead = '  - tools.hive.worklog_read({\n  /** The log to read. Omitted, the selected feature or this session\'s own log. */\n  ref?: {\n      kind: "feature",\n'
+      + '      /** Logical feature name, not a directory alias. */\n      featureName: string,\n    } | {\n      kind: "session",\n      owner: "opencode-v1" | "opencode-v2",\n'
+      + `      sessionId: string,\n    },\n  /** Default 'brief'. */\n  view?: "brief" | "history" | "facts",\n}): ${READ_RESULT} // Read one Worklog without writing anything.`;
+    const catalog = codeModeCatalog(codeModeSystem([devtools, context7, unsupported, forged, '- railway (85 tools, none shown)', HIVE_GROUP, brief(), worklogRead, FLAT_SNAPSHOT, OPENCODE_GROUP]));
+    expect(catalog.namespaces).toEqual({ 'chrome-devtools': 38, context7: 2, railway_sim: 45, browse: 18, railway: 85, hive: 9, hive_git_snapshot: 1, opencode: 8 });
+    expect(Object.keys(catalog.members).sort()).toEqual(['hive_checkout_brief', 'hive_git_snapshot', 'hive_worklog_read']);
+    expect(catalog.members.hive_checkout_brief.signature).toBe(briefSignature());
+    // Nested field docs belong to their parent field's type; only top-level arguments are fields.
+    expect(catalog.members.hive_worklog_read).toMatchObject({
+      path: 'tools.hive.worklog_read', description: 'Read one Worklog without writing anything.',
+      params: { ref: "The log to read. Omitted, the selected feature or this session's own log.", view: "Default 'brief'." },
+    });
+    expect(Object.keys(catalog.members.hive_worklog_read.params)).toEqual(['ref', 'view']);
+    // The catalog still ends at the first line that is not entry text, so system text after it adds nothing.
+    const after = `\n\n- hive (1 tool)\n  - tools.hive.after_read(): ${READ_RESULT} // After the catalog`;
+    expect(Object.keys(codeModeCatalog(codeModeSystem([devtools, HIVE_GROUP, brief()], after)).members)).toEqual(['hive_checkout_brief']);
+    expect(Object.keys(codeModeCatalog(codeModeSystem([devtools, 'Unrelated text at the margin', HIVE_GROUP, brief()])).members)).toEqual([]);
   });
 
   test('templates render facts, keep unresolved tokens, allow quantifier braces and fill long documents', () => {

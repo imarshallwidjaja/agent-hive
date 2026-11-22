@@ -157,7 +157,7 @@ function fakeHost(services: HiveServices, options: { directory?: string; pauseBe
   /** The effective subagent tool after every transform, as the host replays them on its own definition. */
   const subagent = () => {
     const tool = { ...nativeTool };
-    for (const cb of transforms) cb({ add: () => {}, update: (id: string, fn: (info: any) => void) => { if (id === NATIVE_SUBAGENT_TOOL) fn(tool); } });
+    for (const cb of transforms) cb({ namespace: () => {}, add: () => {}, update: (id: string, fn: (info: any) => void) => { if (id === NATIVE_SUBAGENT_TOOL) fn(tool); } });
     return tool;
   };
   /** One subagent call: `execute.before` hooks rewrite the input in order, then the effective tool runs on the result. */

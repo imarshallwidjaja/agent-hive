@@ -19,12 +19,29 @@ export type ReadTransport = 'codemode' | 'direct';
  */
 export const CODEMODE_READ_TOOLS = [
   'hive_repositories_status',
+  'hive_repositories_discover',
   'hive_git_snapshot',
   'hive_task_trace_content',
   'hive_worklog_list',
   'hive_worklog_read',
+  'hive_checkouts_list',
+  'hive_checkout_brief',
   'hive_explore_read',
 ] as const;
+
+export type CodemodeRead = (typeof CODEMODE_READ_TOOLS)[number];
+
+/**
+ * The Code Mode namespace that groups the Code Mode reads. The host joins a namespace and a tool's local name with `_`
+ * into the effective tool ID, so a read registered as `worklog_read` in `hive` keeps the ID `hive_worklog_read`, and
+ * code calls it as `tools.hive.worklog_read`.
+ */
+export const CODEMODE_NAMESPACE = 'hive';
+
+/** A Code Mode read's name inside {@link CODEMODE_NAMESPACE}. */
+export function codemodeLocalName(tool: CodemodeRead): string {
+  return tool.slice(`${CODEMODE_NAMESPACE}_`.length);
+}
 
 export interface HostProfile {
   readonly host: HostId;
@@ -167,6 +184,16 @@ export function subagentWaitInstruction(profile: HostProfile): string {
 }
 
 /**
+ * How code passed to `execute` reaches one Code Mode read, with the given read as the example: its path in the Hive
+ * namespace, and a search that names it when the catalog folds it away. A broad namespace search returns every read's
+ * full description, so the example names the read in `query`.
+ */
+function codemodeLookup(example: CodemodeRead): string {
+  const local = codemodeLocalName(example);
+  return `Each one is in the \`${CODEMODE_NAMESPACE}\` namespace under its name without the \`${CODEMODE_NAMESPACE}_\` prefix, so \`${example}\` is \`tools.${CODEMODE_NAMESPACE}.${local}\`. When the catalog does not list a read you need, find it with a query that names it, such as \`search({ namespace: '${CODEMODE_NAMESPACE}', query: '${local.replaceAll('_', ' ')}' })\`, and call the \`path\` the result gives; a search without \`query\` returns every Hive read with its full description.`;
+}
+
+/**
  * Where an agent finds the Hive reads that the host can run inside Code Mode. Empty on v1, which has no Code
  * Mode. Prose never names a read that the selected transport cannot reach: Code Mode needs `execute`, so the
  * text tells an agent without it to report the missing capability instead of trying a direct call.
@@ -177,18 +204,19 @@ export function renderReadTransport(profile: HostProfile): string {
   if (profile.readTransport === 'direct') {
     return `\n## Hive Read Transport\n\nHive tools, including ${reads}, are direct tool calls. The host's \`execute\` tool is not their transport.\n`;
   }
-  return `\n## Hive Read Transport\n\nWhen your role exposes them, ${reads} run inside the host's Code Mode: call them from code passed to \`execute\`, using the exact paths its Code Mode catalog lists. They are not direct tool calls. Every other Hive tool is a direct call. When \`execute\` is not among your exposed tools, these reads are unavailable to you; report the missing capability and what it blocks instead of attempting a direct call or a substitute.\n`;
+  return `\n## Hive Read Transport\n\nWhen your role exposes them, ${reads} run inside the host's Code Mode: call them from code passed to \`execute\`, using the exact paths its Code Mode catalog lists. They are not direct tool calls. ${codemodeLookup('hive_worklog_read')} Every other Hive tool is a direct call. When \`execute\` is not among your exposed tools, these reads are unavailable to you; report the missing capability and what it blocks instead of attempting a direct call or a substitute.\n`;
 }
 
 /**
  * One instruction naming how the given Code Mode reads are reached, for text that an agent without the Hive system
- * prompt can receive, such as an unbound command. Empty on v1, where every Hive tool is a direct call.
+ * prompt can receive, such as an unbound command. The first read is the lookup example. Empty on v1, where every Hive
+ * tool is a direct call.
  */
-export function readTransportInstruction(profile: HostProfile, tools: readonly (typeof CODEMODE_READ_TOOLS)[number][]): string {
+export function readTransportInstruction(profile: HostProfile, tools: readonly [CodemodeRead, ...CodemodeRead[]]): string {
   if (profile.host !== 'opencode-v2') return '';
   const reads = tools.map((name) => `\`${name}\``).join(' and ');
   if (profile.readTransport === 'direct') {
     return `On this host ${reads} are direct tool calls; the host's \`execute\` tool is not their transport.`;
   }
-  return `On this host ${reads} run inside Code Mode: call them from code passed to the host's \`execute\` tool, using the exact paths its Code Mode catalog lists, not as direct tool calls. When \`execute\` is not among your exposed tools, these reads are unavailable to you. In that case, report the missing capability and what it blocks, and say that the operator can set the oc-arkive option \`readTransport\` to \`direct\` or allow \`execute\`; do not attempt a direct call or a substitute.`;
+  return `On this host ${reads} run inside Code Mode: call them from code passed to the host's \`execute\` tool, using the exact paths its Code Mode catalog lists, not as direct tool calls. ${codemodeLookup(tools[0])} When \`execute\` is not among your exposed tools, these reads are unavailable to you. In that case, report the missing capability and what it blocks, and say that the operator can set the oc-arkive option \`readTransport\` to \`direct\` or allow \`execute\`; do not attempt a direct call or a substitute.`;
 }

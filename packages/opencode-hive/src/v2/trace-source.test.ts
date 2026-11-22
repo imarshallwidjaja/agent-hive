@@ -1047,8 +1047,10 @@ async function activate(options: Record<string, unknown>) {
     }
   }
   const tools = new Map<string, any>();
+  // Keyed by effective ID, as the host joins a namespace and a local name.
   for (const cb of transforms.tool) cb({
-    add: (info: any) => tools.set(info.name, info),
+    namespace: () => {},
+    add: (info: any) => tools.set(info.options?.namespace ? `${info.options.namespace}_${info.name}` : info.name, info),
     update: (id: string, fn: (info: any) => void) => { if (tools.has(id)) fn(tools.get(id)); },
   });
   const agents = new Map<string, any>();
@@ -1073,7 +1075,7 @@ describe('v2 evidence registration', () => {
     for (const transport of ['codemode', 'direct'] as const) {
       const host = await activate({ readTransport: transport });
       expect(host.tools.get('hive_task_trace').options).toEqual({ codemode: false });
-      expect(host.tools.get('hive_task_trace_content').options).toEqual({ codemode: transport === 'codemode' });
+      expect(host.tools.get('hive_task_trace_content').options).toEqual(transport === 'codemode' ? { namespace: 'hive', codemode: true } : { codemode: false });
       expect(host.agents.get(TASK_TRACE_SUMMARIZER_AGENT)).toMatchObject({ mode: 'primary', hidden: true, system: TASK_TRACE_SUMMARIZER_PROMPT });
       expect(host.agents.get(TASK_TRACE_SUMMARIZER_AGENT).permissions.at(-1)).toEqual({ action: '*', resource: '*', effect: 'deny' });
       expect(host.hooks.generate?.length).toBeGreaterThanOrEqual(2);

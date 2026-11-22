@@ -10,7 +10,7 @@
       "type": "string",
       "enum": ["codemode", "direct"],
       "default": "codemode",
-      "description": "How agents reach hive_repositories_status, hive_git_snapshot, hive_task_trace_content, hive_worklog_list, hive_worklog_read and hive_explore_read. `codemode` runs them inside Code Mode and needs the `execute` tool; `direct` registers them as direct tool calls, for configurations that deny `execute`. Every other Hive tool is a direct call in both modes."
+      "description": "How agents reach hive_repositories_status, hive_repositories_discover, hive_git_snapshot, hive_task_trace_content, hive_worklog_list, hive_worklog_read, hive_checkouts_list, hive_checkout_brief and hive_explore_read. `codemode` runs them inside Code Mode in the `hive` namespace, keeping their tool IDs, and needs the `execute` tool; `direct` registers them as direct tool calls, for configurations that deny `execute`. Every other Hive tool is a direct call in both modes."
     },
     "server": {
       "type": "object",

@@ -857,7 +857,10 @@ const HOST_SPECIFIC_TOOL_PARAMS = {
  */
 const BOARD_SUBJECT_TOOL = 'hive_background_reconcile';
 
-/** Wiring requirements on each host's observation, plus cross-host parity of the direct tool parameters. */
+/**
+ * Wiring requirements on each host's observation, plus cross-host parity of each tool's parameter names, whether a host
+ * shows the tool directly or only in Code Mode; the live child tools are judged per host instead.
+ */
 export function wiringFailures(results, model) {
   const failures = [];
   const liveChildHosts = new Set();
@@ -875,7 +878,10 @@ export function wiringFailures(results, model) {
         liveChildHosts.add(host);
         for (const [tool, byHost] of Object.entries(HOST_SPECIFIC_TOOL_PARAMS)) {
           const observed = tools.paramNames?.[tool];
-          if (!observed) failures.push(`tool_params_unobserved:${host}:${tool}`);
+          // Both hosts install the live child tools as direct tools; `paramNames` merges both surfaces, so a Code Mode
+          // declaration would otherwise pass for the direct schema.
+          if (w.codeModeHiveTools?.includes(tool)) failures.push(`tool_codemode_exposed:${host}:${tool}`);
+          else if (!observed) failures.push(`tool_params_unobserved:${host}:${tool}`);
           else if (JSON.stringify(observed) !== JSON.stringify(byHost[host])) failures.push(`tool_params_unexpected:${host}:${tool}`);
         }
       }
@@ -908,6 +914,8 @@ export function wiringFailures(results, model) {
       else for (const [read, selected] of Object.entries(w.location)) if (selected !== true) failures.push(`location_not_selected:${host}:${read}`);
       const read = w.codeModeRead;
       if (!read || read.transport !== 'execute' || !read.completed || !read.projectResolved) failures.push(`codemode_read_failed:${host}`);
+      // Members the catalog folds away count only through the host's own search, so a failed search is reported apart.
+      if (!w.codeModeSearch?.completed) failures.push(`codemode_search_failed:${host}`);
     }
     const nested = w.nestedCompletion;
     if (!nested || nested.result !== 0 || nested.timedOut || nested.asked) failures.push(`nested_completion_run_unsuccessful:${host}`);

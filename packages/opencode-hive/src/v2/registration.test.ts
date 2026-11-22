@@ -118,18 +118,31 @@ function createFakeHost(directory: string, options: Record<string, unknown> = {}
     }
     return { registry, selected };
   }
-  const tools = () => {
+  /**
+   * The tool registry keyed by effective ID, as the host builds it: a tool in a namespace the same transform declared
+   * gets the ID `<namespace>_<name>`.
+   */
+  const toolCatalog = () => {
     const registry = new Map<string, any>();
+    const namespaces = new Map<string, string>();
     // `update` ignores missing tools, as the host's editor does; the native subagent tool is not registered here.
-    for (const cb of transforms.tool) cb({
-      add: (info: any) => {
-        expect(registry.has(info.name)).toBe(false);
-        registry.set(info.name, info);
-      },
-      update: (id: string, fn: (info: any) => void) => { if (registry.has(id)) fn(registry.get(id)); },
-    });
-    return registry;
+    for (const cb of transforms.tool) {
+      const declared = new Set<string>();
+      cb({
+        namespace: (ns: { name: string; description: string }) => { declared.add(ns.name); namespaces.set(ns.name, ns.description); },
+        add: (info: any) => {
+          const ns = info.options?.namespace;
+          if (ns !== undefined) expect(declared.has(ns)).toBe(true);
+          const id = ns === undefined ? info.name : `${ns}_${info.name}`;
+          expect(registry.has(id)).toBe(false);
+          registry.set(id, info);
+        },
+        update: (id: string, fn: (info: any) => void) => { if (registry.has(id)) fn(registry.get(id)); },
+      });
+    }
+    return { registry, namespaces };
   };
+  const tools = () => toolCatalog().registry;
   /** The skill catalog after Hive's transform and then the user's configured sources, as the host builds it. */
   function skills() {
     const registry = new Map<string, any>();
@@ -159,7 +172,7 @@ function createFakeHost(directory: string, options: Record<string, unknown> = {}
     return Effect.runPromiseExit(info.execute(args, { ...caller, messageID: 'm', id: 'c', progress: () => Effect.void }));
   };
   return {
-    context, sessions, prompts, switches, modelSwitches, sessionGets, agents, tools, skills, commands, before, request, requestDraft, execute,
+    context, sessions, prompts, switches, modelSwitches, sessionGets, agents, tools, toolCatalog, skills, commands, before, request, requestDraft, execute,
     /** What `context.agent.list()` reports from now on: Hive's defaults with this user configuration applied. */
     useAgentConfig: (config: UserAgentConfig) => { userConfig = config; },
     /** Adds a skill from a user-configured source; the host applies it after plugin transforms, so it wins on id. */
@@ -220,21 +233,23 @@ function denied(exit: Exit.Exit<unknown, unknown>): string | undefined {
 }
 
 describe('v2 tool registration', () => {
-  it('registers every Hive tool once, with an explicit Code Mode flag from the selected transport', async () => {
-    const flagged = { codemode: [] as string[], direct: [] as string[] };
+  it('registers every Hive tool once by its hive_* ID, grouping only the Code Mode reads in the hive namespace', async () => {
+    const reads = [
+      'hive_checkout_brief', 'hive_checkouts_list', 'hive_explore_read', 'hive_git_snapshot', 'hive_repositories_discover', 'hive_repositories_status',
+      'hive_task_trace_content', 'hive_worklog_list', 'hive_worklog_read',
+    ];
+    expect([...CODEMODE_READ_TOOLS].sort()).toEqual(reads);
     for (const transport of ['codemode', 'direct'] as const) {
-      const tools = (await activate({ readTransport: transport })).tools();
-      expect([...tools.keys()].sort()).toEqual([...HIVE_TOOL_NAMES].sort());
-      for (const [name, info] of tools) {
-        expect(typeof info.options.codemode).toBe('boolean');
-        if (info.options.codemode) flagged[transport].push(name);
+      const catalog = (await activate({ readTransport: transport })).toolCatalog();
+      expect([...catalog.registry.keys()].sort(), transport).toEqual([...HIVE_TOOL_NAMES].sort());
+      expect([...catalog.namespaces], transport).toEqual(transport === 'codemode' ? [['hive', 'Agent Hive.']] : []);
+      for (const [id, info] of catalog.registry) {
+        // The host joins a namespace and a local name with `_`, so a grouped read keeps its hive_* ID.
+        const grouped = transport === 'codemode' && reads.includes(id);
+        expect([info.name, info.options], `${transport} ${id}`)
+          .toEqual(grouped ? [id.slice('hive_'.length), { namespace: 'hive', codemode: true }] : [id, { codemode: false }]);
       }
     }
-    expect(flagged.codemode.sort()).toEqual([
-      'hive_explore_read', 'hive_git_snapshot', 'hive_repositories_status', 'hive_task_trace_content', 'hive_worklog_list', 'hive_worklog_read',
-    ]);
-    expect(flagged.codemode).toEqual([...CODEMODE_READ_TOOLS].sort());
-    expect(flagged.direct).toEqual([]);
   });
 
   it('validates input with the operation schema and exports its JSON Schema through Standard Schema', async () => {
@@ -313,6 +328,9 @@ describe('v2 tool registration', () => {
     const featureRef = { kind: 'feature', featureName: 'demo' };
     succeeded(await host.execute('hive_worklog_record', { ref: featureRef, operationId: 'seed', checkpoint: { summary: 'Seeded' } }, builder));
     succeeded(await host.execute('hive_explore_update', { id: 'audit', expectedRevision: 0, goal: 'Audit the login surface', frontier: [{ key: 'login', target: 'POST /login', state: 'open' }] }, builder));
+    // Two retained checkouts in the one repository, so a brief compares a managed checkout against the registered root.
+    succeeded(await host.execute('hive_checkout_register', { id: 'root/main' }, builder));
+    succeeded(await host.execute('hive_checkout_create', { id: 'root/topic', branch: 'topic', baseRef: 'main' }, builder));
     const seedGets = host.sessionGets.length;
     const tree = (dir: string): string[] => fs.existsSync(dir)
       ? fs.readdirSync(dir, { recursive: true, withFileTypes: true }).map((entry) => {
@@ -320,7 +338,8 @@ describe('v2 tool registration', () => {
         return `${path.relative(dir, full)}:${fs.statSync(full).mtimeMs}`;
       }).sort()
       : [];
-    const gitIndex = () => fs.statSync(path.join(host.root, '.git', 'index')).mtimeMs;
+    // The main checkout's index and the managed checkout's worktree index.
+    const gitIndex = () => [path.join(host.root, '.git', 'index'), path.join(host.root, '.git', 'worktrees', 'topic', 'index')].map((file) => fs.statSync(file).mtimeMs);
     const beforeHive = tree(path.join(host.root, '.hive'));
     const beforeIndex = gitIndex();
     for (const agent of ['scout-researcher', 'forager-worker', 'hive-master']) {
@@ -339,9 +358,17 @@ describe('v2 tool registration', () => {
       expect((await read('hive_worklog_list', {})).worklogs).toEqual([expect.objectContaining({ ref: featureRef })]);
       expect(await read('hive_explore_read', {})).toMatchObject({ totalActive: 1, explorations: [expect.objectContaining({ id: 'audit' })] });
       expect(await read('hive_explore_read', { id: 'audit', view: 'full' })).toMatchObject({ view: 'full', revision: 1 });
+      const listed = await read('hive_checkouts_list', {});
+      expect(listed.repositories[0].checkouts.map((checkout: any) => checkout.id).sort()).toEqual(['root/main', 'root/topic']);
+      const brief = await read('hive_checkout_brief', { id: 'root/topic', against: 'root/main' });
+      expect(brief).toMatchObject({ success: true, source: { id: 'root/topic' }, destination: { id: 'root/main' } });
+      expect(brief.comparison.status).not.toBe('unresolved');
+      // Only Scout and the primary are granted discovery; the guard refuses it to a Forager.
+      if (agent === 'forager-worker') expect(denied(await host.before({ tool: 'hive_repositories_discover', sessionID: 'child', agent }))).toBeDefined();
+      else expect((await read('hive_repositories_discover', {})).candidates).toEqual([expect.objectContaining({ path: '.', root: host.root })]);
     }
     expect(tree(path.join(host.root, '.hive'))).toEqual(beforeHive);
-    expect(gitIndex()).toBe(beforeIndex);
+    expect(gitIndex()).toEqual(beforeIndex);
     // No admitted read is primary-only, so the guard needs no session lookup for them.
     expect(host.sessionGets.slice(seedGets)).toEqual([]);
   });
@@ -517,6 +544,14 @@ describe('v2 execution guards', () => {
     ['code-reviewer', 'child', 'hive_checkout_brief', {}, true],
     ['forager-investigator', 'child', 'hive_checkout_brief', {}, true],
     ['general', 'child', 'hive_checkout_brief', {}, false],
+    // The reads Code Mode groups keep their hive_* IDs, so grants and refusals name them exactly.
+    ['scout-researcher', 'child', 'hive_checkout_brief', {}, true],
+    ['security-scout', 'child', 'hive_checkout_brief', {}, true],
+    ['forager-investigator', 'child', 'hive_checkouts_list', {}, true],
+    ['scout-researcher', 'child', 'hive_repositories_discover', {}, true],
+    ['security-scout', 'child', 'hive_repositories_discover', {}, true],
+    ['forager-investigator', 'child', 'hive_repositories_discover', {}, false],
+    ['general', 'child', 'hive_repositories_discover', {}, false],
     ['build', 'primary', 'hive_checkout_create', {}, true],
     ['build', 'child', 'hive_checkout_cleanup', {}, false],
   ];
@@ -529,6 +564,8 @@ describe('v2 execution guards', () => {
       const exit = await host.execute(tool, {}, { sessionID, agent });
       const executorDenied = denied(exit);
       if (!allowed) expect(executorDenied).toBe(hook);
+      // An allowed call may still fail its own input validation, but never on a role or session refusal.
+      else expect(executorDenied ?? '').not.toMatch(new RegExp(`${tool} is (not granted|a primary-only|denied)|has no Hive tool access`));
     }
   });
 
@@ -893,6 +930,15 @@ describe('v2 native precedence and canonical instructions', () => {
     const codemode = await activate();
     const without = await codemode.request({ sessionID: 'child', agent: 'scout-researcher', system: ['x'], tools: ['read'] });
     expect(without.some((text) => text.includes('## Hive Read Transport Setup') && text.includes('`readTransport` to `direct`'))).toBe(true);
+    // The notice names only the reads the role is granted; the guard still decides each call.
+    const notice = (parts: string[]) => parts.find((text) => text.includes('## Hive Read Transport Setup')) ?? '';
+    const scout = notice(without);
+    for (const read of ['hive_repositories_discover', 'hive_checkout_brief', 'hive_worklog_read']) expect(scout).toContain(`\`${read}\``);
+    expect(scout).not.toContain('hive_task_trace_content');
+    const investigator = notice(await codemode.request({ sessionID: 'child', agent: 'forager-investigator', system: ['x'], tools: ['read'] }));
+    expect(investigator).toContain('`hive_checkouts_list`');
+    for (const read of ['hive_task_trace_content', 'hive_repositories_discover']) expect(investigator).not.toContain(read);
+    expect(notice(await codemode.request({ sessionID: 'primary', agent: 'hive-helper', system: ['x'], tools: ['read'] }))).toContain('`hive_task_trace_content`');
     const withExecute = await codemode.request({ sessionID: 'child', agent: 'scout-researcher', system: ['x'], tools: ['execute'] });
     expect(withExecute.some((text) => text.includes('Read Transport Setup'))).toBe(false);
 
