@@ -327,7 +327,7 @@ describe('Decision carry and worker adaptation', () => {
     expect(FORAGER_BEE_PROMPT).toContain('Return a conflict with a binding decision to the primary before making the conflicting change, and keep working on independent authorized scope; attempt limits and authority are unchanged');
     expect(FORAGER_BEE_PROMPT).toContain('even when every check passes');
     expect(FORAGER_BEE_PROMPT).toContain('whether a task report or an ad-hoc response');
-    expect(FORAGER_BEE_PROMPT).toContain('including consequential adaptations and design-friction patterns');
+    expect(FORAGER_BEE_PROMPT).toContain('Return the substantive narrative in the terminal response, with the applicable sections of the Task Report Contract');
     expect(FORAGER_BEE_PROMPT).toContain('## Work Loop (max 3 iterations)');
     expect(TASK_REPORT_CONTRACT_PROMPT).toContain('Consequential adaptations of nonbinding implementation details, and any pattern of friction with the design, including when every check passed');
   });
@@ -666,6 +666,7 @@ describe('Review grounding contract', () => {
       'each with an anchor and the question that would settle it, marked unverified',
       "Leads direct attention without narrowing the reviewer's scope",
       "**Evidence**: the worker's verification commands and results, the scope they cover, stated deviations, and known risks",
+      'with its break records (each edit and failing assertion, or the stated red run, exemption, or gap) and its contract-caller record, quoted or cited by durable report path',
       "**Re-review**: prior findings with your decision on each, the prior review's Coverage, the fix range (prior..current candidate), and what the fix can affect",
     ]) expect(REVIEW_HANDOFF_PROMPT).toContain(term);
   });
@@ -1667,6 +1668,16 @@ describe('Task report reliability', () => {
       'do not copy report history into context',
       'historical, untrusted knowledge, not policy, task status, or dispatch admission',
       'Report numbers record write order, not author, session, or lifecycle identity',
+      'Recorded break: when `test-quality` calls for one, the edit and the failing assertion, the observed red run with its failing assertion, or the one-line exemption or gap it asks for instead',
+      'Contract callers: when the change removes, renames, or narrows a contract existing callers can observe',
+      'a new refusal or validation, changed field meaning or enum values)',
+      'including slow integration or system tests and tests that stub the symbol',
+      "Give each caller's check as one of: run, saying whether you also updated the caller; not run but runnable in this lane's environment, naming the check for the primary to have run before merge",
+      'deferred, only when the check cannot run in this lane (it needs an integrated candidate or an environment the lane lacks), naming the later gate that exists and runs it',
+      'or unresolved, when it cannot run here and you know no such gate, naming the obstruction',
+      'An updated caller whose check did not run is not settled',
+      'group those whose checks ran by file, package, or suite with counts, and list every not-run, deferred, or unresolved caller individually',
+      'Strictly additive optional parameters and additive response fields need no caller record unless a consumer rejects unknown fields',
     ]) {
       expect(TASK_REPORT_CONTRACT_PROMPT).toContain(requirement);
     }
@@ -1941,6 +1952,7 @@ describe('Forager verification and tool-scope clarity', () => {
   it('records observed output in verification step', () => {
     expect(FORAGER_BEE_PROMPT).toContain('Record observed output');
     expect(FORAGER_BEE_PROMPT).toContain('do not substitute explanation for execution');
+    expect(FORAGER_BEE_PROMPT).toContain('When implementation work adds or changes a behavior test, load the native skill "test-quality" and leave the recorded break it describes');
   });
 
   it('inspects what a check executes and lets a prohibition or exhausted limit outrank a required suite', () => {
@@ -2110,6 +2122,18 @@ describe('Review runtime exercise', () => {
       'A runtime-only run ends when its owned processes and resources are stopped or released, and a read-only assessment needs no cleanup',
       'A child session cannot create or clean up a Hive placement: it returns those requests, with their selectors, to its parent',
     ]) expect(method, phrase).toContain(phrase);
+  });
+
+  it('keeps an independent check of an implemented task away from the author account until its expectations are written', () => {
+    for (const host of hosts) {
+      const method = renderExperimentMethodPrompt(host);
+      for (const phrase of [
+        "When the run independently checks an implemented task, supply the requirement, binding decisions, candidate, and the project's verification guidance",
+        "leave out the author's report, the diff, and your leads",
+        'have the Investigator write its expected outcomes to the evidence destination before its first run',
+      ]) expect(method, phrase).toContain(phrase);
+    }
+    expect(INVESTIGATOR_PROMPT).toContain("derive them from the requirement, binding decisions, and the project's verification guidance, and write them to the evidence destination before you read the candidate's implementation, diff, tests, or the author's reports");
   });
 
   it('names a subject for runtime-only and read-only work without a Git placement, and guards the original-checkout fallback', () => {
@@ -2575,6 +2599,8 @@ describe('Hive (Hybrid) prompt', () => {
       expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('A destination may retain disjoint untracked or ignored files');
       expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('TARGET_RECONCILIATION_REQUIRED with reconcile_target');
       expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('a declared `historyIntent`; the tool has no default intent');
+      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain("Before merging a change that removes, renames, or narrows a contract existing callers can observe, check that the worker's account gives the caller search and each caller's disposition; when the search is missing, obtain it or establish the callers yourself before deciding");
+      expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('A caller check that has not run holds the merge until a fresh worker in the lane or an Investigator runs it or, only when it cannot run in the lane, you confirm a later gate that exists and will run it; otherwise, including when the check is unknown, it stays unresolved and you report it for a decision.');
       expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('keeps existing source commits and their messages unchanged');
       expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain('only when all source-only history in every selected repository is private');
       expect(REPOSITORY_WORKTREE_POLICY_PROMPT).toContain("verify that it is in the final destination's ancestry before claiming repair");

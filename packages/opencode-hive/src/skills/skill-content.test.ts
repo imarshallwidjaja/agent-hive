@@ -402,7 +402,7 @@ describe('skill content', () => {
     expect(modeling).toContain('remove any dead bindings, redundant checks, or intermediate variables left at the call sites');
 
     const quality = BUILTIN_SKILLS.find((entry) => entry.name === 'test-quality')!.template;
-    expect(quality).toContain('Judge a changed behavior test against two imagined edits');
+    expect(quality).toContain('Judge a changed behavior test against two counterfactual edits');
     expect(quality).toContain('**Break the behavior.**');
     expect(quality).toContain('**Change the internals.**');
     expect(quality).toContain('Keep a test that catches the first edit and survives the second');
@@ -411,6 +411,31 @@ describe('skill content', () => {
     expect(quality).toContain('Prompt, configuration, and packaging pins can be legitimate');
     expect(quality).not.toContain('returned `undefined`');
     expect(quality).toContain('Loading it does not select TDD');
+    expect(BUILTIN_SKILLS.find((entry) => entry.name === 'test-quality')!.description).toContain('adding or changing a behavior test in implementation work');
+    const breakStepThree = '3. Reverse only the break edit by hand, never with a checkout, restore, reset, or stash over a file that holds uncommitted work. Rebuild whatever you rebuilt for the break, including tracked build output, confirm the diff holds no trace of the break, and rerun the test green before committing';
+    for (const executedBreak of [
+      'When your implementation work adds or changes a behavior test, make this edit for real, in this order (a reviewer only reasons about it and runs nothing)',
+      'rebuild any compiled output the test reads',
+      'Record the edit and the failing assertion',
+      breakStepThree,
+      "only when the test's own assertion fails for the promised reason",
+      'an unconditional throw (unless throwing is the contract), a deleted symbol, or an edited expectation does not count',
+      'One break may cover several tests',
+      'remove it only after naming the retained owner that covers its behavior',
+      'A break that cannot run is a gap to report, not a reason to delete the test',
+      'the added or changed assertion was seen failing for the missing or incorrect behavior before the production change was made, including an assertion added to an existing test and a bug-fix regression test',
+      'A test written or changed alongside or after the production change needs the executed break',
+      'prompt, configuration, and packaging wording pins, and suites too slow for a local iteration loop keep the reasoning check',
+      'When an added or changed behavior test gets no executed break, state in one line which case applies and why: the observed red run and its failing assertion',
+      'why no focused run of that test was feasible',
+      'report a break record that is missing without a fitting exemption, or a break or red run that misses the behavior the requirement names; a stated exemption that fits is not a finding, and a stated obstruction is a verification gap to note, not a defect in the test',
+      'The reviewer reads the record and runs nothing',
+      'No role needs mutation tooling',
+    ]) expect(quality, executedBreak).toContain(executedBreak);
+    const breakSteps = ['1. Change the value, branch, or effect the requirement names', '2. Run the test. Record the edit', breakStepThree].map((step) => quality.indexOf(step));
+    expect(breakSteps[0]).toBeGreaterThan(-1);
+    expect(breakSteps[0]).toBeLessThan(breakSteps[1]);
+    expect(breakSteps[1]).toBeLessThan(breakSteps[2]);
     for (const contract of ['public observable result, exercised subject and path, independent oracle', 'valid metamorphic relation', 'Reading a fixture after the product mutates it can prove observable state', "asserting only the fixture's setup data cannot", 'credible observability', 'distinct faults', 'not LLM compliance or model behavior', 'Audit is report-only', 'is the implementation request; no separate follow-up request is needed', 'Establish the baseline, preserve unique coverage, and run affected checks']) {
       expect(quality, contract).toContain(contract);
     }
@@ -1416,6 +1441,7 @@ describe('skill content', () => {
     expect(template).toContain('existing public-contract coverage');
     expect(template).toContain('proportionate non-test verification');
     expect(template).toContain('Verify RED');
+    expect(template).toContain('`test-quality` accepts a red run observed before the production change in place of an executed break');
     expect(template).toContain('Verify GREEN');
     expect(template).toContain('Name the invariant and owning layer first');
     expect(template).toContain('(1) add to an existing test in an existing file');

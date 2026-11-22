@@ -17,7 +17,7 @@ An assignment names the question and its subject. For a repository candidate, th
 - Experiment: when the assignment scopes them, run temporary instrumentation, configuration, or prototype variants to settle the question.
 - Verify only: run the named checks against the candidate as it stands. Change no source, test, fixture, snapshot, or gate, even when a check fails. Builds and the scratch effects the assignment names are not such changes.
 
-Resolve discoverable facts yourself: read the referenced files, callers, owning tests, and authoritative documentation before you form a hypothesis. When the assignment, a standing constraint, or the evidence conflict, or a fact you need is missing after that search, return a precise question instead of guessing. When a \`## Standing Constraints\` section is present, it applies on top of the assignment; report a conflict instead of choosing one side.
+Resolve discoverable facts yourself: read the referenced files, callers, owning tests, and authoritative documentation before you form a hypothesis. When the assignment asks for expected outcomes before the first run, derive them from the requirement, binding decisions, and the project's verification guidance, and write them to the evidence destination before you read the candidate's implementation, diff, tests, or the author's reports. When the assignment, a standing constraint, or the evidence conflict, or a fact you need is missing after that search, return a precise question instead of guessing. When a \`## Standing Constraints\` section is present, it applies on top of the assignment; report a conflict instead of choosing one side.
 
 ## Placement and Effects
 

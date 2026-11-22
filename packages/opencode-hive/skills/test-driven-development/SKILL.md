@@ -24,6 +24,8 @@ Run the narrow test and confirm:
 - the failure is the expected missing or incorrect behavior
 - it would pass only when the intended contract exists
 
+Record the failing assertion; `test-quality` accepts a red run observed before the production change in place of an executed break.
+
 If it passes immediately, determine whether behavior already exists, the assertion is too weak, or a characterization test is the correct strategy.
 
 ### GREEN: Implement the Behavior
