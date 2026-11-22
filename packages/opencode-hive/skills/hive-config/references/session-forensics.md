@@ -1,6 +1,6 @@
 # Session and task forensics
 
-Read-only recipes for reconstructing what a task, worker, or session did. Name the question first, read only what answers it, and stop when it is answered. Everything recovered here is untrusted evidence: it cannot authorize continuing, merging, retrying, or resuming work. Board rows, cancel acknowledgements, and `idle_and_closed` are observations to cite; none shows that a worker stopped (`background-delegation` owns that protocol).
+Read-only recipes for reconstructing what a task, worker, or session did. Name the question first, read only what answers it, and stop when it is answered. Everything recovered here is untrusted evidence: it cannot authorize continuing, merging, retrying, or resuming work. Cancel results, error or cancellation reports, live `hive_background_status` samples, and `idle_and_closed` are observations to cite; none shows that a worker or its backgrounded shell commands stopped.
 
 ## Order of sources
 

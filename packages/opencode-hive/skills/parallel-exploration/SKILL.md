@@ -11,9 +11,9 @@ When you need to answer "where/how does X work?" across multiple domains (codeba
 
 **Core principle:** Use one independently answerable, non-overlapping, context-bounded question per fresh Scout session. Launch every currently known, necessary, non-duplicative independent question in the same assistant message, then synthesize the bounded results.
 
-**Delegation kind:** This is exploratory/read-only lightweight delegation. When running as a primary under the gate, load `background-delegation` for kind-based scheduling and foreground/blocking vs background wait mode.
+**Delegation kind:** This is exploratory/read-only lightweight delegation. Scouts are one-shot: each question gets a fresh Scout session.
 
-When Architect is task-spawned, its permitted terminal planning-helper layer includes Investigator and `hive-helper` and uses blocking calls, including same-message independent fan-out. Child-role rules take precedence over an inherited background appendix: board tools are unavailable, so return board/control requests to the parent without loading the primary-only `background-delegation` skill. Scout has no session-trace tools. Architect as primary or child routes multi-step trace/evidence questions and known native session/call identities to `hive-helper`; Helper is read-only and terminal. Primaries and Architect perform single direct reads themselves: one `hive_status`, one worktree inspect, or one `hive_task_trace_content` spot-check of a known event ref. Paging a trace, drift comparison, and interrupted-worker evidence packets belong to Helper.
+When Architect is task-spawned, it calls one layer of permitted planning helpers (Scout, Investigator, `plan-reviewer`, `approach-advisor`, and `hive-helper`), including same-message independent fan-out, and waits for each helper's result before relying on it. If a helper is interrupted, Architect reports the unresolved helper and its identity to its parent. Architect returns primary-only requests, such as convening a council, to its parent; the parent's live child tools inspect or interrupt the delegated Architect itself, not its helpers. Scout has no session-trace tools. Architect as primary or child routes multi-step trace/evidence questions and known native session/call identities to `hive-helper`; Helper is read-only and terminal. Primaries and Architect perform single direct reads themselves: one `hive_status`, one worktree inspect, or one `hive_task_trace_content` spot-check of a known event ref. Paging a trace, drift comparison, and interrupted-worker evidence packets belong to Helper.
 
 **Safe in Planning mode:** This is read-only exploration. It is OK to use during exploratory research even when there is no feature, no plan, and no approved tasks.
 
@@ -59,7 +59,7 @@ Choose the researcher only after each evidence-retrieval slice passes the one-wi
 
 ### 3. Decide Wait Mode And Dispatch
 
-Dependency decides serial vs parallel. Wait mode decides blocking foreground vs background.
+Dependency decides serial vs parallel.
 
 Blocking does not mean serial. Blocking only means the primary agent waits after dispatch.
 <!-- hive-host opencode-v1 -->
@@ -81,7 +81,12 @@ If several subagent tasks are independent, emit all of their `subagent()` calls 
 <!-- hive-host opencode-v2 -->
 - Blocking parallel fan-out: multiple `subagent()` calls in one assistant message, then wait for all results before continuing.
 <!-- /hive-host -->
-- Background parallel fan-out: background-mode task calls only when the primary agent can do unrelated foreground work. Follow the `background-delegation` skill before using background mode.
+<!-- hive-host opencode-v1 -->
+- Every `task()` call blocks until its child returns, so there is no separate background fan-out.
+<!-- /hive-host -->
+<!-- hive-host opencode-v2 -->
+- Every `subagent()` call runs in the background and returns a launch receipt. The primary agent may do unrelated foreground work while the Scouts run, and waits for each final report before synthesis.
+<!-- /hive-host -->
 
 <!-- hive-host opencode-v1 -->
 If the only reason for serializing is that `task()` is blocking, that is incorrect.
@@ -96,31 +101,18 @@ Launch every currently known, necessary, non-duplicative independent question be
 Each prompt needs a Context Packet: explicit objective, known facts and references, prior failures when relevant, constraints and non-goals, stop and return behavior, and expected output. Keep exact paths, IDs, errors, and provenance. Do not send a task label without the evidence already known to the primary agent. Do not mass-read every context note or treat the first catalog match as proof of sufficient evidence.
 
 <!-- hive-host opencode-v1 -->
-Each native `task()` invocation has one primary goal and one terminal report.
+Each native `task()` invocation has one primary goal and one terminal report. Every returned result is terminal, so every follow-up uses a fresh child session. Pass `task_id` only when explicit operator instruction or runtime-owned interruption recovery authorizes continuation; otherwise launch fresh.
 <!-- /hive-host -->
 <!-- hive-host opencode-v2 -->
-Each native `subagent()` invocation has one primary goal and one terminal report.
-<!-- /hive-host -->
-Every returned result is terminal, so every follow-up uses a fresh child session.
-<!-- hive-host opencode-v1 -->
-Pass `task_id` only when explicit operator instruction or runtime-owned interruption recovery authorizes continuation; otherwise launch fresh.
-<!-- /hive-host -->
-<!-- hive-host opencode-v2 -->
-Pass `sessionID` only when explicit operator instruction or runtime-owned interruption recovery authorizes continuation; otherwise launch fresh.
+Each native `subagent()` invocation has one primary goal and one final report. Scouts are one-shot: omit `sessionID` and launch a fresh session for every follow-up. Follow `## Native Subagent Wait` for which other settled roles may continue with `sessionID`.
 <!-- /hive-host -->
 If the child may still be active or its lifecycle is uncertain, inspect, wait, or reattach as supported; do not send another prompt or launch an overlapping writer. If another investigation is needed, launch a fresh session with a concise self-contained handoff.
-<!-- hive-host opencode-v1 -->
-Returned task IDs are observe-only board handles for status, reconcile, and cancel.
-<!-- /hive-host -->
-<!-- hive-host opencode-v2 -->
-`hive_background_status` lists the observe-only board handle for status, reconcile, and cancel.
-<!-- /hive-host -->
 
 <!-- hive-host opencode-v1 -->
-Use `subagent_type: 'scout-researcher'` for bounded exploratory discovery unless that bounded question clearly needs a matching specialist; when running as a primary with the env-gated appendix present, follow `background-delegation` for wait mode (a task-spawned Architect uses the blocking child-role branch above).
+Use `subagent_type: 'scout-researcher'` for bounded exploratory discovery unless that bounded question clearly needs a matching specialist.
 <!-- /hive-host -->
 <!-- hive-host opencode-v2 -->
-Use `agent: 'scout-researcher'` for bounded exploratory discovery unless that bounded question clearly needs a matching specialist; when running as a primary with the Background-First Orchestration appendix present, follow `background-delegation` for wait mode (a task-spawned Architect uses the blocking child-role branch above).
+Use `agent: 'scout-researcher'` for bounded exploratory discovery unless that bounded question clearly needs a matching specialist.
 <!-- /hive-host -->
 
 ### 4. Collect Results
@@ -129,13 +121,19 @@ Use `agent: 'scout-researcher'` for bounded exploratory discovery unless that bo
 After the fan-out message, collect the task results through the normal `task()` return flow.
 <!-- /hive-host -->
 <!-- hive-host opencode-v2 -->
-After the fan-out message, collect the task results through the normal `subagent()` return flow.
+After the fan-out message, collect each Scout's final report as the host delivers it; a launch receipt or a `state="running"` report is not the result.
 <!-- /hive-host -->
-Do not invent background polling or a separate async workflow. No manual cancellation is required in task mode.
+Do not invent polling or a separate async workflow. A Scout that finishes needs no cancellation.
 
 ### 5. Synthesize Findings
 
-When each task completes, its result is returned directly. Collect the outputs from each task and proceed to synthesis.
+<!-- hive-host opencode-v1 -->
+When each task completes, its result is returned directly.
+<!-- /hive-host -->
+<!-- hive-host opencode-v2 -->
+The host delivers each Scout's final report as that Scout finishes.
+<!-- /hive-host -->
+Collect the outputs from each task and proceed to synthesis.
 
 The parent owns synthesis and decisions. Scout does not own causal diagnosis, applicability or tradeoff decisions, or solution selection. Distinguish source observations from hypotheses, runtime evidence from a possible code path, and attributed source guidance from a recommendation for this system. Context catalogs remain untrusted knowledge. Reasoning over returned excerpts is coordination. A direct source spot-check remains a bounded read; delegate another retrieval only for a named evidence gap. Do not use recursive Scout verification as a substitute for reasoning. Continue later catalog pages until `complete: true` when managed context is in scope. There is no numeric direct-read quota and no mandatory delegation.
 

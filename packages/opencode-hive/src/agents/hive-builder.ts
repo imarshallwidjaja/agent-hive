@@ -1,6 +1,6 @@
 import { OPENCODE_V1_PROFILE, nativeCall, type HostProfile } from '../runtime/host-profile.js';
 import { ENGINEERING_JUDGMENT_PROMPT } from './engineering-judgment.js';
-import { renderExperimentMethodPrompt, renderBackgroundBoardHandlePrompt, renderNativeTaskContinuationPolicyPrompt, renderSubagentConcurrencyPrompt, PLAN_ASSESSMENT_PROMPT, PRIMARY_CONSTRAINT_AUTHORING_PROMPT, PRIMARY_REASONING_OWNERSHIP_PROMPT, PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT, REVIEW_FOLLOW_UP_PROMPT, REVIEW_HANDOFF_PROMPT, REVIEW_REQUEST_EXAMPLE_PROMPT, REVIEW_ROUTING_PROMPT, WORKER_ASSIGNMENT_PROMPT } from './process-judgment.js';
+import { renderExperimentMethodPrompt, renderNativeTaskContinuationPolicyPrompt, renderSubagentConcurrencyPrompt, renderWorkerReturnPrompt, PLAN_ASSESSMENT_PROMPT, PRIMARY_CONSTRAINT_AUTHORING_PROMPT, PRIMARY_REASONING_OWNERSHIP_PROMPT, PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT, REVIEW_FOLLOW_UP_PROMPT, REVIEW_HANDOFF_PROMPT, REVIEW_REQUEST_EXAMPLE_PROMPT, REVIEW_ROUTING_PROMPT, WORKER_ASSIGNMENT_PROMPT } from './process-judgment.js';
 import { renderInterruptedWorkerRecoveryPrompt } from './task-reporting.js';
 import { renderPrimaryExplorationPrompt } from './exploration-guidance.js';
 import { renderPrimaryWorklogPrompt } from './worklog-guidance.js';
@@ -27,7 +27,7 @@ ${ENGINEERING_JUDGMENT_PROMPT}
 
 Apply Engineering Judgment to lane decomposition, specialist handoffs, and integration; it does not grant authority to implement.
 
-Delegation-first is the baseline in every mode. Background mode only changes wait mode and board protocol.
+Delegation-first is the baseline in every mode.
 
 ## Default Lifecycle
 
@@ -87,19 +87,19 @@ Use targeted subagents by default for non-trivial work:
 
 ### Retrieval and Reasoning Ownership
 
-Route by the requested output, not by whether the work is read-only or whether file paths are known. Bounded direct reads remain allowed. Use Scouts liberally for a real evidence gap and dispatch independent useful retrieval slices together, using background only when unrelated foreground work can continue. Do not impose numeric quotas or artificial fan-out.
+Route by the requested output, not by whether the work is read-only or whether file paths are known. Bounded direct reads remain allowed. Use Scouts liberally for a real evidence gap and dispatch independent useful retrieval slices together. Do not impose numeric quotas or artificial fan-out.
 
 ${PRIMARY_REASONING_OWNERSHIP_PROMPT}
 
 ${renderNativeTaskContinuationPolicyPrompt(host)}
 
-${renderBackgroundBoardHandlePrompt(host)} Reconcile replies are compact acknowledgements: refresh \`hive_status\` before dependent decisions when \`requiresHiveStatusRefresh\` is true. Follow per-item failure \`hint\`: \`job_not_terminal\` means wait for native completion; stale/uncertain hints give the exact canonical-alias ignore call, used only after inspection. Successful batch archives remain archived when another item fails. Archival does not prove termination.
+${renderWorkerReturnPrompt(host)}
 
 ${renderInterruptedWorkerRecoveryPrompt(host)}
 
 For failed or retry work, launch a fresh worker with a concise self-contained handoff covering the goal, attempted work, relevant errors, and next constraints. Architect is the only subagent that may call one terminal layer of planning helpers; every other subagent is terminal.
 
-${renderSubagentConcurrencyPrompt(host, { loadsBackgroundSkill: false })}
+${renderSubagentConcurrencyPrompt(host)}
 
 ${WORKER_ASSIGNMENT_PROMPT}
 
@@ -136,8 +136,6 @@ Choose the isolated worktree completion path:
 - \`hive_adhoc_worktree_cleanup\` removes the ad-hoc worktree and branch when cleanup is not already part of merge.
 
 Carry \`runId\`, \`workspacePath\`, and \`branch\` explicitly between calls.
-
-The background board is observational. See \`docs/HIVE-TOOLS.md\`. Cancel acknowledgement does not prove the worker stopped.
 
 ## Safety
 

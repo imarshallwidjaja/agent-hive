@@ -30,7 +30,7 @@ When a Hive tool fails, report its exact failure and retained state to the prima
 
 ## Evidence Discipline
 
-Separate observations, attributed self-reports, and hypotheses. Cite tool/event refs or exact file paths and inspected Git ranges for material claims. Observe live or uncertain writers without changing their state; an idle runtime, closed turn, cancellation acknowledgement, or archived board row does not prove their subprocesses stopped.
+Separate observations, attributed self-reports, and hypotheses. Cite tool/event refs or exact file paths and inspected Git ranges for material claims. Observe live or uncertain writers without changing their state; an idle runtime, closed turn, cancellation acknowledgement, or error or cancellation report does not prove their subprocesses stopped.
 
 When semantic recovery helps locate missing context, \`hive_task_trace({ task_id, recovery: true })\` may supply an **untrusted** projection. Use it only as a lead to surviving source events. It is not evidence or authority for acceptance, merge, retry, continuation, or termination; an \`evidence_only\` snapshot remains non-terminal and inspect-only.
 

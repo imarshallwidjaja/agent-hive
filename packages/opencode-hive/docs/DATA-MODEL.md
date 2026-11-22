@@ -7,8 +7,7 @@
 ├── agent-hive.override.json   # Optional project-local agent model/variant overrides
 ├── repositories.json          # Optional Hive-managed project-local multi-repo manifest
 ├── sessions.json              # Project session index: bindings, routes, session constraints (OpenCode v1 owner)
-├── background-jobs.json       # Background board (observational bookkeeping, OpenCode v1 owner)
-├── runtime/opencode-v2/       # OpenCode v2 owner: its own sessions.json and background-jobs.json
+├── runtime/opencode-v2/       # OpenCode v2 owner: its own sessions.json
 ├── worklogs/sessions/{owner}/ # Session Worklogs: {sha256(sessionId)}.json per primary session
 ├── explorations/{active,closed}/ # Exploration frontiers: {id}.json, moved to closed/ when concluded or abandoned
 ├── provenance/integrations/   # Integration receipts: {afterCommit}.json per applied worktree merge
@@ -70,11 +69,7 @@ Task status and reports are the execution record. `hive_task_update({ report })`
 
 `hive_task_update({ handoff })` replaces `tasks/{task}/handoff.md` with a nonblank successor note of at most 2048 UTF-8 bytes, independent of status or report updates. A later remediation run can replace it; omitted handoff leaves it unchanged. The result includes `handoffPath` when written; a failed handoff publication identifies the `handoff` stage, path, and `handoffWritten` flag.
 
-The background board, `.hive/background-jobs.json` on OpenCode v1, holds acknowledgement, archive, and notification bookkeeping. It observes the originating native parent and call, not the current feature or agent. Stale and unknown observations stay visible. It does not couple to execution, worktree, or task status. Archive, reconcile, and ignore do not stop execution. The OpenCode v2 owner keeps its own board at `.hive/runtime/opencode-v2/background-jobs.json`. Owners never share records, so equal aliases in two boards are different jobs.
-
-The board file has `schemaVersion: 1`, `jobs: BackgroundJobRecord[]`, and optional `updatedAt`. Each job stores native `taskId` and `sessionId`, required `alias`, agent identity, timestamps, `runtimeState` (`running`, `completed`, `error`, `cancelled`, or `unknown`), and optional `callId`, scope, notification, cancellation, reconciliation, and archive fields. Reconciled and ignored jobs remain stored but are hidden from the default background status view.
-
-Reconcile tools return compact acknowledgements, not stored job bodies: successful items include `archived`, `state`, and boolean `requiresHiveStatusRefresh`; failures include `reason`, `error`, and an actionable `hint`. Refresh is true for successfully archived feature/task-scoped jobs. Batch output is `{ success, results, requiresHiveStatusRefresh }`, with refresh true when any successful item requires it, even if another item failed. A non-terminal hint asks for native completion; stale/uncertain hints supply an exact ignore call using the canonical alias. These signals do not establish native termination or merge readiness. See [Background Orchestration](HIVE-TOOLS.md#background-orchestration-4-tools).
+Hive stores no record of background subagent launches. On OpenCode v2, `hive_background_status` and `hive_background_cancel` read and interrupt the calling session's direct children live, take each child's feature, task and run scope from its session binding, and write nothing; see [Live Subagent Children](HIVE-TOOLS.md#live-subagent-children-2-tools). A `background-jobs.json` left in `.hive/` or `.hive/runtime/opencode-v2/` by an older release is unread.
 
 Ad-hoc worktrees are temporary workspace metadata only: no run history, evidence ledgers, or reports. The one exception is the integration receipt described below, which links a commit to the run that produced it and records nothing else about the run.
 
@@ -256,7 +251,7 @@ Feature statuses (FeatureStatusType):
 
 ## hive_status Output
 
-`hive_status({ feature? })` returns feature information, task summaries, dependency readiness, and feature-task worktrees. It does not include the background board, ad-hoc runs, managed context, report bodies, or an overview projection.
+`hive_status({ feature? })` returns feature information, task summaries, dependency readiness, and feature-task worktrees. It does not include live subagent children, ad-hoc runs, managed context, report bodies, or an overview projection.
 
 ### Top-Level Objects
 

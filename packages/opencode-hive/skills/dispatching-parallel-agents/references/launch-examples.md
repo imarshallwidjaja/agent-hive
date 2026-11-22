@@ -1,8 +1,14 @@
 # Launch examples
 
-Read this reference when you write the first native Forager launch of a session and want a complete call to adapt, when you need the ad-hoc placement check that validates repository IDs before `hive_adhoc_worktree_create`, when you fan out diagnosis-only lanes, or when you write an assignment prompt and want a worked one. The contracts that make a launch safe stay in `SKILL.md`: one primary goal per launch, one writer per worktree, destination identity in every writing handoff, and a fresh child after every returned result. The examples below illustrate those contracts and add no authority.
+Read this reference when you write the first native Forager launch of a session and want a complete call to adapt, when you need the ad-hoc placement check that validates repository IDs before `hive_adhoc_worktree_create`, when you fan out diagnosis-only lanes, or when you write an assignment prompt and want a worked one. The contracts that make a launch safe stay in `SKILL.md`: one primary goal per launch, one writer per worktree, destination identity in every writing handoff, and the host's continuation rule. The examples below illustrate those contracts and add no authority.
 
-Background observation and reconciliation have one example, in `background-delegation`'s `references/board-protocol.md`. The launches here end where that protocol starts.
+Each case has one example per host, and neither host needs a status call after a launch.
+<!-- hive-host opencode-v1 -->
+Every `task()` call blocks until its child returns, so there is no separate background launch.
+<!-- /hive-host -->
+<!-- hive-host opencode-v2 -->
+Every `subagent()` call runs in the background and returns a launch receipt; the child's result arrives in its final report under `## Native Subagent Wait` in your system prompt.
+<!-- /hive-host -->
 
 ## Feature-task launch
 
@@ -12,20 +18,15 @@ These feature tasks each have an explicit single-repository target. Confirm the 
 OpenCode v1:
 
 ```typescript
-// Gate-open only: use background: true when independent foreground work can continue.
 // Issue independent creates together; capture each destination from its create result.
 hive_worktree_create({ feature: "feature-name", task: "01-fix-abort-tests" })
 hive_worktree_create({ feature: "feature-name", task: "02-fix-batch-tests" })
 // When the route is unset/different or matching selection evidence is missing/uncertain:
 hive_feature_select({ feature: "feature-name" })
-// Issue independent task calls together; reuse this selection for both.
-task({ subagent_type: "forager-worker", description: "Fix abort tests", prompt: "Hive task: 01-fix-abort-tests\n\nTargeted single-repository worktree; destination: <path, ref, commit from create>. Implement and commit assigned changes; return sourceCommit.", background: true })
-task({ subagent_type: "forager-worker", description: "Fix batch tests", prompt: "Hive task: 02-fix-batch-tests\n\nTargeted single-repository worktree; destination: <path, ref, commit from create>. Implement and commit assigned changes; return sourceCommit.", background: true })
-
-// Blocking alternative, including every gate-closed session:
-hive_worktree_create({ feature: "feature-name", task: "03-fix-cleanup-tests" })
-// Capture the create result; reuse only a visible same-feature selection (see SKILL.md).
-await task({ subagent_type: "forager-worker", description: "Fix cleanup tests", prompt: "Hive task: 03-fix-cleanup-tests\n\nTargeted single-repository worktree; destination: <path, ref, commit from create>. Implement and commit assigned changes; return sourceCommit." })
+// Issue independent task calls together; reuse this selection for both. Each call blocks until
+// its child returns sourceCommit, and calls issued in one message run in parallel.
+task({ subagent_type: "forager-worker", description: "Fix abort tests", prompt: "Hive task: 01-fix-abort-tests\n\nTargeted single-repository worktree; destination: <path, ref, commit from create>. Implement and commit assigned changes; return sourceCommit." })
+task({ subagent_type: "forager-worker", description: "Fix batch tests", prompt: "Hive task: 02-fix-batch-tests\n\nTargeted single-repository worktree; destination: <path, ref, commit from create>. Implement and commit assigned changes; return sourceCommit." })
 ```
 <!-- /hive-host -->
 <!-- hive-host opencode-v2 -->
@@ -38,7 +39,7 @@ hive_worktree_create({ feature: "feature-name", task: "02-fix-batch-tests" })
 // When the route is unset/different or matching selection evidence is missing/uncertain:
 hive_feature_select({ feature: "feature-name" })
 // Issue independent task calls together; reuse this selection for both. Each returns a launch receipt;
-// its sourceCommit comes in that child's terminal report (Native Subagent Wait in your system prompt).
+// its sourceCommit comes in that child's final report (Native Subagent Wait in your system prompt).
 subagent({ agent: "forager-worker", description: "Fix abort tests", prompt: "Hive task: 01-fix-abort-tests\n\nTargeted single-repository worktree; destination: <path, ref, commit from create>. Implement and commit assigned changes; return sourceCommit." })
 subagent({ agent: "forager-worker", description: "Fix batch tests", prompt: "Hive task: 02-fix-batch-tests\n\nTargeted single-repository worktree; destination: <path, ref, commit from create>. Implement and commit assigned changes; return sourceCommit." })
 ```
@@ -77,7 +78,7 @@ Placement starts from repository status. These examples resume an existing untar
 <!-- /hive-host -->
 
 <!-- hive-host opencode-v1 -->
-Blocking launch (gate-closed sessions):
+Launch:
 
 OpenCode v1:
 
@@ -100,37 +101,9 @@ await task({
   prompt: `Hive run: ${lane.runId}\n\nResume the untargeted composite run; destinations: <per-repository path, ref, commit from create>. Complete the assigned work and commit; return the complete sourceCommits map keyed by repository ID.`,
 });
 ```
-
-A background launch applies to gate-open sessions with independent foreground work. After it, observe and reconcile the lane with `background-delegation`'s board protocol.
-
-Background launch (gate-open sessions):
-
-OpenCode v1:
-
-```ts
-const { repositories } = hive_repositories_status();
-const requestedRepoIds = lane.repoIds;
-const selectedRepoIds = repositories.filter(({ id }) => requestedRepoIds.includes(id)).map(({ id }) => id);
-if (
-  requestedRepoIds.length === 0 ||
-  new Set(requestedRepoIds).size !== requestedRepoIds.length ||
-  requestedRepoIds.some((id) => !selectedRepoIds.includes(id))
-) {
-  throw new Error('Placement blocker: saved lane.repoIds must be nonempty, unique, and configured');
-}
-const repoIds = selectedRepoIds;
-hive_adhoc_worktree_create({ runId: lane.runId, repoIds });
-const { task_id } = task({
-  subagent_type: 'forager-worker',
-  description: 'Implement the independent ad-hoc change',
-  prompt: `Hive run: ${lane.runId}\n\nResume the untargeted composite run; destinations: <per-repository path, ref, commit from create>. Complete the assigned work and commit; return the complete sourceCommits map keyed by repository ID.`,
-  background: true,
-});
-hive_background_status({});
-```
 <!-- /hive-host -->
 <!-- hive-host opencode-v2 -->
-Every `subagent()` launch runs in the background, so one launch serves both wait modes: wait for the child's terminal report before dependent work, or keep doing foreground work that does not depend on it. After the launch, observe and reconcile the lane with `background-delegation`'s board protocol.
+The launch returns at once. Wait for the child's final report before dependent work, or keep doing foreground work that does not depend on it.
 
 Launch:
 
@@ -154,7 +127,6 @@ const { sessionID } = subagent({
   description: 'Implement the ad-hoc change',
   prompt: `Hive run: ${lane.runId}\n\nResume the untargeted composite run; destinations: <per-repository path, ref, commit from create>. Complete the assigned work and commit; return the complete sourceCommits map keyed by repository ID.`,
 });
-hive_background_status({});
 ```
 <!-- /hive-host -->
 

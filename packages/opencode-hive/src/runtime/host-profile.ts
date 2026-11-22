@@ -133,8 +133,7 @@ export function renderSkillNameLookup(profile: HostProfile, names: ReadonlyMap<s
 export function renderSubagentWait(profile: HostProfile): string {
   if (!profile.backgroundSubagents) return '';
   const call = nativeCall(profile);
-  const { agentField, continuationField } = profile.nativeTask;
-  const resumable = [...RESUMABLE_SUBAGENT_ROLES].map((role) => `\`${role}\``).join(', ');
+  const { continuationField } = profile.nativeTask;
   return `\n## Native Subagent Wait
 
 On this host every \`${call}\` call runs its child in the background and returns a launch receipt (status \`running\` and the child's \`${continuationField}\`), not the child's result. The host later posts a subagent report message for that \`${continuationField}\` each time the child stops, with a \`state\` attribute:
@@ -145,9 +144,26 @@ When an instruction calls a \`${call}\` call blocking or treats its return as th
 
 A foreground \`${profile.shell.tool}\` command that exceeds its timeout moves to the background instead of stopping, and interrupting a session does not stop \`${profile.shell.tool}\` commands or descendant jobs it already backgrounded. Keep one active writer or mutating \`${profile.shell.tool}\` command per worktree or shared resource.
 
-Only a settled child of a resumable role (${resumable}, or a custom agent derived from one) may be continued with \`${continuationField}\`, on the same \`${agentField}\` and the same task or investigation, for one or two bounded follow-ups. Scouts, reviewers, advisors, and \`hive-helper\` are one-shot. A new task, an independent review or challenge pass, and a retry after a dead end always omit \`${continuationField}\`.
+${renderContinuationRule(profile)}
 
 Call \`hive_background_status\` only when a child's or its descendants' liveness is uncertain (an interrupted run, a timeout, a restart), and \`hive_background_cancel\` only to stop a wrong, stale, or unneeded child.\n`;
+}
+
+/** Which settled children may be continued, as `dispatch.ts` admits them. Shared by the wait section and unbound text. */
+function renderContinuationRule(profile: HostProfile): string {
+  const { agentField, continuationField } = profile.nativeTask;
+  const resumable = [...RESUMABLE_SUBAGENT_ROLES].map((role) => `\`${role}\``).join(', ');
+  return `Only a settled child of a resumable role (${resumable}, or a custom agent derived from one) may be continued with \`${continuationField}\`, on the same \`${agentField}\` and the same task or investigation, for one or two bounded follow-ups. Scouts, reviewers, advisors, and \`hive-helper\` are one-shot. A new task, an independent review or challenge pass, and a retry after a dead end always omit \`${continuationField}\`.`;
+}
+
+/**
+ * The wait and continuation rules for text that an agent without the Hive system prompt can receive, such as an
+ * unbound command, which cannot point at `## Native Subagent Wait`. Empty where a blocking call exists.
+ */
+export function subagentWaitInstruction(profile: HostProfile): string {
+  if (!profile.backgroundSubagents) return '';
+  const { continuationField } = profile.nativeTask;
+  return `On this host every \`${nativeCall(profile)}\` call returns a launch receipt (status \`running\` and the child's \`${continuationField}\`), not the child's result. Wait for the child's final report, a subagent report with \`state="completed"\`, \`state="error"\`, or \`state="cancelled"\`, before any decision that depends on it; a \`state="running"\` report is an interim stop, and an error or cancellation report is a failed or interrupted run. ${renderContinuationRule(profile)}`;
 }
 
 /**

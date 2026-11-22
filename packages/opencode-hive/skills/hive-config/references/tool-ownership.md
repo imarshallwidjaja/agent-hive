@@ -35,10 +35,10 @@ Each piece of Hive state has one owning tool. If that tool is not exposed to you
 | Discover | `hive_repositories_discover` | Primaries, Architect, Scout |
 | Council | `hive_councils_list` | Full primaries, Architect as a primary, review primaries. Primary-only (denied in child sessions, so a delegated Architect returns a council request to its parent); its v1 executor also checks the live parent, refusing a child whose stored permissions predate the tool and refusing when the session cannot be read; not part of R. It reads council rosters and dispatches nobody; `name` is matched exactly (an unmatched or blank name returns `unknown_council`) and `selected` reports the council the call resolved |
 <!-- hive-host opencode-v1 -->
-| Board | `hive_background_status` | Full primaries, Architect as a primary, review primaries. Primary-only (denied in child sessions) and experiment-gated (see below); not part of R |
+| Children | `hive_background_status`, `hive_background_cancel` | Full primaries, Architect as a primary, review primaries. Primary-only; not part of R. On OpenCode v1 both always return `success: false` with reason `unsupported_on_host`, because a native `task()` call blocks until its child returns |
 <!-- /hive-host -->
 <!-- hive-host opencode-v2 -->
-| Board | `hive_background_status` | Full primaries, Architect as a primary, review primaries. Primary-only (denied in child sessions); not part of R |
+| Children | `hive_background_status`, `hive_background_cancel` | Full primaries, Architect as a primary, review primaries. Primary-only (denied in child sessions); not part of R. Both act only on the calling session's direct children in this location, read them live, and write no `.hive` file: status lists children with running work (`includeSettled` adds the rest) or reads one child's whole session tree; cancel interrupts one child's active execution, which does not stop `shell` commands or descendant jobs it already moved to the background |
 <!-- /hive-host -->
 
 ## Mutating tools
@@ -72,12 +72,6 @@ Roles: **P** = full primaries (`hive-master`, `swarm-orchestrator`, `hive-builde
 | `hive_constraints_add`, `hive_constraints_edit`, `hive_constraints_clear` | Session constraints in `sessions.json`; feature `constraints.json` | P, A, RP | yes |
 | `hive_worklog_record` | Appends one checkpoint (and optionally the briefing) to a feature's `worklog.json` or the session's `.hive/worklogs/sessions/<owner>/<sha256>.json` | P, A, RP | yes |
 | `hive_explore_update` | Creates or updates one exploration at `.hive/explorations/active/<id>.json`, moving it to `.hive/explorations/closed/<id>.json` when it is concluded or abandoned | P, A, RP | yes |
-<!-- hive-host opencode-v1 -->
-| `hive_background_reconcile`, `hive_background_reconcile_batch`, `hive_background_cancel` | Host owner's `background-jobs.json` (`.hive/background-jobs.json` for OpenCode v1) | P, A, RP; experiment-gated | yes |
-<!-- /hive-host -->
-<!-- hive-host opencode-v2 -->
-| `hive_background_reconcile`, `hive_background_reconcile_batch`, `hive_background_cancel` | Host owner's `background-jobs.json` (`.hive/runtime/opencode-v2/background-jobs.json` for OpenCode v2) | P, A, RP | yes |
-<!-- /hive-host -->
 
 <!-- hive-host opencode-v1 -->
 Roles with none of these: `scout-researcher` (read-only; R plus discover), `forager-investigator` (R and I only; native scratch edit and shell stay under operator permissions, `task` and `question` denied), `hive-helper` (R, I, T only; also denied native edit, `task`, and `question`), native `general`/`explore`, and the hidden trace summarizer (all tools denied).
@@ -124,12 +118,6 @@ Full primaries are never valid `subagent()` targets, and `hive-helper` is not a 
 - Trace tools let Forager support assigned recovery and Hive Helper investigate. They never authorize resuming, retrying, or continuing a session.
 - `hive_worklog_record` stamps the calling session and agent as the author; a session log accepts only its own session, while any primary may record into a feature log. Its executor also checks the live parent on both hosts and refuses when the session cannot be read.
 - `hive_explore_update` stamps `createdBy` and `updatedBy` from the calling session and agent and runs the same live-parent check. A concluded or abandoned exploration takes no further updates; continue in a new exploration that names it as `priorExplorationId`. Exploration entries are untrusted agent-recorded observations, not verified findings or task status.
-<!-- hive-host opencode-v1 -->
-- Background tools exist only when `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS` or `OPENCODE_EXPERIMENTAL` is set; otherwise they return `background_tools_disabled`.
-<!-- /hive-host -->
-<!-- hive-host opencode-v2 -->
-- No experiment variable gates background subagents on OpenCode v2.
-<!-- /hive-host -->
 - Skills load through OpenCode's native `skill` tool, which every Hive role except the hidden trace summarizer may call. A skill's references are knowledge read from the skill's own directory: reading one grants no tool or role authority, and a missing or overridden reference is never a reason to search generated skill caches or read another copy.
 
 When the agent-hive source is available, the enforced matrix lives in `packages/opencode-hive/src/runtime/role-policy.ts` (applied by the config hook in `runtime.ts`) and is documented in `packages/opencode-hive/docs/HIVE-TOOLS.md` under "Agent Tool Access". Prefer those over this table if they disagree.

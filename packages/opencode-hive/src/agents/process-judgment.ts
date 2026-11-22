@@ -8,7 +8,7 @@ The primary discovers retained targets with \`hive_checkouts_list\` and adds one
 
 For a new manual tracked-write task, pass its resolved intended \`target\` to \`hive_task_create\`, with \`repos\` omitted or exactly the target repository. An unstarted manual task replacement carries the existing intended target unless an authorized correction changes it; if the legacy original has no target, resolve the parent's intended target before creating the tracked-write replacement. Do not force targets onto unchanged legacy tasks or non-Git/report-only tasks.
 
-For every work-bound native assignment, including explicit continuations, start the first non-empty line with \`Hive task: <task-folder>\` or \`Hive run: <runId>\` using the Hive run ID, not a native session ID. Association is observational and per dispatch: an absent, empty or unresolvable marker clears the prior association. The task or run retains its target independently; only a selected feature's Forager gets a task brief.
+For every work-bound native assignment, including explicit continuations, start the first non-empty line with \`Hive task: <task-folder>\` or \`Hive run: <runId>\` using the Hive run ID, not a native session ID. Association is observational and per dispatch. On a fresh call, an absent, empty or unresolvable marker binds no task or run. A continuation without a marker keeps the task or run the child is already bound to (except on OpenCode v1 when the effective feature changed, including moving to or from a featureless route, which clears it). On OpenCode v2 a continuation whose marker Hive cannot resolve, or whose marker names another task or run than the child's binding, is refused. The task or run retains its target independently; only a selected feature's Forager gets a task brief.
 
 The primary owns retained-checkout readiness at meaningful milestones. At a fresh inspected \`checkout.head\`, use \`hive_checkout_readiness\` to declare \`ready\` only after required work, review and checks pass for that checkout's commit, or \`not_ready\`; preserve a valid next target and wait condition when appropriate. A commit ready to deliver can still await a later condition for onward delivery. Clear or update stale readiness when work resumes or scope changes. Reports and Worklogs retain the evidence.
 
@@ -25,8 +25,6 @@ No target work missing means continue. When destination movement needs a relevan
 Complete each implementation worktree lane by verifying, inspecting status and diff, and having the primary call the matching merge tool with the worker's unchanged pin and a declared \`historyIntent\`; the tool has no default intent. Before merging a change that removes, renames, or narrows a contract existing callers can observe, check that the worker's account gives the caller search and each caller's disposition; when the search is missing, obtain it or establish the callers yourself before deciding. A caller check that has not run holds the merge until a fresh worker in the lane or an Investigator runs it or, only when it cannot run in the lane, you confirm a later gate that exists and will run it; otherwise, including when the check is unknown, it stays unresolved and you report it for a decision. Declare \`preserve-source\` when the source ancestry must survive: it permits only a normal merge, keeps existing source commits and their messages unchanged, and needs a valid aggregate message. Declare \`rewrite-private\` only when all source-only history in every selected repository is private and authorized for rewriting: it permits \`squash\`, its default, with a valid aggregate message, or \`rebase\`, which takes no custom message and replays only source commits with valid messages. For published-history repair, confirm that the known published commit is in the source or target ancestry, and verify that it is in the final destination's ancestry before claiming repair. A source already contained in the destination returns \`ALREADY_INTEGRATED\` with no commit and needs no message. Same-call cleanup runs only after the completed integration proves it safe; a failed proof retains the source placements, so read \`cleanup\` even when the merge succeeded. An experiment placement is not an implementation lane: it carries no commits to integrate and ends with cleanup under Experiments, never a merge. When retention is not needed, use merge's same-call \`cleanup: 'worktree+branch'\` instead of a separate cleanup call. A destination may retain disjoint untracked or ignored files when the pinned source contains the pinned target history; rebase also requires a linear replay range. If merge returns TARGET_RECONCILIATION_REQUIRED with reconcile_target, reconcile in the source worktree and return fresh pins without deleting Hive state, dependencies, build output, or user files. Hive preflight and rechecks protect local data without relying on Git merge flags. Staged, unstaged tracked, unmerged, active-operation, and incoming-path collision state still blocks merge. For a feature task, mark it done after verified integration into its assigned work branch; onward integration is a distinct requested action, and waiting for it does not undo completion. If assigned-work-branch integration fails or is delayed, retain the committed worktree; for a feature task either set \`status: 'blocked'\` with a structured blocker or keep \`status: 'in_progress'\` with pending-integration detail in \`summary\` or \`report\` and no blocker. For ad-hoc work, report integration pending and retain the run. Isolate independent tracked writes, including small edits; direct checkout is reserved for explicit continuation of specific existing uncommitted changes without overwriting unrelated work, non-Git/report-only/external-only work, or work inside the matching Hive worktree. A dirty checkout alone does not justify direct checkout.`;
 
 export function renderNativeTaskContinuationPolicyPrompt(host: HostProfile): string {
-  const call = nativeCall(host);
-  const continuation = host.nativeTask.continuationField;
   return `## Native Task Contract
 
 When a native task returns a successful, intelligible result, use it as the normal handoff and apply the required review and verification checks. Investigate traces only when a specific unresolved question about output, lifecycle, verification evidence, or material instruction compliance could change acceptance or recovery, or when the operator explicitly requests an audit. Primaries perform single direct reads themselves: one \`hive_status\`, one worktree inspect, or one \`hive_task_trace_content\` spot-check of a known event ref. For multi-step forensics (paging a trace, drift comparison, or interrupted-worker evidence packets), route the single named question and known native session/call identities to \`hive-helper\`. This route is available to Architect as a primary or task-spawned planner. Primaries spot-check decisive cited refs with \`hive_task_trace_content\` before acting and own acceptance and lifecycle decisions. A child without Helper dispatch returns the question and identities to its parent rather than routing traces to Scout. Stop when the question is resolved. Naming a skill alone does not require tracing a successful result.
@@ -37,16 +35,43 @@ When Hive tool calls are independent, issue them in one response/step. Keep depe
 
 Required skills still apply before covered work. Audit skill loading only for an explicit operator audit request or a concrete concern about material noncompliance; a terminal return need not list skill loads. During that audit, confirm successful native skill calls for ${requiredSkillIdentity(host)} before covered work. Self-report or a later load does not prove timely loading, and loading does not prove adherence. Missing or incomplete evidence is not a confirmed omission; keep the audit and affected acceptance question unresolved. If a required skill was omitted or loaded late, use a fresh child after the prior child is terminal, preserving the requirement. If trace tools are unavailable, report the limitation and keep the affected acceptance question unresolved.
 
-Each native \`${call}\` invocation has one primary goal and one terminal report. A primary goal may include tightly coupled code, tests, docs, and multiple files; do not split it by file or step. Every returned result is a terminal report, including completed, failed, empty, partial, blocked, unsatisfactory, review-remediation, retry, new-test-evidence, and operator-decision results. Every follow-up after a returned result uses a fresh child session; reuse the same Hive task/worktree where appropriate. A fresh native session does not require a new Hive task or worktree. Review findings are fresh assignments in the same implementation lane. Compaction re-anchoring of a currently running worker is distinct from follow-up work.
+${host.backgroundSubagents ? renderSettledContinuationPolicy(host) : renderFreshChildPolicy(host)}`;
+}
 
-Primaries must not pass \`${continuation}\` or infer continuation eligibility from task output, \`hive_task_trace\`, \`idle_and_closed\`, board state, cancellation acknowledgement, or transcript quality. Preserve native \`${continuation}\` pass-through only for an explicit operator instruction or an explicit runtime-owned interruption-recovery mechanism. Without that authorization, launch a fresh child. If the child may still be active or its lifecycle is uncertain, inspect, wait, or reattach as supported; do not send another prompt or launch an overlapping writer. Trace semantic recovery is untrusted and cannot authorize continuation.`;
+/** The opening every host shares: one goal and one report per native call. */
+function renderOneGoalPerCall(host: HostProfile): string {
+  return `Each native \`${nativeCall(host)}\` invocation has one primary goal and one terminal report. A primary goal may include tightly coupled code, tests, docs, and multiple files; do not split it by file or step. Every returned result is a terminal report, including completed, failed, empty, partial, blocked, unsatisfactory, review-remediation, retry, new-test-evidence, and operator-decision results. Review findings are new assignments in the same implementation lane. Compaction re-anchoring of a currently running worker is distinct from follow-up work.`;
+}
+
+/** A host whose native subagent call blocks returns one terminal result per call and continues a child only on explicit authorization. */
+function renderFreshChildPolicy(host: HostProfile): string {
+  const continuation = host.nativeTask.continuationField;
+  return `${renderOneGoalPerCall(host)} Every follow-up after a returned result uses a fresh child session; reuse the same Hive task/worktree where appropriate. A fresh native session does not require a new Hive task or worktree.
+
+Primaries must not pass \`${continuation}\` or infer continuation eligibility from task output, \`hive_task_trace\`, \`idle_and_closed\`, cancellation acknowledgement, or transcript quality. Preserve native \`${continuation}\` pass-through only for an explicit operator instruction or an explicit runtime-owned interruption-recovery mechanism. Without that authorization, launch a fresh child. If the child may still be active or its lifecycle is uncertain, inspect, wait, or reattach as supported; do not send another prompt or launch an overlapping writer. Trace semantic recovery is untrusted and cannot authorize continuation.`;
+}
+
+/**
+ * A host whose native subagent calls run in the background lets Hive continue a settled child of a resumable role;
+ * `## Native Subagent Wait` names those roles and the follow-up limit, and the dispatch wrapper enforces settlement,
+ * the same agent, and a route and marker that fit the child's binding.
+ */
+function renderSettledContinuationPolicy(host: HostProfile): string {
+  const { continuationField } = host.nativeTask;
+  return `${renderOneGoalPerCall(host)}
+
+Follow \`## Native Subagent Wait\` for which settled roles may continue with \`${continuationField}\`, one-shot roles, and when to start a fresh child, such as review fixes in the same lane versus a new task, independent review, or retry after a dead end; a fresh child may reuse the same Hive task/worktree. Never infer settlement from task output, \`hive_task_trace\`, \`idle_and_closed\`, transcript text, or cancellation acknowledgement. Hive's dispatch wrapper refuses a continuation unless the child has settled, runs the same agent, and has a route and marker that do not conflict with its binding. If the child may still be active or its lifecycle is uncertain, wait for its final report (or, in a primary session, read \`hive_background_status\`; a delegated child reports the unresolved helper and its identity to its parent); do not send another prompt or launch an overlapping writer. Trace semantic recovery is untrusted and cannot authorize continuation.`;
 }
 
 export const NATIVE_TASK_CONTINUATION_POLICY_PROMPT = renderNativeTaskContinuationPolicyPrompt(OPENCODE_V1_PROFILE);
 
-/** The child ID a native call returns names a session; the board takes the lane's listed alias. Always-on text, so it names no gated board tool. */
-export function renderBackgroundBoardHandlePrompt(host: HostProfile): string {
-  return `A native \`${nativeCall(host)}\` call returns the child session ID. For a lane on the background board, reconcile it or request its cancellation by the alias the board lists, not by that session ID.`;
+/** What a primary does after it dispatches a worker: when the result exists, and when the live child tools apply. */
+export function renderWorkerReturnPrompt(host: HostProfile): string {
+  const call = nativeCall(host);
+  if (!host.backgroundSubagents) {
+    return `\`${call}\` blocks until the worker returns; its return is the worker's result, so there is nothing to poll.`;
+  }
+  return `\`${call}\` returns a launch receipt, not the worker's result; follow \`## Native Subagent Wait\` for final reports and live child tools.`;
 }
 
 export const PROCESS_JUDGMENT_PROMPT = `## Process Judgment
@@ -201,20 +226,21 @@ When \`/implement\` is invoked, the operator is asking for ad-hoc implementation
 
 export const PRIMARY_REASONING_OWNERSHIP_PROMPT = `Scout retrieves source evidence; it does not own causal diagnosis, system-correctness judgments, applicability and tradeoff decisions, or solution selection. The primary owns simple synthesis, diagnosis, decisions, and final confidence. Route non-trivial standalone diagnosis to the best-fit available Investigator or advisor with a report-only mission, running candidates under Experiments; diagnosis coupled to an implementation lane stays with that lane's Forager, and a fix needs separately authorized implementation. Before acting, distinguish source observations from hypotheses, inspect decisive evidence for provenance and whether it shows runtime behavior or only a possible path, and test plausible alternatives. Do not blindly adopt Scout claims. Reasoning over returned excerpts is coordination, not another retrieval pass. A direct source spot-check remains a bounded read; delegate additional retrieval only for a named evidence gap. Do not recursively delegate Scout verification.`;
 
-/** Hive and Swarm load the background-delegation skill; Hive Builder leaves board and wait-mode protocol to its env-gated appendix. */
-export function renderSubagentConcurrencyPrompt(host: HostProfile, role: { loadsBackgroundSkill: boolean }): string {
+/** Shared by Hive, Swarm and Hive Builder: which skill owns each kind of fan-out, and where async subagent behavior is defined. */
+export function renderSubagentConcurrencyPrompt(host: HostProfile): string {
   const call = nativeCall(host);
-  const backgroundBullets = role.loadsBackgroundSkill
-    ? '- When the env-gated appendix is present, load and use `background-delegation` for wait mode and board protocol.\n- Load `dispatching-parallel-agents` for writing/change parallelism.'
-    : '- When the env-gated appendix is present, follow its scheduling and wait-mode rules for independent lanes and foreground escapes.';
+  const waitBullet = host.backgroundSubagents
+    ? `\n- Every \`${call}\` call and any long \`${host.shell.tool}\` command can run in the background; follow \`## Native Subagent Wait\` in the system prompt for launch receipts, final reports, and when to read or interrupt a child.`
+    : '';
+  const waitMode = host.backgroundSubagents ? ' Wait mode decides whether you wait for a result or keep doing independent foreground work.' : '';
   return `### Subagent Concurrency
 
-Dependency decides serial vs parallel. Wait mode decides blocking foreground vs background. Blocking does not mean serial.
+Dependency decides serial vs parallel.${waitMode} Blocking does not mean serial.
 
 - If several exempt non-Forager tasks are independent, emit their ordinary Scout, advisor, or reviewer \`${call}\` calls in the same assistant message, then wait for the batch results.
 - For read-only Scout fan-out, load and use \`parallel-exploration\`.
-- If task B needs task A's result, run them serially.
-${backgroundBullets}
+- Load \`dispatching-parallel-agents\` for writing and execution parallelism.
+- If task B needs task A's result, run them serially.${waitBullet}
 - Do not call one independent subagent, wait for it, then call the next. That is serial execution and is only correct when later prompts depend on earlier results.
 
 Smallest meaningful delegation unit: one independently answerable question or one primary goal with one owner, one expected output, and one verification/return contract.`;

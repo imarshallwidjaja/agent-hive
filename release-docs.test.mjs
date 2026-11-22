@@ -23,7 +23,7 @@ describe('release documentation and runtime contract', () => {
 
   it('publishes only the canonical tool runtime', () => {
     const manifest = JSON.parse(read('packages/opencode-hive/plugin.json'));
-    assert.equal(manifest.tools.length, 52);
+    assert.equal(manifest.tools.length, 50);
     for (const required of [
       'hive_feature_select',
       'hive_worktree_create',
@@ -54,6 +54,8 @@ describe('release documentation and runtime contract', () => {
       'hive_adhoc_cleanup',
       'hive_review_evidence_resolve',
       'hive_review_workspace_create',
+      'hive_background_reconcile',
+      'hive_background_reconcile_batch',
     ]) assert.equal(manifest.tools.includes(removed), false, removed);
   });
 
@@ -110,7 +112,8 @@ describe('release documentation and runtime contract', () => {
     assert.match(plugin, /top-level session uses the explicit CLI\/session model/);
     assert.match(plugin, /trusted shell\/tool subprocesses/);
     assert.match(tools, /every Hive executor and the native `execute.before` hook/);
-    assert.match(tools, /singleton.*unknown/);
+    assert.match(tools, /each always returns `\{ success: false, reason: 'unsupported_on_host', error \}`/);
+    assert.match(tools, /`shell` commands and descendant jobs it already moved to the background keep running/);
     assert.doesNotMatch(tools, /read_access\.code/);
     assert.match(tools, /`read_access` string names.*`not_configured`, `unauthorized`, `unreachable`, `wrong_location`, `wrong_instance`, `caller_unavailable` or `caller_displaced`/);
     assert.match(tools, /`target_unavailable` and `inconsistent_lookup`.*`unavailable_or_unauthorized` without `read_access`/);

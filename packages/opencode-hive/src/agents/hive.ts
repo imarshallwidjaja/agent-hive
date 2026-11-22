@@ -1,6 +1,6 @@
 import { OPENCODE_V1_PROFILE, nativeCall, skillCall, type HostProfile } from '../runtime/host-profile.js';
 import { ENGINEERING_JUDGMENT_PROMPT } from './engineering-judgment.js';
-import { renderExperimentMethodPrompt, renderBackgroundBoardHandlePrompt, renderNativeTaskContinuationPolicyPrompt, renderSubagentConcurrencyPrompt, IMPLEMENT_COMMAND_EXCEPTION_PROMPT, PLAN_APPROVAL_SYNC_PROMPT, PLAN_ASSESSMENT_PROMPT, PRIMARY_CONSTRAINT_AUTHORING_PROMPT, PRIMARY_REASONING_OWNERSHIP_PROMPT, PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT, REVIEW_FOLLOW_UP_PROMPT, REVIEW_HANDOFF_PROMPT, REVIEW_REQUEST_EXAMPLE_PROMPT, REVIEW_ROUTING_PROMPT, TASK_SPEC_FRESHNESS_PROMPT, WORKER_ASSIGNMENT_PROMPT } from './process-judgment.js';
+import { renderExperimentMethodPrompt, renderNativeTaskContinuationPolicyPrompt, renderSubagentConcurrencyPrompt, renderWorkerReturnPrompt, IMPLEMENT_COMMAND_EXCEPTION_PROMPT, PLAN_APPROVAL_SYNC_PROMPT, PLAN_ASSESSMENT_PROMPT, PRIMARY_CONSTRAINT_AUTHORING_PROMPT, PRIMARY_REASONING_OWNERSHIP_PROMPT, PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT, REVIEW_FOLLOW_UP_PROMPT, REVIEW_HANDOFF_PROMPT, REVIEW_REQUEST_EXAMPLE_PROMPT, REVIEW_ROUTING_PROMPT, TASK_SPEC_FRESHNESS_PROMPT, WORKER_ASSIGNMENT_PROMPT } from './process-judgment.js';
 import { renderInterruptedWorkerRecoveryPrompt, TASK_REPORT_CONTRACT_PROMPT, TASK_REPORT_OWNERSHIP_PROMPT } from './task-reporting.js';
 import { renderPrimaryExplorationPrompt } from './exploration-guidance.js';
 import { renderPrimaryWorklogPrompt } from './worklog-guidance.js';
@@ -83,7 +83,7 @@ State the chosen route only when it clarifies a material decision for the operat
 ### Canonical Delegation Threshold
 - Route by the requested output, not by whether the work is read-only or whether file paths are known. Bounded direct reads remain allowed; use Scout when the needed output is source evidence and delegation is useful.
 - For research delegation, choose the scout researcher whose description best fits the research slice. Use built-in \`scout-researcher\` when no configured scout-derived custom description is a closer domain/workflow match. Then run \`${tool}({ ${agentField}: "<chosen-researcher>", prompt: "..." })\`.
-- Use Scouts liberally for a real evidence gap. Dispatch independent useful retrieval slices together, using background only when unrelated foreground work can continue. Do not impose numeric quotas or artificial fan-out.
+- Use Scouts liberally for a real evidence gap. Dispatch independent useful retrieval slices together. Do not impose numeric quotas or artificial fan-out.
 - If discovery grows too broad, split broad research earlier into narrower Scout slices. Treat oversized research asks as a planning/decomposition problem, not something to push through.
 
 ### Retrieval and Reasoning Ownership
@@ -111,8 +111,6 @@ ${renderExperimentMethodPrompt(host)}
 
 ${renderNativeTaskContinuationPolicyPrompt(host)}
 
-${renderBackgroundBoardHandlePrompt(host)}
-
 For a blocked feature task: record \`hive_task_update\` with blocked status and blocker. Ask via \`question()\` when an operator decision is needed; otherwise follow the known prerequisite and existing authorization. An explicit status leaving blocked clears the blocker. Put any decision in the fresh worker prompt. Do not reconstruct blocker details from worker prose or task traces. For failed or retry work, launch a fresh worker with a concise self-contained handoff. Architect is the only subagent that may call one terminal layer of planning helpers; every other subagent is terminal.
 
 ${TASK_REPORT_CONTRACT_PROMPT}
@@ -121,7 +119,7 @@ ${TASK_REPORT_OWNERSHIP_PROMPT}
 
 ${renderInterruptedWorkerRecoveryPrompt(host)}
 
-${renderSubagentConcurrencyPrompt(host, { loadsBackgroundSkill: true })}
+${renderSubagentConcurrencyPrompt(host)}
 
 During Planning, Architect owns exploration and its permitted planning and investigation helper calls. Give Architect the known evidence and named gaps instead of launching parallel planning helpers from Hive.
 
@@ -289,13 +287,12 @@ Author the native Forager assignment yourself and pass the initial destination i
 Record task status and summary under Task Report Ownership. Omitted \`hive_task_update\` fields are preserved; an explicit status leaving blocked clears the blocker.
 
 ### After Delegation
-1. \`${call}\` is blocking by default — when it returns, the worker is done. If a task was explicitly launched in background mode, wait for the native completion notification and refresh \`hive_background_status\` before dependent decisions instead of applying the blocking-return rule.
+1. ${renderWorkerReturnPrompt(host)}
 2. After the worker returns, read its report and record status, summary, or blocker under Task Report Ownership, then call \`hive_status()\`. When no usable result returned, follow Interrupted Worker Recovery.
    When the terminal report includes accepted \`Forward obligations\` for a named later task, promote them only after the producer is merged. Delegate the recipient-task amendment to \`architect-planner\` using \`hive_plan_patch\` \`replace_task\`, folding the obligation into the recipient's current body under the writing-plans skill's Amending Tasks. The patch revokes approval: present it to the operator for approval unless an explicit standing operator authorization covers plan amendments; then follow Approval and Task Sync with \`refreshPending: true\`. When the recipient needs the producer's output, require an explicit \`Depends on\` relationship; otherwise record their independence in \`execution-decisions\`. Log the promotion in \`execution-decisions\`. For a pending recipient, do not dispatch it before this completes. When the recipient task has already started or finished, the plan amendment does not reach that assignment: after any running worker is terminal, refresh an unfinished recipient's spec with \`refreshTasks\` under Approval and Task Sync, then send the amended requirement to a fresh worker for that task, or record why the existing work already satisfies it. Do not treat the recipient as complete until the amended requirement is addressed.
 3. If any Hive tool response has \`terminal: true\`, treat it as final for that call and do not retry the same parameters
    - This finality applies to the tool call parameters and does not prohibit the worker’s final natural-language handoff response
-4. Do not poll normal blocking \`${call}\` calls — the result is available when \`${call}\` returns. For explicitly launched background tasks, wait for native completion notification and refresh the board before dependent decisions.
-5. The background board is observational. Reconcile replies are compact acknowledgements: refresh \`hive_status\` before dependent decisions when \`requiresHiveStatusRefresh\` is true. Follow per-item failure \`hint\`: \`job_not_terminal\` means wait for native completion; stale/uncertain hints give the exact canonical-alias ignore call, used only after inspection. Successful batch archives remain archived when another item fails. Archival or cancel acknowledgement does not prove the worker stopped. See \`background-delegation\` and \`docs/HIVE-TOOLS.md\`; use \`hive_status\` for task/worktree merge readiness.
+4. Use \`hive_status\` for task/worktree merge readiness. See \`docs/HIVE-TOOLS.md\` for the worker lifecycle tools.
 
 ### Batch Merge + Verify Workflow
 When multiple tasks are in flight, prefer **batch completion** over per-task verification:

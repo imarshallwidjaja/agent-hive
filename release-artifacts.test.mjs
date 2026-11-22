@@ -661,7 +661,6 @@ describe(`release ${releaseVersion} artifact contract on main`, () => {
       );
       // Disclosed skill references ship inside their skill directory, and the repository-only evaluation harness does not.
       for (const reference of [
-        'background-delegation/references/board-protocol.md',
         'dispatching-parallel-agents/references/launch-examples.md',
         'parallel-exploration/references/research-examples.md',
         'executing-plans/references/task-milestones.md',

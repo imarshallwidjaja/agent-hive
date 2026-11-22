@@ -11,6 +11,7 @@ import { SCOUT_BEE_PROMPT } from './scout';
 import { HIVE_HELPER_PROMPT } from './hive-helper';
 import { CODEMODE_READ_TOOLS, OPENCODE_V1_PROFILE, createHostProfile, renderReadTransport, renderSkillResolution, renderSubagentWait, requiredSkillIdentity, skillCall } from '../runtime/host-profile';
 import type { HostProfile } from '../runtime/host-profile';
+import { RESUMABLE_SUBAGENT_ROLES } from '../runtime/role-policy';
 import { HIVE_TOOL_NAMES } from '../utils/plugin-manifest';
 import { renderCommandBehavior } from '../commands/command-bodies';
 import { renderQueenBeePrompt } from './hive';
@@ -1098,12 +1099,6 @@ describe('Primary agent subagent concurrency guidance', () => {
     ['Hive Builder', HIVE_BUILDER_PROMPT],
   ] as const;
 
-  const backgroundPrimaries = [
-    ['Hive', QUEEN_BEE_PROMPT],
-    ['Architect', ARCHITECT_BEE_PROMPT],
-    ['Swarm', SWARM_BEE_PROMPT],
-  ] as const;
-
   it('does not keep stale synchronous-exploration wording in primary prompts', () => {
     for (const [name, prompt] of primaryPrompts) {
       expect(prompt, name).not.toContain('default to synchronous exploration');
@@ -1124,20 +1119,15 @@ describe('Primary agent subagent concurrency guidance', () => {
     }
   });
 
-  it('routes background wait mode to background-delegation without copying eligibility detail', () => {
-    for (const [name, prompt] of backgroundPrimaries) {
-      const policy = subagentConcurrencySection(prompt);
-      expect(policy, name).toMatch(/load and use [`']?background-delegation/i);
-      expect(policy, name).not.toMatch(/useful unrelated foreground work/i);
-      expect(policy, name).not.toMatch(
-        /otherwise launch independent lanes together in blocking mode/i
-      );
-      expect(policy, name).not.toMatch(
-        /foreground\/blocking escape for dependency, risk, simplicity/i
-      );
-      expect(policy, name).not.toMatch(
-        /background-launched freely when independent|run in background when independent|freely when independent/i
-      );
+  it('points v2 primaries to the system prompt wait section and keeps v1 on blocking calls', () => {
+    const v2 = createHostProfile('opencode-v2');
+    for (const [name, render] of [['Hive', renderQueenBeePrompt], ['Swarm', renderSwarmBeePrompt], ['Hive Builder', renderHiveBuilderPrompt]] as const) {
+      const v1Policy = subagentConcurrencySection(render(OPENCODE_V1_PROFILE));
+      const v2Policy = subagentConcurrencySection(render(v2));
+      expect(v1Policy, name).toContain('Load `dispatching-parallel-agents` for writing and execution parallelism.');
+      expect(v1Policy, name).not.toContain('Native Subagent Wait');
+      expect(v2Policy, name).toContain('Wait mode decides whether you wait for a result or keep doing independent foreground work.');
+      expect(v2Policy, name).toContain('follow `## Native Subagent Wait` in the system prompt for launch receipts, final reports, and when to read or interrupt a child.');
     }
   });
 });
@@ -1303,7 +1293,7 @@ describe('Fresh-session delegation contract', () => {
       expect(prompt, name).toContain('tightly coupled code, tests, docs, and multiple files');
       expect(prompt, name).toContain('Every returned result is a terminal report');
       expect(prompt, name).toContain('Every follow-up after a returned result uses a fresh child session');
-      expect(prompt, name).toContain('Review findings are fresh assignments in the same implementation lane');
+      expect(prompt, name).toContain('Review findings are new assignments in the same implementation lane');
       for (const result of [
         'completed',
         'failed',
@@ -1418,7 +1408,6 @@ describe('Active native-task guidance contradiction checks', () => {
     'packages/opencode-hive/README.md',
     'packages/opencode-hive/docs/HIVE-TOOLS.md',
     'packages/opencode-hive/docs/SKILL-OWNERSHIP.md',
-    'packages/opencode-hive/skills/background-delegation/SKILL.md',
     'packages/opencode-hive/skills/context-engineering/SKILL.md',
     'packages/opencode-hive/skills/dispatching-parallel-agents/SKILL.md',
     'packages/opencode-hive/skills/executing-plans/SKILL.md',
@@ -1426,7 +1415,6 @@ describe('Active native-task guidance contradiction checks', () => {
     'packages/opencode-hive/skills/orchestrating-ad-hoc-work/SKILL.md',
     'packages/opencode-hive/skills/starting-ad-hoc-implementation/SKILL.md',
     'packages/opencode-hive/skills/parallel-exploration/SKILL.md',
-    'packages/opencode-hive/skills/background-delegation/references/board-protocol.md',
     'packages/opencode-hive/skills/context-engineering/references/mutation-and-recovery.md',
     'packages/opencode-hive/skills/dispatching-parallel-agents/references/launch-examples.md',
     'packages/opencode-hive/skills/executing-plans/references/task-milestones.md',
@@ -1610,18 +1598,14 @@ describe('Primary tool output contracts', () => {
     }
   });
 
-  it('batches independent calls and consumes compact reconciliation acknowledgements safely', () => {
+  it('batches independent calls and keeps a delegated Architect waiting on its own helpers', () => {
     expect(NATIVE_TASK_CONTINUATION_POLICY_PROMPT).toContain('When Hive tool calls are independent, issue them in one response/step');
     expect(NATIVE_TASK_CONTINUATION_POLICY_PROMPT).toContain('mutations of the same worktree, destination, or state register sequential');
-    for (const prompt of [QUEEN_BEE_PROMPT, SWARM_BEE_PROMPT, HIVE_BUILDER_PROMPT]) {
-      expect(prompt).toContain('compact acknowledgements');
-      expect(prompt).toContain('requiresHiveStatusRefresh');
-      expect(prompt).toContain('`job_not_terminal` means wait for native completion');
-      expect(prompt).toContain('exact canonical-alias ignore call, used only after inspection');
-      expect(prompt).toContain('Successful batch archives remain archived when another item fails');
-    }
-    expect(ARCHITECT_BEE_PROMPT).toContain('When task-spawned, use blocking calls for the permitted terminal helper layer');
-    expect(ARCHITECT_BEE_PROMPT).toContain('board tools are denied');
+    expect(ARCHITECT_BEE_PROMPT).toContain("When task-spawned, call only one layer of permitted planning helpers (Scout, Investigator, plan-reviewer, approach-advisor, and `hive-helper`) and wait for each helper's result before relying on it.");
+    expect(ARCHITECT_BEE_PROMPT).toContain('If a helper is interrupted, report the unresolved helper and its identity to your parent.');
+    // The parent's live child tools reach only its direct children, so a delegated Architect forwards no helper control.
+    expect(ARCHITECT_BEE_PROMPT).toContain('Return primary-only requests, such as convening a council, to your parent; its live child tools inspect or interrupt you, not your helpers.');
+    expect(ARCHITECT_BEE_PROMPT).not.toContain('Primary-only control requests, such as `hive_background_status`');
   });
 });
 
@@ -1735,7 +1719,7 @@ describe('Task report reliability', () => {
       'Never update sibling or other tasks, and never supply `status`, `summary`, or `blocker`; the primary records those',
       'When changing Hive state under `.hive/` outside your assigned worktree, use only the owning Hive tool',
       'Never edit, write, move, or delete that state by hand via edit or shell',
-      '`features/**/status.json`, `feature.json`, `plan.md`, `APPROVED`, comments, reports, `handoff.md`, context files, `sessions.json`, constraints, `background-jobs.json`, `repositories.json`, `workspace.json`, and locks',
+      '`features/**/status.json`, `feature.json`, `plan.md`, `APPROVED`, comments, reports, `handoff.md`, context files, `sessions.json`, constraints, `repositories.json`, `workspace.json`, and locks',
       'report the failure to the primary instead of substituting a manual write',
       'Your assigned worktree, even when located under `.hive/.worktrees/...`, is your normal writable workspace',
       'After the final applicable verification and any authorized source commit, call `hive_task_update({ feature, task, report, handoff })`',
@@ -1799,10 +1783,10 @@ describe('Task report reliability', () => {
       'A failed run does not fail the task',
       'Confirm the prior writer is truly terminal, along with any in-flight subprocess or shared-resource effect',
       'do not add polling',
-      'a cancellation acknowledgement, a stale board entry, or closed assistant text alone does not establish termination',
+      'a cancellation acknowledgement, an error or cancellation report, or closed assistant text alone does not establish termination',
       'Treat an idle runtime after a host restart and an `evidence_only` recovery snapshot as records of what survived. Neither proves that the old writer or its subprocesses stopped',
       'give Helper any replay hint or known child ID, or ask it to look for a `child_session_id` on that call in a `hive_task_trace` of the parent session, which appears only when the stored call recorded the child',
-      'the background board has no row for a foreground call that returned no result, and a missing child ID does not establish termination',
+      'which appears only when the stored call recorded the child; a missing child ID does not establish termination',
       'Route a named trace/lifecycle question with known native session/call identities to `hive-helper`',
       'Spot-check decisive cited event refs with `hive_task_trace_content` before deciding',
       'Helper gathers evidence; the primary decides termination',
@@ -2531,7 +2515,6 @@ describe('Hive (Hybrid) prompt', () => {
 
     it('separates subagent concurrency from foreground wait mode', () => {
       expect(QUEEN_BEE_PROMPT).toContain('Dependency decides serial vs parallel');
-      expect(QUEEN_BEE_PROMPT).toContain('Wait mode decides blocking foreground vs background');
       expect(QUEEN_BEE_PROMPT).toContain('Blocking does not mean serial');
       expect(QUEEN_BEE_PROMPT).toContain(
         'If several exempt non-Forager tasks are independent, emit their ordinary Scout, advisor, or reviewer `task()` calls in the same assistant message'
@@ -2793,7 +2776,6 @@ describe('Architect (Planner) prompt', () => {
 
     it('separates subagent concurrency from foreground wait mode', () => {
       expect(ARCHITECT_BEE_PROMPT).toContain('Dependency decides serial vs parallel');
-      expect(ARCHITECT_BEE_PROMPT).toContain('Wait mode decides blocking foreground vs background');
       expect(ARCHITECT_BEE_PROMPT).toContain('Blocking does not mean serial');
       expect(ARCHITECT_BEE_PROMPT).toContain(
         'If several subagent tasks are independent, emit all of their `task()` calls in the same assistant message'
@@ -2985,7 +2967,6 @@ describe('Swarm (Orchestrator) prompt', () => {
 
     it('separates subagent concurrency from foreground wait mode', () => {
       expect(SWARM_BEE_PROMPT).toContain('Dependency decides serial vs parallel');
-      expect(SWARM_BEE_PROMPT).toContain('Wait mode decides blocking foreground vs background');
       expect(SWARM_BEE_PROMPT).toContain('Blocking does not mean serial');
       expect(SWARM_BEE_PROMPT).toContain(
         'If several exempt non-Forager tasks are independent, emit their ordinary Scout, advisor, or reviewer `task()` calls in the same assistant message'
@@ -3601,16 +3582,14 @@ describe('README.md documentation', () => {
     }
   });
 
-  it('documents owner-selected native session and background stores consistently', () => {
+  it('documents owner-selected native session stores consistently', () => {
     for (const content of [agentsContent, dataModelContent]) {
       expect(content).toContain('.hive/runtime/opencode-v2/');
       expect(content).toContain('runtime/opencode-v2/sessions.json');
     }
     expect(agentsContent).toContain('never fake it to redirect storage, import one owner\'s records into another, or accept a path in place of an owner');
     expect(dataModelContent).toContain('A missing v2 index starts empty and never imports v1 sessions');
-    expect(dataModelContent).toContain('equal aliases in two boards are different jobs');
-    expect(vscodeReadmeContent).toContain('`.hive/runtime/opencode-v2/background-jobs.json` (OpenCode v2)');
-    expect(vscodeReadmeContent).toContain('every row action (open, archive) targets only its own board');
+    expect(vscodeReadmeContent).toContain('`.hive/sessions.json` for OpenCode v1 and `.hive/runtime/opencode-v2/sessions.json` for OpenCode v2');
   });
 
   it('keeps removed assignment-artifact authority out of active prompts and docs', () => {
@@ -3671,54 +3650,46 @@ describe('README.md documentation', () => {
     });
   });
 
-  describe('background-delegation docs alignment', () => {
-    it('mentions background-delegation in the available skills table', () => {
-      expect(readmeContent).toContain('background-delegation');
-    });
-
-    it('documents the env gate for background-delegation', () => {
-      expect(readmeContent).toContain('OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS');
-    });
-
-    it('clarifies background-delegation is not a default autoLoadSkills entry', () => {
-      expect(readmeContent).toContain('is not a default');
-      expect(readmeContent).toContain('autoLoadSkills');
-    });
-
-    it('documents background-first env gate behavior with native completion notifications', () => {
-      expect(readmeContent).toContain('background-first scheduler');
-      expect(readmeContent).toContain('hive_background_status');
-      expect(readmeContent).toContain('hive_background_reconcile');
-      expect(readmeContent).toContain('hive_background_cancel');
-      expect(hiveToolsContent).toContain('Background Orchestration');
-      expect(hiveToolsContent).toContain('native completion notifications');
-      expect(hiveToolsContent).toContain('Cancellation is not rollback');
-      expect(hiveToolsContent).toContain('originating native parent and call');
-      expect(hiveToolsContent).toContain('Cancel acknowledgement does not prove the worker stopped');
-      expect(hiveToolsContent).toContain('On v1 it calls OpenCode\'s session abort, and `runtimeCancelled: true` means the abort request succeeded');
-      expect(hiveToolsContent).toContain('`interruptAcknowledged: true` means the host accepted the interruption; `runtimeCancelled` stays `false`');
-      expect(hiveToolsContent).toContain('On v2, every `subagent()` child keeps running after the parent turn is interrupted or ends');
-      expect(hiveToolsContent).toContain('On v2 every `subagent()` call from a primary session is a background launch: Hive records its row at the binding barrier, before the host prompts the child');
-      expect(hiveToolsContent).toContain('A v1 foreground call that returned no result has no board row');
-      expect(hiveToolsContent).not.toMatch(/blocking `subagent\(\)` child|moved to the background|subagent\(\{ background: true/);
-      expect(hiveToolsContent).toContain('it marks the row uncertain, never cancelled');
+  describe('background subagent docs alignment', () => {
+    it('documents the live child tools on each host without a persisted board', () => {
+      for (const content of [readmeContent, hiveToolsContent, operatorGuideContent]) {
+        expect(content).toContain('hive_background_status');
+        expect(content).toContain('hive_background_cancel');
+        expect(content).toContain('unsupported_on_host');
+      }
+      expect(readmeContent).toContain('### Background subagents');
+      expect(readmeContent).toContain('Hive keeps no record of these launches.');
+      expect(hiveToolsContent).toContain('## Live Subagent Children (2 tools)');
+      expect(hiveToolsContent).toContain('Hive keeps no record of background launches');
+      expect(hiveToolsContent).toContain("returns `{ success: false, reason: 'not_a_child', error }`");
+      expect(hiveToolsContent).toContain("returns `{ success: false, reason: 'scope_mismatch', error, warning? }` without reading its settlement");
+      expect(hiveToolsContent).toContain('a `sessionID` call with filters stops at `scope_mismatch`, because the missing scope cannot match them');
+      expect(hiveToolsContent).toContain('`interrupted: false` means the child had no active execution; the result then also reads the child\'s settlement');
+      expect(hiveToolsContent).toContain('Interruption is not rollback and does not prove that the worker stopped');
+      expect(hiveToolsContent).toContain('On v2 a `subagent()` child keeps running after its parent\'s turn is interrupted or ends.');
       expect(hiveToolsContent).toContain('- On v1 only, on each later turn, the runtime adds a replay hint');
       expect(hiveToolsContent).toContain('only when the stored call records the child\'s session ID in its metadata and the runtime confirms that child belongs to the parent');
-      expect(hiveToolsContent).toContain('a call a restart ended before it returned may show no `child_session_id`, though its board row, recorded at the barrier, names the child');
+      expect(hiveToolsContent).toContain('a call a restart ended before it returned may show no `child_session_id`, though `hive_background_status({ includeSettled: true })` still lists the child among the caller\'s direct children');
+      // Without includeSettled the list omits idle children, so post-restart discovery names it.
+      expect(hiveToolsContent).toContain('When a launch call ended before it returned the `sessionID`, `hive_background_status({ includeSettled: true })` lists every direct child of the caller');
+      expect(readmeContent).toContain('`hive_background_status({ includeSettled: true })` still lists the child among the caller\'s direct children');
+      expect(renderInterruptedWorkerRecoveryPrompt(createHostProfile('opencode-v2'))).toContain('find the direct child with `hive_background_status({ includeSettled: true })`, which also lists idle children');
       expect(hiveToolsContent).toContain('a missing child ID does not show that the child stopped');
-      expect(readmeContent).toContain('show a confirmed `child_session_id` only when the stored call recorded the child\'s ID; on v2 a foreground call that never returned may lack it');
+      expect(readmeContent).toContain('show a confirmed `child_session_id` only when the stored call recorded the child\'s ID; on v2 a call that a restart ended before it returned may lack it');
       expect(readmeContent).not.toContain('which is how to find a foreground child after a restart');
       expect(hiveToolsContent).not.toContain('Foreground `task()` calls never appear');
-      expect(hiveToolsContent).not.toContain('keeps its cancel request until');
-      expect(hiveToolsContent).not.toContain('acknowledgeOrphanedAttempt');
       expect(hiveToolsContent).not.toContain('task_status');
     });
 
-    it('documents current env-gate false behavior and env-gate true scheduler behavior', () => {
-      expect(readmeContent).toContain('With the env gate unset');
-      expect(readmeContent).toContain('With the env gate set');
-      expect(readmeContent).not.toContain('prompt appendix text only');
-      expect(hiveToolsContent).not.toContain('only controls primary-agent prompt appendix text');
+    it('documents the v2 continuation limits the dispatch wrapper enforces', () => {
+      expect(hiveToolsContent).toContain('### V2 subagent dispatch and continuation');
+      const resumable = [...RESUMABLE_SUBAGENT_ROLES].map((role) => `\`${role}\``).join(', ');
+      expect(hiveToolsContent).toContain(`The target agent is resumable: ${resumable}, a custom agent derived from one of them, native \`general\`, or an unmanaged agent.`);
+      expect(hiveToolsContent).toContain('A marker Hive cannot resolve is refused.');
+      expect(hiveToolsContent).toContain('A follow-up without a marker keeps the child\'s stored task or run, and a Forager follow-up without a marker gets the task brief of the stored task.');
+      expect(agentsContent).toContain(`\`RESUMABLE_SUBAGENT_ROLES\` in \`packages/opencode-hive/src/runtime/role-policy.ts\` owns which roles a settled child may be continued with \`sessionID\`: ${resumable} and their derivatives`);
+      for (const content of [readmeContent, operatorGuideContent]) expect(content).toContain('one or two bounded follow-ups');
+      expect(agentsContent).toContain('The one-or-two-follow-up bound is prompt guidance in `renderSubagentWait`, not a `dispatch.ts` counter');
     });
 
     it('documents finalized reports, absolute in-place paths, and the active tool inventory', () => {
@@ -3739,23 +3710,15 @@ describe('README.md documentation', () => {
       expect(dataModelContent).toContain('An explicit status leaving blocked clears the blocker');
     });
 
-    it('documents fail-closed migrated background mode classification', () => {
-      expect(dataModelContent).toContain('originating native parent and call');
-      expect(dataModelContent).toContain('Stale and unknown observations stay visible');
-      expect(agentsContent).toContain('originating native parent and call');
-      expect(agentsContent).toContain('Stale and unknown observations stay visible');
-    });
-
     it('does not keep stale root README runtime counts', () => {
       expect(rootReadmeContent).not.toContain('7 agents, 17 tools');
       expect(rootReadmeContent).not.toContain('9 agents');
       expect(rootReadmeContent).not.toContain('25 Hive tools');
     });
 
-    it('documents VS Code background views as viewer-only surfaces', () => {
-      expect(vscodeReadmeContent).toContain('Background Jobs');
+    it('documents the VS Code extension as a viewer without job controls', () => {
       expect(vscodeReadmeContent).toContain('Repositories & Work');
-      expect(vscodeReadmeContent).toContain('does not start worktrees, commit changes, merge branches, cancel jobs, or reconcile jobs; archiving a background job is its only job mutation');
+      expect(vscodeReadmeContent).toContain('It does not start worktrees, commit changes, merge branches, or cancel, reconcile, or archive background jobs.');
     });
 
     it('routes ad-hoc review fixes to the active mode primary', () => {
@@ -4048,26 +4011,6 @@ describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
     expect(HIVE_BUILDER_PROMPT).toContain('omit it instead of sending an empty string');
   });
 
-  const BUILDER_GATE_CLOSED_LEAK_STRINGS = [
-    'task({ background: true',
-    '## Background Delegation',
-
-    'background-first scheduler mode',
-    'background-delegation',
-    'look for independent background lanes',
-    'Gate open',
-    'Gate closed',
-  ] as const;
-
-  it('keeps gate-open scheduling language out of the base Hive Builder prompt', () => {
-    for (const leaked of BUILDER_GATE_CLOSED_LEAK_STRINGS) {
-      expect(HIVE_BUILDER_PROMPT).not.toContain(leaked);
-    }
-    expect(HIVE_BUILDER_PROMPT).toContain('env-gated appendix');
-    expect(HIVE_BUILDER_PROMPT).not.toContain('## Background-First Orchestration');
-    expect(HIVE_BUILDER_PROMPT).not.toContain('task_status');
-  });
-
   it('requires complete context packets and delegation units in the base prompt', () => {
     expect(HIVE_BUILDER_PROMPT).toContain(WORKER_ASSIGNMENT_PROMPT);
     expect(HIVE_BUILDER_PROMPT).toContain('prior failures');
@@ -4085,15 +4028,8 @@ describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
     expect(HIVE_BUILDER_PROMPT).toContain('unresolved lanes');
   });
 
-  it('keeps background scheduler guidance out of Builder base prompt', () => {
-    expect(HIVE_BUILDER_PROMPT).not.toContain('background-first scheduler mode');
-    expect(HIVE_BUILDER_PROMPT).not.toContain('## Background-First Orchestration');
-    expect(HIVE_BUILDER_PROMPT).not.toContain('skill({ name: "background-delegation" })');
-  });
-
   it('separates subagent concurrency from foreground wait mode', () => {
     expect(HIVE_BUILDER_PROMPT).toContain('Dependency decides serial vs parallel');
-    expect(HIVE_BUILDER_PROMPT).toContain('Wait mode decides blocking foreground vs background');
     expect(HIVE_BUILDER_PROMPT).toContain('Blocking does not mean serial');
     expect(HIVE_BUILDER_PROMPT).toContain(
       'If several exempt non-Forager tasks are independent, emit their ordinary Scout, advisor, or reviewer `task()` calls in the same assistant message'
@@ -4164,7 +4100,6 @@ describe('Hive Builder (ad-hoc orchestrator) prompt', () => {
   it('does not embed runtime background wait-mode details in the base prompt', () => {
     expect(HIVE_BUILDER_PROMPT).not.toContain('## Hive Builder Gate-Open Delegation');
     expect(HIVE_BUILDER_PROMPT).not.toContain('task({ background: true');
-    expect(HIVE_BUILDER_PROMPT).not.toContain('## Background-First Orchestration');
   });
 
   it('does not keep the old equal-choice execution lifecycle wording', () => {
@@ -4303,22 +4238,24 @@ describe('host-rendered policy', () => {
   it('renders the native subagent call, agent field and continuation field for OpenCode v2', () => {
     const hive = renderQueenBeePrompt(V2_CODEMODE);
     expect(hive).toContain('subagent({ agent: "forager-worker"');
-    expect(hive).toContain('`subagent()` is blocking by default');
     expect(hive).not.toContain('subagent_type');
-    // The returned child ID names a session; the board takes the alias it lists. The continuation field is a
-    // call input on v1 (`task_id`), so the sentence names the returned ID without it on both hosts. The sentence
-    // is always on, so it names no gated board tool.
-    for (const host of [OPENCODE_V1_PROFILE, V2_CODEMODE]) {
-      for (const prompt of [renderQueenBeePrompt(host), renderSwarmBeePrompt(host), renderHiveBuilderPrompt(host)]) {
-        expect(prompt).toContain(`A native \`${host.nativeTask.tool}()\` call returns the child session ID. For a lane on the background board, reconcile it or request its cancellation by the alias the board lists, not by that session ID.`);
-        expect(prompt).not.toContain(`\`${host.nativeTask.continuationField}\` in a native`);
-        expect(prompt).not.toContain('Returned task IDs');
-      }
+    // v1 calls block and return the result; a v2 call returns a launch receipt and the live child tools apply.
+    for (const prompt of [QUEEN_BEE_PROMPT, SWARM_BEE_PROMPT, HIVE_BUILDER_PROMPT]) {
+      expect(prompt).toContain("`task()` blocks until the worker returns; its return is the worker's result, so there is nothing to poll.");
+    }
+    for (const prompt of [hive, renderSwarmBeePrompt(V2_CODEMODE), renderHiveBuilderPrompt(V2_CODEMODE)]) {
+      expect(prompt).toContain("`subagent()` returns a launch receipt, not the worker's result; follow `## Native Subagent Wait` for final reports and live child tools.");
     }
     expect(renderHiveBuilderPrompt(V2_CODEMODE)).toContain('complete Forager assignment directly in the native `subagent.prompt`');
     const contract = renderNativeTaskContinuationPolicyPrompt(V2_CODEMODE);
-    expect(contract).toContain('Primaries must not pass `sessionID`');
-    expect(contract).toContain('Preserve native `sessionID` pass-through only for an explicit operator instruction');
+    // `## Native Subagent Wait` owns the resumable roles and follow-up limit; the contract points there instead of restating them.
+    expect(contract).toContain('Follow `## Native Subagent Wait` for which settled roles may continue with `sessionID`, one-shot roles, and when to start a fresh child, such as review fixes in the same lane versus a new task, independent review, or retry after a dead end; a fresh child may reuse the same Hive task/worktree.');
+    expect(contract).not.toContain('`forager-investigator`');
+    expect(contract).not.toContain('one or two bounded follow-ups');
+    // Delegated children (such as Architect) cannot read the primary-only live child tools; they report to the parent.
+    expect(contract).toContain('wait for its final report (or, in a primary session, read `hive_background_status`; a delegated child reports the unresolved helper and its identity to its parent)');
+    expect(contract).toContain('Never infer settlement from task output, `hive_task_trace`, `idle_and_closed`, transcript text, or cancellation acknowledgement.');
+    expect(contract).toContain("Hive's dispatch wrapper refuses a continuation unless the child has settled, runs the same agent, and has a route and marker that do not conflict with its binding.");
     expect(contract).toContain('hive_task_trace({ task_id, recovery: true })');
     expect(renderHiveHelperPrompt(V2_CODEMODE)).toContain('Shell remains available for inspection commands only');
     expect(renderScoutBeePrompt(V2_CODEMODE)).toContain('`shell` writes');
@@ -4393,7 +4330,9 @@ describe('host-rendered policy', () => {
       const context: any = { agentMode: 'unified', host, dashReviewLanes: [], vulnerabilityReviewLanes: [] };
       const text = hiveCommandRenderers['start-execution']('', context) as string;
       expect(text).toContain(`issue the native Forager ${host.nativeTask.tool}() call`);
-      expect(text).toContain(`Pass ${host.nativeTask.continuationField} only when`);
+      expect(text).toContain(host.backgroundSubagents
+        ? `may be continued with \`${host.nativeTask.continuationField}\``
+        : `Pass ${host.nativeTask.continuationField} only when`);
       expect(text).not.toContain('pass-through only for explicit operator/runtime-owned interruption recovery');
     }
   });

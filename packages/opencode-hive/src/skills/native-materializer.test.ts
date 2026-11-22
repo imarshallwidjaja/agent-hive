@@ -318,7 +318,6 @@ describe('prepareNativeHiveSkills - materialization behavior', () => {
     // Presence and pointer resolution only: that a consumer selects and reads the reference is shown by the
     // installed-package wiring run and judged qualitatively, not by this materialization check.
     const pointed = {
-      'background-delegation': 'board-protocol.md',
       'dispatching-parallel-agents': 'launch-examples.md',
       'parallel-exploration': 'research-examples.md',
       'executing-plans': 'task-milestones.md',

@@ -1,6 +1,6 @@
 import { OPENCODE_V1_PROFILE, nativeCall, type HostProfile } from '../runtime/host-profile.js';
 import { ENGINEERING_JUDGMENT_PROMPT } from './engineering-judgment.js';
-import { renderExperimentMethodPrompt, renderBackgroundBoardHandlePrompt, renderNativeTaskContinuationPolicyPrompt, renderSubagentConcurrencyPrompt, PLAN_APPROVAL_SYNC_PROMPT, PLAN_ASSESSMENT_PROMPT, PRIMARY_CONSTRAINT_AUTHORING_PROMPT, PRIMARY_REASONING_OWNERSHIP_PROMPT, PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT, REVIEW_FOLLOW_UP_PROMPT, REVIEW_HANDOFF_PROMPT, REVIEW_REQUEST_EXAMPLE_PROMPT, REVIEW_ROUTING_PROMPT, TASK_SPEC_FRESHNESS_PROMPT, WORKER_ASSIGNMENT_PROMPT } from './process-judgment.js';
+import { renderExperimentMethodPrompt, renderNativeTaskContinuationPolicyPrompt, renderSubagentConcurrencyPrompt, renderWorkerReturnPrompt, PLAN_APPROVAL_SYNC_PROMPT, PLAN_ASSESSMENT_PROMPT, PRIMARY_CONSTRAINT_AUTHORING_PROMPT, PRIMARY_REASONING_OWNERSHIP_PROMPT, PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT, REVIEW_FOLLOW_UP_PROMPT, REVIEW_HANDOFF_PROMPT, REVIEW_REQUEST_EXAMPLE_PROMPT, REVIEW_ROUTING_PROMPT, TASK_SPEC_FRESHNESS_PROMPT, WORKER_ASSIGNMENT_PROMPT } from './process-judgment.js';
 import { renderInterruptedWorkerRecoveryPrompt, TASK_REPORT_CONTRACT_PROMPT, TASK_REPORT_OWNERSHIP_PROMPT } from './task-reporting.js';
 import { renderPrimaryExplorationPrompt } from './exploration-guidance.js';
 import { renderPrimaryWorklogPrompt } from './worklog-guidance.js';
@@ -79,11 +79,11 @@ Choose direct retrieval or a Scout from the bounded evidence need and the role's
 
 ### Retrieval and Reasoning Ownership
 
-Route by the requested output, not by whether the work is read-only or whether file paths are known. Bounded direct reads remain allowed. Use Scouts liberally for a real evidence gap and dispatch independent useful retrieval slices together, using background only when unrelated foreground work can continue. Do not impose numeric quotas or artificial fan-out.
+Route by the requested output, not by whether the work is read-only or whether file paths are known. Bounded direct reads remain allowed. Use Scouts liberally for a real evidence gap and dispatch independent useful retrieval slices together. Do not impose numeric quotas or artificial fan-out.
 
 ${PRIMARY_REASONING_OWNERSHIP_PROMPT}
 
-${renderSubagentConcurrencyPrompt(host, { loadsBackgroundSkill: true })}
+${renderSubagentConcurrencyPrompt(host)}
 
 **When NOT to delegate:** When the situation is cheaper to do yourself than to hand off. Sequential operations where step N+1 needs step N's result still use blocking delegation when implementation is non-trivial.
 
@@ -98,8 +98,6 @@ ${renderPrimaryExplorationPrompt()}
 ${renderPrimaryWorklogPrompt({ featureWork: true })}
 
 ${renderNativeTaskContinuationPolicyPrompt(host)}
-
-${renderBackgroundBoardHandlePrompt(host)}
 
 For a blocked feature task: record \`hive_task_update\` with blocked status and blocker. Ask via \`question()\` when an operator decision is needed; otherwise follow the known prerequisite and existing authorization. An explicit status leaving blocked clears the blocker. Put any decision in the fresh worker assignment. Do not reconstruct blocker details from worker prose or task traces. For failed or retry work, launch a fresh worker with a concise self-contained handoff. Architect is the only subagent that may call one terminal layer of planning helpers; every other subagent is terminal.
 
@@ -123,11 +121,11 @@ Delegation guidance:
 - Use the placement path, branch, and commit values returned by \`hive_worktree_create\` or \`hive_worktree_inspect\` verbatim; capture the initial destination identity from the inspection-shaped create result. Later checkpoints remain required. Never concatenate fields in prose to reconstruct them.
 - Worktree tools do not change task status, auto-commit source, or assign workers. See \`docs/HIVE-TOOLS.md\` for merge, cleanup, \`discard\`, and composite contracts.
 - Record task status and summary under Task Report Ownership below. Omitted \`hive_task_update\` fields are preserved; an explicit status leaving blocked clears the blocker.
-- When the env-gated appendix is absent, \`${call}\` returns when the worker is done; when it is present, use the background-first scheduler contract for independent lanes
+- ${renderWorkerReturnPrompt(host)}
 - If any Hive tool response has \`terminal: true\`, treat it as final for that call and do not retry the same parameters
 - This finality applies to the tool call parameters and does not prohibit the worker’s final natural-language handoff response
 - For exempt non-Forager parallel fan-out, issue multiple ordinary Scout, advisor, or reviewer \`${call}\` calls in the same message
-- The background board is observational. Reconcile replies are compact acknowledgements: refresh \`hive_status\` before dependent decisions when \`requiresHiveStatusRefresh\` is true. Follow per-item failure \`hint\`: \`job_not_terminal\` means wait for native completion; stale/uncertain hints give the exact canonical-alias ignore call, used only after inspection. Successful batch archives remain archived when another item fails. Archival or cancel acknowledgement does not prove the worker stopped. See \`background-delegation\` and \`docs/HIVE-TOOLS.md\`; use \`hive_status\` for task/worktree merge readiness.
+- Use \`hive_status\` for task/worktree merge readiness.
 
 ${PLAN_ASSESSMENT_PROMPT}
 
@@ -140,7 +138,7 @@ ${TASK_REPORT_OWNERSHIP_PROMPT}
 ## After Delegation - VERIFY
 
 Validate specialist outcomes against the candidate and evidence, not confidence or fluent self-report. Within the role's verification boundary:
-- Delegate diff-level review, correctness assessment, and deep verification actions to the best-fit specialist when the env-gated appendix is present
+- Delegate diff-level review, correctness assessment, and deep verification actions to the best-fit specialist
 - Check acceptance criteria against actual command output/tool results and the tested candidate plus relevant inputs. Worker reports are attributed evidence; worker prose alone does not establish a pass.
 - Run or inspect only cheap final integration checks directly when they are clearly lower overhead than delegation
 

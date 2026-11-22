@@ -162,12 +162,24 @@ describe('HIVE_COMMANDS', () => {
         'small mechanical edits such as renames, formatting, or one-line fixes get one correctness review, as do bounded docs or tests, unless the diff spans broader workflow behavior; when unsure, pair',
         'configured companion reviewers join when their descriptions fit the risk',
         'explicit operator-required reviews are honored',
-        'give accepted material findings to a fresh worker in the same task lane',
+        'give accepted material findings to a follow-up worker in the same task lane',
         'a missing or interrupted required review stays open',
-        // Uncertain writer termination stops before any overlapping writer.
-        "When a worker's lifecycle is uncertain (no returned result, a cancellation acknowledgement, or a stale or closed record), inspect, wait, or ask instead of launching an overlapping writer",
-        'After every returned native task result, launch a fresh child session for follow-up',
-        `Pass ${host.nativeTask.continuationField} only when an explicit operator instruction or runtime-owned interruption-recovery mechanism authorizes continuation`,
+        // Uncertain writer termination stops before any overlapping writer; continuation follows the host's contract.
+        ...(host.backgroundSubagents
+          ? [
+              "When a worker's lifecycle is uncertain (no final report, a cancellation acknowledgement, or an error or cancellation report or closed record), inspect, wait, or ask instead of launching an overlapping writer",
+              // An unbound command can run under a non-Hive agent without the wait section, so it carries the rules itself.
+              `every \`${host.nativeTask.tool}()\` call returns a launch receipt (status \`running\` and the child's \`${host.nativeTask.continuationField}\`), not the child's result`,
+              'a `state="running"` report is an interim stop, and an error or cancellation report is a failed or interrupted run',
+              `Only a settled child of a resumable role (\`forager-worker\`, \`forager-investigator\`, \`architect-planner\`, or a custom agent derived from one) may be continued with \`${host.nativeTask.continuationField}\`, on the same \`${host.nativeTask.agentField}\` and the same task or investigation, for one or two bounded follow-ups`,
+              'Scouts, reviewers, advisors, and `hive-helper` are one-shot',
+              `A new task, an independent review or challenge pass, and a retry after a dead end always omit \`${host.nativeTask.continuationField}\``,
+            ]
+          : [
+              "When a worker's lifecycle is uncertain (no returned result, a cancellation acknowledgement, or a stale or closed record), inspect, wait, or ask instead of launching an overlapping writer",
+              'After every returned native task result, launch a fresh child session for follow-up',
+              `Pass ${host.nativeTask.continuationField} only when an explicit operator instruction or runtime-owned interruption-recovery mechanism authorizes continuation`,
+            ]),
         `issue the native Forager ${host.nativeTask.tool}() call`,
         'call hive_feature_select only when the selected route is unset or differs from the dispatch target',
         'Explicit null stays featureless unless the dispatch intentionally changes target',
@@ -182,12 +194,14 @@ describe('HIVE_COMMANDS', () => {
         'do not infer scope from task numbers or search generated skill caches',
       ];
       for (const obligation of once) expect(count(output, obligation), obligation).toBe(1);
+      if (host.backgroundSubagents) expect(output).not.toContain('After every returned native task result');
       expect(output).not.toContain('Retry or resume native workers directly');
       expect(output).not.toContain('After any usable terminal handoff');
       expect(output).not.toContain('confirmed-stopped interruption recovery');
       expect(output).not.toContain('Persist worker outcomes with hive_task_update');
       // The unbound command cannot rely on a heading defined in another prompt.
       expect(output).not.toContain('Task Report Ownership');
+      expect(output).not.toContain('Native Subagent Wait');
     }
   });
 

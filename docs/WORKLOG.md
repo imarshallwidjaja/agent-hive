@@ -18,7 +18,7 @@ This document is the contract for the `hive-core` service (`packages/hive-core/s
 | Feature log | `{ kind: 'feature', featureName }` | `worklog.json` inside the resolved feature directory | Every primary session working on the feature |
 | Session log | `{ kind: 'session', owner, sessionId }` | `.hive/worklogs/sessions/<owner>/<sha256(sessionId)>.json` | One native-owner primary session, for ad-hoc work |
 
-`owner` is a `NativeObservationOwner` (`opencode-v1` or `opencode-v2`). The same session ID under two owners names two different logs, matching how session and background stores are already separated.
+`owner` is a `NativeObservationOwner` (`opencode-v1` or `opencode-v2`). The same session ID under two owners names two different logs, matching how session stores are already separated.
 
 Logs outlive the sessions and worktrees that wrote them. A session log stays readable after the session ends, after its ad-hoc worktree is cleaned up, and without any entry in the session index. A feature log stays readable after the feature is completed or archived. The service never deletes, rotates, or compacts a log.
 

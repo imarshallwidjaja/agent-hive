@@ -11,8 +11,7 @@ Everything below is relative to the project root, the directory that holds `.hiv
 ├── checkouts/<repoId>/<slug>.json  retained checkout record
 ├── checkouts/<repoId>/<slug>/      managed retained checkout, when managed
 ├── sessions.json              session bindings, selected feature route, session constraints (OpenCode v1)
-├── background-jobs.json       background board: observational bookkeeping only (OpenCode v1)
-├── runtime/opencode-v2/       OpenCode v2 owner: sessions.json, background-jobs.json
+├── runtime/opencode-v2/       OpenCode v2 owner: sessions.json
 ├── worklogs/sessions/<owner>/<sha256(sessionId)>.json  per-session Worklog for ad-hoc work
 ├── explorations/active/<id>.json  exploration frontier still accepting updates (`hive_explore_update`)
 ├── explorations/closed/<id>.json  concluded or abandoned exploration; terminal
@@ -46,7 +45,7 @@ Everything below is relative to the project root, the directory that holds `.hiv
 └── .operation-locks/          legacy only: <name>.lock files from hosts that predate native locking
 ```
 
-Files that no current code reads, such as `execution-attempts.json`, lease files, or other leftovers from older versions, are legacy. Do not treat them as current state.
+Files that no current code reads, such as `execution-attempts.json`, lease files, `background-jobs.json` (the retired background board, in `.hive/` or `.hive/runtime/opencode-v2/`), or other leftovers from older versions, are legacy. Do not treat them as current state.
 
 Hive locks are operating-system locks held on a stable anchor file in `.hive/.locks/`, named by the SHA-256 of the locked path. The operating system releases a lock when its process exits, however it exits, so a crashed or rebooted host leaves no lock behind and no lock ever needs deleting. Anchors are never removed; the `pid` and time written into one name the most recent holder and prove nothing about ownership. A file outside `.hive/` (the global `agent_hive.json`) anchors beside itself as `<file>.hive-lock`.
 
@@ -105,7 +104,7 @@ Before its first workspace or Git mutation, a create, merge, remove or cleanup w
 
 ## Sessions and constraints
 
-Each native host owns separate stores, so identical session IDs or job aliases under different owners are different records. `.hive/sessions.json` and `.hive/background-jobs.json` belong to OpenCode v1; OpenCode v2 uses the same file names under `.hive/runtime/opencode-v2/`. An absent v2 store is empty, not a lost copy of v1. Read the store of the host you are investigating.
+Each native host owns a separate session store, so identical session IDs under different owners are different records. `.hive/sessions.json` belongs to OpenCode v1; OpenCode v2 uses the same file name under `.hive/runtime/opencode-v2/`. An absent v2 store is empty, not a lost copy of v1. Read the store of the host you are investigating.
 
 <!-- hive-host opencode-v1 -->
 The session index is `.hive/sessions.json`.
@@ -128,15 +127,9 @@ If the session index is not valid JSON, the first read or update of it copies th
 
 So read the session index directly, with a shell or file read, before any session-resolving call. If it does not parse, or a `sessions.json.corrupt-*` sibling exists in its directory, report both paths to the primary or operator, who decides how to restore it. An empty or one-session index next to a `corrupt-*` copy is reset damage, not intentional state. Until the operator decides, avoid session-resolving calls; when you need a feature-scoped read, pass `feature` explicitly.
 
-## Background board
+## Live subagent children
 
-<!-- hive-host opencode-v1 -->
-`.hive/background-jobs.json` records background `task()` launches (`schemaVersion: 1`, `jobs[]` with native `taskId`, `sessionId`, `alias`, `runtimeState`). It never tracks foreground calls.
-<!-- /hive-host -->
-<!-- hive-host opencode-v2 -->
-The OpenCode v2 background board records every `subagent()` launch from a primary session in its own store (`schemaVersion: 1`, `jobs[]` with native `taskId`, `sessionId`, `alias`, `runtimeState`); every v2 subagent call runs in the background. A child session's own helper launches have no row.
-<!-- /hive-host -->
-It observes the originating parent and call, not feature or task status. Archive and cancel acknowledgements do not prove a worker stopped. Agents never edit it; `background-delegation` owns the protocol and the meaning of the board's status fields.
+Hive keeps no record of background subagent launches. On OpenCode v2, `hive_background_status` and `hive_background_cancel` read and interrupt the calling session's direct children live and write no `.hive` file; on OpenCode v1 both return `unsupported_on_host`. An interruption or an error or cancellation report does not prove a worker or its backgrounded shell commands stopped.
 
 ## Integrity signals
 
