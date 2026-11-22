@@ -23,7 +23,6 @@ export const vscodeTestState = {
   messages: [] as string[],
   errors: [] as string[],
   shown: [] as any[],
-  shownOptions: [] as any[],
   pickItems: [] as any[],
   pickOptions: [] as any[],
   warnings: [] as string[],
@@ -123,10 +122,6 @@ class Position {
   constructor(public readonly line: number, public readonly character: number) {}
 }
 
-class Selection {
-  constructor(public readonly anchor: Position, public readonly active: Position) {}
-}
-
 class Range {
   constructor(public readonly start: Position, public readonly end: Position) {}
 }
@@ -194,9 +189,8 @@ const window = {
   showErrorMessage(message: string) {
     vscodeTestState.errors.push(message);
   },
-  async showTextDocument(document: any, options?: unknown) {
+  async showTextDocument(document: any) {
     vscodeTestState.shown.push(document);
-    vscodeTestState.shownOptions.push(options);
   },
 };
 
@@ -333,7 +327,6 @@ export const vscodeTestDouble = {
   Position,
   Range,
   DocumentLink,
-  Selection,
   TreeItem,
   ThemeIcon,
   MarkdownString,

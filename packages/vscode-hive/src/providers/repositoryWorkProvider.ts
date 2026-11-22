@@ -2,7 +2,6 @@ import * as vscode from 'vscode'
 import * as fs from 'fs'
 import * as path from 'path'
 import type {
-  BackgroundJobRecord,
   CheckoutProjection,
   CheckoutRepositoryView,
   CheckoutWorkerView,
@@ -19,13 +18,11 @@ import {
   RepositoryService,
   canonicalProjectRoot,
   getFeaturesPath,
-  getNativeBackgroundJobsPath,
   getNativeObservationOwnerLabel,
   getNativeSessionsPath,
   getTaskReportPath,
   getTaskSpecPath,
   getWorklogKey,
-  isBackgroundJobArchived,
   listFeatureDirectories,
   readJson,
   resolveExistingFeaturePath,
@@ -41,7 +38,7 @@ import { describeAge, formatTimestamp } from './worklogPresentation.js'
  *
  * Readiness is the primary's declaration at a commit, not verification, and says nothing about whether Git could
  * merge. Activity is shown only for an exact recorded association (task or ad-hoc run) and is labelled as a
- * recorded update or an observation, never as proof that a worker is running now.
+ * recorded session update, never as proof that a worker is running now.
  */
 
 /** Structured values a row hands to its open and copy actions; never shell text. */
@@ -52,11 +49,9 @@ interface RowLocation {
 }
 
 interface OwnedSession { owner: NativeObservationOwner; session: SessionInfo }
-interface OwnedJob { owner: NativeObservationOwner; job: BackgroundJobRecord }
 
 interface ActivityStores {
   sessions: OwnedSession[]
-  jobs: OwnedJob[]
   /** Stores that could not be read; their records are unknown, not absent. */
   unreadable: string[]
 }
@@ -477,7 +472,6 @@ function workerLabel(worker: CheckoutWorkerView): string {
 
 interface WorkerActivity {
   sessions: OwnedSession[]
-  jobs: OwnedJob[]
   /** Other placements that share, or cannot be ruled out from sharing, this worker's binding; non-empty means records cannot be attributed. */
   ambiguousWith: string[]
   unreadable: string[]
@@ -496,7 +490,7 @@ function workerActivity(worker: CheckoutWorkerView, context: BuildContext): Work
   const key = bindingKey(worker, featureOf)
   if (!key) {
     if (worker.kind === 'task') directoryOf(worker.feature)
-    return { sessions: [], jobs: [], ambiguousWith: [], unreadable: activity.unreadable, unresolved }
+    return { sessions: [], ambiguousWith: [], unreadable: activity.unreadable, unresolved }
   }
   const own = placementOf(context.projectRoot, worker)
   const unresolvedPeers = worker.kind === 'task' && worker.task ? placements.get(unresolvedTaskKey(worker.task)) ?? [] : []
@@ -506,12 +500,8 @@ function workerActivity(worker: CheckoutWorkerView, context: BuildContext): Work
   const sessionMatches = worker.kind === 'task'
     ? ({ session }: OwnedSession) => session.taskFolder === worker.task && directoryOf(session.featureName) === feature
     : ({ session }: OwnedSession) => session.adHocRunId === worker.runId
-  const jobMatches = worker.kind === 'task'
-    ? ({ job }: OwnedJob) => job.scope?.task === worker.task && directoryOf(job.scope?.feature) === feature
-    : ({ job }: OwnedJob) => job.scope?.adHocRunId === worker.runId
   return {
     sessions: activity.sessions.filter(sessionMatches).sort((a, b) => b.session.lastActiveAt.localeCompare(a.session.lastActiveAt)),
-    jobs: activity.jobs.filter(jobMatches).sort((a, b) => b.job.updatedAt.localeCompare(a.job.updatedAt)),
     ambiguousWith,
     unreadable: activity.unreadable,
     unresolved,
@@ -520,10 +510,6 @@ function workerActivity(worker: CheckoutWorkerView, context: BuildContext): Work
 
 function describeActivity(activity: WorkerActivity): string {
   if (activity.ambiguousWith.length > 0) return 'activity ambiguous'
-  const running = activity.jobs.filter(({ job }) => job.runtimeState === 'running' && !isBackgroundJobArchived(job))
-  const observed = running.find(({ job }) => !job.staleAt && !job.statusUncertain)
-  if (observed) return `observed running ${describeAge(observed.job.updatedAt)}`
-  if (running.length > 0) return 'running status uncertain'
   const latest = activity.sessions[0]
   if (latest) return `last session update ${describeAge(latest.session.lastActiveAt)}`
   return activity.unreadable.length + activity.unresolved.size > 0 ? 'activity unknown' : 'no recorded activity'
@@ -531,21 +517,12 @@ function describeActivity(activity: WorkerActivity): string {
 
 function activityRows(parentId: string, activity: WorkerActivity): WorkItem[] {
   if (activity.ambiguousWith.length > 0) {
-    const row = detail(parentId, 'activity', 'Activity', 'Ambiguous: sessions and jobs for this task are not attributed')
+    const row = detail(parentId, 'activity', 'Activity', 'Ambiguous: sessions for this task are not attributed')
     row.tooltip = `Another placement shares this task binding, or names this task under a feature that could not be resolved, and records do not name the placement:\n${activity.ambiguousWith.join('\n')}`
     row.iconPath = new vscode.ThemeIcon('question')
     return [row]
   }
   const rows: WorkItem[] = []
-  for (const { owner, job } of activity.jobs) {
-    const flags = [job.staleAt ? 'stale' : undefined, job.statusUncertain ? 'uncertain' : undefined, isBackgroundJobArchived(job) ? 'archived' : undefined].filter(Boolean).join(', ')
-    const row = new WorkItem(`${parentId}/job:${owner}:${job.alias}`, `Background job ${job.alias}`, 'activity')
-    row.description = [`${job.runtimeState}${flags ? ` (${flags})` : ''}`, `observed ${describeAge(job.updatedAt)}`, getNativeObservationOwnerLabel(owner)].join(' · ')
-    row.tooltip = `Board observation recorded ${formatTimestamp(job.updatedAt)} by ${getNativeObservationOwnerLabel(owner)}. It is the last observation, not live process state.`
-    row.iconPath = new vscode.ThemeIcon('server-process')
-    row.command = { command: 'hive.openBackgroundJobInBoard', title: 'Open Background Job Record', arguments: [owner, job.alias] }
-    rows.push(row)
-  }
   for (const { owner, session } of activity.sessions) {
     const row = new WorkItem(`${parentId}/session:${owner}:${session.sessionId}`, `Session ${session.sessionId}`, 'activity')
     row.description = [session.agent || session.baseAgent, `last update ${describeAge(session.lastActiveAt)}`, getNativeObservationOwnerLabel(owner)].filter(Boolean).join(' · ')
@@ -555,13 +532,13 @@ function activityRows(parentId: string, activity: WorkerActivity): WorkItem[] {
   }
   if (rows.length === 0) {
     const unknown = [...activity.unreadable, ...[...activity.unresolved.keys()].map(name => `feature "${name}" metadata`)]
-    const row = detail(parentId, 'activity', 'Activity', unknown.length > 0 ? `Unknown: ${unknown.join(', ')} unreadable` : 'No recorded session or background job')
+    const row = detail(parentId, 'activity', 'Activity', unknown.length > 0 ? `Unknown: ${unknown.join(', ')} unreadable` : 'No recorded session')
     row.tooltip = unknown.length > 0
       ? [
-        'A session or background job store, or the feature metadata needed to match records to this task, could not be read, so activity for this worker is unknown.',
+        'A session store, or the feature metadata needed to match records to this task, could not be read, so activity for this worker is unknown.',
         ...[...activity.unresolved].map(([name, error]) => `Feature "${name}": ${error}`),
       ].join('\n')
-      : 'No stored session or background job names this task or run.'
+      : 'No stored session names this task or run.'
     rows.push(row)
   }
   return rows
@@ -617,7 +594,7 @@ function allWorkers(projection: CheckoutProjection): CheckoutWorkerView[] {
   return [...projection.repositories.flatMap(repo => repo.workers), ...projection.unassigned.workers]
 }
 
-/** The task or run a worker serves; session and job records name only this, never a placement. */
+/** The task or run a worker serves; session records name only this, never a placement. */
 function bindingKey(worker: CheckoutWorkerView, featureOf: FeatureResolver): string | null {
   if (worker.kind === 'adhoc') return worker.runId ? `run:${worker.runId}` : null
   const feature = featureOf(worker.feature)?.directory
@@ -698,23 +675,20 @@ function compareWorkers(left: CheckoutWorkerView, right: CheckoutWorkerView): nu
 }
 
 async function readActivityStores(projectRoot: string): Promise<ActivityStores> {
-  const stores: ActivityStores = { sessions: [], jobs: [], unreadable: [] }
+  const stores: ActivityStores = { sessions: [], unreadable: [] }
   // Read directly rather than through the session service, which resets a corrupt index; a viewer must not write.
   await Promise.all(NATIVE_OBSERVATION_OWNERS.map(async owner => {
     const label = getNativeObservationOwnerLabel(owner)
-    const sessions = await readRecords(getNativeSessionsPath(projectRoot, owner), 'sessions', isSession)
+    const sessions = await readSessionRecords(getNativeSessionsPath(projectRoot, owner))
     if (sessions) stores.sessions.push(...sessions.map(session => ({ owner, session })))
     else stores.unreadable.push(`${label} sessions`)
-    const jobs = await readRecords(getNativeBackgroundJobsPath(projectRoot, owner), 'jobs', isJob)
-    if (jobs) stores.jobs.push(...jobs.map(job => ({ owner, job })))
-    else stores.unreadable.push(`${label} background jobs`)
   }))
   stores.unreadable.sort()
   return stores
 }
 
-/** A missing store has no records; an unparsable store or one with a malformed entry is unreadable (null). */
-async function readRecords<T>(filePath: string, key: string, valid: (value: unknown) => value is T): Promise<T[] | null> {
+/** A missing registry has no sessions; an unparsable registry or one with a malformed session is unreadable (null). */
+async function readSessionRecords(filePath: string): Promise<SessionInfo[] | null> {
   let raw: string
   try {
     raw = await fs.promises.readFile(filePath, 'utf8')
@@ -722,8 +696,8 @@ async function readRecords<T>(filePath: string, key: string, valid: (value: unkn
     return (error as NodeJS.ErrnoException).code === 'ENOENT' ? [] : null
   }
   try {
-    const list = (JSON.parse(raw) as Record<string, unknown>)?.[key]
-    return Array.isArray(list) && list.every(valid) ? list : null
+    const sessions = (JSON.parse(raw) as Record<string, unknown>)?.sessions
+    return Array.isArray(sessions) && sessions.every(isSession) ? sessions : null
   } catch {
     return null
   }
@@ -742,11 +716,6 @@ function isSession(value: unknown): value is SessionInfo {
   return isRecord(value) && typeof value.sessionId === 'string' && typeof value.lastActiveAt === 'string'
     && (value.featureName === null || optionalStrings(value, ['featureName']))
     && optionalStrings(value, ['taskFolder', 'adHocRunId', 'agent', 'baseAgent'])
-}
-
-function isJob(value: unknown): value is BackgroundJobRecord {
-  return isRecord(value) && typeof value.alias === 'string' && typeof value.runtimeState === 'string' && typeof value.updatedAt === 'string'
-    && (value.scope === undefined || (isRecord(value.scope) && optionalStrings(value.scope, ['feature', 'task', 'adHocRunId'])))
 }
 
 function countText(checkouts: number, workers: number): string {

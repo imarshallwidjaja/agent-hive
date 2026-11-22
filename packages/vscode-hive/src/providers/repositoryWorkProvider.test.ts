@@ -306,27 +306,28 @@ describe('RepositoryWorkProvider', () => {
       errors: [],
     };
     const recent = new Date(Date.now() - 5 * 60_000).toISOString();
+    const latest = new Date(Date.now() - 2 * 60_000).toISOString();
     writeJson('.hive/sessions.json', { sessions: [
       { sessionId: 'ses_v1', adHocRunId: 'bound', agent: 'forager-worker', startedAt: recent, lastActiveAt: recent },
       { sessionId: 'ses_task', featureName: 'checkout', taskFolder: '01-api', startedAt: recent, lastActiveAt: recent },
       // Feature-only and current-directory associations name no worker.
       { sessionId: 'ses_feature', featureName: 'checkout', startedAt: recent, lastActiveAt: recent },
     ] });
-    writeJson('.hive/runtime/opencode-v2/background-jobs.json', { schemaVersion: 1, jobs: [
-      { alias: 'job-1', taskId: 't', sessionId: 's', agentName: 'forager-worker', createdAt: recent, updatedAt: recent, runtimeState: 'running', scope: { adHocRunId: 'bound' } },
+    writeJson('.hive/runtime/opencode-v2/sessions.json', { sessions: [
+      { sessionId: 'ses_v2', adHocRunId: 'bound', baseAgent: 'forager-worker', startedAt: latest, lastActiveAt: latest },
     ] });
 
     const provider = new RepositoryWorkProvider(testRoot, fakeInspector(projection));
     const tree = await render(provider);
-    expect(tree).toContain('    bound | observed running 5 min ago · hive/adhoc/bound');
-    expect(tree).toContain('      Background job job-1 | running · observed 5 min ago · OpenCode v2');
+    // The worker reports its most recent session update; sessions record updates, not whether a session runs now.
+    expect(tree).toContain('    bound | last session update 2 min ago · hive/adhoc/bound');
+    expect(tree).toContain('      Session ses_v2 | forager-worker · last update 2 min ago · OpenCode v2');
     expect(tree).toContain('      Session ses_v1 | forager-worker · last update 5 min ago · OpenCode v1');
+    expect(tree).toContain('      Activity | No recorded session');
     expect(tree).toContain('    quiet | no recorded activity · hive/adhoc/quiet');
     expect(tree).toContain('    01-api (a) | activity ambiguous · hive/checkout/01-api--a');
-    expect(tree).toContain('      Activity | Ambiguous: sessions and jobs for this task are not attributed');
+    expect(tree).toContain('      Activity | Ambiguous: sessions for this task are not attributed');
     expect(tree.some(line => line.includes('ses_task') || line.includes('ses_feature'))).toBe(false);
-    const job = await find(provider, 'worker:/w/adhoc/bound/job:opencode-v2:job-1');
-    expect(job.command).toEqual({ command: 'hive.openBackgroundJobInBoard', title: 'Open Background Job Record', arguments: ['opencode-v2', 'job-1'] });
 
     // An unreadable store makes activity unknown rather than absent, and is never repaired by reading.
     fs.writeFileSync(path.join(testRoot, '.hive', 'sessions.json'), '{ broken');
@@ -342,7 +343,7 @@ describe('RepositoryWorkProvider', () => {
     provider.refresh();
     const typed = await render(provider);
     expect(typed).toContain('    quiet | activity unknown · hive/adhoc/quiet');
-    expect(typed).toContain('    bound | observed running 5 min ago · hive/adhoc/bound');
+    expect(typed).toContain('    bound | last session update 2 min ago · hive/adhoc/bound');
     expect(typed.some(line => line.includes('ses_bad'))).toBe(false);
     expect(fs.readFileSync(path.join(testRoot, '.hive', 'sessions.json'), 'utf8')).toBe(malformed);
   });

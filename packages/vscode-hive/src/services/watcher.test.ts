@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, mock } from 'bun:test';
 import * as fs from 'fs';
 import * as path from 'path';
-import { getNativeBackgroundJobsPath, getNativeSessionsPath, NATIVE_OBSERVATION_OWNERS } from 'hive-core';
+import { getNativeSessionsPath, NATIVE_OBSERVATION_OWNERS } from 'hive-core';
 import { resetVscodeTestState, vscodeTestDouble, vscodeTestState as ui } from '../test/vscodeTestDouble.js';
 
 mock.module('vscode', () => vscodeTestDouble);
@@ -22,10 +22,7 @@ describe('HiveWatcher', () => {
   it('covers every native owner store and refreshes on their changes but not their locks', () => {
     const root = '/workspace';
     const glob = new Bun.Glob(WATCHED_GLOB);
-    const stores = NATIVE_OBSERVATION_OWNERS.flatMap(owner => [
-      getNativeSessionsPath(root, owner),
-      getNativeBackgroundJobsPath(root, owner),
-    ]);
+    const stores = NATIVE_OBSERVATION_OWNERS.map(owner => getNativeSessionsPath(root, owner));
     const featureProjection = path.join(root, '.hive', 'features', '01_feature', 'runtime', 'opencode-v2', 'sessions.json');
     const changes: string[] = [];
     new HiveWatcher(root, () => changes.push('refresh'));

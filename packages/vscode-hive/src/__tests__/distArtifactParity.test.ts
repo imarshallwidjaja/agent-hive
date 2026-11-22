@@ -22,11 +22,14 @@ describe('shipped extension artifact parity', () => {
     expect(bundle).not.toContain(registrationApi);
   });
 
-  it('includes the background jobs and tracked repositories viewers in dist', () => {
-    expect(bundle).toContain('background-jobs.json');
+  it('includes the features and tracked repositories viewers in dist', () => {
     expect(bundle).toContain('agent_hive.json');
-    expect(bundle).toContain('hive.backgroundJobs');
+    expect(bundle).toContain('hive.features');
     expect(bundle).toContain('hive.repositories');
+  });
+
+  it('does not ship the background jobs view in dist', () => {
+    expect(bundle).not.toContain('hive.backgroundJobs');
   });
 
   it('includes the worklog viewer in dist', () => {

@@ -32,7 +32,6 @@
   "activationEvents": [
     "onStartupFinished",
     "onView:hive.features",
-    "onView:hive.backgroundJobs",
     "onView:hive.repositories",
     "onView:hive.worklogs",
     "onCommand:hive.refresh",
@@ -44,7 +43,6 @@
     "onCommand:hive.comment.resolve",
     "onCommand:hive.comment.delete",
     "onCommand:hive.feature.archive",
-    "onCommand:hive.job.archive",
     "onCommand:hive.context.archive",
     "onCommand:hive.context.loadMore",
     "onCommand:hive.context.scanChars",
@@ -74,10 +72,6 @@
           "name": "Features"
         },
         {
-          "id": "hive.backgroundJobs",
-          "name": "Background Jobs"
-        },
-        {
           "id": "hive.repositories",
           "name": "Repositories & Work"
         },
@@ -91,11 +85,6 @@
       {
         "view": "hive.features",
         "contents": "No Hive workspace found.\n\nCreate or open a workspace containing `.hive`, then refresh this view.\n\n[Refresh](command:hive.refresh)",
-        "when": "!hive.hasHiveRoot"
-      },
-      {
-        "view": "hive.backgroundJobs",
-        "contents": "No Hive workspace found.\n\nOpen a Hive workspace to view background jobs.\n\n[Refresh](command:hive.refresh)",
         "when": "!hive.hasHiveRoot"
       },
       {
@@ -167,10 +156,6 @@
         "title": "Archive Feature"
       },
       {
-        "command": "hive.job.archive",
-        "title": "Archive Background Job"
-      },
-      {
         "command": "hive.worklog.open",
         "title": "Hive: Open Worklog...",
         "icon": "$(search)"
@@ -236,11 +221,6 @@
         },
         {
           "command": "hive.refresh",
-          "when": "view == hive.backgroundJobs",
-          "group": "navigation"
-        },
-        {
-          "command": "hive.refresh",
           "when": "view == hive.repositories",
           "group": "navigation"
         },
@@ -269,21 +249,8 @@
           "when": "viewItem == file"
         },
         {
-          "command": "hive.openFile",
-          "when": "viewItem =~ /^background-job-/ || viewItem == background-jobs-state"
-        },
-        {
-          "command": "hive.copyToClipboard",
-          "when": "viewItem =~ /^background-job-/"
-        },
-        {
           "command": "hive.feature.archive",
           "when": "viewItem =~ /^feature-(planning|approved|executing)$/",
-          "group": "inline"
-        },
-        {
-          "command": "hive.job.archive",
-          "when": "viewItem == background-job-archiveable",
           "group": "inline"
         },
         {
@@ -372,10 +339,6 @@
         },
         {
           "command": "hive.feature.archive",
-          "when": "false"
-        },
-        {
-          "command": "hive.job.archive",
           "when": "false"
         },
         {

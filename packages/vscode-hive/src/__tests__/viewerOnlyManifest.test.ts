@@ -32,7 +32,6 @@ describe('viewer-only VS Code manifest', () => {
       'hive.comment.reply',
       'hive.comment.resolve',
       'hive.feature.archive',
-      'hive.job.archive',
       'hive.openFile',
       'hive.plan.doneReview',
       'hive.refresh',
@@ -84,7 +83,6 @@ describe('viewer-only VS Code manifest', () => {
     const views = (pkg.contributes.views?.hive ?? []).map((entry: { id: string }) => entry.id).sort();
 
     expect(views).toEqual([
-      'hive.backgroundJobs',
       'hive.features',
       'hive.repositories',
       'hive.worklogs',
@@ -110,13 +108,11 @@ describe('viewer-only VS Code manifest', () => {
     expect(source).not.toContain('registerWebviewViewProvider');
   });
 
-  it('documents background and repository views as viewer-first surfaces with limited operator actions', () => {
+  it('documents the repository view as a viewer-first surface with limited operator actions', () => {
     const readme = fs.readFileSync(readmePath, 'utf8');
 
-    expect(readme).toContain('Background Jobs');
     expect(readme).toContain('Repositories & Work');
-    expect(readme).toContain('does not start worktrees, commit changes, merge branches, cancel jobs, or reconcile jobs; archiving a background job is its only job mutation');
-    expect(readme).toContain('Archive Background Job');
+    expect(readme).toContain('does not start worktrees, commit changes, merge branches, or cancel, reconcile, or archive background jobs');
     expect(readme).toContain('Archive Feature');
     expect(readme).toContain('Remove Stale Hive Record');
   });

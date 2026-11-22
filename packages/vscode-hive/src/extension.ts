@@ -3,10 +3,9 @@ import * as fs from 'fs'
 import * as path from 'path'
 import { detectContext } from 'hive-core'
 import { HiveWatcher, Launcher } from './services'
-import { BackgroundJobsProvider, HiveSidebarProvider, PlanCommentController, RepositoryWorkProvider } from './providers'
+import { HiveSidebarProvider, PlanCommentController, RepositoryWorkProvider } from './providers'
 
 import { archiveContext, isContextScope } from './providers/contextInspection.js'
-import { archiveBackgroundJobItem } from './providers/backgroundJobsProvider.js'
 import { copyLocation, openInNewWindow, openTerminal } from './providers/repositoryWorkProvider.js'
 import { removeStaleCheckoutRecord } from './providers/staleCheckoutRecord.js'
 import { SessionConstraintsProvider } from './providers/sessionConstraintsProvider.js'
@@ -120,7 +119,6 @@ function findHiveRoot(startPath: string): { root: string } | { root: null; warni
 
 class HiveExtension {
   private sidebarProvider: HiveSidebarProvider | null = null
-  private backgroundJobsProvider: BackgroundJobsProvider | null = null
   private repositoryWorkProvider: RepositoryWorkProvider | null = null
   private sessionConstraintsProvider: SessionConstraintsProvider | null = null
   private worklogsProvider: WorklogsProvider | null = null
@@ -153,7 +151,6 @@ class HiveExtension {
     this.initialized = true
 
     this.sidebarProvider = new HiveSidebarProvider(workspaceRoot)
-    this.backgroundJobsProvider = new BackgroundJobsProvider(workspaceRoot)
     this.repositoryWorkProvider = new RepositoryWorkProvider(workspaceRoot)
     this.sessionConstraintsProvider = new SessionConstraintsProvider(workspaceRoot)
     this.context.subscriptions.push(
@@ -174,11 +171,10 @@ class HiveExtension {
       vscode.languages.registerDocumentLinkProvider({ scheme: WorklogDocuments.scheme }, this.worklogDocuments),
       vscode.workspace.onDidCloseTextDocument(document => this.worklogDocuments?.close(document.uri)),
     )
-    this.launcher = new Launcher(workspaceRoot)
+    this.launcher = new Launcher()
     this.commentController = new PlanCommentController(workspaceRoot)
 
     vscode.window.registerTreeDataProvider('hive.features', this.sidebarProvider)
-    vscode.window.registerTreeDataProvider('hive.backgroundJobs', this.backgroundJobsProvider)
     const repositoriesView = vscode.window.createTreeView('hive.repositories', { treeDataProvider: this.repositoryWorkProvider })
     this.context.subscriptions.push(repositoriesView, ...this.repositoryWorkProvider.attach(repositoriesView))
     this.commentController.registerCommands(this.context)
@@ -186,7 +182,6 @@ class HiveExtension {
 
     this.hiveWatcher = new HiveWatcher(workspaceRoot, () => {
       this.sidebarProvider?.refresh()
-      this.backgroundJobsProvider?.refresh()
       this.repositoryWorkProvider?.refresh()
       this.sessionConstraintsProvider?.refresh()
       this.worklogsProvider?.refresh()
@@ -234,7 +229,6 @@ class HiveExtension {
           this.initializeWithHive(found.root)
         }
         this.sidebarProvider?.refresh()
-        this.backgroundJobsProvider?.refresh()
         this.repositoryWorkProvider?.refresh()
         this.sessionConstraintsProvider?.refresh()
         this.worklogsProvider?.refresh()
@@ -328,14 +322,7 @@ class HiveExtension {
         await this.sessionConstraintsProvider.inspect()
       }),
 
-      vscode.commands.registerCommand('hive.openFile', (filePathOrItem: string | { command?: { command?: string; arguments?: unknown[] } }) => {
-        if (typeof filePathOrItem !== 'string' && filePathOrItem?.command?.command === 'hive.openBackgroundJobInBoard') {
-          // Any caller can supply these arguments; a non-array reaches the launcher as an invalid reference instead of throwing.
-          const args = filePathOrItem.command.arguments
-          const [owner, alias] = Array.isArray(args) ? args : []
-          this.launcher?.openBackgroundJobInBoard(owner, alias)
-          return
-        }
+      vscode.commands.registerCommand('hive.openFile', (filePathOrItem: string | { command?: { arguments?: unknown[] } }) => {
         const filePath = typeof filePathOrItem === 'string'
           ? filePathOrItem
           : filePathOrItem?.command?.arguments?.[0]
@@ -357,10 +344,6 @@ class HiveExtension {
           return
         }
         await removeStaleCheckoutRecord(provider.projectRoot, item, () => provider.refresh())
-      }),
-
-      vscode.commands.registerCommand('hive.openBackgroundJobInBoard', (owner: unknown, alias: unknown) => {
-        this.launcher?.openBackgroundJobInBoard(owner, alias)
       }),
 
       vscode.commands.registerCommand('hive.copyToClipboard', async (valueOrItem: string | { copyCommand?: { arguments?: string[] } }) => {
@@ -466,14 +449,6 @@ class HiveExtension {
 
         vscode.window.showInformationMessage(`Hive: Feature "${featureName}" archived.`)
         this.sidebarProvider?.refresh()
-      }),
-
-      vscode.commands.registerCommand('hive.job.archive', async (jobItem: unknown) => {
-        if (!this.workspaceRoot) {
-          vscode.window.showErrorMessage('Hive: No .hive directory found')
-          return
-        }
-        await archiveBackgroundJobItem(this.workspaceRoot, jobItem, () => this.backgroundJobsProvider?.refresh())
       })
     )
   }
