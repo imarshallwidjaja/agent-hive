@@ -43,7 +43,10 @@ const encodeCursor = (id: string, order: string) => Buffer.from(JSON.stringify({
 function readAccessFor(input: {
   sessions: Record<string, Omit<SessionRecord, 'location'> & { directory?: string }>;
   timelines: Record<string, Raw[] | ((read: number) => Raw[])>;
-  active?: Record<string, unknown>;
+  /** Sessions whose tree still has work: an active execution, or a job such as a backgrounded shell. */
+  busy?: Record<string, 'active' | 'job'>;
+  /** Makes the settlement read fail, as a malformed host answer does. */
+  settlementFails?: boolean;
   failWith?: ReadAccessError;
 }) {
   const calls: Array<{ method: string; input?: any }> = [];
@@ -58,10 +61,12 @@ function readAccessFor(input: {
     return typeof value === 'function' ? value(listReads) : value;
   };
   const access: TraceReadAccess = {
-    sessionActive: async () => {
-      calls.push({ method: 'active' });
+    sessionSettlement: async ({ sessionID, parentID }) => {
+      calls.push({ method: 'settlement', input: { sessionID, parentID } });
       if (input.failWith) throw input.failWith;
-      return (input.active ?? {}) as never;
+      if (input.settlementFails) throw new ReadAccessError('malformed_response', 'not a record');
+      const signal = input.busy?.[sessionID];
+      return signal === undefined ? { settled: true } : { settled: false, signal, detail: `${sessionID} still works` };
     },
     sessionGet: async (sessionID) => {
       calls.push({ method: 'get', input: sessionID });
@@ -319,14 +324,23 @@ describe('v2 trace source mapping', () => {
     expect(calls.map((call) => call.method)).toEqual(['check']);
   });
 
-  it('reports the runtime from the active map and keeps active sessions out of recovery', async () => {
+  it('reports the runtime from the settlement of the whole session tree and keeps unsettled sessions out of recovery', async () => {
     const timeline = [user('msg_u1', 'go'), assistant('msg_a1', [{ type: 'text', text: 'done' }])];
-    const idle = readAccessFor({ sessions: FAMILY, timelines: { ses_child: timeline }, active: { ses_other: { type: 'running' } } });
+    const idle = readAccessFor({ sessions: FAMILY, timelines: { ses_child: timeline }, busy: { ses_other: 'active' } });
     expect((await operations(idle.access).trace({ task_id: 'ses_child' })).lifecycle).toEqual({ state: 'terminal', terminal: true, reason: 'idle_and_closed', runtime: 'idle' });
-    const busy = readAccessFor({ sessions: FAMILY, timelines: { ses_child: timeline }, active: { ses_child: { type: 'running' } } });
+    // The child's settlement includes its parent's subagent job, so the checked parent is passed with it.
+    expect(idle.calls.filter((call) => call.method === 'settlement').map((call) => call.input)).toContainEqual({ sessionID: 'ses_child', parentID: 'ses_parent' });
+    const busy = readAccessFor({ sessions: FAMILY, timelines: { ses_child: timeline }, busy: { ses_child: 'active' } });
     expect((await operations(busy.access).trace({ task_id: 'ses_child' })).lifecycle).toMatchObject({ state: 'active', runtime: 'busy' });
     expect((await operations(busy.access).trace({ task_id: 'ses_child', recovery: true })).recovery.failures).toEqual([{ stage: 'eligibility', reasons: ['runtime_active'] }]);
-    const malformed = readAccessFor({ sessions: FAMILY, timelines: { ses_child: timeline }, active: { ses_child: { type: 'other' } } });
+    // An idle session whose backgrounded shell or descendant still works is busy, not closed.
+    const background = readAccessFor({ sessions: FAMILY, timelines: { ses_child: timeline }, busy: { ses_child: 'job' } });
+    expect((await operations(background.access).trace({ task_id: 'ses_child' })).lifecycle).toMatchObject({ state: 'active', runtime: 'busy' });
+    // A root session has no parent job to read.
+    const root = readAccessFor({ sessions: FAMILY, timelines: { ses_parent: timeline } });
+    await operations(root.access).trace({ task_id: 'ses_parent' });
+    expect(root.calls.filter((call) => call.method === 'settlement').map((call) => call.input)).toContainEqual({ sessionID: 'ses_parent', parentID: undefined });
+    const malformed = readAccessFor({ sessions: FAMILY, timelines: { ses_child: timeline }, settlementFails: true });
     expect((await operations(malformed.access).trace({ task_id: 'ses_child' })).lifecycle).toMatchObject({ state: 'uncertain', reason: 'status_unavailable', runtime: 'unavailable' });
     const streaming = readAccessFor({ sessions: FAMILY, timelines: { ses_child: [user('msg_u1', 'go'), assistant('msg_a1', [{ type: 'tool', id: 'call_1', name: 'bash', state: { status: 'streaming', input: '{"comm' }, time: { created: 1 } }], { time: { created: 1 } })] } });
     expect((await operations(streaming.access).trace({ task_id: 'ses_child' })).lifecycle).toMatchObject({ state: 'uncertain', reason: 'tool_pending_or_running', unresolved_tools: { latest_message: 1, earlier_messages: 0 } });
@@ -741,7 +755,7 @@ describe('v2 caller cancellation', () => {
     const setup = summarizerContext({ models: () => Effect.never.pipe(Effect.onInterrupt(() => Effect.sync(() => { interrupted = true; }))) });
     const call = await registered(access, setup);
     const fiber = Effect.runFork(call({ task_id: 'ses_child', recovery: true }));
-    await until(() => calls.some((entry) => entry.method === 'active'), 'the source and status reads to finish');
+    await until(() => calls.some((entry) => entry.method === 'settlement'), 'the source and status reads to finish');
     await settle();
     const readsAtCancel = calls.length;
 
@@ -772,7 +786,7 @@ describe('v2 caller cancellation', () => {
     await Effect.runPromise(Fiber.interrupt(fiber));
     await until(() => signals[0]?.aborted === true, 'the history read signal to abort');
     await settle();
-    expect(base.calls.some((entry) => entry.method === 'active')).toBe(false);
+    expect(base.calls.some((entry) => entry.method === 'settlement')).toBe(false);
     expect(setup.created).toEqual([]);
   });
 
@@ -838,11 +852,11 @@ describe('v2 caller cancellation', () => {
     const timeline = [user('msg_u1', 'go'), assistant('msg_a1', [child])];
     const base = readAccessFor({ sessions: { ...FAMILY, ses_grandchild: { parentID: 'ses_child' } }, timelines: { ses_child: timeline } });
     const seen: Array<[string, AbortSignal | undefined]> = [];
-    const spy = (method: 'sessionActive' | 'sessionGet' | 'messageList' | 'checkTarget') => (async (...args: unknown[]) => {
+    const spy = (method: 'sessionSettlement' | 'sessionGet' | 'messageList' | 'checkTarget') => (async (...args: unknown[]) => {
       seen.push([method, args.at(-1) instanceof AbortSignal ? args.at(-1) as AbortSignal : undefined]);
       return (base.access[method] as (...input: unknown[]) => Promise<unknown>)(...args);
     });
-    const access = { ...base.access, sessionActive: spy('sessionActive'), sessionGet: spy('sessionGet'), messageList: spy('messageList'), checkTarget: spy('checkTarget') } as unknown as TraceReadAccess;
+    const access = { ...base.access, sessionSettlement: spy('sessionSettlement'), sessionGet: spy('sessionGet'), messageList: spy('messageList'), checkTarget: spy('checkTarget') } as unknown as TraceReadAccess;
     const trace = await registered(access, summarizerContext());
     const content = await registered(access, summarizerContext(), 'hive_task_trace_content');
 
@@ -850,7 +864,7 @@ describe('v2 caller cancellation', () => {
     const event = page.events.find((entry: Raw) => entry.child_session_id === 'ses_grandchild').ref;
     await Effect.runPromise(content({ task_id: 'ses_child', event }));
 
-    expect(new Set(seen.map(([method]) => method))).toEqual(new Set(['checkTarget', 'sessionGet', 'messageList', 'sessionActive']));
+    expect(new Set(seen.map(([method]) => method))).toEqual(new Set(['checkTarget', 'sessionGet', 'messageList', 'sessionSettlement']));
     expect(seen.filter(([, signal]) => signal === undefined)).toEqual([]);
   });
 

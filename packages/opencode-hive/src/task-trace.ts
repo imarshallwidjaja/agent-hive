@@ -59,7 +59,7 @@ function taskTraceContinuationHint(
 
 // Chooses the replay hint for one recorded native task call, or none. A foreground call without a
 // recorded result is hinted only once a later message exists; that alone does not prove it stopped.
-// Background launches belong to the board, so no branch hints them. Native task records the launch
+// A background launch returns before its child finishes, so no branch hints it. Native task records the launch
 // mode in state.metadata; the recorded input and a part-metadata mirror are honored as well.
 function replayHintLeadIn(part: RecordValue, childID: string, laterMessageExists: boolean): string | undefined {
   const state = record(part.state);

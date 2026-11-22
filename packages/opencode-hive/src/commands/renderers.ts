@@ -8,7 +8,6 @@ type CommandSectionInput = {
   doNotItems: string[];
   outputItems: string[];
   details?: string[];
-  backgroundItems?: string[];
 };
 
 function formatList(items: string[]): string {
@@ -29,10 +28,6 @@ function renderSections(input: CommandSectionInput): string {
     sections.push(`Do not:\n${formatList(input.doNotItems)}`);
   }
 
-  if (input.backgroundItems && input.backgroundItems.length > 0) {
-    sections.push(`Background:\n${formatList(input.backgroundItems)}`);
-  }
-
   sections.push(`Output expected:\n${formatList(input.outputItems)}`);
   return sections.join('\n\n');
 }
@@ -47,7 +42,6 @@ function renderHybridCommand(
     details: input.details,
     doItems: input.doItems,
     doNotItems: input.doNotItems,
-    backgroundItems: input.backgroundItems,
     outputItems: input.outputItems,
   });
   return `${wrapper}\n\n---\n\n${renderCommandBehavior(context.host)[command]}`;
@@ -61,13 +55,6 @@ function topicOrCurrent(args: string, fallback: string): string {
 /** Host-supplied prose after the command, kept whole for the agent to read; nothing is parsed out of it. */
 function operatorText(command: string, args: string): string {
   return `Operator text after /${command} (blank when none):\n<operator-text>\n${args}\n</operator-text>`;
-}
-
-function backgroundItems(
-  context: HiveCommandContext,
-  items: string[],
-): string[] | undefined {
-  return context.backgroundGuidance.available ? items : undefined;
 }
 
 function configuredDashReviewCandidates(context: HiveCommandContext, suiteAudit = false): string {
@@ -100,10 +87,6 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
         'End with the skill\'s explicit three-way alignment confirmation and its closing readback.',
       ],
       doNotItems: [],
-      backgroundItems: backgroundItems(context, [
-        'Use direct retrieval, one agent, or multiple agents, including independent background lanes when useful, only for bounded material research questions and based on their evidence needs and dependencies.',
-        'Continue asking independent operator decisions while research runs; wait only when all remaining material decisions depend on pending evidence.',
-      ]),
       outputItems: [
         '## Interview Summary and ## Recommended Next Step, followed by three-way alignment confirmation and the skill\'s closing readback. The next step is whatever the clarified idea calls for, such as an answer, ad-hoc work, `/hive-plan`, or none.',
       ],
@@ -119,10 +102,6 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
         'End with the skill\'s explicit three-way alignment confirmation and its closing readback.',
       ],
       doNotItems: [],
-      backgroundItems: backgroundItems(context, [
-        'Use direct retrieval, one agent, or multiple agents, including independent background lanes when useful, only for bounded material research questions and based on their evidence needs and dependencies.',
-        'Continue asking independent operator decisions while research runs; wait only when all remaining material decisions depend on pending evidence.',
-      ]),
       outputItems: [
         'The skill\'s alignment brief with acceptance criteria added, followed by three-way alignment confirmation and the skill\'s closing readback.',
         'After confirmation, recommend the next step the result warrants, unless the operator already asked for the next stage.',
@@ -157,9 +136,6 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
       details: [`Subject: ${topicOrCurrent(args, 'the current operator request')}`],
       doItems: ['Produce one copy-paste-ready brief for /hive-plan to turn into the formal Hive plan.'],
       doNotItems: [],
-      backgroundItems: backgroundItems(context, [
-        'Use independent background research only when foreground brief assembly can safely continue without those results.',
-      ]),
       outputItems: ['Output only the final brief in one fenced code block.'],
     });
   },
@@ -172,9 +148,6 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
         'Include documentation updates for non-ad-hoc work when user-facing behavior, setup, install flow, or operator workflow changes.',
       ],
       doNotItems: [],
-      backgroundItems: backgroundItems(context, [
-        'Use independent scout validation in background lanes when it can run without blocking plan framing.',
-      ]),
       outputItems: [
         'Feature, plan readback, task breakdown, recommended execution order, session strategy, operator input, and decision points.',
       ],
@@ -212,9 +185,6 @@ export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
         'Reinspect the destination at each later checkpoint. Before dispatch, call hive_feature_select only when the selected route is unset or differs from the dispatch target, or the selection evidence below is missing or uncertain, then issue the native Forager ' + nativeCall(context.host) + ' call with that path in its authored prompt. Reuse a matching selection across a same-feature batch only when this session\'s most recent route-changing call visible in context is `hive_feature_select` for that same feature, with no later explicit-null or other-feature selection. When that evidence is not visible (for example after compaction or a summary, at session start, or in mixed ad-hoc/feature batches), or you are uncertain, call `hive_feature_select` for the dispatch target. Explicit null stays featureless unless the dispatch intentionally changes target.',
       ],
       doNotItems: [],
-      backgroundItems: backgroundItems(context, [
-        'Use independent background-first orchestration only for runnable tasks or validation lanes.',
-      ]),
       outputItems: [
         'Confirmed strategy, todos, launched or queued tasks, blockers, and merge/verification expectations.',
       ],

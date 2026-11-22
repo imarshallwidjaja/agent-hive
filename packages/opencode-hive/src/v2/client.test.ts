@@ -88,7 +88,7 @@ describe('verified v2 read access', () => {
 
   it('exposes only read methods and no client or callback to keep', () => {
     const access = createVerifiedReadAccess({ server, identity, directory, env, makeClient: fakeServer([ok]).makeClient });
-    expect(Object.keys(access).sort()).toEqual(['checkTarget', 'childSettlement', 'messageList', 'sessionActive', 'sessionGet']);
+    expect(Object.keys(access).sort()).toEqual(['checkTarget', 'childSettlement', 'messageList', 'parentActivity', 'sessionActive', 'sessionGet', 'sessionSettlement']);
   });
 
   it('rejects another instance, another location and failed authentication before any read runs', async () => {
@@ -626,7 +626,7 @@ describe('target relationship and placement', () => {
 
 describe('child settlement', () => {
   type Job = { id: string; kind: string; sessionID: string; status: string; childSessionID?: string };
-  type State = { jobs?: Job[]; inbox?: Record<string, unknown[]>; active?: unknown; jobAnswer?: unknown; inboxAnswer?: unknown; listAnswer?: unknown; extra?: Session[]; unlisted?: string[] };
+  type State = { jobs?: Job[]; inbox?: Record<string, unknown[]>; active?: unknown; jobAnswer?: unknown; inboxAnswer?: unknown; listAnswer?: unknown; extra?: Session[]; unlisted?: string[]; getErrors?: Record<string, unknown> };
   /**
    * A server with sessions, jobs, inboxes and active executions. `parent` owns `child` and `sibling`; `child` owns
    * `helper`, which owns `quiet`. Job rows exist only where a test adds them, so `quiet` is a descendant no job names.
@@ -657,6 +657,12 @@ describe('child settlement', () => {
         return state.inboxAnswer !== undefined ? state.inboxAnswer : state.inbox?.[sessionID] ?? [];
       } };
       client.session.active = async () => { base.reads.push('active'); return state.active ?? {}; };
+      const get = client.session.get;
+      client.session.get = async (input: { sessionID: string }, options?: { signal?: AbortSignal }) => {
+        if (state.getErrors?.[input.sessionID] === undefined) return get(input, options);
+        base.reads.push(`get:${input.sessionID}`);
+        throw state.getErrors[input.sessionID];
+      };
       client.session.list = async (input: { parentID?: string; order?: string; limit: number; cursor?: string }) => {
         const { parentID, offset } = input.cursor === undefined ? { parentID: input.parentID!, offset: 0 } : JSON.parse(input.cursor);
         base.reads.push(`list:${parentID}${offset ? `@${offset}` : ''}`);
@@ -697,7 +703,7 @@ describe('child settlement', () => {
       [{ inbox: { child: [{ id: 'report' }] } }, 'inbox', 'session child has 1 queued inbox item(s)'],
       // Queued input on a descendant that no job names and that is not running is still found through the tree.
       [{ inbox: { quiet: [{ id: 'queued' }] } }, 'inbox', 'session quiet has 1 queued inbox item(s)'],
-      [{ active: { child: { type: 'running' } } }, 'active', 'child session child has an active execution'],
+      [{ active: { child: { type: 'running' } } }, 'active', 'session child has an active execution'],
       [{ active: { quiet: { type: 'running' } } }, 'active', 'descendant session quiet of child has an active execution'],
     ];
     for (const [state, signal, detail] of cases) expect(await settle(state).result).toEqual({ settled: false, signal: signal as any, detail });
@@ -774,6 +780,87 @@ describe('child settlement', () => {
     };
     const access = createVerifiedReadAccess({ server, identity, directory, env, makeClient });
     expect((await failure(access.childSettlement({ parentID: 'parent', childID: 'child' }))).code).toBe('wrong_instance');
+  });
+
+  it('settles a root session from its own tree without reading a parent job list', async () => {
+    const host = settlementServer({ jobs: [subagentJob('parent', 'child')] });
+    // The parent's subagent job for the child is not part of the parent's own tree reads.
+    expect(await host.access.sessionSettlement({ sessionID: 'parent' })).toEqual({ settled: false, signal: 'job', detail: 'subagent job child of session parent is running' });
+    expect(host.reads[0]).toBe('jobs:parent+');
+    const idle = settlementServer({});
+    expect(await idle.access.sessionSettlement({ sessionID: 'parent' })).toEqual({ settled: true });
+    expect(idle.reads).not.toContain('jobs:parent');
+  });
+
+  it('attributes the live jobs and executions under a parent to its direct children in one pass, without job text', async () => {
+    const host = settlementServer({
+      jobs: [
+        subagentJob('parent', 'child'),
+        { id: 'sh_quiet', kind: 'shell', sessionID: 'quiet', status: 'running' },
+        { id: 'sh_parent', kind: 'shell', sessionID: 'parent', status: 'running' },
+        { id: 'odd', kind: 'Shell: rm -rf /tmp/x', sessionID: 'helper', status: 'running' },
+      ],
+      active: { sibling: { type: 'running' }, stranger: { type: 'running' }, parent: { type: 'running' } },
+      extra: [{ id: 'stranger', location: { directory: '/work/other' } }],
+    });
+    expect(await host.access.parentActivity({ parentID: 'parent' })).toEqual({ children: [
+      { sessionID: 'child', activeExecution: false, jobs: [
+        { kind: 'subagent', status: 'running', owner: 'parent' },
+        { kind: 'shell', status: 'running', owner: 'descendant' },
+        { kind: 'other', status: 'running', owner: 'descendant' },
+      ] },
+      { sessionID: 'sibling', activeExecution: true, jobs: [] },
+    ] });
+    // One job list filtered to the parent's tree and one active read; parent chains only for sessions with live work.
+    expect(host.reads.filter((read) => read.startsWith('jobs:') || read === 'active')).toEqual(['jobs:parent+', 'active']);
+    const gets = host.reads.filter((read) => read.startsWith('get:'));
+    expect(new Set(gets).size).toBe(gets.length);
+
+    const displaced = settlementServer({ extra: [{ id: 'parent', location: { directory: '/work/other' } }] });
+    expect((await failure(displaced.access.parentActivity({ parentID: 'parent' }))).code).toBe('caller_displaced');
+  });
+
+  it('skips an active session the server reports gone, and refuses every other failed read of one, so live work is never hidden', async () => {
+    const file = registration({ url: 'http://127.0.0.1:4096', pid: process.pid });
+    const gone = [
+      declaredError('SessionNotFoundError', 'Session not found: ephemeral'),
+      new ClientError('UnexpectedStatus', { cause: { status: 404 }, detail: '404' }),
+    ];
+    const failed = [
+      new ClientError('UnexpectedStatus', { cause: { status: 500 }, detail: '500' }),
+      new ClientError('Transport', { cause: new Error('socket hang up') }),
+      new Error('database is locked'),
+    ];
+    for (const where of [undefined, file]) {
+      for (const error of gone) {
+        const host = settlementServer({ active: { ephemeral: { type: 'running' } }, getErrors: { ephemeral: error } }, where);
+        expect(await host.access.parentActivity({ parentID: 'parent' })).toEqual({ children: [] });
+        expect(await host.access.childSettlement({ parentID: 'parent', childID: 'child' })).toEqual({ settled: true });
+        expect(host.reads.filter((read) => read === 'get:ephemeral')).toHaveLength(2);
+      }
+      for (const error of failed) {
+        const host = settlementServer({ active: { ephemeral: { type: 'running' } }, getErrors: { ephemeral: error } }, where);
+        expect((await failure(host.access.parentActivity({ parentID: 'parent' }))).code).toBe('target_unavailable');
+        expect((await failure(host.access.childSettlement({ parentID: 'parent', childID: 'child' }))).code).toBe('target_unavailable');
+      }
+    }
+  });
+
+  it('refuses an active session whose ancestor the server reports gone, because removing a parent does not stop its children', async () => {
+    const file = registration({ url: 'http://127.0.0.1:4096', pid: process.pid });
+    const gone = [
+      declaredError('SessionNotFoundError', 'Session not found: gone'),
+      new ClientError('UnexpectedStatus', { cause: { status: 404 }, detail: '404' }),
+    ];
+    for (const where of [undefined, file]) {
+      for (const error of gone) {
+        // `leaf` still runs while the host has already deleted its parent's row.
+        const host = settlementServer({ extra: [{ id: 'leaf', parentID: 'gone', location: { directory } }], active: { leaf: { type: 'running' } }, getErrors: { gone: error } }, where);
+        expect((await failure(host.access.parentActivity({ parentID: 'parent' }))).code).toBe('target_unavailable');
+        expect((await failure(host.access.childSettlement({ parentID: 'parent', childID: 'child' }))).code).toBe('target_unavailable');
+        expect(host.reads.filter((read) => read === 'get:gone')).toHaveLength(2);
+      }
+    }
   });
 });
 

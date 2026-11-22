@@ -141,7 +141,6 @@ describe('HIVE_COMMANDS', () => {
       const commands = buildHiveCommandMap(hiveCommandRenderers, () => ({
         agentMode: 'unified',
         host,
-        backgroundGuidance: { available: false },
         dashReviewLanes: [],
         vulnerabilityReviewLanes: [],
       }));
@@ -195,7 +194,7 @@ describe('HIVE_COMMANDS', () => {
   it('routes /grill into the shared continuous grilling loop and /interview into the same engine on every host', () => {
     for (const host of [OPENCODE_V1_PROFILE, createHostProfile('opencode-v2'), createHostProfile('opencode-v2', { readTransport: 'direct' })]) {
       const commands = buildHiveCommandMap(hiveCommandRenderers, () => ({
-        agentMode: 'unified', host, backgroundGuidance: { available: false },
+        agentMode: 'unified', host,
         dashReviewLanes: [], vulnerabilityReviewLanes: [],
       }));
       const grill = commands.grill.run('a migration proposal');
@@ -243,7 +242,6 @@ describe('HIVE_COMMANDS', () => {
     const commands = buildHiveCommandMap(hiveCommandRenderers, () => ({
       agentMode: 'dedicated',
       host: OPENCODE_V1_PROFILE,
-      backgroundGuidance: { available: false },
       dashReviewLanes: [],
       vulnerabilityReviewLanes: [],
     }));
@@ -302,7 +300,7 @@ describe('HIVE_COMMANDS', () => {
     const count = (text: string, needle: string) => text.split(needle).length - 1;
     for (const host of [OPENCODE_V1_PROFILE, createHostProfile('opencode-v2'), createHostProfile('opencode-v2', { readTransport: 'direct' })]) {
       const commands = buildHiveCommandMap(hiveCommandRenderers, () => ({
-        agentMode: 'dedicated', host, backgroundGuidance: { available: false },
+        agentMode: 'dedicated', host,
         dashReviewLanes: [], vulnerabilityReviewLanes: [],
       }));
       const plan = commands['hive-plan'].run('');
@@ -339,7 +337,7 @@ describe('HIVE_COMMANDS', () => {
     // overridden skill, stale cache). Their own text must stop projection or dispatch without guessing from numbering.
     for (const host of [OPENCODE_V1_PROFILE, createHostProfile('opencode-v2'), createHostProfile('opencode-v2', { readTransport: 'direct' })]) {
       const commands = buildHiveCommandMap(hiveCommandRenderers, () => ({
-        agentMode: 'unified', host, backgroundGuidance: { available: false },
+        agentMode: 'unified', host,
         dashReviewLanes: [], vulnerabilityReviewLanes: [],
       }));
       const approve = commands['approve-sync-plan'].run('');
@@ -374,7 +372,7 @@ describe('HIVE_COMMANDS', () => {
     expect('agent' in worklog!).toBe(false);
     for (const host of [OPENCODE_V1_PROFILE, createHostProfile('opencode-v2'), createHostProfile('opencode-v2', { readTransport: 'direct' })]) {
       const commands = buildHiveCommandMap(hiveCommandRenderers, () => ({
-        agentMode: 'unified', host, backgroundGuidance: { available: false },
+        agentMode: 'unified', host,
         dashReviewLanes: [], vulnerabilityReviewLanes: [],
       }));
       expect(commands.worklog.agent).toBeUndefined();
@@ -421,7 +419,7 @@ describe('HIVE_COMMANDS', () => {
     const prose = '  also keep the old "v1 shim" -- don\'t touch /grill output;\n\n  then add docs for $ARGUMENTS-style text\nand retry once.\n';
     for (const host of [OPENCODE_V1_PROFILE, createHostProfile('opencode-v2'), createHostProfile('opencode-v2', { readTransport: 'direct' })]) {
       const commands = buildHiveCommandMap(hiveCommandRenderers, () => ({
-        agentMode: 'dedicated', host, backgroundGuidance: { available: false },
+        agentMode: 'dedicated', host,
         dashReviewLanes: [], vulnerabilityReviewLanes: [],
       }));
       expect(commands.implement.agent).toBeUndefined();
@@ -558,7 +556,7 @@ describe('HIVE_COMMANDS', () => {
     const prose = '  the retry loop "hangs" -- after $ARGUMENTS-style input\n\nonly on v2\n';
     for (const host of [OPENCODE_V1_PROFILE, createHostProfile('opencode-v2'), createHostProfile('opencode-v2', { readTransport: 'direct' })]) {
       const commands = buildHiveCommandMap(hiveCommandRenderers, () => ({
-        agentMode: 'dedicated', host, backgroundGuidance: { available: false },
+        agentMode: 'dedicated', host,
         dashReviewLanes: [], vulnerabilityReviewLanes: [],
       }));
       for (const key of keys) {
@@ -580,7 +578,6 @@ describe('HIVE_COMMANDS', () => {
     const commands = buildHiveCommandMap(hiveCommandRenderers, () => ({
       agentMode: 'unified',
       host: OPENCODE_V1_PROFILE,
-      backgroundGuidance: { available: false },
       dashReviewLanes: [{
         sourceAgent: 'reviewer-contract',
         baseAgent: 'code-reviewer',
@@ -609,7 +606,7 @@ describe('HIVE_COMMANDS', () => {
   it('delivers the report-only suite audit scope and skill loading on both hosts', () => {
     for (const host of [OPENCODE_V1_PROFILE, createHostProfile('opencode-v2')]) {
       const commands = buildHiveCommandMap(hiveCommandRenderers, () => ({
-        agentMode: 'unified', host, backgroundGuidance: { available: false },
+        agentMode: 'unified', host,
         dashReviewLanes: [
           { sourceAgent: 'test-contracts', baseAgent: 'code-reviewer', taskTarget: 'test-contracts', description: 'Outcome contracts' },
           { sourceAgent: 'test-redundancy', baseAgent: 'simplicity-reviewer', taskTarget: 'test-redundancy', description: 'Duplicate invariants' },
@@ -633,7 +630,7 @@ describe('HIVE_COMMANDS', () => {
   it('renders /council as operator prose plus the council skill, with no roster in the command', () => {
     const prose = '  use the review council to assess "quoted choices"\n\nkeep --strict and --group as prose\n';
     for (const host of [OPENCODE_V1_PROFILE, createHostProfile('opencode-v2')]) {
-      const context: HiveCommandContext = { agentMode: 'dedicated', host, backgroundGuidance: { available: true }, dashReviewLanes: [], vulnerabilityReviewLanes: [] };
+      const context: HiveCommandContext = { agentMode: 'dedicated', host, dashReviewLanes: [], vulnerabilityReviewLanes: [] };
       const commands = buildHiveCommandMap(hiveCommandRenderers, () => context);
       expect(commands.council.agent).toBeUndefined();
       const outputs = [commands.council.run('$ARGUMENTS'), commands.council.run(prose), commands.council.run('')];

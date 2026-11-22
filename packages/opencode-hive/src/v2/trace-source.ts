@@ -48,7 +48,7 @@ import type { V2Catalog } from './registration.js';
 
 type RecordValue = Record<string, unknown>;
 /** The reads a trace makes. Its target check must report what it observed, because that is the recovery freshness. */
-export type TraceReadAccess = Pick<VerifiedTreeReadAccess, 'sessionActive' | 'sessionGet' | 'messageList' | 'checkTarget'>;
+export type TraceReadAccess = Pick<VerifiedTreeReadAccess, 'sessionGet' | 'messageList' | 'checkTarget' | 'sessionSettlement'>;
 
 const PAGE_LIMIT = 200;
 // Bounds a history read at 200 000 messages; a longer or non-terminating timeline reads as unavailable.
@@ -65,6 +65,8 @@ const SESSION_ABSENT_TAGS: ReadonlySet<unknown> = new Set(['Session.NotFoundErro
 
 interface V2Target extends TraceTarget {
   report: { placement: 'this-location' | 'other-location' };
+  /** The target's native parent from the checked read; its settlement includes that parent's subagent job. */
+  parentID?: string;
 }
 
 function unavailableFrom(error: unknown) {
@@ -235,6 +237,7 @@ export function createV2TraceSource(readAccess: TraceReadAccess): TraceSource<V2
           // The relationship, placement, parent and location of one checked observation must all hold after recovery.
           freshness: JSON.stringify([check.relationship, check.placement, check.observed.parentID ?? null, check.observed.directory ?? null]),
           report: { placement: check.placement },
+          ...(check.observed.parentID === undefined ? {} : { parentID: check.observed.parentID }),
         };
       } catch (error) {
         if (signal?.aborted) throw cancellationReason(signal);
@@ -251,12 +254,12 @@ export function createV2TraceSource(readAccess: TraceReadAccess): TraceSource<V2
         return { unavailable: { source_read: 'read_failed', ...unavailableFrom(error).unavailable } };
       }
     },
-    // The v2 server runs every location's sessions; its active map is the status of the target wherever it is placed.
-    async readRuntime(taskID, _target, signal): Promise<RuntimeStatus | undefined> {
+    // The whole session tree decides: a session that is idle while its background shell or a descendant still works is
+    // busy. The v2 server runs every location's sessions, so this holds wherever the target is placed.
+    async readRuntime(taskID, target, signal): Promise<RuntimeStatus | undefined> {
       try {
-        const active = record(await readAccess.sessionActive(signal));
-        if (!active || !Object.values(active).every((entry) => record(entry)?.type === 'running')) return undefined;
-        return Object.hasOwn(active, taskID) ? 'busy' : 'idle';
+        const state = await readAccess.sessionSettlement({ sessionID: taskID, ...(target.parentID === undefined ? {} : { parentID: target.parentID }) }, signal);
+        return state.settled ? 'idle' : 'busy';
       } catch {
         if (signal?.aborted) throw cancellationReason(signal);
         return undefined;

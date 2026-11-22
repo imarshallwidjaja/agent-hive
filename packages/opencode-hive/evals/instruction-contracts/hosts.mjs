@@ -59,8 +59,8 @@ export const HIVE_TOOL_NAMES = Object.freeze([
   'hive_plan_write', 'hive_plan_patch', 'hive_plan_read', 'hive_plan_approve', 'hive_tasks_sync', 'hive_task_create', 'hive_task_update',
   'hive_worktree_create', 'hive_worktree_inspect', 'hive_worktree_merge', 'hive_worktree_cleanup', 'hive_adhoc_worktree_create', 'hive_adhoc_worktree_inspect',
   'hive_adhoc_worktree_merge', 'hive_adhoc_worktree_cleanup', 'hive_worktree_recover', 'hive_checkouts_list', 'hive_checkout_inspect', 'hive_checkout_brief',
-  'hive_checkout_create', 'hive_checkout_register', 'hive_checkout_readiness', 'hive_checkout_cleanup', 'hive_background_status', 'hive_background_reconcile',
-  'hive_background_reconcile_batch', 'hive_background_cancel', 'hive_task_trace', 'hive_task_trace_content', 'hive_context_read', 'hive_context_write',
+  'hive_checkout_create', 'hive_checkout_register', 'hive_checkout_readiness', 'hive_checkout_cleanup', 'hive_background_status',
+  'hive_background_cancel', 'hive_task_trace', 'hive_task_trace_content', 'hive_context_read', 'hive_context_write',
   'hive_context_append', 'hive_context_edit', 'hive_context_archive', 'hive_constraints_read', 'hive_constraints_add', 'hive_constraints_edit',
   'hive_constraints_clear', 'hive_worklog_list', 'hive_worklog_read', 'hive_worklog_record', 'hive_explore_read', 'hive_explore_update', 'hive_councils_list',
   'hive_status', 'hive_git_snapshot',
@@ -184,9 +184,9 @@ export function selectionExpectations(id, model) {
     primary: { model: m.default, variant: null },
     'scout-researcher': { model: m.parent, variant: v.parent },
     'probe-native': { model: m.parent, variant: v.parent },
-    'code-reviewer': { model: m.hive, variant: v.hive },
+    'forager-worker': { model: m.hive, variant: v.hive },
     'probe-base': { model: m.hive, variant: v.hive },
-    'approach-advisor': id === 'v2' ? { model: m.native, variant: null } : { model: m.advisor, variant: v.advisor },
+    'forager-investigator': id === 'v2' ? { model: m.native, variant: null } : { model: m.advisor, variant: v.advisor },
     'probe-advisor': { model: m.advisor, variant: v.advisor },
   };
 }
@@ -208,16 +208,16 @@ export function managedControlPlan(model) {
   return {
     refusals: [
       { id: 'inheriting-built-in-other-model', agent: 'scout-researcher', sent: view(m.hive) },
-      { id: 'built-in-pair-same', agent: 'code-reviewer', sent: view(m.hive, v.hive) },
+      { id: 'built-in-pair-same', agent: 'forager-worker', sent: view(m.hive, v.hive) },
       { id: 'custom-same-model-no-variant', agent: 'probe-base', sent: view(m.hive) },
-      { id: 'native-model-other-variant', agent: 'approach-advisor', sent: view(m.parent, v.parent) },
+      { id: 'native-model-other-variant', agent: 'forager-investigator', sent: view(m.parent, v.parent) },
       { id: 'custom-pair-same', agent: 'probe-advisor', sent: view(m.advisor, v.advisor) },
     ],
     // The host's own catalog entry for each probed agent: its configured model, null when it inherits the parent's.
     catalog: {
       'scout-researcher': null,
-      'code-reviewer': effective['code-reviewer'], 'probe-base': effective['probe-base'],
-      'approach-advisor': effective['approach-advisor'], 'probe-advisor': effective['probe-advisor'],
+      'forager-worker': effective['forager-worker'], 'probe-base': effective['probe-base'],
+      'forager-investigator': effective['forager-investigator'], 'probe-advisor': effective['probe-advisor'],
     },
     // The unmanaged native agent without a model inherits the parent's, and with the same argument as a refusal above it must
     // run on that argument: the host accepts it, so a refusal above is Hive's own, and the argument is what changed the model.
@@ -225,9 +225,9 @@ export function managedControlPlan(model) {
     control: { agent: 'general', sent: view(m.hive, v.hive) },
     // Fresh children without a `model`; each runs on its effective configured model.
     children: [
-      { id: 'reviewer', agent: 'code-reviewer', expected: effective['code-reviewer'] },
+      { id: 'reviewer', agent: 'forager-worker', expected: effective['forager-worker'] },
       { id: 'custom', agent: 'probe-base', expected: effective['probe-base'] },
-      { id: 'plain', agent: 'approach-advisor', expected: effective['approach-advisor'] },
+      { id: 'plain', agent: 'forager-investigator', expected: effective['forager-investigator'] },
       { id: 'bearing', agent: 'probe-advisor', expected: effective['probe-advisor'] },
     ],
     // What the operator switches an idle child to between the parent's turns.
@@ -261,7 +261,7 @@ function probeVariant(probe, modelID) {
 /** Native agent settings each probe adds: a native model for a Hive role, which must not complete or override wrongly. */
 function probeNativeAgents(selection, model) {
   const native = `mock/${probeModels(model).native}`;
-  if (selection === 'valid') return { 'approach-advisor': native };
+  if (selection === 'valid') return { 'forager-investigator': native };
   if (selection === 'invalid') return { 'forager-worker': native };
   return {};
 }
@@ -347,13 +347,13 @@ export function hiveConfig({ provider, model, variant, agentMode, selection }) {
     return {
       agentMode,
       agents: {
-        'code-reviewer': { model: `mock/${hive}`, variant: PROBE_VARIANTS.hive },
-        'approach-advisor': { model: `mock/${advisor}`, variant: PROBE_VARIANTS.advisor },
+        'forager-worker': { model: `mock/${hive}`, variant: PROBE_VARIANTS.hive },
+        'forager-investigator': { model: `mock/${advisor}`, variant: PROBE_VARIANTS.advisor },
       },
       customAgents: {
         'probe-native': { baseAgent: 'scout-researcher', description: 'Model-selection probe without Hive model settings.' },
-        'probe-base': { baseAgent: 'code-reviewer', description: 'Model-selection probe inheriting its base Hive pair.' },
-        'probe-advisor': { baseAgent: 'approach-advisor', description: 'Model-selection probe inheriting a base Hive pair that a native setting overrides.' },
+        'probe-base': { baseAgent: 'forager-worker', description: 'Model-selection probe inheriting its base Hive pair.' },
+        'probe-advisor': { baseAgent: 'forager-investigator', description: 'Model-selection probe inheriting a base Hive pair that a native setting overrides.' },
       },
     };
   }

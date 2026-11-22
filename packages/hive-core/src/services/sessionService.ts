@@ -336,7 +336,8 @@ export class SessionService {
     return data.sessions.find((session) => session?.sessionId === sessionId);
   }
 
-  private standingConstraintRegister(session?: SessionInfo): ConstraintRegister {
+  /** The standing-constraint register a session record holds; an absent session holds none. */
+  standingConstraintRegister(session?: SessionInfo): ConstraintRegister {
     const entries = session?.standingConstraintEntries !== undefined
       ? session.standingConstraintEntries
       : session?.standingConstraints !== undefined

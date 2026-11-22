@@ -1,6 +1,6 @@
 import * as fs from 'node:fs';
 import { isIPv4 } from 'node:net';
-import { ClientError, OpenCode } from '@opencode/client';
+import { ClientError, OpenCode, isSessionNotFoundError } from '@opencode/client';
 // Only the path and header helpers: the service lifecycle exports (discover, ensure, stop) are never called.
 import { fallback, headers as serviceHeaders, type Endpoint, type Info } from '@opencode/client/service';
 import { IDENTITY_RPC_ID, type Identity } from './identity.js';
@@ -58,6 +58,33 @@ export class ReadAccessError extends Error {
   }
 }
 
+/** A session read the server answered with the session's absence; callers outside this module see its code only. */
+class SessionAbsentError extends ReadAccessError {
+  constructor(readonly absentSessionID: string, code: ReadAccessErrorCode, message: string) {
+    super(code, message);
+  }
+}
+
+/**
+ * Whether a failed session read shows that the session does not exist: the official client's declared
+ * `SessionNotFoundError`, or an undeclared 404. A transport, server or other failure says nothing about the session.
+ */
+function sessionAbsent(error: unknown): boolean {
+  return isSessionNotFoundError(error) || (error instanceof ClientError && error.reason === 'UnexpectedStatus' && fields(error.cause).status === 404);
+}
+
+/**
+ * A rejection handler that answers `value` when the server reports `sessionID` itself gone, and rethrows every other
+ * failure. An absent ancestor of a session that still exists is rethrown: the host deletes a parent's row before its
+ * children stop, so that session may still run.
+ */
+function skipAbsent<T>(sessionID: string, value: T): (error: unknown) => T {
+  return (error) => {
+    if (error instanceof SessionAbsentError && error.absentSessionID === sessionID) return value;
+    throw error;
+  };
+}
+
 /** How a target session relates to the caller in the native parent chain, and where it lives. Separate facts. */
 export type TargetCheck = {
   relationship: 'self' | 'child' | 'descendant' | 'other';
@@ -101,16 +128,33 @@ export interface VerifiedReadAccess {
 export interface VerifiedTreeReadAccess extends VerifiedReadAccess {
   checkTarget(input: { callerID: string; targetID: string }, signal?: AbortSignal): Promise<ObservedTargetCheck>;
   /**
-   * Reads, between the identity checks, whether child `childID` of `parentID` has settled. Work moves from a job to an
-   * inbox to an active execution, so the reads run in that order (as the host's own `run` command does) and a hand-off
-   * between two reads is still seen by the later one: the parent's subagent jobs for the child, then the jobs of the
-   * child and its descendants (any listed job, running or not, is pending), then the session tree under the child from
-   * the session list, then the inbox of every session in that tree, then the active executions, each matched to the tree
-   * or traced up its parent chain. A response that does not have the documented shape is refused, never read as empty.
-   * The answer is a sample: it says nothing about work another client starts after the last read.
+   * Reads, between the identity checks, whether the session tree under `sessionID` has settled. Work moves from a job
+   * to an inbox to an active execution, so the reads run in that order (as the host's own `run` command does) and a
+   * hand-off between two reads is still seen by the later one: with `parentID`, the parent's subagent jobs for the
+   * session; then the jobs of the session and its descendants (any listed job, running or not, is pending), then the
+   * session tree from the session list, then the inbox of every session in that tree, then the active executions,
+   * each matched to the tree or traced up its parent chain. Without `parentID` (a root session) the parent's job list
+   * is skipped. A response that does not have the documented shape is refused, never read as empty. The answer is a
+   * sample: it says nothing about work another client starts after the last read.
    */
+  sessionSettlement(input: { sessionID: string; parentID?: string }, signal?: AbortSignal): Promise<ChildSettlement>;
+  /** `sessionSettlement` for child `childID` of `parentID`. */
   childSettlement(input: { parentID: string; childID: string }, signal?: AbortSignal): Promise<ChildSettlement>;
+  /**
+   * The live work under `parentID`, attributed to its direct children, in one pass between the identity checks: the
+   * caller must still sit in this location, then the jobs of the parent and its descendants and the server's active
+   * executions are read once, and only the sessions that own a listed job or an active execution are traced up their
+   * parent chains. Job kinds and statuses are reduced to short tokens; no job command, title or description is
+   * returned. A sample like `sessionSettlement`; queued inbox input is not read here.
+   */
+  parentActivity(input: { parentID: string }, signal?: AbortSignal): Promise<ParentActivity>;
 }
+
+/** One live job under a parent: whose job it is relative to the direct child it is attributed to. */
+export type ActivityJob = { kind: string; status: string; owner: 'parent' | 'child' | 'descendant' };
+
+/** The live work `parentActivity` attributed to each direct child of the parent that has any. */
+export type ParentActivity = { children: Array<{ sessionID: string; jobs: ActivityJob[]; activeExecution: boolean }> };
 
 type ClientFactory = (options: { baseUrl: string; headers: Record<string, string>; fetch?: typeof globalThis.fetch }) => VerifiedClient;
 
@@ -152,9 +196,9 @@ const MANAGED_DIAGNOSIS: Record<ReadAccessErrorCode, string> = {
 const MANAGED_READ_FAILED = 'A read from the managed OpenCode service failed.';
 /** What an unsettled child says on the managed service, chosen by its signal alone: none repeats a field the service returned. */
 const MANAGED_PENDING: Record<Exclude<ChildSettlement, { settled: true }>['signal'], string> = {
-  job: 'the managed OpenCode service still lists a job of the child or a descendant as pending',
-  inbox: 'the managed OpenCode service reports queued inbox input in the child\'s session tree',
-  active: 'the managed OpenCode service reports an active execution in the child\'s session tree',
+  job: 'the managed OpenCode service still lists a job of the session or a descendant as pending',
+  inbox: 'the managed OpenCode service reports queued inbox input in the session tree',
+  active: 'the managed OpenCode service reports an active execution in the session tree',
 };
 /** What an identity reply or binding failure says in place of a value that is not text. */
 const OPAQUE_VALUE = 'a value that is not text';
@@ -243,7 +287,8 @@ export function createVerifiedReadAccess(input: {
       session = await client.session.get({ sessionID } as Parameters<RawClient['session']['get']>[0], options);
     } catch (error) {
       if (options?.signal.aborted) throw error;
-      throw new ReadAccessError(unavailable, `Hive could not read session ${sessionID}: ${error instanceof Error ? error.message : String(error)}`);
+      const message = `Hive could not read session ${sessionID}: ${error instanceof Error ? error.message : String(error)}`;
+      throw sessionAbsent(error) ? new SessionAbsentError(sessionID, unavailable, message) : new ReadAccessError(unavailable, message);
     }
     return answeredFor(session, sessionID) as unknown as SessionPlacement;
   };
@@ -319,30 +364,84 @@ export function createVerifiedReadAccess(input: {
     detail: job.status === 'running' ? `${subject} is running` : `${subject} is ${job.status}, and its notice has not been delivered yet`,
   });
 
-  const settlement = async (client: VerifiedClient, options: RequestOptions, parentID: string, childID: string): Promise<ChildSettlement> => {
-    const own = jobsFrom(await client.experimental.job.list({ sessionID: parentID, kind: 'subagent' }, options), 'the parent\'s subagent jobs');
-    const ownJob = own.find((job) => job.id === childID || job.childSessionID === childID);
-    if (ownJob) return pendingJob(ownJob, `the host's subagent job for child session ${childID}`);
-    const descendants = jobsFrom(await client.experimental.job.list({ sessionID: childID, descendants: true }, options), `the jobs of child session ${childID} and its descendants`);
+  const settlement = async (client: VerifiedClient, options: RequestOptions, sessionID: string, parentID: string | undefined): Promise<ChildSettlement> => {
+    if (parentID !== undefined) {
+      const own = jobsFrom(await client.experimental.job.list({ sessionID: parentID, kind: 'subagent' }, options), 'the parent\'s subagent jobs');
+      const ownJob = own.find((job) => job.id === sessionID || job.childSessionID === sessionID);
+      if (ownJob) return pendingJob(ownJob, `the host's subagent job for child session ${sessionID}`);
+    }
+    const descendants = jobsFrom(await client.experimental.job.list({ sessionID, descendants: true }, options), `the jobs of session ${sessionID} and its descendants`);
     if (descendants.length > 0) return pendingJob(descendants[0]!, `${descendants[0]!.kind} job ${descendants[0]!.id} of session ${descendants[0]!.sessionID}`);
     // A session can hold queued input with no job and no execution (a prompt admitted without waking it), so every
     // session of the tree is read, not only the sessions jobs name.
-    const tree = await sessionTree(client, options, childID);
-    for (const sessionID of tree) {
-      const inbox = await client.session.inbox.list({ sessionID }, options);
-      if (!Array.isArray(inbox)) throw new ReadAccessError('malformed_response', `The server answered the inbox of session ${sessionID} with something other than a list.`);
-      if (inbox.length > 0) return { settled: false, signal: 'inbox', detail: `session ${sessionID} has ${inbox.length} queued inbox item(s)` };
+    const tree = await sessionTree(client, options, sessionID);
+    for (const member of tree) {
+      const inbox = await client.session.inbox.list({ sessionID: member }, options);
+      if (!Array.isArray(inbox)) throw new ReadAccessError('malformed_response', `The server answered the inbox of session ${member} with something other than a list.`);
+      if (inbox.length > 0) return { settled: false, signal: 'inbox', detail: `session ${member} has ${inbox.length} queued inbox item(s)` };
     }
-    const active = await client.session.active(options);
-    if (active === null || typeof active !== 'object' || Array.isArray(active)) throw new ReadAccessError('malformed_response', 'The server answered the active sessions with something other than a record.');
-    for (const sessionID of Object.keys(active)) {
-      // A session created after the tree was read is still traced up its parent chain.
-      if (tree.has(sessionID) || await descendsFrom(client, options, sessionID, childID)) {
-        return { settled: false, signal: 'active', detail: sessionID === childID ? `child session ${childID} has an active execution` : `descendant session ${sessionID} of ${childID} has an active execution` };
+    const active = activeRecord(await client.session.active(options));
+    for (const member of Object.keys(active)) {
+      // A session created after the tree was read is still traced up its parent chain; one the server no longer has
+      // (an ephemeral session removed meanwhile) holds no work. Any other failed read, including a gone ancestor of a
+      // session that still exists, refuses the answer.
+      if (tree.has(member) || await descendsFrom(client, options, member, sessionID).catch(skipAbsent(member, false))) {
+        return { settled: false, signal: 'active', detail: member === sessionID ? `session ${sessionID} has an active execution` : `descendant session ${member} of ${sessionID} has an active execution` };
       }
     }
     return { settled: true };
   };
+
+  const activity = async (client: VerifiedClient, options: RequestOptions, parentID: string): Promise<ParentActivity> => {
+    const caller = await getSession(client, options, parentID, 'caller_unavailable');
+    if (caller.location?.directory !== directory) throw new ReadAccessError('caller_displaced', `Caller session ${parentID} is in ${String(caller.location?.directory)}, not ${directory}.`);
+    const jobs = jobsFrom(await client.experimental.job.list({ sessionID: parentID, descendants: true }, options), `the jobs of session ${parentID} and its descendants`);
+    const active = activeRecord(await client.session.active(options));
+    // Parent chains are read once per session; only sessions that own live work are traced.
+    const parents = new Map<string, string | undefined>([[parentID, caller.parentID]]);
+    const directChild = async (sessionID: string): Promise<string | undefined> => {
+      const seen = new Set<string>();
+      let current = sessionID;
+      while (true) {
+        if (seen.has(current) || seen.size > MAX_LINEAGE_DEPTH) throw new ReadAccessError('inconsistent_lookup', `The parent chain of session ${sessionID} is not a finite chain.`);
+        seen.add(current);
+        if (!parents.has(current)) parents.set(current, (await getSession(client, options, current, 'target_unavailable')).parentID);
+        const parent = parents.get(current);
+        if (parent === parentID) return current;
+        if (parent === undefined) return undefined;
+        current = parent;
+      }
+    };
+    const children = new Map<string, { sessionID: string; jobs: ActivityJob[]; activeExecution: boolean }>();
+    const entry = (sessionID: string) => children.get(sessionID) ?? children.set(sessionID, { sessionID, jobs: [], activeExecution: false }).get(sessionID)!;
+    for (const job of jobs) {
+      const summary = { kind: token(job.kind), status: token(job.status) };
+      if (job.sessionID === parentID) {
+        // The parent's own subagent job is its child's run; the parent's other jobs belong to no child.
+        if (job.kind === 'subagent' && job.childSessionID !== undefined) entry(job.childSessionID).jobs.push({ ...summary, owner: 'parent' });
+        continue;
+      }
+      const child = await directChild(job.sessionID);
+      if (child !== undefined) entry(child).jobs.push({ ...summary, owner: job.sessionID === child ? 'child' : 'descendant' });
+    }
+    for (const sessionID of Object.keys(active)) {
+      if (sessionID === parentID) continue;
+      // An active session the server no longer has (an ephemeral session removed while it is traced) holds no work; any
+      // other failed read, including a gone ancestor of a session that still exists, refuses the answer, so live work
+      // is never hidden.
+      const child = await directChild(sessionID).catch(skipAbsent(sessionID, undefined));
+      if (child !== undefined) entry(child).activeExecution = true;
+    }
+    return { children: [...children.values()] };
+  };
+
+  /** Redacts a managed pending detail to its signal; an explicit `server` keeps its detail. */
+  const redacted = (state: ChildSettlement): ChildSettlement => (!('signal' in state) || source.kind === 'configured')
+    ? state
+    : { settled: false, signal: state.signal, detail: MANAGED_PENDING[state.signal] };
+
+  const sessionSettlement: VerifiedTreeReadAccess['sessionSettlement'] = async ({ sessionID, parentID }, signal) =>
+    redacted(await verified((client, options) => settlement(client, options, sessionID, parentID), signal));
 
   return {
     sessionActive: (signal) => verified((client, options) => client.session.active(options), signal),
@@ -363,11 +462,9 @@ export function createVerifiedReadAccess(input: {
       }
       return check;
     }, signal),
-    childSettlement: async ({ parentID, childID }, signal) => {
-      const state = await verified((client, options) => settlement(client, options, parentID, childID), signal);
-      if (!('signal' in state) || source.kind === 'configured') return state;
-      return { settled: false, signal: state.signal, detail: MANAGED_PENDING[state.signal] };
-    },
+    sessionSettlement,
+    childSettlement: ({ parentID, childID }, signal) => sessionSettlement({ sessionID: childID, parentID }, signal),
+    parentActivity: ({ parentID }, signal) => verified((client, options) => activity(client, options, parentID), signal),
   };
 }
 
@@ -394,6 +491,17 @@ function sessionPage(value: unknown, parentID: string): { sessions: string[]; ne
     return record.id;
   });
   return { sessions, next: typeof next === 'string' ? next : undefined };
+}
+
+/** The active executions record, or a refusal: an unexpected answer is never read as no executions. */
+function activeRecord(value: unknown): Record<string, unknown> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new ReadAccessError('malformed_response', 'The server answered the active sessions with something other than a record.');
+  return value as Record<string, unknown>;
+}
+
+/** A job kind or status as a short lowercase token; anything else is reported as `other`, never repeated. */
+function token(value: string): string {
+  return /^[a-z][a-z0-9_-]{0,31}$/.test(value) ? value : 'other';
 }
 
 /** A job list that has the documented shape, or a refusal: an unexpected answer is never read as no jobs. */

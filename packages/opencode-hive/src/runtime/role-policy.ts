@@ -41,6 +41,13 @@ export const COUNCIL_SEAT_BASES = [
   'scout-researcher', 'plan-reviewer', 'code-reviewer', 'simplicity-reviewer', 'approach-advisor', 'vulnerability-reviewer',
 ] as const satisfies readonly CustomAgentBase[];
 
+/**
+ * The roles whose settled child a parent may continue with the host's continuation field: the workers that carry one
+ * task or investigation across bounded follow-ups. Every other role (Scout, reviewers, advisors, Helper) is one-shot,
+ * so an independent pass never reuses another pass's context. Custom agents follow their base role.
+ */
+export const RESUMABLE_SUBAGENT_ROLES: ReadonlySet<BuiltInRole> = new Set(['forager-worker', 'forager-investigator', 'architect-planner']);
+
 const READ_TOOLS = ['hive_context_read', 'hive_constraints_read', 'hive_plan_read', 'hive_status', 'hive_repositories_status', 'hive_git_snapshot',
   'hive_worklog_list', 'hive_worklog_read', 'hive_checkouts_list', 'hive_checkout_brief', 'hive_explore_read'];
 /** Writes that stamp the calling primary session as the author of shared records. */
@@ -53,7 +60,8 @@ const TASK_TRACE_TOOLS = ['hive_task_trace', 'hive_task_trace_content'];
 const INSPECTION_TOOLS = ['hive_worktree_inspect', 'hive_adhoc_worktree_inspect', 'hive_checkout_inspect'];
 /** Retained checkout mutations; only the executing primaries (Hive, Swarm, Hive Builder) hold them. */
 const CHECKOUT_MUTATIONS = ['hive_checkout_create', 'hive_checkout_register', 'hive_checkout_readiness', 'hive_checkout_cleanup'];
-const BACKGROUND_TOOLS = ['hive_background_status', 'hive_background_reconcile', 'hive_background_reconcile_batch', 'hive_background_cancel'];
+/** Live inspection and cancellation of the caller's own native children. */
+const BACKGROUND_TOOLS = ['hive_background_status', 'hive_background_cancel'];
 /** Acknowledges an interrupted worktree operation; every primary that can create or clean up a placement holds it. */
 const WORKTREE_RECOVERY = 'hive_worktree_recover';
 /** Reads the configured council rosters; a delegated child returns a council request to its parent instead. */

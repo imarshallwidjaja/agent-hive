@@ -2,7 +2,6 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import {
   AdhocWorktreeService,
-  BackgroundJobService,
   CheckoutInspector,
   ConfigService,
   ContextService,
@@ -22,6 +21,7 @@ import {
   readCheckoutBrief,
   type ContextScope,
   type NativeObservationOwner,
+  type SessionInfo,
   type StandingConstraintEntry,
   type WorklogAuthor,
   type WorklogRef,
@@ -45,12 +45,14 @@ export type RouteSnapshot = {
   featureName?: string | null;
   sessionConstraints: ConstraintRegister;
   featureConstraints?: ConstraintRegister;
-  /**
-   * Set by the dispatch that captured the route, from its assignment's first line: the task or run a marker names,
-   * absent when the assignment has no marker or one Hive cannot resolve.
-   */
-  assignment?: AssignmentBinding;
 };
+
+/**
+ * What a dispatch's assignment marker (its first non-empty line) says: `none` when that line opens with no
+ * `Hive task:` or `Hive run:` marker, `invalid` when it opens with one that names no ID or names a task or run Hive
+ * cannot resolve, and `resolved` with the task or run it names.
+ */
+export type AssignmentMarker = { state: 'none' } | { state: 'invalid' } | { state: 'resolved'; binding: AssignmentBinding };
 
 export type ConstraintTarget =
   | { scope: 'session'; sessionID: string }
@@ -63,7 +65,7 @@ const NON_FEATURE_NAMESPACES = new Set(['adhoc', 'review']);
  * every operation shares. Session state is read only when a route or constraint actually needs it, so an
  * operation that takes no feature never touches the session index.
  *
- * `nativeObservationOwner` is chosen by the host adapter. It selects only the session and background stores;
+ * `nativeObservationOwner` is chosen by the host adapter. It selects only the session store;
  * the project root stays the real one for every other service.
  */
 export function createHiveServices(options: { projectRoot: string; detectedFeature?: string; nativeObservationOwner: NativeObservationOwner }) {
@@ -76,7 +78,6 @@ export function createHiveServices(options: { projectRoot: string; detectedFeatu
   const contextService = new ContextService(projectRoot);
   const configService = new ConfigService(projectRoot);
   const repositoryManifestService = new RepositoryManifestService(projectRoot);
-  const backgroundJobService = new BackgroundJobService(projectRoot, nativeObservationOwner);
   const worklogService = new WorklogService(projectRoot);
   const explorationService = new ExplorationService(projectRoot);
   // Loading the config is what records a fallback warning, so read it once here for status and startup reporting.
@@ -130,7 +131,10 @@ export function createHiveServices(options: { projectRoot: string; detectedFeatu
       assertValidFeatureName(feature);
       return feature;
     }
-    const stored = sessionID ? sessionService.getGlobal(sessionID) : undefined;
+    return routeFeature(sessionID ? sessionService.getGlobal(sessionID) : undefined);
+  };
+  /** The feature a session's stored route selects, else the detected feature, else the sole live feature. */
+  const routeFeature = (stored: SessionInfo | undefined): string | null => {
     if (stored && Object.prototype.hasOwnProperty.call(stored, 'featureName')) {
       if (stored.featureName !== null && stored.featureName !== undefined) assertValidFeatureName(stored.featureName);
       return stored.featureName ?? null;
@@ -156,11 +160,15 @@ export function createHiveServices(options: { projectRoot: string; detectedFeatu
     if (task !== undefined && !taskService.getRawStatus(featureName, task)) throw new Error(`Task '${task}' does not exist in feature '${featureName}'`);
     return { type: 'feature', featureName };
   };
-  const captureRoute = (sessionID: string): RouteSnapshot => {
-    const session = sessionService.getGlobal(sessionID);
+  /**
+   * The session's route and standing constraints from one read of the session index. A strict capture reads it without
+   * the reset-on-corruption path, so an unreadable index fails the capture and stays as found.
+   */
+  const captureRoute = (sessionID: string, options: { strict?: boolean } = {}): RouteSnapshot => {
+    const session = options.strict ? sessionService.peekGlobal(sessionID) : sessionService.getGlobal(sessionID);
     const hasFeatureRoute = !!session && Object.prototype.hasOwnProperty.call(session, 'featureName');
-    const featureName = resolveFeature(undefined, { sessionID });
-    const sessionConstraints = sessionService.readStandingConstraints(sessionID);
+    const featureName = routeFeature(session);
+    const sessionConstraints = sessionService.standingConstraintRegister(session);
     const featureConstraints = typeof featureName === 'string' ? featureConstraintService.read(featureName) : undefined;
     return { projectRoot, hasFeatureRoute, featureName, sessionConstraints, featureConstraints };
   };
@@ -226,7 +234,6 @@ export function createHiveServices(options: { projectRoot: string; detectedFeatu
     contextService,
     configService,
     repositoryManifestService,
-    backgroundJobService,
     worklogService,
     explorationService,
     worktreeService,

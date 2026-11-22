@@ -51,8 +51,6 @@ export const HIVE_TOOL_NAMES = [
   'hive_checkout_readiness',
   'hive_checkout_cleanup',
   'hive_background_status',
-  'hive_background_reconcile',
-  'hive_background_reconcile_batch',
   'hive_background_cancel',
   'hive_task_trace',
   'hive_task_trace_content',

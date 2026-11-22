@@ -1,19 +1,19 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { Effect, Exit, Scope, Stream } from 'effect';
+import { Effect, Exit, Scope } from 'effect';
 import type { Plugin } from '@opencode/plugin/effect';
-import { BackgroundJobService, getNativeBackgroundJobsPath } from 'hive-core';
-import { createV2BackgroundLifecycle, hostRuntimeId, registerBackground, type BackgroundLaunch } from './background.js';
+import { FeatureService, SessionService, getNativeSessionsPath } from 'hive-core';
+import { registerBackground, type BackgroundReadAccess } from './background.js';
+import { ReadAccessError, type ChildSettlement, type ParentActivity } from './client.js';
 import { createHiveAuthority } from './registration.js';
 import { createHiveToolRegistrar } from './tools.js';
 
-// The v2 board observes the host's structured identities and events: launch rows from dispatch, completion
-// notifications from synthetic inbox metadata, and execution settlement. It never parses notification text and never
-// records a cancellation the host did not report. A notification names the child but not the launching call, so it is
-// recorded as an uncertain observation of the child's live launches, never as one launch's terminal outcome.
+// The live child tools read the caller's direct children when they are called: who the children are comes from the
+// in-process session list, their feature, task and run from Hive's bindings, and whether work still runs under them
+// from the verified read client. Nothing is recorded.
 
-const BOARD_TOOLS = ['hive_background_status', 'hive_background_reconcile', 'hive_background_reconcile_batch', 'hive_background_cancel'];
+const LIVE_TOOLS = ['hive_background_cancel', 'hive_background_status'];
 
 const cleanup: string[] = [];
 afterEach(() => {
@@ -27,473 +27,237 @@ function projectRoot(): string {
   return root;
 }
 
-function lifecycle(root = projectRoot(), runtimeId = 'runtime-a') {
-  const service = new BackgroundJobService(root, 'opencode-v2');
-  const warnings: string[] = [];
-  return { root, service, warnings, background: createV2BackgroundLifecycle({ projectRoot: root, service, runtimeId, warn: (message) => warnings.push(message) }) };
-}
+type Session = { id: string; parentID?: string; agent?: string; outcome?: string; location: { directory: string } };
 
-const launch = (overrides: Partial<BackgroundLaunch> = {}): BackgroundLaunch => ({
-  parentSessionID: 'parent', callID: 'call-1', childSessionID: 'child-1', agent: 'forager-worker', description: 'Work', primaryAgent: 'swarm-orchestrator', ...overrides,
-});
-
-/** The host's completion notification: a synthetic inbox item for the parent, as `SubagentCompletion.deliver` admits it. */
-const completion = (parent: string, child: string, state: string, inboxID = `inbox-${child}-${state}`) => ({
-  type: 'session.inbox.enqueued',
-  data: {
-    sessionID: parent,
-    inboxID,
-    item: { type: 'synthetic', delivery: 'steer', payload: { text: `<subagent sessionID="${child}" state="${state}" description="Work">\nresult text\n</subagent>`, description: 'Work', metadata: { source: 'subagent', childID: child, agent: 'forager-worker', state } } },
-  },
-});
-
-describe('v2 background observation', () => {
-  it('records a completion notification for the parent and child as an uncertain observation, never a terminal outcome', () => {
-    const { service, background } = lifecycle();
-    background.recordLaunch(launch());
-
-    // A user message copying the shape, another parent's notification and a non-subagent synthetic are not evidence.
-    background.handleEvent({ type: 'session.inbox.enqueued', data: { ...completion('parent', 'child-1', 'completed').data, item: { type: 'user', payload: { text: 'done' } } } });
-    background.handleEvent(completion('other-parent', 'child-1', 'completed'));
-    background.handleEvent({ type: 'session.inbox.enqueued', data: { sessionID: 'parent', inboxID: 'x', item: { type: 'synthetic', payload: { text: 'restart', metadata: { notice: 'restart' } } } } });
-    expect(service.resolve('child-1')).toMatchObject({ runtimeState: 'running' });
-
-    background.handleEvent(completion('parent', 'child-1', 'completed'));
-    const row = service.resolve('child-1')!;
-    expect(row).toMatchObject({ runtimeState: 'unknown', statusUncertain: true });
-    expect(row.terminalUnreconciled).toBeUndefined();
-    expect(row.lastStatusError).toBe('The host sent the parent a report for child child-1 (state completed). A report names the child, not the launching call, and does not establish that the child ended, so Hive does not record it as this launch\'s outcome; inspect the child and archive this observation with decision "ignored".');
-  });
-
-  it('keeps other projects and other owners out of scope', () => {
-    const { root, service, background } = lifecycle();
-    const foreignRoot = projectRoot();
-    service.registerLaunch({ taskId: 'child-1', sessionId: 'child-1', callId: 'call-f', agentName: 'forager-worker', scope: { projectRoot: foreignRoot, parentSessionId: 'parent' } });
-    const v1 = new BackgroundJobService(root, 'opencode-v1');
-    v1.registerLaunch({ taskId: 'child-1', sessionId: 'child-1', callId: 'call-v1', agentName: 'forager-worker', scope: { projectRoot: root, parentSessionId: 'parent' } });
-
-    background.handleEvent(completion('parent', 'child-1', 'completed'));
-    expect(service.listScoped({ projectRoot: foreignRoot })[0]).toMatchObject({ runtimeState: 'running' });
-    expect(v1.resolve('child-1')).toMatchObject({ runtimeState: 'running' });
-    expect(fs.existsSync(getNativeBackgroundJobsPath(root, 'opencode-v2'))).toBe(true);
-  });
-
-  it('marks every live launch of a reused child uncertain and leaves terminal and archived rows as they were', () => {
-    const { service, background } = lifecycle();
-    // Rows a host recorded as terminal or archived before (v2 itself never records a notification as terminal).
-    background.recordLaunch(launch({ callID: 'call-0' }));
-    service.markTerminal('parent:job-1', 'completed', { resultSummary: 'earlier result' });
-    background.recordLaunch(launch({ callID: 'call-archived' }));
-    service.markIgnored('parent:job-2', 'Archived the observation.');
-    background.recordLaunch(launch({ callID: 'call-1' }));
-    background.recordLaunch(launch({ callID: 'call-2' }));
-
-    background.handleEvent(completion('parent', 'child-1', 'error', 'one'));
-    const rows = service.listScoped({}, { includeArchived: true });
-    const row = (callId: string) => rows.find((job) => job.callId === callId)!;
-    expect(row('call-0')).toMatchObject({ runtimeState: 'completed', resultSummary: 'earlier result' });
-    expect(row('call-0').lastStatusError).toBeUndefined();
-    expect(row('call-archived')).toMatchObject({ runtimeState: 'running', archiveReason: 'ignored' });
-    expect(row('call-archived').lastStatusError).toBeUndefined();
-    for (const callId of ['call-1', 'call-2']) {
-      expect(row(callId)).toMatchObject({ runtimeState: 'unknown', statusUncertain: true });
-      expect(row(callId).lastStatusError).toContain('child child-1 (state error)');
-    }
-  });
-
-  it('records settlement and the notification as uncertain observations with what the host reported', () => {
-    const { service, background } = lifecycle();
-    background.recordLaunch(launch());
-
-    background.handleEvent({ type: 'session.execution.interrupted', data: { sessionID: 'child-1', reason: 'user' } });
-    expect(service.resolve('child-1')).toMatchObject({ runtimeState: 'unknown', statusUncertain: true, lastStatusError: 'Native execution was interrupted (user) and settled; the completion notification has not been observed yet.' });
-
-    background.handleEvent(completion('parent', 'child-1', 'cancelled'));
-    expect(service.resolve('child-1')).toMatchObject({ runtimeState: 'unknown', statusUncertain: true });
-    expect(service.resolve('child-1')?.lastStatusError).toContain('child child-1 (state cancelled)');
-
-    background.recordLaunch(launch({ childSessionID: 'child-2', callID: 'call-2' }));
-    background.handleEvent({ type: 'session.execution.failed', data: { sessionID: 'child-2', error: { type: 'provider', message: 'rate limited' } } });
-    expect(service.resolve('child-2')).toMatchObject({ runtimeState: 'unknown', statusUncertain: true, lastStatusError: 'Native execution failed (rate limited); the completion notification has not been observed yet.' });
-
-    background.recordLaunch(launch({ childSessionID: 'child-3', callID: 'call-3' }));
-    background.handleEvent({ type: 'session.execution.interrupted', data: { sessionID: 'child-3', reason: 'shutdown' } });
-    expect(service.resolve('child-3')?.lastStatusError).toBe('Native execution was interrupted by host shutdown; the host may resume this child after it restarts. Inspect before acting.');
-
-    background.recordLaunch(launch({ childSessionID: 'child-4', callID: 'call-4' }));
-    background.handleEvent({ type: 'session.execution.succeeded', data: { sessionID: 'child-4' } });
-    expect(service.resolve('child-4')).toMatchObject({ runtimeState: 'unknown', statusUncertain: true });
-
-    // After an interrupt the host publishes the notification before the settlement; settlement adds nothing to an
-    // observation that is already uncertain and keeps the notified state.
-    background.recordLaunch(launch({ childSessionID: 'child-5', callID: 'call-5' }));
-    background.handleEvent(completion('parent', 'child-5', 'cancelled'));
-    background.handleEvent({ type: 'session.execution.interrupted', data: { sessionID: 'child-5', reason: 'user' } });
-    expect(service.resolve('child-5')?.lastStatusError).toContain('child child-5 (state cancelled)');
-  });
-
-  it('applies a notification seen before its launch row only to that parent and child, once', () => {
-    const { service, background } = lifecycle();
-    // The barrier could not write call-1's row, so its report can arrive before the call's retry records it.
-    background.observer.launchNotRecorded({ parentSessionId: 'parent', callId: 'call-1', childSessionId: 'child-1', agentName: 'forager-worker' }, new Error('disk full'));
-    background.handleEvent(completion('parent', 'child-1', 'completed'));
-    background.recordLaunch(launch({ parentSessionID: 'other-parent', callID: 'call-other' }));
-    expect(service.listScoped({}).find((job) => job.callId === 'call-other')).toMatchObject({ runtimeState: 'running' });
-
-    background.recordLaunch(launch());
-    expect(service.listScoped({}).find((job) => job.callId === 'call-1')).toMatchObject({ runtimeState: 'unknown', statusUncertain: true });
-    // The held notification was used up by that row.
-    background.recordLaunch(launch({ callID: 'call-later' }));
-    expect(service.listScoped({}).find((job) => job.callId === 'call-later')).toMatchObject({ runtimeState: 'running' });
-  });
-
-  it('holds no report for a child it has no unrecorded launch for, such as a child session\'s helper', () => {
-    const { service, background } = lifecycle();
-    // A delegated Architect's helper reports to the Architect; Hive never records a row for it and holds nothing.
-    background.handleEvent(completion('architect', 'helper-1', 'completed'));
-    background.recordLaunch(launch({ parentSessionID: 'architect', childSessionID: 'helper-1', callID: 'call-later' }));
-    expect(service.resolve('helper-1')).toMatchObject({ runtimeState: 'running' });
-    expect(service.resolve('helper-1')?.statusUncertain).toBeUndefined();
-  });
-
-  it('keeps a later continuation uncertain, never terminal, when an earlier launch\'s notification arrives after its row', () => {
-    // Launch A of child-1 has no row (both registration attempts failed); continuation B recorded the only live row.
-    const late = lifecycle();
-    late.background.recordLaunch(launch({ callID: 'call-B' }));
-    late.background.handleEvent(completion('parent', 'child-1', 'completed', 'inbox-A'));
-    expect(late.service.resolve('child-1')).toMatchObject({ callId: 'call-B', runtimeState: 'unknown', statusUncertain: true });
-    expect(late.service.resolve('child-1')?.terminalUnreconciled).toBeUndefined();
-
-    // The same after a plugin reload: the new activation has no memory of A, B's row is still the only live one.
-    const root = projectRoot();
-    const before = lifecycle(root);
-    before.background.recordLaunch(launch({ callID: 'call-B' }));
-    const after = lifecycle(root);
-    after.background.handleEvent(completion('parent', 'child-1', 'completed', 'inbox-A'));
-    expect(after.service.resolve('child-1')).toMatchObject({ callId: 'call-B', runtimeState: 'unknown', statusUncertain: true });
-
-    // The same when A's row was archived before its notification arrived.
-    const archived = lifecycle();
-    archived.background.recordLaunch(launch({ callID: 'call-A' }));
-    archived.service.updateRuntimeState('parent:job-1', 'unknown', { statusUncertain: true });
-    archived.service.markIgnored('parent:job-1', 'Inspected; archived the observation.');
-    archived.background.recordLaunch(launch({ callID: 'call-B' }));
-    archived.background.handleEvent(completion('parent', 'child-1', 'completed', 'inbox-A'));
-    const rows = archived.service.listScoped({}, { includeArchived: true });
-    expect(rows.find((job) => job.callId === 'call-B')).toMatchObject({ runtimeState: 'unknown', statusUncertain: true });
-    expect(rows.find((job) => job.callId === 'call-A')).toMatchObject({ runtimeState: 'unknown', archiveReason: 'ignored' });
-    expect(rows.find((job) => job.callId === 'call-A')?.lastStatusError).toBeUndefined();
-  });
-
-  it('discards a held completion that predates the launch bound for the same child, and keeps one that follows the barrier', () => {
-    const { service, warnings, background } = lifecycle();
-    // A completion for a launch that has no row (its registration failed) is held, then the child is continued.
-    background.observer.launchNotRecorded({ parentSessionId: 'parent', callId: 'call-a', childSessionId: 'child-1', agentName: 'forager-worker' }, new Error('disk full'));
-    background.handleEvent(completion('parent', 'child-1', 'completed', 'older'));
-    background.launchBound('parent', 'child-1');
-    background.recordLaunch(launch({ callID: 'call-b' }));
-    expect(service.resolve('child-1')).toMatchObject({ callId: 'call-b', runtimeState: 'running' });
-    expect(warnings.join('\n')).toContain('predates');
-
-    // A completion that arrives after the barrier, before a retried row write succeeds, belongs to that launch.
-    background.launchBound('parent', 'child-4');
-    background.observer.launchNotRecorded({ parentSessionId: 'parent', callId: 'call-d', childSessionId: 'child-4', agentName: 'forager-worker' }, new Error('disk full'));
-    background.handleEvent(completion('parent', 'child-4', 'completed', 'retried'));
-    background.recordLaunch(launch({ childSessionID: 'child-4', callID: 'call-d' }));
-    expect(service.resolve('child-4')).toMatchObject({ callId: 'call-d', runtimeState: 'unknown', statusUncertain: true });
-  });
-
-  it('uses the host process and the activation location, not the plugin activation, as the runtime epoch', () => {
-    expect(hostRuntimeId('/work/proj')).toBe(hostRuntimeId('/work/proj'));
-    expect(hostRuntimeId('/work/proj')).toStartWith(`opencode-v2:pid-${process.pid}-`);
-    expect(hostRuntimeId('/work/proj')).not.toBe(hostRuntimeId('/work/proj/packages/app'));
-
-    const root = projectRoot();
-    const earlier = lifecycle(root, 'runtime-old');
-    earlier.background.recordLaunch(launch());
-    const current = lifecycle(root, 'runtime-new');
-    const board = current.background.observer.promptBoard('parent');
-    expect(board?.text).toContain('stale/orphan recovery');
-    expect(current.service.resolve('child-1')?.staleAt).toBeDefined();
-  });
-});
-
-/** A host with the domains the board uses: tool registration, the parent's context hook, interrupt and events. */
-function fakeHost(root: string, events: Array<{ type: string; data: unknown }> = [], options: { interrupt?: (input: { sessionID: string; resume?: boolean }) => Effect.Effect<{ interrupted: boolean }, Error>; stream?: Stream.Stream<{ type: string; data: unknown }, Error> } = {}) {
+/**
+ * A host with the domains the tools use. `parent` has children `child-a` (working), `child-b` and `child-c` in this
+ * location and `child-away` in another; `child-a` has the grandchild `grand`. `other` is another primary.
+ */
+function fakeHost(root: string, options: {
+  interrupted?: boolean;
+  settlement?: (input: { parentID: string; childID: string }) => Promise<ChildSettlement>;
+  activity?: (input: { parentID: string }) => Promise<ParentActivity>;
+  /** More direct children of `parent` in this location, listed after the others. */
+  extraChildren?: number;
+  /** Runs after each list page is read, as the host's updates would between pages. */
+  afterPage?: (sessions: Map<string, Session>) => void;
+} = {}) {
+  const here = { directory: root };
+  const sessions = new Map<string, Session>([
+    ['parent', { id: 'parent', agent: 'swarm-orchestrator', location: here }],
+    ['other', { id: 'other', agent: 'hive-builder', location: here }],
+    ['child-a', { id: 'child-a', parentID: 'parent', agent: 'forager-worker', location: here }],
+    ['child-b', { id: 'child-b', parentID: 'parent', agent: 'scout-researcher', outcome: 'succeeded', location: here }],
+    ['child-c', { id: 'child-c', parentID: 'parent', agent: 'forager-worker', outcome: 'failed', location: here }],
+    ['child-away', { id: 'child-away', parentID: 'parent', agent: 'forager-worker', location: { directory: `${root}/packages/app` } }],
+    ['grand', { id: 'grand', parentID: 'child-a', agent: 'scout-researcher', location: here }],
+  ]);
+  for (let index = 0; index < (options.extraChildren ?? 0); index++) {
+    const id = `child-x${String(index).padStart(3, '0')}`;
+    sessions.set(id, { id, parentID: 'parent', agent: 'scout-researcher', outcome: 'succeeded', location: here });
+  }
   const tools = new Map<string, any>();
-  const contextHooks: Array<(event: any) => Effect.Effect<void>> = [];
   const interrupts: Array<{ sessionID: string; resume?: boolean }> = [];
-  const sessions = new Map<string, { id: string; parentID?: string }>([['parent', { id: 'parent' }], ['child-1', { id: 'child-1', parentID: 'parent' }]]);
+  const reads: string[] = [];
+  const lists: number[] = [];
   const context = {
     location: { directory: root, project: { id: 'project', directory: root, canonical: root } },
     tool: { transform: (cb: any) => Effect.sync(() => { cb({ add: (info: any) => tools.set(info.name, info) }); return { dispose: Effect.void }; }) },
     session: {
       get: ({ sessionID }: { sessionID: string }) => Effect.suspend(() => sessions.has(sessionID) ? Effect.succeed(sessions.get(sessionID)!) : Effect.fail(new Error('unknown'))),
-      hook: (name: string, cb: any) => Effect.sync(() => { if (name === 'context') contextHooks.push(cb); return { dispose: Effect.void }; }),
-      interrupt: (input: { sessionID: string; resume?: boolean }) => Effect.suspend(() => { interrupts.push(input); return options.interrupt?.(input) ?? Effect.succeed({ interrupted: true }); }),
+      // Pages in map order, the order of last update, after the last session of the previous page (a keyset cursor);
+      // like the 2.3.2 host, a nonempty page always has a next cursor.
+      list: (input: { parentID?: string; cursor?: string; limit: number }) => Effect.sync(() => {
+        const parentID = input.cursor === undefined ? input.parentID : JSON.parse(input.cursor).parentID;
+        const children = [...sessions.values()].filter((session) => session.parentID === parentID);
+        const offset = input.cursor === undefined ? 0 : children.findIndex((session) => session.id === JSON.parse(input.cursor!).after) + 1;
+        lists.push(offset);
+        const data = children.slice(offset, offset + input.limit);
+        options.afterPage?.(sessions);
+        return { data, cursor: { previous: null, next: data.length ? JSON.stringify({ parentID, after: data.at(-1)!.id }) : null } };
+      }),
+      interrupt: (input: { sessionID: string; resume?: boolean }) => Effect.sync(() => { interrupts.push(input); return { interrupted: options.interrupted ?? true }; }),
     },
-    // A live host stream stays open; the listed events are delivered first.
-    event: { subscribe: () => options.stream ?? Stream.fromIterable(events).pipe(Stream.concat(Stream.never)) },
   } as unknown as Plugin.Context;
-  return { context, tools, contextHooks, interrupts };
+  const readAccess: BackgroundReadAccess = {
+    childSettlement: async (input) => {
+      reads.push(`settlement:${input.childID}`);
+      return options.settlement ? options.settlement(input) : { settled: true };
+    },
+    parentActivity: async (input) => {
+      reads.push(`activity:${input.parentID}`);
+      return options.activity ? options.activity(input) : { children: [{ sessionID: 'child-a', activeExecution: false, jobs: [{ kind: 'shell', status: 'running', owner: 'child' }] }] };
+    },
+  };
+  return { context, tools, interrupts, reads, lists, readAccess };
 }
 
-async function registered(transport: 'codemode' | 'direct' = 'codemode', events: Array<{ type: string; data: unknown }> = [], options: Parameters<typeof fakeHost>[2] = {}, before?: (board: { root: string; service: BackgroundJobService }) => void) {
-  const { root, service, background, warnings } = lifecycle();
-  before?.({ root, service });
-  const host = fakeHost(root, events, options);
+async function registered(options: Parameters<typeof fakeHost>[1] & { prepare?: (root: string) => void } = {}, transport: 'codemode' | 'direct' = 'codemode') {
+  const root = projectRoot();
+  new FeatureService(root).create('alpha');
+  const sessionService = new SessionService(root, 'opencode-v2');
+  sessionService.trackGlobal('child-a', { parentSessionId: 'parent', featureName: 'alpha', taskFolder: '01-build' });
+  sessionService.trackGlobal('child-b', { parentSessionId: 'parent', adHocRunId: 'run-1' });
+  sessionService.trackGlobal('child-c', { parentSessionId: 'parent', featureName: 'alpha', taskFolder: '02-test' });
+  options.prepare?.(root);
+  const host = fakeHost(root, options);
   const authority = createHiveAuthority(host.context, {});
   const registrar = createHiveToolRegistrar({ context: host.context, readTransport: transport, guard: authority.guardHive });
   const scope = Effect.runSync(Scope.make());
-  await Effect.runPromise(registerBackground({ context: host.context, registrar, projectRoot: root, service, lifecycle: background, runtimeId: 'runtime-a' }).pipe(Scope.provide(scope)));
-  const run = (name: string, args: unknown, sessionID = 'parent', agent = 'swarm-orchestrator') =>
+  await Effect.runPromise(registerBackground({ context: host.context, registrar, services: { sessionService }, readAccess: host.readAccess }).pipe(Scope.provide(scope)));
+  const exit = (name: string, args: unknown, sessionID = 'parent', agent = 'swarm-orchestrator') =>
     Effect.runPromiseExit(host.tools.get(name).execute(args, { sessionID, agent, messageID: 'msg', id: 'call', progress: () => Effect.void }));
-  const status = async () => ((await run('hive_background_status', {})) as Exit.Success<any>).value.output;
-  return { root, service, background, warnings, host, run, status, scope };
+  const run = async (name: string, args: unknown, sessionID?: string) => ((await exit(name, args, sessionID)) as Exit.Success<any>).value.output;
+  return { root, host, exit, run };
 }
 
-/** An event stream that delivers nothing until `stop` is called, then ends normally or fails. */
-function stoppableStream(end: 'normally' | 'with an error') {
-  let stop!: () => void;
-  const stopped = new Promise<void>((resolve) => { stop = resolve; });
-  const stream = end === 'normally'
-    ? Stream.fromEffect(Effect.promise(() => stopped)).pipe(Stream.drain) as Stream.Stream<{ type: string; data: unknown }, Error>
-    : Stream.fromEffect(Effect.promise(() => stopped).pipe(Effect.andThen(Effect.fail(new Error('event bus closed')))));
-  return { stream, stop };
-}
-
-const settle = async (done: () => boolean) => {
-  for (let attempt = 0; attempt < 100 && !done(); attempt += 1) await Bun.sleep(5);
-};
-
-describe('v2 background board tools', () => {
-  it('registers the four board tools through the registrar as direct calls under either transport', async () => {
+describe('v2 live child tools', () => {
+  it('registers the two tools through the registrar as direct calls, for primaries only', async () => {
     for (const transport of ['codemode', 'direct'] as const) {
-      const { host } = await registered(transport);
-      expect([...host.tools.keys()].sort()).toEqual([...BOARD_TOOLS].sort());
+      const { host, exit } = await registered({}, transport);
+      expect([...host.tools.keys()].sort()).toEqual(LIVE_TOOLS);
       for (const info of host.tools.values()) expect(info.options).toEqual({ codemode: false });
+      // The guard reads the caller's parent: a child session is refused before any read.
+      expect(Exit.isSuccess(await exit('hive_background_status', {}, 'child-a', 'swarm-orchestrator'))).toBe(false);
+      expect(Exit.isSuccess(await exit('hive_background_cancel', { sessionID: 'grand' }, 'child-a', 'swarm-orchestrator'))).toBe(false);
+      expect(host.interrupts).toEqual([]);
     }
   });
 
-  it('runs the shared guard: primaries see their board, child sessions are denied', async () => {
-    const { background, run } = await registered();
-    background.recordLaunch(launch());
-    const status = await run('hive_background_status', {});
-    expect(Exit.isSuccess(status)).toBe(true);
-    const output = (status as Exit.Success<any>).value.output;
-    // The v2 registrar now reports the calling agent, so the display-only primaryAgent matches v1.
-    expect(output.scope).toEqual({ projectRoot: expect.any(String), parentSessionId: 'parent', primaryAgent: 'swarm-orchestrator' });
-    expect(output.jobs.map((job: any) => job.taskId)).toEqual(['child-1']);
-    expect(output.recommendedNextAction.reasonCode).toBe('native_completion_wait_only');
+  it('lists the working direct children in this location with their bound scope, and the rest only on request', async () => {
+    const { host, run } = await registered();
+    const output = await run('hive_background_status', {});
+    expect(output).toMatchObject({ success: true, coverage: 'jobs_and_executions' });
+    expect(output.working).toEqual([{ sessionID: 'child-a', agent: 'forager-worker', scope: { feature: 'alpha', task: '01-build' }, jobs: [{ kind: 'shell', status: 'running', owner: 'child' }], activeExecution: false }]);
+    expect(output.children).toBeUndefined();
+    expect(host.reads).toEqual(['activity:parent']);
 
-    const child = await run('hive_background_status', {}, 'child-1', 'swarm-orchestrator');
-    expect(Exit.isSuccess(child)).toBe(false);
+    const all = await run('hive_background_status', { includeSettled: true });
+    // The child in another location is not listed; the grandchild is not a direct child.
+    expect(all.children).toEqual([
+      { sessionID: 'child-b', agent: 'scout-researcher', outcome: 'succeeded', scope: { adHocRunId: 'run-1' } },
+      { sessionID: 'child-c', agent: 'forager-worker', outcome: 'failed', scope: { feature: 'alpha', task: '02-test' } },
+    ]);
+
+    const filtered = await run('hive_background_status', { includeSettled: true, task: '02-test' });
+    expect(filtered.working).toEqual([]);
+    expect(filtered.children.map((child: any) => child.sessionID)).toEqual(['child-c']);
+    expect((await run('hive_background_status', { includeSettled: true, adHocRunId: 'run-1' })).children.map((child: any) => child.sessionID)).toEqual(['child-b']);
   });
 
-  it('interrupts with resume disabled and records acknowledgement, not cancellation', async () => {
-    const { service, background, run, host } = await registered();
-    background.recordLaunch(launch());
-    const exit = await run('hive_background_cancel', { identifier: 'child-1', reason: 'Wrong scope' });
-    const output = (exit as Exit.Success<any>).value.output;
-    expect(host.interrupts).toEqual([{ sessionID: 'child-1', resume: false }]);
-    expect(output).toMatchObject({ success: true, runtimeCancelled: false, interruptAcknowledged: true });
-    expect(output.scopeMessage).toContain('does not prove the worker stopped');
-    expect(service.resolve('child-1')).toMatchObject({ runtimeState: 'running', cancelReason: 'Wrong scope' });
-    expect(service.resolve('child-1')?.cancelRequestedAt).toBeDefined();
-
-    // Settlement and the notification are observations of the child, still not a recorded cancellation of this launch.
-    background.handleEvent({ type: 'session.execution.interrupted', data: { sessionID: 'child-1', reason: 'user' } });
-    background.handleEvent(completion('parent', 'child-1', 'cancelled'));
-    expect(service.resolve('child-1')).toMatchObject({ runtimeState: 'unknown', statusUncertain: true, cancelReason: 'Wrong scope' });
-    expect(service.resolve('child-1')?.lastStatusError).toContain('(state cancelled)');
+  it('still lists the children, marked unchecked, when the live reads are unavailable', async () => {
+    const { run } = await registered({ activity: async () => { throw new ReadAccessError('not_configured', 'set server'); } });
+    const output = await run('hive_background_status', { feature: 'alpha' });
+    expect(output.observation).toEqual({ available: false, readAccess: 'not_configured', message: 'set server' });
+    expect(output.children.map((child: any) => child.sessionID)).toEqual(['child-a', 'child-c']);
+    expect(output.working).toBeUndefined();
+    expect(output.warnings.join(' ')).toContain('Do not treat a child as settled from this result');
   });
 
-  it('reports an interrupt that reached no active execution, or failed, as unconfirmed', async () => {
-    const idle = await registered('codemode', [], { interrupt: () => Effect.succeed({ interrupted: false }) });
-    idle.background.recordLaunch(launch());
-    const idleOutput = ((await idle.run('hive_background_cancel', { identifier: 'child-1', reason: 'Stop' })) as Exit.Success<any>).value.output;
-    expect(idleOutput).toMatchObject({ runtimeCancelled: false, interruptAcknowledged: false });
-    expect(idleOutput.runtimeMessage).toContain('runtime cancellation is not confirmed');
-
-    const broken = await registered('codemode', [], { interrupt: () => Effect.fail(new Error('host unavailable')) });
-    broken.background.recordLaunch(launch());
-    const brokenOutput = ((await broken.run('hive_background_cancel', { identifier: 'child-1', reason: 'Stop' })) as Exit.Success<any>).value.output;
-    expect(brokenOutput).toMatchObject({ runtimeCancelled: false, runtimeMessage: 'Interrupt request failed: host unavailable' });
-    expect(broken.service.resolve('child-1')).toMatchObject({ runtimeState: 'running' });
-  });
-
-  it("shows the board on the parent's requests only and acknowledges it when the parent's turn settles", async () => {
-    const { service, background, host } = await registered();
-    background.recordLaunch(launch());
-    const request = (sessionID: string) => ({ sessionID, system: [] as Array<{ type: string; text: string }> });
-
-    const other = request('someone-else');
-    await Effect.runPromise(host.contextHooks[0]!(other));
-    expect(other.system).toEqual([]);
-
-    const running = request('parent');
-    await Effect.runPromise(host.contextHooks[0]!(running));
-    expect(running.system[0]!.text).toStartWith('## Background Job Board\n- parent:job-1 (child-1) forager-worker\n  runtime: running');
-
-    // The notified child stays on the board as an uncertain observation with an inspection hint.
-    background.handleEvent(completion('parent', 'child-1', 'completed'));
-    const parent = request('parent');
-    await Effect.runPromise(host.contextHooks[0]!(parent));
-    expect(parent.system[0]!.text).toContain('runtime: unknown; status error: The host sent the parent a report for child child-1 (state completed).');
-    expect(parent.system[0]!.text).toContain('diagnostic: hive_task_trace({ task_id: "child-1" })');
-
-    // A terminal row (v2 records none itself, so the test sets one) is acknowledged when the parent's turn settles.
-    background.recordLaunch(launch({ childSessionID: 'child-2', callID: 'call-2' }));
-    service.markTerminal('child-2', 'completed');
-    await Effect.runPromise(host.contextHooks[0]!(request('parent')));
-    expect(service.resolve('child-2')?.promptNotifiedInSessionId).toBe('parent');
-    background.handleEvent({ type: 'session.execution.succeeded', data: { sessionID: 'parent' } });
-    expect(service.resolve('child-2')?.promptAcknowledgedAt).toBeDefined();
-  });
-
-  it('starts healthy: a first activation leaves new launches running and reports no observation problem', async () => {
-    const { service, background, status } = await registered();
-    background.recordLaunch(launch());
-    expect(service.resolve('child-1')).toMatchObject({ runtimeState: 'running' });
-    expect(service.resolve('child-1')?.statusUncertain).toBeUndefined();
-    const output = await status();
-    expect(output.observation).toBeUndefined();
-    expect(output.recommendedNextAction.reasonCode).toBe('native_completion_wait_only');
-  });
-
-  it('marks rows an earlier plugin activation of this host left running as uncertain, since a completion may have been missed in the gap', async () => {
-    const { service, background, run } = await registered('codemode', [], {}, ({ root, service }) => {
-      const scope = { projectRoot: root, parentSessionId: 'parent' };
-      service.registerLaunch({ taskId: 'child-1', sessionId: 'child-1', callId: 'call-1', agentName: 'forager-worker', runtimeId: 'runtime-a', scope });
-      service.registerLaunch({ taskId: 'child-2', sessionId: 'child-2', callId: 'call-2', agentName: 'forager-worker', runtimeId: 'runtime-a', scope });
-      service.registerLaunch({ taskId: 'child-3', sessionId: 'child-3', callId: 'call-3', agentName: 'forager-worker', runtimeId: 'runtime-a', scope });
-      service.registerLaunch({ taskId: 'child-old', sessionId: 'child-old', callId: 'call-old', agentName: 'forager-worker', runtimeId: 'runtime-from-another-process', scope });
-      service.markTerminal('child-3', 'completed');
+  it('lists each child once across full pages, though a working child updated while paging reappears on a later page', async () => {
+    let moved = false;
+    const { host, run } = await registered({
+      extraChildren: 250,
+      // The working child is updated after the first page is read, so the host lists it again at the end.
+      afterPage: (sessions) => {
+        if (moved) return;
+        moved = true;
+        const child = sessions.get('child-a')!;
+        sessions.delete('child-a');
+        sessions.set('child-a', child);
+      },
     });
-
-    const gap = service.resolve('child-1');
-    expect(gap).toMatchObject({ runtimeState: 'unknown', statusUncertain: true });
-    expect(gap?.lastStatusError).toContain('after a plugin reload');
-    expect(service.resolve('child-3')).toMatchObject({ runtimeState: 'completed' });
-    // A row from another host process is the epoch classification's to mark; activation leaves it running.
-    expect(service.resolve('child-old')).toMatchObject({ runtimeState: 'running' });
-    expect(service.resolve('child-old')?.statusUncertain).toBeUndefined();
-
-    // The uncertainty can be archived; a notification that does arrive replaces the reload diagnostic with its own.
-    const ignored = await run('hive_background_reconcile', { identifier: 'child-1', decision: 'ignored', summary: 'Checked the child session; archiving the observation.' });
-    expect((ignored as Exit.Success<any>).value.output).toMatchObject({ success: true, archived: true, state: 'ignored_archived' });
-    background.handleEvent(completion('parent', 'child-2', 'completed'));
-    expect(service.resolve('child-2')).toMatchObject({ runtimeState: 'unknown', statusUncertain: true });
-    expect(service.resolve('child-2')?.lastStatusError).toContain('(state completed)');
-
-    // The reload is a transition, not a lasting gap: launches after it stay running.
-    background.recordLaunch(launch({ childSessionID: 'child-new', callID: 'call-new' }));
-    expect(service.resolve('child-new')).toMatchObject({ runtimeState: 'running' });
-    expect(service.resolve('child-new')?.statusUncertain).toBeUndefined();
+    const output = await run('hive_background_status', { includeSettled: true });
+    // A full page then a short one, which ends the list without another request.
+    expect(host.lists).toHaveLength(2);
+    expect(output.working.map((child: any) => child.sessionID)).toEqual(['child-a']);
+    expect(output.children).toHaveLength(252);
+    expect(new Set(output.children.map((child: any) => child.sessionID)).size).toBe(252);
+    expect(output.children.some((child: any) => child.sessionID === 'child-a')).toBe(false);
   });
 
-  it('leaves the live rows of another location in the same project alone when this location activates', async () => {
-    const { service, background } = await registered('codemode', [], {}, ({ root, service }) => {
-      service.registerLaunch({ taskId: 'child-1', sessionId: 'child-1', callId: 'call-1', agentName: 'forager-worker', runtimeId: hostRuntimeId(path.join(root, 'packages', 'app')), scope: { projectRoot: root, parentSessionId: 'parent' } });
+  it('still answers with the in-process reads when a live read fails without a typed refusal', async () => {
+    const failed = async () => { throw new Error('A read from the managed OpenCode service failed.'); };
+    const { run } = await registered({ activity: failed, settlement: failed, interrupted: false });
+    const listed = await run('hive_background_status', { feature: 'alpha' });
+    expect(listed.observation).toEqual({ available: false, readAccess: 'read_failed', message: 'A read from the managed OpenCode service failed.' });
+    expect(listed.children.map((child: any) => child.sessionID)).toEqual(['child-a', 'child-c']);
+    expect(await run('hive_background_status', { sessionID: 'child-a' })).toMatchObject({ success: true, sessionID: 'child-a', settlement: { available: false, readAccess: 'read_failed' } });
+    expect(await run('hive_background_cancel', { sessionID: 'child-a' })).toMatchObject({ success: true, interrupted: false, settlement: { available: false, readAccess: 'read_failed' } });
+  });
+
+  it('lists children without scope when the binding index is unreadable, and leaves the index as found', async () => {
+    let index = '';
+    const { run } = await registered({
+      prepare: (root) => {
+        index = getNativeSessionsPath(root, 'opencode-v2');
+        fs.writeFileSync(index, '{ not json');
+      },
     });
-    // This activation's runtime is `runtime-a`; the other location's activation observes its own launches.
-    expect(service.resolve('child-1')).toMatchObject({ runtimeState: 'running' });
-    expect(service.resolve('child-1')?.statusUncertain).toBeUndefined();
-    background.recordLaunch(launch({ childSessionID: 'child-2', callID: 'call-2' }));
-    expect(service.resolve('child-2')).toMatchObject({ runtimeState: 'running' });
+    const output = await run('hive_background_status', { includeSettled: true });
+    expect(output.working).toEqual([{ sessionID: 'child-a', agent: 'forager-worker', scope: {}, jobs: [{ kind: 'shell', status: 'running', owner: 'child' }], activeExecution: false }]);
+    expect(output.warnings).toEqual([expect.stringContaining('Hive could not read its child bindings')]);
+    expect(fs.readFileSync(index, 'utf8')).toBe('{ not json');
   });
 
-  for (const end of ['with an error', 'normally'] as const) {
-    it(`marks existing and later launches uncertain when the event observation ends ${end}`, async () => {
-      const { stream, stop } = stoppableStream(end);
-      const { service, background, status } = await registered('codemode', [], { stream });
-      background.recordLaunch(launch());
-      expect(service.resolve('child-1')).toMatchObject({ runtimeState: 'running' });
-      expect((await status()).observation).toBeUndefined();
+  it('refuses one child whose binding does not match the requested scope, without reading its settlement', async () => {
+    const { host, run } = await registered();
+    expect(await run('hive_background_status', { sessionID: 'child-a', task: '02-test' })).toMatchObject({ success: false, reason: 'scope_mismatch' });
+    expect(await run('hive_background_status', { sessionID: 'child-b', feature: 'alpha' })).toMatchObject({ success: false, reason: 'scope_mismatch' });
+    expect(host.reads).toEqual([]);
+    expect(await run('hive_background_status', { sessionID: 'child-a', feature: 'alpha', task: '01-build' })).toMatchObject({ success: true, sessionID: 'child-a', settled: true });
+    expect(host.reads).toEqual(['settlement:child-a']);
+  });
 
-      stop();
-      await settle(() => service.resolve('child-1')?.runtimeState !== 'running');
-      expect(service.resolve('child-1')).toMatchObject({ runtimeState: 'unknown', statusUncertain: true });
-      expect(service.resolve('child-1')?.lastStatusError).toContain(end === 'normally' ? 'the host event stream ended' : 'event bus closed');
-
-      // Nothing observes the next launch's notification either.
-      background.recordLaunch(launch({ childSessionID: 'child-2', callID: 'call-2' }));
-      expect(service.resolve('child-2')).toMatchObject({ runtimeState: 'unknown', statusUncertain: true });
-      const output = await status();
-      expect(output.observation).toMatchObject({ healthy: false, uncertaintyPending: false });
-      expect(output.observation.reason).toContain(end === 'normally' ? 'the host event stream ended' : 'event bus closed');
-      expect(output.recommendedNextAction.reasonCode).toBe('uncertain_background_jobs_visible');
+  it('reads one direct child\'s whole tree, and refuses any other session without reading it', async () => {
+    const working = await registered({ settlement: async () => ({ settled: false, signal: 'job', detail: 'shell job sh_1 of session child-a is running' }) });
+    expect(await working.run('hive_background_status', { sessionID: 'child-a' })).toEqual({
+      success: true, sessionID: 'child-a', agent: 'forager-worker', scope: { feature: 'alpha', task: '01-build' },
+      settled: false, signal: 'job', detail: 'shell job sh_1 of session child-a is running', settlement: { available: true },
     });
-  }
+    const settled = await registered();
+    expect(await settled.run('hive_background_status', { sessionID: 'child-b' })).toMatchObject({ success: true, outcome: 'succeeded', settled: true, settlement: { available: true } });
 
-  it('does not report success when an uncertainty write fails: observation degrades and the write is retried', async () => {
-    const { service, background, status, warnings } = await registered();
-    background.recordLaunch(launch());
-    const update = service.updateRuntimeState.bind(service);
-    // The notification's write fails, and so does the immediate retry that follows it.
-    let failures = 2;
-    service.updateRuntimeState = ((...args: Parameters<typeof update>) => {
-      if (failures > 0) { failures -= 1; throw new Error('board write failed'); }
-      return update(...args);
-    }) as typeof service.updateRuntimeState;
+    const unavailable = await registered({ settlement: async () => { throw new ReadAccessError('wrong_instance', 'replaced server'); } });
+    const degraded = await unavailable.run('hive_background_status', { sessionID: 'child-a' });
+    expect(degraded).toMatchObject({ success: true, sessionID: 'child-a', settlement: { available: false, readAccess: 'wrong_instance' } });
+    expect(degraded.settled).toBeUndefined();
 
-    background.handleEvent(completion('parent', 'child-1', 'completed'));
-    expect(service.resolve('child-1')).toMatchObject({ runtimeState: 'running' });
-    expect(warnings.join('\n')).toContain('board write failed');
+    for (const sessionID of ['parent', 'grand', 'child-away', 'other', 'missing']) {
+      expect(await settled.run('hive_background_status', { sessionID })).toMatchObject({ success: false, reason: 'not_a_child' });
+    }
+    expect(settled.host.reads).toEqual(['settlement:child-b']);
+  });
+});
 
-    // The next board read retries and reports the degraded observation.
-    const output = await status();
-    expect(service.resolve('child-1')).toMatchObject({ runtimeState: 'unknown', statusUncertain: true });
-    expect(output.observation).toMatchObject({ healthy: false, uncertaintyPending: false });
-    expect(output.observation.reason).toContain('board write failed');
-    background.recordLaunch(launch({ childSessionID: 'child-2', callID: 'call-2' }));
-    expect(service.resolve('child-2')).toMatchObject({ runtimeState: 'unknown', statusUncertain: true });
+describe('v2 hive_background_cancel', () => {
+  it('interrupts only the caller\'s own direct child in this location, with resume disabled', async () => {
+    const { host, run } = await registered();
+    // Self, a grandchild, a child in another location and another primary's session are all refused unread.
+    for (const sessionID of ['parent', 'grand', 'child-away', 'other']) {
+      expect(await run('hive_background_cancel', { sessionID })).toMatchObject({ success: false, reason: 'not_a_child' });
+    }
+    expect(await run('hive_background_cancel', { sessionID: 'child-a' }, 'other')).toMatchObject({ success: false, reason: 'not_a_child' });
+    expect(host.interrupts).toEqual([]);
+
+    const output = await run('hive_background_cancel', { sessionID: 'child-a', reason: 'Wrong scope' });
+    expect(host.interrupts).toEqual([{ sessionID: 'child-a', resume: false }]);
+    expect(output).toMatchObject({ success: true, sessionID: 'child-a', interrupted: true });
+    expect(output.message).toContain('stops only its active model execution');
+    expect(output.message).toContain('keep running');
+    expect(output.message).toContain('An error or cancellation report ends only that execution, not those commands and jobs, so confirm that the child\'s tree has settled before you start an overlapping writer.');
+    // An interrupted execution needs no settlement read to decide what happened.
+    expect(host.reads).toEqual([]);
   });
 
-  it('keeps an unrecorded launch in the prompt and in status when the board becomes unreadable, without disclosing it to another session', async () => {
-    const { root, service, background, host, status } = await registered();
-    service.registerLaunch = (() => { throw new Error('disk full'); }) as typeof service.registerLaunch;
-    background.recordLaunch(launch());
-    const boardPath = getNativeBackgroundJobsPath(root, 'opencode-v2');
-    fs.mkdirSync(path.dirname(boardPath), { recursive: true });
-    fs.writeFileSync(boardPath, 'not json');
-    const request = (sessionID: string) => ({ sessionID, system: [] as Array<{ type: string; text: string }> });
+  it('reads the settlement when the host had no execution to interrupt, because background work may remain', async () => {
+    const { host, run } = await registered({ interrupted: false, settlement: async () => ({ settled: false, signal: 'job', detail: 'shell job sh_1 of session child-a is running' }) });
+    expect(await run('hive_background_cancel', { sessionID: 'child-a' })).toMatchObject({
+      success: true, interrupted: false, settled: false, signal: 'job', settlement: { available: true },
+    });
+    expect(host.reads).toEqual(['settlement:child-a']);
 
-    const parent = request('parent');
-    await Effect.runPromise(host.contextHooks[0]!(parent));
-    expect(parent.system[0]!.text).toContain('- board unreadable: Hive could not read the background board');
-    expect(parent.system[0]!.text).toContain('unrecorded launch (child-1) forager-worker');
-    const other = request('someone-else');
-    await Effect.runPromise(host.contextHooks[0]!(other));
-    expect(other.system).toEqual([]);
-
-    const output = await status();
-    expect(output).toMatchObject({ success: false, reason: 'background_board_unreadable' });
-    expect(output.jobs).toBeUndefined();
-    expect(output.unrecordedLaunches).toEqual([expect.objectContaining({ childSessionId: 'child-1', callId: 'call-1', reason: 'disk full' })]);
-    expect(output.recommendedNextAction).toMatchObject({ action: 'inspect_unreadable_background_board', childSessionIds: ['child-1'] });
-  });
-
-  it('marks a launch recorded after its activation stopped observing uncertain', async () => {
-    const { service, background, scope } = await registered();
-    await Effect.runPromise(Scope.close(scope, Exit.void));
-    background.recordLaunch(launch());
-    expect(service.resolve('child-1')).toMatchObject({ runtimeState: 'unknown', statusUncertain: true });
-  });
-
-  it('observes host events from the subscription for the activation scope', async () => {
-    const root = projectRoot();
-    const service = new BackgroundJobService(root, 'opencode-v2');
-    service.registerLaunch({ taskId: 'child-1', sessionId: 'child-1', callId: 'call-1', agentName: 'forager-worker', runtimeId: 'runtime-a', scope: { projectRoot: root, parentSessionId: 'parent' } });
-    const background = createV2BackgroundLifecycle({ projectRoot: root, service, runtimeId: 'runtime-a', warn: () => {} });
-    const host = fakeHost(root, [{ type: 'session.step.started', data: { sessionID: 'child-1' } }, completion('parent', 'child-1', 'completed')]);
-    const registrar = createHiveToolRegistrar({ context: host.context, readTransport: 'codemode', guard: () => Effect.void });
-    const scope = Effect.runSync(Scope.make());
-    await Effect.runPromise(registerBackground({ context: host.context, registrar, projectRoot: root, service, lifecycle: background, runtimeId: 'runtime-a' }).pipe(Scope.provide(scope)));
-    // The row predates this activation, so activation marked it uncertain; the delivered notification is recorded on it.
-    await settle(() => service.resolve('child-1')?.lastStatusError?.includes('(state completed)') === true);
-    expect(service.resolve('child-1')).toMatchObject({ runtimeState: 'unknown', statusUncertain: true });
-    expect(service.resolve('child-1')?.lastStatusError).toContain('(state completed)');
-    await Effect.runPromise(Scope.close(scope, Exit.void));
+    const unreadable = await registered({ interrupted: false, settlement: async () => { throw new ReadAccessError('not_configured', 'set server'); } });
+    expect(await unreadable.run('hive_background_cancel', { sessionID: 'child-c' })).toMatchObject({ success: true, interrupted: false, settlement: { available: false, readAccess: 'not_configured' } });
   });
 });

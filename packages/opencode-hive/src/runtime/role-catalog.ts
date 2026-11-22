@@ -17,11 +17,8 @@ import { renderVulnerabilityReviewPrimaryPrompt } from '../agents/vulnerability-
 import { buildCustomSubagents, type RuntimeSubagentConfig } from '../agents/custom-agents.js';
 import type { HiveCommandContext } from '../commands/types.js';
 import { renderAutoLoadSkillsAppendix, renderHiveSystemPrompt } from '../hooks/system-hook.js';
-import { renderBackgroundFirstOrchestrationAppendix, resolveBackgroundDelegationAvailability } from '../utils/background-gate.js';
 import { renderSkillNameLookup, type HostProfile, type NativeSkillIdentity } from './host-profile.js';
 import { ARCHITECT_PLANNING_BASES, ROUTING_BASES, agentPermission, createRolePolicy, type BuiltInRole } from './role-policy.js';
-
-const BACKGROUND_DELEGATION_SKILL_ID = 'background-delegation';
 
 /**
  * The one skill every Hive role is asked to load, ahead of its configured names. It is added where guidance is
@@ -60,7 +57,7 @@ export type RoleCatalog = {
   customAgents: Record<string, ResolvedCustomAgentConfig>;
   defaultAgent: 'hive-master' | 'architect-planner';
   /**
-   * The auto-load and background-delegation guidance one agent gets for the skills a host offers. Prompts built
+   * The skill name lookup and auto-load guidance one agent gets for the skills a host offers. Prompts built
    * without skills omit it, so a host that learns its skill catalog later adds it itself, once per request.
    */
   skillGuidance(agent: string, skills: SkillLookups, warn?: Warn): string;
@@ -105,20 +102,6 @@ function buildAutoLoadSkillsPromptAppendix(host: HostProfile, agentName: string,
   return renderAutoLoadSkillsAppendix(host, names);
 }
 
-function buildBackgroundDelegationPromptAppendix(host: HostProfile, agentName: string, skills: SkillLookups, warn: Warn): string {
-  const skipped = new Map(skills.skipped.map((entry) => [entry.name, entry]));
-  const availability = resolveBackgroundDelegationAvailability(skills.nativeSkillsByName, skills.skillsByName, skipped, host);
-  if (availability.available) return renderBackgroundFirstOrchestrationAppendix(host);
-  if (availability.reason === 'experiment-disabled') return '';
-  const reason = availability.reason === 'skill-disabled'
-    ? `skill "${BACKGROUND_DELEGATION_SKILL_ID}" is disabled in Hive config`
-    : availability.reason === 'url-scan-incomplete'
-      ? 'configured skills URLs could not be fully scanned for conflicts during this config-hook run'
-      : `skill "${BACKGROUND_DELEGATION_SKILL_ID}" was not found in OpenCode native skill discovery or eligible Hive bundled skills`;
-  warn(`[hive] Background delegation guidance was not advertised for agent "${agentName}" because ${reason}.`);
-  return '';
-}
-
 function buildSubagentRoutingAppendix(
   bases: readonly CustomAgentBase[],
   customAgents: Record<string, ResolvedCustomAgentConfig>,
@@ -144,25 +127,6 @@ ${cards.join('\n')}`;
 /** Agents whose instructions are added at request time instead of replacing the host's default prompt. */
 const REQUEST_PROMPT_AGENTS = new Set<BuiltInRole>(['hive-master', 'swarm-orchestrator', 'hive-builder', 'forager-worker', 'forager-investigator']);
 
-/** Whether each built-in role's instructions carry background-delegation guidance; every role carries auto-load guidance. */
-const SKILL_GUIDANCE: Record<BuiltInRole, { background: boolean }> = {
-  'hive-master': { background: true },
-  'architect-planner': { background: true },
-  'swarm-orchestrator': { background: true },
-  'hive-builder': { background: true },
-  'scout-researcher': { background: false },
-  'forager-worker': { background: false },
-  'forager-investigator': { background: false },
-  'hive-helper': { background: false },
-  'plan-reviewer': { background: false },
-  'code-reviewer': { background: false },
-  'simplicity-reviewer': { background: false },
-  'approach-advisor': { background: false },
-  'vulnerability-reviewer': { background: false },
-  'dash-reviewer': { background: false },
-  'vulnerability-review-primary': { background: false },
-};
-
 /**
  * Composes every Hive role and configured custom agent for one host profile from the global Hive configuration.
  * With `skills`, each prompt carries its skill guidance (v1, which knows its skills when it builds). Without
@@ -176,12 +140,10 @@ export function buildRoleCatalog(host: HostProfile, configService: ConfigService
   const routingAppendix = (bases: readonly CustomAgentBase[]) => buildSubagentRoutingAppendix(bases, custom, descriptions);
   const skillGuidance = (agent: string, lookups: SkillLookups, warn: Warn = console.warn): string => {
     const base = (custom[agent]?.baseAgent ?? agent) as BuiltInRole;
-    if (!Object.prototype.hasOwnProperty.call(SKILL_GUIDANCE, base)) return '';
-    const use = SKILL_GUIDANCE[base];
+    if (!Object.hasOwn(policy, base)) return '';
     const configured = [...new Set([...(configService.getAgentConfig(base).autoLoadSkills ?? []), ...(custom[agent]?.autoLoadSkills ?? [])])];
     return renderSkillNameLookup(host, lookups.nativeSkillsByName, lookups.ambiguousNames)
-      + buildAutoLoadSkillsPromptAppendix(host, agent, configured, lookups, warn, [UNIVERSAL_AUTO_LOAD_SKILL])
-      + (use.background ? buildBackgroundDelegationPromptAppendix(host, agent, lookups, warn) : '');
+      + buildAutoLoadSkillsPromptAppendix(host, agent, configured, lookups, warn, [UNIVERSAL_AUTO_LOAD_SKILL]);
   };
   const agentMode = configService.get().agentMode ?? 'dedicated';
   const sources: Record<BuiltInRole, { body: string; routing?: string }> = {
@@ -253,13 +215,11 @@ export function createCommandContext(input: {
   host: HostProfile;
   configService: ConfigService;
   agents: Record<string, HostCheckedHiveAgent>;
-  backgroundGuidance: HiveCommandContext['backgroundGuidance'];
 }): HiveCommandContext {
-  const { host, configService, agents, backgroundGuidance } = input;
+  const { host, configService, agents } = input;
   return {
     host,
     agentMode: configService.get().agentMode ?? 'dedicated',
-    backgroundGuidance,
     dashReviewLanes: Object.entries(agents).filter(([, value]) => value.available && ['code-reviewer', 'simplicity-reviewer', 'approach-advisor'].includes(value.baseAgent)).map(([name, value]) => ({ taskTarget: name, sourceAgent: name, baseAgent: value.baseAgent as any, description: value.description, model: value.model, variant: value.variant })),
     vulnerabilityReviewLanes: Object.entries(agents).filter(([, value]) => value.available && value.baseAgent === 'vulnerability-reviewer').map(([name, value]) => ({ taskTarget: name, sourceAgent: name, role: 'specialist' as const, description: value.description, model: value.model, variant: value.variant })),
   };

@@ -1,5 +1,4 @@
 import type { HostProfile } from '../runtime/host-profile.js';
-import type { BackgroundDelegationAvailability } from '../utils/background-gate.js';
 
 export interface HiveCommandMetadata {
   key: string;
@@ -19,7 +18,6 @@ export type HiveRuntimeCommandMap = Record<string, HiveRuntimeCommand>;
 export interface HiveCommandContext {
   host: HostProfile;
   agentMode: 'unified' | 'dedicated';
-  backgroundGuidance: BackgroundDelegationAvailability;
   dashReviewLanes: HiveCommandDashReviewLane[];
   vulnerabilityReviewLanes: HiveCommandVulnerabilityReviewLane[];
 }

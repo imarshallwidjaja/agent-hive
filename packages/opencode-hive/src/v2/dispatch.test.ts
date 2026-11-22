@@ -4,21 +4,19 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { Effect, Exit, Fiber, Scope, Stream } from 'effect';
 import type { Plugin } from '@opencode/plugin/effect';
-import { FeatureService, PlanService, TaskService, getNativeBackgroundJobsPath, type ResolvedCustomAgentConfig } from 'hive-core';
+import { FeatureService, PlanService, TaskService, getNativeSessionsPath, type ResolvedCustomAgentConfig } from 'hive-core';
 import plugin from '../index.js';
 import { createHiveServices, type HiveServices } from '../runtime/hive-services.js';
-import { createBackgroundOperations } from '../background/operations.js';
-import { createV2BackgroundLifecycle } from './background.js';
 import { NATIVE_SUBAGENT_TOOL, registerDispatch } from './dispatch.js';
 import { createHiveAuthority } from './registration.js';
 
 // Dispatch owns what Hive adds to the host's own subagent tool: the parent's route and constraints, the composed
-// prompt, managed-model control, the continuation preflight, the child-binding barrier on the awaited progress update,
-// and the background launch row. The fake host below stands in for the native tool only: it runs `execute.before`
+// prompt, managed-model control, the continuation preflight and the child-binding barrier on the awaited progress
+// update. The fake host below stands in for the native tool only: it runs `execute.before`
 // hooks on the call's input, creates the child or, for a continuation, switches it to the requested agent, selects the
 // model as the host does, awaits progress, then admits the child's prompt with its own prefix, recording what Hive had
 // bound at that moment, and returns `running` as the qualified host does for every call. It never binds anything
-// itself. Its `active` set is the server's active-session read that the catalog's verified read access returns, and its
+// itself. Every session it reports lives in the activation's location unless a test moves it. Its `active` set is the server's active-session read that the catalog's verified read access returns, and its
 // `catalog` is the host's effective agent catalog. A calling session it has not seen is a primary session.
 
 const cleanup: string[] = [];
@@ -27,7 +25,7 @@ afterEach(() => {
 });
 
 type ModelRef = { providerID: string; id: string; variant?: string };
-type Session = { id: string; parentID?: string; agent?: string; model?: ModelRef };
+type Session = { id: string; parentID?: string; agent?: string; model?: ModelRef; location?: { directory: string } };
 type Admission = { child: string; text: string; boundParent?: string; boundFeature?: string | null; boundConstraints?: string; boundAgent?: string };
 
 /** A model reference as the host stores it; `test/<id>` unless written out. */
@@ -60,11 +58,12 @@ function project(features: string[] = ['alpha']) {
  * return `running`: the child runs on in the background. Every agent is configured for `test/model-of-<agent>` unless
  * `catalog.models` says otherwise (`null` is a model-less entry); `catalog.missing` and `catalog.error` fail lookups.
  */
-function fakeHost(services: HiveServices, options: { pauseBeforeProgress?: Effect.Effect<void>; reportedParent?: (child: string, parent: string) => string | undefined; promptFails?: boolean; blockForever?: boolean; holdNewChild?: Promise<void>; holdContinuation?: Promise<void>; afterAdmission?: (child: string) => void; skipProgress?: boolean } = {}) {
+function fakeHost(services: HiveServices, options: { directory?: string; pauseBeforeProgress?: Effect.Effect<void>; reportedParent?: (child: string, parent: string) => string | undefined; promptFails?: boolean; blockForever?: boolean; holdNewChild?: Promise<void>; holdContinuation?: Promise<void>; afterAdmission?: (child: string) => void; skipProgress?: boolean } = {}) {
   const sessions = new Map<string, Session>();
   const admissions: Admission[] = [];
   const nativeInputs: any[] = [];
   const switches: Array<{ child: string; agent?: string; model?: ModelRef }> = [];
+  const directory = options.directory ?? '/workspace/project';
   const catalog: { models: Map<string, ModelRef | null>; missing: Set<string>; error?: Error; reads: number } = { models: new Map(), missing: new Set(), reads: 0 };
   const configuredModel = (agent: string) => catalog.models.has(agent) ? catalog.models.get(agent) ?? undefined : ref(`model-of-${agent}`);
   const beforeHooks: Array<(event: any) => Effect.Effect<void, any>> = [];
@@ -87,6 +86,7 @@ function fakeHost(services: HiveServices, options: { pauseBeforeProgress?: Effec
   let next = 0;
   const transforms: Array<(editor: any) => void> = [];
   const context = {
+    location: { directory },
     tool: {
       transform: (cb: any) => Effect.sync(() => { transforms.push(cb); return { dispose: Effect.void }; }),
       hook: (name: string, fn: any) => Effect.sync(() => { if (name === 'execute.before') beforeHooks.push(fn); return { dispose: Effect.void }; }),
@@ -103,7 +103,7 @@ function fakeHost(services: HiveServices, options: { pauseBeforeProgress?: Effec
       get: ({ sessionID }: { sessionID: string }) => Effect.suspend(() => {
         const session = sessions.get(sessionID);
         // Like the host's `Session.fromRow`, a stored model reports `default` when it has no variant.
-        return session ? Effect.succeed({ ...session, ...(session.model === undefined ? {} : { model: { ...session.model, variant: session.model.variant ?? 'default' } }) }) : Effect.fail(new Error(`unknown session ${sessionID}`));
+        return session ? Effect.succeed({ location: { directory }, ...session, ...(session.model === undefined ? {} : { model: { ...session.model, variant: session.model.variant ?? 'default' } }) }) : Effect.fail(new Error(`unknown session ${sessionID}`));
       }),
     },
   } as unknown as Plugin.Context;
@@ -177,10 +177,9 @@ async function setup(options: Parameters<typeof fakeHost>[1] & { features?: stri
   const services = createHiveServices({ projectRoot: root, nativeObservationOwner: 'opencode-v2' });
   const host = fakeHost(services, options);
   const authority = createHiveAuthority(host.context, options.customAgents ?? {});
-  const background = createV2BackgroundLifecycle({ projectRoot: root, service: services.backgroundJobService, runtimeId: 'runtime-a', warn: () => {} });
   const scope = Effect.runSync(Scope.make());
-  await Effect.runPromise(registerDispatch({ context: host.context, services, authority, background, activity: host.activity }).pipe(Scope.provide(scope)));
-  return { root, services, host, background };
+  await Effect.runPromise(registerDispatch({ context: host.context, services, authority, activity: host.activity }).pipe(Scope.provide(scope)));
+  return { root, services, host };
 }
 
 /** A child the parent dispatched earlier under its current route, now idle in the host. */
@@ -189,12 +188,6 @@ async function dispatchedChild(context: Awaited<ReturnType<typeof setup>>, optio
   expect(Exit.isSuccess(exit)).toBe(true);
   return context.host.admissions.at(-1)!.child;
 }
-
-/** The host's completion notification for a background child, as the parent receives it. */
-const completion = (parent: string, child: string, state = 'completed', inboxID = `inbox-${child}-${state}`) => ({
-  type: 'session.inbox.enqueued',
-  data: { sessionID: parent, inboxID, item: { type: 'synthetic', delivery: 'steer', payload: { text: `<subagent sessionID="${child}" state="${state}">\nresult\n</subagent>`, metadata: { source: 'subagent', childID: child, agent: 'forager-worker', state } } } },
-});
 
 const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, stdio: 'pipe' });
 
@@ -310,7 +303,7 @@ describe('v2 native dispatch', () => {
     expect(host.nativeInputs).toEqual([]);
 
     // Native idle qualifies adoption of a child with no Hive binding.
-    host.sessions.set('child-y', { id: 'child-y', parentID: 'parent' });
+    host.sessions.set('child-y', { id: 'child-y', parentID: 'parent', agent: 'forager-worker', model: ref('model-of-forager-worker') });
     services.sessionService.setFeatureRoute('parent', 'alpha');
     const continued = await host.call('parent', { agent: 'forager-worker', prompt: 'Continue.', sessionID: 'child-y' });
     expect(Exit.isSuccess(continued)).toBe(true);
@@ -325,8 +318,8 @@ describe('v2 native dispatch', () => {
     it(`qualifies adoption of a child with a ${binding} Hive binding before native effects`, async () => {
       const { services, host } = await setup();
       services.sessionService.setFeatureRoute('parent', 'alpha');
-      host.sessions.set('unbound', { id: 'unbound', parentID: 'parent', agent: 'scout-researcher', model: ref('model-of-scout-researcher') });
-      if (binding === 'parentless') services.sessionService.trackGlobal('unbound', { agent: 'scout-researcher' });
+      host.sessions.set('unbound', { id: 'unbound', parentID: 'parent', agent: 'forager-worker', model: ref('model-of-forager-worker') });
+      if (binding === 'parentless') services.sessionService.trackGlobal('unbound', { agent: 'forager-worker' });
       const before = services.sessionService.getGlobal('unbound');
       host.active.add('unbound');
 
@@ -335,7 +328,7 @@ describe('v2 native dispatch', () => {
       expect(host.nativeInputs).toEqual([]);
       expect(host.switches).toEqual([]);
       expect(host.admissions).toEqual([]);
-      expect(host.sessions.get('unbound')).toMatchObject({ agent: 'scout-researcher', model: ref('model-of-scout-researcher') });
+      expect(host.sessions.get('unbound')).toMatchObject({ agent: 'forager-worker', model: ref('model-of-forager-worker') });
       expect(services.sessionService.getGlobal('unbound')).toEqual(before);
 
       host.active.delete('unbound');
@@ -352,46 +345,20 @@ describe('v2 native dispatch', () => {
       expect(Exit.isSuccess(idle)).toBe(true);
       expect(host.activityState.reads).toBe(4);
       expect(host.nativeInputs).toHaveLength(1);
-      expect(host.switches).toEqual([{ child: 'unbound', agent: 'forager-worker', model: ref('model-of-forager-worker') }]);
+      expect(host.switches).toEqual([]);
       expect(host.admissions[0]).toMatchObject({ child: 'unbound', boundParent: 'parent', boundAgent: 'forager-worker', boundFeature: 'alpha' });
     });
   }
 
-  it('records every launch from a primary at the barrier in the v2 store, scoped by project, parent and call', async () => {
-    const { root, services, host } = await setup();
-    services.sessionService.setFeatureRoute('parent', 'alpha');
-    const exit = await host.call('parent', { agent: 'forager-worker', prompt: 'Hive task: 01-build' }, 'call-bg');
-    expect(Exit.isSuccess(exit)).toBe(true);
-    expect(services.backgroundJobService.resolve('child-1')).toMatchObject({
-      taskId: 'child-1', sessionId: 'child-1', callId: 'call-bg', agentName: 'forager-worker', runtimeState: 'running', runtimeId: 'runtime-a',
-      scope: { projectRoot: root, parentSessionId: 'parent', primaryAgent: 'swarm-orchestrator', feature: 'alpha' },
-    });
-    expect(fs.existsSync(getNativeBackgroundJobsPath(root, 'opencode-v2'))).toBe(true);
-    expect(fs.existsSync(path.join(root, '.hive', 'background-jobs.json'))).toBe(false);
-
-    await host.call('parent', { agent: 'forager-worker', prompt: 'Another.' }, 'call-second');
-    expect(services.backgroundJobService.listScoped({ projectRoot: root }).map((job) => job.callId)).toEqual(['call-bg', 'call-second']);
-  });
-
-  it('binds the helper of a child session but records no board row for it, because the board and its tools belong to primaries', async () => {
-    const { root, services, host, background } = await setup();
+  it('binds the helper of a child session to that session, which is its parent', async () => {
+    const { host } = await setup();
     host.sessions.set('architect', { id: 'architect', parentID: 'parent', agent: 'architect-planner' });
     const exit = await host.call('architect', { agent: 'scout-researcher', prompt: 'Look around.' }, 'call-helper', 'architect-planner');
     expect(Exit.isSuccess(exit)).toBe(true);
     expect(host.admissions[0]).toMatchObject({ child: 'child-1', boundParent: 'architect' });
-    expect(services.backgroundJobService.listScoped({ projectRoot: root }, { includeArchived: true })).toEqual([]);
-    expect(background.observer.promptBoard('architect')).toBeUndefined();
-
-    // A caller whose own session cannot be read is refused before the host is called.
-    const unreadable = await Effect.runPromiseExit(host.subagent().execute(
-      { agent: 'scout-researcher', description: 'Work', prompt: 'Look.' },
-      { sessionID: 'ghost', agent: 'architect-planner', messageID: 'msg', id: 'call-ghost', progress: () => Effect.void } as any,
-    ));
-    expect(failureMessage(unreadable)).toBe('Hive could not read session ghost to check its parent; the call is denied.');
-    expect(host.nativeInputs).toHaveLength(1);
   });
 
-  it('associates each child with the task or run its marker names, and scopes the launch row to that binding', async () => {
+  it('associates each child with the task or run its marker names', async () => {
     const { root, services, host } = await setup();
     git(root, 'init', '-b', 'main');
     fs.writeFileSync(path.join(root, '.gitignore'), '.hive/\n');
@@ -414,158 +381,98 @@ describe('v2 native dispatch', () => {
       { taskFolder: undefined, adHocRunId: 'run-1' },
       { taskFolder: undefined, adHocRunId: undefined },
     ]);
-    const scope = { projectRoot: root, parentSessionId: 'parent', primaryAgent: 'swarm-orchestrator', feature: 'alpha' };
-    expect(services.backgroundJobService.resolve('child-1')?.scope).toEqual({ ...scope, task: '01-build' });
-    expect(services.backgroundJobService.resolve('child-2')?.scope).toEqual({ ...scope, task: '01-build' });
-    expect(services.backgroundJobService.resolve('child-3')?.scope).toEqual({ ...scope, adHocRunId: 'run-1' });
-    expect(services.backgroundJobService.resolve('child-4')?.scope).toEqual({ ...scope, adHocRunId: 'run-1' });
-    expect(services.backgroundJobService.resolve('child-5')?.scope).toEqual(scope);
   });
 
-  it('writes the association of a continued child without changing what its continuation needs', async () => {
+  it('keeps a continued child on its own project, feature and task or run, and refuses a follow-up for another', async () => {
     const context = await setup({ features: ['alpha', 'beta'] });
     const { services, host } = context;
     services.sessionService.setFeatureRoute('parent', 'alpha');
-    // A child bound before associations existed: the same route and agent, but no task or run.
+    services.adhocService = () => ({ get: async (runId: string) => (runId === 'run-1' ? { runId } : null) }) as any;
+    // A child dispatched without a marker is bound to the route but to no task or run.
     expect(Exit.isSuccess(await host.call('parent', { agent: 'forager-worker', prompt: 'Go.' }, 'call-first'))).toBe(true);
     const child = host.admissions.at(-1)!.child;
-    services.adhocService = () => ({ get: async (runId: string) => (runId === 'run-1' ? { runId } : null) }) as any;
-    const continued = (prompt: string, callID: string) => host.call('parent', { agent: 'forager-worker', prompt, sessionID: child }, callID);
+    const continued = (prompt: string, callID: string, parent = 'parent') => host.call(parent, { agent: 'forager-worker', prompt, sessionID: child }, callID);
 
-    // Without an activity reader no continuation runs, so the association is left as it was.
-    host.activityState.error = new Error('no server configured');
-    expect(failureMessage(await continued('Hive task: 01-build', 'call-no-reader'))).toContain('could not confirm that child session');
-    expect(association(services, child)).toEqual({ taskFolder: undefined, adHocRunId: undefined });
-
-    // With the host reporting the child settled, adding, replacing and clearing an association each need the same two
-    // reads, at the preflight and at the barrier.
-    host.activityState.error = undefined;
-    const readsBefore = host.activityState.reads;
-    expect(Exit.isSuccess(await continued('Hive task: 01-build', 'call-task'))).toBe(true);
+    // A follow-up marker may adopt a task when none is bound; settlement is read at the preflight and the barrier.
+    expect(Exit.isSuccess(await continued('Hive task: 01-build', 'call-adopt'))).toBe(true);
     expect(association(services, child)).toEqual({ taskFolder: '01-build', adHocRunId: undefined });
-    expect(Exit.isSuccess(await continued('Hive run: run-1', 'call-run'))).toBe(true);
-    expect(association(services, child)).toEqual({ taskFolder: undefined, adHocRunId: 'run-1' });
-    expect(services.backgroundJobService.listScoped({ projectRoot: context.root }).find((job) => job.callId === 'call-run')?.scope).toMatchObject({ feature: 'alpha', adHocRunId: 'run-1' });
-    expect(Exit.isSuccess(await continued('Hive task: 09-missing', 'call-invalid'))).toBe(true);
-    expect(association(services, child)).toEqual({ taskFolder: undefined, adHocRunId: undefined });
-    expect(Exit.isSuccess(await continued('Hive task: 01-build', 'call-again'))).toBe(true);
-    // A marker without an ID is invalid and clears the association, like one Hive cannot resolve.
-    expect(Exit.isSuccess(await continued('Hive run:  \t\nContinue.', 'call-blank'))).toBe(true);
-    expect(association(services, child)).toEqual({ taskFolder: undefined, adHocRunId: undefined });
-    expect(Exit.isSuccess(await continued('Hive task: 01-build', 'call-restore'))).toBe(true);
-    // Without a marker a continuation clears the association, even on the same route.
-    expect(Exit.isSuccess(await continued('Continue.', 'call-same-route'))).toBe(true);
-    expect(association(services, child)).toEqual({ taskFolder: undefined, adHocRunId: undefined });
-    expect(Exit.isSuccess(await continued('Hive task: 01-build', 'call-restore-again'))).toBe(true);
-    expect(host.activityState.reads - readsBefore).toBe(16);
+    expect(host.activityState.reads).toBe(2);
 
-    // A route change needs the same idle child; it then writes the cleared association.
+    // Without a marker the follow-up keeps the bound task, and the Forager still receives that task's brief.
+    expect(Exit.isSuccess(await continued('Continue.', 'call-unmarked'))).toBe(true);
+    expect(association(services, child)).toEqual({ taskFolder: '01-build', adHocRunId: undefined });
+    expect(host.admissions.at(-1)!.text).toContain('Task: 01-build - Build (pending)');
+    expect(host.admissions.at(-1)!.text).not.toContain('No Hive task binding');
+    expect(Exit.isSuccess(await continued('Hive task: 01-build', 'call-same'))).toBe(true);
+    const inputs = host.nativeInputs.length;
+    const reads = host.activityState.reads;
+
+    // Another run, a marker Hive cannot resolve, and a marker with no ID are refused before any host read or effect.
+    expect(failureMessage(await continued('Hive run: run-1', 'call-other-run'))).toBe(`Child session ${child} is bound to task 01-build, but the follow-up names run run-1; the host was not asked to continue the child. Omit sessionID and start a fresh forager-worker subagent call instead.`);
+    for (const prompt of ['Hive task: 09-missing', 'Hive run:  \t\nContinue.']) {
+      expect(failureMessage(await continued(prompt, `call-${prompt}`)), prompt).toBe(`The follow-up for child session ${child} opens with a Hive task or run marker that Hive cannot resolve on this call's route; the host was not asked to continue the child. Name the child's own task or run, or omit the marker line.`);
+    }
+    // Another feature on the parent's route is refused; changed standing constraints are not.
     services.sessionService.setFeatureRoute('parent', 'beta');
-    host.activityState.error = new Error('no server configured');
-    expect(failureMessage(await continued('Continue.', 'call-unknown'))).toContain('could not confirm that child session');
+    expect(failureMessage(await continued('Continue.', 'call-beta'))).toBe(`Child session ${child} is bound to feature alpha, but this call's route selects feature beta; the host was not asked to continue the child. Omit sessionID and start a fresh forager-worker subagent call instead.`);
+    expect(host.nativeInputs).toHaveLength(inputs);
+    expect(host.activityState.reads).toBe(reads);
     expect(association(services, child)).toEqual({ taskFolder: '01-build', adHocRunId: undefined });
-    host.activityState.error = undefined;
-    expect(Exit.isSuccess(await continued('Continue.', 'call-route-change'))).toBe(true);
-    expect(services.sessionService.getGlobal(child)?.featureName).toBe('beta');
-    expect(association(services, child)).toEqual({ taskFolder: undefined, adHocRunId: undefined });
+    services.sessionService.setFeatureRoute('parent', 'alpha');
+    services.sessionService.addStandingConstraint('parent', 'New rule.');
+    expect(Exit.isSuccess(await continued('Continue.', 'call-constraints'))).toBe(true);
+    expect(services.sessionService.getGlobal(child)).toMatchObject({ featureName: 'alpha', taskFolder: '01-build', standingConstraints: 'New rule.' });
+
+    // A binding for another project is refused.
+    services.sessionService.trackGlobal(child, { projectRoot: '/elsewhere' });
+    expect(failureMessage(await continued('Continue.', 'call-project'))).toContain(`Child session ${child} is bound to project /elsewhere, not ${context.root}`);
   });
 
-  it('runs a same-route child whose new association cannot be written, recording its launch with no task or run; a route the child does not hold yet still needs its binding written', async () => {
-    const context = await setup({ features: ['alpha', 'beta'] });
-    const { root, services, host } = context;
-    services.sessionService.setFeatureRoute('parent', 'alpha');
+  it('refuses to continue an ad-hoc run child under a feature, and lets a featureless child join a feature created since', async () => {
+    const { services, host } = await setup();
     services.adhocService = () => ({ get: async (runId: string) => (runId === 'run-1' ? { runId } : null) }) as any;
+    expect(Exit.isSuccess(await host.call('lead', { agent: 'forager-worker', prompt: 'Hive run: run-1' }, 'call-run'))).toBe(true);
+    const runChild = host.admissions.at(-1)!.child;
+    expect(Exit.isSuccess(await host.call('lead', { agent: 'architect-planner', prompt: 'Plan it.' }, 'call-plan'))).toBe(true);
+    const planner = host.admissions.at(-1)!.child;
+
+    // The route now selects a feature, for example one the delegated Architect created.
+    services.sessionService.setFeatureRoute('lead', 'alpha');
+    expect(failureMessage(await host.call('lead', { agent: 'forager-worker', prompt: 'Continue.', sessionID: runChild }, 'call-run-2'))).toBe(`Child session ${runChild} is bound to ad-hoc run run-1, but this call's route selects feature alpha; the host was not asked to continue the child. Omit sessionID and start a fresh forager-worker subagent call instead.`);
+    expect(Exit.isSuccess(await host.call('lead', { agent: 'architect-planner', prompt: 'Continue planning.', sessionID: planner }, 'call-plan-2'))).toBe(true);
+    expect(services.sessionService.getGlobal(planner)).toMatchObject({ featureName: 'alpha', agent: 'architect-planner' });
+  });
+
+  it('runs a same-route child whose binding rewrite fails, and never prompts a child whose route it cannot write', async () => {
+    const context = await setup();
+    const { services, host } = context;
+    services.sessionService.setFeatureRoute('parent', 'alpha');
     const tasked = await dispatchedChild(context);
-    expect(Exit.isSuccess(await host.call('parent', { agent: 'forager-worker', prompt: 'Go.' }, 'call-plain'))).toBe(true);
-    const plain = host.admissions.at(-1)!.child;
     const track = services.sessionService.trackGlobal;
-    services.sessionService.trackGlobal = () => { throw new Error('EACCES: permission denied, open sessions.json'); };
+    const failing = () => { throw new Error('EACCES: permission denied, open sessions.json'); };
+    services.sessionService.trackGlobal = failing;
     const warn = spyOn(console, 'warn').mockImplementation(() => {});
-    // The host reports both children settled; each continuation reads that at the preflight and at the barrier.
-    const readsBefore = host.activityState.reads;
-    const continued = (child: string, prompt: string, callID: string) => host.call('parent', { agent: 'forager-worker', prompt, sessionID: child }, callID);
-    const row = (callID: string) => services.backgroundJobService.listScoped({ projectRoot: root }).find((job) => job.callId === callID);
-    const scope = { projectRoot: root, parentSessionId: 'parent', primaryAgent: 'swarm-orchestrator', feature: 'alpha' };
     try {
-      for (const [child, prompt, callID, stored] of [
-        [plain, 'Hive task: 01-build', 'call-add', { taskFolder: undefined, adHocRunId: undefined }],
-        [tasked, 'Hive run: run-1', 'call-replace', { taskFolder: '01-build', adHocRunId: undefined }],
-        [tasked, 'Hive task: 09-missing', 'call-clear', { taskFolder: '01-build', adHocRunId: undefined }],
-        [tasked, 'Hive task: ', 'call-blank', { taskFolder: '01-build', adHocRunId: undefined }],
-        // After the failed write of run-1, an unmarked continuation carries no association either, so its launch does
-        // not name the task the store still holds from the dispatch before.
-        [tasked, 'Continue.', 'call-continue', { taskFolder: '01-build', adHocRunId: undefined }],
-      ] as const) {
-        const admitted = host.admissions.length;
-        expect(Exit.isSuccess(await continued(child, prompt, callID)), prompt).toBe(true);
-        expect(host.admissions.slice(admitted).map((admission) => admission.child), prompt).toEqual([child]);
-        // The store keeps what an earlier dispatch wrote; this launch is recorded with no task or run.
-        expect(association(services, child), prompt).toEqual(stored);
-        expect(row(callID)?.scope, prompt).toEqual(scope);
-      }
-      expect(warn.mock.calls.map(([message]) => String(message))).toEqual([
-        expect.stringContaining(`could not record the task or run association of child session ${plain}`),
-        expect.stringContaining(`stored binding named task 01-build`),
-        expect.stringContaining(`stored binding named task 01-build`),
-        expect.stringContaining(`stored binding named task 01-build`),
-        expect.stringContaining(`stored binding named task 01-build`),
-      ]);
-      expect(warn.mock.calls.every(([message]) => String(message).includes('EACCES'))).toBe(true);
-      expect(host.activityState.reads - readsBefore).toBe(10);
-
-      // A write that publishes and then fails (for example while releasing its lock) leaves the store changed, so
-      // neither the warning nor the launch may treat the binding read before the write as current.
-      services.sessionService.trackGlobal = (...args) => {
-        track.apply(services.sessionService, args);
-        throw new Error('EIO: i/o error, close sessions.json.lock');
-      };
-      warn.mockClear();
-      const admittedBeforePublished = host.admissions.length;
-      expect(Exit.isSuccess(await continued(tasked, 'Hive run: run-1', 'call-published'))).toBe(true);
-      expect(host.admissions.slice(admittedBeforePublished).map((admission) => admission.child)).toEqual([tasked]);
-      expect(association(services, tasked)).toEqual({ taskFolder: undefined, adHocRunId: 'run-1' });
-      expect(row('call-published')?.scope).toEqual(scope);
-      expect(warn).toHaveBeenCalledTimes(1);
-      const [published] = warn.mock.calls.map(([message]) => String(message));
-      expect(published).toContain('EIO');
-      expect(published).not.toContain('still names');
-      services.sessionService.trackGlobal = () => { throw new Error('EACCES: permission denied, open sessions.json'); };
-
-      // A route change and a new child still fail when their binding cannot be written, and are never prompted.
-      services.sessionService.setFeatureRoute('parent', 'beta');
+      // The child already holds this route, so only the rewrite (activity time, association) is lost.
       const admitted = host.admissions.length;
-      expect(failureMessage(await continued(tasked, 'Continue.', 'call-route-change'))).toContain(`Hive could not bind child session ${tasked} to its dispatch route (EACCES`);
-      expect(failureMessage(await host.call('parent', { agent: 'forager-worker', prompt: 'Hive task: 01-build' }, 'call-new'))).toContain('Hive could not bind child session child-3 to its dispatch route (EACCES');
-      expect(host.admissions).toHaveLength(admitted);
-      expect(services.sessionService.getGlobal(tasked)?.featureName).toBe('alpha');
+      expect(Exit.isSuccess(await host.call('parent', { agent: 'forager-worker', prompt: 'Continue.', sessionID: tasked }, 'call-continue'))).toBe(true);
+      expect(host.admissions.slice(admitted).map((admission) => admission.child)).toEqual([tasked]);
+      expect(warn.mock.calls.map(([message]) => String(message))).toEqual([expect.stringContaining(`could not rewrite the binding of child session ${tasked} (EACCES`)]);
+      expect(String(warn.mock.calls[0]![0])).toContain('stored binding named task 01-build');
+
+      // New constraints are a route the child does not hold yet, and a new child holds none: both need the write.
+      services.sessionService.trackGlobal = track;
+      services.sessionService.addStandingConstraint('parent', 'New rule.');
+      services.sessionService.trackGlobal = failing;
+      const before = host.admissions.length;
+      expect(failureMessage(await host.call('parent', { agent: 'forager-worker', prompt: 'Continue.', sessionID: tasked }, 'call-new-route'))).toContain(`Hive could not bind child session ${tasked} to its dispatch route (EACCES`);
+      expect(failureMessage(await host.call('parent', { agent: 'forager-worker', prompt: 'Hive task: 01-build' }, 'call-new'))).toContain('Hive could not bind child session child-2 to its dispatch route (EACCES');
+      expect(host.admissions).toHaveLength(before);
+      expect(services.sessionService.getGlobal(tasked)?.standingConstraints).toBeUndefined();
     } finally {
       warn.mockRestore();
       services.sessionService.trackGlobal = track;
     }
-  });
-
-  it('marks a recorded launch uncertain when the call fails or is interrupted after binding', async () => {
-    const failing = await setup({ promptFails: true });
-    expect(Exit.isSuccess(await failing.host.call('parent', { agent: 'forager-worker', prompt: 'Go.' }))).toBe(false);
-    expect(failing.services.backgroundJobService.resolve('child-1')).toMatchObject({ runtimeState: 'unknown', statusUncertain: true });
-    expect(failing.services.backgroundJobService.resolve('child-1')?.lastStatusError).toContain('The background launch call failed after the child was bound');
-
-    const blocked = await setup({ blockForever: true });
-    blocked.host.sessions.set('parent', { id: 'parent' });
-    const fiber = Effect.runFork(blocked.host.subagent().execute({ agent: 'forager-worker', description: 'Work', prompt: 'Go.' }, { sessionID: 'parent', agent: 'swarm-orchestrator', messageID: 'msg', id: 'call-i', progress: () => Effect.void } as any));
-    while (blocked.host.admissions.length === 0) await Bun.sleep(1);
-    await Effect.runPromise(Fiber.interrupt(fiber));
-    expect(blocked.services.backgroundJobService.resolve('child-1')?.lastStatusError).toContain('The background launch call was interrupted after the child was bound');
-  });
-
-  it('records the launch row before the host admits the child prompt, so the row exists while the child runs', async () => {
-    const rows: unknown[] = [];
-    const ref: { services?: HiveServices } = {};
-    const { services, host } = await setup({ afterAdmission: (child) => rows.push(ref.services!.backgroundJobService.resolve(child)) });
-    ref.services = services;
-    await host.call('parent', { agent: 'forager-worker', prompt: 'Go.' }, 'call-launch');
-    expect(rows).toEqual([expect.objectContaining({ callId: 'call-launch', runtimeState: 'running' })]);
-    expect(services.backgroundJobService.resolve('child-1')).toMatchObject({ callId: 'call-launch', runtimeState: 'running' });
   });
 
   it('refuses any continuation of a child another call of this activation is still starting, before the host touches the child', async () => {
@@ -579,11 +486,10 @@ describe('v2 native dispatch', () => {
 
     // The same captured route would steer the child the earlier call just started.
     const same = await host.call('parent', { agent: 'forager-worker', prompt: 'More.', sessionID: 'child-1' }, 'call-same');
-    expect(failureMessage(same)).toBe('Child session child-1 has not settled (another unfinished subagent call in this plugin activation holds it). Hive does not send a follow-up to a child that still runs or has work pending, so it did not overwrite its binding and the host was not asked to continue the child. Wait for its terminal <subagent> report before continuing it.');
+    expect(failureMessage(same)).toBe('Child session child-1 has not settled (another unfinished subagent call in this plugin activation holds it). Hive does not send a follow-up to a child that still runs or has work pending, so it did not overwrite its binding and the host was not asked to continue the child. Wait for its final report before continuing it.');
 
-    // A different route or constraint set would also rebind the child mid-run for the earlier call. The local call is
-    // known to be unfinished, so neither refusal needs a host read and both come before the host is invoked.
-    services.sessionService.setFeatureRoute('parent', 'beta');
+    // A new constraint set would also rebind the child mid-run for the earlier call. The local call is known to be
+    // unfinished, so the refusal needs no host read and comes before the host is invoked.
     services.sessionService.addStandingConstraint('parent', 'Now beta.');
     const conflicting = await host.call('parent', { agent: 'forager-worker', prompt: 'Switch.', sessionID: 'child-1' }, 'call-2');
     expect(failureMessage(conflicting)).toBe(failureMessage(same));
@@ -593,11 +499,11 @@ describe('v2 native dispatch', () => {
     expect(services.sessionService.getGlobal('child-1')).toMatchObject({ parentSessionId: 'parent', featureName: 'alpha' });
     expect(services.sessionService.getGlobal('child-1')?.standingConstraints).toBe('Only alpha.');
 
-    // Once the earlier call has returned and the host reports the child idle, an authorized continuation takes the new route.
+    // Once the earlier call has returned and the host reports the child idle, a continuation takes the new constraints.
     release();
     expect(Exit.isSuccess(await first)).toBe(true);
     expect(Exit.isSuccess(await host.call('parent', { agent: 'forager-worker', prompt: 'Switch.', sessionID: 'child-1' }, 'call-3'))).toBe(true);
-    expect(services.sessionService.getGlobal('child-1')).toMatchObject({ featureName: 'beta' });
+    expect(services.sessionService.getGlobal('child-1')).toMatchObject({ featureName: 'alpha', taskFolder: '01-build' });
     expect(services.sessionService.getGlobal('child-1')?.standingConstraints).toContain('Now beta.');
   });
 
@@ -608,14 +514,16 @@ describe('v2 native dispatch', () => {
     const child = await dispatchedChild(context);
     host.active.add(child);
 
-    const conflicting = await host.call('parent', { agent: 'scout-researcher', prompt: 'Look instead.', sessionID: child }, 'call-agent');
-    expect(failureMessage(conflicting)).toBe(`Child session ${child} has not settled (active signal for ${child}). Hive does not send a follow-up to a child that still runs or has work pending, so it did not overwrite its binding and the host was not asked to continue the child. Wait for its terminal <subagent> report before continuing it.`);
+    // New standing constraints would rebind the running child.
+    services.sessionService.addStandingConstraint('parent', 'Changed.');
+    const conflicting = await host.call('parent', { agent: 'forager-worker', prompt: 'Look instead.', sessionID: child }, 'call-agent');
+    expect(failureMessage(conflicting)).toBe(`Child session ${child} has not settled (active signal for ${child}). Hive does not send a follow-up to a child that still runs or has work pending, so it did not overwrite its binding and the host was not asked to continue the child. Wait for its final report before continuing it.`);
     expect(host.nativeInputs).toHaveLength(1);
     expect(host.switches).toEqual([]);
     expect(host.sessions.get(child)).toMatchObject({ agent: 'forager-worker', model: ref('model-of-forager-worker') });
     expect(services.sessionService.getGlobal(child)).toMatchObject({ parentSessionId: 'parent', featureName: 'alpha', agent: 'forager-worker' });
 
-    // The same agent and route would join the running child's current run on this host, which Hive refuses too.
+    // A plain follow-up on the same agent would join the running child's current run on this host, which Hive refuses too.
     const compatible = await host.call('parent', { agent: 'forager-worker', prompt: 'Also this.', sessionID: child }, 'call-steer');
     expect(failureMessage(compatible)).toBe(failureMessage(conflicting));
     expect(host.nativeInputs).toHaveLength(1);
@@ -636,7 +544,7 @@ describe('v2 native dispatch', () => {
     const before = services.sessionService.getGlobal(child);
     for (const signal of ['jobs', 'inbox'] as const) {
       host[signal].add(child);
-      const refused = await host.call('parent', { agent: 'scout-researcher', prompt: 'Switch.', sessionID: child }, `call-${signal}`);
+      const refused = await host.call('parent', { agent: 'forager-worker', prompt: 'More.', sessionID: child }, `call-${signal}`);
       expect(failureMessage(refused) ?? '', signal).toContain(`has not settled (${signal === 'jobs' ? 'job' : 'inbox'} signal for ${child})`);
       host[signal].delete(child);
     }
@@ -656,47 +564,93 @@ describe('v2 native dispatch', () => {
     // The preflight finds the child settled; another client then queues work for it before the host reports progress.
     pause.during = () => host.inbox.add(child);
     const refused = await host.call('parent', { agent: 'forager-worker', prompt: 'More.', sessionID: child }, 'call-late');
-    expect(failureMessage(refused)).toBe(`Child session ${child} has not settled (inbox signal for ${child}). Hive does not send a follow-up to a child that still runs or has work pending, so it did not overwrite its binding and the child was not prompted. Wait for its terminal <subagent> report before continuing it.`);
+    expect(failureMessage(refused)).toBe(`Child session ${child} has not settled (inbox signal for ${child}). Hive does not send a follow-up to a child that still runs or has work pending, so it did not overwrite its binding and the child was not prompted. Wait for its final report before continuing it.`);
     expect(host.activityState.reads).toBe(2);
     expect(host.nativeInputs).toHaveLength(2);
     expect(host.admissions).toHaveLength(1);
     expect(services.sessionService.getGlobal(child)).toEqual(before);
   });
 
-  it('decides an incompatible continuation from the host\'s activity, never from the board', async () => {
-    // An active child whose launch the board never recorded, because every board write failed.
-    const unrecorded = await setup({ features: ['alpha', 'beta'] });
-    const board = unrecorded.services.backgroundJobService;
-    board.registerLaunch = (() => { throw new Error('board unwritable'); }) as typeof board.registerLaunch;
-    unrecorded.services.sessionService.setFeatureRoute('parent', 'alpha');
-    const child = await dispatchedChild(unrecorded);
-    unrecorded.host.active.add(child);
-    unrecorded.services.sessionService.setFeatureRoute('parent', 'beta');
-    const refused = await unrecorded.host.call('parent', { agent: 'forager-worker', prompt: 'Switch.', sessionID: child }, 'call-2');
-    expect(failureMessage(refused) ?? '').toContain('has not settled');
-    expect(unrecorded.host.nativeInputs).toHaveLength(1);
-    expect(unrecorded.services.sessionService.getGlobal(child)).toMatchObject({ featureName: 'alpha' });
+  it('checks the agent, model and binding again at the barrier, so a change during the host\'s permission wait is never prompted', async () => {
+    const pause: { during?: () => void } = {};
+    const context = await setup({ pauseBeforeProgress: Effect.sync(() => pause.during?.()) });
+    const { services, host } = context;
+    services.sessionService.setFeatureRoute('parent', 'alpha');
+    const child = await dispatchedChild(context);
+    const before = services.sessionService.getGlobal(child);
 
-    // An active child whose board row was archived as ignored.
-    const ignored = await setup({ features: ['alpha', 'beta'] });
-    ignored.services.sessionService.setFeatureRoute('parent', 'alpha');
-    const ignoredChild = await dispatchedChild(ignored);
-    ignored.services.backgroundJobService.updateRuntimeState(ignoredChild, 'unknown', { statusUncertain: true });
-    ignored.services.backgroundJobService.markIgnored(ignoredChild, 'Archived the observation.');
-    ignored.host.active.add(ignoredChild);
-    ignored.services.sessionService.setFeatureRoute('parent', 'beta');
-    expect(failureMessage(await ignored.host.call('parent', { agent: 'forager-worker', prompt: 'Switch.', sessionID: ignoredChild }, 'call-2')) ?? '').toContain('has not settled');
-    expect(ignored.services.sessionService.getGlobal(ignoredChild)).toMatchObject({ featureName: 'alpha' });
+    // The preflight finds the configured model; another client then moves the child to another model.
+    pause.during = () => { host.sessions.get(child)!.model = ref('drifted'); };
+    expect(failureMessage(await host.call('parent', { agent: 'forager-worker', prompt: 'More.', sessionID: child }, 'call-model'))).toBe(`Child session ${child} runs on test/drifted, but agent forager-worker is configured for test/model-of-forager-worker; the child was not prompted. Start a new forager-worker subagent call without sessionID to run on the configured model.`);
+    host.sessions.get(child)!.model = ref('model-of-forager-worker');
 
-    // An idle child whose board still shows a live row, with the board file unreadable: the host says idle.
-    const unreadable = await setup({ features: ['alpha', 'beta'] });
-    unreadable.services.sessionService.setFeatureRoute('parent', 'alpha');
-    const idleChild = await dispatchedChild(unreadable);
-    fs.writeFileSync(getNativeBackgroundJobsPath(unreadable.root, 'opencode-v2'), '{ not json');
-    unreadable.services.sessionService.setFeatureRoute('parent', 'beta');
-    const allowed = await unreadable.host.call('parent', { agent: 'forager-worker', prompt: 'Switch.', sessionID: idleChild }, 'call-2');
-    expect(Exit.isSuccess(allowed)).toBe(true);
-    expect(unreadable.host.admissions.at(-1)).toMatchObject({ child: idleChild, boundFeature: 'beta' });
+    // Another client rebinds the child to a run during the wait; Hive neither overwrites nor prompts it.
+    pause.during = () => { services.sessionService.trackGlobal(child, { adHocRunId: 'run-elsewhere' }); };
+    expect(failureMessage(await host.call('parent', { agent: 'forager-worker', prompt: 'More.', sessionID: child }, 'call-binding'))).toBe(`The binding of child session ${child} changed while the host awaited the call (it named project ${context.root}, feature alpha, task 01-build, run none at the preflight and names project ${context.root}, feature alpha, task 01-build, run run-elsewhere now); Hive did not overwrite it and the child was not prompted.`);
+    expect(host.admissions).toHaveLength(1);
+    expect(host.activityState.reads).toBe(2);
+    expect(services.sessionService.getGlobal(child)).toMatchObject({ ...before, adHocRunId: 'run-elsewhere', lastActiveAt: expect.any(String) });
+  });
+
+  it('refuses a child the host moved to another location, at the preflight and at the barrier, without prompting it', async () => {
+    const pause: { during?: () => void } = {};
+    const context = await setup({ pauseBeforeProgress: Effect.sync(() => pause.during?.()) });
+    const { services, host } = context;
+    services.sessionService.setFeatureRoute('parent', 'alpha');
+    const child = await dispatchedChild(context);
+    const before = services.sessionService.getGlobal(child);
+
+    host.sessions.get(child)!.location = { directory: '/workspace/other' };
+    expect(failureMessage(await host.call('parent', { agent: 'forager-worker', prompt: 'More.', sessionID: child }, 'call-moved'))).toBe(`Child session ${child} is in /workspace/other, not /workspace/project; Hive did not bind it and the host was not asked to continue the child.`);
+    expect(host.nativeInputs).toHaveLength(1);
+
+    delete host.sessions.get(child)!.location;
+    pause.during = () => { host.sessions.get(child)!.location = { directory: '/workspace/other' }; };
+    expect(failureMessage(await host.call('parent', { agent: 'forager-worker', prompt: 'More.', sessionID: child }, 'call-moved-late'))).toBe(`Child session ${child} is in /workspace/other, not /workspace/project; Hive did not bind it and the child was not prompted.`);
+    expect(host.admissions).toHaveLength(1);
+    expect(services.sessionService.getGlobal(child)).toEqual(before);
+  });
+
+  it('refuses a continuation when the binding index is unreadable, and leaves the index as found', async () => {
+    const context = await setup();
+    const { root, services, host } = context;
+    services.sessionService.setFeatureRoute('parent', 'alpha');
+    const child = await dispatchedChild(context);
+    const index = getNativeSessionsPath(root, 'opencode-v2');
+    fs.writeFileSync(index, '{ not json');
+
+    const refused = await host.call('parent', { agent: 'forager-worker', prompt: 'More.', sessionID: child }, 'call-corrupt');
+    expect(failureMessage(refused)).toBe(`Hive could not capture the dispatch route of session parent: Session index ${index} is unreadable; it was left unchanged for explicit recovery.`);
+    expect(fs.readFileSync(index, 'utf8')).toBe('{ not json');
+    expect(fs.readdirSync(path.dirname(index)).filter((name) => name.includes('.corrupt-'))).toEqual([]);
+    expect(host.nativeInputs).toHaveLength(1);
+    expect(host.admissions).toHaveLength(1);
+    expect(host.activityState.reads).toBe(0);
+  });
+
+  it('continues a child on the route captured when the call started, even if the parent switches features during its first host read', async () => {
+    const context = await setup({ features: ['alpha', 'beta'] });
+    const { services, host } = context;
+    services.sessionService.setFeatureRoute('parent', 'alpha');
+    const child = await dispatchedChild(context);
+    const session = host.context.session as unknown as { get: (input: { sessionID: string }) => Effect.Effect<unknown, unknown> };
+    const read = session.get;
+    let switched = false;
+    session.get = (input) => Effect.suspend(() => {
+      if (!switched) {
+        switched = true;
+        services.sessionService.setFeatureRoute('parent', 'beta');
+      }
+      return read(input);
+    });
+
+    const exit = await host.call('parent', { agent: 'forager-worker', prompt: 'More.', sessionID: child }, 'call-switch');
+    expect(failureMessage(exit)).toBeUndefined();
+    expect(switched).toBe(true);
+    const admission = host.admissions.at(-1)!;
+    expect(admission.child).toBe(child);
+    expect(admission.boundFeature).toBe('alpha');
+    expect(admission.text).toContain('"feature":"alpha"');
   });
 
   it('treats unknown host activity as not idle for every continuation, and needs no activity read for a fresh dispatch', async () => {
@@ -709,11 +663,11 @@ describe('v2 native dispatch', () => {
     const same = await host.call('parent', { agent: 'forager-worker', prompt: 'More.', sessionID: child }, 'call-same');
     expect(failureMessage(same)).toBe(`Hive could not confirm that child session ${child} has settled (Session history reads need the oc-arkive \`server\` option). Continuing a child needs a settled child, so Hive did not overwrite its binding and the host was not asked to continue the child.`);
 
-    services.sessionService.setFeatureRoute('parent', 'beta');
+    services.sessionService.addStandingConstraint('parent', 'Changed.');
     const unknown = await host.call('parent', { agent: 'forager-worker', prompt: 'Switch.', sessionID: child }, 'call-switch');
     expect(failureMessage(unknown)).toBe(failureMessage(same));
     expect(host.nativeInputs).toHaveLength(1);
-    expect(services.sessionService.getGlobal(child)).toMatchObject({ featureName: 'alpha' });
+    expect(services.sessionService.getGlobal(child)?.standingConstraints).toBeUndefined();
   });
 
   it('reserves an incompatible preflight before an old idle snapshot can be overtaken by a returned background call', async () => {
@@ -725,7 +679,8 @@ describe('v2 native dispatch', () => {
     const before = services.sessionService.getGlobal(child);
     host.activityState.gate = new Promise<void>((resolve) => { releaseActivity = resolve; });
 
-    const incompatible = host.call('parent', { agent: 'scout-researcher', prompt: 'Switch.', sessionID: child }, 'call-A');
+    services.sessionService.addStandingConstraint('parent', 'Changed.');
+    const incompatible = host.call('parent', { agent: 'forager-worker', prompt: 'Switch.', sessionID: child }, 'call-A');
     try {
       for (let wait = 0; wait < 500 && host.activityState.reads === 0; wait += 1) await Bun.sleep(1);
       expect(host.activityState.reads).toBe(1);
@@ -749,8 +704,8 @@ describe('v2 native dispatch', () => {
 
     expect(Exit.isSuccess(await incompatible)).toBe(true);
     expect(host.nativeInputs).toHaveLength(2);
-    expect(host.switches).toEqual([{ child, agent: 'scout-researcher', model: ref('model-of-scout-researcher') }]);
-    expect(services.sessionService.getGlobal(child)).toMatchObject({ agent: 'scout-researcher' });
+    expect(host.switches).toEqual([]);
+    expect(services.sessionService.getGlobal(child)?.standingConstraints).toBe('Changed.');
   });
 
   it('does not treat a matching pending reservation as qualified compatibility and releases it after interruption', async () => {
@@ -763,13 +718,13 @@ describe('v2 native dispatch', () => {
     host.active.add(child);
     host.activityState.gate = new Promise<void>((resolve) => { releaseActivity = resolve; });
     const pending = Effect.runFork(host.subagent().execute(
-      { agent: 'scout-researcher', prompt: 'Switch.', sessionID: child },
+      { agent: 'forager-worker', prompt: 'Switch.', sessionID: child },
       { sessionID: 'parent', agent: 'swarm-orchestrator', messageID: 'msg', id: 'call-A', progress: () => Effect.void } as any,
     ));
     for (let wait = 0; wait < 500 && host.activityState.reads === 0; wait += 1) await Bun.sleep(1);
     expect(host.activityState.reads).toBe(1);
     // B matches A's route, but A's reservation is not qualified compatibility: B is refused without a read of its own.
-    const matching = await host.call('parent', { agent: 'scout-researcher', prompt: 'Switch too.', sessionID: child }, 'call-B');
+    const matching = await host.call('parent', { agent: 'forager-worker', prompt: 'Switch too.', sessionID: child }, 'call-B');
     expect(host.activityState.reads).toBe(1);
     expect(failureMessage(matching) ?? '').toContain('has not settled');
     // The pending settlement read received the call's signal, and interrupting the call aborts it.
@@ -786,90 +741,11 @@ describe('v2 native dispatch', () => {
     expect(Exit.isSuccess(await host.call('parent', { agent: 'forager-worker', prompt: 'Continue.', sessionID: child }))).toBe(true);
   });
 
-  it('reports a launch whose row could not be written to its parent until the same call records it', async () => {
-    const { root, services, host, background } = await setup();
-    const board = services.backgroundJobService;
-    const register = board.registerLaunch.bind(board);
-    let failures = 2;
-    // The barrier write and the retry when the call returns `running` both fail; reads of the board still work.
-    board.registerLaunch = ((input) => { if (failures > 0) { failures -= 1; throw new Error('disk full'); } return register(input); }) as typeof board.registerLaunch;
-    const status = createBackgroundOperations({ backgroundJobService: board, projectRoot: root, isEnabled: () => true, currentRuntimeId: 'runtime-a', unrecordedLaunches: background.observer.unrecordedLaunches }).hive_background_status!;
-
-    expect(Exit.isSuccess(await host.call('parent', { agent: 'forager-worker', prompt: 'Go.' }, 'call-A'))).toBe(true);
-    expect(board.listScoped({ projectRoot: root }, { includeArchived: true })).toHaveLength(0);
-    const gap = await status.execute({}, { sessionID: 'parent' }) as any;
-    expect(gap.jobs).toEqual([]);
-    expect(gap.unrecordedLaunches).toEqual([expect.objectContaining({ childSessionId: 'child-1', callId: 'call-A', agentName: 'forager-worker', reason: 'disk full' })]);
-    expect(gap.recommendedNextAction).toMatchObject({ action: 'inspect_unrecorded_background_launches', childSessionIds: ['child-1'] });
-    expect(gap.schedulerGuidance).toBeUndefined();
-    // Another parent's board never shows it, and its prompt board does not either.
-    const other = await status.execute({}, { sessionID: 'other-parent' }) as any;
-    expect(other.unrecordedLaunches).toBeUndefined();
-    expect(other.recommendedNextAction.action).toBe('idle');
-    expect(background.observer.promptBoard('other-parent')).toBeUndefined();
-    expect(background.observer.promptBoard('parent')?.text).toContain('unrecorded launch (child-1) forager-worker');
-
-    // The same call writing its row on the retry clears the gap; another call's failure does not hide behind it.
-    failures = 1;
-    expect(Exit.isSuccess(await host.call('parent', { agent: 'forager-worker', prompt: 'Again.' }, 'call-B'))).toBe(true);
-    const recovered = await status.execute({}, { sessionID: 'parent' }) as any;
-    expect(recovered.unrecordedLaunches).toEqual([expect.objectContaining({ childSessionId: 'child-1', callId: 'call-A' })]);
-    expect(board.listScoped({ projectRoot: root }).map((job) => job.callId)).toEqual(['call-B']);
-    expect(board.resolve('child-2')?.statusUncertain).toBeUndefined();
-  });
-
   it('fails a call that returns a child it never bound at the progress barrier, without binding it afterwards', async () => {
     const { services, host } = await setup({ skipProgress: true });
     const exit = await host.call('parent', { agent: 'forager-worker', prompt: 'Go.' }, 'call-unbound');
     expect(failureMessage(exit)).toBe('The subagent call returned child session child-1 without the progress update at which Hive binds the child before its prompt. Hive did not bind it after it ran, so the child may have run without its parent\'s route and standing constraints; inspect hive_task_trace({ task_id: "child-1" }) before relying on its result.');
     expect(services.sessionService.getGlobal('child-1')).toBeUndefined();
-    expect(services.backgroundJobService.listScoped({}, { includeArchived: true })).toEqual([]);
-  });
-
-  it('does not hand a completion for a launch Hive could not record to a later continuation of the same child', async () => {
-    const { root, services, host, background } = await setup();
-    const board = services.backgroundJobService;
-    const register = board.registerLaunch.bind(board);
-    // The store rejects every attempt to record the first launch, at the barrier and again when the call returns.
-    board.registerLaunch = ((input) => { if (input.callId === 'call-A') throw new Error('disk full'); return register(input); }) as typeof board.registerLaunch;
-
-    await host.call('parent', { agent: 'forager-worker', prompt: 'Go.' }, 'call-A');
-    expect(board.listScoped({ projectRoot: root }, { includeArchived: true })).toHaveLength(0);
-    background.handleEvent(completion('parent', 'child-1', 'completed', 'inbox-A'));
-
-    await host.call('parent', { agent: 'forager-worker', prompt: 'Again.', sessionID: 'child-1' }, 'call-B');
-    expect(board.resolve('child-1')).toMatchObject({ callId: 'call-B', runtimeState: 'running' });
-    expect(board.resolve('child-1')?.statusUncertain).toBeUndefined();
-
-    // The continuation's own notification names the child, not the call: it is recorded as an uncertain observation.
-    background.handleEvent(completion('parent', 'child-1', 'completed', 'inbox-B'));
-    expect(board.resolve('child-1')).toMatchObject({ callId: 'call-B', runtimeState: 'unknown', statusUncertain: true });
-  });
-
-  it('never settles a later continuation with the late notification of an earlier launch that has no row', async () => {
-    const { root, services, host, background } = await setup();
-    const board = services.backgroundJobService;
-    const register = board.registerLaunch.bind(board);
-    board.registerLaunch = ((input) => { if (input.callId === 'call-A') throw new Error('disk full'); return register(input); }) as typeof board.registerLaunch;
-
-    await host.call('parent', { agent: 'forager-worker', prompt: 'Go.' }, 'call-A');
-    await host.call('parent', { agent: 'forager-worker', prompt: 'Again.', sessionID: 'child-1' }, 'call-B');
-    expect(board.listScoped({ projectRoot: root })).toHaveLength(1);
-
-    // A's notification arrives after B's row exists and is B's row only by timing.
-    background.handleEvent(completion('parent', 'child-1', 'completed', 'inbox-A'));
-    const row = board.resolve('child-1')!;
-    expect(row).toMatchObject({ callId: 'call-B', runtimeState: 'unknown', statusUncertain: true });
-    expect(row.terminalUnreconciled).toBeUndefined();
-    expect(row.lastStatusError).toContain('names the child, not the launching call');
-  });
-
-  it('applies a completion that arrives before the call returns, as uncertainty, to the row recorded at the barrier', async () => {
-    const ref: { background?: ReturnType<typeof createV2BackgroundLifecycle> } = {};
-    const { services, host, background } = await setup({ afterAdmission: (child) => ref.background!.handleEvent(completion('parent', child)) });
-    ref.background = background;
-    await host.call('parent', { agent: 'forager-worker', prompt: 'Go.' }, 'call-fast');
-    expect(services.backgroundJobService.resolve('child-1')).toMatchObject({ callId: 'call-fast', runtimeState: 'unknown', statusUncertain: true });
   });
 
   describe('managed-model control', () => {
@@ -877,7 +753,7 @@ describe('v2 native dispatch', () => {
 
     it('refuses any model on a built-in or custom managed target, from any caller, before route capture, native effects, binding, launch or reservation', async () => {
       const context = await setup({ customAgents: { 'team-forager': teamForager } });
-      const { root, services, host } = context;
+      const { services, host } = context;
       // A managed target with no configured model is refused the same way: the argument is the violation, not the lookup.
       host.catalog.models.set('scout-researcher', null);
       services.sessionService.setFeatureRoute('parent', 'alpha');
@@ -885,7 +761,7 @@ describe('v2 native dispatch', () => {
       const before = services.sessionService.getGlobal(child);
       let captures = 0;
       const capture = services.captureRoute.bind(services);
-      services.captureRoute = ((session: string) => { captures += 1; return capture(session); }) as typeof services.captureRoute;
+      services.captureRoute = ((session, options) => { captures += 1; return capture(session, options); }) as typeof services.captureRoute;
 
       for (const agent of ['forager-worker', 'team-forager', 'scout-researcher']) {
         // A different model, the configured model itself, and the configured model with a reasoning variant.
@@ -907,7 +783,6 @@ describe('v2 native dispatch', () => {
       expect(host.catalog.reads).toBe(0);
       expect(host.sessions.get(child)).toMatchObject({ agent: 'forager-worker', model: ref('model-of-forager-worker') });
       expect(services.sessionService.getGlobal(child)).toEqual(before);
-      expect(services.backgroundJobService.listScoped({ projectRoot: root }, { includeArchived: true }).map((job) => job.callId)).toEqual(['call-first']);
 
       // Nothing was reserved: the corrected calls run, the settled child's continuation with its two settlement reads and
       // on the child's model.
@@ -992,41 +867,52 @@ describe('v2 native dispatch', () => {
       expect(host.nativeInputs).toHaveLength(1);
 
       // Model-less: a fresh child inherits the parent's model, and a resumed child keeps whatever model it had.
-      host.catalog.models.set('scout-researcher', null);
-      expect(Exit.isSuccess(await host.call('parent', { agent: 'scout-researcher', prompt: 'Look.' }))).toBe(true);
+      host.catalog.models.set('forager-investigator', null);
+      expect(Exit.isSuccess(await host.call('parent', { agent: 'forager-investigator', prompt: 'Look.' }))).toBe(true);
       expect(host.sessions.get('child-2')?.model).toEqual(ref('parent-model'));
       host.sessions.get('child-2')!.model = ref('earlier-model');
-      expect(Exit.isSuccess(await host.call('parent', { agent: 'scout-researcher', prompt: 'More.', sessionID: 'child-2' }))).toBe(true);
+      expect(Exit.isSuccess(await host.call('parent', { agent: 'forager-investigator', prompt: 'More.', sessionID: 'child-2' }))).toBe(true);
       expect(host.sessions.get('child-2')?.model).toEqual(ref('earlier-model'));
       expect(host.switches).toEqual([]);
     });
 
-    it('lets an idle child switch to another managed agent on that agent\'s configured model, judging the switch by the host\'s session agent', async () => {
-      const context = await setup();
-      const { services, host } = context;
-      services.sessionService.setFeatureRoute('parent', 'alpha');
-      const child = await dispatchedChild(context);
-      // A stale binding claims the child already runs as the scout, so the captured route matches it exactly; the host
-      // still reports the Forager, and the continuation would switch it.
-      services.sessionService.trackGlobal(child, { agent: 'scout-researcher' });
-      const before = services.sessionService.getGlobal(child);
-
-      host.active.add(child);
-      expect(failureMessage(await host.call('parent', { agent: 'scout-researcher', prompt: 'Look.', sessionID: child })) ?? '').toContain('has not settled');
-      host.active.delete(child);
-      host.activityState.error = new Error('reader unavailable');
-      expect(failureMessage(await host.call('parent', { agent: 'scout-researcher', prompt: 'Look.', sessionID: child })) ?? '').toContain('could not confirm');
-      expect(host.nativeInputs).toHaveLength(1);
-      expect(host.switches).toEqual([]);
+    it('continues only resumable workers on their own agent, and refuses one-shot roles and agent switches before any host read', async () => {
+      const customAgents = {
+        'team-scout': { baseAgent: 'scout-researcher', description: 'Team scout' } as ResolvedCustomAgentConfig,
+        'team-forager': { baseAgent: 'forager-worker', description: 'Team forager' } as ResolvedCustomAgentConfig,
+      };
+      const { services, host } = await setup({ customAgents });
+      const fresh = async (agent: string) => {
+        expect(Exit.isSuccess(await host.call('parent', { agent, prompt: 'Go.' })), agent).toBe(true);
+        return host.admissions.at(-1)!.child;
+      };
+      const oneShot = ['scout-researcher', 'code-reviewer', 'approach-advisor', 'hive-helper', 'team-scout', 'explore'];
+      for (const agent of oneShot) {
+        const child = await fresh(agent);
+        const inputs = host.nativeInputs.length;
+        const refused = await host.call('parent', { agent, prompt: 'More.', sessionID: child });
+        expect(failureMessage(refused) ?? '', agent).toContain(`Agent ${agent} is one-shot`);
+        expect(failureMessage(refused) ?? '', agent).toContain(`Omit sessionID and start a fresh ${agent} subagent call instead.`);
+        expect(host.nativeInputs, agent).toHaveLength(inputs);
+      }
+      expect(host.activityState.reads).toBe(0);
       expect(host.catalog.reads).toBe(0);
-      expect(services.sessionService.getGlobal(child)).toEqual(before);
 
-      // Idle: the host switches the child onto the destination's configured model, which differs from the old one.
-      host.activityState.error = undefined;
-      expect(Exit.isSuccess(await host.call('parent', { agent: 'scout-researcher', prompt: 'Look.', sessionID: child }))).toBe(true);
-      expect(host.activityState.reads).toBe(4);
-      expect(host.switches).toEqual([{ child, agent: 'scout-researcher', model: ref('model-of-scout-researcher') }]);
-      expect(host.admissions.at(-1)).toMatchObject({ child, boundAgent: 'scout-researcher', boundFeature: 'alpha' });
+      for (const agent of ['forager-worker', 'forager-investigator', 'architect-planner', 'team-forager', 'general']) {
+        const child = await fresh(agent);
+        expect(Exit.isSuccess(await host.call('parent', { agent, prompt: 'More.', sessionID: child })), agent).toBe(true);
+      }
+
+      // A resumable child is continued only on the agent the host reports and its binding names.
+      const worker = await fresh('forager-worker');
+      const before = services.sessionService.getGlobal(worker);
+      const reads = host.activityState.reads;
+      expect(failureMessage(await host.call('parent', { agent: 'forager-investigator', prompt: 'Check.', sessionID: worker }))).toBe(`Child session ${worker} runs agent forager-worker, not forager-investigator; Hive continues a child only on its own agent, so the host was not asked to continue the child. Omit sessionID and start a fresh forager-investigator subagent call instead.`);
+      services.sessionService.trackGlobal(worker, { agent: 'forager-investigator' });
+      expect(failureMessage(await host.call('parent', { agent: 'forager-worker', prompt: 'More.', sessionID: worker })) ?? '').toContain('runs agent forager-worker (bound as forager-investigator), not forager-worker');
+      expect(host.switches).toEqual([]);
+      expect(host.activityState.reads).toBe(reads);
+      expect(services.sessionService.getGlobal(worker)).toMatchObject({ parentSessionId: 'parent', projectRoot: before?.projectRoot, agent: 'forager-investigator' });
     });
   });
 
@@ -1035,7 +921,7 @@ describe('v2 native dispatch', () => {
     const home = fs.mkdtempSync(`/tmp/hive-v2-dispatch-home-${process.pid}-`);
     cleanup.push(home);
     const services = createHiveServices({ projectRoot: root, nativeObservationOwner: 'opencode-v2' });
-    const host = fakeHost(services);
+    const host = fakeHost(services, { directory: root });
     const accept = () => Effect.succeed({ dispose: Effect.void });
     const context = {
       ...host.context,

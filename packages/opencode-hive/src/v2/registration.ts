@@ -9,7 +9,6 @@ import { HIVE_COMMANDS } from '../commands/registry.js';
 import { hiveCommandRenderers } from '../commands/renderers.js';
 import { SUBAGENT_CLARIFICATION_PROMPT } from '../hooks/system-hook.js';
 import { prepareNativeHiveSkills, type PreparedNativeHiveSkills } from '../skills/native-materializer.js';
-import { resolveBackgroundDelegationAvailability } from '../utils/background-gate.js';
 import { createHiveServices, type HiveServices } from '../runtime/hive-services.js';
 import { createHiveOperations } from '../runtime/hive-tools.js';
 import type { CouncilAgentDescriptor } from '../runtime/councils.js';
@@ -95,7 +94,7 @@ export function registerCatalog(input: { context: Plugin.Context; identity: Iden
         editor.add({ id: hiveSkillId(skill), name: skill.name, description: skill.description, path: path.join(skill.materializedDir, 'SKILL.md'), content: skill.content } as never);
       }
     });
-    yield* registerCommands(context, { host, configService, roles, skills });
+    yield* registerCommands(context, { host, configService, roles });
     yield* registrar.register(createHiveOperations(services, (signal) => Effect.runPromise(context.agent.list(), { signal })
       .then(({ data }) => councilAgents(roles, data))));
     yield* context.tool.hook('execute.before', (event) => event.tool.startsWith('hive_')
@@ -235,12 +234,12 @@ function councilAgents(roles: RoleCatalog, installed: ReadonlyArray<Agent.Info>)
 }
 
 /**
- * Commands render when invoked, against the agents and skills current at that moment. A command bound to an agent
+ * Commands render when invoked, against the agents current at that moment. A command bound to an agent
  * follows native configured commands: it switches the session to the agent, then to the agent's effective model and
  * variant, before prompting.
  */
-function registerCommands(context: Plugin.Context, input: { host: HostProfile; configService: ConfigService; roles: RoleCatalog; skills: Effect.Effect<SkillLookups> }) {
-  const { host, configService, roles, skills } = input;
+function registerCommands(context: Plugin.Context, input: { host: HostProfile; configService: ConfigService; roles: RoleCatalog }) {
+  const { host, configService, roles } = input;
   return context.command.transform((editor) => {
     for (const command of HIVE_COMMANDS) {
       const agentID = 'agent' in command ? command.agent : undefined;
@@ -249,10 +248,8 @@ function registerCommands(context: Plugin.Context, input: { host: HostProfile; c
         description: command.description,
         execute: (invocation) => Effect.gen(function* () {
           const installed = (yield* context.agent.list()).data;
-          const lookups = yield* skills;
-          const backgroundGuidance = resolveBackgroundDelegationAvailability(lookups.nativeSkillsByName, lookups.skillsByName, new Map(lookups.skipped.map((entry) => [entry.name, entry])), host);
           const agents = effectiveCommandAgents(roles, installed);
-          const text = yield* Effect.promise(async () => hiveCommandRenderers[command.key](invocation.prompt.text, createCommandContext({ host, configService, agents, backgroundGuidance })));
+          const text = yield* Effect.promise(async () => hiveCommandRenderers[command.key](invocation.prompt.text, createCommandContext({ host, configService, agents })));
           if (agentID !== undefined) {
             const target = installed.find((agent) => agent.id === agentID);
             if (!target) return yield* Effect.fail(new Error(`The /${command.key} command needs the ${agentID} agent, which is not available in this configuration.`));
@@ -271,7 +268,7 @@ function registerCommands(context: Plugin.Context, input: { host: HostProfile; c
  * Keeps each Hive role's canonical instructions in every model request it makes:
  * ordinary turns (`context`) and the public auxiliary requests that carry the agent (`compaction`, `generate`). An
  * agent the user gave its own system prompt keeps it, and the Hive instructions follow it; nothing the user wrote is
- * replaced. Skill guidance (auto-load names, background delegation) is resolved against the live skill catalog on
+ * replaced. Skill guidance (the skill name lookup and auto-load names) is resolved against the live skill catalog on
  * each request. Ordinary turns also get what only a turn with tools needs: the subagent clarification rule in child
  * sessions and, under the `codemode` read transport, a plain notice for an agent whose permissions deny `execute`,
  * whose Code Mode reads are unavailable. The title request names no agent and is left alone.

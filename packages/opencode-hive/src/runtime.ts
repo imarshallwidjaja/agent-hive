@@ -3,12 +3,8 @@ import {
   canonicalProjectRoot,
   detectContext,
   getNativeSessionsPath,
-  type SessionInfo,
 } from 'hive-core';
 import { prepareNativeHiveSkills } from './skills/native-materializer.js';
-import { createBackgroundJobAdapter } from './background/backgroundJobAdapter.js';
-import { createBackgroundTools } from './background/backgroundTools.js';
-import { isBackgroundSubagentsExperimentEnabled } from './utils/background-gate.js';
 import { SUBAGENT_CLARIFICATION_PROMPT } from './hooks/system-hook.js';
 import { OPENCODE_V1_PROFILE } from './runtime/host-profile.js';
 import { classifySession, createVariantHook } from './hooks/variant-hook.js';
@@ -17,9 +13,10 @@ import { HIVE_COMMANDS } from './commands/registry.js';
 import { hiveCommandRenderers } from './commands/renderers.js';
 import type { HiveCommandContext } from './commands/types.js';
 import { createTaskTraceTools, injectTaskTraceHint, isDirectChildSession, TASK_TRACE_SUMMARIZER_AGENT, TASK_TRACE_SUMMARIZER_PROMPT } from './task-trace.js';
-import { childAssociation, childRouteRecord, composeDispatchPrompt, provenChildBinding, resolveAssignment } from './task-brief.js';
-import { createHiveServices, type RouteSnapshot } from './runtime/hive-services.js';
+import { childAssociation, childRouteRecord, composeDispatchPrompt, resolveAssignment } from './task-brief.js';
+import { createHiveServices, type AssignmentMarker, type RouteSnapshot } from './runtime/hive-services.js';
 import { createHiveOperations, presentHiveResult } from './runtime/hive-tools.js';
+import { z } from './runtime/schema.js';
 import { buildRoleCatalog, createCommandContext as createSharedCommandContext } from './runtime/role-catalog.js';
 import type { HostCheckedHiveAgent } from './runtime/role-catalog.js';
 import { LIVE_PARENT_CHECKED_TOOLS, authorizeHiveCall, createRolePolicy, mergePrimaryOnlyTools, nativeSubagentBoundary, resolveCallerAuthority } from './runtime/role-policy.js';
@@ -45,18 +42,15 @@ const plugin: Plugin = async (ctx) => {
   const workTarget = ctx.project?.id === 'global' && ctx.worktree === '/' ? ctx.directory : ctx.worktree || ctx.directory;
   const detected = detectContext(workTarget);
   const projectRoot = canonicalProjectRoot(detected.projectRoot);
-  const runtimeId = `pid-${process.pid}-${Date.now().toString(36)}`;
   // This entry is the OpenCode v1 server; the v2 adapter builds its own profile.
   const host = OPENCODE_V1_PROFILE;
 
   const services = createHiveServices({ projectRoot, detectedFeature: detected.feature, nativeObservationOwner: 'opencode-v1' });
-  const { sessionService, contextService, taskService, configService, backgroundJobService } = services;
+  const { sessionService, contextService, taskService, configService } = services;
   const runtimeAgentPrompts = new Map<string, string>();
   const runtimeSessionAgents = new Map<string, string>();
   const runtimeTaskChildren = new Set<string>();
-  const dispatchSnapshots = new Map<string, RouteSnapshot>();
-  // The child binding each captured task call wrote, or what the stored binding proves when its write failed.
-  const confirmedChildren = new Map<string, SessionInfo>();
+  const dispatchSnapshots = new Map<string, { snapshot: RouteSnapshot; marker: AssignmentMarker }>();
   const ephemeralSessionIDs = new Set<string>();
   const taskTraceConfig = configService.get().taskTraceSummarizer ?? {};
   const configFallbackWarning = services.configFallbackWarning;
@@ -74,38 +68,19 @@ const plugin: Plugin = async (ctx) => {
     summarizer: taskTraceConfig,
     ephemeralSessionIDs,
   });
-  const backgroundAdapter = createBackgroundJobAdapter({
-    projectRoot,
-    service: backgroundJobService,
-    isEnabled: isBackgroundSubagentsExperimentEnabled,
-    runtimeId,
-    getSession: (sessionId) => sessionService.getGlobal(sessionId),
-    getBoundChild: ({ childSessionId, parentSessionId, callId }) => {
-      const confirmed = callId === undefined ? undefined : confirmedChildren.get(`${parentSessionId}\0${callId}`);
-      return confirmed?.sessionId === childSessionId ? confirmed : undefined;
-    },
-  });
-
   const bindChildSnapshot = (binding: { parent: string; call: string; child: string; agent?: string }): void => {
     runtimeTaskChildren.add(binding.child);
-    const key = `${binding.parent}\0${binding.call}`;
-    const snapshot = dispatchSnapshots.get(key);
-    if (!snapshot) return;
+    const dispatch = dispatchSnapshots.get(`${binding.parent}\0${binding.call}`);
+    if (!dispatch) return;
     const existing = sessionService.getGlobal(binding.child);
     if (existing?.parentSessionId !== undefined && existing.parentSessionId !== binding.parent) {
       throw new Error('existing child snapshot parent cannot change');
     }
-    const stored = existing?.parentSessionId === binding.parent ? existing : undefined;
-    const route = childRouteRecord(snapshot, binding.parent, binding.agent);
-    const association = childAssociation(snapshot);
-    try {
-      confirmedChildren.set(key, sessionService.trackGlobal(binding.child, { ...route, ...association }));
-    } catch (error) {
-      // An earlier write of this call still stands; otherwise the launch row gets only what the old binding proves.
-      const proven = confirmedChildren.has(key) ? undefined : provenChildBinding(stored, route, association);
-      if (proven) confirmedChildren.set(key, proven);
-      throw error;
-    }
+    const route = childRouteRecord(dispatch.snapshot, binding.parent, binding.agent);
+    // A continuation whose prompt has no marker keeps the task or run its child is bound to, unless the route moved it
+    // to another feature: v1 cannot refuse that continuation, so the old association is cleared instead.
+    const movedFeature = dispatch.marker.state === 'none' && (existing?.featureName ?? undefined) !== (route.featureName ?? undefined);
+    sessionService.trackGlobal(binding.child, { ...route, ...(movedFeature ? { taskFolder: undefined, adHocRunId: undefined } : childAssociation(dispatch.marker)) });
   };
 
   // V1 reports a failed child binding and lets the native task call continue.
@@ -113,7 +88,7 @@ const plugin: Plugin = async (ctx) => {
     try {
       bindChildSnapshot(binding);
     } catch (error) {
-      console.warn(`[hive:routing] could not bind child session ${binding.child} to the route call ${binding.call} captured (${(error as Error).message}); whether this attempt changed the stored binding is unknown, and a launch row of this call names only the feature, task or run that the binding read before the attempt proves for the call.`);
+      console.warn(`[hive:routing] could not bind child session ${binding.child} to the route call ${binding.call} captured (${(error as Error).message}); whether this attempt changed the stored binding is unknown.`);
     }
   };
 
@@ -157,19 +132,16 @@ const plugin: Plugin = async (ctx) => {
       return presentHiveResult(operation, await operation.execute(input, { sessionID: context?.sessionID, agent: context?.agent, signal: context?.abort }));
     },
   })]));
+  // The live child tools need a host whose subagent calls run in the background; v1 task() calls block, so each refuses.
+  const unsupportedOnHost = () => tool({
+    description: 'Unsupported on OpenCode v1: native task() calls block until the child returns, so there is no live background child to inspect or stop. It always returns success: false with reason unsupported_on_host.',
+    args: { sessionID: z.string().optional().describe('Ignored on OpenCode v1.') },
+    execute: async () => JSON.stringify({ success: false, reason: 'unsupported_on_host', error: 'OpenCode v1 uses blocking task() calls; live background subagent tools require OpenCode v2.' }, null, 2),
+  });
+  const backgroundTools = { hive_background_status: unsupportedOnHost(), hive_background_cancel: unsupportedOnHost() };
   const tools: Record<string, any> = {
     ...taskTraceTools,
-    ...createBackgroundTools({
-      backgroundJobService,
-      projectRoot,
-      isEnabled: isBackgroundSubagentsExperimentEnabled,
-      currentRuntimeId: runtimeId,
-      unrecordedLaunches: backgroundAdapter.unrecordedLaunches,
-      cancelRuntimeTask: async (sessionId) => {
-        const result = await ctx.client.session.abort({ path: { id: sessionId }, query: { directory: projectRoot } });
-        return { cancelled: result.data === true, message: result.data === true ? 'Runtime task abort requested.' : String(result.error ?? 'Abort not confirmed.') };
-      },
-    }),
+    ...backgroundTools,
     ...hiveTools,
   };
 
@@ -177,7 +149,6 @@ const plugin: Plugin = async (ctx) => {
     host,
     configService,
     agents: hostCheckedAgents ?? {},
-    backgroundGuidance: { available: isBackgroundSubagentsExperimentEnabled(), reason: isBackgroundSubagentsExperimentEnabled() ? undefined : 'experiment-disabled' } as any,
   });
 
   return {
@@ -186,7 +157,6 @@ const plugin: Plugin = async (ctx) => {
     event: async (input) => {
       const binding = taskChildBinding(input.event);
       if (binding) bindReportedChild(binding);
-      await backgroundAdapter.event(input);
     },
     'chat.message': (async (input, output) => {
       const agent = (input as { agent?: string }).agent ?? output.message.agent;
@@ -218,39 +188,30 @@ const plugin: Plugin = async (ctx) => {
     'experimental.chat.messages.transform': async (_input, output) => {
       const sessionID = output.messages?.[0]?.info?.sessionID;
       if (!sessionID) return;
-      await backgroundAdapter['experimental.chat.messages.transform'](_input, output);
       await injectTaskTraceHint(output.messages, (childID, parentID) => (
         isDirectChildSession(taskTraceClient, projectRoot, childID, parentID)
       ));
     },
     'tool.execute.before': async (input, output) => {
       if (input.tool === 'task' && input.sessionID && input.callID) {
-        const captured = services.captureRoute(input.sessionID);
-        const snapshot = { ...captured, assignment: await resolveAssignment(services, captured, output.args?.prompt) };
-        dispatchSnapshots.set(`${input.sessionID}\0${input.callID}`, snapshot);
+        const snapshot = services.captureRoute(input.sessionID);
+        dispatchSnapshots.set(`${input.sessionID}\0${input.callID}`, { snapshot, marker: await resolveAssignment(services, snapshot, output.args?.prompt) });
         const agent = output.args?.subagent_type;
         const foragerDispatch = typeof agent === 'string'
           && classifySession(agent, configService.getCustomAgentConfigs()).baseAgent === 'forager-worker';
         output.args.prompt = composeDispatchPrompt({ sources: { projectRoot, taskService, contextService }, snapshot, prompt: output.args?.prompt, foragerDispatch });
       }
-      await backgroundAdapter['tool.execute.before'](input, output);
     },
     'tool.execute.after': async (input, output) => {
       try {
-        // The child is bound first, so a background launch row takes its feature, task and run from the binding this
-        // call confirmed.
         const child = input.tool === 'task' ? (output?.metadata as any)?.sessionId : undefined;
         if (typeof child === 'string' && input.callID) {
           const binding = { type: 'message.part.updated', properties: { part: { type: 'tool', tool: 'task', sessionID: input.sessionID, callID: input.callID, metadata: { sessionId: child }, state: { input: input.args } } } };
           const parsed = taskChildBinding(binding);
           if (parsed) bindReportedChild(parsed);
         }
-        await backgroundAdapter['tool.execute.after'](input, output);
       } finally {
-        if (input.tool === 'task' && input.callID) {
-          dispatchSnapshots.delete(`${input.sessionID}\0${input.callID}`);
-          confirmedChildren.delete(`${input.sessionID}\0${input.callID}`);
-        }
+        if (input.tool === 'task' && input.callID) dispatchSnapshots.delete(`${input.sessionID}\0${input.callID}`);
       }
     },
     config: async (opencodeConfig) => {

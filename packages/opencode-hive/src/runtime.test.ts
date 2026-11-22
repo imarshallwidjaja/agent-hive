@@ -128,7 +128,7 @@ afterEach(() => {
 });
 
 describe('coordinated runtime hard cut', () => {
-  it('keeps v1 session and background stores in the legacy files and binds a v2 adapter to its own', async () => {
+  it('keeps the v1 session store in the legacy file and binds a v2 adapter to its own', async () => {
     const { root, hooks } = createRuntime();
     const loaded = await hooks;
     await loaded['chat.message']!({ sessionID: 'shared-id', agent: 'forager-worker' } as any, { message: { agent: 'forager-worker' }, parts: [] } as any);
@@ -137,17 +137,27 @@ describe('coordinated runtime hard cut', () => {
 
     const v1 = createHiveServices({ projectRoot: root, nativeObservationOwner: 'opencode-v1' });
     const v2 = createHiveServices({ projectRoot: root, nativeObservationOwner: 'opencode-v2' });
-    expect([v1.sessionService.owner, v1.backgroundJobService.owner]).toEqual(['opencode-v1', 'opencode-v1']);
-    expect([v2.sessionService.owner, v2.backgroundJobService.owner]).toEqual(['opencode-v2', 'opencode-v2']);
+    expect([v1.sessionService.owner, v2.sessionService.owner]).toEqual(['opencode-v1', 'opencode-v2']);
     expect(v2.projectRoot).toBe(root);
     expect(v2.sessionService.getGlobal('shared-id')).toBeUndefined();
 
     v2.sessionService.trackGlobal('shared-id', { agent: 'scout-researcher', projectRoot: v2.projectRoot });
-    v2.backgroundJobService.registerLaunch({ taskId: 'task', sessionId: 'child', agentName: 'scout-researcher', scope: { projectRoot: v2.projectRoot } });
     const v2Dir = path.join(root, '.hive', 'runtime', 'opencode-v2');
     expect(JSON.parse(fs.readFileSync(path.join(v2Dir, 'sessions.json'), 'utf8')).sessions[0]).toMatchObject({ agent: 'scout-researcher', projectRoot: root });
-    expect(JSON.parse(fs.readFileSync(path.join(v2Dir, 'background-jobs.json'), 'utf8')).jobs).toHaveLength(1);
     expect(v1.sessionService.getGlobal('shared-id')?.agent).toBe('forager-worker');
+    // Neither host writes a background job store.
+    expect(fs.existsSync(path.join(v2Dir, 'background-jobs.json'))).toBe(false);
+    expect(fs.existsSync(path.join(root, '.hive', 'background-jobs.json'))).toBe(false);
+  });
+
+  it('registers the live child tools on v1 as explicit refusals, because v1 task() calls block', async () => {
+    const { root, hooks } = createRuntime();
+    const loaded = await hooks;
+    for (const name of ['hive_background_status', 'hive_background_cancel']) {
+      expect(JSON.parse(await loaded.tool![name].execute({ sessionID: 'child-1' }, context('parent')))).toEqual({
+        success: false, reason: 'unsupported_on_host', error: 'OpenCode v1 uses blocking task() calls; live background subagent tools require OpenCode v2.',
+      });
+    }
     expect(fs.existsSync(path.join(root, '.hive', 'background-jobs.json'))).toBe(false);
   });
 
@@ -293,14 +303,13 @@ describe('coordinated runtime hard cut', () => {
     await loaded.tool!.hive_feature_select.execute({ feature: 'feature-a' }, parent);
     const folder = await loaded.tool!.hive_task_create.execute({ name: 'build' }, parent);
     await loaded.tool!.hive_adhoc_worktree_create.execute({ runId: 'run-1' }, parent);
-    const board = createHiveServices({ projectRoot: root, nativeObservationOwner: 'opencode-v1' }).backgroundJobService;
     const association = (child: string) => {
       const bound = new SessionService(root).getGlobal(child);
       return { feature: bound?.featureName, taskFolder: bound?.taskFolder, adHocRunId: bound?.adHocRunId };
     };
     /** One native task call through the plugin's hooks; `during` runs while the dispatch resolves its assignment. */
-    const dispatch = async (callID: string, child: string, prompt: string, options: { background?: boolean; during?: () => Promise<unknown> } = {}) => {
-      const output = { args: { subagent_type: 'forager-worker', prompt, background: options.background ?? false } };
+    const dispatch = async (callID: string, child: string, prompt: string, options: { during?: () => Promise<unknown> } = {}) => {
+      const output = { args: { subagent_type: 'forager-worker', prompt } };
       let captured = false;
       const before = loaded['tool.execute.before']!({ tool: 'task', sessionID: 'parent', callID } as any, output).then(() => { captured = true; });
       if (options.during) {
@@ -313,47 +322,31 @@ describe('coordinated runtime hard cut', () => {
       return { prompt: output.args.prompt, ...association(child) };
     };
 
-    const previousBackground = process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
-    process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
-    try {
-      expect(await dispatch('call-a', 'child-a', `Hive task: ${folder}\nBuild it.`)).toMatchObject({ feature: 'feature-a', taskFolder: folder, adHocRunId: undefined });
-      // A later marker replaces the association and clears the other kind; the background row takes the child's binding.
-      expect(await dispatch('call-b', 'child-a', 'Hive run: run-1', { background: true })).toMatchObject({ feature: 'feature-a', taskFolder: undefined, adHocRunId: 'run-1' });
-      expect(board.resolve('child-a')?.scope).toMatchObject({ parentSessionId: 'parent', feature: 'feature-a', adHocRunId: 'run-1' });
-      expect(board.resolve('child-a')?.scope).not.toHaveProperty('task');
-      // The parent selects another feature while the dispatch resolves its run: the prompt, the child's binding and its
-      // board row all keep the route the dispatch captured.
-      const raced = await dispatch('call-race', 'child-race', 'Hive run: run-1', {
-        background: true,
-        during: () => loaded.tool!.hive_feature_select.execute({ feature: 'feature-b' }, parent),
-      });
-      expect(new SessionService(root).getGlobal('parent')?.featureName).toBe('feature-b');
-      expect(raced.prompt).toContain('"featureRoute":{"selected":true,"feature":"feature-a"}');
-      expect(raced).toMatchObject({ feature: 'feature-a', adHocRunId: 'run-1' });
-      expect(board.resolve('child-race')?.scope).toMatchObject({ parentSessionId: 'parent', feature: 'feature-a', adHocRunId: 'run-1' });
-      await loaded.tool!.hive_feature_select.execute({ feature: 'feature-a' }, parent);
-      // Without a marker a dispatch clears the association, even on the same route.
-      expect(await dispatch('call-c', 'child-a', 'Continue.')).toMatchObject({ taskFolder: undefined, adHocRunId: undefined });
-      expect(await dispatch('call-d', 'child-a', `Hive task: ${folder}`)).toMatchObject({ taskFolder: folder, adHocRunId: undefined });
-      expect(await dispatch('call-e', 'child-a', 'Continue.')).toMatchObject({ taskFolder: undefined, adHocRunId: undefined });
-      await loaded.tool!.hive_feature_select.execute({ feature: 'feature-b' }, parent);
-      expect(await dispatch('call-f', 'child-a', 'Continue.')).toMatchObject({ feature: 'feature-b', taskFolder: undefined, adHocRunId: undefined });
-      // A marker Hive cannot resolve clears the association.
-      await loaded.tool!.hive_feature_select.execute({ feature: 'feature-a' }, parent);
-      expect(await dispatch('call-g', 'child-a', `Hive task: ${folder}`)).toMatchObject({ taskFolder: folder });
-      expect(await dispatch('call-h', 'child-a', 'Hive run: run-missing')).toMatchObject({ taskFolder: undefined, adHocRunId: undefined });
-      // So does a marker without an ID, and the launch row it records names no task.
-      expect(await dispatch('call-g2', 'child-a', `Hive task: ${folder}`)).toMatchObject({ taskFolder: folder });
-      expect(await dispatch('call-blank', 'child-a', 'Hive task:   \nBuild it.', { background: true })).toMatchObject({ taskFolder: undefined, adHocRunId: undefined });
-      const blankRow = board.listScoped({ projectRoot: root }).find((job) => job.callId === 'call-blank');
-      expect(blankRow?.scope).toMatchObject({ parentSessionId: 'parent', feature: 'feature-a' });
-      expect(blankRow?.scope).not.toHaveProperty('task');
-      for (const [call, prompt] of [['call-i', 'Hive run: run-missing'], ['call-j', 'Hive task: 09-missing'], ['call-k', 'Build it.']]) {
-        expect(await dispatch(call!, `child-${call}`, prompt!), prompt).toMatchObject({ taskFolder: undefined, adHocRunId: undefined });
-      }
-    } finally {
-      if (previousBackground === undefined) delete process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
-      else process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = previousBackground;
+    expect(await dispatch('call-a', 'child-a', `Hive task: ${folder}\nBuild it.`)).toMatchObject({ feature: 'feature-a', taskFolder: folder, adHocRunId: undefined });
+    // A later marker replaces the association and clears the other kind.
+    expect(await dispatch('call-b', 'child-a', 'Hive run: run-1')).toMatchObject({ feature: 'feature-a', taskFolder: undefined, adHocRunId: 'run-1' });
+    // The parent selects another feature while the dispatch resolves its run: the prompt and the child's binding keep
+    // the route the dispatch captured.
+    const raced = await dispatch('call-race', 'child-race', 'Hive run: run-1', {
+      during: () => loaded.tool!.hive_feature_select.execute({ feature: 'feature-b' }, parent),
+    });
+    expect(new SessionService(root).getGlobal('parent')?.featureName).toBe('feature-b');
+    expect(raced.prompt).toContain('"featureRoute":{"selected":true,"feature":"feature-a"}');
+    expect(raced).toMatchObject({ feature: 'feature-a', adHocRunId: 'run-1' });
+    await loaded.tool!.hive_feature_select.execute({ feature: 'feature-a' }, parent);
+    // Without a marker a continuation keeps the task or run its child is bound to, as on v2.
+    expect(await dispatch('call-d', 'child-a', `Hive task: ${folder}`)).toMatchObject({ taskFolder: folder, adHocRunId: undefined });
+    expect(await dispatch('call-e', 'child-a', 'Continue.')).toMatchObject({ taskFolder: folder, adHocRunId: undefined });
+    await loaded.tool!.hive_feature_select.execute({ feature: 'feature-b' }, parent);
+    // v1 cannot refuse a continuation on another feature, so it clears the association the old feature held.
+    expect(await dispatch('call-f', 'child-a', 'Continue.')).toMatchObject({ feature: 'feature-b', taskFolder: undefined, adHocRunId: undefined });
+    // A marker Hive cannot resolve, or one without an ID, clears the association.
+    await loaded.tool!.hive_feature_select.execute({ feature: 'feature-a' }, parent);
+    expect(await dispatch('call-h', 'child-a', 'Hive run: run-missing')).toMatchObject({ taskFolder: undefined, adHocRunId: undefined });
+    expect(await dispatch('call-g', 'child-a', `Hive task: ${folder}`)).toMatchObject({ taskFolder: folder });
+    expect(await dispatch('call-blank', 'child-a', 'Hive task:   \nBuild it.')).toMatchObject({ taskFolder: undefined, adHocRunId: undefined });
+    for (const [call, prompt] of [['call-i', 'Hive run: run-missing'], ['call-j', 'Hive task: 09-missing'], ['call-k', 'Build it.']]) {
+      expect(await dispatch(call!, `child-${call}`, prompt!), prompt).toMatchObject({ taskFolder: undefined, adHocRunId: undefined });
     }
     // A child the runtime reports for a call Hive did not capture is never bound.
     await loaded.event!({ event: { type: 'message.part.updated', properties: { part: { type: 'tool', tool: 'task', sessionID: 'parent', callID: 'call-unseen', metadata: { sessionId: 'child-unseen' }, state: { input: { prompt: `Hive task: ${folder}` } } } } } } as any);
@@ -377,24 +370,15 @@ describe('coordinated runtime hard cut', () => {
     // logical one: the view must still join them.
     await loaded.tool!.hive_worktree_create.execute({ feature: '01_feature-a', task: folder }, parent);
     await loaded.tool!.hive_adhoc_worktree_create.execute({ runId: 'run-1' }, parent);
-    const dispatch = async (callID: string, child: string, prompt: string, background = false) => {
-      const output = { args: { subagent_type: 'forager-worker', prompt, background } };
+    const dispatch = async (callID: string, child: string, prompt: string) => {
+      const output = { args: { subagent_type: 'forager-worker', prompt } };
       await loaded['tool.execute.before']!({ tool: 'task', sessionID: 'parent', callID } as any, output);
       sessions.set(child, { id: child, parentID: 'parent' });
       await loaded['tool.execute.after']!({ tool: 'task', sessionID: 'parent', callID, args: output.args } as any, { title: 'task', output: `task_id: ${child}`, metadata: { sessionId: child } } as any);
     };
-    const previousBackground = process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
-    process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
-    try {
-      await dispatch('call-task', 'child-task', `Hive task: ${folder}\nBuild it.`);
-      await dispatch('call-run', 'child-run', 'Hive run: run-1', true);
-      await dispatch('call-none', 'child-none', 'Continue.', true);
-    } finally {
-      if (previousBackground === undefined) delete process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
-      else process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = previousBackground;
-    }
-    const board = createHiveServices({ projectRoot: root, nativeObservationOwner: 'opencode-v1' }).backgroundJobService;
-    const runJob = board.listScoped({ projectRoot: root }).find((job) => job.callId === 'call-run')!;
+    await dispatch('call-task', 'child-task', `Hive task: ${folder}\nBuild it.`);
+    await dispatch('call-run', 'child-run', 'Hive run: run-1');
+    await dispatch('call-none', 'child-none', 'Continue.');
 
     // The view reads the files the plugin wrote; it shares no state with the runtime above.
     const { vscodeTestDouble } = await import('../../vscode-hive/src/test/vscodeTestDouble.ts');
@@ -411,35 +395,29 @@ describe('coordinated runtime hard cut', () => {
     await walk();
     expect([...activity.keys()].sort()).toEqual([folder, 'run-1'].sort());
     expect(activity.get(folder)).toContain('Session child-task');
-    expect(activity.get('run-1')).toEqual(expect.arrayContaining(['Session child-run', `Background job ${runJob.alias}`]));
+    expect(activity.get('run-1')).toContain('Session child-run');
     for (const [worker, rows] of activity) {
-      expect(rows.filter((label) => label.startsWith('Session ') || label.startsWith('Background job ')), worker)
-        .toHaveLength(worker === folder ? 1 : 2);
+      expect(rows.filter((label) => label.startsWith('Session ')), worker).toHaveLength(1);
     }
   });
 
-  it('scopes a v1 launch row only to what its own dispatch bound when writing the child binding fails', async () => {
+  it('lets a v1 task call continue when the child binding cannot be written, keeping the stored binding as it was', async () => {
     const { root, sessions, hooks } = createRuntime();
     const loaded = await hooks;
     const parent = context('parent');
     await loaded.tool!.hive_feature_create.execute({ name: 'feature-a' }, parent);
-    await loaded.tool!.hive_feature_create.execute({ name: 'feature-b' }, parent);
     await loaded.tool!.hive_feature_select.execute({ feature: 'feature-a' }, parent);
     const build = await loaded.tool!.hive_task_create.execute({ name: 'build' }, parent);
     const check = await loaded.tool!.hive_task_create.execute({ name: 'check' }, parent);
-    const board = createHiveServices({ projectRoot: root, nativeObservationOwner: 'opencode-v1' }).backgroundJobService;
-    const dispatch = async (callID: string, child: string, prompt: string, background = false) => {
-      const output = { args: { subagent_type: 'forager-worker', prompt, background } };
+    const dispatch = async (callID: string, child: string, prompt: string) => {
+      const output = { args: { subagent_type: 'forager-worker', prompt } };
       await loaded['tool.execute.before']!({ tool: 'task', sessionID: 'parent', callID } as any, output);
       sessions.set(child, { id: child, parentID: 'parent' });
       await loaded['tool.execute.after']!({ tool: 'task', sessionID: 'parent', callID, args: output.args } as any, { title: 'task', output: `task_id: ${child}`, metadata: { sessionId: child } } as any);
-      return board.listScoped({ projectRoot: root }).find((job) => job.callId === callID)?.scope;
     };
     const stored = (child: string) => new SessionService(root).getGlobal(child);
 
-    const previousBackground = process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
-    process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = '1';
-    for (const child of ['child-replace', 'child-clear', 'child-route']) await dispatch(`call-${child}`, child, `Hive task: ${build}`);
+    await dispatch('call-first', 'child-a', `Hive task: ${build}`);
     const trackGlobal = SessionService.prototype.trackGlobal;
     const failing = spyOn(SessionService.prototype, 'trackGlobal').mockImplementation(function (this: SessionService, sessionId, patch) {
       if (sessionId.startsWith('child-')) throw new Error('EACCES: permission denied, open sessions.json');
@@ -447,29 +425,12 @@ describe('coordinated runtime hard cut', () => {
     });
     const warn = spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      // The store keeps the task an earlier dispatch wrote; a launch whose new association was not written names none.
-      expect(await dispatch('call-replace', 'child-replace', `Hive task: ${check}`, true)).toEqual({ projectRoot: root, parentSessionId: 'parent', feature: 'feature-a' });
-      expect(await dispatch('call-clear', 'child-clear', 'Hive task:  ', true)).toEqual({ projectRoot: root, parentSessionId: 'parent', feature: 'feature-a' });
-      expect([stored('child-replace')?.taskFolder, stored('child-clear')?.taskFolder]).toEqual([build, build]);
-      // An unmarked continuation after the failed write of its task names no task either: the store still holds the
-      // task of the dispatch before, which this launch did not carry.
-      expect(await dispatch('call-continue', 'child-replace', 'Continue.', true)).toEqual({ projectRoot: root, parentSessionId: 'parent', feature: 'feature-a' });
-      expect(stored('child-replace')?.taskFolder).toBe(build);
-      // After a route change the old binding proves nothing about this launch.
-      await loaded.tool!.hive_feature_select.execute({ feature: 'feature-b' }, parent);
-      expect(await dispatch('call-route', 'child-route', 'Continue.', true)).toEqual({ projectRoot: root, parentSessionId: 'parent' });
-      expect(stored('child-route')).toMatchObject({ featureName: 'feature-a', taskFolder: build });
-      expect(warn.mock.calls.filter(([message]) => String(message).includes('EACCES'))).toHaveLength(4);
-      // Once the store is writable again, the next unmarked continuation clears the task the store held.
-      failing.mockRestore();
-      await loaded.tool!.hive_feature_select.execute({ feature: 'feature-a' }, parent);
-      expect(await dispatch('call-continue-written', 'child-replace', 'Continue.', true)).toEqual({ projectRoot: root, parentSessionId: 'parent', feature: 'feature-a' });
-      expect([stored('child-replace')?.taskFolder, stored('child-replace')?.adHocRunId]).toEqual([undefined, undefined]);
+      await dispatch('call-replace', 'child-a', `Hive task: ${check}`);
+      expect(stored('child-a')).toMatchObject({ featureName: 'feature-a', taskFolder: build });
+      expect(warn.mock.calls.map(([message]) => String(message))).toEqual([expect.stringContaining('could not bind child session child-a to the route call call-replace captured (EACCES')]);
     } finally {
       warn.mockRestore();
       failing.mockRestore();
-      if (previousBackground === undefined) delete process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS;
-      else process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = previousBackground;
     }
   });
 
@@ -1305,7 +1266,7 @@ describe('coordinated runtime hard cut', () => {
     const traces = ['hive_task_trace', 'hive_task_trace_content'];
     const inspections = ['hive_worktree_inspect', 'hive_adhoc_worktree_inspect', 'hive_checkout_inspect'];
     const constraints = ['hive_constraints_add', 'hive_constraints_edit', 'hive_constraints_clear'];
-    const background = ['hive_background_status', 'hive_background_reconcile', 'hive_background_reconcile_batch', 'hive_background_cancel'];
+    const background = ['hive_background_status', 'hive_background_cancel'];
     const primaryOnly = [
       'hive_feature_complete', 'hive_feature_select', 'hive_plan_approve', 'hive_tasks_sync', 'hive_task_create',
       'hive_worktree_merge', 'hive_worktree_cleanup', 'hive_adhoc_worktree_create', 'hive_adhoc_worktree_merge', 'hive_adhoc_worktree_cleanup',
@@ -1337,7 +1298,7 @@ describe('coordinated runtime hard cut', () => {
     };
     for (const base of CUSTOM_AGENT_BASES) matrix[`audit-${base}`] = matrix[base]!;
 
-    expect(HIVE_TOOL_NAMES).toHaveLength(52);
+    expect(HIVE_TOOL_NAMES).toHaveLength(50);
     // The operator's entries stay first and `question` is not repeated; the policy's entries follow in policy order.
     expect(config.experimental.primary_tools).toEqual(['operator_tool', 'question', ...primaryOnly]);
     const bare: any = {};

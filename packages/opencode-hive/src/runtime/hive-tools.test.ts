@@ -135,7 +135,7 @@ const ORDINARY_OPERATION_SIGNATURES = [
 
 const NATIVE_TRACE_AND_BACKGROUND_TOOLS = [
   'hive_task_trace', 'hive_task_trace_content',
-  'hive_background_status', 'hive_background_reconcile', 'hive_background_reconcile_batch', 'hive_background_cancel',
+  'hive_background_status', 'hive_background_cancel',
 ];
 
 describe('ordinary Hive operation arguments', () => {
@@ -144,7 +144,7 @@ describe('ordinary Hive operation arguments', () => {
     const registered = Object.entries(hooks.tool as Record<string, { args: any }>);
     const ordinary = registered.filter(([name]) => !NATIVE_TRACE_AND_BACKGROUND_TOOLS.includes(name));
     expect(ordinary.map(([name, definition]) => `${name}(${fields(z.toJSONSchema(z.object(definition.args)))})`)).toEqual(ORDINARY_OPERATION_SIGNATURES);
-    expect(registered.slice(0, 6).map(([name]) => name).sort()).toEqual([...NATIVE_TRACE_AND_BACKGROUND_TOOLS].sort());
+    expect(registered.slice(0, 4).map(([name]) => name).sort()).toEqual([...NATIVE_TRACE_AND_BACKGROUND_TOOLS].sort());
     expect(registered.map(([name]) => name).sort()).toEqual([...HIVE_TOOL_NAMES].sort());
   });
 

@@ -40,10 +40,10 @@ A bound implementation Forager publishes its own report and successor handoff fo
 export function renderInterruptedWorkerRecoveryPrompt(host: HostProfile): string {
   const call = nativeCall(host);
   const { continuationField } = host.nativeTask;
-  // v1 can lose a blocking call's result with no board row; on a host whose calls always run in the background, the
-  // launch receipt names the child and a primary's call has a board row, so what is missing is the terminal report.
-  const missingResult = host.backgroundGate === 'always'
-    ? `On this host the \`${call}\` launch receipt names the child's \`${continuationField}\`, and a primary's call has a board row. A missing terminal report, an interim \`state="running"\` report, or a launch call that failed after Hive bound the child does not establish termination; give Helper the child ID and the board row's diagnostic.`
+  // v1 can lose a blocking call's result; on a host whose calls always run in the background, the launch receipt
+  // names the child, so what is missing is the terminal report.
+  const missingResult = host.backgroundSubagents
+    ? `On this host the \`${call}\` launch receipt names the child's \`${continuationField}\`. A missing terminal report, an interim \`state="running"\` report, or a launch call that failed after Hive bound the child does not establish termination; check the child's live settlement with \`hive_background_status\` and give Helper that \`${continuationField}\` for a \`hive_task_trace\` of the child.`
     : `When a foreground \`${call}\` call has no returned result, give Helper any replay hint or known child ID, or ask it to look for a \`child_session_id\` on that call in a \`hive_task_trace\` of the parent session, which appears only when the stored call recorded the child; the background board has no row for a foreground call that returned no result, and a missing child ID does not establish termination.`;
   return `## Interrupted Worker Recovery
 

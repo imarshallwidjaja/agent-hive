@@ -11,7 +11,7 @@ import { parseV2Options } from './options.js';
 import { registerCatalog, type V2Catalog } from './registration.js';
 
 // lifecycle imports: native dispatch and background observation
-import { createV2BackgroundLifecycle, hostRuntimeId, registerBackground } from './background.js';
+import { registerBackground } from './background.js';
 import { registerDispatch } from './dispatch.js';
 
 // evidence imports: forensic reads and semantic recovery
@@ -27,16 +27,14 @@ function composeCatalog(context: Plugin.Context, identity: Identity): Effect.Eff
 
 /**
  * Native subagent dispatch (route capture, prompt composition, the continuation preflight against the server's verified
- * active sessions, and the child-binding barrier) and the background board (its four tools, the parent's board view and
- * host-event observation). The host keeps scheduling and running jobs.
+ * settlement reads, and the child-binding barrier) and the live child tools (status and cancel), which read the host
+ * when they are called. The host keeps scheduling, running and reporting jobs.
  */
 function composeLifecycle(context: Plugin.Context, _identity: Identity, catalog: V2Catalog): Effect.Effect<void, never, Scope.Scope> {
-  const { services } = catalog;
-  const runtimeId = hostRuntimeId(context.location.directory);
-  const background = createV2BackgroundLifecycle({ projectRoot: services.projectRoot, service: services.backgroundJobService, runtimeId });
+  const { services, readAccess } = catalog;
   return Effect.gen(function* () {
-    yield* registerDispatch({ context, services, authority: catalog.authority, background, activity: catalog.readAccess });
-    yield* registerBackground({ context, registrar: catalog.registrar, projectRoot: services.projectRoot, service: services.backgroundJobService, lifecycle: background, runtimeId });
+    yield* registerDispatch({ context, services, authority: catalog.authority, activity: readAccess });
+    yield* registerBackground({ context, registrar: catalog.registrar, services, readAccess });
   });
 }
 

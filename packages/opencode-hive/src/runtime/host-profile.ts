@@ -1,4 +1,5 @@
 import type { NativeObservationOwner } from 'hive-core';
+import { RESUMABLE_SUBAGENT_ROLES } from './role-policy.js';
 
 /**
  * The native surface an agent prompt, command or skill is rendered for. Policy text is host-neutral; only the
@@ -42,12 +43,10 @@ export interface HostProfile {
   readonly nativeSkill: { readonly tool: string; readonly field: 'name' | 'id' };
   readonly readTransport: ReadTransport;
   /**
-   * `experiment-env`: the subagent call blocks unless it sets `background`, which exists only while an
-   * `OPENCODE_EXPERIMENTAL*` variable enables it.
-   * `always`: every subagent call runs its child in the background and returns at once; the host reports the result in
-   * a later message, and there is neither a blocking call nor a `background` field.
+   * `false`: the subagent call blocks and returns the child's result. `true`: every subagent call runs its child in
+   * the background and returns at once; the host reports the result in a later message.
    */
-  readonly backgroundGate: 'experiment-env' | 'always';
+  readonly backgroundSubagents: boolean;
 }
 
 /** Every native name a prompt, command or skill can mention, per host. Prose takes these through the profile, never as literals. */
@@ -56,15 +55,15 @@ const HOST_SURFACE = {
     nativeTask: { tool: 'task', agentField: 'subagent_type', continuationField: 'task_id' },
     shell: { tool: 'bash', sentence: 'Bash' },
     nativeSkill: { tool: 'skill', field: 'name' },
-    backgroundGate: 'experiment-env',
+    backgroundSubagents: false,
   },
   'opencode-v2': {
     nativeTask: { tool: 'subagent', agentField: 'agent', continuationField: 'sessionID' },
     shell: { tool: 'shell', sentence: 'Shell' },
     nativeSkill: { tool: 'skill', field: 'id' },
-    backgroundGate: 'always',
+    backgroundSubagents: true,
   },
-} as const satisfies Record<HostId, Pick<HostProfile, 'nativeTask' | 'shell' | 'nativeSkill' | 'backgroundGate'>>;
+} as const satisfies Record<HostId, Pick<HostProfile, 'nativeTask' | 'shell' | 'nativeSkill' | 'backgroundSubagents'>>;
 
 /**
  * v1 has no Code Mode, so its reads are always direct; asking for `codemode` there is a configuration error.
@@ -127,20 +126,28 @@ export function renderSkillNameLookup(profile: HostProfile, names: ReadonlyMap<s
 
 /**
  * How a host whose subagent calls always run in the background meets instructions written around blocking calls.
- * Empty where a blocking call exists. Policy text stays host-neutral; this section is the one owner of the rule that
- * maps "blocking" and "the call's result" onto the host's terminal report, and names the continuation limit Hive
- * enforces at dispatch. Skills point here instead of restating it.
+ * Empty where a blocking call exists. Policy text stays host-neutral; this section is the one owner of the wait rule,
+ * the continuation limit Hive enforces at dispatch, and when to use the live child tools. Skills point here instead of
+ * restating it. It names the report's `state` attribute, not the message's tag, which differs between host versions.
  */
 export function renderSubagentWait(profile: HostProfile): string {
-  if (profile.backgroundGate !== 'always') return '';
+  if (!profile.backgroundSubagents) return '';
   const call = nativeCall(profile);
-  const { continuationField } = profile.nativeTask;
-  return `\n## Native Subagent Wait\n\nOn this host every \`${call}\` call runs its child in the background: it returns at once with status \`running\` and the child's \`${continuationField}\`, and it takes no \`background\` field. That return is a launch receipt, not the worker's result. The host then posts a \`<subagent ${continuationField}="..." state="...">\` message for that \`${continuationField}\` each time the child stops:
-- \`state="running"\` is an interim report: the child stopped while its own background work (a helper subagent, a shell, a script) still runs, and the host will report again. Its text is not the result.
-- \`state="completed"\` is the terminal report, and its text is the child's result.
-- \`state="error"\` and \`state="cancelled"\` are terminal too, but the work failed or was stopped: their text describes the failure, not a result. Handle them as a failed or interrupted worker run.
+  const { agentField, continuationField } = profile.nativeTask;
+  const resumable = [...RESUMABLE_SUBAGENT_ROLES].map((role) => `\`${role}\``).join(', ');
+  return `\n## Native Subagent Wait
 
-When an instruction describes a \`${call}\` call as blocking, or treats its return as the worker's result, wait for the matching terminal report for that child's \`${continuationField}\` instead. Until it arrives, continue only work that does not depend on it, then end your turn; the host wakes you with each report. Several calls issued in one response, each followed by its terminal report, form a parallel blocking batch. Do not poll, sleep, or repeat a launch while you wait, and make no lifecycle decision (accept, integrate, retry, replace, clean up) from the launch receipt or an interim report. A call with \`${continuationField}\` continues a settled child only; Hive refuses it while that child, or work it started, still runs or has queued work.\n`;
+On this host every \`${call}\` call runs its child in the background and returns a launch receipt (status \`running\` and the child's \`${continuationField}\`), not the child's result. The host later posts a subagent report message for that \`${continuationField}\` each time the child stops, with a \`state\` attribute:
+- \`state="running"\` is interim: the child stopped while its own background work (a \`${profile.shell.tool}\` command, a helper subagent, a script) still runs. Its text is not the result.
+- \`state="completed"\` is the final report, and its text is the child's result. \`state="error"\` and \`state="cancelled"\` end that execution: handle them as a failed or interrupted worker run. Any \`${profile.shell.tool}\` commands and descendant jobs the child had already moved to the background may still run, so confirm that the child's tree has settled before you start overlapping work.
+
+When an instruction calls a \`${call}\` call blocking or treats its return as the result, wait for the child's final report instead. Until it arrives, continue only independent work, then end your turn; do not poll, sleep, or repeat the launch, and make no lifecycle decision (accept, integrate, retry, replace, clean up) from a launch receipt or an interim report.
+
+A foreground \`${profile.shell.tool}\` command that exceeds its timeout moves to the background instead of stopping, and interrupting a session does not stop \`${profile.shell.tool}\` commands or descendant jobs it already backgrounded. Keep one active writer or mutating \`${profile.shell.tool}\` command per worktree or shared resource.
+
+Only a settled child of a resumable role (${resumable}, or a custom agent derived from one) may be continued with \`${continuationField}\`, on the same \`${agentField}\` and the same task or investigation, for one or two bounded follow-ups. Scouts, reviewers, advisors, and \`hive-helper\` are one-shot. A new task, an independent review or challenge pass, and a retry after a dead end always omit \`${continuationField}\`.
+
+Call \`hive_background_status\` only when a child's or its descendants' liveness is uncertain (an interrupted run, a timeout, a restart), and \`hive_background_cancel\` only to stop a wrong, stale, or unneeded child.\n`;
 }
 
 /**

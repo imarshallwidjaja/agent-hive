@@ -1870,10 +1870,10 @@ describe('model-selection probes', () => {
   test('the valid probe leaves inheriting roles unconfigured and gives each model source its own mock model and variant', () => {
     const config = hiveConfig({ provider: 'mock', model, agentMode: 'dedicated', selection: 'valid' });
     expect(config.agents).toEqual({
-      'code-reviewer': { model: `mock/${models.hive}`, variant: PROBE_VARIANTS.hive },
-      'approach-advisor': { model: `mock/${models.advisor}`, variant: PROBE_VARIANTS.advisor },
+      'forager-worker': { model: `mock/${models.hive}`, variant: PROBE_VARIANTS.hive },
+      'forager-investigator': { model: `mock/${models.advisor}`, variant: PROBE_VARIANTS.advisor },
     });
-    for (const [name, base] of [['probe-native', 'scout-researcher'], ['probe-base', 'code-reviewer'], ['probe-advisor', 'approach-advisor']]) {
+    for (const [name, base] of [['probe-native', 'scout-researcher'], ['probe-base', 'forager-worker'], ['probe-advisor', 'forager-investigator']]) {
       expect(config.customAgents[name]).toMatchObject({ baseAgent: base });
       expect(config.customAgents[name]).not.toHaveProperty('model');
       expect(config.customAgents[name]).not.toHaveProperty('variant');
@@ -1883,7 +1883,7 @@ describe('model-selection probes', () => {
     for (const id of ['v1', 'v2'] as const) {
       const { agents, models: declared } = native(id, 'valid');
       // The native setting names the base role of a custom agent, as a model alone with no variant.
-      expect(agents).toEqual({ 'approach-advisor': { model: `mock/${models.native}` } });
+      expect(agents).toEqual({ 'forager-investigator': { model: `mock/${models.native}` } });
       expect(Object.keys(declared).sort()).toEqual(Object.values(models).sort());
       const variants = Object.entries(declared).filter(([, entry]: [string, any]) => entry.variants !== undefined).map(([name]) => name);
       expect(variants.sort()).toEqual([models.parent, models.hive, models.advisor].sort());
@@ -1917,13 +1917,13 @@ describe('model-selection probes', () => {
       expect(expected.primary).toEqual({ model: models.default, variant: null });
       expect(expected['scout-researcher']).toEqual({ model: models.parent, variant: v.parent });
       expect(expected['probe-native']).toEqual({ model: models.parent, variant: v.parent });
-      expect(expected['code-reviewer']).toEqual({ model: models.hive, variant: v.hive });
+      expect(expected['forager-worker']).toEqual({ model: models.hive, variant: v.hive });
       expect(expected['probe-base']).toEqual({ model: models.hive, variant: v.hive });
       // A native setting on the base role never reaches a custom agent, which keeps the Hive base pair.
       expect(expected['probe-advisor']).toEqual({ model: models.advisor, variant: v.advisor });
     }
-    expect(selectionExpectations('v1', model)['approach-advisor']).toEqual({ model: models.advisor, variant: v.advisor });
-    expect(selectionExpectations('v2', model)['approach-advisor']).toEqual({ model: models.native, variant: null });
+    expect(selectionExpectations('v1', model)['forager-investigator']).toEqual({ model: models.advisor, variant: v.advisor });
+    expect(selectionExpectations('v2', model)['forager-investigator']).toEqual({ model: models.native, variant: null });
   });
 
   test('a probe fails when a child did not inherit the parent pair, a Hive pair or base was lost, an agent was not observed, or invalid configuration was not refused', () => {
@@ -1931,16 +1931,16 @@ describe('model-selection probes', () => {
     const observed = passingSelection('v1');
     observed['scout-researcher'] = { ...observed['scout-researcher'], wireModel: models.default, recordedModel: models.default };
     observed['probe-native'] = { ...observed['probe-native'], recordedVariant: null };
-    observed['code-reviewer'] = { ...observed['code-reviewer'], recordedVariant: PROBE_VARIANTS.parent };
-    observed['approach-advisor'] = { ...observed['approach-advisor'], wireModel: models.native };
+    observed['forager-worker'] = { ...observed['forager-worker'], recordedVariant: PROBE_VARIANTS.parent };
+    observed['forager-investigator'] = { ...observed['forager-investigator'], wireModel: models.native };
     observed['probe-advisor'] = { ...observed['probe-advisor'], wireModel: models.native, recordedModel: models.native, recordedVariant: null };
     delete observed['probe-base'];
     expect(modelSelectionFailures('v1', observed, { ...REJECTED_INVALID_SELECTION, hiveRolesRegistered: ['hive-builder'], errorLogged: false }, model)).toEqual([
       'model_selection_mismatch:v1:scout-researcher',
       'model_variant_mismatch:v1:probe-native',
-      'model_variant_mismatch:v1:code-reviewer',
+      'model_variant_mismatch:v1:forager-worker',
       'model_selection_unobserved:v1:probe-base',
-      'model_selection_mismatch:v1:approach-advisor',
+      'model_selection_mismatch:v1:forager-investigator',
       'model_selection_mismatch:v1:probe-advisor',
       'model_variant_mismatch:v1:probe-advisor',
       'invalid_model_config_error_missing:v1',
@@ -1948,8 +1948,8 @@ describe('model-selection probes', () => {
     ]);
     // On v2 the native model replaces the Hive pair whole: a surviving Hive variant is a mismatch.
     const kept = passingSelection('v2');
-    kept['approach-advisor'] = { ...kept['approach-advisor'], recordedVariant: PROBE_VARIANTS.advisor };
-    expect(modelSelectionFailures('v2', kept, REJECTED_INVALID_SELECTION, model)).toEqual(['model_variant_mismatch:v2:approach-advisor']);
+    kept['forager-investigator'] = { ...kept['forager-investigator'], recordedVariant: PROBE_VARIANTS.advisor };
+    expect(modelSelectionFailures('v2', kept, REJECTED_INVALID_SELECTION, model)).toEqual(['model_variant_mismatch:v2:forager-investigator']);
     expect(modelSelectionFailures('v2', undefined, undefined, model)).toEqual([
       ...Object.keys(selectionExpectations('v2', model)).map((agent) => `model_selection_unobserved:v2:${agent}`),
       'invalid_model_config_unobserved:v2',
@@ -2315,9 +2315,9 @@ describe('managed-model control probe', () => {
     });
 
     test('the host catalog must show the model each agent is configured for', () => {
-      expect(judge((c) => { delete c.catalog['code-reviewer']; })).toEqual(['managed_model_catalog_unobserved:v2:code-reviewer']);
-      expect(judge((c) => { c.catalog['approach-advisor'].model = view(models.native, 'default'); })).toEqual([]);
-      expect(judge((c) => { c.catalog['approach-advisor'].model = view(models.advisor, v.advisor); })).toEqual(['managed_model_catalog_mismatch:v2:approach-advisor']);
+      expect(judge((c) => { delete c.catalog['forager-worker']; })).toEqual(['managed_model_catalog_unobserved:v2:forager-worker']);
+      expect(judge((c) => { c.catalog['forager-investigator'].model = view(models.native, 'default'); })).toEqual([]);
+      expect(judge((c) => { c.catalog['forager-investigator'].model = view(models.advisor, v.advisor); })).toEqual(['managed_model_catalog_mismatch:v2:forager-investigator']);
       expect(judge((c) => { c.catalog['scout-researcher'].model = view(models.parent); })).toEqual(['managed_model_catalog_mismatch:v2:scout-researcher']);
       expect(judge((c) => { c.catalog['probe-base'].listed = false; })).toEqual(['managed_model_catalog_unobserved:v2:probe-base']);
     });

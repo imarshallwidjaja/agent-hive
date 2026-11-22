@@ -1347,7 +1347,6 @@ const PACKAGE_ROOT = '/opt/ic/plugin/node_modules/oc-arkive';
 // References the instruction-contracts plan adds in later tasks. Wiring reports their state so a generic reference
 // success can never be read as their delivery; they become required only once an installed SKILL.md points to them.
 export const PLANNED_REFERENCES = [
-  'background-delegation/references/board-protocol.md',
   'dispatching-parallel-agents/references/launch-examples.md',
   'parallel-exploration/references/research-examples.md',
   'executing-plans/references/task-milestones.md',
@@ -1793,7 +1792,7 @@ async function modelSelection(input: Json): Promise<Json> {
   let before = requests().length;
   const primary = await runPrompt(host, { agent: 'hive-builder', prompt: `selection-primary\n${text}` }, 120_000);
   observed.primary = await observedSelection(host, primary.sessionId, 'selection-primary', before, models);
-  for (const agent of ['scout-researcher', 'probe-native', 'code-reviewer', 'probe-base', 'approach-advisor', 'probe-advisor']) {
+  for (const agent of ['scout-researcher', 'probe-native', 'forager-worker', 'probe-base', 'forager-investigator', 'probe-advisor']) {
     before = requests().length;
     const marker = `selection-child-${agent}`;
     const run = await runPrompt(host, {

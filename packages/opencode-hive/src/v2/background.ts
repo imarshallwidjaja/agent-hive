@@ -1,320 +1,204 @@
-import { Effect, Stream } from 'effect';
+import { Effect } from 'effect';
 import type { Scope } from 'effect';
 import type { Plugin } from '@opencode/plugin/effect';
-import type { BackgroundJobRecord, BackgroundJobService } from 'hive-core';
-import { createBoardObserver, isLiveBackgroundJob } from '../background/backgroundJobAdapter.js';
-import { createBackgroundOperations, type ObservationHealth, type RuntimeCancelResult } from '../background/operations.js';
+import type { SessionInfo } from 'hive-core';
+import type { HiveInvocation, HiveServices } from '../runtime/hive-services.js';
+import { z } from '../runtime/schema.js';
+import { ReadAccessError, type ChildSettlement, type ParentActivity, type VerifiedTreeReadAccess } from './client.js';
 import type { HiveToolRegistrar } from './tools.js';
 
 /**
- * OpenCode v2 background observation. The host schedules, runs, interrupts and notifies background subagents; Hive
- * only keeps its observational board in the `opencode-v2` store, scoped by project, parent session and native call.
- *
- * The host's evidence stays distinct, and none of it records a launch's terminal outcome:
- * - acknowledgement: `hive_background_cancel` asked the host to interrupt the child (resume disabled) and the host
- *   accepted. The row keeps its cancel request; nothing is recorded as cancelled.
- * - settlement: the child's execution ended (`session.execution.*`).
- * - notification: the host's report message to the parent (a synthetic inbox item whose metadata names the child and
- *   its state). It names the child but not the launching call, so with a reused child it cannot say which launch it
- *   reports, and arrival order is no substitute for that identity. It does not establish that the child ended either:
- *   the host sends one each time the child stops, and a `completed` metadata state can come with a report the parent
- *   reads as interim (`state="running"`) while the child's own background work continues.
- *   A notification therefore marks every live row of that child uncertain with the state the host reported, and
- *   settlement marks those still shown running; rows already terminal or archived are left as they were. The parent
- *   receives the notification itself.
- * - restart: rows from another host process or location are stale on the next board read.
- * - observation gap: Hive does not see a notification while no activation listens (a plugin reload) or after its
- *   event stream stops, and a failed board write loses what was observed. Rows live across a gap are uncertain; after
- *   the stream stops or a write fails, so is every later launch of the activation, and failed writes are retried.
- * - unrecorded launch: the launch row's write failed, so the row is unconfirmed (a failure such as releasing the lock
- *   can follow a completed write). Nothing else is missed, so this is not an observation gap; the observer reports
- *   that one launch to its parent until the same call records it.
+ * OpenCode v2 live child inspection and cancellation. The host schedules, runs, interrupts and notifies background
+ * subagents, and reports each child's result to its parent; Hive keeps no record of launches. Both tools read the
+ * caller's direct children in this location when they are called: the in-process session list says who the children
+ * are and Hive's own bindings say which feature, task or run each serves, while the verified read client says whether
+ * any work still runs under them. Every answer is a sample at the time of the call.
  */
 
-/**
- * The runtime epoch for board rows: this host process and the activation's location, not the plugin activation.
- * Native background jobs outlive a plugin reload in the same process, so a reload must not mark them stale; a new
- * process must. Each location's activation observes its own sessions' events, so the epoch also names the location.
- */
-export function hostRuntimeId(location: string): string {
-  return `opencode-v2:pid-${process.pid}-${Math.round(performance.timeOrigin).toString(36)}:${location}`;
-}
+/** The live reads the tools need; `createVerifiedReadAccess` provides them. */
+export type BackgroundReadAccess = Pick<VerifiedTreeReadAccess, 'childSettlement' | 'parentActivity'>;
 
-/** One background launch, identified by its native parent, call and child. */
-export type BackgroundLaunch = {
-  parentSessionID: string;
-  callID: string;
-  childSessionID: string;
-  agent: string;
-  description?: string;
-  primaryAgent?: string;
-  feature?: string;
-  /** The task or ad-hoc run the child's Hive binding names, when it names one. */
-  task?: string;
-  adHocRunId?: string;
-};
+/** Children read per in-process session list page. */
+const CHILD_PAGE = 200;
+/** A parent with more children than this many pages is refused rather than read without end. */
+const MAX_CHILD_PAGES = 50;
 
-/** How many early completion notifications (seen before their launch row) are held; older ones are dropped. */
-const EARLY_NOTIFICATION_LIMIT = 64;
+const NOT_STOPPED = 'Interrupting a session stops only its active model execution: shell commands and descendant jobs it already moved to the background keep running and can wake it again when they finish. An error or cancellation report ends only that execution, not those commands and jobs, so confirm that the child\'s tree has settled before you start an overlapping writer.';
 
-export function createV2BackgroundLifecycle(input: { projectRoot: string; service: BackgroundJobService; runtimeId: string; warn?: (message: string) => void }) {
-  const { projectRoot, service, runtimeId } = input;
-  const warn = input.warn ?? ((message: string) => console.warn(message));
-  const observer = createBoardObserver({ projectRoot, service, runtimeId, warn });
-  // A child whose barrier write failed can report before the call's retry records its row. Its notification is held by
-  // parent and child until that launch is recorded, and only while such an unrecorded launch exists; it is never
-  // applied to any other parent or child. A child session's helpers are never recorded, so nothing is held for them.
-  const early = new Map<string, string>();
-  const earlyKey = (parent: string, child: string) => `${parent}\u0000${child}`;
-  // Set once Hive can no longer trust that it sees every notification for this activation's launches.
-  let degraded: string | undefined;
-  // The live rows of this runtime still need marking uncertain for `degraded`; retried until a pass succeeds.
-  let sweepPending = false;
+type ChildScope = { feature?: string; task?: string; adHocRunId?: string };
+type ChildView = { sessionID: string; agent?: string; outcome?: string; scope: ChildScope };
 
-  /** Marks live rows uncertain with what was observed. A failed write is an observation gap, never a silent success. */
-  function markUncertain(aliases: string[], diagnostic: string): void {
-    for (const alias of aliases) {
+type SessionRecord = { id: string; parentID?: string; agent?: string; outcome?: string; location?: { directory?: string } };
+
+export function registerBackground(input: { context: Plugin.Context; registrar: HiveToolRegistrar; services: Pick<HiveServices, 'sessionService'>; readAccess: BackgroundReadAccess }): Effect.Effect<void, never, Scope.Scope> {
+  const { context, registrar, services, readAccess } = input;
+  const directory = context.location.directory;
+
+  const caller = (invocation: HiveInvocation): string => {
+    if (!invocation.sessionID) throw new Error('This tool reads the calling session\'s children, and the host reported no calling session.');
+    return invocation.sessionID;
+  };
+
+  const run = <A, E>(effect: Effect.Effect<A, E>, signal: AbortSignal | undefined) => Effect.runPromise(effect, signal ? { signal } : undefined);
+
+  /**
+   * The calling session's direct children in this location, each once. Pages run oldest update first and the host
+   * always returns a next cursor for a nonempty page, so a child updated while the pages are read reappears on a later
+   * page: the latest record of each child is kept, and a short page ends the list.
+   */
+  const listChildren = async (parentID: string, signal: AbortSignal | undefined): Promise<SessionRecord[]> => {
+    const children = new Map<string, SessionRecord>();
+    let cursor: unknown;
+    for (let page = 0; page < MAX_CHILD_PAGES; page++) {
+      const result = await run(context.session.list((cursor === undefined
+        ? { parentID, order: 'asc', limit: CHILD_PAGE }
+        : { cursor, limit: CHILD_PAGE }) as never), signal) as { data: ReadonlyArray<SessionRecord>; cursor?: { next?: unknown } };
+      for (const child of result.data) {
+        if (child.parentID === parentID && child.location?.directory === directory) children.set(child.id, child);
+      }
+      cursor = result.cursor?.next ?? undefined;
+      if (cursor === undefined || result.data.length < CHILD_PAGE) return [...children.values()];
+    }
+    throw new Error(`Session ${parentID} has more than ${MAX_CHILD_PAGES * CHILD_PAGE} children; Hive did not list them all.`);
+  };
+
+  /** Hive's binding of each child, or none when the binding index cannot be read (reported once). */
+  const bindings = () => {
+    let unreadable: string | undefined;
+    const read = (sessionID: string): SessionInfo | undefined => {
+      if (unreadable !== undefined) return undefined;
       try {
-        service.updateRuntimeState(alias, 'unknown', { statusUncertain: true, lastStatusError: diagnostic });
+        return services.sessionService.peekGlobal(sessionID);
       } catch (error) {
-        observationLost(`Hive could not record an observation of ${alias} on the board (${describe(error)})`);
+        unreadable = describe(error);
+        return undefined;
       }
-    }
-  }
+    };
+    return { read, warning: () => unreadable === undefined ? undefined : `Hive could not read its child bindings (${unreadable}); feature, task and run scope are missing.` };
+  };
 
-  /** The live rows matching `select`, or undefined after the board could not be read, which is an observation gap. */
-  function liveRows(select: (job: BackgroundJobRecord) => boolean, observing: string): BackgroundJobRecord[] | undefined {
+  const view = (child: SessionRecord, stored: SessionInfo | undefined): ChildView => ({
+    sessionID: child.id,
+    ...(child.agent === undefined ? {} : { agent: child.agent }),
+    ...(child.outcome === undefined ? {} : { outcome: child.outcome }),
+    scope: {
+      ...(stored?.featureName ? { feature: stored.featureName } : {}),
+      ...(stored?.taskFolder ? { task: stored.taskFolder } : {}),
+      ...(stored?.adHocRunId ? { adHocRunId: stored.adHocRunId } : {}),
+    },
+  });
+
+  const matches = (child: ChildView, filter: ChildScope) => (filter.feature === undefined || child.scope.feature === filter.feature)
+    && (filter.task === undefined || child.scope.task === filter.task)
+    && (filter.adHocRunId === undefined || child.scope.adHocRunId === filter.adHocRunId);
+
+  /** Why a live read failed, for a result that still reports what the in-process reads found. A cancellation is rethrown. */
+  const unavailable = (error: unknown, signal: AbortSignal | undefined) => {
+    if (signal?.aborted) throw error;
+    return { available: false, readAccess: error instanceof ReadAccessError ? error.code : 'read_failed', message: describe(error) };
+  };
+
+  /** The child's settlement, or why it could not be read. */
+  const settlementOf = async (parentID: string, childID: string, signal: AbortSignal | undefined) => {
+    let state: ChildSettlement;
     try {
-      return service.listScoped({ projectRoot }).filter((job) => isLiveBackgroundJob(job) && select(job));
+      state = await readAccess.childSettlement({ parentID, childID }, signal);
     } catch (error) {
-      observationLost(`Hive could not read the board to record ${observing} (${describe(error)})`);
-      return undefined;
+      return { settlement: unavailable(error, signal) };
     }
-  }
+    return { ...('signal' in state ? { settled: false, signal: state.signal, detail: state.detail } : { settled: true }), settlement: { available: true } };
+  };
 
-  /**
-   * Hive stopped seeing, or failed to record, host evidence for this activation's launches. Every live row of this
-   * runtime is marked uncertain, now and on later board reads until that succeeds, and so is every later launch.
-   */
-  function observationLost(reason: string): void {
-    warn(`[hive:background] ${reason}; live launches of this activation are now uncertain.`);
-    degraded ??= reason;
-    sweepPending = true;
-    sweep();
-  }
+  /** The caller's direct child in this location, read in-process, or a refusal. */
+  const directChild = async (callerID: string, sessionID: string, signal: AbortSignal | undefined): Promise<SessionRecord | { success: false; reason: 'not_a_child'; error: string }> => {
+    const target = sessionID === callerID ? undefined : await run(context.session.get({ sessionID: sessionID as never }).pipe(
+      Effect.map((session) => session as unknown as SessionRecord),
+      Effect.orElseSucceed(() => undefined),
+    ), signal);
+    if (target?.parentID === callerID && target.location?.directory === directory) return target;
+    return { success: false, reason: 'not_a_child', error: `Session ${sessionID} is not a direct child of calling session ${callerID} in ${directory}; Hive reads and stops only the caller's own children.` };
+  };
 
-  function sweep(): void {
-    if (!sweepPending || degraded === undefined) return;
-    try {
-      for (const job of service.listScoped({ projectRoot })) {
-        if (job.runtimeId === runtimeId && isLiveBackgroundJob(job) && !job.statusUncertain) {
-          service.updateRuntimeState(job.alias, 'unknown', { statusUncertain: true, lastStatusError: gapDiagnostic(degraded) });
+  return registrar.register({
+    hive_background_status: {
+      description: 'Inspect the calling session\'s direct subagent children live. Without sessionID it lists the children that still have work running (a job of the child or its descendants, or an active execution); includeSettled also lists the rest. With sessionID it reads whether that child\'s whole session tree has settled: no job, no queued inbox input and no active execution under it. Feature, task and run filters match the binding Hive wrote when it dispatched the child; with sessionID, a child whose binding does not match them returns reason scope_mismatch. Each answer is a sample at the time of the call; when the live reads are unavailable, the children are still listed and the result says what could not be checked. Call it when a child\'s liveness is uncertain, for example after an interrupted run, a timeout or a restart.',
+      args: {
+        sessionID: z.string().optional().describe('One direct child to read in full. Omitted, every direct child of the calling session in this location is considered.'),
+        feature: z.string().optional().describe('Only children Hive bound to this feature.'),
+        task: z.string().optional().describe('Only children Hive bound to this task folder.'),
+        adHocRunId: z.string().optional().describe('Only children Hive bound to this ad-hoc run.'),
+        includeSettled: z.boolean().optional().describe('Without sessionID, also list the children with no observed work.'),
+      },
+      output: 'json',
+      execute: async (args: { sessionID?: string } & ChildScope & { includeSettled?: boolean }, invocation) => {
+        const callerID = caller(invocation);
+        const { signal } = invocation;
+        const stored = bindings();
+        if (args.sessionID !== undefined) {
+          const child = await directChild(callerID, args.sessionID, signal);
+          if ('success' in child) return child;
+          const childView = view(child, stored.read(child.id));
+          const warning = stored.warning();
+          if (!matches(childView, args)) {
+            return { success: false, reason: 'scope_mismatch', error: `Child session ${childView.sessionID} is not bound to the requested feature, task or run (its binding names ${JSON.stringify(childView.scope)}); its settlement was not read.`, ...(warning ? { warning } : {}) };
+          }
+          return { success: true, ...childView, ...(await settlementOf(callerID, childView.sessionID, signal)), ...(warning ? { warning } : {}) };
         }
-      }
-      sweepPending = false;
-    } catch (error) {
-      warn(`[hive:background] could not mark live launches uncertain after an observation gap; retrying on the next board read: ${describe(error)}`);
-    }
-  }
-
-  /** Retries pending uncertainty writes, then reports whether the board is fully observed. */
-  function checkObservation(): ObservationHealth {
-    sweep();
-    return degraded === undefined ? { healthy: true } : { healthy: false, reason: degraded, uncertaintyPending: sweepPending };
-  }
-
-  function recordLaunch(launch: BackgroundLaunch): string | undefined {
-    sweep();
-    let alias: string;
-    try {
-      alias = service.registerLaunch({
-        taskId: launch.childSessionID,
-        sessionId: launch.childSessionID,
-        callId: launch.callID,
-        agentName: launch.agent,
-        description: launch.description,
-        runtimeId,
-        scope: {
-          projectRoot, parentSessionId: launch.parentSessionID, primaryAgent: launch.primaryAgent, feature: launch.feature,
-          ...(launch.task ? { task: launch.task } : {}),
-          ...(launch.adHocRunId ? { adHocRunId: launch.adHocRunId } : {}),
-        },
-      }).alias;
-    } catch (error) {
-      // Only this launch's row is unconfirmed; other launches are still observed, so this is not an observation gap.
-      observer.launchNotRecorded({ parentSessionId: launch.parentSessionID, callId: launch.callID, childSessionId: launch.childSessionID, agentName: launch.agent }, error);
-      return undefined;
-    }
-    observer.launchRecorded(launch.parentSessionID, launch.callID, launch.childSessionID);
-    const key = earlyKey(launch.parentSessionID, launch.childSessionID);
-    const held = early.get(key);
-    early.delete(key);
-    if (held !== undefined) markUncertain([alias], held);
-    else if (degraded !== undefined) markUncertain([alias], gapDiagnostic(degraded));
-    return alias;
-  }
-
-  /**
-   * A call has bound `child` to `parent` and the host has not prompted the child yet, so a completion held for that
-   * pair predates the call. It belongs to an earlier launch whose row was never recorded.
-   */
-  function launchBound(parentSessionID: string, childSessionID: string): void {
-    if (!early.delete(earlyKey(parentSessionID, childSessionID))) return;
-    warn(`[hive:background] discarded a completion notification for child ${childSessionID} that predates the launch now bound to ${parentSessionID}; it belongs to an earlier launch with no board row.`);
-  }
-
-  /** The row is live but its outcome cannot be known from what was observed (a failed or interrupted launch call). */
-  function launchUncertain(alias: string, reason: string): void {
-    markUncertain([alias], reason);
-  }
-
-  /**
-   * A new activation in this host process and location: an earlier activation's live launches may have finished
-   * while nothing was listening, and the event stream does not replay their notifications.
-   */
-  function resumeObservation(): void {
-    const rows = liveRows((job) => job.runtimeId === runtimeId && !job.statusUncertain, 'launches from before a plugin reload');
-    if (rows) markUncertain(rows.map((job) => job.alias), 'Hive resumed observing host events after a plugin reload; a completion notification delivered while it was not observing is not replayed, so this child\'s outcome is unknown.');
-  }
-
-  /** The event stream ended or failed while the activation was live. */
-  function observationStopped(reason: string): void {
-    observationLost(`Hive stopped observing host events (${reason})`);
-  }
-
-  /**
-   * The activation was closed (a reload or shutdown). A call it dispatched may still record a launch afterwards; no
-   * one is listening for that launch on this activation, so it is uncertain. Existing rows are the next activation's.
-   */
-  function deactivate(): void {
-    degraded ??= 'the plugin activation that recorded this launch had stopped observing host events';
-  }
-
-  function handleEvent(event: { type: string; data?: unknown }): void {
-    const data = event.data && typeof event.data === 'object' ? event.data as Record<string, unknown> : undefined;
-    const sessionID = typeof data?.sessionID === 'string' ? data.sessionID : undefined;
-    if (!data || !sessionID) return;
-    switch (event.type) {
-      case 'session.inbox.enqueued': {
-        const completion = completionFrom(sessionID, data);
-        if (!completion) return;
-        const diagnostic = `The host sent the parent a report for child ${completion.child} (state ${completion.state}). A report names the child, not the launching call, and does not establish that the child ended, so Hive does not record it as this launch's outcome; inspect the child and archive this observation with decision "ignored".`;
-        const rows = liveRows((job) => job.scope?.parentSessionId === completion.parent && job.sessionId === completion.child, `the completion notification for ${completion.child}`);
-        if (rows === undefined) return;
-        if (rows.length > 0) {
-          markUncertain(rows.map((job) => job.alias), diagnostic);
-          return;
+        const children = (await listChildren(callerID, signal)).map((child) => view(child, stored.read(child.id))).filter((child) => matches(child, args));
+        const warnings = [stored.warning()].filter((text): text is string => text !== undefined);
+        let activity: ParentActivity;
+        try {
+          activity = await readAccess.parentActivity({ parentID: callerID }, signal);
+        } catch (error) {
+          return {
+            success: true,
+            observation: unavailable(error, signal),
+            children,
+            warnings: [...warnings, 'Live jobs, inboxes and executions could not be checked, so these children are listed without knowing whether any of them still works. Do not treat a child as settled from this result.'],
+          };
         }
-        // Hold it only for a launch of this parent whose row the barrier could not write; that same call retries the row.
-        if (!observer.unrecordedLaunches(completion.parent).some((launch) => launch.childSessionId === completion.child)) return;
-        const key = earlyKey(completion.parent, completion.child);
-        early.delete(key);
-        early.set(key, diagnostic);
-        if (early.size > EARLY_NOTIFICATION_LIMIT) early.delete(early.keys().next().value!);
-        return;
-      }
-      case 'session.execution.succeeded':
-        // A parent that finished its turn has seen the board it was shown.
-        observer.acknowledgePrompt(sessionID);
-        settled(sessionID, 'Native execution settled (succeeded); the completion notification has not been observed yet.');
-        return;
-      case 'session.execution.failed': {
-        const error = data.error && typeof data.error === 'object' ? data.error as { type?: unknown; message?: unknown } : undefined;
-        const detail = typeof error?.message === 'string' && error.message.trim() ? error.message.trim() : typeof error?.type === 'string' ? error.type : 'unknown error';
-        settled(sessionID, `Native execution failed (${detail}); the completion notification has not been observed yet.`);
-        return;
-      }
-      case 'session.execution.interrupted': {
-        const reason = typeof data.reason === 'string' ? data.reason : 'unknown';
-        settled(sessionID, reason === 'shutdown'
-          ? 'Native execution was interrupted by host shutdown; the host may resume this child after it restarts. Inspect before acting.'
-          : `Native execution was interrupted (${reason}) and settled; the completion notification has not been observed yet.`);
-        return;
-      }
-    }
-  }
-
-  /**
-   * Settlement only marks rows still shown running. After an interrupt the host publishes the notification first, so
-   * a row already uncertain keeps the more specific observation it has.
-   */
-  function settled(child: string, diagnostic: string): void {
-    const rows = liveRows((job) => job.sessionId === child && !job.statusUncertain, `the settlement of ${child}`);
-    if (rows) markUncertain(rows.map((job) => job.alias), diagnostic);
-  }
-
-  return { observer, recordLaunch, launchBound, launchUncertain, resumeObservation, observationStopped, deactivate, checkObservation, handleEvent };
-}
-
-export type V2BackgroundLifecycle = ReturnType<typeof createV2BackgroundLifecycle>;
-
-function gapDiagnostic(reason: string): string {
-  return `${reason[0]!.toUpperCase()}${reason.slice(1)}; a completion notification for this child may not have been seen, so its outcome is unknown.`;
+        const live = new Map(activity.children.map((entry) => [entry.sessionID, entry]));
+        const working = children.flatMap((child) => {
+          const entry = live.get(child.sessionID);
+          return entry ? [{ ...child, jobs: entry.jobs, activeExecution: entry.activeExecution }] : [];
+        });
+        return {
+          success: true,
+          coverage: 'jobs_and_executions',
+          working,
+          ...(args.includeSettled === true ? { children: children.filter((child) => !live.has(child.sessionID)) } : {}),
+          note: 'Queued inbox input is not read in this list; pass sessionID to read one child\'s whole tree, inboxes included.',
+          ...(warnings.length ? { warnings } : {}),
+        };
+      },
+    },
+    hive_background_cancel: {
+      description: `Interrupt one direct subagent child of the calling session in this location, with resume disabled. ${NOT_STOPPED} When the host had no active execution to interrupt, the result also reads whether the child's tree has settled.`,
+      args: {
+        sessionID: z.string().min(1).describe('The direct child session to interrupt.'),
+        reason: z.string().optional().describe('Why the child is stopped, for the record of this call.'),
+      },
+      output: 'json',
+      execute: async (args: { sessionID: string; reason?: string }, invocation) => {
+        const callerID = caller(invocation);
+        const { signal } = invocation;
+        const child = await directChild(callerID, args.sessionID, signal);
+        if ('success' in child) return child;
+        const { interrupted } = await run(context.session.interrupt({ sessionID: child.id as never, resume: false }), signal);
+        // An idle child may still have background work; whether it settled changes what the caller does next.
+        const settlement = interrupted ? {} : await settlementOf(callerID, child.id, signal);
+        return {
+          success: true,
+          sessionID: child.id,
+          interrupted,
+          ...settlement,
+          message: `${interrupted ? 'The host interrupted the child\'s active execution.' : 'The child had no active execution to interrupt.'} ${NOT_STOPPED}`,
+        };
+      },
+    },
+  });
 }
 
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-/**
- * A native subagent completion: a synthetic inbox item for the parent whose metadata the host writes as
- * `{ source: 'subagent', childID, state }`. Identity and state come only from that metadata; the text is never
- * parsed. A user message is never a completion.
- */
-function completionFrom(parent: string, data: Record<string, unknown>): { parent: string; child: string; state: string } | undefined {
-  const item = data.item && typeof data.item === 'object' ? data.item as { type?: unknown; payload?: unknown } : undefined;
-  if (item?.type !== 'synthetic') return undefined;
-  const payload = item.payload && typeof item.payload === 'object' ? item.payload as { metadata?: unknown } : undefined;
-  const metadata = payload?.metadata && typeof payload.metadata === 'object' ? payload.metadata as Record<string, unknown> : undefined;
-  if (metadata?.source !== 'subagent' || typeof metadata.childID !== 'string') return undefined;
-  const state = metadata.state;
-  if (state !== 'completed' && state !== 'error' && state !== 'cancelled') return undefined;
-  return { parent, child: metadata.childID, state };
-}
-
-/**
- * Registers the four board tools through the catalog's registrar (explicit `codemode: false`, the shared guard),
- * shows the board on the parent's ordinary requests, and observes host events for the activation's scope.
- */
-export function registerBackground(input: { context: Plugin.Context; registrar: HiveToolRegistrar; projectRoot: string; service: BackgroundJobService; lifecycle: V2BackgroundLifecycle; runtimeId: string }): Effect.Effect<void, never, Scope.Scope> {
-  const { context, registrar, projectRoot, service, lifecycle, runtimeId } = input;
-  const cancelRuntimeTask = (sessionId: string): Promise<RuntimeCancelResult> => Effect.runPromise(
-    context.session.interrupt({ sessionID: sessionId as never, resume: false }).pipe(
-      Effect.map(({ interrupted }): RuntimeCancelResult => interrupted
-        ? { cancelled: false, acknowledged: true, message: 'Interrupt acknowledged by the host with resume disabled. This does not prove the worker stopped.' }
-        : { cancelled: false, acknowledged: false, message: 'The host interrupted no active execution for this session in this process (it was idle or not owned here); runtime cancellation is not confirmed.' }),
-      Effect.catch((error: unknown) => Effect.succeed<RuntimeCancelResult>({ cancelled: false, message: `Interrupt request failed: ${describe(error)}` })),
-    ),
-  );
-  return Effect.gen(function* () {
-    yield* registrar.register(createBackgroundOperations({ backgroundJobService: service, projectRoot, isEnabled: () => true, currentRuntimeId: runtimeId, cancelRuntimeTask, checkObservation: lifecycle.checkObservation, unrecordedLaunches: lifecycle.observer.unrecordedLaunches }));
-    yield* Effect.sync(() => lifecycle.resumeObservation());
-    yield* Effect.addFinalizer(() => Effect.sync(() => lifecycle.deactivate()));
-    // Board bookkeeping never fails a model request or stops observation; a broken board store is reported.
-    yield* context.session.hook('context', (event) => Effect.sync(() => {
-      try {
-        lifecycle.checkObservation();
-        const board = lifecycle.observer.promptBoard(event.sessionID);
-        if (!board) return;
-        event.system.push({ type: 'text', text: board.text });
-        board.notify();
-      } catch (error) {
-        console.warn(`[hive:background] could not show the board for ${event.sessionID}: ${describe(error)}`);
-      }
-    }));
-    // Closing the activation interrupts this fiber, which is not a stop of observation; ending or failing while the
-    // activation is live is.
-    yield* context.event.subscribe().pipe(
-      Stream.runForEach((event) => Effect.sync(() => {
-        try {
-          lifecycle.handleEvent(event as { type: string; data?: unknown });
-        } catch (error) {
-          console.warn(`[hive:background] could not observe ${event.type}: ${describe(error)}`);
-        }
-      })),
-      Effect.andThen(Effect.sync(() => lifecycle.observationStopped('the host event stream ended'))),
-      Effect.catch((error: unknown) => Effect.sync(() => lifecycle.observationStopped(`the host event stream failed: ${describe(error)}`))),
-      Effect.forkScoped,
-    );
-  });
 }
