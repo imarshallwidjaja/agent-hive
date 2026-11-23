@@ -10,7 +10,7 @@ The method for prune mode. Authority, scope, and stop conditions are in SKILL.md
 4. **Act.**
    - **Keep** a test that depends on intended behavior.
    - **Rewrite** a test that depends on the implementation but covers behavior something relies on: drive the public interface and take the expected value from the requirement.
-   - **Delete or fold** a test that depends on nothing, on an obsolete requirement, or on another test. Name the retained owner of a fold.
+   - **Delete or fold** a test that depends on nothing, on an obsolete requirement, or on another test. Name the retained owner of a fold. Retiring a lower-level test because an interface case covers it is not a same-layer fold; it belongs to a black-box migration under `black-box-testing`.
    - **Remove support code** made unnecessary by deleted tests, such as a test reset hook or a debug dump, when its file is inside the writable scope and only after checking its remaining consumers and public contracts. Keep package and public exports, published or workspace-internal, utilities that other packages or tests use, and protocol methods called indirectly (`toJSON`, `Symbol.*`). Keep dependency-injection seams, such as an injected clock or client, whether or not a retained test uses them. Report what you could not establish.
 5. **Verify.** The scoped tests and type check pass apart from recorded baseline failures. When a shared symbol changed, run the affected sibling packages' checks. No probe edit remains.
 

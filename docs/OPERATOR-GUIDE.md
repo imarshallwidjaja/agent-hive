@@ -399,6 +399,8 @@ Findings include source/test anchors, a plausible missed fault or retained canon
 
 The audit reports findings and never fixes tests by default. Request implementation separately to remediate accepted findings, with a baseline and affected checks under the implementation lifecycle. A disabled, missing, ambiguous, or incomplete overridden skill leaves an explicit affected audit/review gap; the agent does not search old generated caches. Standalone skill use retains the active role's permissions.
 
+The packaged `black-box-testing` skill covers tests that drive a real consumer interface, such as a CLI, an HTTP endpoint, a tool call, a packed artifact, or a library's exported API. Ask in ordinary words: "Write a black-box test for the `export` command" writes that one case with your project's existing runner and changes nothing else. "Adopt black-box testing for this repository" runs through `project-verification`: the agent writes a self-contained test contract into your repository, proposes one mechanical check for you to accept or decline, and gets your approval before it changes `AGENTS.md`; adoption deletes no test. Retiring lower-level tests in favor of interface cases needs a separate, explicit migration request, and an audit of the contract reports only. Once your repository declares such a contract, `test-quality` follows it for test placement and expected-file records.
+
 ### Runtime exercises
 
 A review can run the candidate when reading cannot settle a question that matters: how it behaves along its intended journeys, what data or output it produces, or whether a suspected failure reproduces. `/dash-review`, `/test-audit`, and `/vuln-review` do not run it by default; questions that source and contracts already answer need no run.

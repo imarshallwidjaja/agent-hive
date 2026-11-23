@@ -69,7 +69,7 @@ function expectInSessionDesignDocumentationPolicy(content: string) {
 describe('skill content', () => {
   it('packages the design, explanation, and writing families with self-contained references and provenance', () => {
     const root = resolvePackagedSkillsDir();
-    const names = ['code-design-principles', 'how', 'why', 'unslop', 'stop-design-slop', 'writing-for-humans', 'stop-slop', 'humanizer', 'modern-web-guidance'];
+    const names = ['code-design-principles', 'how', 'why', 'unslop', 'stop-design-slop', 'writing-for-humans', 'stop-slop', 'humanizer', 'modern-web-guidance', 'black-box-testing'];
     for (const name of names) {
       const skill = BUILTIN_SKILLS.find((entry) => entry.name === name);
       expect(skill, name).toBeDefined();
@@ -447,6 +447,21 @@ describe('skill content', () => {
     for (const lead of ['the contract and the observed product path decide', 'misses the behavior break or fails the behavior-preserving refactor', 'Ask what would be wrong if they came back', 'An absence check that observes a continuing requirement stays', "an invariant the repository's instructions require to stay pinned", 'neither establishes nor rules out the requirement', 'redundant only when it exercises no repository-owned behavior, integration, configuration, or runtime boundary', 'a retained owner at the same layer', 'stays until a contract test replaces it']) {
       expect(quality, lead).toContain(lead);
     }
+    // Captured output, rejection guards, coverage-driven tests, test-only hooks, and a declared black-box contract.
+    for (const addition of [
+      'A snapshot or golden file captured from the implementation is implementation-derived until its expected values are checked against the requirement',
+      'a characterization test may still record unspecified behavior',
+      'violate the intended guard with otherwise-valid input and assert the error code, type, or exit status the contract specifies',
+      'Coverage numbers and new branches alone do not justify a test',
+      'An export, flag, or hook used only by a test is a lead to inspect, not proof',
+      'keep dependency-injection seams and deterministic failure-mode hooks',
+      'When repository instructions declare a black-box test contract, follow it for test placement and the expected-file record',
+      'which the same-layer fold rule here does not cover',
+    ]) expect(quality, addition).toContain(addition);
+    expect(readSkillReference('test-quality', 'suite-audit.md')).toContain('`black-box-testing` owns the audit of that contract');
+    expect(readSkillReference('test-quality', 'prune.md')).toContain('is not a same-layer fold; it belongs to a black-box migration under `black-box-testing`');
+    expect(readFileSync(path.join(root, 'test-quality/UPSTREAM.md'), 'utf8')).toContain('e1241e31a4c701e218c0047a93a8a5b4ce67cb8c');
+    expect(existsSync(path.join(root, 'test-quality/LICENSE.paleo'))).toBe(true);
     const prune = readSkillReference('test-quality', 'prune.md');
     for (const method of ['before deleting it', 'also read the governing instructions, provenance notes, and the history of the removal', 'one fault per run, never batched', 'isolated clean placement', 'rebuild it after introducing the fault', 'Restore the exact original bytes immediately after each probe, before the next probe or any edit', 'does not prove two tests equivalent', 'when its file is inside the writable scope and only after checking its remaining consumers and public contracts', 'published or workspace-internal', 'protocol methods called indirectly', 'Keep dependency-injection seams, such as an injected clock or client, whether or not a retained test uses them', 'removed, folded, rewritten, or uncertain test', 'count of kept tests', 'No probe edit remains']) {
       expect(prune, method).toContain(method);
@@ -2869,6 +2884,118 @@ describe('skill content', () => {
       expect(skill.name.trim().length).toBeGreaterThan(0);
       expect(skill.description.trim().length).toBeGreaterThan(0);
     }
+  });
+});
+
+// Description prefix, UPSTREAM.md presence, and relative-link containment for this skill live in the shared
+// 'packages the design, explanation, and writing families' test above.
+describe('black-box-testing skill contracts', () => {
+  const directory = path.join(resolvePackagedSkillsDir(), 'black-box-testing');
+  const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'black-box-testing');
+  const template = readSkillTemplate('black-box-testing');
+
+  it('triggers only on explicit black-box requests or a declared contract that names it', () => {
+    expect(skill).toBeDefined();
+    for (const trigger of ['write a black-box test', 'adopt, migrate to, or audit black-box testing for a project', 'whose instructions declare a black-box test contract and name this skill', 'Ordinary test work in other repositories does not trigger it']) {
+      expect(skill!.description, trigger).toContain(trigger);
+    }
+  });
+
+  it('keeps uses, case rules, adopted-contract rules, and stop conditions in SKILL.md', () => {
+    for (const rule of [
+      // Authority by use.
+      'It grants no tool, edit, commit, deletion, or instruction-change authority',
+      "It adopts no policy and never forbids, rewrites, or deletes the project's other tests",
+      'Load `project-verification` and `verification`; adoption runs through them',
+      'Adoption deletes nothing and retires no test',
+      'An audit deletes nothing and starts no migration',
+      // A local contract's silence or difference authorizes nothing.
+      'When you write a new black-box case and the local contract is silent on a point, apply the Case Rules and report the gap',
+      'never authorizes rejecting a test that satisfies the local contract, treating a missing allowlist as a ban on lower-level tests, or starting a migration',
+      // Case rules.
+      "a library's exported API as a consumer installs it",
+      'An export, flag, or hook that only a test uses is not a consumer interface',
+      'A case that matches the text but skips the status passes on a wrong status',
+      'A capture with no independent basis is characterization, not an expectation',
+      'Neither is a fallback for the other',
+      'Never normalize a value the requirement specifies',
+      'A normalizer that does not find what it expects fails the case',
+      'a case that substitutes an external service while the real product still runs',
+      'A new expected file records the requirement values it was checked against',
+      'a scripted bulk update is allowed when that mapping covers every hunk kind',
+      'is not part of the update: investigate whether it is a regression, a permitted variation that needs a normalizer, or a correction against an unchanged requirement',
+      'never inside a diffed expected file',
+      // Adopted-contract rules.
+      'These apply only under a declared local contract or an explicit adopt, migrate, or audit request',
+      'each listed path names the fault that only that test detects',
+      "Adoption proposes one mechanical check that fits the project's existing tooling",
+      'the contract states in the present tense that no mechanical check exists',
+      'A pending decision is recorded as pending, not as declined',
+      'One executed break introduces one fault, so it retires only the lower-level tests that guard that fault',
+      'tests guarding distinct faults need separate breaks',
+      'Judge reachability against every entry point of the repository, whether or not the local contract declares it',
+      'check consumers across the whole repository, not only inside the migration\'s writable scope',
+      'Absent static callers or strict static types do not prove unreachability',
+      'through a dependency-injection seam, is reachable: it is an allowlist candidate or an uncertain case, never route (b)',
+      'does not let you retire its predecessor',
+      "Remove product code only inside the migration's writable scope",
+      'keep the test and report the question that would settle it',
+      'Use the `test-quality` suite audit, limited to behavior tests',
+      'Report each difference as an omission, an approved local decision, or a proposed change',
+      'never authorizes amending the repository, failing a valid test, or starting a migration',
+      'When the repository declares no local contract, the audit reports its absence and applies no allowlist or retirement rule',
+      // Stop conditions and naming.
+      'report it instead of adding a test-only entry point',
+      'record it as pending and report the contract as incomplete',
+      'A pending `AGENTS.md` approval is separate: `project-verification` reports it as discoverability not yet adopted',
+      'must not be named `black-box-testing`, because a same-name skill replaces this packaged one',
+    ]) expect(template, rule).toContain(rule);
+  });
+
+  it('points to every reference with a read-when line and stays host-neutral', () => {
+    for (const file of ['adoption.md', 'migration.md', 'expected-file-example.md']) {
+      const escaped = file.replace('.', '\\.');
+      expect(template, file).toMatch(new RegExp(`^Read \\[references/${escaped}\\]\\(references/${escaped}\\) when `, 'm'));
+    }
+    for (const relative of readdirSync(directory, { recursive: true, encoding: 'utf8' })) {
+      if (!relative.endsWith('.md')) continue;
+      // No Hive tool names, native call syntax, or host sections.
+      expect(readFileSync(path.join(directory, relative), 'utf8'), relative).not.toMatch(/hive_[a-z_]+|hive-host|skill\(\{|subagent\(|task\(\{/);
+    }
+    const upstream = readFileSync(path.join(directory, 'UPSTREAM.md'), 'utf8');
+    expect(upstream).toContain('e1241e31a4c701e218c0047a93a8a5b4ce67cb8c');
+    expect(upstream).toContain('0.4.1');
+    expect(upstream).toContain('Not from upstream, and in part contradicting it');
+    expect(readFileSync(path.join(directory, 'LICENSE.paleo'), 'utf8')).toContain('CC0 1.0 Universal');
+  });
+
+  it('discloses adoption, migration, and a runnable expected-file case behind the pointers', () => {
+    const adoption = readSkillReference('black-box-testing', 'adoption.md');
+    for (const rule of [
+      'They are not a second creation procedure',
+      "use `test-quality`'s executed break, including its restore steps",
+      'only when the contract uses expected files',
+      'Remove a proof-only case unless a permanent test is inside the request',
+      'Report any step you did not run as unvalidated',
+      'The placement rule: new behavior coverage is an interface case except on allowlisted paths',
+      'The expected-file record rule in full, not only where it lives',
+      'from the checkout alone, place a new test, run it, review an expected-file change, and tell that pre-existing lower-level tests stay untouched outside an explicit migration',
+      'It never tells the reader to load `black-box-testing` to learn how',
+      'not filled into a template',
+    ]) expect(adoption, rule).toContain(rule);
+    const migration = readSkillReference('black-box-testing', 'migration.md');
+    for (const rule of [
+      'Group the inventory by requirement and fault, not by file',
+      'a test in the group that guards a different fault needs its own break',
+      'Record the search across the whole repository',
+      "When the branch's file is outside the migration's writable scope, keep both and report it",
+      'Retained uncertain tests, each with the question that would settle it',
+    ]) expect(migration, rule).toContain(rule);
+    const example = readSkillReference('black-box-testing', 'expected-file-example.md');
+    for (const shape of ['set -euo pipefail', '|| status=$?', 'grep -Ec', 'diff -u', 'trap ', 'For a new expected file:', 'For a later grouped change']) {
+      expect(example, shape).toContain(shape);
+    }
+    expect(example.indexOf('grep -Ec')).toBeLessThan(example.indexOf('sed -E'));
   });
 });
 

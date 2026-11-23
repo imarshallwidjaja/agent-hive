@@ -4,6 +4,8 @@ Audit the named roots or natural-language scope; when none is named, use the cur
 
 Map the inspected tests to their requirement/invariant, exercised subject and path, independent oracle, plausible detected fault, and owning layer (unit, integration, or end-to-end). Use the common lens in SKILL.md. Follow relevant source and callers to establish whether product behavior is actually exercised. Search adjacent suites before declaring a gap or duplicate. A large suite may need sampling; name the sampled areas and leave uninspected areas explicit.
 
+When repository instructions declare a black-box test contract, judge test placement and the expected-file record by it; `black-box-testing` owns the audit of that contract.
+
 Look for important outcomes without meaningful proof and for tests repeating the same invariant and failure mode. Test count and coverage percentage alone are not quality verdicts. Different layer-specific failure modes justify similar assertions. Inspect setup, mocks, and readbacks before calling an assertion tautological.
 
 For each supported finding, give:

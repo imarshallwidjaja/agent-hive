@@ -317,21 +317,27 @@ describe('prepareNativeHiveSkills - materialization behavior', () => {
   it('delivers each pointed reference inside its materialized skill directory on both hosts', async () => {
     // Presence and pointer resolution only: that a consumer selects and reads the reference is shown by the
     // installed-package wiring run and judged qualitatively, not by this materialization check.
-    const pointed = {
-      'dispatching-parallel-agents': 'launch-examples.md',
-      'parallel-exploration': 'research-examples.md',
-      'executing-plans': 'task-milestones.md',
-      'writing-plans': 'verification-planning.md',
-      'context-engineering': 'mutation-and-recovery.md',
-      'systematic-debugging': 'diagnostic-techniques.md',
-      'project-verification': 'formal-verification.md',
-      'test-quality': 'suite-audit.md',
-      'writing-for-humans': 'examples.md',
-    };
+    const pointed = [
+      ['dispatching-parallel-agents', 'launch-examples.md'],
+      ['parallel-exploration', 'research-examples.md'],
+      ['executing-plans', 'task-milestones.md'],
+      ['writing-plans', 'verification-planning.md'],
+      ['context-engineering', 'mutation-and-recovery.md'],
+      ['systematic-debugging', 'diagnostic-techniques.md'],
+      ['project-verification', 'formal-verification.md'],
+      ['test-quality', 'suite-audit.md'],
+      ['writing-for-humans', 'examples.md'],
+      ['test-quality', 'prune.md'],
+      ['security-audit', 'vuln-classes.md'],
+      ['security-audit', 'local-pentest.md'],
+      ['black-box-testing', 'adoption.md'],
+      ['black-box-testing', 'migration.md'],
+      ['black-box-testing', 'expected-file-example.md'],
+    ];
     for (const host of [OPENCODE_V1_PROFILE, createHostProfile('opencode-v2')]) {
       const worktree = createTempDir();
       const result = await prepareNativeHiveSkills({ directory: worktree, worktree, packagedSkillsDir: resolvePackagedSkillsDir(), env: { HOME: worktree }, host });
-      for (const [skill, file] of [...Object.entries(pointed), ['test-quality', 'prune.md'], ['security-audit', 'vuln-classes.md'], ['security-audit', 'local-pentest.md']]) {
+      for (const [skill, file] of pointed) {
         const dir = path.join(result.materializedPath!, skill);
         expect(fs.readFileSync(path.join(dir, 'SKILL.md'), 'utf8'), `${host.host}/${skill}`).toContain(`](references/${file})`);
         const resolved = path.resolve(dir, 'references', file);

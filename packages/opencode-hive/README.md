@@ -638,6 +638,7 @@ Generated/managed shape (for inspection) at `<project>/.hive/repositories.json`:
 |----|-------------|
 | `adversarial-review` | Explicit adversarial / red-team / multi-pass review posture |
 | `agents-md-mastery` | Bootstrap, review, or prune AGENTS.md by placing rules next to the code they govern |
+| `black-box-testing` | Write a black-box case through a real consumer interface, or adopt, migrate to, or audit a project's black-box test contract when asked |
 | `brainstorming` | Explore intent and design before implementation |
 | `code-design-principles` | Conditional depth for state, types, boundaries, shared writers, retries, and internal migration |
 | `complexity-audit` | Read-only complexity audit of named roots or the current worktree |
