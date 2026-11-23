@@ -410,6 +410,114 @@ describe('ExplorationService', () => {
       expect(snapshotTree()).toEqual(before);
     });
 
+    it('discovers active and closed IDs by file name, newest first, without opening any file or writing', () => {
+      expect(service.discover()).toEqual({ active: [], closed: [] });
+      expect(fs.existsSync(HIVE)).toBe(false);
+      for (const id of ['old-active', 'new-active', 'interrupted', 'old-closed', 'new-closed']) create(id);
+      for (const id of ['interrupted', 'old-closed', 'new-closed']) {
+        service.update({ id, expectedRevision: 1, status: 'concluded', conclusion: 'done' }, PRIMARY);
+      }
+      // An interrupted close leaves both copies; discovery lists the ID once, as closed, like a named read.
+      fs.copyFileSync(path.join(CLOSED, 'interrupted.json'), path.join(ACTIVE, 'interrupted.json'));
+      fs.writeFileSync(path.join(CLOSED, 'corrupt.json'), '{not json');
+      fs.writeFileSync(path.join(CLOSED, 'new-closed.json.tmp.1.2'), '{');
+      fs.writeFileSync(path.join(CLOSED, 'Not-An-Id.json'), '{}');
+      fs.writeFileSync(path.join(ACTIVE, 'README'), 'ignored');
+      const at = (placement: string, id: string, seconds: number) => fs.utimesSync(path.join(EXPLORATIONS, placement, `${id}.json`), seconds, seconds);
+      at('active', 'old-active', 100);
+      at('active', 'new-active', 300);
+      at('active', 'interrupted', 400);
+      at('closed', 'old-closed', 100);
+      at('closed', 'new-closed', 300);
+      at('closed', 'interrupted', 200);
+      at('closed', 'corrupt', 200);
+
+      const before = snapshotTree();
+      const opened = spyOn(fs, 'openSync');
+      try {
+        expect(service.discover()).toEqual({
+          active: ['new-active', 'old-active'],
+          closed: ['new-closed', 'corrupt', 'interrupted', 'old-closed'],
+        });
+        expect(opened).not.toHaveBeenCalled();
+      } finally {
+        opened.mockRestore();
+      }
+      expect(snapshotTree()).toEqual(before);
+      // The agent list stays active-only, and the corrupt record fails only when it is read.
+      expect(list().explorations.map((entry) => entry.id).sort()).toEqual(['new-active', 'old-active']);
+      expectError(() => service.read({ id: 'corrupt' }), 'exploration_corrupt');
+    });
+
+    it('lists an exploration closed between the two placement scans once, as closed', () => {
+      create('closing');
+      create('staying');
+      const originalReaddir = fs.readdirSync;
+      const scanned: string[] = [];
+      // The close lands right after the first placement scan, whichever placement that is.
+      let closing = false;
+      const readdir = spyOn(fs, 'readdirSync').mockImplementation(((directory: fs.PathLike, options?: unknown) => {
+        const names = (originalReaddir as (...args: unknown[]) => string[])(directory, options);
+        if (closing) return names;
+        scanned.push(path.basename(String(directory)));
+        if (scanned.length === 1) {
+          closing = true;
+          service.update({ id: 'closing', expectedRevision: 1, status: 'concluded', conclusion: 'done' }, PRIMARY);
+          closing = false;
+        }
+        return names;
+      }) as typeof fs.readdirSync);
+      try {
+        expect(service.discover()).toEqual({ active: ['staying'], closed: ['closing'] });
+      } finally {
+        readdir.mockRestore();
+      }
+      expect(scanned).toEqual(['active', 'closed']);
+    });
+
+    it.skipIf(process.platform === 'win32')('checks closed/ again just before scanning it', () => {
+      const outside = `${TEST_DIR}-outside`;
+      fs.mkdirSync(outside, { recursive: true });
+      const originalReaddir = fs.readdirSync;
+      try {
+        create('kept');
+        fs.mkdirSync(CLOSED, { recursive: true });
+        fs.writeFileSync(path.join(outside, 'hidden.json'), '{}');
+        // After the upfront check passed and active/ was scanned, closed/ is swapped for a link.
+        const readdir = spyOn(fs, 'readdirSync').mockImplementation(((directory: fs.PathLike, options?: unknown) => {
+          const names = (originalReaddir as (...args: unknown[]) => string[])(directory, options);
+          if (String(directory) === ACTIVE) {
+            fs.rmdirSync(CLOSED);
+            fs.symlinkSync(outside, CLOSED);
+          }
+          return names;
+        }) as typeof fs.readdirSync);
+        try {
+          expect(expectError(() => service.discover(), 'unsafe_path').details).toMatchObject({ path: '.hive/explorations/closed' });
+        } finally {
+          readdir.mockRestore();
+        }
+      } finally {
+        fs.rmSync(outside, { recursive: true, force: true });
+      }
+    });
+
+    it('fails discovery through a linked or non-directory placement instead of reading it as empty', () => {
+      const outside = `${TEST_DIR}-outside`;
+      fs.mkdirSync(outside, { recursive: true });
+      try {
+        create('kept');
+        fs.writeFileSync(path.join(outside, 'hidden.json'), '{}');
+        fs.symlinkSync(outside, CLOSED);
+        expect(expectError(() => service.discover(), 'unsafe_path').details).toMatchObject({ path: '.hive/explorations/closed' });
+        fs.unlinkSync(CLOSED);
+        fs.writeFileSync(CLOSED, 'not a directory');
+        expect(expectError(() => service.discover(), 'io_error').details).toMatchObject({ stage: 'path', code: 'ENOTDIR' });
+      } finally {
+        fs.rmSync(outside, { recursive: true, force: true });
+      }
+    });
+
     it('prefers the closed copy when an interrupted close left both files, and cleans up on the next write', () => {
       create('both', { operationId: 'c' });
       const activeFile = path.join(EXPLORATIONS, 'active', 'both.json');

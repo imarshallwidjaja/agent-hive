@@ -1,7 +1,7 @@
 import * as vscode from 'vscode'
 import * as fs from 'fs'
 import * as path from 'path'
-import { detectContext } from 'hive-core'
+import { detectContext, isExplorationId } from 'hive-core'
 import { HiveWatcher, Launcher } from './services'
 import { HiveSidebarProvider, PlanCommentController, RepositoryWorkProvider } from './providers'
 
@@ -13,6 +13,8 @@ import { WorklogDocuments } from './providers/worklogDocuments.js'
 import type { WorklogDocumentView } from './providers/worklogDocuments.js'
 import { WorklogViewerPreferences, WorklogsProvider, pickWorklog } from './providers/worklogsProvider.js'
 import { describeFailure } from './providers/worklogPresentation.js'
+import { ExplorationsProvider, pickExploration } from './providers/explorationsProvider.js'
+import { ExplorationViewer } from './providers/explorationViewer.js'
 
 import { reviewTargetForDocument, findReviewCommentsPath } from './reviewRouting.js'
 
@@ -124,6 +126,8 @@ class HiveExtension {
   private worklogsProvider: WorklogsProvider | null = null
   private worklogDocuments: WorklogDocuments | null = null
   private worklogPreferences: WorklogViewerPreferences | null = null
+  private explorationsProvider: ExplorationsProvider | null = null
+  private explorationViewer: ExplorationViewer | null = null
   private launcher: Launcher | null = null
   private commentController: PlanCommentController | null = null
   private hiveWatcher: HiveWatcher | null = null
@@ -171,6 +175,11 @@ class HiveExtension {
       vscode.languages.registerDocumentLinkProvider({ scheme: WorklogDocuments.scheme }, this.worklogDocuments),
       vscode.workspace.onDidCloseTextDocument(document => this.worklogDocuments?.close(document.uri)),
     )
+    this.explorationsProvider = new ExplorationsProvider(workspaceRoot)
+    this.explorationViewer = new ExplorationViewer(workspaceRoot)
+    const explorationsView = vscode.window.createTreeView('hive.explorations', { treeDataProvider: this.explorationsProvider })
+    explorationsView.description = path.basename(workspaceRoot)
+    this.context.subscriptions.push(explorationsView, this.explorationViewer)
     this.launcher = new Launcher()
     this.commentController = new PlanCommentController(workspaceRoot)
 
@@ -186,6 +195,10 @@ class HiveExtension {
       this.sessionConstraintsProvider?.refresh()
       this.worklogsProvider?.refresh()
       this.worklogDocuments?.refresh()
+    }, (explorationId) => {
+      // Only the Explorations view and that exploration's tab read exploration records.
+      this.explorationsProvider?.refresh()
+      this.explorationViewer?.recordChanged(explorationId)
     })
     this.context.subscriptions.push({ dispose: () => this.hiveWatcher?.dispose() })
 
@@ -233,6 +246,24 @@ class HiveExtension {
         this.sessionConstraintsProvider?.refresh()
         this.worklogsProvider?.refresh()
         this.worklogDocuments?.refresh()
+        this.explorationsProvider?.refresh()
+        this.explorationViewer?.refreshAll()
+      }),
+
+      vscode.commands.registerCommand('hive.exploration.open', async (target?: unknown) => {
+        if (!this.workspaceRoot || !this.explorationViewer) {
+          vscode.window.showInformationMessage('Hive: Open a workspace containing .hive to read explorations.')
+          return
+        }
+        const fromItem = (target as { explorationId?: unknown } | undefined)?.explorationId
+        const given = typeof target === 'string' ? target : fromItem
+        const id = given === undefined ? await pickExploration(this.workspaceRoot) : given
+        if (id === undefined) return
+        if (!isExplorationId(id)) {
+          vscode.window.showErrorMessage('Hive: That is not an exploration ID.')
+          return
+        }
+        this.explorationViewer.open(id)
       }),
 
       vscode.commands.registerCommand('hive.worklog.open', async (target?: unknown) => {

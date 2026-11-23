@@ -24,6 +24,7 @@ describe('viewer-only VS Code manifest', () => {
     expect(commands).toEqual([
       'hive.copyToClipboard',
       'hive.context.archive',
+      'hive.exploration.open',
       'hive.context.loadMore',
       'hive.context.scanChars',
       'hive.constraints.inspect',
@@ -83,6 +84,7 @@ describe('viewer-only VS Code manifest', () => {
     const views = (pkg.contributes.views?.hive ?? []).map((entry: { id: string }) => entry.id).sort();
 
     expect(views).toEqual([
+      'hive.explorations',
       'hive.features',
       'hive.repositories',
       'hive.worklogs',
@@ -104,8 +106,19 @@ describe('viewer-only VS Code manifest', () => {
     expect(source).toContain('onDidCloseTextDocument(document => this.worklogDocuments?.close(document.uri))');
     expect(source).toContain('this.worklogsProvider?.refresh()\n      this.worklogDocuments?.refresh()');
     expect(source).toContain('new WorklogViewerPreferences(this.context.workspaceState, workspaceRoot)');
-    expect(source).not.toContain('createWebviewPanel');
-    expect(source).not.toContain('registerWebviewViewProvider');
+  });
+
+  it('confines webviews to the read-only exploration tab, so worklogs stay plain text documents', () => {
+    const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+    expect(pkg.activationEvents).toContain('onView:hive.explorations');
+    expect(pkg.contributes.menus['view/title']).toContainEqual({ command: 'hive.exploration.open', when: 'view == hive.explorations', group: 'navigation@1' });
+    expect(pkg.contributes.menus.commandPalette).toContainEqual({ command: 'hive.exploration.open', when: 'hive.hasHiveRoot' });
+    const sourceRoot = path.resolve(import.meta.dir, '..');
+    const sources = fs.readdirSync(sourceRoot, { recursive: true, encoding: 'utf8' })
+      .filter((file) => file.endsWith('.ts') && !file.endsWith('.test.ts') && !file.startsWith('test'));
+    const webviewOwners = sources.filter((file) => /createWebviewPanel|registerWebviewViewProvider|registerWebviewPanelSerializer/.test(fs.readFileSync(path.join(sourceRoot, file), 'utf8')));
+    expect(webviewOwners).toEqual([path.join('providers', 'explorationViewer.ts')]);
+    expect(pkg.contributes.menus['view/item/context'].filter((entry: { when: string }) => entry.when.includes('hive.explorations'))).toEqual([]);
   });
 
   it('documents the repository view as a viewer-first surface with limited operator actions', () => {

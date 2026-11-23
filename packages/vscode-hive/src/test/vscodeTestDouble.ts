@@ -36,6 +36,7 @@ export const vscodeTestState = {
   activeTextEditor: undefined as any,
   workspaceFolders: undefined as any,
   treeViews: [] as any[],
+  webviewPanels: [] as any[],
   textDocuments: [] as any[],
   contentProviders: new Map<string, any>(),
   linkProviders: [] as any[],
@@ -168,6 +169,53 @@ const window = {
   registerTreeDataProvider() {
     return { dispose() {} };
   },
+  /**
+   * A panel whose webview records the HTML and every posted message. Like a panel without retained context, a hidden
+   * webview drops posted messages; tests drive the webview side through `send` and visibility through `setVisible`.
+   */
+  createWebviewPanel(viewType: string, title: string, showOptions: unknown, options: any) {
+    const messageListeners = new Set<(message: unknown) => void>();
+    const viewStateListeners = new Set<(event: unknown) => void>();
+    const disposeListeners = new Set<() => void>();
+    const panel = {
+      viewType,
+      title,
+      showOptions,
+      options,
+      visible: true,
+      disposed: false,
+      reveals: 0,
+      webview: {
+        html: '',
+        options,
+        posted: [] as any[],
+        async postMessage(message: unknown) {
+          if (!panel.visible || panel.disposed) return false;
+          panel.webview.posted.push(message);
+          return true;
+        },
+        onDidReceiveMessage: (listener: (message: unknown) => void) => listen(messageListeners, listener),
+      },
+      onDidChangeViewState: (listener: (event: unknown) => void) => listen(viewStateListeners, listener),
+      onDidDispose: (listener: () => void) => listen(disposeListeners, listener),
+      reveal() { panel.reveals += 1; panel.setVisible(true); },
+      /** Test hook: a message from the webview script. */
+      send(message: unknown) { for (const listener of [...messageListeners]) listener(message); },
+      /** Test hook: the tab moving to the background or back. */
+      setVisible(visible: boolean) {
+        if (panel.visible === visible) return;
+        panel.visible = visible;
+        for (const listener of [...viewStateListeners]) listener({ webviewPanel: panel });
+      },
+      dispose() {
+        if (panel.disposed) return;
+        panel.disposed = true;
+        for (const listener of [...disposeListeners]) listener();
+      },
+    };
+    vscodeTestState.webviewPanels.push(panel);
+    return panel;
+  },
   async showQuickPick(items: any[], options?: unknown) {
     vscodeTestState.pickItems = items;
     vscodeTestState.pickOptions.push(options);
@@ -266,6 +314,12 @@ const Uri = {
   },
 };
 
+const ViewColumn = {
+  Active: -1,
+  Beside: -2,
+  One: 1,
+};
+
 const TreeItemCollapsibleState = {
   None: 0,
   Collapsed: 1,
@@ -332,5 +386,6 @@ export const vscodeTestDouble = {
   MarkdownString,
   EventEmitter,
   TreeItemCollapsibleState,
+  ViewColumn,
   Uri,
 };

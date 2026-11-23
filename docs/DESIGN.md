@@ -268,11 +268,11 @@ Hive uses file-based state with clear ownership boundaries:
 | `context/index.json` and managed Markdown | `ContextService` via `hive_context_*` | Agent roles according to tool permissions |
 | `repositories.json` | `RepositoryManifestService` | Worktree services (read) |
 | Feature `worklog.json` and `.hive/worklogs/sessions/**` | `WorklogService` record, under the log's lock, called by `hive_worklog_record` from primary sessions | `hive_worklog_list` and `hive_worklog_read` for every Hive role; VS Code Worklogs viewer (read-only) |
-| `.hive/explorations/{active,closed}/*.json` | `ExplorationService` update, under the exploration's lock, called by `hive_explore_update` from primary sessions | `hive_explore_read` for every Hive role; the VS Code watcher ignores these writes |
+| `.hive/explorations/{active,closed}/*.json` | `ExplorationService` update, under the exploration's lock, called by `hive_explore_update` from primary sessions | `hive_explore_read` for every Hive role; VS Code Explorations view and exploration tabs (read-only) |
 
 ### VS Code watcher
 
-The VS Code `HiveWatcher` watches `.hive/**/*` and calls the sidebar refresh callback on create, change, and delete events, excluding `.lock` files, lock anchors and operation markers under `.hive/.locks/`, files inside worker and retained checkouts, and exploration frontiers under `.hive/explorations/`, which no view shows. Review comments are written by the plan comment controller, not by the watcher.
+The VS Code `HiveWatcher` watches `.hive/**/*` and calls the sidebar refresh callback on create, change, and delete events, excluding `.lock` files, lock anchors and operation markers under `.hive/.locks/`, files inside worker and retained checkouts, and everything under `.hive/explorations/`. A create, change or delete of a stored `active/<id>.json` or `closed/<id>.json` instead calls the exploration callback with that ID, which refreshes only the Explorations view and that exploration's open tab; temporary write files, the exploration lock anchor and the directories call nothing. The tab reads the record again on that callback, when it becomes visible, and on Refresh, so a missed or reordered event is repaired by the next read. Closed explorations are discovered from directory entries with `ExplorationService.discover()` and parsed only when a row or tab reads one. Review comments are written by the plan comment controller, not by the watcher.
 
 ## Field Ownership
 

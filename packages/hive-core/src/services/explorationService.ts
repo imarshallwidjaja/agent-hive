@@ -215,6 +215,15 @@ export interface ExplorationListView {
 
 export type ExplorationReadResult = ExplorationListView | ExplorationBriefView | ExplorationFullView;
 
+/**
+ * Exploration IDs found by file name alone, without opening any file. Each list is ordered by file modification time,
+ * newest first, then by ID. An ID with a file in `closed/` is listed only as closed, as a named read prefers that copy.
+ */
+export interface ExplorationDiscovery {
+  active: string[];
+  closed: string[];
+}
+
 export interface ExplorationUpdateResult extends ExplorationBriefView {
   /** True when an identical earlier request with this operationId had already committed. */
   replayed: boolean;
@@ -400,6 +409,11 @@ function refs(value: unknown, field: string, v: Validator): string[] | undefined
     throw v.tooLarge(`${field} has ${value.length} entries; the limit is ${LIMITS.refsMax}.`, { field, maxItems: LIMITS.refsMax });
   }
   return value.map((entry, index) => text(entry, `${field}[${index}]`, LIMITS.refMaxBytes, v));
+}
+
+/** Whether `value` is a valid exploration ID, which is also the stored file's name without `.json`. */
+export function isExplorationId(value: unknown): value is string {
+  return typeof value === 'string' && ID_PATTERN.test(value);
 }
 
 function explorationId(value: unknown, field: string, v: Validator): string {
@@ -782,6 +796,35 @@ function readDocument(filePath: string, id: string, placement: Placement): Explo
   return parseDocument(raw, id, placement);
 }
 
+/**
+ * IDs named by `<id>.json` entries of one placement directory, newest modification first, then by ID; other names,
+ * such as temporary files, are skipped. An absent directory lists nothing, and an entry removed between the listing
+ * and its `lstat` is dropped. Nothing is opened, so a linked or invalid entry is reported only when it is read.
+ */
+function discoverPlacement(directory: string): string[] {
+  let names: string[];
+  try {
+    names = fs.readdirSync(directory);
+  } catch (error) {
+    if (isAbsent(error)) return [];
+    throw ioError('discover', error);
+  }
+  const entries: Array<{ id: string; modifiedMs: number }> = [];
+  for (const name of names) {
+    const id = name.endsWith('.json') ? name.slice(0, -'.json'.length) : '';
+    if (!ID_PATTERN.test(id)) continue;
+    try {
+      entries.push({ id, modifiedMs: fs.lstatSync(path.join(directory, name)).mtimeMs });
+    } catch (error) {
+      if (isAbsent(error)) continue;
+      throw ioError('discover', error);
+    }
+  }
+  return entries
+    .sort((a, b) => b.modifiedMs - a.modifiedMs || a.id.localeCompare(b.id))
+    .map((entry) => entry.id);
+}
+
 // ============================================================================
 // Projections
 // ============================================================================
@@ -1018,6 +1061,24 @@ export class ExplorationService {
       ?? this.recheckClosed(files.closed, id);
     if (!doc) throw new ExplorationError('not_found', `No exploration '${id}'.`, { id });
     return view === 'full' ? fullOf(doc) : briefOf(doc);
+  }
+
+  /**
+   * Lists the IDs stored in `active/` and `closed/` from directory entries and their metadata only, so a large archive
+   * of closed explorations is never parsed. Read each one by ID for its content, which validates it. Like the list, a
+   * linked or non-directory placement fails instead of reading as empty. Reads never create files or directories.
+   */
+  discover(): ExplorationDiscovery {
+    const activeDirectory = this.placementDirectory('active');
+    const closedDirectory = this.placementDirectory('closed');
+    assertSafeTree(this.projectRoot, [activeDirectory, closedDirectory], true);
+    // A close publishes the closed copy before it removes the active one, so scanning active/ first means a close
+    // landing between the scans still lists the exploration, as closed, instead of dropping it from both lists.
+    const active = discoverPlacement(activeDirectory);
+    assertSafeTree(this.projectRoot, [closedDirectory], true);
+    const closed = discoverPlacement(closedDirectory);
+    const closedIds = new Set(closed);
+    return { active: active.filter((id) => !closedIds.has(id)), closed };
   }
 
   /** The last read of a racing close: `closed/` may have been created or replaced since the first check. */

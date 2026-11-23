@@ -47,20 +47,29 @@ describe('HiveWatcher', () => {
     expect(changes).toEqual(['refresh']);
   });
 
-  it('ignores exploration frontier writes, which no view shows', () => {
+  it('routes only stored exploration files to the exploration callback, never to the view refresh', () => {
     const root = '/workspace';
     const explorations = path.join(root, '.hive', 'explorations');
     const changes: string[] = [];
-    new HiveWatcher(root, () => changes.push('refresh'));
+    new HiveWatcher(root, () => changes.push('refresh'), (id) => changes.push(`exploration:${id}`));
+    // Directories, temporary write files, lock anchors and names that are not exploration IDs are churn.
     ui.watchers[0].create({ fsPath: explorations });
-    ui.watchers[0].create({ fsPath: path.join(explorations, 'active', 'flaky-login.json') });
+    ui.watchers[0].create({ fsPath: path.join(explorations, 'active') });
     ui.watchers[0].change({ fsPath: path.join(explorations, 'active', 'flaky-login.json.tmp.1.2') });
-    ui.watchers[0].delete({ fsPath: path.join(explorations, 'active', 'flaky-login.json') });
-    ui.watchers[0].create({ fsPath: path.join(explorations, 'closed', 'flaky-login.json') });
+    ui.watchers[0].change({ fsPath: path.join(explorations, 'flaky-login.json') });
+    ui.watchers[0].change({ fsPath: path.join(explorations, 'flaky-login.json.lock') });
+    ui.watchers[0].create({ fsPath: path.join(explorations, 'active', 'Not An ID.json') });
+    ui.watchers[0].create({ fsPath: path.join(explorations, 'archive', 'flaky-login.json') });
+    ui.watchers[0].create({ fsPath: path.join(explorations, 'active', 'nested', 'flaky-login.json') });
     expect(changes).toEqual([]);
+    // A write, then a close: the active copy changes, the closed copy appears, and the active copy goes away.
+    ui.watchers[0].change({ fsPath: path.join(explorations, 'active', 'flaky-login.json') });
+    ui.watchers[0].create({ fsPath: path.join(explorations, 'closed', 'flaky-login.json') });
+    ui.watchers[0].delete({ fsPath: path.join(explorations, 'active', 'flaky-login.json') });
+    expect(changes).toEqual(['exploration:flaky-login', 'exploration:flaky-login', 'exploration:flaky-login']);
     // A sibling whose name only starts with the same letters is still content.
     ui.watchers[0].change({ fsPath: path.join(root, '.hive', 'explorations-notes.json') });
-    expect(changes).toEqual(['refresh']);
+    expect(changes.at(-1)).toBe('refresh');
   });
 
   it('matches ignored areas case-insensitively on case-insensitive volumes', () => {

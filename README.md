@@ -112,7 +112,7 @@ Agent Hive's runtime configuration lives in `~/.config/opencode/agent_hive.json`
 | Package | Distribution | Role |
 |---------|--------------|------|
 | [`oc-arkive`](https://www.npmjs.com/package/oc-arkive) | npm | OpenCode plugin: agents, Hive tools, skills, commands |
-| `vscode-arkive` | GitHub Release VSIX | Sidebar, plan/overview review, worklogs, worktree viewer |
+| `vscode-arkive` | GitHub Release VSIX | Sidebar, plan/overview review, worklogs, exploration viewer, worktree viewer |
 
 ## Documentation
 

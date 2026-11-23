@@ -45,7 +45,7 @@ describe('worklog commands', () => {
 
   it('opens, selects, pins, and follows editor-title URIs without writing under .hive', async () => {
     const before = fs.readFileSync(path.join(root, '.hive', 'features', '01_checkout', 'worklog.json'), 'utf8');
-    expect(ui.treeViews.map(view => [view.id, view.description])).toEqual([['hive.worklogs', path.basename(root)], ['hive.repositories', undefined]]);
+    expect(ui.treeViews.map(view => [view.id, view.description])).toEqual([['hive.worklogs', path.basename(root)], ['hive.explorations', path.basename(root)], ['hive.repositories', undefined]]);
 
     await run('hive.worklog.open', 'feature:checkout');
     expect(shownQuery(0).get('key')).toBe('feature:checkout');

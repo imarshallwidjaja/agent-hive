@@ -267,11 +267,13 @@ export {
   EXPLORATION_LIMITS,
   EXPLORATION_SCHEMA_VERSION,
   EXPLORATION_UNTRUSTED_NOTICE,
+  isExplorationId,
 } from './explorationService.js';
 export type {
   ExplorationBriefView,
   ExplorationClosingStatus,
   ExplorationCounts,
+  ExplorationDiscovery,
   ExplorationErrorReason,
   ExplorationFullView,
   ExplorationGapSummary,

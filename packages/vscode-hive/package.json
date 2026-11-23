@@ -34,6 +34,7 @@
     "onView:hive.features",
     "onView:hive.repositories",
     "onView:hive.worklogs",
+    "onView:hive.explorations",
     "onCommand:hive.refresh",
     "onCommand:hive.openFile",
     "onCommand:hive.copyToClipboard",
@@ -52,7 +53,8 @@
     "onCommand:hive.worklog.showFacts",
     "onCommand:hive.worklog.pin",
     "onCommand:hive.worklog.unpin",
-    "onCommand:hive.worklog.loadMore"
+    "onCommand:hive.worklog.loadMore",
+    "onCommand:hive.exploration.open"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -78,6 +80,10 @@
         {
           "id": "hive.worklogs",
           "name": "Worklogs"
+        },
+        {
+          "id": "hive.explorations",
+          "name": "Explorations"
         }
       ]
     },
@@ -95,6 +101,11 @@
       {
         "view": "hive.worklogs",
         "contents": "No Hive workspace found.\n\nOpen a Hive workspace to read its worklogs.\n\n[Refresh](command:hive.refresh)",
+        "when": "!hive.hasHiveRoot"
+      },
+      {
+        "view": "hive.explorations",
+        "contents": "No Hive workspace found.\n\nOpen a Hive workspace to read its explorations.\n\n[Refresh](command:hive.refresh)",
         "when": "!hive.hasHiveRoot"
       }
     ],
@@ -186,6 +197,11 @@
         "icon": "$(fold-down)"
       },
       {
+        "command": "hive.exploration.open",
+        "title": "Hive: Open Exploration...",
+        "icon": "$(search)"
+      },
+      {
         "command": "hive.repositories.openInNewWindow",
         "title": "Open in New Window",
         "icon": "$(empty-window)"
@@ -232,6 +248,16 @@
         {
           "command": "hive.refresh",
           "when": "view == hive.worklogs",
+          "group": "navigation@2"
+        },
+        {
+          "command": "hive.exploration.open",
+          "when": "view == hive.explorations",
+          "group": "navigation@1"
+        },
+        {
+          "command": "hive.refresh",
+          "when": "view == hive.explorations",
           "group": "navigation@2"
         }
       ],
@@ -384,6 +410,10 @@
         {
           "command": "hive.repositories.removeStaleRecord",
           "when": "false"
+        },
+        {
+          "command": "hive.exploration.open",
+          "when": "hive.hasHiveRoot"
         }
       ],
       "editor/title": [

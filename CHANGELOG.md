@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Explorations in VS Code.** A new **Explorations** view lists active and closed explorations from `.hive/explorations`, including ones whose IDs you do not know. Closed explorations are listed by file name and read only when a row is hovered or opened. Selecting a row, or **Hive: Open Exploration...**, opens a read-only tab with the goal, status, revision, last update and closing conclusion or reason, a map of frontier targets with their states, and observations with arrows and text for their supersedes links. A details pane shows each item's question, evidence, reason and references; references stay text and are never opened. While an exploration is active, its tab reads the record again when its file changes, when you return to the tab and on Refresh, marks the items that changed, keeps selection, focus and scroll, and shows the closed record in the same tab when the agent closes it. The tab shows recorded progress only, not whether an agent is still working. `hive-core` adds `ExplorationService.discover()` and `isExplorationId()` for this; agent tools and the stored format are unchanged, and `hive_explore_read` still lists active explorations only.
+
 ## [6.0.0] - 2026-11-22
 
 `oc-arkive` 6.0.0 moves its OpenCode v2 entry to OpenCode 2.3.2 and replaces the persisted background board with live child status and cancellation on v2. It adds councils resolved through `hive_councils_list`, Exploration frontiers, and nine v2 Code Mode reads grouped under one `hive` namespace. The major version carries the breaking changes below: two tools and one command are removed, council configuration drops its cap and exclusion settings, and the v2 entry no longer supports OpenCode 2.0.26. The v1 entry keeps its 1.18.30 floor. Each host now registers 50 Hive tools and 17 commands, compared with 49 and 18 in 5.3.0. See [v6.0.0 release notes](docs/releases/v6.0.0.md).
