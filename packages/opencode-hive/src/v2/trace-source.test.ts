@@ -10,7 +10,7 @@ import plugin from '../index.js';
 import { TASK_TRACE_SUMMARIZER_AGENT, TASK_TRACE_SUMMARIZER_PROMPT } from '../trace/types.js';
 import { ReadAccessError, type ObservedTargetCheck } from './client.js';
 import { createHiveToolRegistrar } from './tools.js';
-import { createV2Summarizer, createV2TraceOperations, createV2TraceSource, registerEvidence, type TraceReadAccess } from './trace-source.js';
+import { createV2Summarizer, createV2TraceOperations, createV2TraceSource, registerEvidence, v2Snapshot, type TraceReadAccess } from './trace-source.js';
 import type { V2Catalog } from './registration.js';
 
 // The v2 trace source owns its native mapping, complete-history paging, authorization and in-process summarizer.
@@ -344,6 +344,90 @@ describe('v2 trace source mapping', () => {
     expect((await operations(malformed.access).trace({ task_id: 'ses_child' })).lifecycle).toMatchObject({ state: 'uncertain', reason: 'status_unavailable', runtime: 'unavailable' });
     const streaming = readAccessFor({ sessions: FAMILY, timelines: { ses_child: [user('msg_u1', 'go'), assistant('msg_a1', [{ type: 'tool', id: 'call_1', name: 'bash', state: { status: 'streaming', input: '{"comm' }, time: { created: 1 } }], { time: { created: 1 } })] } });
     expect((await operations(streaming.access).trace({ task_id: 'ses_child' })).lifecycle).toMatchObject({ state: 'uncertain', reason: 'tool_pending_or_running', unresolved_tools: { latest_message: 1, earlier_messages: 0 } });
+  });
+});
+
+// A v2 compaction is one `type: 'compaction'` message (`SessionMessage.Compaction` in @opencode/schema 2.4.1) with
+// status running, completed or failed. The engine counts it strictly: it marks the source compacted, forces an
+// inspect-only next action, and a compaction as the latest message keeps the lifecycle non-terminal.
+describe('v2 compaction messages', () => {
+  function compaction(id: string, status: 'running' | 'completed' | 'failed', extra: Raw = {}): Raw {
+    return {
+      id, type: 'compaction', status, reason: 'auto', time: { created: 1 },
+      ...(status === 'failed' ? {} : { summary: 'Summary of the earlier work.' }),
+      ...extra,
+    };
+  }
+  const read = (id: string) => ({ type: 'tool', id, name: 'read', state: { status: 'completed', input: { filePath: 'a.ts' }, content: [{ type: 'text', text: 'file body' }] }, time: { created: 1, completed: 2 } });
+  const midRun = [
+    user('msg_u1', 'Implement the task.'),
+    assistant('msg_a1', [read('call_before')]),
+    compaction('msg_c1', 'completed'),
+    assistant('msg_a2', [{ type: 'text', text: 'Implemented and verified.' }]),
+  ];
+
+  it('indexes a completed mid-run compaction as compacted source, keeping the events before and after it', async () => {
+    const { access } = readAccessFor({ sessions: FAMILY, timelines: { ses_child: midRun } });
+    const page = await operations(access).trace({ task_id: 'ses_child' });
+    expect(page.source).toMatchObject({ messages: 4, compactions: 1, fidelity: 'compacted_surviving_source' });
+    expect(page.coverage.limitations).toContain('compacted_source');
+    expect(page.events.map((event: Raw) => [event.kind, event.actor])).toEqual([
+      ['text', 'user'],
+      ['tool', 'assistant'],
+      ['compaction', 'assistant'],
+      ['text', 'assistant'],
+    ]);
+    expect(page.events[1]).toMatchObject({ call_id: 'call_before', output: 'file body' });
+    expect(page.events[3].text).toBe('Implemented and verified.');
+    expect(page.lifecycle).toEqual({ state: 'terminal', terminal: true, reason: 'idle_and_closed', runtime: 'idle' });
+  });
+
+  it('recovers the closed turn after a mid-run compaction but keeps the next action inspect-only', async () => {
+    const { access } = readAccessFor({ sessions: FAMILY, timelines: { ses_child: midRun } });
+    const result = await operations(access).trace({ task_id: 'ses_child', recovery: true });
+    expect(result.lifecycle).toMatchObject({ state: 'terminal', terminal: true, reason: 'idle_and_closed' });
+    expect(result.recovery).toMatchObject({ status: 'complete', scope: 'closed_turn', failures: [] });
+    expect(result.source).toMatchObject({ fidelity: 'compacted_surviving_source', compactions: 1 });
+    // The summarizer proposes review_completed_work; a compacted source overrides it.
+    expect(result.semantic.safest_next_action.action).toBe('inspect');
+  });
+
+  it('keeps a session whose latest message is a completed compaction non-terminal and refuses recovery', async () => {
+    const timeline = [user('msg_u1', 'Implement the task.'), assistant('msg_a1', [read('call_before')]), compaction('msg_c1', 'completed')];
+    const { access } = readAccessFor({ sessions: FAMILY, timelines: { ses_child: timeline } });
+    const ops = operations(access);
+    const page = await ops.trace({ task_id: 'ses_child' });
+    expect(page.lifecycle).toEqual({ state: 'uncertain', terminal: false, reason: 'latest_message_summary_or_compaction', runtime: 'idle' });
+    expect(page.source).toMatchObject({ compactions: 1, fidelity: 'compacted_surviving_source' });
+
+    const setup = summarizerContext();
+    const result = await operations(access, setup.summarizer.host).trace({ task_id: 'ses_child', recovery: true });
+    expect(result.recovery).toMatchObject({ status: 'unavailable', scope: null, failures: [{ stage: 'eligibility', reasons: ['latest_message_summary_or_compaction'] }] });
+    expect(result.semantic).toBeNull();
+    expect(setup.created).toEqual([]);
+  });
+
+  it('maps a running compaction as an open message and a failed one with its error, both counted once', async () => {
+    const error = { type: 'provider', message: 'context window exceeded', status: 400 };
+    const snapshot = v2Snapshot([compaction('msg_c1', 'running'), compaction('msg_c2', 'failed', { error })]);
+    expect(snapshot.messages).toEqual([
+      { id: 'msg_c1', role: 'assistant', closed: false, summary: false, parts: [{ kind: 'compaction', index: -1 }] },
+      { id: 'msg_c2', role: 'assistant', closed: true, summary: false, error, parts: [{ kind: 'compaction', index: -1 }] },
+    ]);
+
+    const base = [user('msg_u1', 'Implement the task.'), assistant('msg_a1', [read('call_before')])];
+    const running = readAccessFor({ sessions: FAMILY, timelines: { ses_child: [...base, compaction('msg_c1', 'running')] } });
+    const runningPage = await operations(running.access).trace({ task_id: 'ses_child' });
+    expect(runningPage.lifecycle).toMatchObject({ state: 'uncertain', terminal: false });
+    expect(runningPage.source).toMatchObject({ compactions: 1, fidelity: 'compacted_surviving_source' });
+
+    const failed = readAccessFor({ sessions: FAMILY, timelines: { ses_child: [...base, compaction('msg_c2', 'failed', { error }), assistant('msg_a2', [{ type: 'text', text: 'Continued.' }])] } });
+    const ops = operations(failed.access);
+    const failedPage = await ops.trace({ task_id: 'ses_child' });
+    expect(failedPage.source).toMatchObject({ compactions: 1, fidelity: 'compacted_surviving_source' });
+    expect(failedPage.events.map((event: Raw) => event.kind)).toEqual(['text', 'tool', 'compaction', 'assistant_error', 'text']);
+    const errorEvent = await ops.content({ task_id: 'ses_child', event: failedPage.events[3].ref });
+    expect(errorEvent.event.fields.error).toMatchObject({ state: 'value', value: error });
   });
 });
 
