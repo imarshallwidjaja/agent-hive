@@ -195,24 +195,32 @@ function escapeRouteSnapshotMarkers(text: string): string {
     .replaceAll('<!-- hive-route-snapshot:end -->', '&lt;!-- hive-route-snapshot:end -->');
 }
 
-function routeFooter(snapshot: RouteSnapshot, separated: boolean): string {
-  const payload = {
+/** The route as both deliveries show it: the project root and the feature route the session selected, as JSON. */
+export function routePayloadJson(snapshot: RouteSnapshot): string {
+  return JSON.stringify({
     projectRoot: snapshot.projectRoot,
     featureRoute: { selected: snapshot.hasFeatureRoute, feature: snapshot.featureName ?? null },
-  };
-  const constraints = [
-    `Session constraints (revision ${snapshot.sessionConstraints.revision}):\n${escapeRouteSnapshotMarkers(snapshot.sessionConstraints.constraints || '(none)')}`,
+  });
+}
+
+/** The session and feature constraint registers with their revisions, verbatim unless `escape` rewrites them. */
+export function standingConstraintsText(snapshot: RouteSnapshot, escape: (text: string) => string = (text) => text): string {
+  return [
+    `Session constraints (revision ${snapshot.sessionConstraints.revision}):\n${escape(snapshot.sessionConstraints.constraints || '(none)')}`,
     snapshot.featureConstraints
-      ? `Feature constraints for ${JSON.stringify(snapshot.featureName)} (revision ${snapshot.featureConstraints.revision}):\n${escapeRouteSnapshotMarkers(snapshot.featureConstraints.constraints || '(none)')}`
+      ? `Feature constraints for ${JSON.stringify(snapshot.featureName)} (revision ${snapshot.featureConstraints.revision}):\n${escape(snapshot.featureConstraints.constraints || '(none)')}`
       : 'Feature constraints: (none)',
   ].join('\n\n');
+}
+
+function routeFooter(snapshot: RouteSnapshot): string {
   return [
-    `${separated ? '\n\n' : ''}<!-- hive-route-snapshot:start -->`,
+    '<!-- hive-route-snapshot:start -->',
     '## Hive route snapshot',
-    `Route snapshot (JSON): ${JSON.stringify(payload)}`,
+    `Route snapshot (JSON): ${routePayloadJson(snapshot)}`,
     '',
     '## Standing Constraints',
-    constraints,
+    standingConstraintsText(snapshot, escapeRouteSnapshotMarkers),
     'This is a dispatch-time snapshot. If directives conflict, report the conflict; runtime routing does not decide it.',
     '<!-- hive-route-snapshot:end -->',
   ].join('\n');
@@ -228,15 +236,17 @@ function authoredPrompt(prompt: unknown): string {
  * route snapshot footer, then, for a Forager dispatch (built-in or custom-derived) on a selected feature route, the
  * task brief. Both hosts compose it from the parent's own prompt, before the host adds its subagent prefix.
  * `fallbackTaskFolder` is the task a continued child is already bound to; its brief is attached when the follow-up
- * prompt opens with no marker.
+ * prompt opens with no marker. `includeRouteFooter: false` omits the footer for a host that delivers the route and
+ * standing constraints to the child another way (v2 session instructions); earlier footers are still removed.
  */
-export function composeDispatchPrompt(input: { sources: TaskBriefSources; snapshot: RouteSnapshot; prompt: unknown; foragerDispatch: boolean; fallbackTaskFolder?: string }): string {
-  const { sources, snapshot, foragerDispatch, fallbackTaskFolder } = input;
+export function composeDispatchPrompt(input: { sources: TaskBriefSources; snapshot: RouteSnapshot; prompt: unknown; foragerDispatch: boolean; fallbackTaskFolder?: string; includeRouteFooter?: boolean }): string {
+  const { sources, snapshot, foragerDispatch, fallbackTaskFolder, includeRouteFooter = true } = input;
   const authored = authoredPrompt(input.prompt);
   const brief = foragerDispatch && snapshot.hasFeatureRoute && typeof snapshot.featureName === 'string'
-    ? `\n\n${composeTaskBrief(sources, snapshot.featureName, authored, fallbackTaskFolder)}`
-    : '';
-  return `${authored}${routeFooter(snapshot, authored.length > 0)}${brief}`;
+    ? composeTaskBrief(sources, snapshot.featureName, authored, fallbackTaskFolder)
+    : undefined;
+  const footer = includeRouteFooter ? routeFooter(snapshot) : undefined;
+  return [authored, footer, brief].filter((part) => part !== undefined && part.length > 0).join('\n\n');
 }
 
 /**
@@ -296,7 +306,10 @@ export function sameChildRoute(stored: SessionInfo | ChildRoute, route: ChildRou
  * continuation that omits its marker keeps the task or run the child was bound to. It is observation for viewers and
  * the continuation check; it never comes from the route or the prose.
  */
-export function childAssociation(marker: AssignmentMarker): { taskFolder?: string; adHocRunId?: string } {
+/** The task or run a dispatched child is bound to. */
+export type ChildAssociation = { taskFolder?: string; adHocRunId?: string };
+
+export function childAssociation(marker: AssignmentMarker): ChildAssociation {
   if (marker.state === 'none') return {};
   const binding = marker.state === 'resolved' ? marker.binding : undefined;
   return {

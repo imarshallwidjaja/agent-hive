@@ -89,7 +89,7 @@ Task facts shown beside a Worklog are projected at read time from `status.json` 
 
 ## Prompt Files
 
-The primary authors the native Forager prompt. At native subagent dispatch (`task()` on v1, `subagent()` on v2), the runtime appends a route-snapshot footer with `projectRoot`, the selected feature route, session constraints, and feature constraints. A selected feature-task Forager bound by `Hive task: <task-folder>` as its first non-empty authored line also receives a bounded path-only task brief after that footer. It does not inject context documents or catalogs; there is no project constraint register. Standing constraints are operator directives, not tool permissions.
+The primary authors the native Forager prompt. At native subagent dispatch (`task()` on v1, `subagent()` on v2), the runtime delivers a route snapshot with `projectRoot`, the selected feature route, session constraints, and feature constraints. V1 appends it to the prompt as a footer; v2 writes it to the child's `hive.session` session instruction entry and adds no footer (see [HIVE-TOOLS.md](HIVE-TOOLS.md#v2-subagent-dispatch-and-continuation)). A selected feature-task Forager bound by `Hive task: <task-folder>` as its first non-empty authored line also receives a bounded path-only task brief at the end of its prompt. It does not inject context documents or catalogs; there is no project constraint register. Standing constraints are operator directives, not tool permissions.
 
 ## Reserved Overview Convention
 

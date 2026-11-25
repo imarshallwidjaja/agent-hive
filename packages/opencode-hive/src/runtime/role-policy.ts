@@ -53,7 +53,7 @@ const READ_TOOLS = ['hive_context_read', 'hive_constraints_read', 'hive_plan_rea
 /** Writes that stamp the calling primary session as the author of shared records. */
 const AUTHORED_PRIMARY_WRITES = ['hive_worklog_record', 'hive_explore_update'] as const;
 const CONTEXT_WRITES = ['hive_context_write', 'hive_context_append', 'hive_context_edit'];
-const CONSTRAINT_MUTATIONS = ['hive_constraints_add', 'hive_constraints_edit', 'hive_constraints_clear'];
+export const CONSTRAINT_MUTATIONS = ['hive_constraints_add', 'hive_constraints_edit', 'hive_constraints_clear'];
 const REVIEW_TOOLS = [...READ_TOOLS, ...CONTEXT_WRITES];
 const TASK_TRACE_TOOLS = ['hive_task_trace', 'hive_task_trace_content'];
 // Checkout inspection takes the same operation locks as worktree inspection when it reads a cleanup proposal.

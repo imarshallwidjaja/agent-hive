@@ -13,6 +13,7 @@ import { registerCatalog, type V2Catalog } from './registration.js';
 // lifecycle imports: native dispatch and background observation
 import { registerBackground } from './background.js';
 import { registerDispatch } from './dispatch.js';
+import { registerSessionInstructions } from './session-instructions.js';
 
 // evidence imports: forensic reads and semantic recovery
 import { registerEvidence } from './trace-source.js';
@@ -27,13 +28,16 @@ function composeCatalog(context: Plugin.Context, identity: Identity): Effect.Eff
 
 /**
  * Native subagent dispatch (route capture, prompt composition, the continuation preflight against the server's verified
- * settlement reads, and the child-binding barrier) and the live child tools (status and cancel), which read the host
- * when they are called. The host keeps scheduling, running and reporting jobs.
+ * settlement reads, and the child-binding barrier), the session instruction entries that carry each session's route
+ * and standing constraints (kept current for primaries, written at the barrier for children), and the live child
+ * tools (status and cancel), which read the host when they are called. The host keeps scheduling, running and
+ * reporting jobs.
  */
 function composeLifecycle(context: Plugin.Context, _identity: Identity, catalog: V2Catalog): Effect.Effect<void, never, Scope.Scope> {
-  const { services, readAccess } = catalog;
+  const { services, readAccess, authority } = catalog;
   return Effect.gen(function* () {
-    yield* registerDispatch({ context, services, authority: catalog.authority, activity: readAccess });
+    yield* registerSessionInstructions({ context, services, authority });
+    yield* registerDispatch({ context, services, authority, activity: readAccess });
     yield* registerBackground({ context, registrar: catalog.registrar, services, readAccess });
   });
 }

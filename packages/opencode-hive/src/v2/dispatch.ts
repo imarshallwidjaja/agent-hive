@@ -5,9 +5,10 @@ import type { Model, Plugin } from '@opencode/plugin/effect';
 import type { AssignmentMarker, HiveServices } from '../runtime/hive-services.js';
 import type { SessionInfo } from 'hive-core';
 import { RESUMABLE_SUBAGENT_ROLES } from '../runtime/role-policy.js';
-import { childAssociation, childRouteRecord, composeDispatchPrompt, resolveAssignment, sameChildRoute, type ChildRoute } from '../task-brief.js';
+import { childAssociation, childRouteRecord, composeDispatchPrompt, resolveAssignment, sameChildRoute, type ChildAssociation, type ChildRoute } from '../task-brief.js';
 import type { VerifiedTreeReadAccess } from './client.js';
 import type { HiveAuthority } from './registration.js';
+import { writeChildSessionInstructions } from './session-instructions.js';
 
 /** The host's native subagent tool. */
 export const NATIVE_SUBAGENT_TOOL = 'subagent';
@@ -38,9 +39,12 @@ type Admissions = Map<string, string>;
  * dispatch:
  *
  * - The parent's route and standing constraints, captured when the call starts, and the parent's authored prompt
- *   (before the host adds its subagent prefix) composed with the route footer and, for a Forager on a selected feature
- *   route, the task brief from its `Hive task:` line, or from the task a continued child is bound to when the
- *   follow-up has no marker.
+ *   (before the host adds its subagent prefix, without route footers an earlier dispatch generated) composed with, for
+ *   a Forager on a selected feature route, the task brief from its `Hive task:` line, or from the task a continued
+ *   child is bound to when the follow-up has no marker. The route and constraints are not in the prompt: the barrier
+ *   writes them to the child's session instruction entry.
+ * - A continuation whose `sessionID` is blank, holds whitespace or is the bare `ses` or `ses_` prefix is refused first,
+ *   before reservation or target preflight.
  * - Model selection for Hive-managed targets (built-in roles and custom agents): a call that sets `model` is refused
  *   before anything else runs, whatever the caller and whatever the value, so the target runs on the model and
  *   variant its effective native agent entry configures. Native `general`/`explore` and unmanaged targets keep the
@@ -64,12 +68,14 @@ type Admissions = Map<string, string>;
  *   binding takes the parent's current ones. The `sessionID` is passed through unchanged.
  * - A barrier on the progress update the host awaits before it admits the child's prompt: Hive reads the child from
  *   the host again, requires that its parent is this call's session, that it is in this location and that no other
- *   parent owns its binding, and writes the child's binding: the captured route with its task or run association, or
- *   with the stored association when a continuation names none. For a continuation, the barrier runs after any
- *   permission prompt the host awaited, so it checks again that the child runs the target agent (and, when managed,
- *   its configured model), that its binding's project, feature, task and run are those the preflight read, and that
- *   it has settled. If a step fails, the call fails and the child is never prompted, except that a child already
- *   bound to the captured route still runs when only the rewrite fails; Hive warns. A call that returns successfully
+ *   parent owns its binding, and writes the captured route, constraints and task or run as the child's session
+ *   instruction entry, then the child's binding: the captured route with its task or run association, or with the
+ *   stored association when a continuation names none. A child whose entry cannot be written is never prompted and
+ *   its binding is left unchanged. For a continuation, the barrier runs after any permission prompt the host awaited,
+ *   so it checks again that the child runs the target agent (and, when managed, its configured model), that its
+ *   binding's project, feature, task and run are those the preflight read, and that it has settled. If a step fails,
+ *   the call fails and the child is never prompted, except that a child already bound to the captured route and the
+ *   same task or run still runs when only the binding rewrite fails; Hive warns. A call that returns successfully
  *   for a child it never bound at that barrier fails instead of being bound late.
  */
 export function registerDispatch(input: { context: Plugin.Context; services: HiveServices; authority: HiveAuthority; activity: NativeActivity }): Effect.Effect<void, never, Scope.Scope> {
@@ -172,6 +178,22 @@ function dispatchSubagent(
     Effect.flatMap((state) => 'detail' in state ? refuse(unsettled(child, state.detail, outcome)) : Effect.void),
   );
 
+  /**
+   * A continuation names an exact child session ID. A blank ID, one holding whitespace, or the bare `ses` or `ses_`
+   * prefix is a truncated or garbled copy, refused before reservation or target preflight. A primary can list its children with
+   * `hive_background_status`; a child cannot, so its refusal names only what it can do.
+   */
+  const wellFormed = (child: string) => {
+    if (child.trim() !== '' && !/\s/.test(child) && !/^ses_?$/.test(child)) return Effect.void;
+    const found = `Subagent sessionID ${JSON.stringify(child)} is malformed or truncated (likely the bare "ses" prefix of a session ID), so ${NOT_CONTINUED}.`;
+    return authority.isChild(parent).pipe(
+      Effect.orElseSucceed(() => false),
+      Effect.flatMap((callerIsChild) => Effect.fail(new Tool.Error({ message: callerIsChild
+        ? `${found} Copy the exact child session ID from the subagent result that reported it, or omit sessionID to start a fresh ${args.agent} subagent call.`
+        : `${found} Read the exact child session IDs with hive_background_status({ includeSettled: true }), or omit sessionID to start a fresh ${args.agent} subagent call.` }))),
+    );
+  };
+
   /** Whether the target agent may be continued at all; decided before any host read. */
   const resumable = (child: string) => {
     if (target.kind === 'role' && !RESUMABLE_SUBAGENT_ROLES.has(target.role)) {
@@ -228,6 +250,7 @@ function dispatchSubagent(
     // A continuation takes its reservation before any awaited read, so two calls of this activation never interleave
     // their reads of one child.
     if (args.sessionID !== undefined) {
+      yield* wellFormed(args.sessionID);
       yield* resumable(args.sessionID).pipe(Effect.mapError(refused));
       yield* admit(args.sessionID, NOT_CONTINUED).pipe(Effect.mapError(refused));
     }
@@ -249,6 +272,8 @@ function dispatchSubagent(
       prompt: args.prompt,
       foragerDispatch: target.kind === 'role' && target.role === 'forager-worker',
       fallbackTaskFolder: marker.state === 'none' ? stored?.taskFolder : undefined,
+      // The child's route and standing constraints reach it as its session instruction entry, written at the barrier.
+      includeRouteFooter: false,
     });
 
     const bind = (child: string) => Effect.gen(function* () {
@@ -265,13 +290,20 @@ function dispatchSubagent(
         }
         yield* requireSettled(child, NOT_PROMPTED);
       }
-      // Every bind rewrites the binding, so it carries the parent's current constraints and activity time. A
-      // continuation without a marker writes no association, so the stored task or run stays.
+      // A continuation without a marker writes no association, so the stored task or run stays.
+      const association: ChildAssociation = marker.state === 'none' ? { taskFolder: current?.taskFolder, adHocRunId: current?.adHocRunId } : childAssociation(marker);
+      // The child reads its route and standing constraints from this entry; without it the child is never prompted.
+      // It is written before the binding, so a failed write leaves `.hive` unchanged.
+      yield* writeChildSessionInstructions(context, child, snapshot, association).pipe(
+        Effect.catch((error: unknown) => refuse(`Hive could not write the route instructions of child session ${child} (${describe(error)}), so the child would run without its parent's route and standing constraints; ${NOT_PROMPTED}.`)),
+      );
+      // Every bind rewrites the binding, so it carries the parent's current constraints and activity time.
       try {
         services.sessionService.trackGlobal(child, { ...route, ...childAssociation(marker) });
       } catch (error) {
-        // A child already bound to this route runs on it; only the rewrite is lost.
-        if (current === undefined || !sameChildRoute(current, route)) {
+        // A child already bound to this route and this task or run runs on it; only the rewrite is lost. A task or
+        // run the call would adopt is not stored, so the child is not run with it.
+        if (current === undefined || !sameChildRoute(current, route) || current.taskFolder !== association.taskFolder || current.adHocRunId !== association.adHocRunId) {
           return yield* refuse(`Hive could not bind child session ${child} to its dispatch route (${describe(error)}); ${NOT_PROMPTED}.`);
         }
         console.warn(`[hive:routing] Hive could not rewrite the binding of child session ${child} (${describe(error)}); the child runs on its unchanged route. Before the write its stored binding named ${describeAssociation(current)}; whether the failed write changed it is unknown.`);

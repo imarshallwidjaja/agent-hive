@@ -285,6 +285,18 @@ describe('dispatch prompt composition shared by both hosts', () => {
     expect(explicitNull).not.toContain('hive-task-brief');
   });
 
+  it('omits the route footer on request while still removing earlier generated blocks and keeping the brief', () => {
+    const sources = stubSources();
+    const earlier = composeDispatchPrompt({ sources, snapshot: snapshot(), prompt: 'Hive task: 01-a', foragerDispatch: true });
+    const bare = composeDispatchPrompt({ sources, snapshot: snapshot(), prompt: earlier, foragerDispatch: true, includeRouteFooter: false });
+    expect(bare.startsWith('Hive task: 01-a\n\n<!-- hive-task-brief:start -->\n## Hive task brief\n')).toBe(true);
+    expect(bare.match(/<!-- hive-task-brief:start -->/g)).toHaveLength(1);
+    expect(bare).not.toContain('hive-route-snapshot');
+    expect(bare).not.toContain('Blocking only.');
+    expect(composeDispatchPrompt({ sources, snapshot: snapshot(), prompt: 'Look.', foragerDispatch: false, includeRouteFooter: false })).toBe('Look.');
+    expect(composeDispatchPrompt({ sources, snapshot: snapshot(), prompt: undefined, foragerDispatch: true, includeRouteFooter: false }).startsWith('<!-- hive-task-brief:start -->')).toBe(true);
+  });
+
   it('binds a child to the captured route, keeping an explicit null route and omitting an empty constraint register', () => {
     expect(childRouteRecord(snapshot({ featureName: null }), 'parent', 'forager-worker')).toEqual({
       parentSessionId: 'parent', projectRoot: '/project', featureName: null, agent: 'forager-worker',

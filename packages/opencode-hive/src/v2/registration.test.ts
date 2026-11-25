@@ -10,6 +10,7 @@ import { SUBAGENT_CLARIFICATION_PROMPT } from '../hooks/system-hook.js';
 import { HIVE_COMMANDS } from '../commands/registry.js';
 import { CODEMODE_READ_TOOLS } from '../runtime/host-profile.js';
 import { createHiveOperations } from '../runtime/hive-tools.js';
+import { createHiveServices } from '../runtime/hive-services.js';
 import { COUNCIL_SEAT_BASES } from '../runtime/role-policy.js';
 import { HIVE_TOOL_NAMES } from '../utils/plugin-manifest.js';
 import { createHiveAuthority, toModelRef } from './registration.js';
@@ -51,7 +52,9 @@ type UserSkill = { id: string; name: string; description: string; path: string; 
  */
 function createFakeHost(directory: string, options: Record<string, unknown> = {}, projectDirectory = directory) {
   const transforms = { agent: [] as Array<(editor: any) => void>, skill: [] as Array<(editor: any) => void>, command: [] as Array<(editor: any) => void>, tool: [] as Array<(editor: any) => void> };
-  const hooks = { before: [] as Array<(event: any) => Effect.Effect<void, any>>, context: [] as Array<(event: any) => Effect.Effect<void, any>>, compaction: [] as Array<(event: any) => Effect.Effect<void, any>>, generate: [] as Array<(event: any) => Effect.Effect<void, any>> };
+  type Hook = (event: any) => Effect.Effect<void, any>;
+  const hooks = { before: [] as Hook[], after: [] as Hook[], context: [] as Hook[], compaction: [] as Hook[], generate: [] as Hook[], prompt: [] as Hook[] };
+  const instructionEntries = new Map<string, unknown>();
   const sessions = new Map<string, Session>();
   const prompts: any[] = [];
   const switches: any[] = [];
@@ -76,10 +79,20 @@ function createFakeHost(directory: string, options: Record<string, unknown> = {}
     command: { transform: (cb: any) => Effect.sync(() => { transforms.command.push(cb); return registration; }) },
     tool: {
       transform: (cb: any) => Effect.sync(() => { transforms.tool.push(cb); return registration; }),
-      hook: (name: string, cb: any) => Effect.sync(() => { if (name === 'execute.before') hooks.before.push(cb); return registration; }),
+      hook: (name: string, cb: any) => Effect.sync(() => {
+        if (name === 'execute.before') hooks.before.push(cb);
+        if (name === 'execute.after') hooks.after.push(cb);
+        return registration;
+      }),
     },
     session: {
-      hook: (name: string, cb: any) => Effect.sync(() => { if (name === 'context' || name === 'compaction' || name === 'generate') hooks[name].push(cb); return registration; }),
+      hook: (name: string, cb: any) => Effect.sync(() => { if (name === 'context' || name === 'compaction' || name === 'generate' || name === 'prompt') hooks[name].push(cb); return registration; }),
+      instructions: {
+        entry: {
+          put: ({ sessionID, key, value }: { sessionID: string; key: string; value: unknown }) => Effect.sync(() => { instructionEntries.set(`${sessionID}/${key}`, value); }),
+          remove: ({ sessionID, key }: { sessionID: string; key: string }) => Effect.sync(() => { instructionEntries.delete(`${sessionID}/${key}`); }),
+        },
+      },
       get: ({ sessionID }: { sessionID: string }) => Effect.suspend(() => {
         sessionGets.push(sessionID);
         const session = sessions.get(sessionID);
@@ -171,8 +184,17 @@ function createFakeHost(directory: string, options: Record<string, unknown> = {}
     const info = tools().get(name);
     return Effect.runPromiseExit(info.execute(args, { ...caller, messageID: 'm', id: 'c', progress: () => Effect.void }));
   };
+  /** Executes a Hive tool and then runs every execute.after hook on its outcome, as the host does after each call. */
+  const executeWithAfter = async (name: string, args: unknown, caller: { sessionID: string; agent: string }) => {
+    const exit = await execute(name, args, caller);
+    const outcome = Exit.isSuccess(exit) ? { status: 'completed', result: exit.value } : { status: 'error', error: exit.cause };
+    for (const hook of hooks.after) await Effect.runPromise(hook({ tool: name, ...caller, messageID: 'm', id: 'c', input: args, codemode: false, ...outcome }));
+    return exit;
+  };
+  /** Runs every prompt hook, as the host does before it admits a prompt to the session. */
+  const prompt = (sessionID: string) => Effect.runPromise(Effect.forEach(hooks.prompt, (hook) => hook({ sessionID }), { discard: true }));
   return {
-    context, sessions, prompts, switches, modelSwitches, sessionGets, agents, tools, toolCatalog, skills, commands, before, request, requestDraft, execute,
+    context, sessions, prompts, switches, modelSwitches, sessionGets, agents, tools, toolCatalog, skills, commands, before, request, requestDraft, execute, executeWithAfter, prompt, instructionEntries,
     /** What `context.agent.list()` reports from now on: Hive's defaults with this user configuration applied. */
     useAgentConfig: (config: UserAgentConfig) => { userConfig = config; },
     /** Adds a skill from a user-configured source; the host applies it after plugin transforms, so it wins on id. */
@@ -890,6 +912,11 @@ describe('v2 native precedence and canonical instructions', () => {
       expect(automationDenies(id), id).toEqual(['create', 'delete', 'pause', 'resume']);
     }
     expect(automationDenies('build')).toEqual([]);
+    const interruptDenied = (id: string) => defaults.registry.get(id)!.permissions.some((rule: { action: string; effect: string }) => rule.action === 'opencode_session_interrupt' && rule.effect === 'deny');
+    for (const id of ['scout-researcher', 'scout-fast', 'forager-worker', 'swarm-orchestrator', 'general', 'explore']) {
+      expect(interruptDenied(id), id).toBe(true);
+    }
+    expect(interruptDenied('build')).toBe(false);
     expect(defaults.selected).toBe('architect-planner');
     expect(defaults.registry.get('swarm-orchestrator')!.system).toBeUndefined();
     expect(defaults.registry.get('general')!.permissions).toContainEqual({ action: 'hive_*', resource: '*', effect: 'deny' });
@@ -952,16 +979,71 @@ describe('v2 native precedence and canonical instructions', () => {
         }
       }
       for (const kind of ['compaction', 'generate'] as const) {
-        const draft = await host.requestDraft({ kind, sessionID: 'child', agent: 'scout-researcher', system: ['USER SCOUT PROMPT'], tools: ['read'] });
-        // A child session without `execute` would get the clarification rule and the Code Mode notice on an ordinary turn.
-        // Skill guidance reaches these requests too, so the universal skill is the only addition for a role with no configured names.
-        expect(draft.system.map((part: { text: string }) => part.text)).toEqual(['USER SCOUT PROMPT', registered, expect.stringContaining('skill({ id: "unslop" })')]);
         const unmanaged = await host.requestDraft({ kind, sessionID: 'primary', agent: 'build', system: ['BUILD'] });
         expect(unmanaged.system).toEqual([{ type: 'text', text: 'BUILD' }]);
       }
+      // A child session without `execute` gets the clarification rule and the Code Mode notice on turn-prefixed
+      // requests; generate gets only the role instructions and skill guidance (here the universal skill alone).
+      const generate = await host.request({ kind: 'generate', sessionID: 'child', agent: 'scout-researcher', system: ['USER SCOUT PROMPT'], tools: ['read'] });
+      expect(generate).toEqual(['USER SCOUT PROMPT', registered, expect.stringContaining('skill({ id: "unslop" })')]);
       const ordinary = await host.request({ sessionID: 'child', agent: 'scout-researcher', system: ['USER SCOUT PROMPT'], tools: ['read'] });
       expect(ordinary).toContain(SUBAGENT_CLARIFICATION_PROMPT.trim());
       expect(warn.mock.calls.filter(([message]) => String(message).includes('removed setting temperature'))).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("keeps a primary session's route instruction entry current through activation, and writes none on a model request", async () => {
+    const host = await activate();
+    const caller = { sessionID: 'primary', agent: 'swarm-orchestrator' };
+    const entry = () => host.instructionEntries.get('primary/hive.session') as string | undefined;
+    // A constraint another client wrote reaches the entry at the next prompt.
+    const seeded = createHiveServices({ projectRoot: host.root, nativeObservationOwner: 'opencode-v2' });
+    seeded.sessionService.addStandingConstraint('primary', 'Seeded before the prompt.');
+    expect(entry()).toBeUndefined();
+    await host.prompt('primary');
+    expect(entry()).toContain('Session constraints (revision 1):\nSeeded before the prompt.');
+    const register = seeded.sessionService.readStandingConstraints('primary');
+    seeded.sessionService.clearStandingConstraints('primary', register.revision);
+    await host.prompt('primary');
+    expect(entry()).toBeUndefined();
+    expect(Exit.isSuccess(await host.executeWithAfter('hive_feature_create', { name: 'alpha' }, caller))).toBe(true);
+    expect(Exit.isSuccess(await host.executeWithAfter('hive_feature_select', { feature: 'alpha' }, caller))).toBe(true);
+    expect(entry()).toContain('"featureRoute":{"selected":true,"feature":"alpha"}');
+    expect(Exit.isSuccess(await host.executeWithAfter('hive_constraints_add', { constraints: 'Prefer small diffs.' }, caller))).toBe(true);
+    expect(entry()).toContain('Session constraints (revision 3):\nPrefer small diffs.');
+    // A model request writes no entry.
+    host.instructionEntries.clear();
+    await host.request({ sessionID: 'primary', agent: 'swarm-orchestrator', system: ['x'] });
+    await host.request({ kind: 'compaction', sessionID: 'primary', agent: 'swarm-orchestrator', system: ['x'] });
+    expect(host.instructionEntries.size).toBe(0);
+  });
+
+  it('gives a compaction the same system parts as an ordinary turn, while generate stays minimal', async () => {
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      for (const readTransport of ['codemode', 'direct'] as const) {
+        const host = await activate({ readTransport });
+        const cases = [
+          { sessionID: 'primary', agent: 'swarm-orchestrator', tools: ['execute', 'read'] },
+          { sessionID: 'child', agent: 'scout-researcher', tools: ['execute', 'read'] },
+          { sessionID: 'primary', agent: 'hive-helper', tools: ['read'] },
+          { sessionID: 'child', agent: 'scout-researcher', tools: ['read'] },
+        ];
+        for (const request of cases) {
+          const label = `${readTransport} ${request.sessionID} ${request.agent} ${request.tools.join('+')}`;
+          const turn = await host.request({ ...request, kind: 'context', system: ['HOST PROMPT'] });
+          const compaction = await host.request({ ...request, kind: 'compaction', system: ['HOST PROMPT'] });
+          const generate = await host.request({ ...request, kind: 'generate', system: ['HOST PROMPT'] });
+          expect(compaction, label).toEqual(turn);
+          expect(generate, label).toEqual(turn.slice(0, 3));
+          // Each case adds what only a turn carries: the clarification rule for a child, the notice without execute.
+          const extras = turn.slice(3);
+          expect(extras.includes(SUBAGENT_CLARIFICATION_PROMPT.trim()), label).toBe(request.sessionID === 'child');
+          expect(extras.some((text) => text.includes('## Hive Read Transport Setup')), label).toBe(readTransport === 'codemode' && !request.tools.includes('execute'));
+        }
+      }
     } finally {
       warn.mockRestore();
     }

@@ -269,13 +269,22 @@ function registerCommands(context: Plugin.Context, input: { host: HostProfile; c
 }
 
 /**
+ * How a request's system prompt is shaped. A `turn-prefixed` request (an ordinary turn, `context`, and the compaction
+ * that summarizes such turns) gets the full turn prefix, identical for both, so a compaction summarizes the session
+ * under the rules its turns ran under and reuses their prompt prefix. An `auxiliary` request (`generate`) gets only the
+ * role instructions and skill guidance.
+ */
+type RequestShape = 'turn-prefixed' | 'auxiliary';
+
+/**
  * Keeps each Hive role's canonical instructions in every model request it makes:
  * ordinary turns (`context`) and the public auxiliary requests that carry the agent (`compaction`, `generate`). An
  * agent the user gave its own system prompt keeps it, and the Hive instructions follow it; nothing the user wrote is
  * replaced. Skill guidance (the skill name lookup and auto-load names) is resolved against the live skill catalog on
- * each request. Ordinary turns also get what only a turn with tools needs: the subagent clarification rule in child
- * sessions and, under the `codemode` read transport, a plain notice for an agent whose permissions deny `execute`,
- * whose Code Mode reads are unavailable. The title request names no agent and is left alone.
+ * each request. Turn-prefixed requests also get the subagent clarification rule in child sessions and, under the
+ * `codemode` read transport, a plain notice for an agent whose permissions deny `execute`, whose Code Mode reads are
+ * unavailable. The title request names no agent and is left alone. No request reads `.hive`: the session's route and
+ * standing constraints reach it as a session instruction entry (`session-instructions.ts`).
  */
 function registerRequestPolicy(context: Plugin.Context, input: { host: HostProfile; roles: RoleCatalog; authority: HiveAuthority; skills: Effect.Effect<SkillLookups> }) {
   const { host, roles, authority, skills } = input;
@@ -289,7 +298,7 @@ function registerRequestPolicy(context: Plugin.Context, input: { host: HostProfi
     warned.add(message);
     console.warn(message);
   };
-  const apply = (event: SessionContext, ordinary: boolean) => Effect.gen(function* () {
+  const apply = (event: SessionContext, shape: RequestShape) => Effect.gen(function* () {
     const agent: string = event.agent;
     const caller = authority.resolve(agent);
     const parts: string[] = [];
@@ -297,7 +306,7 @@ function registerRequestPolicy(context: Plugin.Context, input: { host: HostProfi
     if (instructions && !event.system.some((part) => 'text' in part && part.text.includes(instructions))) parts.push(instructions);
     const guidance = roles.skillGuidance(agent, yield* skills, warnOnce).trim();
     if (guidance && !event.system.some((part) => 'text' in part && part.text.includes(guidance))) parts.push(guidance);
-    if (ordinary) {
+    if (shape === 'turn-prefixed') {
       if (caller.kind === 'role' && host.readTransport === 'codemode' && !('execute' in event.tools)) {
         const reads = CODEMODE_READ_TOOLS.filter((tool) => authority.policy[caller.role].hiveTools.includes(tool));
         if (reads.length > 0) {
@@ -310,9 +319,9 @@ function registerRequestPolicy(context: Plugin.Context, input: { host: HostProfi
     for (const text of parts) event.system.push({ type: 'text', text });
   });
   return Effect.all([
-    context.session.hook('context', (event) => apply(event, true)),
-    context.session.hook('compaction', (event) => apply(event, false)),
-    context.session.hook('generate', (event) => apply(event, false)),
+    context.session.hook('context', (event) => apply(event, 'turn-prefixed')),
+    context.session.hook('compaction', (event) => apply(event, 'turn-prefixed')),
+    context.session.hook('generate', (event) => apply(event, 'auxiliary')),
   ]).pipe(Effect.asVoid);
 }
 

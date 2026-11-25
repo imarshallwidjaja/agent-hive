@@ -9,6 +9,7 @@ import plugin from '../index.js';
 import { createHiveServices, type HiveServices } from '../runtime/hive-services.js';
 import { NATIVE_SUBAGENT_TOOL, registerDispatch } from './dispatch.js';
 import { createHiveAuthority } from './registration.js';
+import { HIVE_SESSION_INSTRUCTION_KEY } from './session-instructions.js';
 
 // Dispatch owns what Hive adds to the host's own subagent tool: the parent's route and constraints, the composed
 // prompt, managed-model control, the continuation preflight and the child-binding barrier on the awaited progress
@@ -26,7 +27,7 @@ afterEach(() => {
 
 type ModelRef = { providerID: string; id: string; variant?: string };
 type Session = { id: string; parentID?: string; agent?: string; model?: ModelRef; location?: { directory: string } };
-type Admission = { child: string; text: string; boundParent?: string; boundFeature?: string | null; boundConstraints?: string; boundAgent?: string };
+type Admission = { child: string; text: string; boundParent?: string; boundFeature?: string | null; boundConstraints?: string; boundAgent?: string; instructions?: string };
 
 /** A model reference as the host stores it; `test/<id>` unless written out. */
 const ref = (id: string, variant?: string, providerID = 'test'): ModelRef => ({ providerID, id, ...(variant === undefined ? {} : { variant }) });
@@ -83,6 +84,9 @@ function fakeHost(services: HiveServices, options: { directory?: string; pauseBe
       return signal === undefined ? { settled: true as const } : { settled: false as const, signal, detail: `${signal} signal for ${childID}` };
     },
   };
+  // The host's session instruction entries, by session then key; `fail` makes every write fail.
+  const entries = new Map<string, Map<string, unknown>>();
+  const entryState: { fail?: Error } = {};
   let next = 0;
   const transforms: Array<(editor: any) => void> = [];
   const context = {
@@ -105,6 +109,17 @@ function fakeHost(services: HiveServices, options: { directory?: string; pauseBe
         // Like the host's `Session.fromRow`, a stored model reports `default` when it has no variant.
         return session ? Effect.succeed({ location: { directory }, ...session, ...(session.model === undefined ? {} : { model: { ...session.model, variant: session.model.variant ?? 'default' } }) }) : Effect.fail(new Error(`unknown session ${sessionID}`));
       }),
+      instructions: {
+        entry: {
+          put: ({ sessionID, key, value }: { sessionID: string; key: string; value: unknown }) => Effect.suspend(() => {
+            if (entryState.fail) return Effect.fail(entryState.fail);
+            if (!entries.has(sessionID)) entries.set(sessionID, new Map());
+            entries.get(sessionID)!.set(key, value);
+            return Effect.void;
+          }),
+          remove: ({ sessionID, key }: { sessionID: string; key: string }) => Effect.sync(() => { entries.get(sessionID)?.delete(key); }),
+        },
+      },
     },
   } as unknown as Plugin.Context;
 
@@ -145,6 +160,7 @@ function fakeHost(services: HiveServices, options: { directory?: string; pauseBe
         boundFeature: bound?.featureName,
         boundConstraints: bound?.standingConstraints,
         boundAgent: bound?.agent,
+        instructions: entries.get(child)?.get(HIVE_SESSION_INSTRUCTION_KEY) as string | undefined,
       });
       options.afterAdmission?.(child);
       if (options.blockForever) yield* Effect.never;
@@ -169,7 +185,7 @@ function fakeHost(services: HiveServices, options: { directory?: string; pauseBe
       return yield* subagent().execute(event.input, { sessionID: parent, agent: caller, messageID: 'msg', id: callID, progress: () => Effect.void });
     }));
   };
-  return { context, sessions, admissions, nativeInputs, switches, catalog, beforeHooks, jobs, inbox, active, activity, activityState, call, subagent };
+  return { context, sessions, admissions, nativeInputs, switches, catalog, beforeHooks, jobs, inbox, active, activity, activityState, entries, entryState, call, subagent };
 }
 
 async function setup(options: Parameters<typeof fakeHost>[1] & { features?: string[]; customAgents?: Record<string, ResolvedCustomAgentConfig> } = {}) {
@@ -218,14 +234,67 @@ describe('v2 native dispatch', () => {
     expect(admission.boundParent).toBe('parent');
     expect(admission.boundFeature).toBe('alpha');
     expect(admission.boundConstraints).toContain('Use blocking calls only.');
-    // Hive composed the parent's own prompt; the host prefix comes after, on top of it.
-    expect(host.nativeInputs[0].prompt.startsWith('Hive task: 01-build\nBuild it.\n\n<!-- hive-route-snapshot:start -->')).toBe(true);
+    // Hive composed the parent's own prompt, without the stale footer, and the brief; the host prefix comes after.
+    expect(host.nativeInputs[0].prompt.startsWith('Hive task: 01-build\nBuild it.\n\n<!-- hive-task-brief:start -->\n## Hive task brief\n')).toBe(true);
     expect(admission.text.startsWith('You are a subagent spawned by another session.\nHive task: 01-build')).toBe(true);
     expect(admission.text).not.toContain('\nstale\n');
-    expect(admission.text).toContain(`Route snapshot (JSON): {"projectRoot":"${root}","featureRoute":{"selected":true,"feature":"alpha"}}`);
-    expect(admission.text).toContain('Feature constraints for "alpha" (revision 1):\nPublic APIs only.');
-    expect(admission.text).toContain('<!-- hive-task-brief:start -->\n## Hive task brief\n');
+    expect(admission.text).not.toContain('hive-route-snapshot');
+    expect(admission.text).not.toContain('Use blocking calls only.');
     expect(admission.text).toContain('Task: 01-build - Build (pending)');
+    // The route, constraints and task reach the child as its instruction entry, written before its prompt.
+    expect(admission.instructions).toContain(`Route (JSON): {"projectRoot":"${root}","featureRoute":{"selected":true,"feature":"alpha"}}\nTask: 01-build\n`);
+    expect(admission.instructions).toContain('Session constraints (revision 1):\nUse blocking calls only.');
+    expect(admission.instructions).toContain('Feature constraints for "alpha" (revision 1):\nPublic APIs only.');
+    // The parent gets no entry from a dispatch.
+    expect(host.entries.has('parent')).toBe(false);
+  });
+
+  it('writes a continued child the parent current constraints and keeps its stored task when the follow-up has no marker', async () => {
+    const context = await setup();
+    context.services.sessionService.setFeatureRoute('parent', 'alpha');
+    const child = await dispatchedChild(context);
+    context.services.sessionService.addStandingConstraint('parent', 'Added after the first dispatch.');
+
+    const continued = await context.host.call('parent', { agent: 'forager-worker', prompt: 'Continue.', sessionID: child });
+    expect(Exit.isSuccess(continued)).toBe(true);
+    const instructions = context.host.admissions.at(-1)!.instructions!;
+    expect(instructions).toContain('\nTask: 01-build\n');
+    expect(instructions).toContain('Session constraints (revision 1):\nAdded after the first dispatch.');
+  });
+
+  it('refuses a child whose instruction entry cannot be written, before its prompt', async () => {
+    const { services, host } = await setup();
+    services.sessionService.setFeatureRoute('parent', null);
+    services.sessionService.addStandingConstraint('parent', 'Stay small.');
+    host.entryState.fail = new Error('entry store offline');
+    const refused = await host.call('parent', { agent: 'forager-worker', prompt: 'Do it.' });
+    expect(failureMessage(refused)).toBe("Hive could not write the route instructions of child session child-1 (entry store offline), so the child would run without its parent's route and standing constraints; the child was not prompted.");
+    expect(host.admissions).toEqual([]);
+    // The entry is written before the binding, so the refused child leaves no binding in `.hive`.
+    expect(services.sessionService.peekGlobal('child-1')).toBeUndefined();
+
+    host.entryState.fail = undefined;
+    const ran = await host.call('parent', { agent: 'scout-researcher', prompt: 'Look.' });
+    expect(Exit.isSuccess(ran)).toBe(true);
+    const instructions = host.admissions[0].instructions!;
+    expect(instructions).toContain('"featureRoute":{"selected":true,"feature":null}');
+    expect(instructions).not.toContain('Task:');
+    expect(instructions).toContain('Stay small.');
+  });
+
+  it('leaves a continued child binding unchanged when its instruction entry cannot be written for a task it would adopt', async () => {
+    const { services, host } = await setup();
+    services.sessionService.setFeatureRoute('parent', 'alpha');
+    expect(Exit.isSuccess(await host.call('parent', { agent: 'forager-worker', prompt: 'Go.' }, 'call-first'))).toBe(true);
+    const child = host.admissions.at(-1)!.child;
+    const before = services.sessionService.peekGlobal(child);
+    expect(before?.taskFolder).toBeUndefined();
+
+    host.entryState.fail = new Error('entry store offline');
+    const refused = await host.call('parent', { agent: 'forager-worker', prompt: 'Hive task: 01-build', sessionID: child }, 'call-adopt');
+    expect(failureMessage(refused)).toContain(`Hive could not write the route instructions of child session ${child} (entry store offline)`);
+    expect(host.admissions).toHaveLength(1);
+    expect(services.sessionService.peekGlobal(child)).toEqual(before);
   });
 
   it('keeps parallel dispatches from different parents on their own captured snapshots', async () => {
@@ -246,7 +315,8 @@ describe('v2 native dispatch', () => {
 
     const byParent = Object.fromEntries(host.admissions.map((admission) => [admission.boundParent, admission]));
     expect(byParent['parent-a'].boundFeature).toBe('alpha');
-    expect(byParent['parent-a'].text).toContain('"feature":"alpha"');
+    expect(byParent['parent-a'].instructions).toContain('"feature":"alpha"');
+    expect(byParent['parent-b'].instructions).toContain('"feature":"beta"');
     expect(byParent['parent-a'].boundConstraints).toBeUndefined();
     expect(byParent['parent-b'].boundFeature).toBe('beta');
     expect(byParent['parent-b'].boundConstraints).toContain('Only beta.');
@@ -266,16 +336,30 @@ describe('v2 native dispatch', () => {
     await host.call('feature-parent', { agent: 'team-investigator', prompt: 'Hive task: 01-build' });
 
     const [nullRoute, scout, custom, builtInInvestigator, customInvestigator] = host.admissions;
-    // Investigators carry the generic route snapshot but never the Forager task brief.
+    // Investigators carry the generic route but never the Forager task brief.
     for (const admission of [builtInInvestigator, customInvestigator]) {
-      expect(admission.text).toContain('"featureRoute":{"selected":true,"feature":"alpha"}');
+      expect(admission.instructions).toContain('"featureRoute":{"selected":true,"feature":"alpha"}');
       expect(admission.text).not.toContain('hive-task-brief');
     }
-    expect(nullRoute.text).toContain('"featureRoute":{"selected":true,"feature":null}');
+    expect(nullRoute.instructions).toContain('"featureRoute":{"selected":true,"feature":null}');
     expect(nullRoute.text).not.toContain('hive-task-brief');
     expect(nullRoute.boundFeature).toBeNull();
     expect(scout.text).not.toContain('hive-task-brief');
     expect(custom.text).toContain('Task: 01-build - Build (pending)');
+  });
+
+  it('refuses a blank, whitespace-holding or bare "ses" or "ses_" sessionID before any host effect, telling each caller what it can do', async () => {
+    const { host } = await setup();
+    host.sessions.set('sub', { id: 'sub', parentID: 'parent', agent: 'architect-planner' });
+    for (const sessionID of ['ses', 'ses_', 'ses\n', '', '  ', 'ses_abc def']) {
+      const primary = failureMessage(await host.call('parent', { agent: 'forager-worker', prompt: 'Continue.', sessionID }));
+      expect(primary, JSON.stringify(sessionID)).toBe(`Subagent sessionID ${JSON.stringify(sessionID)} is malformed or truncated (likely the bare "ses" prefix of a session ID), so the host was not asked to continue the child. Read the exact child session IDs with hive_background_status({ includeSettled: true }), or omit sessionID to start a fresh forager-worker subagent call.`);
+      const child = failureMessage(await host.call('sub', { agent: 'scout-researcher', prompt: 'Continue.', sessionID }, undefined, 'architect-planner'));
+      expect(child, JSON.stringify(sessionID)).toBe(`Subagent sessionID ${JSON.stringify(sessionID)} is malformed or truncated (likely the bare "ses" prefix of a session ID), so the host was not asked to continue the child. Copy the exact child session ID from the subagent result that reported it, or omit sessionID to start a fresh scout-researcher subagent call.`);
+    }
+    expect(host.nativeInputs).toEqual([]);
+    expect(host.activityState.reads).toBe(0);
+    expect(host.catalog.reads).toBe(0);
   });
 
   it('refuses a child the host does not report as a child of the calling session; it is never prompted', async () => {
@@ -309,7 +393,7 @@ describe('v2 native dispatch', () => {
     expect(Exit.isSuccess(continued)).toBe(true);
     expect(host.nativeInputs[0].sessionID).toBe('child-y');
     expect(host.admissions[0]).toMatchObject({ child: 'child-y', boundParent: 'parent', boundFeature: 'alpha' });
-    expect(host.admissions[0].text.startsWith('Continue.\n\n<!-- hive-route-snapshot:start -->')).toBe(true);
+    expect(host.admissions[0].text.startsWith('Continue.\n\n<!-- hive-task-brief:start -->')).toBe(true);
     // One settlement read at the preflight and one again at the barrier.
     expect(host.activityState.reads).toBe(2);
   });
@@ -381,6 +465,9 @@ describe('v2 native dispatch', () => {
       { taskFolder: undefined, adHocRunId: 'run-1' },
       { taskFolder: undefined, adHocRunId: undefined },
     ]);
+    // Each child's instruction entry names the same association; an unresolved marker names none.
+    const bindingLine = (n: number) => host.entries.get(`child-${n}`)!.get(HIVE_SESSION_INSTRUCTION_KEY)!.toString().split('\n')[2];
+    expect([1, 3, 5].map(bindingLine)).toEqual(['Task: 01-build', 'Ad-hoc run: run-1', '']);
   });
 
   it('keeps a continued child on its own project, feature and task or run, and refuses a follow-up for another', async () => {
@@ -469,6 +556,27 @@ describe('v2 native dispatch', () => {
       expect(failureMessage(await host.call('parent', { agent: 'forager-worker', prompt: 'Hive task: 01-build' }, 'call-new'))).toContain('Hive could not bind child session child-2 to its dispatch route (EACCES');
       expect(host.admissions).toHaveLength(before);
       expect(services.sessionService.getGlobal(tasked)?.standingConstraints).toBeUndefined();
+    } finally {
+      warn.mockRestore();
+      services.sessionService.trackGlobal = track;
+    }
+  });
+
+  it('refuses a same-route continuation that would adopt a task when the binding rewrite fails, before its prompt', async () => {
+    const { services, host } = await setup();
+    services.sessionService.setFeatureRoute('parent', 'alpha');
+    expect(Exit.isSuccess(await host.call('parent', { agent: 'forager-worker', prompt: 'Go.' }, 'call-first'))).toBe(true);
+    const child = host.admissions.at(-1)!.child;
+    const before = services.sessionService.peekGlobal(child);
+    const track = services.sessionService.trackGlobal;
+    services.sessionService.trackGlobal = () => { throw new Error('EACCES: permission denied, open sessions.json'); };
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const refused = await host.call('parent', { agent: 'forager-worker', prompt: 'Hive task: 01-build', sessionID: child }, 'call-adopt');
+      expect(failureMessage(refused)).toContain(`Hive could not bind child session ${child} to its dispatch route (EACCES`);
+      expect(host.admissions).toHaveLength(1);
+      expect(warn).not.toHaveBeenCalled();
+      expect(services.sessionService.peekGlobal(child)).toEqual(before);
     } finally {
       warn.mockRestore();
       services.sessionService.trackGlobal = track;
@@ -650,7 +758,7 @@ describe('v2 native dispatch', () => {
     const admission = host.admissions.at(-1)!;
     expect(admission.child).toBe(child);
     expect(admission.boundFeature).toBe('alpha');
-    expect(admission.text).toContain('"feature":"alpha"');
+    expect(admission.instructions).toContain('"feature":"alpha"');
   });
 
   it('treats unknown host activity as not idle for every continuation, and needs no activity read for a fresh dispatch', async () => {
@@ -951,7 +1059,9 @@ describe('v2 native dispatch', () => {
     services.sessionService.setFeatureRoute('parent', 'alpha');
     expect(Exit.isSuccess(await host.call('parent', { agent: 'forager-worker', prompt: 'Hive task: 01-build' }))).toBe(true);
     expect(host.admissions[0]).toMatchObject({ boundParent: 'parent', boundFeature: 'alpha' });
-    expect(host.admissions[0].text).toContain('<!-- hive-route-snapshot:start -->');
+    // The production activation writes the child's route entry at the barrier, so the prompt carries no footer.
+    expect(host.admissions[0].instructions).toContain('"featureRoute":{"selected":true,"feature":"alpha"}');
+    expect(host.admissions[0].text).not.toContain('hive-route-snapshot');
 
     // Another plugin's hook, registered after Hive's, injects a model into the call; the wrapper sees the final input.
     expect(host.beforeHooks.length).toBeGreaterThan(0);
