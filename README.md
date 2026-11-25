@@ -63,6 +63,7 @@ The [Operator Guide](docs/OPERATOR-GUIDE.md) covers each step in depth: source c
 
 | Workflow | When | How you start |
 |----------|------|----------------|
+| `/sharpen` | Deepen a rough prompt or idea, reframed with expert vocabulary when warranted, into one rewritten prompt and a recommended next command, without acting on it | `/sharpen [prompt or idea]` |
 | `/grill` | Pressure-test supplied context into confirmed decisions, constraints, scope and acceptance criteria, then get a recommended next step | `/grill <context>` |
 | `/investigate` | Evidence-backed diagnosis with a proposed fix and success criteria, without changing code | `/investigate [problem]` |
 | `/walkthrough` | Grounded explanation of how a subsystem works now, or of what a finished change did | `/walkthrough [subsystem or change]` |

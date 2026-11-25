@@ -78,6 +78,21 @@ function configuredVulnerabilityReviewCandidates(context: HiveCommandContext): s
 }
 
 export const hiveCommandRenderers: HiveCommandRenderers<HiveCommandKey> = {
+  sharpen(args, context) {
+    return renderHybridCommand('sharpen', context, {
+      details: [operatorText('sharpen', args)],
+      doItems: [
+        `Load the \`sharpening\` skill with ${skillCall(context.host, 'sharpening')} and follow it with the operator text above as the candidate prompt. Blank text means the prompt or topic this conversation is currently about.`,
+      ],
+      doNotItems: [
+        'If the `sharpening` skill is unavailable, disabled, or ambiguous, say what is missing and stop. Do not search generated skill caches for a copy, switch agents, or improvise the method.',
+      ],
+      outputItems: [
+        'The sharpening result the `sharpening` skill defines, or the missing-skill stop reason.',
+      ],
+    });
+  },
+
   interview(args, context) {
     return renderHybridCommand('interview', context, {
       details: [`Topic: ${topicOrCurrent(args, 'clarify the operator idea')}`],

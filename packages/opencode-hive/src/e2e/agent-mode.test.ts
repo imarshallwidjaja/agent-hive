@@ -114,7 +114,7 @@ describe('agent registration', () => {
     expect(template).not.toMatch(/\$\d+/);
     for (const name of ['grill', 'interview']) expect(config.command[name].template).toContain('$ARGUMENTS');
     // The other unbound operator commands take the same single wrapped substitution and pin no agent.
-    for (const name of ['investigate', 'walkthrough', 'handoff', 'merge-to-main']) {
+    for (const name of ['sharpen', 'investigate', 'walkthrough', 'handoff', 'merge-to-main']) {
       expect(Object.keys(config.command[name]).sort(), name).toEqual(['description', 'template']);
       const unboundTemplate: string = config.command[name].template;
       expect(unboundTemplate, name).toContain('<operator-text>\n$ARGUMENTS\n</operator-text>');

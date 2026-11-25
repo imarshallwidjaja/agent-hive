@@ -37,7 +37,7 @@ import {
   credentialFromSnapshot, evidenceScanner, fingerprintWire, hasJwtShape, scanValue, secretScanner, snapshotAuthFile,
 } from './credentials.mjs';
 import { GuardState, parseWireFingerprint, sharedClockMs } from './guard.mjs';
-import { HIVE_RESULT_OMITTED_TOOLS, HIVE_TOOL_NAMES as EXERCISE_HIVE_TOOL_NAMES, MESSAGE_ID, exerciseHiveConfig, exerciseHostConfig, exerciseMessageId, exerciseRoutes, nativeStorePath } from './hosts.mjs';
+import { HIVE_COMMANDS as EXERCISE_HIVE_COMMANDS, HIVE_RESULT_OMITTED_TOOLS, HIVE_TOOL_NAMES as EXERCISE_HIVE_TOOL_NAMES, MESSAGE_ID, exerciseHiveConfig, exerciseHostConfig, exerciseMessageId, exerciseRoutes, nativeStorePath } from './hosts.mjs';
 import { exerciseCoreFailures } from './runtime.mjs';
 import {
   ACTIONS, CLOCK_MARGIN_MS, DRIVER_FAILURES, DRIVER_REFUSALS, EXIT, INTERRUPT_FLOOR_MS, LIVE_MAX_SECONDS, NO_NEW_WORK_MS, PROJECT_ROOT, QUALIFICATION_CHECKS, acquireRunLock, actionReserveMs,
@@ -50,6 +50,7 @@ import {
   observedApprovals, pendingInteractions, planExport, quiescence, readHistory, release as driverRelease, releasedPending, resolveOperation, sessionTree, submit as driverSubmit, toolRecord,
 } from './exercise-driver.ts';
 import { HIVE_TOOL_NAMES as MANIFEST_HIVE_TOOL_NAMES } from '../../src/utils/plugin-manifest.ts';
+import { HIVE_COMMANDS as REGISTRY_HIVE_COMMANDS } from '../../src/commands/registry.ts';
 import { PLAN_READ_LIMITS, planReadDifferences, readPlan } from './plan-reader.ts';
 
 const SCENARIOS = JSON.parse(readFileSync(join(import.meta.dir, 'scenarios.json'), 'utf8'));
@@ -4933,6 +4934,10 @@ describe('supervised exercise native adapters', () => {
   test('the exercise Hive tool list is the plugin manifest list', () => {
     expect([...EXERCISE_HIVE_TOOL_NAMES]).toEqual([...MANIFEST_HIVE_TOOL_NAMES]);
     expect(HIVE_RESULT_OMITTED_TOOLS.every((name: string) => EXERCISE_HIVE_TOOL_NAMES.includes(name))).toBe(true);
+  });
+
+  test('the wiring command list is the plugin command registry', () => {
+    expect([...EXERCISE_HIVE_COMMANDS]).toEqual(REGISTRY_HIVE_COMMANDS.map((command) => command.key));
   });
 
   test('a fabricated Code Mode approval never satisfies the approval, read or switch checks, even when the core plan really is approved', async () => {

@@ -1300,7 +1300,7 @@ describe('v2 skills, commands and models', () => {
     expect(host.switches).toHaveLength(switchesBefore);
     expect(host.modelSwitches).toEqual([]);
     // The other unbound operator commands also prompt the session they were run in, on whatever agent it has.
-    for (const name of ['investigate', 'walkthrough', 'handoff', 'merge-to-main']) {
+    for (const name of ['sharpen', 'investigate', 'walkthrough', 'handoff', 'merge-to-main']) {
       await Effect.runPromise(commands.get(name).execute({ sessionID: 'i2', prompt: { text: prose }, delivery: 'steer' }));
       expect(host.prompts.at(-1), name).toMatchObject({ sessionID: 'i2', delivery: 'steer' });
       expect(host.prompts.at(-1).text, name).toContain(`Operator text after /${name} (blank when none):\n<operator-text>\n${prose}\n</operator-text>`);

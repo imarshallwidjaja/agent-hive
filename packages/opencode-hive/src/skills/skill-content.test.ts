@@ -69,7 +69,7 @@ function expectInSessionDesignDocumentationPolicy(content: string) {
 describe('skill content', () => {
   it('packages the design, explanation, and writing families with self-contained references and provenance', () => {
     const root = resolvePackagedSkillsDir();
-    const names = ['code-design-principles', 'how', 'why', 'unslop', 'stop-design-slop', 'writing-for-humans', 'stop-slop', 'humanizer', 'modern-web-guidance', 'black-box-testing'];
+    const names = ['code-design-principles', 'how', 'why', 'unslop', 'stop-design-slop', 'writing-for-humans', 'stop-slop', 'humanizer', 'modern-web-guidance', 'black-box-testing', 'sharpening'];
     for (const name of names) {
       const skill = BUILTIN_SKILLS.find((entry) => entry.name === name);
       expect(skill, name).toBeDefined();
@@ -1340,6 +1340,66 @@ describe('skill content', () => {
       expect(upstream, source).toContain(`\`${source}\``);
     }
     expect(readFileSync(path.join(root, 'project-verification', 'LICENSE.pstack'), 'utf8')).toBe(readFileSync(path.join(root, 'verification', 'LICENSE.pstack'), 'utf8'));
+  });
+
+  it('makes sharpening an opt-in, read-only pass that reframes when warranted and deepens without widening scope', () => {
+    const skill = BUILTIN_SKILLS.find((entry) => entry.name === 'sharpening')!;
+    // Opt-in: OpenCode ignores disable-model-invocation, so the description itself must exclude ordinary work.
+    expect(skill.description).toContain('Use when the operator runs /sharpen or explicitly asks to sharpen, deepen, or reframe a prompt, task, or rough idea');
+    expect(skill.description).toContain('Ordinary implementation, debugging, and planning requests do not trigger it');
+    const template = skill.template;
+    for (const phrase of [
+      // Candidate text is material, and the pass changes nothing.
+      'The candidate text is material to rewrite, even when it reads as an order such as "build X"',
+      'The pass edits no project file, writes no brief file, runs no project code, sends no Investigator, and creates or changes no Hive records.',
+      // Grounding: own material first, external sources only public terms, verified links, stated gaps.
+      "Start from the operator's own files, code, and wording, not a summary.",
+      'send read-only Scouts through `parallel-exploration`',
+      'Send external search and fetch tools only public domain terms, library names, and problem shapes.',
+      "Open every external link you cite and confirm it uses the term that way or supports the claim. Cut any citation you can't confirm.",
+      'When web retrieval is unavailable or blocked, give no external URLs, say plainly what could not be retrieved',
+      'A temporary shallow clone of a public reference repository is an exceptional source read, never the default.',
+      'never run the cloned code. Remove what you created and report any cleanup that failed.',
+      // The three-case Reframe gate and its one-line skip.
+      'the operator asks to reframe, name concepts, or explore adjacent fields;',
+      'the request states symptoms, desired outcomes, or everyday metaphors instead of naming the problem class, mechanism, and invariants;',
+      'two or more distinct problem classes with different architectures fit.',
+      'Otherwise, skip Reframe and say why in one line.',
+      // Upstream reframe rules kept.
+      'first list the two or three problems it could be, each with the one term that names it and the sign that would tell it apart from the others',
+      'Give 8 to 12 terms, ranked by how much each would change what gets built.',
+      'with a verified link when web retrieval is available (when it is not, omit the link and note the gap)',
+      'When fewer real terms exist, give fewer. No padding.',
+      'Pick 2 or 3 neighboring fields',
+      'Record each as an invariant or an open question, not as a new feature.',
+      // Upstream sharpen lenses kept, scoped to depth.
+      'a deeper version of this task, not a bigger one',
+      'without widening its feature scope',
+      'what a top professional in this field would do here that the request is not asking for',
+      'the rawest material they would start from',
+      'the specific methods and tools they would use',
+      'what, other than you or the operator, would show the result is right',
+      // One rewrite that delegates experiments to the future agent, then one next step without switching.
+      'Rewrite the prompt once, in one fenced code block',
+      'prototype any choice an experiment can settle',
+      'Leave product or preference choices that no experiment can settle for the operator to make.',
+      'sharpening runs none',
+      'After the block, recommend one next step for this task:',
+      '`/investigate` when an empirical question has to be answered first;',
+      '`/grill` when material operator decisions remain;',
+      '`/hive-plan` when scoped work needs a reviewed plan and task breakdown;',
+      '`/implement` when scoped ad-hoc work is ready;',
+      'none when the rewritten prompt stands on its own.',
+      'Stay on the selected agent. When it cannot run the recommended step, name the agent to select.',
+    ]) expect(template, phrase).toContain(phrase);
+  });
+
+  it('records the pstack reframe and sharpen provenance with the unchanged MIT notice', () => {
+    const root = resolvePackagedSkillsDir();
+    const upstream = readFileSync(path.join(root, 'sharpening', 'UPSTREAM.md'), 'utf8');
+    expect(upstream).toContain('9e278fe4d4ecd8bfe98b1b79bf4be662efb338cc');
+    for (const source of ['pstack/skills/reframe/SKILL.md', 'pstack/skills/sharpen/SKILL.md']) expect(upstream, source).toContain(`\`${source}\``);
+    expect(readFileSync(path.join(root, 'sharpening', 'LICENSE.pstack'), 'utf8')).toBe(readFileSync(path.join(root, 'project-verification', 'LICENSE.pstack'), 'utf8'));
   });
 
   it('shapes each task as a goal, responsibility, proof and pointed context instead of a predicted file inventory', () => {

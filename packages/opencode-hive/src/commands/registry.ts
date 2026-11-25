@@ -1,6 +1,11 @@
 import type { HiveCommandMetadata } from './types.js';
 export const HIVE_COMMANDS = [
   {
+    key: 'sharpen',
+    name: '/sharpen',
+    description: 'Deepen and reframe a prompt or rough idea into a sharper rewritten prompt, without acting on it',
+  },
+  {
     key: 'interview',
     name: '/interview',
     description: 'Clarify an idea toward shared understanding, with no fixed next step',

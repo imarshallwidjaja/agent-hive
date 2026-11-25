@@ -45,8 +45,9 @@ export const HIVE_ROLES = [
   'dash-reviewer', 'vulnerability-review-primary',
 ];
 
+// Command keys registered by the plugin (src/commands/registry.ts HIVE_COMMANDS); harness.test.ts pins this list to it.
 export const HIVE_COMMANDS = [
-  'interview', 'grill', 'investigate', 'walkthrough', 'implementation-brief', 'hive-plan', 'approve-sync-plan', 'start-execution',
+  'sharpen', 'interview', 'grill', 'investigate', 'walkthrough', 'implementation-brief', 'hive-plan', 'approve-sync-plan', 'start-execution',
   'implement', 'merge-to-main', 'council', 'dash-review', 'test-audit', 'vuln-review', 'worklog', 'handoff',
   'compact-summary',
 ];
