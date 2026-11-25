@@ -25,12 +25,12 @@ export const HOSTS = {
   v2: {
     id: 'v2',
     packageName: '@opencode/cli',
-    version: '2.3.2',
+    version: '2.4.1',
     binary: '/opt/ic/v2/node_modules/.bin/opencode2',
-    // packages/core/src/integration.ts@v2.3.2 connection.resolve refreshes when Credential.expiring
+    // packages/core/src/integration.ts@v2.4.1 connection.resolve refreshes when Credential.expiring
     // (core/src/credential.ts): `expires <= now + 5 minutes`; `expires` is epoch milliseconds.
     refreshWindowMs: 5 * 60_000,
-    // @opencode/protocol@2.3.2 groups/credential.js: POST /api/credential with Credential.CreateInput. The
+    // @opencode/protocol@2.4.1 groups/credential.js: POST /api/credential with Credential.CreateInput. The
     // `chatgpt-browser` method (plugin/provider/openai.ts) uses the Codex backend with metadata.accountID.
     auth: { method: 'POST', path: '/api/credential' },
     readyPath: '/api/info',
@@ -402,7 +402,7 @@ export function codeModePathId(path) {
   return path.replace(/^tools\./, '').replace('.', '_');
 }
 
-// Reading the TypeScript declarations v2 2.3.2 renders for Code Mode tools. Brackets of every kind nest; comments and
+// Reading the TypeScript declarations v2 2.4.1 renders for Code Mode tools. Brackets of every kind nest; comments and
 // string literals are skipped, so a bracket, quote or `//` inside a field doc or a literal type never ends a group.
 const CLOSERS = { '(': ')', '{': '}', '[': ']', '<': '>' };
 const isOpener = (c) => Object.hasOwn(CLOSERS, c);
@@ -511,7 +511,7 @@ function codeModeSignature(text, start = 0) {
   return { path, id: codeModePathId(path), params, end };
 }
 
-/** The heading v2 2.3.2 puts over its Code Mode catalog; the catalog is the contiguous entry list right after it. */
+/** The heading v2 2.4.1 puts over its Code Mode catalog; the catalog is the contiguous entry list right after it. */
 const CODE_MODE_CATALOG_HEADING = '## Code Mode tools (call only inside `execute`)';
 
 // A namespace header line. v2 names a namespace after its MCP server or tool, so the name may hold `-` or other
@@ -633,7 +633,7 @@ export function nativeToolCall(id, step, tools, codeModePaths = {}) {
 //   session/prompt.ts SessionPrompt.command -> prompt -> loop). The turn itself runs in the instance's session runner
 //   (effect/runner.ts startRun forks into the instance scope), so a client that disconnects once the user message exists
 //   and the session is busy leaves the turn running.
-// v2 (@opencode/cli 2.3.2; routes from @opencode/protocol@2.3.2 dist/groups/{session,permission,command,agent,model}.js):
+// v2 (@opencode/cli 2.4.1; routes from @opencode/protocol@2.4.1 dist/groups/{session,permission,command,agent,model}.js):
 //   POST /api/session {agent, model, location}; POST /api/session/:id/prompt {id, text}; POST /api/session/:id/agent at idle; GET /api/session?parentID&limit&cursor; GET /api/session/active; GET /api/session/:id/form,
 //   POST .../form/:formID/reply {answer}; GET /api/session/:id/permission, POST .../permission/:id/reply {decision};
 //   POST /api/session/:id/interrupt. The v2 question tool (packages/core/src/tool/plugin/question.ts) asks one form
@@ -793,12 +793,13 @@ export function dispatchedChild(output) {
 }
 
 /**
- * A v2 `<subagent>` report as the parent reads it (core/src/session/subagent-completion.ts): the child and the state
+ * A v2 `<background-result kind="subagent">` report as the parent reads it (core/src/session/subagent-completion.ts
+ * renders it through session/background-result.ts): the child and the state
  * attribute. The host sends one each time the child stops; `running` is interim (the child's own background work
  * continues and it will report again), while `completed`, `error` and `cancelled` are terminal. Null for other text.
  */
 export function subagentReport(text) {
-  const found = /^<subagent sessionID="(ses_[A-Za-z0-9]+)" state="(running|completed|error|cancelled)"/.exec(typeof text === 'string' ? text : '');
+  const found = /^<background-result kind="subagent" sessionID="(ses_[A-Za-z0-9]+)" state="(running|completed|error|cancelled)"/.exec(typeof text === 'string' ? text : '');
   return found ? { child: found[1], state: found[2], terminal: found[2] !== 'running' } : null;
 }
 

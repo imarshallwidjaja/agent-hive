@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { builtinModules } from 'node:module';
+import { builtinModules, findPackageJSON } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { describe, it } from 'node:test';
 import ts from 'typescript';
@@ -544,9 +545,9 @@ describe(`release ${releaseVersion} artifact contract on main`, () => {
         zod: devDependencies.zod,
       },
       {
-        '@opencode/client': '2.3.2',
-        '@opencode/plugin': '2.3.2',
-        '@opencode/schema': '2.3.2',
+        '@opencode/client': '2.4.1',
+        '@opencode/plugin': '2.4.1',
+        '@opencode/schema': '2.4.1',
         '@types/json-schema': '7.0.15',
         effect: '4.1.0',
         zod: '4.1.8',
@@ -557,7 +558,10 @@ describe(`release ${releaseVersion} artifact contract on main`, () => {
     assert.equal(devDependencies['@opencode/client'], undefined, '@opencode/client is a dependency, not a duplicate dev dependency');
     // The bundle inlines @opencode/client and @opencode/schema code that calls the host's external Effect, so all three
     // must be the releases the host's own plugin SDK depends on. A skew here is what failed v2 activation before.
-    const sdk = readJson('node_modules/@opencode/plugin/package.json');
+    // Resolve from the package that depends on it: npm ci can nest it under packages/opencode-hive instead of hoisting
+    // it, and its exports do not publish ./package.json, so find the manifest of the entry it resolves to.
+    const sdkManifest = findPackageJSON('@opencode/plugin', pathToFileURL(path.join(opencodeHiveRoot, 'package.json')));
+    const sdk = JSON.parse(fs.readFileSync(sdkManifest, 'utf8'));
     assert.equal(sdk.version, dependencies['@opencode/plugin'], 'the installed @opencode/plugin should be the pinned release');
     assert.deepEqual(
       { effect: devDependencies.effect, '@opencode/client': dependencies['@opencode/client'], '@opencode/schema': devDependencies['@opencode/schema'] },
@@ -720,8 +724,8 @@ describe(`release ${releaseVersion} artifact contract on main`, () => {
       // Koffi is the one intentional runtime dependency the bundle leaves external: its loader selects the prebuilt
       // binary for the platform from the installed package, so the exact pin comes with every install.
       assert.deepEqual(packedManifest.dependencies, {
-        '@opencode/client': '2.3.2',
-        '@opencode/plugin': '2.3.2',
+        '@opencode/client': '2.4.1',
+        '@opencode/plugin': '2.4.1',
         '@types/json-schema': '7.0.15',
         'gray-matter': '^4.0.3',
         koffi: '2.16.3',

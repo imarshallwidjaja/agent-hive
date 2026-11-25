@@ -19,6 +19,7 @@ import {
   PRIMARY_ONLY_TOOLS,
   authorizeHiveCall,
   authorizeNativeCall,
+  canonicalToolName,
   createRolePolicy,
   deniedNativeBypassTools,
   nativeCallNeedsAncestry,
@@ -97,9 +98,12 @@ export function registerCatalog(input: { context: Plugin.Context; identity: Iden
     yield* registerCommands(context, { host, configService, roles });
     yield* registrar.register(createHiveOperations(services, (signal) => Effect.runPromise(context.agent.list(), { signal })
       .then(({ data }) => councilAgents(roles, data))));
-    yield* context.tool.hook('execute.before', (event) => event.tool.startsWith('hive_')
-      ? authority.guardHive(event.tool, { sessionID: event.sessionID, agent: event.agent })
-      : authority.guardNative(event.tool, event.input, { sessionID: event.sessionID, agent: event.agent }));
+    yield* context.tool.hook('execute.before', (event) => {
+      const tool = canonicalToolName(event.tool);
+      return tool.startsWith('hive_')
+        ? authority.guardHive(tool, { sessionID: event.sessionID, agent: event.agent })
+        : authority.guardNative(tool, event.input, { sessionID: event.sessionID, agent: event.agent });
+    });
     yield* registerRequestPolicy(context, { host, roles, authority, skills });
 
     const readAccess = createVerifiedReadAccess({ server: options.server, identity, directory: context.location.directory });
@@ -122,7 +126,7 @@ export function createHiveAuthority(context: Pick<Plugin.Context, 'session'>, cu
     isChild,
     guardHive: (tool, caller) => {
       const authorityOf = resolve(caller.agent);
-      const ancestry = PRIMARY_ONLY_TOOLS.includes(tool) && authorityOf.kind !== 'native-subagent' ? isChild(caller.sessionID) : Effect.succeed(false);
+      const ancestry = PRIMARY_ONLY_TOOLS.includes(canonicalToolName(tool)) && authorityOf.kind !== 'native-subagent' ? isChild(caller.sessionID) : Effect.succeed(false);
       return ancestry.pipe(Effect.flatMap((child) => enforce(authorizeHiveCall(policy, { tool, caller: authorityOf, isChild: child }))));
     },
     guardNative: (tool, toolInput, caller) => {

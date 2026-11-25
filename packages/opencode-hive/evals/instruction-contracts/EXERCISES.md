@@ -1,6 +1,6 @@
 # Supervised OpenCode exercises
 
-A supervised exercise runs one real primary session of a packed oc-arkive candidate on one exact stock OpenCode host (`opencode-ai@1.18.30` as v1, or `@opencode/cli@2.3.2` as v2) inside a disposable local container, and lets a supervisor drive it turn by turn: answer its questions, decide its permission requests, send it a native slash command, review and approve its plan, switch it to an execution primary, and collect bounded evidence of what it did. Use it when a change needs qualitative evidence that a scripted test cannot give, such as how a planning primary behaves from clarification through approval to completion.
+A supervised exercise runs one real primary session of a packed oc-arkive candidate on one exact stock OpenCode host (`opencode-ai@1.18.30` as v1, or `@opencode/cli@2.4.1` as v2) inside a disposable local container, and lets a supervisor drive it turn by turn: answer its questions, decide its permission requests, send it a native slash command, review and approve its plan, switch it to an execution primary, and collect bounded evidence of what it did. Use it when a change needs qualitative evidence that a scripted test cannot give, such as how a planning primary behaves from clarification through approval to completion.
 
 The tooling codifies setup, supervision, inspection and cleanup. It does not contain an exercise scenario, a scorer or a verdict. Each exercise is a temporary question that its supervisor writes, runs once and assesses by reading the evidence.
 

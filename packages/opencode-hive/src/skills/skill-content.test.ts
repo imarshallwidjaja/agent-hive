@@ -2929,7 +2929,7 @@ describe('skill content', () => {
       expect(content).not.toMatch(/\/complexity-(review|audit)/);
     }
     for (const content of [readRepoFile('packages/opencode-hive/README.md'), readRepoFile('docs/OPERATOR-GUIDE.md')]) {
-      expect(content).toContain('OpenCode v2.3.2 lists no skill among its commands');
+      expect(content).toContain('OpenCode v2.4.1 lists no skill among its commands');
     }
 
     expect(readRepoFile('docs/OPERATOR-GUIDE.md')).toContain(conversationFallback);

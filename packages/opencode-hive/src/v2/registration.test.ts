@@ -452,30 +452,67 @@ describe('v2 execution guards', () => {
     // Automations: the four mutating tools are the operator's. Every Hive role (primary or child, editing or not),
     // native subagent and child session is refused them; listing stays native. A top-level unmanaged agent keeps
     // native authority.
-    ['swarm-orchestrator', 'primary', 'opencode_automation_create', {}, false],
-    ['swarm-orchestrator', 'primary', 'opencode_automation_resume', {}, false],
-    ['swarm-orchestrator', 'primary', 'opencode_automation_pause', {}, false],
-    ['swarm-orchestrator', 'primary', 'opencode_automation_delete', {}, false],
-    ['swarm-orchestrator', 'primary', 'opencode_automation_list', {}, true],
-    ['forager-worker', 'child', 'opencode_automation_create', {}, false],
-    ['forager-worker', 'child', 'opencode_automation_delete', {}, false],
-    ['forager-investigator', 'child', 'opencode_automation_pause', {}, false],
-    ['scout-researcher', 'child', 'opencode_automation_pause', {}, false],
-    ['architect-planner', 'primary', 'opencode_automation_pause', {}, false],
-    ['security-scout', 'child', 'opencode_automation_delete', {}, false],
-    ['security-scout', 'child', 'opencode_automation_list', {}, true],
-    ['general', 'child', 'opencode_automation_create', {}, false],
-    ['general', 'child', 'opencode_automation_pause', {}, false],
-    ['explore', 'child', 'opencode_automation_resume', {}, false],
-    ['build', 'primary', 'opencode_automation_create', {}, true],
-    ['build', 'primary', 'opencode_automation_resume', {}, true],
-    ['build', 'primary', 'opencode_automation_pause', {}, true],
-    ['build', 'primary', 'opencode_automation_delete', {}, true],
-    ['build', 'child', 'opencode_automation_create', {}, false],
-    ['build', 'child', 'opencode_automation_resume', {}, false],
-    ['build', 'child', 'opencode_automation_pause', {}, false],
-    ['build', 'child', 'opencode_automation_delete', {}, false],
-    ['build', 'child', 'opencode_automation_list', {}, true],
+    ['swarm-orchestrator', 'primary', 'automation_create', {}, false],
+    ['swarm-orchestrator', 'primary', 'automation_resume', {}, false],
+    ['swarm-orchestrator', 'primary', 'automation_pause', {}, false],
+    ['swarm-orchestrator', 'primary', 'automation_delete', {}, false],
+    ['swarm-orchestrator', 'primary', 'automation_list', {}, true],
+    ['forager-worker', 'child', 'automation_create', {}, false],
+    ['forager-worker', 'child', 'automation_delete', {}, false],
+    ['forager-investigator', 'child', 'automation_pause', {}, false],
+    ['scout-researcher', 'child', 'automation_pause', {}, false],
+    ['architect-planner', 'primary', 'automation_pause', {}, false],
+    ['security-scout', 'child', 'automation_delete', {}, false],
+    ['security-scout', 'child', 'automation_list', {}, true],
+    ['general', 'child', 'automation_create', {}, false],
+    ['general', 'child', 'automation_pause', {}, false],
+    ['explore', 'child', 'automation_resume', {}, false],
+    ['build', 'primary', 'automation_create', {}, true],
+    ['build', 'primary', 'automation_resume', {}, true],
+    ['build', 'primary', 'automation_pause', {}, true],
+    ['build', 'primary', 'automation_delete', {}, true],
+    ['build', 'child', 'automation_create', {}, false],
+    ['build', 'child', 'automation_resume', {}, false],
+    ['build', 'child', 'automation_pause', {}, false],
+    ['build', 'child', 'automation_delete', {}, false],
+    ['build', 'child', 'automation_list', {}, true],
+    // Interrupting another session is the operator's, like the automations: Hive roles, native subagents and child
+    // sessions are refused; a top-level unmanaged agent keeps native authority.
+    ['swarm-orchestrator', 'primary', 'opencode_session_interrupt', {}, false],
+    ['forager-worker', 'child', 'opencode_session_interrupt', {}, false],
+    ['general', 'child', 'opencode_session_interrupt', {}, false],
+    ['explore', 'child', 'opencode_session_interrupt', {}, false],
+    ['build', 'primary', 'opencode_session_interrupt', {}, true],
+    ['build', 'child', 'opencode_session_interrupt', {}, false],
+    // A model can call a Code Mode tool at top level by its dotted qualified name; the host then reports that name to
+    // execute.before once and runs the tool without a second hook, so the dotted name gets the same decision.
+    ['swarm-orchestrator', 'primary', 'opencode.worktree_create', {}, false],
+    ['swarm-orchestrator', 'primary', 'opencode.worktree_remove', {}, false],
+    ['swarm-orchestrator', 'primary', 'opencode.session.move', {}, false],
+    ['swarm-orchestrator', 'primary', 'opencode.session.interrupt', {}, false],
+    ['swarm-orchestrator', 'primary', 'automation.create', {}, false],
+    ['swarm-orchestrator', 'primary', 'automation.resume', {}, false],
+    ['swarm-orchestrator', 'primary', 'automation.pause', {}, false],
+    ['swarm-orchestrator', 'primary', 'automation.delete', {}, false],
+    ['swarm-orchestrator', 'primary', 'automation.list', {}, true],
+    ['forager-worker', 'child', 'automation.create', {}, false],
+    ['forager-worker', 'child', 'opencode.session.interrupt', {}, false],
+    ['general', 'child', 'automation.create', {}, false],
+    ['general', 'child', 'opencode.session.interrupt', {}, false],
+    ['explore', 'child', 'automation.pause', {}, false],
+    ['explore', 'child', 'opencode.session.interrupt', {}, false],
+    ['build', 'primary', 'automation.create', {}, true],
+    ['build', 'primary', 'opencode.session.interrupt', {}, true],
+    ['build', 'primary', 'opencode.session.move', {}, true],
+    ['build', 'child', 'automation.create', {}, false],
+    ['build', 'child', 'automation.delete', {}, false],
+    ['build', 'child', 'opencode.session.interrupt', {}, false],
+    ['build', 'child', 'automation.list', {}, true],
+    ['forager-worker', 'child', 'hive.worklog_read', {}, true],
+    ['general', 'child', 'hive.worklog_read', {}, false],
+    ['forager-worker', 'child', 'hive.feature_complete', {}, false],
+    ['build', 'child', 'hive.feature_complete', {}, false],
+    ['build', 'primary', 'hive.feature_complete', {}, true],
     ['swarm-orchestrator', 'primary', 'opencode_session_rename', {}, true],
     ['general', 'child', 'hive_status', {}, false],
     ['general', 'child', 'subagent', { agent: 'explore' }, false],
@@ -566,6 +603,16 @@ describe('v2 execution guards', () => {
       if (!allowed) expect(executorDenied).toBe(hook);
       // An allowed call may still fail its own input validation, but never on a role or session refusal.
       else expect(executorDenied ?? '').not.toMatch(new RegExp(`${tool} is (not granted|a primary-only|denied)|has no Hive tool access`));
+    }
+  });
+
+  it('reads the parent of an unmanaged caller for dotted automation and interrupt calls, and denies one it cannot read', async () => {
+    const host = await activate();
+    for (const tool of ['automation.create', 'automation.resume', 'automation.pause', 'automation.delete', 'opencode.session.interrupt']) {
+      const seen = host.sessionGets.length;
+      expect(denied(await host.before({ tool, sessionID: 'primary', agent: 'build', input: {} })), tool).toBeUndefined();
+      expect(host.sessionGets.slice(seen), tool).toEqual(['primary']);
+      expect(denied(await host.before({ tool, sessionID: 'missing', agent: 'build', input: {} })), tool).toBeDefined();
     }
   });
 
@@ -837,8 +884,8 @@ describe('v2 native precedence and canonical instructions', () => {
     expect(scout.permissions).toContainEqual({ action: 'opencode_worktree_create', resource: '*', effect: 'deny' });
     // The default denies hide exactly the bypass tools the execution guard refuses to each agent.
     const automationDenies = (id: string) => defaults.registry.get(id)!.permissions
-      .filter((rule: { action: string; effect: string }) => rule.action.startsWith('opencode_automation_') && rule.effect === 'deny')
-      .map((rule: { action: string }) => rule.action.slice('opencode_automation_'.length)).sort();
+      .filter((rule: { action: string; effect: string }) => rule.action.startsWith('automation_') && rule.effect === 'deny')
+      .map((rule: { action: string }) => rule.action.slice('automation_'.length)).sort();
     for (const id of ['scout-researcher', 'scout-fast', 'forager-worker', 'swarm-orchestrator', 'general', 'explore']) {
       expect(automationDenies(id), id).toEqual(['create', 'delete', 'pause', 'resume']);
     }

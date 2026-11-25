@@ -154,10 +154,11 @@ function parseToolOutput(text: string): Json {
 }
 
 /**
- * The text a scripted v2 parent answers while a child it launched has not sent its terminal report. v2 2.3.2 runs every
+ * The text a scripted v2 parent answers while a child it launched has not sent its terminal report. v2 2.4.1 runs every
  * subagent call in the background: the call returns `running` with the child's session ID (core/src/tool/plugin/
- * subagent.ts), and the host posts a `<subagent sessionID="..." state="...">` message each time the child stops
- * (core/src/session/subagent-completion.ts). A `state="running"` report is interim: the child stopped while its own
+ * subagent.ts), and the host posts a `<background-result kind="subagent" sessionID="..." state="...">` message each
+ * time the child stops (core/src/session/subagent-completion.ts). A `state="running"` report is interim: the child
+ * stopped while its own
  * background work continues. The parent ends its turn with this text and continues the script only when the terminal
  * report of every launch has arrived, so a scripted step never runs ahead of a child result it may depend on. This text
  * is not a step.
@@ -838,7 +839,7 @@ export async function messagePages(host: string, sessionId: string, get: (path: 
         tokens: m.tokens ?? null,
         retries: m.retry ? 1 : 0,
         error: m.error ? safeName(m.error.type ?? m.error._tag ?? m.error.name) ?? 'other' : null,
-        // A v2 user or synthetic message (a `<subagent>` report) carries its text as `text`; assistant messages carry
+        // A v2 user or synthetic message (a `<background-result kind="subagent">` report) carries its text as `text`; assistant messages carry
         // text parts in `content`.
         text: (m.type === 'user' || m.type === 'synthetic') && typeof m.text === 'string' ? m.text : (m.content ?? []).filter((p: Json) => p.type === 'text').map((p: Json) => p.text).join(''),
         tools: (m.content ?? []).filter((p: Json) => p.type === 'tool').map((p: Json) => ({
@@ -923,7 +924,7 @@ export function clipText(text: string, cap: number): { text: string; truncated: 
 /**
  * Whether the dispatching session held its next step until the child's result, the behavior a blocking wait names on
  * each host. v1: the call did not set `background`, so it returned only with the result. v2 runs every child in the
- * background, so the child's terminal `<subagent>` report must arrive before the session's next message that makes a
+ * background, so the child's terminal `<background-result kind="subagent">` report must arrive before the session's next message that makes a
  * tool call; an interim `state="running"` report does not count. A v2 call that did not complete, or whose child is
  * unknown, is `null`: not shown to have waited, which a check for waiting counts as not waiting.
  */
@@ -950,7 +951,7 @@ export function toolOutcome(call: Json, session: Json, tree: Json[]): Json {
     const childSessionId = metadata.sessionId ?? metadata.sessionID ?? dispatchedChild(output);
     const child = tree.find((s) => s.id === childSessionId);
     const requested = neutralArgs(call.name, call.input).agent;
-    // A v2 2.3.2 call always reports `running`, because its child runs in the background; success still needs the
+    // A v2 2.4.1 call always reports `running`, because its child runs in the background; success still needs the
     // child itself verified below.
     const failed = metadata.status !== undefined && metadata.status !== 'completed' && metadata.status !== 'running';
     const verified = Boolean(child) && child.parentId === session.id && child.agent === requested && child.assistantMessages > 0 && child.errors === 0;

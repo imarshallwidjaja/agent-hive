@@ -1052,7 +1052,7 @@ describe('artifacts, runtime identity and model selection', () => {
   });
 
   test('stock host versions are fixed', () => {
-    const runtime = { hosts: { v1: { version: '1.18.30' }, v2: { version: 'opencode v2.3.2' } }, pluginTarballSha256: 'x' };
+    const runtime = { hosts: { v1: { version: '1.18.30' }, v2: { version: 'opencode v2.4.1' } }, pluginTarballSha256: 'x' };
     expect(runtimeFailures(runtime)).toEqual([]);
     expect(runtimeFailures({ ...runtime, hosts: { ...runtime.hosts, v2: { version: '2.3.3' } } })).toContain('stock_version_mismatch:v2');
     expect(runtimeFailures({ ...runtime, hosts: { ...runtime.hosts, v2: { version: 'opencode v2.0.26' } } })).toContain('stock_version_mismatch:v2');
@@ -1087,7 +1087,7 @@ describe('artifacts, runtime identity and model selection', () => {
   // The committed harness directory is the single archive and build root: identities refuse uncommitted harness changes,
   // and the build context holds exactly the committed harness, the subject archive and the packed candidate.
   describe('the committed harness is the one archive and build root', () => {
-    const RUNTIME_REPORT = { hosts: { v1: { version: '1.18.30' }, v2: { version: '2.3.2' } }, pluginTarballSha256: 'installed' };
+    const RUNTIME_REPORT = { hosts: { v1: { version: '1.18.30' }, v2: { version: '2.4.1' } }, pluginTarballSha256: 'installed' };
     const BUILD_REPORT = { hiveCoreResolvedInArchive: true, coreBuiltFirst: true, packEntries: ['dist/index.js'] };
 
     function harnessRepo() {
@@ -2104,7 +2104,7 @@ describe('managed-model control probe', () => {
       expect(facts([{ name: 'read', status: 'completed', input: { prompt: 'mmc-refuse-x' } }])).toMatchObject({ call: 'absent' });
       // A call that completed is never a refusal, and reports the child the host named.
       expect(facts([tool({ status: 'completed', errorText: null, metadata: { sessionID: 'ses_kid', status: 'completed' } })])).toMatchObject({ call: 'completed', refusal: null, child: 'ses_kid' });
-      expect(facts([tool({ status: 'completed', errorText: null, metadata: null, output: '<subagent sessionID="ses_kid" state="completed">ok</subagent>' })]).child).toBe('ses_kid');
+      expect(facts([tool({ status: 'completed', errorText: null, metadata: null, output: '<background-result kind="subagent" sessionID="ses_kid" state="completed">ok</background-result>' })]).child).toBe('ses_kid');
       // The v2 launch receipt names its child in the form the shared dispatch parser reads.
       expect(facts([tool({ status: 'completed', errorText: null, metadata: null, output: 'Subagent started in the background (sessionID: ses_kid).' })]).child).toBe('ses_kid');
       expect(facts([tool({ status: 'completed', errorText: null, metadata: { sessionID: 'not a session' } })]).child).toBeNull();
@@ -3598,21 +3598,21 @@ describe('in-container fixture helpers', () => {
     ]);
     const launched = [
       { role: 'assistant', tool_calls: [{ id: 'c1', function: { name: 'subagent' } }] },
-      { role: 'tool', tool_call_id: 'c1', content: 'The subagent is working in the background (sessionID: ses_child1). You will receive a <subagent> message when it goes idle.' },
+      { role: 'tool', tool_call_id: 'c1', content: 'The subagent is working in the background (sessionID: ses_child1). You will receive a <background-result kind="subagent"> message when it goes idle.' },
     ];
     expect(mockDecision('v2', request(['subagent'], script, launched))).toEqual({ text: SUBAGENT_WAIT_TEXT });
     const waited = [...launched, { role: 'assistant', content: SUBAGENT_WAIT_TEXT }];
     expect(mockDecision('v2', request(['subagent'], script, waited))).toEqual({ text: SUBAGENT_WAIT_TEXT });
     // An interim report (the child stopped while its own helper runs) neither answers the launch nor is a result, even
     // when its text would match the next step.
-    const interim = [...waited, { role: 'user', content: '<subagent sessionID="ses_child1" state="running" description="look">\nverdict=premature\n\nBackground work still running:\n- subagent (scout-researcher, sessionID: ses_helper): helper\n</subagent>' }];
+    const interim = [...waited, { role: 'user', content: '<background-result kind="subagent" sessionID="ses_child1" state="running" description="look">\nverdict=premature\n\nBackground work still running:\n- subagent (scout-researcher, sessionID: ses_helper): helper\n</background-result>' }];
     expect(mockDecision('v2', request(['subagent'], script, interim))).toEqual({ text: SUBAGENT_WAIT_TEXT });
     const interimWaited = [...interim, { role: 'assistant', content: SUBAGENT_WAIT_TEXT }];
     // The terminal report wakes the parent; the wait texts were not steps, so the next step runs and reads that result.
-    const reported = [...interimWaited, { role: 'user', content: '<subagent sessionID="ses_child1" state="completed" description="look">\nverdict=approve\n</subagent>' }];
+    const reported = [...interimWaited, { role: 'user', content: '<background-result kind="subagent" sessionID="ses_child1" state="completed" description="look">\nverdict=approve\n</background-result>' }];
     expect(mockDecision('v2', request(['subagent'], script, reported))).toEqual({ text: 'child said approve' });
     // A failed or cancelled child's terminal report also answers its launch.
-    const failed = [...waited, { role: 'user', content: '<subagent sessionID="ses_child1" state="error" description="look">\nverdict=crashed\n</subagent>' }];
+    const failed = [...waited, { role: 'user', content: '<background-result kind="subagent" sessionID="ses_child1" state="error" description="look">\nverdict=crashed\n</background-result>' }];
     expect(mockDecision('v2', request(['subagent'], script, failed))).toEqual({ text: 'child said crashed' });
     // v1 returns the child's result from the call itself and never waits.
     expect(mockDecision('v1', request(['task'], script, [
@@ -3631,7 +3631,7 @@ describe('in-container fixture helpers', () => {
       { role: 'assistant', tool_calls: [{ id, function: { name: 'subagent' } }] },
       { role: 'tool', tool_call_id: id, content: 'The subagent is working in the background (sessionID: ses_child1).' },
     ];
-    const report = (verdict: string) => ({ role: 'user', content: `<subagent sessionID="ses_child1" state="completed" description="look">\nverdict=${verdict}\n</subagent>` });
+    const report = (verdict: string) => ({ role: 'user', content: `<background-result kind="subagent" sessionID="ses_child1" state="completed" description="look">\nverdict=${verdict}\n</background-result>` });
     const first = [...receipt('c1'), { role: 'assistant', content: SUBAGENT_WAIT_TEXT }, report('first')];
     // The first launch's report is used up; the continuation reuses the child ID and needs a report of its own.
     const continued = [...first, ...receipt('c2')];
@@ -3642,7 +3642,7 @@ describe('in-container fixture helpers', () => {
   test('a v2 dispatch waited only when its terminal report arrived before the session\'s next tool call', () => {
     const call = { name: 'subagent', status: 'completed', input: { agent: 'forager-worker' } };
     const launch = { role: 'assistant', tools: [call] };
-    const report = (state: string) => ({ role: 'synthetic', text: `<subagent sessionID="ses_w" state="${state}" description="d">\nx\n</subagent>`, tools: [] });
+    const report = (state: string) => ({ role: 'synthetic', text: `<background-result kind="subagent" sessionID="ses_w" state="${state}" description="d">\nx\n</background-result>`, tools: [] });
     const next = { role: 'assistant', tools: [{ name: 'hive_adhoc_worktree_merge' }] };
     const wait = { role: 'assistant', text: SUBAGENT_WAIT_TEXT, tools: [] };
     expect(dispatchWaited('v2', call, [launch, wait, report('completed'), next], 0, 'ses_w')).toBe(true);
@@ -3718,8 +3718,8 @@ describe('in-container fixture helpers', () => {
     expect(toolOutcome(dispatch({ sessionId: 'c' }, 'forager-worker'), parent, tree).result).toBe('unknown');
     expect(toolOutcome(dispatch({ sessionId: 'missing' }), parent, tree).result).toBe('unknown');
     expect(toolOutcome({ name: 'subagent', status: 'completed', input: { agent: 'code-reviewer' }, metadata: { sessionID: 'c', status: 'failed' }, output: '' }, parent, tree).result).toBe('failure');
-    expect(toolOutcome({ name: 'subagent', status: 'completed', input: { agent: 'code-reviewer' }, metadata: null, output: '<subagent sessionID="ses_child" state="completed">ok</subagent>' }, parent, tree).result).toBe('success');
-    // A v2 2.3.2 call always reports `running`; it succeeds only through its verified child, never through the status.
+    expect(toolOutcome({ name: 'subagent', status: 'completed', input: { agent: 'code-reviewer' }, metadata: null, output: '<background-result kind="subagent" sessionID="ses_child" state="completed">ok</background-result>' }, parent, tree).result).toBe('success');
+    // A v2 2.4.1 call always reports `running`; it succeeds only through its verified child, never through the status.
     const running = (sessionID: string, agent = 'code-reviewer') => ({ name: 'subagent', status: 'completed', input: { agent }, metadata: { sessionID, status: 'running' }, output: `The subagent is working in the background (sessionID: ${sessionID}).` });
     expect(toolOutcome(running('ses_child'), parent, tree)).toEqual({ result: 'success', childSessionId: 'ses_child', childAgent: 'code-reviewer' });
     expect(toolOutcome(running('ses_child', 'forager-worker'), parent, tree).result).toBe('unknown');
@@ -4585,7 +4585,7 @@ describe('supervised exercise native adapters', () => {
   });
 
   // Assistant messages in the pinned host shapes. v1 (1.x): a tool part has `callID` and `tool`; a completed state has an
-  // `output` string, an errored one an `error` string. v2 (@opencode/schema 2.3.2): a tool part has `id` and `name`; a
+  // `output` string, an errored one an `error` string. v2 (@opencode/schema 2.4.1): a tool part has `id` and `name`; a
   // completed state has `content` blocks and no `output`; an errored state has `error: { type, message, response? }` and
   // optional `content`.
   const pinnedV1 = (tools: any[]) => ({ info: { id: 'm', role: 'assistant', agent: 'hive-builder' }, parts: tools.map((t) => ({

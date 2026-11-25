@@ -171,7 +171,8 @@ export type CallDecision = { allowed: true } | { allowed: false; reason: string 
  * primary-only operations in child sessions.
  */
 export function authorizeHiveCall(policy: Record<BuiltInRole, RolePolicy>, input: { tool: string; caller: CallerAuthority; isChild: boolean }): CallDecision {
-  const { tool, caller, isChild } = input;
+  const { caller, isChild } = input;
+  const tool = canonicalToolName(input.tool);
   if (caller.kind === 'native-subagent') return { allowed: false, reason: `The native ${caller.name} subagent has no Hive tool access; ${tool} is denied.` };
   if (caller.kind === 'role' && !policy[caller.role].hiveTools.includes(tool)) return { allowed: false, reason: `${tool} is not granted to the ${caller.role} role.` };
   if (isChild && PRIMARY_ONLY_TOOLS.includes(tool)) return { allowed: false, reason: `${tool} is a primary-only operation and is denied in child sessions.` };
@@ -179,38 +180,56 @@ export function authorizeHiveCall(policy: Record<BuiltInRole, RolePolicy>, input
 }
 
 /**
- * Native OpenCode v2 tools that change worktrees or session placement outside Hive's ownership of `.hive` worktrees.
- * Names are the effective tool ids the host reports to `execute.before`, including Code Mode inner calls.
+ * The canonical tool ID for a name the host reports to `execute.before`. OpenCode v2.4.1 reports a Code Mode tool
+ * that a model calls at top level by its qualified name (`automation.create`, `hive.worklog_read`) under that dotted
+ * name, and then runs the tool without a second hook, so the guards decide on the canonical ID (`automation_create`).
  */
-export const NATIVE_LIFECYCLE_BYPASS_TOOLS = ['opencode_worktree_create', 'opencode_worktree_remove', 'opencode_session_move'] as const;
+export function canonicalToolName(tool: string): string {
+  return tool.replaceAll('.', '_');
+}
 
 /**
- * Native OpenCode v2 tools that change project automations, which v2.3.2 registers in the `opencode` namespace when the
- * operator enables automations. An armed automation later prompts a session or starts a subagent child outside the
+ * Native OpenCode v2 tools that change worktrees or session placement outside Hive's ownership of `.hive` worktrees,
+ * or interrupt another session outside the primary, location and direct-child checks of `hive_background_cancel`.
+ * Names are canonical tool IDs; see `canonicalToolName`.
+ */
+export const NATIVE_LIFECYCLE_BYPASS_TOOLS = ['opencode_worktree_create', 'opencode_worktree_remove', 'opencode_session_move', 'opencode_session_interrupt'] as const;
+
+/** v2.4.1 `opencode.session.interrupt` stops any session except the caller and its ancestors; it is the operator's. */
+const NATIVE_SESSION_INTERRUPT_TOOL = 'opencode_session_interrupt';
+
+/**
+ * Native OpenCode v2 tools that change project automations, which v2.4.1 registers in the `automation` namespace unless
+ * the operator turns automations off. An armed automation later prompts a session or starts a subagent child outside the
  * `subagent` call Hive wraps, without Hive's route binding, delegation limits, managed model and continuation checks,
  * and pausing or deleting one changes the operator's schedule for the whole project. These are the operator's to use;
  * listing automations stays native.
  */
-export const NATIVE_AUTOMATION_TOOLS = ['opencode_automation_create', 'opencode_automation_resume', 'opencode_automation_pause', 'opencode_automation_delete'] as const;
+export const NATIVE_AUTOMATION_TOOLS = ['automation_create', 'automation_resume', 'automation_pause', 'automation_delete'] as const;
 
 const isAutomationTool = (tool: string) => (NATIVE_AUTOMATION_TOOLS as readonly string[]).includes(tool);
 
+/** Native tools reserved to a top-level operator session: refused to native subagents and in every child session. */
+const OPERATOR_ONLY_NATIVE_TOOLS: readonly string[] = [...NATIVE_AUTOMATION_TOOLS, NATIVE_SESSION_INTERRUPT_TOOL];
+
 /**
- * The native tools an agent may never run because they bypass what Hive owns. The same list becomes the agent's default
- * permission denies, which hide the tools, and the execution guard's refusal, which a user allow rule does not lift.
- * Hive roles are denied the worktree and session-placement tools and the automation tools; native `general` and
- * `explore` are denied the automation tools. An unmanaged agent is denied none: a top-level operator agent keeps its
- * native authority, and automations that already exist are the operator's to manage, which Hive does not inspect or
- * stop. `authorizeNativeCall` still refuses the automation tools in every child session, whatever its agent.
+ * The native tools an agent may never run because they bypass what Hive owns, as canonical tool IDs. The same list
+ * becomes the agent's default permission denies, which hide the tools, and the execution guard's refusal, which a user
+ * allow rule does not lift. Hive roles are denied the worktree, session-placement and session-interrupt tools and the
+ * automation tools; native `general` and `explore` are denied the automation and session-interrupt tools. An unmanaged
+ * agent is denied none: a top-level operator agent keeps its native authority, and automations that already exist are
+ * the operator's to manage, which Hive does not inspect or stop. `authorizeNativeCall` still refuses the automation and
+ * session-interrupt tools in every child session, whatever its agent.
  */
 export function deniedNativeBypassTools(caller: CallerAuthority): readonly string[] {
   if (caller.kind === 'unmanaged') return [];
-  if (caller.kind === 'native-subagent') return NATIVE_AUTOMATION_TOOLS;
+  if (caller.kind === 'native-subagent') return OPERATOR_ONLY_NATIVE_TOOLS;
   return [...NATIVE_LIFECYCLE_BYPASS_TOOLS, ...NATIVE_AUTOMATION_TOOLS];
 }
 
 function nativeBypassReason(tool: string): string {
   if (isAutomationTool(tool)) return `${tool} changes the operator's project automations, which run outside Hive's dispatch checks; leave automations to the operator and use the native subagent call for delegated work.`;
+  if (tool === NATIVE_SESSION_INTERRUPT_TOOL) return `${tool} interrupts sessions outside Hive's ownership checks; use hive_background_cancel for a direct child, or leave other sessions to the operator.`;
   return `${tool} bypasses Hive worktree and session ownership; use the Hive worktree tools instead.`;
 }
 
@@ -221,7 +240,8 @@ const NATIVE_TOOL_PERMISSION: Record<string, 'edit' | 'question' | 'task'> = {
 
 /** Native tools whose decision depends on whether the calling session is a child. */
 export function nativeCallNeedsAncestry(tool: string): boolean {
-  return tool === 'question' || isAutomationTool(tool);
+  const id = canonicalToolName(tool);
+  return id === 'question' || OPERATOR_ONLY_NATIVE_TOOLS.includes(id);
 }
 
 /** Orchestrators that are never valid delegation targets, whichever agent calls and however the operator sets their mode. */
@@ -237,7 +257,8 @@ export const PRIMARY_ONLY_AGENTS: readonly string[] = ['hive-master', 'swarm-orc
  * `agent`; it does not parse code, so it is a boundary on these tools, not a sandbox.
  */
 export function authorizeNativeCall(policy: Record<BuiltInRole, RolePolicy>, input: { tool: string; toolInput: unknown; caller: CallerAuthority; isChild: boolean }): CallDecision {
-  const { tool, toolInput, caller, isChild } = input;
+  const { toolInput, caller, isChild } = input;
+  const tool = canonicalToolName(input.tool);
   if (NATIVE_TOOL_PERMISSION[tool] === 'task') {
     const requested = toolInput && typeof toolInput === 'object' ? (toolInput as { agent?: unknown }).agent : undefined;
     if (typeof requested === 'string' && PRIMARY_ONLY_AGENTS.includes(requested)) {
@@ -245,8 +266,8 @@ export function authorizeNativeCall(policy: Record<BuiltInRole, RolePolicy>, inp
     }
   }
   if (deniedNativeBypassTools(caller).includes(tool)) return { allowed: false, reason: nativeBypassReason(tool) };
-  if (isChild && isAutomationTool(tool)) {
-    return { allowed: false, reason: `${tool} is denied in child sessions: project automations are the operator's. Return the request to the parent instead.` };
+  if (isChild && OPERATOR_ONLY_NATIVE_TOOLS.includes(tool)) {
+    return { allowed: false, reason: `${tool} is denied in child sessions: project automations and interrupting other sessions are the operator's. Return the request to the parent instead.` };
   }
   if (caller.kind === 'role') {
     const key = NATIVE_TOOL_PERMISSION[tool];

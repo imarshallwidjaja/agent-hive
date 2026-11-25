@@ -38,8 +38,8 @@
     "effect": ">=4.1.0 <5"
   },
   "dependencies": {
-    "@opencode/client": "2.3.2",
-    "@opencode/plugin": "2.3.2",
+    "@opencode/client": "2.4.1",
+    "@opencode/plugin": "2.4.1",
     "@types/json-schema": "7.0.15",
     "gray-matter": "^4.0.3",
     "koffi": "2.16.3"
@@ -47,7 +47,7 @@
   "devDependencies": {
     "@opencode-ai/plugin": "^1.18.30",
     "@opencode-ai/sdk": "^0.13.0",
-    "@opencode/schema": "2.3.2",
+    "@opencode/schema": "2.4.1",
     "@types/bun": "^1.2.0",
     "@types/node": "^24.0.0",
     "effect": "4.1.0",
