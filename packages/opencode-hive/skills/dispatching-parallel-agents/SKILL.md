@@ -98,7 +98,12 @@ Put the complete Forager packet directly in the unchanged native `task.prompt`; 
 <!-- hive-host opencode-v2 -->
 Put the complete Forager packet directly in the unchanged native `subagent.prompt`; ordinary Scout, advisor, and reviewer packets also go in `subagent.prompt`. The launch receipt names the child's `sessionID`, the identity `hive_background_status`, `hive_background_cancel`, and a continuation take.
 <!-- /hive-host -->
+<!-- hive-host opencode-v1 -->
 At dispatch, the runtime appends a route snapshot (project root and selected feature) plus session and feature constraints.
+<!-- /hive-host -->
+<!-- hive-host opencode-v2 -->
+At dispatch, the runtime writes a route snapshot (project root and selected feature) plus session and feature constraints to the child's `hive.session` session instruction entry.
+<!-- /hive-host -->
 
 In feature-task mode, one implementation assignment normally maps to one numbered task; an independently verifiable new deliverable requires a DAG amendment or append-only manual task. In ad-hoc mode, use multiple fresh one-goal launches with disjoint path ownership or sequence overlapping writers.
 
@@ -118,7 +123,13 @@ Before native `task()` dispatch, call `hive_feature_select` only when the select
 <!-- hive-host opencode-v2 -->
 Before native `subagent()` dispatch, call `hive_feature_select` only when the selected route is unset or differs from the dispatch target, or the selection evidence below is missing or uncertain.
 <!-- /hive-host -->
-Reuse a matching selection across a same-feature batch only when this session's most recent route-changing call visible in context is `hive_feature_select` for that same feature, with no later explicit-null or other-feature selection. When that evidence is not visible (for example after compaction or a summary, at session start, or in mixed ad-hoc/feature batches), or you are uncertain, call `hive_feature_select` for the dispatch target. Explicit null suppresses fallback and stays featureless unless the dispatch intentionally targets a feature.
+<!-- hive-host opencode-v1 -->
+Reuse a matching selection across a same-feature batch only when this session's most recent route-changing call visible in context is `hive_feature_select` for that same feature, with no later explicit-null or other-feature selection. When that evidence is not visible (for example after compaction or a summary, at session start, or in mixed ad-hoc/feature batches), or you are uncertain, call `hive_feature_select` for the dispatch target.
+<!-- /hive-host -->
+<!-- hive-host opencode-v2 -->
+Reuse a matching selection across a same-feature batch only when this session's most recent route-changing call visible in context is `hive_feature_select` for that same feature, with no later explicit-null or other-feature selection, or when this session's `hive.session` session instruction entry shows that feature as the selected route; that entry survives compaction. When neither is visible (for example at session start or in mixed ad-hoc/feature batches), or you are uncertain, call `hive_feature_select` for the dispatch target.
+<!-- /hive-host -->
+Explicit null suppresses fallback and stays featureless unless the dispatch intentionally targets a feature.
 <!-- hive-host opencode-v1 -->
 For ad-hoc work, call `hive_adhoc_worktree_create`, then issue the next native `task()` call unchanged with a Forager or Forager-derived agent.
 <!-- /hive-host -->

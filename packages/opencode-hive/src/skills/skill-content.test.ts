@@ -2002,6 +2002,47 @@ describe('skill content', () => {
     expect(skill!.template).toContain('A task with no such mismatch runs as approved');
   });
 
+  it('keeps milestone prompts resumable in a fresh session and continues in the same session across v2 compaction', () => {
+    const reference = readSkillReference('executing-plans', 'task-milestones.md');
+    const suggesting = reference.slice(reference.indexOf('## Suggesting milestones'), reference.indexOf('## Executing requested milestones'));
+    const running = reference.slice(reference.indexOf('## Executing requested milestones'));
+    for (const rule of [
+      'Each prompt must carry its whole explicit scope into a fresh session with status alone, because no persistent milestone manifest exists.',
+      'On OpenCode v2 a session continues across native compaction, so sending the next prompt in the same session is the default.',
+      'do not tell the operator to start a new session only because the context grew',
+      'it works unchanged when pasted into a completely fresh session',
+      'sent in the same session or a fresh one like the milestone prompts',
+    ]) expect(suggesting, rule).toContain(rule);
+    for (const rule of [
+      'whether it arrives in the session that ran the previous milestone or in a fresh one',
+      '- **Resumption in a fresh session.** Treat the prompt plus a fresh status read as the whole input.',
+      '- **Continuation in the same session after compaction.**',
+      'Handle it exactly like a fresh session: re-read `hive_status`, recompute scope from the prompt and stored edges',
+    ]) expect(running, rule).toContain(rule);
+  });
+
+  it('renders v2 route delivery and compaction-surviving selection evidence in the dispatch skills', () => {
+    const visibleCall = "Reuse a matching selection across a same-feature batch only when this session's most recent route-changing call visible in context is `hive_feature_select` for that same feature, with no later explicit-null or other-feature selection";
+    const v1Rule = `${visibleCall}. When that evidence is not visible (for example after compaction or a summary, at session start, or in mixed ad-hoc/feature batches), or you are uncertain, call \`hive_feature_select\` for the dispatch target.`;
+    const v2Rule = `${visibleCall}, or when this session's \`hive.session\` session instruction entry shows that feature as the selected route; that entry survives compaction. When neither is visible (for example at session start or in mixed ad-hoc/feature batches), or you are uncertain, call \`hive_feature_select\` for the dispatch target.`;
+    for (const skill of ['executing-plans', 'dispatching-parallel-agents']) {
+      const source = readFileSync(path.join(resolvePackagedSkillsDir(), skill, 'SKILL.md'), 'utf8');
+      const v1 = renderHostMarkdown(source, OPENCODE_V1_PROFILE, `${skill}/SKILL.md`);
+      const v2 = renderHostMarkdown(source, createHostProfile('opencode-v2'), `${skill}/SKILL.md`);
+      expect(v1, skill).toContain(v1Rule);
+      expect(v1, skill).not.toContain('hive.session');
+      expect(v2, skill).toContain(v2Rule);
+      expect(v2, skill).not.toContain('When that evidence is not visible');
+      expect(v2, skill).not.toContain('Compaction Checkpoint Recovery');
+      for (const rendered of [v1, v2]) expect(rendered, skill).toContain('Explicit null suppresses fallback and stays featureless unless the dispatch intentionally targets a feature.');
+    }
+    const dispatching = readFileSync(path.join(resolvePackagedSkillsDir(), 'dispatching-parallel-agents', 'SKILL.md'), 'utf8');
+    expect(renderHostMarkdown(dispatching, OPENCODE_V1_PROFILE, 'dispatching-parallel-agents/SKILL.md')).toContain('At dispatch, the runtime appends a route snapshot (project root and selected feature) plus session and feature constraints.');
+    const v2Dispatching = renderHostMarkdown(dispatching, createHostProfile('opencode-v2'), 'dispatching-parallel-agents/SKILL.md');
+    expect(v2Dispatching).toContain("At dispatch, the runtime writes a route snapshot (project root and selected feature) plus session and feature constraints to the child's `hive.session` session instruction entry.");
+    expect(v2Dispatching).not.toContain('appends a route snapshot');
+  });
+
   it('keeps the milestone safety baseline inline and the full procedure in the disclosed reference', () => {
     const executing = readSkillTemplate('executing-plans');
     const reference = readSkillReference('executing-plans', 'task-milestones.md');

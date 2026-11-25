@@ -190,7 +190,13 @@ describe('HIVE_COMMANDS', () => {
         'Explicit null stays featureless unless the dispatch intentionally changes target',
         "only when this session's most recent route-changing call visible in context is `hive_feature_select` for that same feature",
         'no later explicit-null or other-feature selection',
-        'When that evidence is not visible (for example after compaction or a summary, at session start, or in mixed ad-hoc/feature batches), or you are uncertain, call `hive_feature_select` for the dispatch target',
+        // On v2 the session's `hive.session` entry carries the route across compaction, so it also counts as evidence.
+        ...(host.host === 'opencode-v2'
+          ? [
+              "or when this session's `hive.session` session instruction entry shows that feature as the selected route; that entry survives compaction.",
+              'When neither is visible (for example at session start or in mixed ad-hoc/feature batches), or you are uncertain, call `hive_feature_select` for the dispatch target',
+            ]
+          : ['When that evidence is not visible (for example after compaction or a summary, at session start, or in mixed ad-hoc/feature batches), or you are uncertain, call `hive_feature_select` for the dispatch target']),
         'load executing-plans, apply its Target Task Milestones procedure, and read its references/task-milestones.md section "Executing requested milestones" before dispatch and on resumption',
         'including an explicit companion suffix',
         'Preserve the exact feature, target, and explicitly named companions from the suggested prompt',
@@ -200,6 +206,7 @@ describe('HIVE_COMMANDS', () => {
       ];
       for (const obligation of once) expect(count(output, obligation), obligation).toBe(1);
       if (host.backgroundSubagents) expect(output).not.toContain('After every returned native task result');
+      if (host.host === 'opencode-v2') expect(output).not.toContain('after compaction or a summary');
       expect(output).not.toContain('Retry or resume native workers directly');
       expect(output).not.toContain('After any usable terminal handoff');
       expect(output).not.toContain('confirmed-stopped interruption recovery');
@@ -313,6 +320,25 @@ describe('HIVE_COMMANDS', () => {
     expect(output).toContain('excludes unrelated and descendant tasks');
     expect(output).toContain('terminal verification handoff in Session Strategy with the concrete feature name: Run final verification for feature "<feature>" and complete it only after the required checks pass');
     expect(output).toContain('a separate continuation after no unfinished feature tasks remain, routed to executing-plans Step 6 and the existing full-feature verification/completion procedure, carrying deferred checks and applicable cleanup');
+  });
+
+  it('keeps milestone prompts self-contained and makes same-session continuation the v2 default', () => {
+    const approve = (host: HiveCommandContext['host']) => buildHiveCommandMap(hiveCommandRenderers, () => ({
+      agentMode: 'dedicated',
+      host,
+      dashReviewLanes: [],
+      vulnerabilityReviewLanes: [],
+    }))['approve-sync-plan'].run('api-delivery');
+    const v1 = approve(OPENCODE_V1_PROFILE);
+    expect(v1).toContain('The prompt must carry the whole explicit scope into a fresh session with status alone, without a persistent milestone manifest.');
+    expect(v1).not.toContain('native compaction');
+    for (const host of [createHostProfile('opencode-v2'), createHostProfile('opencode-v2', { readTransport: 'direct' })]) {
+      const v2 = approve(host);
+      expect(v2).toContain('Say that on this host each next prompt can go in the same session, which continues across native compaction, and that no new session is required between milestones.');
+      expect(v2).toContain('Each prompt still carries the whole explicit scope, so it works unchanged in that session or in a completely fresh session with status alone, without a persistent milestone manifest.');
+      expect(v2).toContain('Run final verification for feature "<feature>" and complete it only after the required checks pass');
+      expect(v2).not.toContain('The prompt must carry the whole explicit scope into a fresh session');
+    }
   });
 
   it('carries the plan assessment requirement once in /hive-plan and /approve-sync-plan on every host, standing alone for a non-Hive primary', () => {

@@ -1,4 +1,4 @@
-import { OPENCODE_V1_PROFILE, nativeCall, renderReadTransport, renderSkillResolution, renderSubagentWait, skillCall } from '../runtime/host-profile.js';
+import { OPENCODE_V1_PROFILE, nativeCall, renderCompactionRecovery, renderReadTransport, renderSkillResolution, renderSubagentWait, skillCall } from '../runtime/host-profile.js';
 import type { HostProfile, NativeSkillIdentity } from '../runtime/host-profile.js';
 
 export function renderHiveSystemPrompt(host: HostProfile): string {
@@ -22,7 +22,7 @@ Select an exposed tool whose documented capability, evidence source, and permitt
 Ground repository claims in local source and executed checks, and library or API claims in first-party documentation for the relevant version. Public code examples show usage, not API authority. A text match does not prove a structural invariant; use language-aware or syntax-aware inspection for that. Use web discovery to find current sources, direct retrieval for a chosen URL, and interactive browsing only for rendered state, forms, downloads, or user-like interaction. Check provenance, dates or versions, and material source conflicts.
 
 When no exposed tool fits, report the missing capability and what cannot be established, keep the evidence gathered, and continue only independent authorized work. Do not install, configure, or enable tools, start helper services, or recreate a missing capability with shell commands, scripts, or ad hoc network requests.
-${renderSubagentWait(host)}${renderReadTransport(host)}`;
+${renderSubagentWait(host)}${renderReadTransport(host)}${renderCompactionRecovery(host)}`;
 }
 
 export const HIVE_SYSTEM_PROMPT = renderHiveSystemPrompt(OPENCODE_V1_PROFILE);

@@ -300,15 +300,15 @@ export function sameChildRoute(stored: SessionInfo | ChildRoute, route: ChildRou
   return (Object.keys(route) as Array<keyof ChildRoute>).every((key) => JSON.stringify(stored[key]) === JSON.stringify(route[key]));
 }
 
+/** The task or run a dispatched child is bound to. */
+export type ChildAssociation = { taskFolder?: string; adHocRunId?: string };
+
 /**
  * The task or run association a dispatch writes into its child's binding. A resolved marker names the task or run, with
  * both keys so the other one clears; an invalid marker clears both. Without a marker nothing is written, so a
  * continuation that omits its marker keeps the task or run the child was bound to. It is observation for viewers and
  * the continuation check; it never comes from the route or the prose.
  */
-/** The task or run a dispatched child is bound to. */
-export type ChildAssociation = { taskFolder?: string; adHocRunId?: string };
-
 export function childAssociation(marker: AssignmentMarker): ChildAssociation {
   if (marker.state === 'none') return {};
   const binding = marker.state === 'resolved' ? marker.binding : undefined;

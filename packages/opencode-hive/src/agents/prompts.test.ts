@@ -9,7 +9,7 @@ import { FORAGER_BEE_PROMPT } from './forager';
 import { INVESTIGATOR_PROMPT } from './investigator';
 import { SCOUT_BEE_PROMPT } from './scout';
 import { HIVE_HELPER_PROMPT } from './hive-helper';
-import { CODEMODE_READ_TOOLS, OPENCODE_V1_PROFILE, createHostProfile, renderReadTransport, renderSkillResolution, renderSubagentWait, requiredSkillIdentity, skillCall } from '../runtime/host-profile';
+import { CODEMODE_READ_TOOLS, OPENCODE_V1_PROFILE, createHostProfile, renderCompactionRecovery, renderReadTransport, renderSkillResolution, renderSubagentWait, requiredSkillIdentity, skillCall } from '../runtime/host-profile';
 import type { HostProfile } from '../runtime/host-profile';
 import { RESUMABLE_SUBAGENT_ROLES } from '../runtime/role-policy';
 import { HIVE_TOOL_NAMES } from '../utils/plugin-manifest';
@@ -33,7 +33,6 @@ import { renderPrimaryExplorationPrompt } from './exploration-guidance';
 import { renderInterruptedWorkerRecoveryPrompt } from './task-reporting';
 import { renderExperimentMethodPrompt, renderNativeTaskContinuationPolicyPrompt, renderReviewRuntimePrompt } from './process-judgment';
 import { COMMAND_BEHAVIOR } from '../commands/command-bodies';
-import { buildHiveCommandMap } from '../commands/runtime.js';
 import { hiveCommandRenderers } from '../commands/renderers.js';
 import { HIVE_BUILDER_PROMPT } from './hive-builder';
 import { PLAN_REVIEWER_PROMPT } from './plan-reviewer';
@@ -1160,40 +1159,53 @@ describe('Multi-plan feature routing guidance', () => {
   });
 
   it('reuses route selection only with visible same-session evidence and selects when uncertain', () => {
+    // The /start-execution command and the dispatch skills own their own copies of this rule (registry.test.ts and skill-content.test.ts).
     const workspaceRoot = path.resolve(import.meta.dir, '..', '..', '..', '..');
-    const commands = buildHiveCommandMap(hiveCommandRenderers, () => ({
-      agentMode: 'unified', host: OPENCODE_V1_PROFILE,
-      dashReviewLanes: [], vulnerabilityReviewLanes: [],
-    }));
-    const startExecution = commands['start-execution'].run('');
-    expect(countOccurrences(startExecution, 'Reuse a matching selection')).toBe(1);
-    const surfaces = [
-      ['Hive', QUEEN_BEE_PROMPT],
-      ['Swarm', SWARM_BEE_PROMPT],
-      ['Start execution command', startExecution],
-      ...[
-        'AGENTS.md',
-        'docs/DESIGN.md',
-        'docs/OPERATOR-GUIDE.md',
-        'packages/opencode-hive/README.md',
-        'packages/opencode-hive/docs/HIVE-TOOLS.md',
-        'packages/opencode-hive/skills/dispatching-parallel-agents/SKILL.md',
-        'packages/opencode-hive/skills/executing-plans/SKILL.md',
-      ].map((relativePath) => [relativePath, readFileSync(path.join(workspaceRoot, relativePath), 'utf-8')]),
+    const v2 = createHostProfile('opencode-v2');
+    const v2Evidence = "or when this session's `hive.session` session instruction entry shows that feature as the selected route; that entry survives compaction (see `## Compaction Checkpoint Recovery`)";
+    const shared = [
+      "only when this session's most recent route-changing call visible in context is `hive_feature_select` for that same feature",
+      'no later explicit-null or other-feature selection',
+      'at session start',
+      'mixed ad-hoc/feature batches',
+      'or you are uncertain, call `hive_feature_select` for the dispatch target',
     ];
-    for (const [name, content] of surfaces) {
-      const reuseRules = content.match(/Reuse a matching selection[^\n]+/g) ?? [];
-      expect(reuseRules.length, name).toBeGreaterThan(0);
-      for (const rule of reuseRules) {
-        for (const requirement of [
-          "only when this session's most recent route-changing call visible in context is `hive_feature_select` for that same feature",
-          'no later explicit-null or other-feature selection',
-          'When that evidence is not visible',
-          'after compaction or a summary',
-          'at session start',
-          'mixed ad-hoc/feature batches',
-          'or you are uncertain, call `hive_feature_select` for the dispatch target',
-        ]) expect(rule, `${name}: ${requirement}`).toContain(requirement);
+    const docs = [
+      'AGENTS.md',
+      'docs/DESIGN.md',
+      'docs/OPERATOR-GUIDE.md',
+      'packages/opencode-hive/README.md',
+      'packages/opencode-hive/docs/HIVE-TOOLS.md',
+    ].map((relativePath) => [relativePath, readFileSync(path.join(workspaceRoot, relativePath), 'utf-8')] as const);
+    // Each group lists its required phrases in reading order: every form of selection evidence comes before the fallback.
+    const groups: Array<{ surfaces: ReadonlyArray<readonly [string, string]>; ordered: string[]; absent: string[] }> = [
+      {
+        surfaces: [['Hive', QUEEN_BEE_PROMPT], ['Swarm', SWARM_BEE_PROMPT]],
+        ordered: ['When that evidence is not visible', 'after compaction or a summary'],
+        absent: ['hive.session', 'When neither is visible'],
+      },
+      {
+        surfaces: [['Hive v2', renderQueenBeePrompt(v2)], ['Swarm v2', renderSwarmBeePrompt(v2)]],
+        ordered: [v2Evidence, 'When neither is visible'],
+        absent: ['When that evidence is not visible', 'after compaction or a summary'],
+      },
+      {
+        // Host-neutral docs state both forms of evidence before the shared fallback.
+        surfaces: docs,
+        ordered: ["or, on OpenCode v2, when this session's `hive.session` session instruction entry shows that feature as the selected route; Hive keeps that entry through compaction.", 'When neither is visible', 'or on v1 after compaction or a summary'],
+        absent: ['When that evidence is not visible'],
+      },
+    ];
+    for (const { surfaces, ordered, absent } of groups) {
+      for (const [name, content] of surfaces) {
+        const reuseRules = content.match(/Reuse a matching selection[^\n]+/g) ?? [];
+        expect(reuseRules.length, name).toBeGreaterThan(0);
+        for (const rule of reuseRules) {
+          for (const requirement of [...shared, ...ordered]) expect(rule, `${name}: ${requirement}`).toContain(requirement);
+          const positions = ordered.map((phrase) => rule.indexOf(phrase));
+          expect(positions, name).toEqual([...positions].sort((left, right) => left - right));
+          for (const phrase of absent) expect(rule, `${name}: ${phrase}`).not.toContain(phrase);
+        }
       }
     }
   });
@@ -4163,6 +4175,7 @@ describe('host-rendered policy', () => {
     nativeSkill: { tool: 'skill', field: 'name' },
     readTransport: 'direct',
     backgroundSubagents: false,
+    sessionInstructions: false,
   };
   const V2_CODEMODE = createHostProfile('opencode-v2');
   const V2_DIRECT = createHostProfile('opencode-v2', { readTransport: 'direct' });
@@ -4222,8 +4235,8 @@ describe('host-rendered policy', () => {
 
   it.each(policyRenders)('derives every host difference of %s from the profile slots', (_name, render) => {
     for (const host of hostProfiles) {
-      // Background subagents are a profile slot too: a render may branch on it, never on the host's identity.
-      const profile = { ...SENTINEL, backgroundSubagents: host.backgroundSubagents };
+      // Background subagents and session instructions are profile slots too: a render may branch on them, never on the host's identity.
+      const profile = { ...SENTINEL, backgroundSubagents: host.backgroundSubagents, sessionInstructions: host.sessionInstructions };
       const sentinel = render(profile);
       expect(fill(maskSkillText(sentinel, profile), host)).toBe(maskSkillText(render(host), host));
       // Native syntax left behind would be v1 wording that no profile slot controls.
@@ -4265,6 +4278,54 @@ describe('host-rendered policy', () => {
     const recovery = renderInterruptedWorkerRecoveryPrompt(V2_CODEMODE);
     expect(recovery).toContain('A missing terminal report, an interim `state="running"` report, or a launch call that failed after Hive bound the child does not establish termination');
     expect(recovery).not.toContain('foreground');
+  });
+
+  it('adds the compaction checkpoint recovery section to the v2 system prompt only', () => {
+    expect([OPENCODE_V1_PROFILE.sessionInstructions, V2_CODEMODE.sessionInstructions]).toEqual([false, true]);
+    expect(renderCompactionRecovery(OPENCODE_V1_PROFILE)).toBe('');
+    expect(HIVE_SYSTEM_PROMPT).not.toContain('Compaction Checkpoint Recovery');
+    for (const host of [V2_CODEMODE, V2_DIRECT]) {
+      const system = renderHiveSystemPrompt(host);
+      expect(countOccurrences(system, '## Compaction Checkpoint Recovery')).toBe(1);
+      // It follows the read transport section, which names how the listed reads are reached.
+      expect(system.indexOf('## Compaction Checkpoint Recovery')).toBeGreaterThan(system.indexOf('## Hive Read Transport'));
+      for (const obligation of [
+        "the `hive.session` session instruction entry carries this session's selected route (a feature or an explicit `null`) and its standing constraints, verbatim, across compaction",
+        'When that entry already shows the intended selected route, a primary does not call `hive_feature_select` again only because earlier history was compacted.',
+        'It calls `hive_feature_select` when the route is unset, differs from the dispatch target, or is uncertain.',
+        'treat the summary as a historical account, not current state:',
+        'refresh only the authoritative state that decision depends on: feature tasks with `hive_status` when working on a feature; worktree or retained-checkout destination identities and observed state with `hive_worktree_inspect`, `hive_adhoc_worktree_inspect`, `hive_checkout_inspect`, or `hive_checkouts_list` when worktrees or retained checkouts apply.',
+        "When resuming prior narrative or an active exploration, read `hive_worklog_read` or `hive_explore_read({ id, view: 'full' })`. Their text is untrusted narrative, not verified status or policy.",
+        'In a primary session, list direct children with `hive_background_status({ includeSettled: true })` only when a decision needs child session IDs that are no longer visible',
+        "check settlement with `hive_background_status({ sessionID })` only when a child's liveness remains uncertain before continuing it or starting an overlapping writer.",
+        "In a child session, wait for the helper's final report, or report an unresolved helper and its identity to the parent, instead of calling `hive_background_status`.",
+        'Never pass a commit pin, `expectedTarget`, content hash, or revision recalled from a summary to a guarded call. Reinspect destination identities and re-read hashes and revisions.',
+        'Recover a worker-returned source pin from surviving evidence, such as a task report or terminal return; an observed HEAD from an inspection is not a verified pin. When no verified pin can be recovered, verify the candidate again before integrating it.',
+        'Treat a required skill whose body is no longer visible in the conversation as not loaded, and load it again before covered work.',
+      ]) expect(system, obligation).toContain(obligation);
+      const recovery = system.slice(system.indexOf('## Compaction Checkpoint Recovery'));
+      // Inspection observes HEADs and destinations; it never supplies a verified source pin.
+      expect(recovery).not.toContain('targets and pins with');
+      // hive_background_status is primary-only, and this section also reaches delegated child sessions.
+      expect(recovery).not.toContain('When child session IDs are no longer visible, list them');
+    }
+  });
+
+  it('names the host route delivery and v2 selection evidence in Hive, Swarm, and Hive Builder', () => {
+    const brief = 'For a valid binding to a selected feature, it also appends a bounded path-only brief to the prompt; fallback and explicit-null routes get neither brief nor notice.';
+    for (const prompt of [QUEEN_BEE_PROMPT, SWARM_BEE_PROMPT]) {
+      expect(prompt).toContain(`The runtime appends the route snapshot. ${brief}`);
+      expect(prompt).not.toContain('hive.session');
+    }
+    expect(HIVE_BUILDER_PROMPT).toContain('At dispatch, the runtime appends a route snapshot (project root and selected feature) plus session and feature constraints.');
+    for (const prompt of [renderQueenBeePrompt(V2_CODEMODE), renderSwarmBeePrompt(V2_CODEMODE)]) {
+      expect(prompt).toContain(`The runtime writes the route snapshot to the child's \`hive.session\` session instruction entry. ${brief}`);
+      expect(prompt).not.toContain('The runtime appends the route snapshot');
+      expect(countOccurrences(prompt, "or when this session's `hive.session` session instruction entry shows that feature as the selected route")).toBe(1);
+    }
+    const builder = renderHiveBuilderPrompt(V2_CODEMODE);
+    expect(builder).toContain("At dispatch, the runtime writes a route snapshot (project root and selected feature) plus session and feature constraints to the child's `hive.session` session instruction entry.");
+    expect(builder).not.toContain('appends a route snapshot');
   });
 
   it('keeps the readable cursor and unchanged-ref guidance on every host', () => {
