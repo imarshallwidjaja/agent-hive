@@ -34,7 +34,6 @@ import type {
 
 export type { ContextFile, ContextIndex, ContextIndexEntry, ContextKind, ContextKindSource, ContextMetadata, ContextRole, ContextScope };
 
-export const OVERVIEW_CONTEXT_NAME = 'overview';
 export const CONTEXT_INDEX_SCHEMA_VERSION = 1;
 export const FEATURE_DURABLE_FILE_WARNING_CAP = 8;
 export const FEATURE_DURABLE_CHAR_WARNING_CAP = 40_000;
@@ -297,10 +296,6 @@ export class ContextService {
     private readonly now: () => Date = () => new Date(),
   ) {}
 
-  write(featureName: string, fileName: string, content: string, expectedRevision: number, expectedContentHash: string): string {
-    return this.replace(featureName, fileName, content, expectedRevision, expectedContentHash).path;
-  }
-
   read(scope: string | ContextScope, fileName: string): string | null {
     const resolved = this.resolveScope(scope);
     const name = this.normalizeName(fileName);
@@ -321,100 +316,6 @@ export class ContextService {
       return fs.lstatSync(this.contentPath(resolved, this.normalizeName(fileName))).isFile();
     } catch {
       return false;
-    }
-  }
-
-  list(scope: string | ContextScope): ContextFile[] {
-    const resolved = this.resolveScope(scope);
-    const before = this.observe(resolved);
-    const files = before.inventory.files.map(file => {
-      const filePath = this.contentPath(resolved, file.name);
-      const content = fs.readFileSync(filePath, 'utf8');
-      return { ...this.publicInventoryFile(file), content };
-    });
-    const after = this.observe(resolved);
-    if (before.inventory.snapshot !== after.inventory.snapshot) {
-      throw new ContextMutationError('context_changed_during_read', 'Context changed while it was being read. Retry the read.');
-    }
-    return files;
-  }
-
-  getOverview(scope: string | ContextScope): ContextFile | null {
-    return this.list(scope).find(file => file.name === OVERVIEW_CONTEXT_NAME) ?? null;
-  }
-
-  delete(featureName: string, fileName: string, expectedRevision: number, expectedContentHash: string): boolean {
-    const name = this.normalizeName(fileName);
-    this.assertExpectedHash(expectedContentHash);
-    return this.mutate(featureName, expectedRevision, (control, resolved) => {
-      const filePath = this.contentPath(resolved, name);
-      const prior = this.requireCurrentContent(filePath, name, expectedContentHash);
-      const nextEntries = { ...control.index.entries };
-      delete nextEntries[name];
-      const nextIndex = { ...control.index, revision: control.index.revision + 1, entries: nextEntries };
-      this.publish(control, resolved, 'delete', [name], [], () => {
-        this.unlinkDurable(filePath);
-        writeJsonAtomicDurable(this.indexPath(resolved), nextIndex);
-      }, () => {
-        writeAtomicDurable(filePath, prior);
-        this.restoreIndex(resolved, control.indexRaw);
-      });
-      return true;
-    });
-  }
-
-  archive(featureName: string, expectedRevision: number, expectedContentHashes: Record<string, string>): { archived: string[]; archivePath: string } {
-    if (!isPlainRecord(expectedContentHashes)) {
-      throw new ContextMutationError('context_precondition_required', 'Expected content hashes are required for every archived context.');
-    }
-    return this.mutate(featureName, expectedRevision, (control, resolved) => {
-      const inventory = this.buildInventory(resolved, control);
-      for (const file of inventory.files) {
-        const field = `expectedContentHashes[${JSON.stringify(file.name)}]`;
-        this.assertExpectedHash(expectedContentHashes[file.name], field);
-        this.requireCurrentContent(this.contentPath(resolved, file.name), file.name, expectedContentHashes[file.name]!, field);
-      }
-      if (inventory.files.length === 0) return { archived: [], archivePath: '' };
-      const moves = this.prepareArchiveMoves(resolved, inventory.files.map(file => file.name), true);
-      const nextIndex = { ...control.index, revision: control.index.revision + 1, entries: {} };
-      this.publishArchive(control, resolved, 'archive', moves, nextIndex, undefined, 'Compatibility archive');
-      return { archived: moves.map(item => item.name), archivePath: moves.length ? path.dirname(moves[0]!.destination) : '' };
-    });
-  }
-
-  stats(scope: string | ContextScope): { count: number; totalChars: number; oldest?: string; newest?: string } {
-    const contexts = this.list(scope);
-    if (contexts.length === 0) return { count: 0, totalChars: 0 };
-    const sorted = [...contexts].sort((left, right) => new Date(left.updatedAt).getTime() - new Date(right.updatedAt).getTime());
-    return {
-      count: contexts.length,
-      totalChars: contexts.reduce((sum, context) => sum + context.content.length, 0),
-      oldest: sorted[0]!.name,
-      newest: sorted[sorted.length - 1]!.name,
-    };
-  }
-
-  /**
-   * A summary for passive display. `busy` while a live writer holds the index
-   * lock (or a pre-native lock file is present); `reconciliation` when a pending
-   * mutation marker remains with no live writer, because its writer died.
-   */
-  inspectSummary(scope: string | ContextScope): { status: 'ready'; summary: ContextReadSummary } | { status: 'busy' } | { status: 'reconciliation' } {
-    const resolved = this.resolveScope(scope);
-    const writerActive = () => probeLock(this.indexPath(resolved)) !== 'free';
-    if (writerActive()) return { status: 'busy' };
-    if (this.safeStat(this.markerPath(resolved))) return writerActive() ? { status: 'busy' } : { status: 'reconciliation' };
-    try {
-      return { status: 'ready', summary: this.readSummary(scope, { scanChars: true }) };
-    } catch (error) {
-      if (error instanceof ContextMutationError && error.reason === 'context_reconciliation_required') {
-        return writerActive() || !this.safeStat(this.markerPath(resolved)) ? { status: 'busy' } : { status: 'reconciliation' };
-      }
-      if (error instanceof ContextMutationError && error.reason === 'context_changed_during_read') {
-        return { status: 'busy' };
-      }
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { status: 'busy' };
-      throw error;
     }
   }
 
@@ -847,12 +748,12 @@ export class ContextService {
       for (const name of normalized) {
         this.requireCurrentContent(this.contentPath(resolved, name), name, expectedContentHashes[name]!, hashField(name));
       }
-      const moves = this.prepareArchiveMoves(resolved, normalized, false);
+      const moves = this.prepareArchiveMoves(resolved, normalized);
       const nextEntries = { ...control.index.entries };
       for (const name of normalized) delete nextEntries[name];
       const nextIndex = { ...control.index, revision: control.index.revision + 1, entries: nextEntries };
       const timestamp = this.now().toISOString();
-      this.publishArchive(control, resolved, 'archive-selected', moves, nextIndex, timestamp, reason.trim());
+      this.publishArchive(control, resolved, moves, nextIndex, timestamp, reason.trim());
       return { revision: nextIndex.revision, archived: moves.map(item => ({ name: item.name, archivePath: item.destination, reason: reason.trim() })) };
     });
   }
@@ -1218,12 +1119,12 @@ export class ContextService {
     });
   }
 
-  private publishArchive(control: ControlState, resolved: ResolvedScope, operation: string, moves: Array<{ name: string; source: string; destination: string }>, nextIndex: ContextIndex, timestamp: string | undefined, reason: string): void {
+  private publishArchive(control: ControlState, resolved: ResolvedScope, moves: Array<{ name: string; source: string; destination: string }>, nextIndex: ContextIndex, timestamp: string, reason: string): void {
     const manifestPath = path.join(resolved.archivePath, '..', 'context-index.json');
-    const priorManifest = timestamp ? this.readFileBuffer(manifestPath) : null;
+    const priorManifest = this.readFileBuffer(manifestPath);
     const moved: typeof moves = [];
     const createdDirectories: string[] = [];
-    this.publish(control, resolved, operation, moves.map(item => item.name), moves.map(item => item.destination), () => {
+    this.publish(control, resolved, 'archive-selected', moves.map(item => item.name), moves.map(item => item.destination), () => {
       for (const item of moves) {
         this.ensureDirectoryDurable(path.dirname(item.destination), createdDirectories);
         fs.copyFileSync(item.source, item.destination, fs.constants.COPYFILE_EXCL);
@@ -1233,10 +1134,10 @@ export class ContextService {
         this.unlinkDurable(item.source);
       }
       writeJsonAtomicDurable(this.indexPath(resolved), nextIndex);
-      if (timestamp) this.appendArchiveRecord(manifestPath, timestamp, reason, moved);
+      this.appendArchiveRecord(manifestPath, timestamp, reason, moved);
     }, () => {
       this.restoreIndex(resolved, control.indexRaw);
-      if (timestamp) this.restoreIndex({ ...resolved, contextPath: path.dirname(manifestPath) }, priorManifest, path.basename(manifestPath));
+      this.restoreIndex({ ...resolved, contextPath: path.dirname(manifestPath) }, priorManifest, path.basename(manifestPath));
       for (const item of [...moved].reverse()) {
         if (!fileExists(item.destination)) continue;
         if (!fileExists(item.source)) this.renameDurable(item.destination, item.source);
@@ -1271,8 +1172,8 @@ export class ContextService {
     }
   }
 
-  private prepareArchiveMoves(resolved: ResolvedScope, names: string[], compatibility: boolean): Array<{ name: string; source: string; destination: string }> {
-    const archivePath = compatibility ? path.join(resolved.contextPath, '..', 'archive') : resolved.archivePath;
+  private prepareArchiveMoves(resolved: ResolvedScope, names: string[]): Array<{ name: string; source: string; destination: string }> {
+    const archivePath = resolved.archivePath;
     this.assertNamespaceSafe(archivePath);
     const timestamp = this.now().toISOString().replace(/[:.]/g, '-');
     const reserved = new Set<string>();

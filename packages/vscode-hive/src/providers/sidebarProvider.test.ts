@@ -885,7 +885,6 @@ describe('HiveSidebarProvider', () => {
       ui.picks.push((items: any[]) => items[0]);
       await provider.inspect();
       const content = provider.provideTextDocumentContent(ui.shown[0].uri);
-      provider.refresh();
 
       expect(fs.readFileSync(v2Path, 'utf8')).toBe(bytes);
       expect(fs.readdirSync(path.dirname(v2Path)).filter(entry => entry.includes('.corrupt-'))).toEqual([]);

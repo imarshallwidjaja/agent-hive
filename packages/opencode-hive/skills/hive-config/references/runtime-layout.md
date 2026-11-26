@@ -124,7 +124,7 @@ If the session index is not valid JSON, or its root is not an object with a `ses
 - Route resolution in any feature-scoped tool called without an explicit `feature`, such as `hive_status()`, as well as feature selection, constraint tools, and native `subagent()` dispatch, which captures the route.
 <!-- /hive-host -->
 
-Read-only inspection never resets the index. `peekGlobal` and `peekListGlobal`, which the VS Code standing-constraints inspector and some runtime binding checks use, report a malformed index as unreadable and leave it unchanged, without a lock or backup.
+Direct file reads, `peekGlobal`, `peekListGlobal`, and the VS Code standing-constraints inspector never reset the index; they report a malformed index as unreadable and leave it unchanged, without a lock or backup. Some runtime binding checks also use `peekGlobal` and `peekListGlobal`.
 
 So read the session index directly, with a shell or file read, before any session-resolving call. If it does not parse, or its root is not an object with a `sessions` array (such as `{}` or `null`), or a `sessions.json.corrupt-*` sibling exists in its directory, report the index path (and the backup path if a `sessions.json.corrupt-*` sibling exists) to the primary or operator, who decides how to restore it. An empty or one-session index next to a `corrupt-*` copy is reset damage, not intentional state. Until the operator decides, avoid session-resolving calls; when you need a feature-scoped read, pass `feature` explicitly.
 

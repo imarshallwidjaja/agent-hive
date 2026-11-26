@@ -24,7 +24,6 @@ export type {
   TaskUpdatePersistenceStage,
   TaskUpdateResult,
 } from './taskService.js';
-export { SubtaskService } from './subtaskService.js';
 export { WorktreeService, createWorktreeService } from './worktreeService.js';
 export type {
   BulkCleanupFailure,

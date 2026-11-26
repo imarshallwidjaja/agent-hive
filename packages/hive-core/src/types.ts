@@ -20,25 +20,6 @@ export interface FeatureDirectoryInfo {
 
 export type TaskStatusType = 'pending' | 'in_progress' | 'done' | 'cancelled' | 'blocked' | 'failed' | 'partial';
 export type TaskOrigin = 'plan' | 'manual';
-export type SubtaskType = 'test' | 'implement' | 'review' | 'verify' | 'research' | 'debug' | 'custom';
-
-export interface Subtask {
-  id: string;
-  name: string;
-  folder: string;
-  status: TaskStatusType;
-  type?: SubtaskType;
-  createdAt?: string;
-  completedAt?: string;
-}
-
-export interface SubtaskStatus {
-  status: TaskStatusType;
-  type?: SubtaskType;
-  createdAt: string;
-  completedAt?: string;
-}
-
 export interface ManualTaskMetadata {
   goal?: string;
   description?: string;
@@ -51,14 +32,6 @@ export interface ManualTaskMetadata {
   reason?: string;
   source?: 'review' | 'operator' | 'ad_hoc';
   dependsOn?: string[];
-}
-
-export interface TaskAggregateBranchDiff {
-  fileCount: number;
-  insertions: number;
-  deletions: number;
-  areas: string[];
-  report: string;
 }
 
 export interface TaskBlocker {
@@ -77,8 +50,6 @@ export interface TaskStatus {
   summary?: string;
   /** Persisted operator-decision input for a blocked task. */
   blocker?: TaskBlocker;
-  /** Runtime-owned aggregate branch diff captured when a terminal report is written. */
-  aggregateBranchDiff?: TaskAggregateBranchDiff;
   startedAt?: string;
   completedAt?: string;
   baseCommit?: string;
@@ -89,7 +60,6 @@ export interface TaskStatus {
    * into the project root or their composite repositories. With `repoIds`, they are exactly the target's repository.
    */
   target?: string;
-  subtasks?: Subtask[];
   /**
    * Task dependencies expressed as task folder names (e.g., '01-setup', '02-core-api').
    * A task cannot start until all its dependencies have status 'done'.

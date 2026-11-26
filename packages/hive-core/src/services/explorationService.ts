@@ -224,7 +224,12 @@ export interface ExplorationDiscovery {
   closed: string[];
 }
 
-export interface ExplorationUpdateResult extends ExplorationBriefView {
+/**
+ * The compact receipt an update returns. `status`, `counts`, `scopeMapped`, `stagnantRevisions` and
+ * `lastProgressRevision` describe the exploration now, which a replay may find past the committed revision; read the
+ * `brief` or `full` view for gaps and observations.
+ */
+export interface ExplorationUpdateResult extends Pick<ExplorationHeader, 'id' | 'status' | 'counts' | 'scopeMapped' | 'stagnantRevisions' | 'lastProgressRevision'> {
   /** True when an identical earlier request with this operationId had already committed. */
   replayed: boolean;
   /** Revision the request committed. */
@@ -929,6 +934,11 @@ function fullOf(doc: ExplorationDocument): ExplorationFullView {
   };
 }
 
+function updateReceiptOf(doc: ExplorationDocument, committedRevision: number, replayed: boolean): ExplorationUpdateResult {
+  const { id, status, counts, scopeMapped, stagnantRevisions, lastProgressRevision } = headerOf(doc);
+  return { id, status, counts, scopeMapped, stagnantRevisions, lastProgressRevision, committedRevision, currentRevision: doc.revision, replayed };
+}
+
 function listEntryOf(doc: ExplorationDocument): ExplorationListEntry {
   const header = headerOf(doc);
   return {
@@ -1133,7 +1143,7 @@ export class ExplorationService {
             throw ioError('write', error);
           }
           if (closed) this.removeStaleActive(files.active);
-          return { ...briefOf(current), replayed: true, committedRevision: receipt.committedRevision, currentRevision: current.revision };
+          return updateReceiptOf(current, receipt.committedRevision, true);
         }
       }
       if (request.expectedRevision === 0) {
@@ -1170,7 +1180,7 @@ export class ExplorationService {
         throw ioError('write', error);
       }
       if (next.status !== 'active' && current) this.removeStaleActive(files.active, true);
-      return { ...briefOf(next), replayed: false, committedRevision: next.revision, currentRevision: next.revision };
+      return updateReceiptOf(next, next.revision, false);
     } finally {
       release();
     }

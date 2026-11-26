@@ -29,12 +29,9 @@ import {
 } from '../utils/paths.js';
 import {
   TaskStatus,
-  TaskStatusType,
   TaskOrigin,
   TasksSyncResult,
   TaskInfo,
-  Subtask,
-  SubtaskType,
   ManualTaskMetadata,
   PlanSyncStatus,
   TaskSyncCheckpoint,
@@ -42,7 +39,6 @@ import {
 import { getPlanContentHash, readPlanApprovalMarker } from './planService.js';
 import { RepositoryService } from './repositoryService.js';
 import { parseRetainedCheckoutId } from './retainedCheckout.js';
-import { SubtaskService } from './subtaskService.js';
 import { resolveWorkerTaskStatusPath } from './workspaceManifest.js';
 import {
   findUnfinishedDependencyViolation,
@@ -65,7 +61,7 @@ export const TASK_STATUS_SCHEMA_VERSION = 1;
 /** Upper bound for a successor handoff, in UTF-8 bytes. */
 export const TASK_HANDOFF_MAX_BYTES = 4096;
 
-export interface TaskUpdateInput extends Partial<Pick<TaskStatus, 'status' | 'summary' | 'aggregateBranchDiff' | 'baseCommit'>> {
+export interface TaskUpdateInput extends Partial<Pick<TaskStatus, 'status' | 'summary' | 'baseCommit'>> {
   blocker?: TaskStatus['blocker'] | null;
   report?: string;
   /** Bounded note for the next worker; replaces handoff.md. */
@@ -504,14 +500,10 @@ function readTaskStatusEntry(folder: string, statusPath: string, guard: (target:
 }
 
 export class TaskService {
-  private readonly subtaskService: SubtaskService;
-
   constructor(
     private projectRoot: string,
     private readonly now: () => Date = () => new Date(),
-  ) {
-    this.subtaskService = new SubtaskService(projectRoot);
-  }
+  ) {}
 
   /**
    * Reconcile task records with the current plan. Syncs of one feature are serialized with each other, with manual
@@ -1566,7 +1558,6 @@ export class TaskService {
 
       if (updates.status !== undefined) updated.status = updates.status;
       if (updates.summary !== undefined) updated.summary = updates.summary;
-      if (updates.aggregateBranchDiff !== undefined) updated.aggregateBranchDiff = updates.aggregateBranchDiff;
       if (updates.baseCommit !== undefined) updated.baseCommit = updates.baseCommit;
       if (updates.blocker === null) delete updated.blocker;
       else if (updates.blocker !== undefined) updated.blocker = updates.blocker;
@@ -2057,43 +2048,6 @@ export class TaskService {
       this.validateTarget(task.target ?? undefined, task.repoIds ?? undefined, `plan.md task ${task.order} ("${task.name}")`);
     }
     return tasks;
-  }
-
-  /** Creates a subtask through SubtaskService, keeping this method's manual-task folder slug. */
-  createSubtask(featureName: string, taskFolder: string, name: string, type?: SubtaskType): Subtask {
-    return this.subtaskService.createWithFolderSlug(featureName, taskFolder, name, type, this.slugify(name));
-  }
-
-  updateSubtask(featureName: string, taskFolder: string, subtaskId: string, status: TaskStatusType): Subtask {
-    return this.subtaskService.update(featureName, taskFolder, subtaskId, status);
-  }
-
-  listSubtasks(featureName: string, taskFolder: string): Subtask[] {
-    return this.subtaskService.list(featureName, taskFolder);
-  }
-
-  deleteSubtask(featureName: string, taskFolder: string, subtaskId: string): void {
-    this.subtaskService.delete(featureName, taskFolder, subtaskId);
-  }
-
-  getSubtask(featureName: string, taskFolder: string, subtaskId: string): Subtask | null {
-    return this.subtaskService.get(featureName, taskFolder, subtaskId);
-  }
-
-  writeSubtaskSpec(featureName: string, taskFolder: string, subtaskId: string, content: string): string {
-    return this.subtaskService.writeSpec(featureName, taskFolder, subtaskId, content);
-  }
-
-  writeSubtaskReport(featureName: string, taskFolder: string, subtaskId: string, content: string): string {
-    return this.subtaskService.writeReport(featureName, taskFolder, subtaskId, content);
-  }
-
-  readSubtaskSpec(featureName: string, taskFolder: string, subtaskId: string): string | null {
-    return this.subtaskService.readSpec(featureName, taskFolder, subtaskId);
-  }
-
-  readSubtaskReport(featureName: string, taskFolder: string, subtaskId: string): string | null {
-    return this.subtaskService.readReport(featureName, taskFolder, subtaskId);
   }
 
   private buildManualTaskSpec(

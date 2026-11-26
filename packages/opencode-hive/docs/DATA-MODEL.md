@@ -114,8 +114,6 @@ Catalog pages default to 10 entries and accept at most 50. Both catalog views us
 
 Named reads bypass full inventory construction. They stream and hash the complete raw file while returning the canonical UTF-8-safe `range: { startByte, endByte, totalBytes }`. The default serialized response budget is 16 KiB and the maximum is 64 KiB. Continue until `complete` is true to reconstruct a whole document. Existing-content replace and append operations require the current scope revision and the actual hash from that named read. Archive requires one hash for every selected name. A client must not compute a new hash at mutation time as a substitute for the read precondition.
 
-The compatibility `write` and `delete` methods require the same revision and per-file hash; `write` replaces existing content, while explicit creation uses `create`. Compatibility `archive` requires the current revision and hashes for every file in the namespace, including reserved and evidence files. Missing preconditions reject without publication.
-
 ## Interrupted Publication
 
 Every managed multi-file mutation writes `.managed-mutation-pending.json` under the context namespace after taking the existing index lock and before publishing content, creating archive destinations, removing archive sources, or publishing control data. On POSIX platforms, the writer flushes the marker file and containing directory before those changes, then flushes published files and changed directories before removing and directory-flushing the marker. Rollback follows the same ordering, and an uncertain publication, rollback, or marker-removal flush restores or retains the marker for reconciliation. Node does not expose the same directory-flush primitive on Windows, so Windows retains atomic rename and explicit file flushes but not the POSIX directory-durability guarantee. The marker identifies the operation, affected names, contained archive destinations, and starting control identity. It contains no body copies and is not a replay journal.
@@ -165,15 +163,15 @@ All bundled source consumers must use the hash-aware signatures together. Mixed 
 | `planTitle` | string? | Task title from plan.md |
 | `summary` | string? | Execution summary |
 | `blocker` | object? | `TaskBlocker` with required reason and optional options, recommendation, and context; present while blocked |
-| `aggregateBranchDiff` | object? | Captured file count, insertions, deletions, areas, and report for a terminal report |
 | `startedAt` | string? | ISO timestamp when task started |
 | `completedAt` | string? | ISO timestamp when task completed |
 | `baseCommit` | string? | Git commit hash at task start |
 | `baseCommits` | map? | Base commit hashes keyed by repository ID |
 | `repoIds` | string[]? | Persisted repository selection for a manifest-backed task |
-| `subtasks` | object[]? | Optional nested subtask state when a task is decomposed during execution. |
 | `dependsOn` | string[]? | Task folder names this task depends on (for example, `["01-setup"]`). Plan tasks resolve this from `plan.md` `Depends on:` annotations during task sync, when the task is created or refreshed; manual tasks persist an explicit array and default to `[]`. A missing field in an older record reads as `[]`; reads never rewrite the file. |
 | `metadata` | object? | Structured manual-task metadata used to generate `spec.md`. Omitted for normal plan-backed tasks. |
+
+Older records may also hold `aggregateBranchDiff` or `subtasks`. Nothing writes or reads them any more; such a record stays readable.
 
 **Dependency rules**:
 - Only status `done` satisfies a dependency.

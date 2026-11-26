@@ -98,13 +98,15 @@ describe('ExplorationService', () => {
           { key: 'ci-env', target: 'CI runner image', state: 'open' },
         ],
       });
-      expect(created).toMatchObject({
-        replayed: false, committedRevision: 1, currentRevision: 1, revision: 1, status: 'active', scopeMapped: true,
-        lastProgressRevision: 0, stagnantRevisions: 1, createdBy: PRIMARY, updatedBy: PRIMARY,
-        counts: { frontierTotal: 3, open: 3, covered: 0, observationsTotal: 0 },
-        untrustedNotice: EXPLORATION_UNTRUSTED_NOTICE,
+      // An update returns a compact receipt; the goal, gaps, observations and authors stay in the read views.
+      expect(created).toEqual({
+        id: 'flaky-login-test', status: 'active', scopeMapped: true, lastProgressRevision: 0, stagnantRevisions: 1,
+        counts: { frontierTotal: 3, open: 3, covered: 0, blocked: 0, dropped: 0, observationsTotal: 0, confirmed: 0, hypothesis: 0, refuted: 0 },
+        committedRevision: 1, currentRevision: 1, replayed: false,
       });
-      expect(created.gaps.total).toBe(3);
+      expect(brief('flaky-login-test')).toMatchObject({
+        revision: 1, createdBy: PRIMARY, updatedBy: PRIMARY, gaps: { total: 3 }, untrustedNotice: EXPLORATION_UNTRUSTED_NOTICE,
+      });
 
       const settled = service.update({
         id: 'flaky-login-test', expectedRevision: 1,
@@ -116,17 +118,18 @@ describe('ExplorationService', () => {
           { key: 'expiry', summary: 'Token expiry compares Date.now() with a 1s window', status: 'hypothesis', refs: ['src/auth/token.ts:40'] },
         ],
       }, OTHER);
-      expect(settled).toMatchObject({ revision: 2, lastProgressRevision: 2, stagnantRevisions: 0, createdBy: PRIMARY, updatedBy: OTHER });
-      expect(settled.gaps.items.map((item) => item.key)).toEqual(['clock']);
+      expect(settled).toMatchObject({ currentRevision: 2, lastProgressRevision: 2, stagnantRevisions: 0, counts: { open: 1, covered: 1, dropped: 1, hypothesis: 1 } });
+      expect(brief('flaky-login-test')).toMatchObject({ createdBy: PRIMARY, updatedBy: OTHER });
+      expect(brief('flaky-login-test').gaps.items.map((item) => item.key)).toEqual(['clock']);
 
       // Adding a speculative open item and editing the goal is not progress.
       const widened = service.update({
         id: 'flaky-login-test', expectedRevision: 2, goal: 'Find why the login test fails intermittently on slow machines',
         frontier: [{ key: 'retry', target: 'test/helpers/retry.ts', state: 'open' }],
       }, PRIMARY);
-      expect(widened).toMatchObject({ revision: 3, lastProgressRevision: 2, stagnantRevisions: 1 });
+      expect(widened).toMatchObject({ currentRevision: 3, lastProgressRevision: 2, stagnantRevisions: 1 });
 
-      const confirmed = service.update({
+      service.update({
         id: 'flaky-login-test', expectedRevision: 3,
         frontier: [{ key: 'clock', target: 'src/auth/token.ts', state: 'covered', evidence: 'A 1100ms delay reproduces the failure every run.' }],
         observations: [
@@ -134,12 +137,13 @@ describe('ExplorationService', () => {
           { key: 'expiry', summary: 'Token expiry compares Date.now() with a 1s window', status: 'refuted', refs: ['src/auth/token.ts:40'] },
         ],
       }, PRIMARY);
-      expect(confirmed.observations.items.map((item) => [item.key, item.status])).toEqual([['expiry-confirmed', 'confirmed'], ['expiry', 'refuted']]);
+      expect(brief('flaky-login-test').observations.items.map((item) => [item.key, item.status])).toEqual([['expiry-confirmed', 'confirmed'], ['expiry', 'refuted']]);
 
       const concluded = service.update({
         id: 'flaky-login-test', expectedRevision: 4, status: 'concluded', conclusion: 'The token expiry window is too tight; widen it to 5s.',
       }, PRIMARY);
-      expect(concluded).toMatchObject({ status: 'concluded', closedAt: expect.any(String), conclusion: expect.stringContaining('5s') });
+      expect(concluded).toMatchObject({ status: 'concluded', currentRevision: 5 });
+      expect(brief('flaky-login-test')).toMatchObject({ status: 'concluded', closedAt: expect.any(String), conclusion: expect.stringContaining('5s') });
       expect(fs.existsSync(path.join(EXPLORATIONS, 'closed', 'flaky-login-test.json'))).toBe(true);
       expect(fs.existsSync(path.join(EXPLORATIONS, 'active', 'flaky-login-test.json'))).toBe(false);
       expect(list().explorations).toEqual([]);
@@ -162,8 +166,8 @@ describe('ExplorationService', () => {
       service.update({ id: 'audit-auth', expectedRevision: 1, status: 'abandoned', reason: 'Scope moved to the new gateway.' }, PRIMARY);
       // A closed exploration takes no further updates; a retest starts a new one citing it.
       expectError(() => service.update({ id: 'audit-auth', expectedRevision: 2, goal: 'retry' }, PRIMARY), 'already_closed');
-      const followUp = create('audit-auth-2', { goal: 'Retest the gateway authentication surface', priorExplorationId: 'audit-auth' });
-      expect(followUp.priorExplorationId).toBe('audit-auth');
+      create('audit-auth-2', { goal: 'Retest the gateway authentication surface', priorExplorationId: 'audit-auth' });
+      expect(brief('audit-auth-2').priorExplorationId).toBe('audit-auth');
       expect(list().explorations.map((entry) => entry.id)).toEqual(['audit-auth-2']);
     });
   });
@@ -224,7 +228,8 @@ describe('ExplorationService', () => {
       expectError(() => service.update({ id: 'e1', expectedRevision: 1, subject: 'other' }, PRIMARY), 'immutable_field');
       expectError(() => service.update({ id: 'e1', expectedRevision: 1, priorExplorationId: 'e9' }, PRIMARY), 'immutable_field');
       // Repeating the stored value is not a change.
-      expect(service.update({ id: 'e1', expectedRevision: 1, subject: 'scope', goal: 'new goal' }, PRIMARY)).toMatchObject({ revision: 2, goal: 'new goal', subject: 'scope' });
+      expect(service.update({ id: 'e1', expectedRevision: 1, subject: 'scope', goal: 'new goal' }, PRIMARY)).toMatchObject({ currentRevision: 2 });
+      expect(brief('e1')).toMatchObject({ goal: 'new goal', subject: 'scope' });
       expectError(() => service.update({ id: 'e1', expectedRevision: 2, observations: [{ key: 'b', summary: 's', status: 'confirmed', supersedes: 'ghost' }] }, PRIMARY), 'invalid_argument');
       expect(brief('e1').revision).toBe(2);
       create('e2');
@@ -279,7 +284,7 @@ describe('ExplorationService', () => {
       expect(brief('chain')).toMatchObject({ revision: 2, lastProgressRevision: 1, stagnantRevisions: 1 });
       service.update({ id: 'chain', expectedRevision: 2, observations: [{ key: 'c', summary: 'third', status: 'confirmed' }] }, PRIMARY);
       const progressed = service.update({ id: 'chain', expectedRevision: 3, observations: [{ key: 'c', summary: 'third', status: 'confirmed', supersedes: 'b' }] }, PRIMARY);
-      expect(progressed).toMatchObject({ revision: 4, lastProgressRevision: 4, stagnantRevisions: 0 });
+      expect(progressed).toMatchObject({ currentRevision: 4, lastProgressRevision: 4, stagnantRevisions: 0 });
       // Resending an unchanged observation keeps its revision tag and is not progress.
       service.update({ id: 'chain', expectedRevision: 4, goal: 'new goal', observations: [{ key: 'c', summary: 'third', status: 'confirmed', supersedes: 'b' }] }, PRIMARY);
       expect(full('chain')).toMatchObject({ revision: 5, lastProgressRevision: 4 });
@@ -333,7 +338,13 @@ describe('ExplorationService', () => {
       const first = create('retry', { operationId: 'op-1', frontier: [{ key: 'a', target: 'A', state: 'open' }] });
       service.update({ id: 'retry', expectedRevision: 1, operationId: 'op-2', observations: [{ key: 'o', summary: 's', status: 'confirmed' }] }, PRIMARY);
       const replay = create('retry', { operationId: 'op-1', frontier: [{ key: 'a', target: 'A', state: 'open' }] });
-      expect(replay).toMatchObject({ replayed: true, committedRevision: first.committedRevision, currentRevision: 2 });
+      // A replay reports the revision it committed, while status, counts and stagnation describe the exploration now.
+      expect(replay).toEqual({
+        id: 'retry', status: 'active', scopeMapped: true, lastProgressRevision: 2, stagnantRevisions: 0,
+        counts: { frontierTotal: 1, open: 1, covered: 0, blocked: 0, dropped: 0, observationsTotal: 1, confirmed: 1, hypothesis: 0, refuted: 0 },
+        committedRevision: first.committedRevision, currentRevision: 2, replayed: true,
+      });
+      expect(first.committedRevision).toBe(1);
       const conflict = expectError(() => create('retry', { operationId: 'op-1', goal: 'different' }), 'operation_conflict');
       expect(conflict.details).toMatchObject({ committedRevision: 1 });
       // Another session's identical operationId is a new request, which the revision guard refuses.
@@ -1025,7 +1036,8 @@ describe('ExplorationService', () => {
       // Open gaps come before blocked ones.
       expect(view.gaps.items[0]!.state).toBe('open');
       const update = service.update({ id: 'dense', expectedRevision: 1, goal: quoted }, PRIMARY);
-      expect(Buffer.byteLength(JSON.stringify(update))).toBeLessThan(EXPLORATION_LIMITS.briefMaxBytes + 256);
+      // The receipt echoes none of the goal, subject, gaps or observations, so it stays small however large they are.
+      expect(Buffer.byteLength(JSON.stringify(update))).toBeLessThan(512);
 
       for (let index = 0; index < 20; index++) create(`list-${String(index).padStart(2, '0')}`, { goal: quoted, subject: quoted });
       const listed = list();

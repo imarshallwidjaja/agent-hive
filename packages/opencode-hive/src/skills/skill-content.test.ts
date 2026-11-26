@@ -3467,7 +3467,7 @@ describe('host sections in packaged skills', () => {
       const text = layout(host);
       expect(text).toContain('So read the session index directly, with a shell or file read, before any session-resolving call.');
       expect(text).toContain('report the index path (and the backup path if a `sessions.json.corrupt-*` sibling exists) to the primary or operator, who decides how to restore it');
-      expect(text).toContain('Read-only inspection never resets the index.');
+      expect(text).toContain('Direct file reads, `peekGlobal`, `peekListGlobal`, and the VS Code standing-constraints inspector never reset the index; they report a malformed index as unreadable and leave it unchanged, without a lock or backup.');
       expect(text).toContain('avoid session-resolving calls; when you need a feature-scoped read, pass `feature` explicitly');
     }
     const overview = rendered('hive-config/SKILL.md', V2);

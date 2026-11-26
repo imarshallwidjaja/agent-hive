@@ -1082,8 +1082,12 @@ describe('Exploration operations', () => {
       frontier: [{ key: 'bundler', target: 'scripts/build.ts', state: 'open', question: 'Which phase dominates?' }],
       createdBy: forged, author: forged,
     }, 's1', 'hive-builder');
-    expect(created).toMatchObject({
-      replayed: false, committedRevision: 1, currentRevision: 1, status: 'active', scopeMapped: true,
+    expect(created).toEqual({
+      id: 'slow-build', status: 'active', scopeMapped: true, stagnantRevisions: 1, lastProgressRevision: 0,
+      counts: { frontierTotal: 1, open: 1, covered: 0, blocked: 0, dropped: 0, observationsTotal: 0, confirmed: 0, hypothesis: 0, refuted: 0 },
+      committedRevision: 1, currentRevision: 1, replayed: false,
+    });
+    expect(await callJson('hive_explore_read', { id: 'slow-build' })).toMatchObject({
       createdBy: { owner: 'opencode-v1', sessionId: 's1', agent: 'hive-builder' }, untrustedNotice: EXPLORATION_UNTRUSTED_NOTICE,
     });
 
@@ -1092,12 +1096,13 @@ describe('Exploration operations', () => {
       frontier: [{ key: 'bundler', target: 'scripts/build.ts', state: 'covered', evidence: 'Type declaration emit takes 80% of the time.', refs: ['scripts/build.ts:30'] }],
       observations: [{ key: 'dts', summary: 'Declaration emit dominates the build', status: 'confirmed' }],
     }, 's2', 'swarm-orchestrator');
-    expect(updated).toMatchObject({ revision: 2, lastProgressRevision: 2, updatedBy: { sessionId: 's2', agent: 'swarm-orchestrator' }, gaps: { items: [], total: 0 } });
+    expect(updated).toMatchObject({ currentRevision: 2, lastProgressRevision: 2, stagnantRevisions: 0, counts: { covered: 1, confirmed: 1 } });
 
     // Results are compact JSON, so the brief budget bounds the text the host receives.
     const text = await call('hive_explore_read', { id: 'slow-build' });
     expect(text).toBe(JSON.stringify(JSON.parse(text)));
     expect(Buffer.byteLength(text)).toBeLessThanOrEqual(EXPLORATION_LIMITS.briefMaxBytes);
+    expect(JSON.parse(text)).toMatchObject({ revision: 2, updatedBy: { sessionId: 's2', agent: 'swarm-orchestrator' }, gaps: { items: [], total: 0 } });
     expect((await callJson('hive_explore_read', { id: 'slow-build', view: 'full' })).frontier[0]).toMatchObject({ refs: ['scripts/build.ts:30'] });
     expect((await callJson('hive_explore_read', {})).explorations.map((entry: { id: string }) => entry.id)).toEqual(['slow-build']);
 
@@ -1144,7 +1149,8 @@ describe('Exploration operations', () => {
     expect(await failure('hive_explore_update', create('root'), 'root', 'general')).toContain('native general subagent has no Hive tool access');
     expect(fs.existsSync(path.join(root, '.hive', 'explorations'))).toBe(false);
     for (const agent of ['hive-master', 'swarm-orchestrator', 'hive-builder', 'architect-planner', 'dash-reviewer', 'vulnerability-review-primary']) {
-      expect((await callJson('hive_explore_update', create(agent), agent, agent)).createdBy).toEqual({ owner: 'opencode-v1', sessionId: agent, agent });
+      expect(await callJson('hive_explore_update', create(agent), agent, agent)).toMatchObject({ id: agent, committedRevision: 1 });
+      expect((await callJson('hive_explore_read', { id: agent }, agent, agent)).createdBy).toEqual({ owner: 'opencode-v1', sessionId: agent, agent });
     }
     // Children still read.
     expect((await callJson('hive_explore_read', { id: 'hive-master' }, 'child', 'forager-worker')).id).toBe('hive-master');

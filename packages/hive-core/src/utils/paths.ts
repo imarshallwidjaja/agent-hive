@@ -21,7 +21,6 @@ const CONTEXT_DIR = 'context';
 const REVIEW_COMMENTS_DIR = 'comments';
 const PLAN_FILE = 'plan.md';
 const COMMENTS_FILE = 'comments.json';
-const OVERVIEW_FILE = 'overview.md';
 const FEATURE_FILE = 'feature.json';
 const STATUS_FILE = 'status.json';
 const REPORT_FILE = 'report.md';
@@ -281,10 +280,6 @@ export function getContextPath(projectRoot: string, featureName: string): string
   return path.join(getFeaturePath(projectRoot, featureName), CONTEXT_DIR);
 }
 
-export function getOverviewPath(projectRoot: string, featureName: string): string {
-  return path.join(getContextPath(projectRoot, featureName), OVERVIEW_FILE);
-}
-
 export function getTasksPath(projectRoot: string, featureName: string): string {
   return path.join(getFeaturePath(projectRoot, featureName), TASKS_DIR);
 }
@@ -325,29 +320,6 @@ export function getTaskSyncPath(projectRoot: string, featureName: string): strin
 /** `getTaskSyncPath` for an already resolved feature directory. */
 export function getFeatureTaskSyncPath(featurePath: string): string {
   return path.join(featurePath, TASK_SYNC_FILE);
-}
-
-const SUBTASKS_DIR = 'subtasks';
-const SPEC_FILE = 'spec.md';
-
-export function getSubtasksPath(projectRoot: string, featureName: string, taskFolder: string): string {
-  return path.join(getTaskPath(projectRoot, featureName, taskFolder), SUBTASKS_DIR);
-}
-
-export function getSubtaskPath(projectRoot: string, featureName: string, taskFolder: string, subtaskFolder: string): string {
-  return path.join(getSubtasksPath(projectRoot, featureName, taskFolder), subtaskFolder);
-}
-
-export function getSubtaskStatusPath(projectRoot: string, featureName: string, taskFolder: string, subtaskFolder: string): string {
-  return path.join(getSubtaskPath(projectRoot, featureName, taskFolder, subtaskFolder), STATUS_FILE);
-}
-
-export function getSubtaskSpecPath(projectRoot: string, featureName: string, taskFolder: string, subtaskFolder: string): string {
-  return path.join(getSubtaskPath(projectRoot, featureName, taskFolder, subtaskFolder), SPEC_FILE);
-}
-
-export function getSubtaskReportPath(projectRoot: string, featureName: string, taskFolder: string, subtaskFolder: string): string {
-  return path.join(getSubtaskPath(projectRoot, featureName, taskFolder, subtaskFolder), REPORT_FILE);
 }
 
 export function ensureDir(dirPath: string): void {

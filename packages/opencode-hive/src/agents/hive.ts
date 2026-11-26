@@ -1,6 +1,6 @@
 import { OPENCODE_V1_PROFILE, nativeCall, routeSnapshotDelivery, selectionReuseRule, skillCall, type HostProfile } from '../runtime/host-profile.js';
 import { ENGINEERING_JUDGMENT_PROMPT } from './engineering-judgment.js';
-import { renderExperimentMethodPrompt, renderNativeTaskContinuationPolicyPrompt, renderSubagentConcurrencyPrompt, renderWorkerReturnPrompt, IMPLEMENT_COMMAND_EXCEPTION_PROMPT, PLAN_APPROVAL_SYNC_PROMPT, PLAN_ASSESSMENT_PROMPT, PRIMARY_CONSTRAINT_AUTHORING_PROMPT, PRIMARY_REASONING_OWNERSHIP_PROMPT, PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT, REVIEW_FOLLOW_UP_PROMPT, REVIEW_HANDOFF_PROMPT, REVIEW_REQUEST_EXAMPLE_PROMPT, REVIEW_ROUTING_PROMPT, TASK_SPEC_FRESHNESS_PROMPT, WORKER_ASSIGNMENT_PROMPT } from './process-judgment.js';
+import { renderExperimentMethodPrompt, renderNativeTaskContinuationPolicyPrompt, renderSubagentConcurrencyPrompt, renderWorkerReturnPrompt, IMPLEMENT_COMMAND_EXCEPTION_PROMPT, PLAN_APPROVAL_SYNC_PROMPT, PLAN_ASSESSMENT_PROMPT, PRIMARY_CONSTRAINT_AUTHORING_PROMPT, PRIMARY_REASONING_OWNERSHIP_PROMPT, PROCESS_JUDGMENT_PROMPT, REPOSITORY_WORKTREE_POLICY_PROMPT, REVIEW_FOLLOW_UP_PROMPT, REVIEW_HANDOFF_PROMPT, REVIEW_REQUEST_EXAMPLE_PROMPT, REVIEW_ROUTING_PROMPT, TASK_REPOSITORY_METADATA_REPAIR_PROMPT, TASK_SPEC_FRESHNESS_PROMPT, WORKER_ASSIGNMENT_PROMPT } from './process-judgment.js';
 import { renderInterruptedWorkerRecoveryPrompt, TASK_REPORT_CONTRACT_PROMPT, TASK_REPORT_OWNERSHIP_PROMPT } from './task-reporting.js';
 import { renderPrimaryExplorationPrompt } from './exploration-guidance.js';
 import { renderPrimaryWorklogPrompt } from './worklog-guidance.js';
@@ -229,7 +229,7 @@ Each task declares dependencies with **Depends on**:
 
 Use \`writing-plans\` to select the repository and retained target for new tracked-write tasks. Existing untargeted tasks remain resumable without automatic rewrites.
 
-For a plan-backed task with missing or incorrect repository metadata, delegate the amendment to Architect and follow Approval and Task Sync with \`refreshPending: true\` before worktree creation. For an incorrectly scoped manual task, automatically replace and cancel it only when no work has started and no existing task depends on it; the replacement mirrors incoming \`dependsOn\` and supplies corrected \`repos\` via \`hive_task_create(...)\`. If work started or reverse dependents exist, retain the incorrect task as blocked with a structured blocker and escalate; do not rewrite dependencies. Find reverse dependents with \`hive_status({ detail: 'full' })\`, because default done and cancelled rows omit \`dependsOn\`.
+${TASK_REPOSITORY_METADATA_REPAIR_PROMPT}
 
 Require Architect to inspect repository scope with \`hive_repositories_status\` before planning multi-repo or non-git-root work. If the needed repo is not declared, Architect runs \`hive_repositories_discover\`, then \`hive_repositories_update\` when the scope is clear. Add only repositories the feature or task will touch; do not bulk-register every discovered repo.
 

@@ -4,7 +4,6 @@ import * as path from "path";
 import { spawn } from "node:child_process";
 import { TaskCreateUncertainError, TaskService, TaskSyncError, TaskUpdatePersistenceError, TASK_STATUS_SCHEMA_VERSION } from "./taskService";
 import { PlanService } from "./planService";
-import { SubtaskService } from "./subtaskService";
 import { TaskUpdatePersistenceError as PublicTaskUpdatePersistenceError } from "../index";
 import type { TaskUpdateInput as PublicTaskUpdateInput, TaskUpdateResult as PublicTaskUpdateResult } from "../index";
 import { TaskStatus } from "../types";
@@ -117,45 +116,6 @@ describe("TaskService", () => {
     expect(() => service.update(featureName, "01-string-deps", { summary: "Must not publish" })).toThrow(/corrupt status file/i);
   });
 
-  it("delegates the subtask lifecycle while preserving both public slug contracts", () => {
-    const featureName = "subtask-lifecycle";
-    setupFeature(featureName);
-    setupTask(featureName, "01-task-api");
-    setupTask(featureName, "02-subtask-api");
-
-    const taskSlash = service.createSubtask(featureName, "01-task-api", "API / UI", "implement");
-    const taskUnderscore = service.createSubtask(featureName, "01-task-api", "Hello_World");
-    expect([taskSlash.folder, taskUnderscore.folder]).toEqual(["1-api-ui", "2-hello-world"]);
-    expect(service.listSubtasks(featureName, "01-task-api")).toHaveLength(2);
-    expect(service.getSubtask(featureName, "01-task-api", taskSlash.id)).toMatchObject({
-      folder: "1-api-ui",
-      status: "pending",
-      type: "implement",
-    });
-
-    expect(service.writeSubtaskSpec(featureName, "01-task-api", taskSlash.id, "spec")).toEndWith("/spec.md");
-    expect(service.writeSubtaskReport(featureName, "01-task-api", taskSlash.id, "report")).toEndWith("/report.md");
-    expect(service.readSubtaskSpec(featureName, "01-task-api", taskSlash.id)).toBe("spec");
-    expect(service.readSubtaskReport(featureName, "01-task-api", taskSlash.id)).toBe("report");
-    expect(service.updateSubtask(featureName, "01-task-api", taskSlash.id, "done")).toMatchObject({
-      status: "done",
-      completedAt: expect.any(String),
-    });
-    service.deleteSubtask(featureName, "01-task-api", taskSlash.id);
-    expect(service.getSubtask(featureName, "01-task-api", taskSlash.id)).toBeNull();
-    expect(service.readSubtaskSpec(featureName, "01-task-api", taskSlash.id)).toBeNull();
-    expect(() => service.updateSubtask(featureName, "01-task-api", taskSlash.id, "done"))
-      .toThrow("Subtask '1.1' not found in task '01-task-api'");
-    expect(() => service.writeSubtaskReport(featureName, "01-task-api", taskSlash.id, "missing"))
-      .toThrow("Subtask '1.1' not found in task '01-task-api'");
-    expect(() => service.deleteSubtask(featureName, "01-task-api", taskSlash.id))
-      .toThrow("Subtask '1.1' not found in task '01-task-api'");
-
-    const publicSubtasks = new SubtaskService(PROJECT_ROOT);
-    expect(publicSubtasks.create(featureName, "02-subtask-api", "API / UI").folder).toBe("1-api--ui");
-    expect(publicSubtasks.create(featureName, "02-subtask-api", "Hello_World").folder).toBe("2-helloworld");
-  });
-
   describe("feature and task namespace integrity", () => {
     const runChildren = (script: string, envs: Array<Record<string, string>>): Promise<string[]> => Promise.all(envs.map(env => {
       const child = spawn(process.execPath, ["-e", script], { env: { ...process.env, PROJECT_ROOT, ...env } });
@@ -183,31 +143,17 @@ describe("TaskService", () => {
       setupFeature("broken");
       setupTask("broken", "01-test-task");
       fs.writeFileSync(path.join(featuresPath, "broken", "feature.json"), "{ not json");
-      // An existing subtask in each candidate directory, which a write that skipped resolution would change.
-      for (const directory of ["01_twin", "02_twin", "broken"]) {
-        const subtaskPath = path.join(featuresPath, directory, "tasks", "01-test-task", "subtasks", "1-sub");
-        fs.mkdirSync(subtaskPath, { recursive: true });
-        fs.writeFileSync(path.join(subtaskPath, "status.json"), JSON.stringify({ status: "pending" }));
-      }
       const snapshot = () => fs.readdirSync(path.join(TEST_DIR, ".hive"), { recursive: true }).map(String).sort()
         .map(entry => {
           const target = path.join(TEST_DIR, ".hive", entry);
           return fs.statSync(target).isFile() ? `${entry}=${fs.readFileSync(target, "utf8")}` : entry;
         });
       const before = snapshot();
-      const subtasks = new SubtaskService(PROJECT_ROOT);
-
       for (const [featureName, reason] of [["ghost", "not_found"], ["twin", "ambiguous"], ["broken", "unreadable"]] as const) {
         const unresolved = expect.objectContaining({ name: "FeatureResolutionError", reason });
         expect(() => service.create(featureName, "manual")).toThrow(unresolved);
         expect(() => service.update(featureName, "01-test-task", { status: "in_progress" })).toThrow(unresolved);
         expect(() => service.writeSpec(featureName, "01-test-task", "Rewritten.\n")).toThrow(unresolved);
-        expect(() => service.createSubtask(featureName, "01-test-task", "Sub")).toThrow(unresolved);
-        expect(() => subtasks.create(featureName, "01-test-task", "Sub")).toThrow(unresolved);
-        expect(() => service.updateSubtask(featureName, "01-test-task", "1.1", "done")).toThrow(unresolved);
-        expect(() => subtasks.writeSpec(featureName, "01-test-task", "1.1", "Rewritten.\n")).toThrow(unresolved);
-        expect(() => subtasks.writeReport(featureName, "01-test-task", "1.1", "Report.\n")).toThrow(unresolved);
-        expect(() => subtasks.delete(featureName, "01-test-task", "1.1")).toThrow(unresolved);
         try {
           service.sync(featureName);
           throw new Error("Expected an unresolved feature");
@@ -222,13 +168,12 @@ describe("TaskService", () => {
       expect(snapshot()).toEqual(before);
     });
 
-    it("writes tasks and subtasks into the metadata-backed feature, never a metadata-less directory that has its name", () => {
+    it("writes tasks into the metadata-backed feature, never a metadata-less directory that has its name", () => {
       const featuresPath = path.join(TEST_DIR, ".hive", "features");
-      // A leftover directory named like the feature, without feature.json, holding its own task and subtask.
+      // A leftover directory named like the feature, without feature.json, holding its own task.
       const ghostTask = path.join(featuresPath, "collide", "tasks", "01-manual");
-      fs.mkdirSync(path.join(ghostTask, "subtasks", "1-sub"), { recursive: true });
+      fs.mkdirSync(ghostTask, { recursive: true });
       fs.writeFileSync(path.join(ghostTask, "status.json"), JSON.stringify({ status: "pending", origin: "manual", planTitle: "Ghost" }));
-      fs.writeFileSync(path.join(ghostTask, "subtasks", "1-sub", "status.json"), JSON.stringify({ status: "pending" }));
       fs.mkdirSync(path.join(featuresPath, "03_collide"), { recursive: true });
       fs.writeFileSync(path.join(featuresPath, "03_collide", "feature.json"), JSON.stringify({ name: "collide", status: "executing", createdAt: "2026-01-01T00:00:00.000Z" }));
       const ghost = () => fs.readdirSync(path.join(featuresPath, "collide"), { recursive: true }).map(String).sort()
@@ -241,46 +186,11 @@ describe("TaskService", () => {
       expect(service.create("collide", "manual")).toBe("01-manual");
       service.update("collide", "01-manual", { status: "in_progress" });
       service.writeSpec("collide", "01-manual", "Rewritten.\n");
-      const subtask = service.createSubtask("collide", "01-manual", "Sub");
-      expect(subtask).toMatchObject({ id: "1.1", folder: "1-sub" });
-      const subtasks = new SubtaskService(PROJECT_ROOT);
-      subtasks.update("collide", "01-manual", "1.1", "done");
-      subtasks.writeSpec("collide", "01-manual", "1.1", "Sub spec.\n");
-      subtasks.writeReport("collide", "01-manual", "1.1", "Sub report.\n");
 
       const realTask = path.join(featuresPath, "03_collide", "tasks", "01-manual");
       expect(readJson<TaskStatus>(path.join(realTask, "status.json"))).toMatchObject({ status: "in_progress", origin: "manual", planTitle: "manual" });
       expect(fs.readFileSync(path.join(realTask, "spec.md"), "utf8")).toBe("Rewritten.\n");
-      expect(fs.readdirSync(path.join(realTask, "subtasks", "1-sub")).sort()).toEqual(["report.md", "spec.md", "status.json"]);
-      expect(service.getSubtask("collide", "01-manual", "1.1")).toMatchObject({ status: "done" });
-      subtasks.delete("collide", "01-manual", "1.1");
-      expect(fs.readdirSync(path.join(realTask, "subtasks"))).toEqual([]);
       expect(ghost()).toEqual(before);
-    });
-
-    it("refuses a subtask for a missing task without creating its folders", () => {
-      setupFeature("subtask-missing");
-      const taskPath = path.join(TEST_DIR, ".hive", "features", "subtask-missing", "tasks", "01-ghost");
-      expect(() => service.createSubtask("subtask-missing", "01-ghost", "Sub")).toThrow("Task '01-ghost' not found");
-      expect(fs.existsSync(taskPath)).toBe(false);
-    });
-
-    it("never reuses a deleted subtask's number, and concurrent creations take distinct numbers", async () => {
-      const featureName = "subtask-numbers";
-      setupFeature(featureName);
-      setupTask(featureName, "03-api");
-      const ids = ["One", "Two", "Three"].map(name => service.createSubtask(featureName, "03-api", name).id);
-      expect(ids).toEqual(["3.1", "3.2", "3.3"]);
-      service.deleteSubtask(featureName, "03-api", "3.2");
-      expect(service.createSubtask(featureName, "03-api", "Four")).toMatchObject({ id: "3.4", folder: "4-four" });
-      expect(service.getSubtask(featureName, "03-api", "3.3")).toMatchObject({ folder: "3-three" });
-
-      const created = await runChildren(`
-        import { SubtaskService } from ${serviceModule("subtaskService")};
-        console.log(new SubtaskService(process.env.PROJECT_ROOT).create(process.env.FEATURE, "03-api", process.env.NAME).id);
-      `, ["a", "b", "c", "d"].map(name => ({ FEATURE: featureName, NAME: `child ${name}` })));
-      expect(created.sort()).toEqual(["3.5", "3.6", "3.7", "3.8"]);
-      expect(service.listSubtasks(featureName, "03-api").map(subtask => subtask.id)).toEqual(["3.1", "3.3", "3.4", "3.5", "3.6", "3.7", "3.8"]);
     });
 
     it("allocates distinct manual task orders across concurrent creations", async () => {
@@ -1236,31 +1146,19 @@ Run tests.
   });
 
   describe("getRawStatus", () => {
-    it("returns full TaskStatus including aggregate branch metadata", () => {
+    it("reads and updates a legacy status that still carries retired subtasks and aggregateBranchDiff keys", () => {
       const featureName = "test-feature";
       setupFeature(featureName);
-      setupTask(featureName, "01-test-task", {
-        schemaVersion: 1,
-        aggregateBranchDiff: {
-          fileCount: 2,
-          insertions: 8,
-          deletions: 3,
-          areas: ["packages", "docs"],
-          report: ".hive/features/test-feature/tasks/01-test-task/report.md",
-        },
-      });
+      const retired = {
+        aggregateBranchDiff: { fileCount: 2, insertions: 8, deletions: 3, areas: ["packages"], report: "report.md" },
+        subtasks: [{ id: "1.1", name: "Sub", folder: "1-sub", status: "done" }],
+      };
+      setupTask(featureName, "01-test-task", { schemaVersion: 1, ...retired } as Partial<TaskStatus>);
 
-      const result = service.getRawStatus(featureName, "01-test-task");
-
-      expect(result).not.toBeNull();
-      expect(result?.schemaVersion).toBe(1);
-      expect(result?.aggregateBranchDiff).toEqual({
-        fileCount: 2,
-        insertions: 8,
-        deletions: 3,
-        areas: ["packages", "docs"],
-        report: ".hive/features/test-feature/tasks/01-test-task/report.md",
-      });
+      expect(service.getRawStatus(featureName, "01-test-task")).toMatchObject({ schemaVersion: 1, status: "pending" });
+      expect(service.listStatusEntries(featureName)).toEqual([expect.objectContaining({ folder: "01-test-task", status: "pending" })]);
+      service.update(featureName, "01-test-task", { status: "in_progress" });
+      expect(service.getRawStatus(featureName, "01-test-task")).toMatchObject({ status: "in_progress" });
     });
 
     it("returns null for non-existent task", () => {

@@ -191,11 +191,11 @@ describe('ContextService reserved overview context', () => {
     });
   });
 
-  it('inspects absent and read-only context without filesystem writes or lock acquisition', () => {
+  it('summarizes absent and read-only context without filesystem writes or lock acquisition', () => {
     setupFeature('inspection');
     const contextPath = path.join(TEST_DIR, '.hive/features/inspection/context');
     const before = fs.readdirSync(path.dirname(contextPath));
-    expect(service.inspectSummary('inspection').status).toBe('ready');
+    expect(service.readSummary('inspection', { scanChars: true }).files).toEqual([]);
     expect(fs.readdirSync(path.dirname(contextPath))).toEqual(before);
     expect(fs.existsSync(contextPath)).toBe(false);
     service.create('inspection', 'notes', durable('é😀'));
@@ -208,35 +208,15 @@ describe('ContextService reserved overview context', () => {
     }) as typeof fs.openSync);
     fs.chmodSync(contextPath, 0o555);
     try {
-      const snapshot = service.inspectSummary('inspection');
-      expect(snapshot.status).toBe('ready');
-      if (snapshot.status !== 'ready') throw new Error('Expected snapshot');
-      expect(snapshot.summary.durable.chars).toBe(durable('é😀').length);
-      expect(snapshot.summary.files.find(file => file.name === 'notes')?.bytes).toBe(Buffer.byteLength(durable('é😀')));
-      expect(snapshot.summary.files.find(file => file.name === 'proof')?.role).toBe('evidence');
+      const summary = service.readSummary('inspection', { scanChars: true });
+      expect(summary.durable.chars).toBe(durable('é😀').length);
+      expect(summary.files.find(file => file.name === 'notes')?.bytes).toBe(Buffer.byteLength(durable('é😀')));
+      expect(summary.files.find(file => file.name === 'proof')?.role).toBe('evidence');
       expect(writerOpens).toBe(0);
     } finally { open.mockRestore(); fs.chmodSync(contextPath, 0o755); }
-    // A pre-native lock file may belong to a live host, so it reads as busy.
-    fs.writeFileSync(path.join(contextPath, 'index.json.lock'), 'writer');
-    expect(service.inspectSummary('inspection')).toEqual({ status: 'busy' });
-    fs.unlinkSync(path.join(contextPath, 'index.json.lock'));
-
-    // A live writer is busy; a pending marker whose writer died needs reconciliation, however long the anchor exists.
-    const indexPath = path.join(contextPath, 'index.json');
-    const markerPath = path.join(contextPath, '.managed-mutation-pending.json');
-    fs.writeFileSync(markerPath, JSON.stringify({ schemaVersion: 1, operation: 'replace', names: ['notes'] }));
-    const releaseWriter = acquireLockSync(indexPath);
-    try {
-      expect(service.inspectSummary('inspection')).toEqual({ status: 'busy' });
-    } finally {
-      releaseWriter();
-    }
-    expect(service.inspectSummary('inspection')).toEqual({ status: 'reconciliation' });
-    fs.unlinkSync(markerPath);
-    expect(service.inspectSummary('inspection').status).toBe('ready');
   });
 
-  it('rejects unstable inspection snapshots and transient missing files without partial results', () => {
+  it('rejects unstable summary snapshots and transient missing files without partial results', () => {
     setupFeature('inspection');
     service.create('inspection', 'proof', 'evidence', { kind: 'evidence' });
     const original = fs.openSync;
@@ -249,7 +229,7 @@ describe('ContextService reserved overview context', () => {
       return (original as any)(file, ...args);
     }) as typeof fs.openSync);
     try {
-      expect(service.inspectSummary('inspection')).toEqual({ status: 'busy' });
+      expect(() => service.readSummary('inspection', { scanChars: true })).toThrow('moved by archive');
       expect(reads).toBe(1);
     } finally { read.mockRestore(); }
     let indexReads = 0;
@@ -259,11 +239,12 @@ describe('ContextService reserved overview context', () => {
       if (String(file).endsWith('index.json')) return Buffer.from(JSON.stringify({ ...JSON.parse(value), revision: ++indexReads }));
       return value;
     }) as any);
-    try { expect(service.inspectSummary('inspection')).toEqual({ status: 'busy' }); }
-    finally { changing.mockRestore(); }
+    try {
+      expect(() => service.readSummary('inspection', { scanChars: true })).toThrow(expect.objectContaining({ reason: 'context_changed_during_read' }));
+    } finally { changing.mockRestore(); }
   });
 
-  it('rejects invalid inspection index shapes without writes or lock acquisition', () => {
+  it('rejects invalid index shapes in summaries without writes or lock acquisition', () => {
     setupFeature('inspection');
     service.create('inspection', 'notes', durable('preserved'));
     const contextPath = path.join(TEST_DIR, '.hive/features/inspection/context');
@@ -274,8 +255,8 @@ describe('ContextService reserved overview context', () => {
       const open = spyOn(fs, 'openSync');
       const write = spyOn(fs, 'writeFileSync');
       try {
-        expect(() => service.inspectSummary('inspection')).toThrow('Context index');
-        // The writer probe may open the lock anchor read-only; nothing is opened for writing or created.
+        expect(() => service.readSummary('inspection', { scanChars: true })).toThrow('Context index');
+        // Nothing is opened for writing or created.
         const writeFlags = fs.constants.O_WRONLY | fs.constants.O_RDWR | fs.constants.O_CREAT;
         expect(open.mock.calls.filter(([, flags]) => typeof flags !== 'number' || (flags & writeFlags) !== 0)).toEqual([]);
         expect(probeLock(indexPath)).toBe('free');
@@ -295,7 +276,7 @@ describe('ContextService reserved overview context', () => {
     seedLegacy(featureName, 'execution-decisions', 'Operational note');
     seedLegacy(featureName, 'learnings', 'Durable learning');
 
-    expect(service.list(featureName).map(file => [
+    expect(service.readSummary(featureName).files.map(file => [
       file.name,
       file.role,
     ])).toEqual([
@@ -1251,44 +1232,29 @@ describe('ContextService managed context', () => {
     expect(fs.existsSync(path.join(contextPath, 'index.json'))).toBe(false);
   });
 
-  it('preserves write overwrite compatibility and advances a coherent revision', () => {
-    setupFeature('write-overwrite');
-    service.create('write-overwrite', 'contract', durable('first'));
+  it('invalidates held revisions and removes index metadata when a file is archived', () => {
+    setupFeature('archive-index');
+    const kept = service.create('archive-index', 'kept', durable('kept'));
+    const created = service.create('archive-index', 'notes', 'archive me', { kind: 'evidence' });
 
-    const current = service.readContent('write-overwrite', 'contract')!;
-    const replacement = durable('replacement bytes');
-    const result = service.write('write-overwrite', 'contract.md', replacement, current.revision, current.file.contentHash!);
-
-    expect(result).toContain(path.join('context', 'contract.md'));
-    expect(service.read('write-overwrite', 'contract')).toBe(replacement);
-    expect(service.readSummary('write-overwrite')).toMatchObject({
-      revision: 2,
-      durable: { fileCount: 1, chars: null, bytes: Buffer.byteLength(replacement) },
-    });
-  });
-
-  it('invalidates held revisions and removes index metadata on compatibility delete', () => {
-    setupFeature('delete-managed');
-    const created = service.create('delete-managed', 'notes', 'delete me', { kind: 'evidence' });
-
-    expect(service.delete('delete-managed', 'notes', created.revision, created.file.contentHash)).toBe(true);
-    expect(service.readSummary('delete-managed')).toMatchObject({ revision: 2, files: [] });
-    const replacement = service.create('delete-managed', 'replacement', durable('new'));
-    expect(() => service.replace('delete-managed', 'replacement', durable('stale'), created.revision, replacement.file.contentHash))
+    expect(service.archiveSelected('archive-index', ['notes'], 'done', created.revision, { notes: created.file.contentHash }).revision).toBe(3);
+    expect(service.readSummary('archive-index')).toMatchObject({ revision: 3, files: [{ name: 'kept' }] });
+    // The revision held before the archive is stale for the document that stayed active.
+    expect(() => service.replace('archive-index', 'kept', durable('stale'), created.revision, kept.file.contentHash))
       .toThrow('current revision is 3');
-    const indexPath = path.join(TEST_DIR, '.hive', 'features', 'delete-managed', 'context', 'index.json');
+    expect(service.read('archive-index', 'kept')).toBe(durable('kept'));
+    const indexPath = path.join(TEST_DIR, '.hive', 'features', 'archive-index', 'context', 'index.json');
     expect(JSON.parse(fs.readFileSync(indexPath, 'utf-8')).entries).not.toHaveProperty('notes');
   });
 
-  it.each(['write', 'delete', 'archive'] as const)('requires caller revision and actual hashes on compatibility %s', operation => {
-    setupFeature('guarded-compatibility');
-    const created = service.create('guarded-compatibility', 'notes', durable('original'));
+  it.each(['replace', 'archiveSelected'] as const)('requires caller revision and actual hashes on %s', operation => {
+    setupFeature('guarded-mutation');
+    const created = service.create('guarded-mutation', 'notes', durable('original'));
     const invoke = (revision: unknown, hash: unknown) => {
-      if (operation === 'write') return service.write('guarded-compatibility', 'notes', 'replacement', revision as number, hash as string);
-      if (operation === 'delete') return service.delete('guarded-compatibility', 'notes', revision as number, hash as string);
-      return service.archive('guarded-compatibility', revision as number, hash === undefined ? undefined as any : { notes: hash as string });
+      if (operation === 'replace') return service.replace('guarded-mutation', 'notes', durable('replacement'), revision as number, hash as string);
+      return service.archiveSelected('guarded-mutation', ['notes'], 'retired', revision as number, hash === undefined ? undefined as any : { notes: hash as string });
     };
-    const contextPath = path.join(TEST_DIR, '.hive/features/guarded-compatibility/context');
+    const contextPath = path.join(TEST_DIR, '.hive/features/guarded-mutation/context');
     const indexBefore = fs.readFileSync(path.join(contextPath, 'index.json'));
     for (const revision of [undefined, null, -1, created.revision - 1]) {
       expect(() => invoke(revision, created.file.contentHash)).toThrow();
@@ -1299,50 +1265,6 @@ describe('ContextService managed context', () => {
     expect(fs.readFileSync(path.join(contextPath, 'notes.md'), 'utf8')).toBe('external edit');
     expect(fs.readFileSync(path.join(contextPath, 'index.json'))).toEqual(indexBefore);
     expect(fs.existsSync(path.join(contextPath, '.managed-mutation-pending.json'))).toBe(false);
-  });
-
-  it('preserves compatibility archive collisions and invalidates held revisions', () => {
-    setupFeature('archive-managed');
-    const first = service.create('archive-managed', 'notes', durable('first payload'));
-    const firstArchive = service.archive('archive-managed', first.revision, { notes: first.file.contentHash });
-    const second = service.create('archive-managed', 'notes', durable('second payload'));
-    const secondArchive = service.archive('archive-managed', second.revision, { notes: second.file.contentHash });
-
-    const archiveFiles = fs.readdirSync(firstArchive.archivePath)
-      .filter(name => name.includes('_notes'));
-    expect(archiveFiles).toHaveLength(2);
-    expect(archiveFiles.map(name => fs.readFileSync(path.join(firstArchive.archivePath, name), 'utf-8')).sort())
-      .toEqual([durable('first payload'), durable('second payload')]);
-    expect(secondArchive.archivePath).toBe(firstArchive.archivePath);
-    expect(service.readSummary('archive-managed')).toMatchObject({ revision: 4, files: [] });
-    const replacement = service.create('archive-managed', 'replacement', durable('new'));
-    expect(() => service.replace('archive-managed', 'replacement', durable('stale'), first.revision, replacement.file.contentHash))
-      .toThrow('current revision is 5');
-  });
-
-  it('returns the empty compatibility archive shape without creating an archive path', () => {
-    setupFeature('archive-empty');
-
-    expect(service.archive('archive-empty', service.readSummary('archive-empty').revision, {})).toEqual({
-      archived: [],
-      archivePath: '',
-    });
-  });
-
-  it('reports empty and timestamp-ordered compatibility stats with exact character totals', () => {
-    setupFeature('stats');
-    expect(service.stats('stats')).toEqual({ count: 0, totalChars: 0 });
-
-    seedLegacy('stats', 'first', 'a'.repeat(100));
-    seedLegacy('stats', 'second', 'b'.repeat(200));
-    seedLegacy('stats', 'third', 'c'.repeat(300));
-    const contextPath = path.join(TEST_DIR, '.hive/features/stats/context');
-    const now = Date.now();
-    fs.utimesSync(path.join(contextPath, 'first.md'), (now - 2000) / 1000, (now - 2000) / 1000);
-    fs.utimesSync(path.join(contextPath, 'second.md'), (now - 1000) / 1000, (now - 1000) / 1000);
-    fs.utimesSync(path.join(contextPath, 'third.md'), now / 1000, now / 1000);
-
-    expect(service.stats('stats')).toEqual({ count: 3, totalChars: 600, oldest: 'first', newest: 'third' });
   });
 
   it('returns content and revision from one locked snapshot', () => {
@@ -1360,7 +1282,7 @@ describe('ContextService managed context', () => {
     });
   });
 
-  it('performs list-based public reads without writer locks', () => {
+  it('performs public reads without writer locks', () => {
     setupFeature('locked-reads');
     service.create('locked-reads', 'notes', durable('snapshot bytes'));
     const contextPath = path.join(TEST_DIR, '.hive', 'features', 'locked-reads', 'context');
@@ -1376,16 +1298,13 @@ describe('ContextService managed context', () => {
     }) as typeof fs.opendirSync);
 
     try {
-      expect(service.list('locked-reads')).toHaveLength(1);
-      expect(service.getOverview('locked-reads')).toBeNull();
-      expect(service.stats('locked-reads').count).toBe(1);
       expect(service.readSummary('locked-reads').files).toHaveLength(1);
       expect(service.readContent('locked-reads', 'notes')?.file.content).toBe(durable('snapshot bytes'));
     } finally {
       opendirSpy.mockRestore();
     }
 
-    expect(observations).toBeGreaterThanOrEqual(5);
+    expect(observations).toBeGreaterThanOrEqual(2);
   });
 
   it('creates evidence without exposing it to execution or network context', () => {
@@ -1862,10 +1781,9 @@ describe('ContextService pending marker classification', () => {
     readManagementCatalog: reasonOf(() => target.readManagementCatalog(featureName)) ?? 'ok',
     readContent: reasonOf(() => target.readContent(featureName, 'notes')) ?? 'ok',
     read: reasonOf(() => target.read(featureName, 'notes')) ?? 'ok',
-    list: reasonOf(() => target.list(featureName)) ?? 'ok',
   });
   const allReads = (outcome: string) => ({
-    readSummary: outcome, readCatalog: outcome, readManagementCatalog: outcome, readContent: outcome, read: outcome, list: outcome,
+    readSummary: outcome, readCatalog: outcome, readManagementCatalog: outcome, readContent: outcome, read: outcome,
   });
 
   // The reader is a separate process, so its lock probe meets the writer's kernel lock exactly as another host would.
@@ -1882,7 +1800,6 @@ describe('ContextService pending marker classification', () => {
         readManagementCatalog: outcome(() => service.readManagementCatalog(feature)),
         readContent: outcome(() => service.readContent(feature, 'notes')),
         read: outcome(() => service.read(feature, 'notes')),
-        list: outcome(() => service.list(feature)),
       }));
     `);
     const result = Bun.spawnSync([process.execPath, script, PROJECT_ROOT, featureName], { stdout: 'pipe', stderr: 'pipe' });
@@ -2005,11 +1922,8 @@ describe('ContextService pending marker classification', () => {
     const mutations: Array<[string, () => unknown]> = [
       ['create', () => service.create('ghost', 'notes', durable('typo'))],
       ['replace', () => service.replace('ghost', 'notes', durable('typo'), 0, hash)],
-      ['write', () => service.write('ghost', 'notes', durable('typo'), 0, hash)],
       ['append', () => service.append('ghost', 'notes', 'typo', 0, hash)],
       ['edit', () => service.edit('ghost', 'notes', 'a', 'b', 0, hash)],
-      ['delete', () => service.delete('ghost', 'notes', 0, hash)],
-      ['archive', () => service.archive('ghost', 0, {})],
       ['archiveSelected', () => service.archiveSelected('ghost', ['notes'], 'obsolete', 0, { notes: hash })],
     ];
     for (const [label, mutation] of mutations) {
@@ -2049,9 +1963,8 @@ describe('ContextService pending marker classification', () => {
       readCatalog: reasonOf(() => service.readCatalog(feature)),
       readContent: reasonOf(() => service.readContent(feature, 'notes')),
       read: reasonOf(() => service.read(feature, 'notes')),
-      list: reasonOf(() => service.list(feature)),
     });
-    const refused = (reason: string) => ({ readSummary: reason, readCatalog: reason, readContent: reason, read: reason, list: reason });
+    const refused = (reason: string) => ({ readSummary: reason, readCatalog: reason, readContent: reason, read: reason });
     expect(reads('twin')).toEqual(refused('ambiguous'));
     expect(reads('broken')).toEqual(refused('unreadable'));
     expect(snapshot()).toEqual(before);
@@ -2080,7 +1993,7 @@ describe('ContextService pending marker classification', () => {
       ['invalid_context_metadata', () => service.create(project, 'notes', 'no frontmatter')],
       ['context_precondition_required', () => service.replace(project, 'notes', projectDurable('x'), 0, 'not-a-hash')],
       ['context_precondition_required', () => service.append(project, 'notes', 'x', -1, sha('x'))],
-      ['invalid_context_name', () => service.delete(featureName, 'a/b', 0, sha('x'))],
+      ['invalid_context_name', () => service.edit(featureName, 'a/b', 'x', 'y', 0, sha('x'))],
       ['invalid_argument', () => service.archiveSelected(project, [], 'obsolete', 0, {})],
       ['invalid_archive_reason', () => service.archiveSelected(project, ['notes'], ' ', 0, { notes: sha('x') })],
       ['invalid_context_name', () => service.create(featureName, 'index', durable('x'))],

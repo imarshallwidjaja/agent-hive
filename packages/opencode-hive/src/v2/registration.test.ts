@@ -813,7 +813,7 @@ describe('v2 execution guards', () => {
     const primary = { sessionID: 'primary', agent: 'vulnerability-review-primary' };
     const args = { id: 'audit', expectedRevision: 0, goal: 'Audit the login surface', frontier: [{ key: 'login', target: 'POST /login', state: 'open' }], createdBy: { owner: 'opencode-v1', sessionId: 'x', agent: 'forged' } };
     const created = (await host.execute('hive_explore_update', args, primary) as Exit.Success<{ output: any; content: string }>).value;
-    expect(created.output.createdBy).toEqual({ owner: 'opencode-v2', sessionId: 'primary', agent: 'vulnerability-review-primary' });
+    expect(created.output).toMatchObject({ id: 'audit', committedRevision: 1, replayed: false });
     expect(created.content).toBe(JSON.stringify(created.output));
     const directory = path.join(host.root, '.hive', 'explorations');
     const before = fs.readdirSync(directory, { recursive: true });
@@ -821,7 +821,7 @@ describe('v2 execution guards', () => {
     expect(denied(await host.execute('hive_explore_update', { ...args, id: 'gone-audit' }, { sessionID: 'gone', agent: 'hive-builder' }))).toContain('could not read session gone');
     expect(fs.readdirSync(directory, { recursive: true })).toEqual(before);
     const read = (await host.execute('hive_explore_read', { id: 'audit' }, { sessionID: 'child', agent: 'forager-worker' }) as Exit.Success<{ output: any }>).value.output;
-    expect(read).toMatchObject({ view: 'brief', revision: 1, gaps: { total: 1 } });
+    expect(read).toMatchObject({ view: 'brief', revision: 1, gaps: { total: 1 }, createdBy: { owner: 'opencode-v2', sessionId: 'primary', agent: 'vulnerability-review-primary' } });
   });
 
   it('presents Worklog results as compact JSON, with the same structured output, so maxBytes bounds the content text', async () => {
