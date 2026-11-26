@@ -154,7 +154,7 @@ function parseToolOutput(text: string): Json {
 }
 
 /**
- * The text a scripted v2 parent answers while a child it launched has not sent its terminal report. v2 2.4.1 runs every
+ * The text a scripted v2 parent answers while a child it launched has not sent its terminal report. v2 2.4.2 runs every
  * subagent call in the background: the call returns `running` with the child's session ID (core/src/tool/plugin/
  * subagent.ts), and the host posts a `<background-result kind="subagent" sessionID="..." state="...">` message each
  * time the child stops (core/src/session/subagent-completion.ts). A `state="running"` report is interim: the child
@@ -951,7 +951,7 @@ export function toolOutcome(call: Json, session: Json, tree: Json[]): Json {
     const childSessionId = metadata.sessionId ?? metadata.sessionID ?? dispatchedChild(output);
     const child = tree.find((s) => s.id === childSessionId);
     const requested = neutralArgs(call.name, call.input).agent;
-    // A v2 2.4.1 call always reports `running`, because its child runs in the background; success still needs the
+    // A v2 2.4.2 call always reports `running`, because its child runs in the background; success still needs the
     // child itself verified below.
     const failed = metadata.status !== undefined && metadata.status !== 'completed' && metadata.status !== 'running';
     const verified = Boolean(child) && child.parentId === session.id && child.agent === requested && child.assistantMessages > 0 && child.errors === 0;

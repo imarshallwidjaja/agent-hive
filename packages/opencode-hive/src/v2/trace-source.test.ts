@@ -347,7 +347,7 @@ describe('v2 trace source mapping', () => {
   });
 });
 
-// A v2 compaction is one `type: 'compaction'` message (`SessionMessage.Compaction` in @opencode/schema 2.4.1) with
+// A v2 compaction is one `type: 'compaction'` message (`SessionMessage.Compaction` in @opencode/schema 2.4.2) with
 // status running, completed or failed. The engine counts it strictly: it marks the source compacted, forces an
 // inspect-only next action, and a compaction as the latest message keeps the lifecycle non-terminal.
 describe('v2 compaction messages', () => {
@@ -715,7 +715,7 @@ describe('v2 summarizer model selection', () => {
   });
 
   it('reports recovery unavailable when the catalog default has no provider package, which the native runner skips', async () => {
-    // v2.4.1 `ModelResolver.fallback` runs a session without a model on the catalog default only when it has a
+    // v2.4.2 `ModelResolver.fallback` runs a session without a model on the catalog default only when it has a
     // package, else on another packaged model. Binding the package-less default would pin a model the runner never picks.
     const setup = summarizerContext({ config: {}, models: catalog, defaultModel: modelInfo('dp', 'dm', [], ''), sessions: { ses_parent: {} } });
     const result = await recover(setup);

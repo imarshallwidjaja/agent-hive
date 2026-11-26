@@ -541,6 +541,21 @@ describe('v2 execution guards', () => {
     ['general', 'child', 'edit', {}, true],
     ['explore', 'child', 'hive_context_read', {}, false],
     ['explore', 'child', 'edit', {}, false],
+    // v2.4.2 `machine.copy` and `machine.move` write files, so they are edits under either name: refused to read-only
+    // roles and explore, left to native permissions for roles that may edit.
+    ['code-reviewer', 'child', 'machine_copy', {}, false],
+    ['code-reviewer', 'child', 'machine_move', {}, false],
+    ['code-reviewer', 'child', 'machine.copy', {}, false],
+    ['code-reviewer', 'child', 'machine.move', {}, false],
+    ['hive-helper', 'child', 'machine.move', {}, false],
+    ['explore', 'child', 'machine_copy', {}, false],
+    ['explore', 'child', 'machine_move', {}, false],
+    ['explore', 'child', 'machine.copy', {}, false],
+    ['explore', 'child', 'machine.move', {}, false],
+    ['forager-worker', 'child', 'machine_copy', {}, true],
+    ['forager-worker', 'child', 'machine.move', {}, true],
+    ['general', 'child', 'machine.copy', {}, true],
+    ['code-reviewer', 'child', 'machine.list', {}, true],
     ['explore', 'child', 'question', {}, false],
     ['build', 'primary', 'hive_worktree_merge', {}, true],
     ['build', 'primary', 'question', {}, true],
@@ -1081,13 +1096,13 @@ describe('v2 native precedence and canonical instructions', () => {
 
 describe('v2 request tool pruning', () => {
   // Every native tool a broad `"*": "allow"` rule can expose next to the Hive tools, in the names the host reports.
-  const NATIVE_TOOLS = ['read', 'edit', 'write', 'patch', 'shell', 'execute', 'question', 'subagent', 'skill',
+  const NATIVE_TOOLS = ['read', 'edit', 'write', 'patch', 'machine_copy', 'machine_move', 'shell', 'execute', 'question', 'subagent', 'skill',
     'opencode_worktree_create', 'opencode_worktree_remove', 'opencode_session_move', 'opencode_session_interrupt',
     'automation_create', 'automation_resume', 'automation_pause', 'automation_delete', 'automation_list'];
   const OPERATOR_ONLY = ['automation_create', 'automation_resume', 'automation_pause', 'automation_delete', 'opencode_session_interrupt'];
   const LIFECYCLE = ['opencode_worktree_create', 'opencode_worktree_remove', 'opencode_session_move'];
   const SAFE_NATIVE = ['read', 'shell', 'execute', 'skill', 'automation_list'];
-  const EDITS = ['edit', 'write', 'patch'];
+  const EDITS = ['edit', 'write', 'patch', 'machine_copy', 'machine_move'];
   const DIRECT_READ_HIVE = ['hive_context_read', 'hive_constraints_read', 'hive_plan_read', 'hive_status'];
   const DIRECT_REVIEW_HIVE = [...DIRECT_READ_HIVE, 'hive_context_write', 'hive_context_append', 'hive_context_edit'];
 
@@ -1129,6 +1144,10 @@ describe('v2 request tool pruning', () => {
     const { kept } = await setup();
     expect(await kept('child', 'code-reviewer')).toEqual(sorted([...DIRECT_REVIEW_HIVE, ...SAFE_NATIVE]));
     expect(await kept('child', 'scout-researcher')).toEqual(sorted([...DIRECT_READ_HIVE, ...SAFE_NATIVE]));
+    for (const kind of ['context', 'compaction'] as const) {
+      expect(await kept('child', 'code-reviewer', kind, ['read', 'machine.copy', 'machine.move'])).toEqual(['read']);
+      expect(await kept('child', 'explore', kind, ['read', 'machine.copy', 'machine.move'])).toEqual(['read']);
+    }
   });
 
   it('keeps delegation for Architect in both session kinds and drops primary-only tools from its child', async () => {

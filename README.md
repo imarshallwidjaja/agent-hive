@@ -14,7 +14,7 @@ https://github.com/user-attachments/assets/6290b435-1566-46b4-ac98-0420ed321204
 
 ## Requirements
 
-- [OpenCode](https://opencode.ai) v1, with a floor of `1.18.30`, or v2, qualified on `2.4.1`. `oc-arkive@5.0.0` is the first release with both host entries, and releases through 4.2.0 support v1 only. `oc-arkive@6.0.0` is the first release qualified on v2 `2.3.2`, and the current source is qualified on v2 `2.4.1`. The 5.x releases were qualified on v2 `2.0.26`, and 5.3.0 does not activate on 2.3.2. The v2 qualification covers 2.4.1 and is not a support claim for other v2 releases.
+- [OpenCode](https://opencode.ai) v1, with a floor of `1.18.30`, or v2, qualified on `2.4.2`. `oc-arkive@5.0.0` is the first release with both host entries, and releases through 4.2.0 support v1 only. `oc-arkive@6.0.0` is the first release qualified on v2 `2.3.2`, and the current source is qualified on v2 `2.4.2`. The 5.x releases were qualified on v2 `2.0.26`, and 5.3.0 does not activate on 2.3.2. The v2 qualification covers 2.4.2 and is not a support claim for other v2 releases.
 - For worktree workflows, a project whose work resolves to one or more Git repositories. Single-repo projects need no manifest. For a multi-repo root, ask Hive to inspect, discover, and update the topology instead of hand-creating `<project>/.hive/repositories.json`.
 - Optional: [VS Code](https://code.visualstudio.com/) for sidebar plan review through `vscode-arkive`.
 

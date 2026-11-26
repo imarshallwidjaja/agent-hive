@@ -1064,7 +1064,7 @@ describe('artifacts, runtime identity and model selection', () => {
   });
 
   test('stock host versions are fixed', () => {
-    const runtime = { hosts: { v1: { version: '1.18.30' }, v2: { version: 'opencode v2.4.1' } }, pluginTarballSha256: 'x' };
+    const runtime = { hosts: { v1: { version: '1.18.30' }, v2: { version: 'opencode v2.4.2' } }, pluginTarballSha256: 'x' };
     expect(runtimeFailures(runtime)).toEqual([]);
     expect(runtimeFailures({ ...runtime, hosts: { ...runtime.hosts, v2: { version: '2.3.3' } } })).toContain('stock_version_mismatch:v2');
     expect(runtimeFailures({ ...runtime, hosts: { ...runtime.hosts, v2: { version: 'opencode v2.0.26' } } })).toContain('stock_version_mismatch:v2');
@@ -1099,7 +1099,7 @@ describe('artifacts, runtime identity and model selection', () => {
   // The committed harness directory is the single archive and build root: identities refuse uncommitted harness changes,
   // and the build context holds exactly the committed harness, the subject archive and the packed candidate.
   describe('the committed harness is the one archive and build root', () => {
-    const RUNTIME_REPORT = { hosts: { v1: { version: '1.18.30' }, v2: { version: '2.4.1' } }, pluginTarballSha256: 'installed' };
+    const RUNTIME_REPORT = { hosts: { v1: { version: '1.18.30' }, v2: { version: '2.4.2' } }, pluginTarballSha256: 'installed' };
     const BUILD_REPORT = { hiveCoreResolvedInArchive: true, coreBuiltFirst: true, packEntries: ['dist/index.js'] };
 
     function harnessRepo() {
@@ -3731,7 +3731,7 @@ describe('in-container fixture helpers', () => {
     expect(toolOutcome(dispatch({ sessionId: 'missing' }), parent, tree).result).toBe('unknown');
     expect(toolOutcome({ name: 'subagent', status: 'completed', input: { agent: 'code-reviewer' }, metadata: { sessionID: 'c', status: 'failed' }, output: '' }, parent, tree).result).toBe('failure');
     expect(toolOutcome({ name: 'subagent', status: 'completed', input: { agent: 'code-reviewer' }, metadata: null, output: '<background-result kind="subagent" sessionID="ses_child" state="completed">ok</background-result>' }, parent, tree).result).toBe('success');
-    // A v2 2.4.1 call always reports `running`; it succeeds only through its verified child, never through the status.
+    // A v2 2.4.2 call always reports `running`; it succeeds only through its verified child, never through the status.
     const running = (sessionID: string, agent = 'code-reviewer') => ({ name: 'subagent', status: 'completed', input: { agent }, metadata: { sessionID, status: 'running' }, output: `The subagent is working in the background (sessionID: ${sessionID}).` });
     expect(toolOutcome(running('ses_child'), parent, tree)).toEqual({ result: 'success', childSessionId: 'ses_child', childAgent: 'code-reviewer' });
     expect(toolOutcome(running('ses_child', 'forager-worker'), parent, tree).result).toBe('unknown');
@@ -4457,7 +4457,7 @@ describe('supervised exercise native adapters', () => {
     const v2 = exerciseRoutes('v2', '/work/proj');
     expect(v2.prompt({ sessionId: 'ses_a', messageId: id, text: 'hi' })).toEqual({ method: 'POST', path: '/api/session/ses_a/prompt', body: { id, text: 'hi' } });
     expect(v2.permissionReply('ses_c', 'per_1', 'once').body).toEqual({ decision: 'once' });
-    // A bare v2.4.1 rejection is a shutdown interruption that never delivers the child's result; a message avoids it.
+    // A bare v2.4.2 rejection is a shutdown interruption that never delivers the child's result; a message avoids it.
     expect(v2.permissionReply('ses_c', 'per_1', 'reject')).toEqual({ method: 'POST', path: '/api/session/ses_c/permission/per_1/reply', body: { decision: 'reject', message: 'Permission rejected by supervisor.' } });
     expect(exerciseRoutes('v1', '/work/proj').permissionReply('ses_c', 'per_1', 'reject').body).toEqual({ reply: 'reject' });
     expect(v2.formReply('ses_a', 'frm_1', { q0: 'alpha' })).toEqual({ method: 'POST', path: '/api/session/ses_a/form/frm_1/reply', body: { answer: { q0: 'alpha' } } });
@@ -4599,7 +4599,7 @@ describe('supervised exercise native adapters', () => {
   });
 
   // Assistant messages in the pinned host shapes. v1 (1.x): a tool part has `callID` and `tool`; a completed state has an
-  // `output` string, an errored one an `error` string. v2 (@opencode/schema 2.4.1): a tool part has `id` and `name`; a
+  // `output` string, an errored one an `error` string. v2 (@opencode/schema 2.4.2): a tool part has `id` and `name`; a
   // completed state has `content` blocks and no `output`; an errored state has `error: { type, message, response? }` and
   // optional `content`.
   const pinnedV1 = (tools: any[]) => ({ info: { id: 'm', role: 'assistant', agent: 'hive-builder' }, parts: tools.map((t) => ({
@@ -6890,7 +6890,7 @@ describe('OpenCode v2 compaction, telemetry and access-only auth export', () => 
     expect(v1.instructionEntries).toBeUndefined();
   });
 
-  // The `SessionInbox.Compaction` item @opencode/protocol 2.4.1 returns as `{ data }` from POST /api/session/:id/compact.
+  // The `SessionInbox.Compaction` item @opencode/protocol 2.4.2 returns as `{ data }` from POST /api/session/:id/compact.
   const admitted = (fields: any = {}) => ({ data: { type: 'compaction', payload: {}, delivery: 'steer', id: messageId, sessionID: 'ses_a', time: { created: 1 }, ...fields } });
 
   test('the driver sends one compaction only on v2 and only to a quiescent tree', async () => {

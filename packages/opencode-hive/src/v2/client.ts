@@ -473,7 +473,7 @@ type JobRecord = { id: string; kind: string; sessionID: string; status: string; 
 
 /**
  * One page of the children of `parentID`: their IDs and the next cursor, or a refusal when the page has another shape.
- * The 2.4.1 SessionsResponse always has `cursor`, whose `next` is a cursor string, null or absent, and a page that lists
+ * The 2.4.2 SessionsResponse always has `cursor`, whose `next` is a cursor string, null or absent, and a page that lists
  * any session always has `next` (core session.ts `list`). A full page without one would end the tree read early.
  */
 function sessionPage(value: unknown, parentID: string): { sessions: string[]; next: string | undefined } {

@@ -751,9 +751,9 @@ describe('child settlement', () => {
     const malformed: State[] = [
       { jobAnswer: { data: [] } }, { jobAnswer: [{ id: 'x', status: 'running' }] }, { inboxAnswer: null }, { active: [] }, { active: 'idle' },
       { listAnswer: [] }, { listAnswer: { data: [{ parentID: 'child' }], cursor: {} } }, { listAnswer: { data: [], cursor: { next: 7 } } },
-      // The 2.4.1 SessionsResponse always carries `cursor`, and `next` is a cursor string, null or absent, never empty.
+      // The 2.4.2 SessionsResponse always carries `cursor`, and `next` is a cursor string, null or absent, never empty.
       { listAnswer: { data: [] } }, { listAnswer: { data: [], cursor: null } }, { listAnswer: { data: [], cursor: { next: '' } } },
-      // A full page always has a next cursor on 2.4.1, so one without it would end the tree read early.
+      // A full page always has a next cursor on 2.4.2, so one without it would end the tree read early.
       { listAnswer: { data: fullPage, cursor: {} } }, { listAnswer: { data: fullPage, cursor: { next: null } } }, { listAnswer: { data: fullPage } },
     ];
     for (const state of malformed) expect((await failure(settle(state).result)).code).toBe('malformed_response');

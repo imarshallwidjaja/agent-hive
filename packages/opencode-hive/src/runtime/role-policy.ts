@@ -180,7 +180,7 @@ export function authorizeHiveCall(policy: Record<BuiltInRole, RolePolicy>, input
 }
 
 /**
- * The canonical tool ID for a name the host reports to `execute.before`. OpenCode v2.4.1 reports a Code Mode tool
+ * The canonical tool ID for a name the host reports to `execute.before`. OpenCode v2.4.2 reports a Code Mode tool
  * that a model calls at top level by its qualified name (`automation.create`, `hive.worklog_read`) under that dotted
  * name, and then runs the tool without a second hook, so the guards decide on the canonical ID (`automation_create`).
  */
@@ -195,11 +195,11 @@ export function canonicalToolName(tool: string): string {
  */
 export const NATIVE_LIFECYCLE_BYPASS_TOOLS = ['opencode_worktree_create', 'opencode_worktree_remove', 'opencode_session_move', 'opencode_session_interrupt'] as const;
 
-/** v2.4.1 `opencode.session.interrupt` stops any session except the caller and its ancestors; it is the operator's. */
+/** v2.4.2 `opencode.session.interrupt` stops any session except the caller and its ancestors; it is the operator's. */
 const NATIVE_SESSION_INTERRUPT_TOOL = 'opencode_session_interrupt';
 
 /**
- * Native OpenCode v2 tools that change project automations, which v2.4.1 registers in the `automation` namespace unless
+ * Native OpenCode v2 tools that change project automations, which v2.4.2 registers in the `automation` namespace unless
  * the operator turns automations off. An armed automation later prompts a session or starts a subagent child outside the
  * `subagent` call Hive wraps, without Hive's route binding, delegation limits, managed model and continuation checks,
  * and pausing or deleting one changes the operator's schedule for the whole project. These are the operator's to use;
@@ -233,9 +233,12 @@ function nativeBypassReason(tool: string): string {
   return `${tool} bypasses Hive worktree and session ownership; use the Hive worktree tools instead.`;
 }
 
-/** The role permission that governs each native OpenCode v2 tool Hive guards, keyed by the host's tool name. */
+/**
+ * The role permission that governs each native OpenCode v2 tool Hive guards, as canonical tool IDs. v2.4.2
+ * `machine.copy` writes the target file and `machine.move` also removes the source, so both are edits.
+ */
 const NATIVE_TOOL_PERMISSION: Record<string, 'edit' | 'question' | 'task'> = {
-  edit: 'edit', write: 'edit', patch: 'edit', question: 'question', subagent: 'task',
+  edit: 'edit', write: 'edit', patch: 'edit', machine_copy: 'edit', machine_move: 'edit', question: 'question', subagent: 'task',
 };
 
 /** Native tools whose decision depends on whether the calling session is a child. */
@@ -299,8 +302,8 @@ function unconditionalNativeDenial(policy: Record<BuiltInRole, RolePolicy>, inpu
     }
   }
   if (caller.kind === 'native-subagent') {
-    const denied = ['subagent', 'question', ...(caller.name === 'explore' ? ['edit', 'write', 'patch'] : [])];
-    if (denied.includes(tool)) return { allowed: false, reason: `The native ${caller.name} subagent cannot use ${tool}.` };
+    const denied = ['subagent', 'question'].includes(tool) || (caller.name === 'explore' && NATIVE_TOOL_PERMISSION[tool] === 'edit');
+    if (denied) return { allowed: false, reason: `The native ${caller.name} subagent cannot use ${tool}.` };
   }
   if (isChild && tool === 'question') return { allowed: false, reason: 'The question tool is unavailable in child sessions; return the clarification to the parent instead.' };
   return undefined;

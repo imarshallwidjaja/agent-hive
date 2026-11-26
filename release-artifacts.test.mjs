@@ -545,9 +545,9 @@ describe(`release ${releaseVersion} artifact contract on main`, () => {
         zod: devDependencies.zod,
       },
       {
-        '@opencode/client': '2.4.1',
-        '@opencode/plugin': '2.4.1',
-        '@opencode/schema': '2.4.1',
+        '@opencode/client': '2.4.2',
+        '@opencode/plugin': '2.4.2',
+        '@opencode/schema': '2.4.2',
         '@types/json-schema': '7.0.15',
         effect: '4.1.0',
         zod: '4.1.8',
@@ -724,8 +724,8 @@ describe(`release ${releaseVersion} artifact contract on main`, () => {
       // Koffi is the one intentional runtime dependency the bundle leaves external: its loader selects the prebuilt
       // binary for the platform from the installed package, so the exact pin comes with every install.
       assert.deepEqual(packedManifest.dependencies, {
-        '@opencode/client': '2.4.1',
-        '@opencode/plugin': '2.4.1',
+        '@opencode/client': '2.4.2',
+        '@opencode/plugin': '2.4.2',
         '@types/json-schema': '7.0.15',
         'gray-matter': '^4.0.3',
         koffi: '2.16.3',

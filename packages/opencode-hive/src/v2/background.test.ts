@@ -66,7 +66,7 @@ function fakeHost(root: string, options: {
     session: {
       get: ({ sessionID }: { sessionID: string }) => Effect.suspend(() => sessions.has(sessionID) ? Effect.succeed(sessions.get(sessionID)!) : Effect.fail(new Error('unknown'))),
       // Pages in map order, the order of last update, after the last session of the previous page (a keyset cursor);
-      // like the 2.4.1 host, a nonempty page always has a next cursor.
+      // like the 2.4.2 host, a nonempty page always has a next cursor.
       list: (input: { parentID?: string; cursor?: string; limit: number }) => Effect.sync(() => {
         const parentID = input.cursor === undefined ? input.parentID : JSON.parse(input.cursor).parentID;
         const children = [...sessions.values()].filter((session) => session.parentID === parentID);

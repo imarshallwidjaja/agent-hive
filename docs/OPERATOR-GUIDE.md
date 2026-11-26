@@ -26,7 +26,7 @@ Every Hive role is asked to load the packaged `unslop` skill, the shared philoso
 
 ## Switching OpenCode hosts and rollback
 
-`oc-arkive@5.0.0` is the first release that packages both native entries. Releases through 4.2.0 are v1-only. The qualified hosts are v1.18.30 and v2.4.1. `oc-arkive@6.0.0` was qualified on v2.3.2. The 5.x releases were qualified on v2.0.26, and 5.3.0 does not activate on 2.3.2. `oc-arkive@6.0.0` needs 2.3.2 and does not support 2.0.26, so a v2 host and the oc-arkive install it loads move together. Follow the [v2 setup reference](../packages/opencode-hive/README.md#opencode-v2) for the installed package, `plugins` options, both read transports, the server reader settings, and helper depth. With `execute` denied, select `readTransport: "direct"`; Code Mode reads require `execute` and otherwise produce a setup diagnostic.
+`oc-arkive@5.0.0` is the first release that packages both native entries. Releases through 4.2.0 are v1-only. The qualified hosts are v1.18.30 and v2.4.2. `oc-arkive@6.0.0` was qualified on v2.3.2. The 5.x releases were qualified on v2.0.26, and 5.3.0 does not activate on 2.3.2. `oc-arkive@6.0.0` needs 2.3.2 and does not support 2.0.26, so a v2 host and the oc-arkive install it loads move together. Follow the [v2 setup reference](../packages/opencode-hive/README.md#opencode-v2) for the installed package, `plugins` options, both read transports, the server reader settings, and helper depth. With `execute` denied, select `readTransport: "direct"`; Code Mode reads require `execute` and otherwise produce a setup diagnostic.
 
 The v2 `server` option configures only Hive's own reader: its URL and the name of the environment variable that holds the server password. It does not configure native authentication. When you set the `server` option, the server process and every connecting CLI process need the password under `OPENCODE_PASSWORD` (or legacy `OPENCODE_SERVER_PASSWORD`) in their own environments. Custom credential environment variables may be visible to trusted tool subprocesses, so provision the server environment with that exposure in mind. Without the `server` option, Hive's reader uses the managed local service, with that service's own credentials and no extra configuration, only when that service is the OpenCode process that loaded the plugin; otherwise reads report `not_configured`. Hive never probes, starts or stops the service ([v2 options](../packages/opencode-hive/README.md#options)).
 
@@ -58,11 +58,13 @@ Do not start 2.0.26 on the home that 2.3.2 has migrated. Native conversations an
 
 Hive's own files are separate from the native home. The shared `.hive/` domain state stays in the project checkout, and `.hive/runtime/opencode-v2/sessions.json` keeps the session bindings that 2.3.2 recorded. A binding records a dispatch, not a running worker, so after a rollback treat those sessions as work that may have ended.
 
-The upgrade from v2.3.2 to v2.4.1 also changes the native database in place. On first start, 2.4.1 runs two migrations, `20261119211416_machine` and `20261120004954_machine-key`, which add a `machine` table and a unique index on its `key` column. The `20261116043204_automation` migration, which moves schedules into the new `automation` table and runs `DROP TABLE schedule;`, already ships in 2.3.1 and 2.3.2, so a home that 2.3.2 has opened does not run it again. Starting 2.3.2 on a home that 2.4.1 has opened has not been tested, so keep a rollback path anyway:
+The upgrade from v2.3.2 to v2.4.2 also changes the native database in place. On first start, 2.4.2 runs two migrations, `20261119211416_machine` and `20261120004954_machine-key`, which add a `machine` table and a unique index on its `key` column. The `20261116043204_automation` migration, which moves schedules into the new `automation` table and runs `DROP TABLE schedule;`, already ships in 2.3.1 and 2.3.2, so a home that 2.3.2 has opened does not run it again. Starting 2.3.2 on a home that 2.4.2 has opened has not been tested, so keep a rollback path anyway:
 
-1. Before the first 2.4.1 start, quiesce the 2.3.2 host as in step 1 above and stop it.
-2. Keep a pre-upgrade copy of its native home, or give the 2.4.1 host a new home of its own, as for the 2.3.2 upgrade.
-3. To roll back, quiesce and stop the 2.4.1 host, restore the copy or switch back to the old home, and start 2.3.2 with `oc-arkive@6.0.0`. Native conversations and jobs that started under 2.4.1 stay in the 2.4.1 home.
+1. Before the first 2.4.2 start, quiesce the 2.3.2 host as in step 1 above and stop it.
+2. Keep a pre-upgrade copy of its native home, or give the 2.4.2 host a new home of its own, as for the 2.3.2 upgrade.
+3. To roll back, quiesce and stop the 2.4.2 host, restore the copy or switch back to the old home, and start 2.3.2 with `oc-arkive@6.0.0`. Native conversations and jobs that started under 2.4.2 stay in the 2.4.2 home.
+
+OpenCode 2.4.2 ships the same database migrations as 2.4.1, so a home that 2.4.1 has already opened runs no new migration on its first 2.4.2 start.
 
 ## Agents
 
@@ -426,7 +428,7 @@ The assignment names the goal and candidate, the intended outcomes, the effects,
 
 `complexity-review` and `complexity-audit` are packaged skills. A review uses an explicit diff or bounded named scope, or current staged, unstaged, and relevant nonignored untracked changes when scope is absent; an empty review stops and never widens to an audit. An audit uses named roots or codebases, or the current worktree when roots are absent. Both report complexity findings and do not apply fixes. Findings preserve required and pre-existing behavior; a worthwhile alternative that changes behavior that predates the reviewed change (in an audit or a named scope without a diff, current behavior), a public contract, or external dependencies, or that reaches callers beyond the reviewed scope, is reported separately as a structural proposal for your decision, with the dependents that rely on it. Your request supplies scope, philosophy, and preferences.
 
-On either host, use ordinary conversation and name the requested skill instead of relying on a slash command, for example "Run complexity-audit on packages/hive-core; flag single-use abstractions." On the v2 TUI you can mention the skill as `@complexity-review <scope>` or `@complexity-audit <scope>`. OpenCode v2.4.1 lists no skill among its commands, and slash invocation has not been verified on the v1.18.30 floor.
+On either host, use ordinary conversation and name the requested skill instead of relying on a slash command, for example "Run complexity-audit on packages/hive-core; flag single-use abstractions." On the v2 TUI you can mention the skill as `@complexity-review <scope>` or `@complexity-audit <scope>`. OpenCode v2.4.2 lists no skill among its commands, and slash invocation has not been verified on the v1.18.30 floor.
 
 ## Upgrade
 

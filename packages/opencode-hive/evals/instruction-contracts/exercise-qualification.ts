@@ -57,7 +57,7 @@ export function qualificationPrompt(step: string, facts: Json = {}): string {
         // A rejected permission can end the asking child's turn, so the accepted read and the child's return happen in
         // one child and the rejected read in a second. On v2 the supervisor's rejection carries a message: the tool
         // then fails with `permission.rejected` and the child's background result still reaches the parent. Stock
-        // v2.4.1 treats a rejection without a message as a shutdown interruption, never delivers that result and
+        // v2.4.2 treats a rejection without a message as a shutdown interruption, never delivers that result and
         // leaves the job cancelled.
         { op: 'dispatch', agent: 'scout-researcher', prompt: 'Qualification child: read one external file and return.', script: [
           { op: 'read', path: EXTERNAL_READS[0] },
