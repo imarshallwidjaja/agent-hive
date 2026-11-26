@@ -259,12 +259,30 @@ export const PRIMARY_ONLY_AGENTS: readonly string[] = ['hive-master', 'swarm-orc
 export function authorizeNativeCall(policy: Record<BuiltInRole, RolePolicy>, input: { tool: string; toolInput: unknown; caller: CallerAuthority; isChild: boolean }): CallDecision {
   const { toolInput, caller, isChild } = input;
   const tool = canonicalToolName(input.tool);
-  if (NATIVE_TOOL_PERMISSION[tool] === 'task') {
-    const requested = toolInput && typeof toolInput === 'object' ? (toolInput as { agent?: unknown }).agent : undefined;
-    if (typeof requested === 'string' && PRIMARY_ONLY_AGENTS.includes(requested)) {
-      return { allowed: false, reason: `${requested} is a primary-only orchestrator and cannot be a delegation target.` };
+  const key = NATIVE_TOOL_PERMISSION[tool];
+  const target = key === 'task' && toolInput && typeof toolInput === 'object' ? (toolInput as { agent?: unknown }).agent : undefined;
+  if (typeof target === 'string' && PRIMARY_ONLY_AGENTS.includes(target)) {
+    return { allowed: false, reason: `${target} is a primary-only orchestrator and cannot be a delegation target.` };
+  }
+  const denial = unconditionalNativeDenial(policy, { tool, caller, isChild, target });
+  if (denial) return denial;
+  if (caller.kind === 'role' && key === 'task') {
+    const rule = policy[caller.role].permission[key];
+    if (rule !== undefined && typeof rule !== 'string') {
+      const effect = typeof target === 'string' && Object.prototype.hasOwnProperty.call(rule, target) ? rule[target] : rule['*'];
+      if (effect === 'deny') return { allowed: false, reason: delegationDenialReason(caller.role, target) };
     }
   }
+  return { allowed: true };
+}
+
+function delegationDenialReason(role: BuiltInRole, target: unknown): string {
+  return `The ${role} role cannot delegate to ${typeof target === 'string' ? target : 'that agent'}.`;
+}
+
+/** The native-tool refusals that hold for every input, shared by `authorizeNativeCall` and `isToolUnconditionallyDenied`. */
+function unconditionalNativeDenial(policy: Record<BuiltInRole, RolePolicy>, input: { tool: string; caller: CallerAuthority; isChild: boolean; target?: unknown }): CallDecision | undefined {
+  const { tool, caller, isChild, target } = input;
   if (deniedNativeBypassTools(caller).includes(tool)) return { allowed: false, reason: nativeBypassReason(tool) };
   if (isChild && OPERATOR_ONLY_NATIVE_TOOLS.includes(tool)) {
     return { allowed: false, reason: `${tool} is denied in child sessions: project automations and interrupting other sessions are the operator's. Return the request to the parent instead.` };
@@ -272,14 +290,12 @@ export function authorizeNativeCall(policy: Record<BuiltInRole, RolePolicy>, inp
   if (caller.kind === 'role') {
     const key = NATIVE_TOOL_PERMISSION[tool];
     const rule = key ? policy[caller.role].permission[key] : undefined;
-    const target = key === 'task' && toolInput && typeof toolInput === 'object' ? (toolInput as { agent?: unknown }).agent : undefined;
-    const effect = typeof rule === 'string' || rule === undefined
-      ? rule
-      : (typeof target === 'string' && Object.prototype.hasOwnProperty.call(rule, target) ? rule[target] : rule['*']);
-    if (effect === 'deny') {
-      return { allowed: false, reason: key === 'task'
-        ? `The ${caller.role} role cannot delegate to ${typeof target === 'string' ? target : 'that agent'}.`
-        : `The ${caller.role} role cannot use ${tool}.` };
+    if (typeof rule === 'string' || rule === undefined) {
+      if (rule === 'deny') {
+        return { allowed: false, reason: key === 'task' ? delegationDenialReason(caller.role, target) : `The ${caller.role} role cannot use ${tool}.` };
+      }
+    } else if (rule['*'] === 'deny' && !Object.values(rule).some((effect) => effect === 'allow' || effect === 'ask')) {
+      return { allowed: false, reason: delegationDenialReason(caller.role, target) };
     }
   }
   if (caller.kind === 'native-subagent') {
@@ -287,7 +303,20 @@ export function authorizeNativeCall(policy: Record<BuiltInRole, RolePolicy>, inp
     if (denied.includes(tool)) return { allowed: false, reason: `The native ${caller.name} subagent cannot use ${tool}.` };
   }
   if (isChild && tool === 'question') return { allowed: false, reason: 'The question tool is unavailable in child sessions; return the clarification to the parent instead.' };
-  return { allowed: true };
+  return undefined;
+}
+
+/**
+ * Whether Hive refuses a tool to this caller for every possible input, so a request can drop the tool's schema without
+ * hiding anything the caller could run. It answers with the same rules as `authorizeHiveCall` and `authorizeNativeCall`
+ * and never replaces them. A tool refused only for some inputs stays, such as `subagent` for a role that may delegate to
+ * some agents. An unmanaged top-level session keeps every tool.
+ */
+export function isToolUnconditionallyDenied(policy: Record<BuiltInRole, RolePolicy>, input: { tool: string; caller: CallerAuthority; isChild: boolean }): boolean {
+  const { caller, isChild } = input;
+  const tool = canonicalToolName(input.tool);
+  if (tool.startsWith('hive_')) return !authorizeHiveCall(policy, { tool, caller, isChild }).allowed;
+  return unconditionalNativeDenial(policy, { tool, caller, isChild }) !== undefined;
 }
 
 type V2Rule = { action: string; resource: string; effect: 'allow' | 'deny' | 'ask' };

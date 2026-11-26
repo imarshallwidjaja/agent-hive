@@ -298,7 +298,7 @@ export function createV2Summarizer(context: Pick<Plugin.Context, 'session' | 'mo
   const location = { directory: context.location.directory };
   const metadataOf = (model: { limit: unknown; variants: ReadonlyArray<{ id: string }> }) => ({ limit: model.limit, variants: model.variants.map((variant) => variant.id) });
   // The catalog default is what a session without a model runs on only when it names a provider package. The native
-  // resolver (v2.3.2 `ModelResolver.fallback`) otherwise picks another packaged model, a choice Hive does not reproduce.
+  // resolver (v2.4.1 `ModelResolver.fallback`) otherwise picks another packaged model, a choice Hive does not reproduce.
   const nativeDefaultModel = async (signal: AbortSignal) => {
     const exit = await run(context.model.default({ location }), signal);
     if (Exit.isFailure(exit)) throw Cause.squash(exit.cause);
@@ -309,7 +309,7 @@ export function createV2Summarizer(context: Pick<Plugin.Context, 'session' | 'mo
   const host: SummarizerHost = {
     config,
     ephemeralSessionIDs,
-    // The caller's model as the native runner (v2.3.2 `SessionRunnerModel.select`) picks it: the session's own model;
+    // The caller's model as the native runner (v2.4.1 `SessionRunnerModel.select`) picks it: the session's own model;
     // without one, its agent's effective configured model and variant when that model is available; otherwise the
     // host default with no variant. A session that names no agent runs on the default agent, which the host resolved
     // for this tool call and named as the call's agent; without that name the agent, and so the model, is not known

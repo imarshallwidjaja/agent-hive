@@ -22,6 +22,7 @@ import {
   canonicalToolName,
   createRolePolicy,
   deniedNativeBypassTools,
+  isToolUnconditionallyDenied,
   nativeCallNeedsAncestry,
   nativeSubagentBoundary,
   resolveCallerAuthority,
@@ -283,7 +284,10 @@ type RequestShape = 'turn-prefixed' | 'auxiliary';
  * replaced. Skill guidance (the skill name lookup and auto-load names) is resolved against the live skill catalog on
  * each request. Turn-prefixed requests also get the subagent clarification rule in child sessions and, under the
  * `codemode` read transport, a plain notice for an agent whose permissions deny `execute`, whose Code Mode reads are
- * unavailable. The title request names no agent and is left alone. No request reads `.hive`: the session's route and
+ * unavailable. Turn-prefixed requests also drop from `event.tools` every tool Hive refuses the caller for any input
+ * (`isToolUnconditionallyDenied`), so a broad user allow rule does not ship refused schemas; a compaction drops the
+ * same tools as the turn it summarizes, and the execution guards still decide each call. The title request names no
+ * agent and is left alone. No request reads `.hive`: the session's route and
  * standing constraints reach it as a session instruction entry (`session-instructions.ts`).
  */
 function registerRequestPolicy(context: Plugin.Context, input: { host: HostProfile; roles: RoleCatalog; authority: HiveAuthority; skills: Effect.Effect<SkillLookups> }) {
@@ -307,6 +311,10 @@ function registerRequestPolicy(context: Plugin.Context, input: { host: HostProfi
     const guidance = roles.skillGuidance(agent, yield* skills, warnOnce).trim();
     if (guidance && !event.system.some((part) => 'text' in part && part.text.includes(guidance))) parts.push(guidance);
     if (shape === 'turn-prefixed') {
+      const child = yield* authority.isChild(event.sessionID).pipe(Effect.orElseSucceed(() => false));
+      for (const name of Object.keys(event.tools)) {
+        if (isToolUnconditionallyDenied(authority.policy, { tool: name, caller, isChild: child })) delete event.tools[name];
+      }
       if (caller.kind === 'role' && host.readTransport === 'codemode' && !('execute' in event.tools)) {
         const reads = CODEMODE_READ_TOOLS.filter((tool) => authority.policy[caller.role].hiveTools.includes(tool));
         if (reads.length > 0) {
@@ -314,7 +322,7 @@ function registerRequestPolicy(context: Plugin.Context, input: { host: HostProfi
           warnOnce(`[hive:config] Agent "${agent}" cannot reach Hive Code Mode reads: its permissions deny execute. Set the oc-arkive option readTransport to "direct" or allow execute for this agent.`);
         }
       }
-      if (yield* authority.isChild(event.sessionID).pipe(Effect.orElseSucceed(() => false))) parts.push(SUBAGENT_CLARIFICATION_PROMPT.trim());
+      if (child) parts.push(SUBAGENT_CLARIFICATION_PROMPT.trim());
     }
     for (const text of parts) event.system.push({ type: 'text', text });
   });

@@ -11,7 +11,7 @@ import { HIVE_COMMANDS } from '../commands/registry.js';
 import { CODEMODE_READ_TOOLS } from '../runtime/host-profile.js';
 import { createHiveOperations } from '../runtime/hive-tools.js';
 import { createHiveServices } from '../runtime/hive-services.js';
-import { COUNCIL_SEAT_BASES } from '../runtime/role-policy.js';
+import { COUNCIL_SEAT_BASES, PRIMARY_ONLY_TOOLS, authorizeNativeCall, createRolePolicy, isToolUnconditionallyDenied } from '../runtime/role-policy.js';
 import { HIVE_TOOL_NAMES } from '../utils/plugin-manifest.js';
 import { createHiveAuthority, toModelRef } from './registration.js';
 import { standardSchema, toToolInfo } from './tools.js';
@@ -1076,6 +1076,99 @@ describe('v2 native precedence and canonical instructions', () => {
     expect(directParts.some((text) => text.includes('Read Transport Setup'))).toBe(false);
     expect(direct.tools().get('hive_repositories_status').options.codemode).toBe(false);
     expect(directParts[1]).toContain('are direct tool calls');
+  });
+});
+
+describe('v2 request tool pruning', () => {
+  // Every native tool a broad `"*": "allow"` rule can expose next to the Hive tools, in the names the host reports.
+  const NATIVE_TOOLS = ['read', 'edit', 'write', 'patch', 'shell', 'execute', 'question', 'subagent', 'skill',
+    'opencode_worktree_create', 'opencode_worktree_remove', 'opencode_session_move', 'opencode_session_interrupt',
+    'automation_create', 'automation_resume', 'automation_pause', 'automation_delete', 'automation_list'];
+  const OPERATOR_ONLY = ['automation_create', 'automation_resume', 'automation_pause', 'automation_delete', 'opencode_session_interrupt'];
+  const LIFECYCLE = ['opencode_worktree_create', 'opencode_worktree_remove', 'opencode_session_move'];
+  const SAFE_NATIVE = ['read', 'shell', 'execute', 'skill', 'automation_list'];
+  const EDITS = ['edit', 'write', 'patch'];
+  const DIRECT_READ_HIVE = ['hive_context_read', 'hive_constraints_read', 'hive_plan_read', 'hive_status'];
+  const DIRECT_REVIEW_HIVE = [...DIRECT_READ_HIVE, 'hive_context_write', 'hive_context_append', 'hive_context_edit'];
+
+  async function setup() {
+    const host = await activate();
+    // Under the default Code Mode transport the Code Mode reads reach the model through `execute`, not `event.tools`.
+    const directHive = [...host.tools().entries()].filter(([name, info]) => name.startsWith('hive_') && info.options?.codemode !== true).map(([name]) => name);
+    expect(directHive.some((name) => CODEMODE_READ_TOOLS.includes(name))).toBe(false);
+    const exposed = [...directHive, ...NATIVE_TOOLS];
+    const kept = async (sessionID: string, agent: string, kind: 'context' | 'compaction' | 'generate' = 'context', tools = exposed) =>
+      Object.keys((await host.requestDraft({ kind, sessionID, agent, system: ['x'], tools })).tools).sort();
+    return { host, exposed, kept };
+  }
+  const sorted = (names: string[]) => [...new Set(names)].sort();
+
+  it('drops the same tools on context and compaction, leaving identical tools and system parts', async () => {
+    const { host, exposed } = await setup();
+    const cases = [
+      ['primary', 'swarm-orchestrator'], ['primary', 'architect-planner'], ['child', 'architect-planner'], ['child', 'forager-worker'],
+      ['child', 'code-reviewer'], ['child', 'general'], ['child', 'explore'], ['primary', 'build'], ['child', 'build'],
+    ] as const;
+    for (const [sessionID, agent] of cases) {
+      const turn = await host.requestDraft({ kind: 'context', sessionID, agent, system: ['HOST PROMPT'], tools: exposed });
+      const compaction = await host.requestDraft({ kind: 'compaction', sessionID, agent, system: ['HOST PROMPT'], tools: exposed });
+      expect(compaction.tools, `${sessionID} ${agent}`).toEqual(turn.tools);
+      expect(compaction.system, `${sessionID} ${agent}`).toEqual(turn.system);
+    }
+  });
+
+  it('keeps only the direct Hive tools and native tools a forager child may run', async () => {
+    const { kept } = await setup();
+    const hive = [...DIRECT_REVIEW_HIVE, 'hive_worktree_inspect', 'hive_adhoc_worktree_inspect', 'hive_checkout_inspect', 'hive_task_trace', 'hive_task_update', 'hive_worktree_create'];
+    expect(await kept('child', 'forager-worker')).toEqual(sorted([...hive, ...SAFE_NATIVE, ...EDITS]));
+    // Dotted names the host can report for namespaced tools are matched by their canonical ID.
+    expect(await kept('child', 'forager-worker', 'context', ['read', 'automation.create', 'opencode.session.interrupt', 'hive.plan_approve'])).toEqual(['read']);
+  });
+
+  it('drops edits, delegation, questions and ungranted Hive tools for read-only reviewer and scout children', async () => {
+    const { kept } = await setup();
+    expect(await kept('child', 'code-reviewer')).toEqual(sorted([...DIRECT_REVIEW_HIVE, ...SAFE_NATIVE]));
+    expect(await kept('child', 'scout-researcher')).toEqual(sorted([...DIRECT_READ_HIVE, ...SAFE_NATIVE]));
+  });
+
+  it('keeps delegation for Architect in both session kinds and drops primary-only tools from its child', async () => {
+    const { kept } = await setup();
+    const primary = await kept('primary', 'architect-planner');
+    for (const name of ['subagent', 'question', 'hive_plan_approve', 'hive_councils_list', 'hive_feature_select', 'hive_feature_create']) expect(primary).toContain(name);
+    for (const name of ['hive_worktree_merge', 'hive_task_update', ...EDITS, ...LIFECYCLE, ...OPERATOR_ONLY]) expect(primary).not.toContain(name);
+    const child = await kept('child', 'architect-planner');
+    expect(child).toEqual(primary.filter((name) => !PRIMARY_ONLY_TOOLS.includes(name)));
+    for (const name of ['subagent', 'hive_feature_create', 'hive_plan_write']) expect(child).toContain(name);
+  });
+
+  it('drops every Hive tool, delegation, questions and operator tools for native subagents, and edits for explore', async () => {
+    const { kept } = await setup();
+    const general = await kept('child', 'general');
+    expect(general).toEqual(sorted([...SAFE_NATIVE, ...EDITS, ...LIFECYCLE]));
+    expect(await kept('child', 'explore')).toEqual(sorted([...SAFE_NATIVE, ...LIFECYCLE]));
+  });
+
+  it('leaves an unmanaged primary untouched and drops only child-refused tools from an unmanaged child', async () => {
+    const { kept, exposed } = await setup();
+    expect(await kept('primary', 'build')).toEqual(sorted(exposed));
+    expect(await kept('primary', 'build', 'context', ['automation.create', 'read'])).toEqual(['automation.create', 'read']);
+    const child = await kept('child', 'build');
+    expect(child).toEqual(sorted(exposed.filter((name) => !PRIMARY_ONLY_TOOLS.includes(name) && !OPERATOR_ONLY.includes(name))));
+    for (const name of ['edit', 'subagent', 'hive_status', 'hive_task_update']) expect(child).toContain(name);
+  });
+
+  it('leaves the tools of a generate request alone', async () => {
+    const { kept, exposed } = await setup();
+    expect(await kept('child', 'forager-worker', 'generate')).toEqual(sorted(exposed));
+  });
+
+  it('keeps delegation for a role whose task rule denies some agents without a deny-all fallback', () => {
+    const policy = createRolePolicy({});
+    policy['scout-researcher'] = { ...policy['scout-researcher'], permission: { ...policy['scout-researcher'].permission, task: { 'forager-worker': 'deny' } } };
+    const caller = { kind: 'role', role: 'scout-researcher' } as const;
+    expect(authorizeNativeCall(policy, { tool: 'subagent', toolInput: { agent: 'code-reviewer' }, caller, isChild: true }).allowed).toBe(true);
+    expect(authorizeNativeCall(policy, { tool: 'subagent', toolInput: { agent: 'forager-worker' }, caller, isChild: true }).allowed).toBe(false);
+    expect(isToolUnconditionallyDenied(policy, { tool: 'subagent', caller, isChild: true })).toBe(false);
   });
 });
 
