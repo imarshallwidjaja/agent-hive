@@ -3,10 +3,10 @@
 import { describe, expect, test } from 'bun:test';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { release, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { ConfigService } from 'hive-core';
 import {
@@ -17,7 +17,8 @@ import {
   HIVE_ROLES, HOSTS, MANAGED_CONTROL_HOST, PROBE_VARIANTS, REFRESH_SENTINEL, TOOL_FIELD_CONTRACT, authRequest, codeModeCatalog, codeModeSearchMember, fieldContractFindings, hiveConfig, hostConfig, managedControlPlan, modelArgument,
   nativeToolCall, probeModels, requiredLifetimeMs, runArgs, sameModelView, selectionExpectations,
 } from './hosts.mjs';
-import { payloadFacts, pickSettings } from './observer/index.js';
+import observerPlugin, { payloadFacts, pickSettings, requestParity } from './observer/index.js';
+import { DatabaseSync } from 'node:sqlite';
 import {
   STATUS_EXIT, candidateBindingMismatches, caseSummary, checkCriterion, classifyCase, effectiveSettings, failedChecks, finalExit, loadRunRecords,
   hostPreflight, modelEvidenceFailures, paidCase, parseCli, prepareResume, recordReadFailures, rehearsalPathFailures, rehearseInjection,
@@ -38,7 +39,7 @@ import {
 } from './credentials.mjs';
 import { GuardState, parseWireFingerprint, sharedClockMs } from './guard.mjs';
 import { HIVE_COMMANDS as EXERCISE_HIVE_COMMANDS, HIVE_RESULT_OMITTED_TOOLS, HIVE_TOOL_NAMES as EXERCISE_HIVE_TOOL_NAMES, MESSAGE_ID, exerciseHiveConfig, exerciseHostConfig, exerciseMessageId, exerciseRoutes, nativeStorePath } from './hosts.mjs';
-import { exerciseCoreFailures } from './runtime.mjs';
+import { exerciseCoreFailures, sha256Text } from './runtime.mjs';
 import {
   ACTIONS, CLOCK_MARGIN_MS, DRIVER_FAILURES, DRIVER_REFUSALS, EXIT, INTERRUPT_FLOOR_MS, LIVE_MAX_SECONDS, NO_NEW_WORK_MS, PROJECT_ROOT, QUALIFICATION_CHECKS, acquireRunLock, actionReserveMs,
   admitsAction, admitsNewWork, approvalMessage, catalogProblems, containerCutoffs, descriptorsOf, failureWord, inspectCommand, interpretReply, main as exerciseMain, operationLifetimeMs,
@@ -48,6 +49,7 @@ import {
 import {
   HIVE_RESULT_CHARS, approvalObserved, approvalPrecondition, artifactRecord, budget as driverBudget, latestPluginPlanRead, lineDiff, listPrefix, nativeCredentialMatches, normalizeMessage, observeWith,
   observedApprovals, pendingInteractions, planExport, quiescence, readHistory, release as driverRelease, releasedPending, resolveOperation, sessionTree, submit as driverSubmit, toolRecord,
+  ENTRY_LIMITS, PARITY_LIMITS, exportConversation, instructionEntriesExport, parityExport, readObserverLog,
 } from './exercise-driver.ts';
 import { HIVE_TOOL_NAMES as MANIFEST_HIVE_TOOL_NAMES } from '../../src/utils/plugin-manifest.ts';
 import { HIVE_COMMANDS as REGISTRY_HIVE_COMMANDS } from '../../src/commands/registry.ts';
@@ -201,6 +203,16 @@ describe('Docker boundary', () => {
     const env = { DOCKER_CONTEXT: 'remote', DOCKER_TLS_VERIFY: '1', BUILDX_BUILDER: 'cloud', HTTPS_PROXY: 'http://proxy:3128', DOCKER_HOST: 'tcp://x' };
     const { failures } = assessDockerBoundary({ ...base, env });
     for (const name of Object.keys(env)) expect(failures).toContain(`inherited_override:${name}`);
+  });
+
+  test('accepts an inherited proxy exclusion list alone and refuses it beside any inherited proxy', () => {
+    expect(assessDockerBoundary({ ...base, env: { NO_PROXY: 'localhost,127.0.0.1', no_proxy: 'localhost' } })).toEqual({ ok: true, failures: [] });
+    for (const proxy of ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy']) {
+      const { failures } = assessDockerBoundary({ ...base, env: { NO_PROXY: 'localhost', no_proxy: 'localhost', [proxy]: 'http://proxy:3128' } });
+      expect([proxy, failures]).toEqual([proxy, [`inherited_override:${proxy}`, 'inherited_override:NO_PROXY', 'inherited_override:no_proxy']]);
+    }
+    // An empty proxy variable still counts as inherited, so an exclusion list beside it is refused too.
+    expect(assessDockerBoundary({ ...base, env: { HTTP_PROXY: '', NO_PROXY: 'x' } }).failures).toEqual(['inherited_override:HTTP_PROXY', 'inherited_override:NO_PROXY']);
   });
 
   test('requires engine support for equal memory and swap limits', () => {
@@ -5565,6 +5577,7 @@ describe('supervised exercise run commands', () => {
       expect((await turnCommand({ run: blocked.runDir, operation: blocked.op('command', { name: 'implement', text }, 'c1') }, blocked.env, {}, { docker: blockedDocker })).status, label).toMatchObject({ state: 'rejected' });
       expect(runState(blocked.journal).primary, label).toBeNull();
       expect((await turnCommand({ run: blocked.runDir, operation: blocked.op('prompt', { text: 'continue' }, 'p1') }, blocked.env, {}, { docker: blockedDocker })).status, label).toMatchObject({ state: 'refused', reason: 'primary_unknown' });
+      expect((await turnCommand({ run: blocked.runDir, operation: blocked.op('compact', {}, 'k1') }, blocked.env, {}, { docker: blockedDocker })).status, label).toMatchObject({ state: 'refused', reason: 'primary_unknown' });
       expect(submits(blockedDocker).length, label).toBe(1);
     }
     const kept = exerciseRun({ host: 'v2', transitions });
@@ -6624,6 +6637,30 @@ describe('supervised exercise publication, admission and deadlines', () => {
     expect(run.journal.read('start.intent')).toBeNull();
   });
 
+  test('a start with no resolvable auth path fails before any intent or resource, and the prepared run stays retryable with --auth-file', async () => {
+    const docker = new ExerciseDocker();
+    const run = exerciseRun();
+    const prepared = runState(run.journal).prepared!;
+    const authorization = join(run.runDir, 'authorization.json');
+    writeFileSync(authorization, JSON.stringify({
+      schema: 'ic-exercise-authorization/v1', runId: 'run-1', preparedSha256: prepared.sha256, host: 'v1', model: prepared.value.request.model, budgetSeconds: 900,
+      allowedActions: ['prompt'], stopConditions: ['done'], authorizedBy: 'supervisor',
+    }));
+    const attempt = async (authFile?: string) => {
+      try { await startCommand({ run: run.runDir, authorization, budgetSeconds: 900 }, {}, {}, { docker, authFile }); return 'started'; } catch (e) { return (e as HarnessError).code; }
+    };
+    // No --auth-file, IC_EXERCISE_AUTH_PATH, HOME or XDG_DATA_HOME.
+    expect(await attempt()).toBe('auth_path_unresolved');
+    expect(run.journal.read('start.intent')).toBeNull();
+    expect(run.journal.read('latch')).toBeNull();
+    expect(runState(run.journal).stopped).toEqual([]);
+    expect(docker.calls).toEqual([]);
+    // The retry with --auth-file is not refused as already started: it records the intent and reaches Docker.
+    expect(await attempt(run.auth)).not.toBe('already_started');
+    expect(run.journal.read('start.intent')).not.toBeNull();
+    expect(docker.calls.length).toBeGreaterThan(0);
+  });
+
   test('a run directory named with a token shape fails the release gate and is never echoed', async () => {
     const shape = 'sk-' + 'w'.repeat(24);
     const docker = new ExerciseDocker({ driver: { observe: () => ({ ...QUIET }) } });
@@ -6804,5 +6841,390 @@ describe('supervised exercise publication, admission and deadlines', () => {
       'protocol.actionCutoffSendsNothing', 'protocol.directPlanRead', 'protocol.directApproval', 'clock.sharedDomain', 'clock.processClockRefused']) {
       expect(QUALIFICATION_CHECKS).toContain(name);
     }
+  });
+});
+
+describe('OpenCode v2 compaction, telemetry and access-only auth export', () => {
+  const V2_QUIET: Record<string, any> = {
+    '/api/session/ses_a': { data: { id: 'ses_a', agent: 'architect-planner' } }, '/api/session?parentID=ses_a&limit=100&order=asc': { data: [], cursor: {} },
+    '/api/session/ses_a/message?limit=100&order=asc': { data: [], cursor: {} }, '/api/session/active': { data: {} }, '/api/session/ses_a/form': { data: [] },
+    '/api/experimental/job?sessionID=ses_a&descendants=true': { data: [] }, '/api/session/ses_a/inbox': { data: [] }, '/api/session/ses_a/permission': { data: [] },
+  };
+  const messageId = exerciseMessageId(1_792_201_844_045, 7);
+
+  test('each exported turn carries its token usage in the fixture names, null when the host reported none', () => {
+    const usage = { input: 1200, output: 340, reasoning: 56, cache: { read: 800, write: 12 } };
+    const flat = { input: 1200, output: 340, reasoning: 56, cacheRead: 800, cacheWrite: 12 };
+    const v1 = normalizeMessage('v1', { info: { id: 'm1', role: 'assistant', agent: 'a', tokens: usage }, parts: [] })!;
+    const v2 = normalizeMessage('v2', { id: 'm2', type: 'assistant', agent: 'a', model: { providerID: 'openai', id: 'gpt-test' }, content: [], tokens: usage })!;
+    expect(v1.tokens).toEqual(flat);
+    expect(v2.tokens).toEqual(flat);
+    expect(normalizeMessage('v2', { id: 'm3', type: 'user', text: 'hi' })!.tokens).toBeNull();
+    // A count that is not a non-negative integer is unknown, never coerced.
+    expect(normalizeMessage('v2', { id: 'm4', type: 'assistant', content: [], tokens: { input: 1.5, output: -1, reasoning: '3', cache: {} } })!.tokens)
+      .toEqual({ input: null, output: null, reasoning: null, cacheRead: null, cacheWrite: null });
+    const scan = evidenceScanner({ access: FAKE_ACCESS, expires: 1 });
+    const observed = { tree: { sessions: [{ id: 'ses_a', parentId: null, agent: 'a' }] }, histories: new Map([['ses_a', { messages: [v2], complete: true, failure: null }]]) };
+    const conversation = exportConversation(observed, scan);
+    expect(conversation.sessions[0].turns[0].tokens).toEqual(flat);
+    const reply = { ...QUIET, conversation };
+    expect(parseDriverReply('observe', reply)!.conversation.sessions[0].turns[0].tokens).toEqual(flat);
+    const bad = structuredClone(reply);
+    bad.conversation.sessions[0].turns[0].tokens.input = -5;
+    expect(parseDriverReply('observe', bad)).toBeNull();
+  });
+
+  test('a v2 compaction message keeps its type as its role, so the export marks the boundary', () => {
+    const m = normalizeMessage('v2', { id: messageId, type: 'compaction', status: 'completed', reason: 'manual', summary: 's', tokens: { input: 9, output: 2, reasoning: 0, cache: { read: 0, write: 0 } } })!;
+    expect(m).toMatchObject({ id: messageId, role: 'compaction', model: null, tools: [], tokens: { input: 9, output: 2 } });
+  });
+
+  test('compact is a v2 route with a caller-chosen ID; v1 has neither compaction nor instruction entries', () => {
+    const v2 = exerciseRoutes('v2', '/work/proj');
+    expect(v2.compact({ sessionId: 'ses_a', messageId })).toEqual({ method: 'POST', path: '/api/session/ses_a/compact', body: { id: messageId } });
+    expect(v2.instructionEntries('ses_a')).toEqual({ method: 'GET', path: '/api/experimental/session/ses_a/instructions/entries' });
+    const v1 = exerciseRoutes('v1', '/work/proj') as any;
+    expect(v1.compact).toBeUndefined();
+    expect(v1.instructionEntries).toBeUndefined();
+  });
+
+  // The `SessionInbox.Compaction` item @opencode/protocol 2.4.1 returns as `{ data }` from POST /api/session/:id/compact.
+  const admitted = (fields: any = {}) => ({ data: { type: 'compaction', payload: {}, delivery: 'steer', id: messageId, sessionID: 'ses_a', time: { created: 1 }, ...fields } });
+
+  test('the driver sends one compaction only on v2 and only to a quiescent tree', async () => {
+    const attempt = async ({ host = 'v2', inbox = [] as any[], answer = admitted() as any } = {}) => {
+      const sends: any[] = [];
+      const api = async (path: string, options: any) => {
+        if ((options.method ?? 'GET') !== 'GET') { sends.push({ path, body: options.body }); return { outcome: 'response' as const, status: 200, body: answer, bytes: 1 }; }
+        const table = { ...V2_QUIET, '/api/session/ses_a/inbox': { data: inbox } };
+        return path in table ? { outcome: 'response' as const, status: 200, body: table[path], bytes: 1 } : { outcome: 'response' as const, status: 404, body: null, bytes: 0 };
+      };
+      const op = { kind: 'compact', sessionId: 'ses_a', messageId };
+      return { reply: await driverSubmit({ host, trusted: false, expected: null, sessionId: 'ses_a', op, commandEndClock: 100_000, actionEndClock: 100_000 }, { api: api as any, clock: () => 1_000 }), sends };
+    };
+    const sent = await attempt();
+    expect(sent.reply).toEqual({ ok: true, submitted: true, acknowledged: true, status: 200 });
+    expect(sent.sends).toEqual([{ path: '/api/session/ses_a/compact', body: { id: messageId } }]);
+    // A success body that does not name this compaction (another ID, session or type, or no item) is never an
+    // acknowledgement: the operation stays unknown until its own ID resolves it.
+    for (const answer of [admitted({ id: 'msg_other' }), admitted({ sessionID: 'ses_b' }), admitted({ type: 'user' }), { data: {} }, {}, null]) {
+      expect((await attempt({ answer })).reply).toEqual({ ok: true, submitted: true, acknowledged: null, status: 200 });
+    }
+    const busy = await attempt({ inbox: [{ id: 'msg_queued', type: 'user' }] });
+    expect(busy.reply).toMatchObject({ ok: true, submitted: false, refused: 'not_quiescent' });
+    expect(busy.sends).toEqual([]);
+    const v1 = await attempt({ host: 'v1' });
+    expect(v1.reply).toEqual({ ok: false, failure: 'operation_kind_invalid' });
+    expect(v1.sends).toEqual([]);
+  });
+
+  test('a lost compaction resolves only from its own inbox item or compaction message', async () => {
+    const op = { kind: 'compact', sessionId: 'ses_a', messageId };
+    const inbox = (items: any[]) => ({ '/api/session/ses_a/inbox': api({ data: items }) });
+    const message = (m: any) => ({ '/api/session/ses_a/inbox': api({ data: [] }), [`/api/session/ses_a/message/${messageId}`]: api({ data: m }) });
+    expect(await resolveOperation('v2', op, {}, routeGet(inbox([{ id: messageId, type: 'compaction' }])))).toEqual({ resolved: true, effect: 'accepted' });
+    expect(await resolveOperation('v2', op, {}, routeGet(message({ id: messageId, type: 'compaction', status: 'running' })))).toEqual({ resolved: true, effect: 'accepted' });
+    // Another item or a message of another kind with that ID does not name this compaction; no evidence stays unknown.
+    expect(await resolveOperation('v2', op, {}, routeGet(inbox([{ id: messageId, type: 'user' }])))).toEqual({ resolved: false });
+    expect(await resolveOperation('v2', op, {}, routeGet(message({ id: messageId, type: 'user', text: 'x' })))).toEqual({ resolved: false });
+    expect(await resolveOperation('v2', op, {}, routeGet(message({ id: 'msg_other', type: 'compaction' })))).toEqual({ resolved: false });
+    expect(await resolveOperation('v2', op, {}, routeGet({}))).toEqual({ resolved: false });
+    expect(await resolveOperation('v1', op, {}, routeGet(inbox([{ id: messageId, type: 'compaction' }])))).toEqual({ resolved: false });
+  });
+
+  test('the controller refuses compact on v1 before recording anything and binds a chosen message ID on v2', async () => {
+    const op = (run: any, id: string) => run.op('compact', {}, id);
+    expect(validateOperation(JSON.parse(readFileSync(op(exerciseRun(), 'c0'), 'utf8')), { runId: 'run-1', sessionId: 'ses_primary', allowedActions: ACTIONS }).action).toBe('compact');
+    expect(() => validateOperation({ schema: 'ic-exercise-operation/v1', id: 'c0', runId: 'run-1', sessionId: 'ses_primary', action: 'compact', text: 'x' }, { runId: 'run-1', sessionId: 'ses_primary', allowedActions: ACTIONS })).toThrow(HarnessError);
+    const v1Docker = new ExerciseDocker({ driver: { submit: () => ({ ok: true, submitted: true, acknowledged: true }) } });
+    const v1 = exerciseRun({ host: 'v1' });
+    const refused = await turnCommand({ run: v1.runDir, operation: op(v1, 'c1') }, v1.env, {}, { docker: v1Docker });
+    expect(refused.status).toMatchObject({ state: 'refused', reason: 'compact_unsupported_on_host' });
+    expect(v1Docker.driverCalls.filter((c) => c.command === 'submit')).toEqual([]);
+    expect(v1.journal.read('op.0001.intent')).toBeNull();
+    const docker = new ExerciseDocker({ driver: { submit: () => ({ ok: true, submitted: true, acknowledged: null }) } });
+    const run = exerciseRun({ host: 'v2' });
+    const lost = await turnCommand({ run: run.runDir, operation: op(run, 'c2') }, run.env, {}, { docker });
+    expect(lost.status).toMatchObject({ state: 'unknown', reason: 'acknowledgement_lost' });
+    const sent = docker.driverCalls.find((c) => c.command === 'submit')!.input.op;
+    expect(sent).toEqual({ kind: 'compact', sessionId: 'ses_primary', messageId: sent.messageId });
+    expect(sent.messageId).toMatch(MESSAGE_ID);
+    expect(run.journal.read('op.0001.intent')!.value).toMatchObject({ id: 'c2', kind: 'compact', messageId: sent.messageId });
+    docker.behavior.driver.observe = (input: any) => ({ ...QUIET, resolution: input.resolve?.kind === 'compact' && input.resolve.messageId === sent.messageId ? { resolved: true, effect: 'accepted' } : { resolved: false } });
+    await inspectCommand({ run: run.runDir, request: run.inspection({ resolve: 'c2' }) }, run.env, { docker });
+    expect(runState(run.journal).unresolved).toEqual([]);
+  });
+
+  test('request parity records digests and counts only, and tells system, tool and checkpoint changes apart', () => {
+    const input = {
+      system: [{ type: 'text', text: 'system prompt text that must never be logged' }, { type: 'text', text: 'second' }],
+      tools: { read: { description: 'Read a file', input: { type: 'object' } }, hive_status: { description: 'Status', input: { type: 'object', properties: { feature: { type: 'string' } } } } },
+      messages: [{ role: 'user', content: [{ type: 'text', text: '<conversation-checkpoint>\nsummary' }] }],
+    };
+    const base: any = requestParity(input);
+    expect(base).toMatchObject({ systemCount: 2, toolCount: 2, firstMessageHasCheckpoint: true });
+    for (const key of ['systemSha256', 'toolKeysSha256', 'toolDefsSha256']) expect(base[key]).toMatch(/^[0-9a-f]{64}$/);
+    expect(JSON.stringify(base)).not.toMatch(/system prompt|Read a file|summary|hive_status/);
+    expect(requestParity(structuredClone(input))).toEqual(base);
+    const schema: any = structuredClone(input);
+    schema.tools.read.input = { type: 'object', properties: {} };
+    expect(requestParity(schema)).toMatchObject({ toolKeysSha256: base.toolKeysSha256, systemSha256: base.systemSha256 });
+    expect(requestParity(schema).toolDefsSha256).not.toBe(base.toolDefsSha256);
+    const system = structuredClone(input);
+    system.system[1].text = 'changed';
+    expect(requestParity(system).systemSha256).not.toBe(base.systemSha256);
+    expect(requestParity({ ...input, messages: [{ role: 'user', content: 'plain' }] }).firstMessageHasCheckpoint).toBe(false);
+    expect(requestParity({})).toEqual({ systemCount: null, systemSha256: null, toolCount: null, toolKeysSha256: null, toolDefsSha256: null, firstMessageHasCheckpoint: null });
+  });
+
+  test('the v2 observer hooks compaction next to context', async () => {
+    const hooks: string[] = [];
+    await observerPlugin.setup({ session: { hook: async (name: string) => { hooks.push(name); } } } as any);
+    expect(hooks).toEqual(expect.arrayContaining(['context', 'compaction', 'model.request', 'http.request']));
+  });
+
+  test('parity export keeps only digest, count and identity fields of context and compaction rows, cutting the oldest', () => {
+    const digest = 'a'.repeat(64);
+    const row = (hook: string, extra: any = {}) => JSON.stringify({ at: 1, host: 'v2', hook, sessionID: 'ses_a', agent: 'architect-planner', kind: null, settings: { temperature: 1 }, systemCount: 3, systemSha256: digest, toolCount: 4, toolKeysSha256: digest, toolDefsSha256: digest, firstMessageHasCheckpoint: false, ...extra });
+    const text = [row('model.request'), row('context'), row('compaction', { systemSha256: 'not-a-digest', note: FAKE_ACCESS }), 'not json', '[1]', ''].join('\n');
+    const out = parityExport(text);
+    expect(out.total).toBe(2);
+    expect(out.malformed).toBe(2);
+    expect(out.rows.map((r: any) => r.hook)).toEqual(['context', 'compaction']);
+    expect(out.rows[1].systemSha256).toBeNull();
+    expect(Object.keys(out.rows[0]).sort()).toEqual(['agent', 'at', 'firstMessageHasCheckpoint', 'hook', 'host', 'kind', 'sessionID', 'systemCount', 'systemSha256', 'toolCount', 'toolDefsSha256', 'toolKeysSha256']);
+    expect(JSON.stringify(out)).not.toContain(FAKE_ACCESS);
+    const many = Array.from({ length: PARITY_LIMITS.rows + 3 }, (_, i) => row('context', { at: i })).join('\n');
+    const capped = parityExport(many);
+    expect(capped.total).toBe(PARITY_LIMITS.rows + 3);
+    expect(capped.rows.length).toBe(PARITY_LIMITS.rows);
+    expect(capped.rows[0].at).toBe(3);
+    expect(parseDriverReply('observe', { ...QUIET, parity: out })!.parity).toEqual(out);
+    expect(parseDriverReply('observe', { ...QUIET, parity: { ...capped, rows: [...capped.rows, capped.rows[0]] } })).toBeNull();
+  });
+
+  test('the observer log is read only as a regular file in a real directory, never through a link, a FIFO or past its bound', () => {
+    const row = JSON.stringify({ at: 1, host: 'v2', hook: 'context', systemCount: 1 });
+    const absent = { rows: [], total: 0, malformed: 0, omitted: 'absent' };
+    const dir = scratch();
+    const log = join(dir, 'observer.jsonl');
+    expect(readObserverLog(log)).toEqual(absent);
+    writeFileSync(log, row + '\n');
+    expect(readObserverLog(log)).toMatchObject({ total: 1, malformed: 0 });
+    expect(readObserverLog(log).omitted).toBeUndefined();
+    const link = join(dir, 'linked.jsonl');
+    symlinkSync(log, link);
+    expect(readObserverLog(link)).toEqual(absent);
+    const linkedDir = join(scratch(), 'state');
+    symlinkSync(dir, linkedDir);
+    expect(readObserverLog(join(linkedDir, 'observer.jsonl'))).toEqual(absent);
+    mkdirSync(join(dir, 'a-directory'));
+    expect(readObserverLog(join(dir, 'a-directory'))).toEqual(absent);
+    const fifo = join(dir, 'fifo');
+    expect(spawnSync('mkfifo', [fifo]).status).toBe(0);
+    // A FIFO with no writer blocks a reading open forever, so the check runs in a bounded child: a regression that drops
+    // O_NONBLOCK times out here instead of hanging the runner.
+    const probe = `const { readObserverLog } = await import(${JSON.stringify(join(import.meta.dir, 'exercise-driver.ts'))}); process.stdout.write(JSON.stringify(readObserverLog(${JSON.stringify(fifo)})));`;
+    const fifoRead = spawnSync(process.execPath, ['-e', probe], { encoding: 'utf8', timeout: 5000 });
+    expect({ signal: fifoRead.signal, status: fifoRead.status, stderr: fifoRead.stderr }).toEqual({ signal: null, status: 0, stderr: '' });
+    expect(JSON.parse(fifoRead.stdout)).toEqual(absent);
+    // The bound is inclusive: exactly maxBytes is read, one byte more is oversize.
+    const bytes = Buffer.byteLength(row + '\n');
+    expect(readObserverLog(log, bytes)).toMatchObject({ total: 1 });
+    expect(readObserverLog(log, bytes - 1)).toEqual({ ...absent, omitted: 'oversize' });
+    const big = join(dir, 'big.jsonl');
+    writeFileSync(big, '');
+    truncateSync(big, PARITY_LIMITS.fileBytes + 1);
+    expect(readObserverLog(big).omitted).toBe('oversize');
+  });
+
+  test('instruction entries are read per tree session on v2, scanned and bounded; v1 reports them unsupported', async () => {
+    const scan = evidenceScanner({ access: FAKE_ACCESS, expires: 1 });
+    const tree = { sessions: [{ id: 'ses_a', parentId: null, agent: null }, { id: 'ses_b', parentId: 'ses_a', agent: null }], complete: true, failure: null };
+    const route = (id: string) => `/api/experimental/session/${id}/instructions/entries`;
+    const long = 'x'.repeat(ENTRY_LIMITS.valueChars + 10);
+    const table = { [route('ses_a')]: api({ data: [{ key: 'hive.session', value: { route: 'r' } }, { key: 'big', value: long }] }), [route('ses_b')]: api(null, 500) };
+    const out = await instructionEntriesExport('v2', tree, routeGet(table), scan);
+    expect(out.supported).toBe(true);
+    expect(out.sessions[0]).toMatchObject({ sessionId: 'ses_a', readable: true, entryCount: 2 });
+    expect(out.sessions[0].entries[0]).toEqual({ key: { text: 'hive.session', chars: 12, clipped: false }, value: { text: '{"route":"r"}', chars: 13, clipped: false } });
+    expect(out.sessions[0].entries[1].value).toMatchObject({ clipped: true, chars: long.length + 2 });
+    expect(out.sessions[1]).toEqual({ sessionId: 'ses_b', readable: false, entryCount: 0, entries: [] });
+    expect(parseDriverReply('observe', { ...QUIET, instructionEntries: out })!.instructionEntries).toEqual(out);
+    expect(await instructionEntriesExport('v1', tree, routeGet(table), scan)).toEqual({ supported: false, sessions: [] });
+    const leaked = { [route('ses_a')]: api({ data: [{ key: 'k', value: { note: `prefix ${FAKE_ACCESS}` } }] }), [route('ses_b')]: api({ data: [] }) };
+    await expect(instructionEntriesExport('v2', tree, routeGet(leaked), scan)).rejects.toThrow('evidence_contaminated');
+  });
+
+  test('parity and instruction entries are opt-in inspection booleans passed through to the driver', async () => {
+    const check = (value: any) => { try { validateInspection({ schema: 'ic-exercise-inspection/v1', runId: 'r1', ...value }, { runId: 'r1', artifacts: [] }); return 'accepted'; } catch (e) { return (e as HarnessError).code; } };
+    expect(check({ parity: true, instructionEntries: false })).toBe('accepted');
+    expect(check({ parity: 'yes' })).toBe('inspection_invalid');
+    expect(check({ instructionEntries: 1 })).toBe('inspection_invalid');
+    const docker = new ExerciseDocker({ driver: { observe: () => ({ ...QUIET }) } });
+    const run = exerciseRun({ host: 'v2' });
+    await inspectCommand({ run: run.runDir, request: run.inspection({ parity: true, instructionEntries: true }) }, run.env, { docker });
+    expect(docker.driverCalls.find((c) => c.command === 'observe')!.input.request).toMatchObject({ parity: true, instructionEntries: true });
+  });
+
+  test('turn and inspect read only the auth file the run was started with; --auth-file is absolute and never on stop', async () => {
+    const code = (fn: () => unknown) => { try { fn(); return 'accepted'; } catch (e) { return (e as HarnessError).code; } };
+    expect(parseExerciseCli(['turn', '--run', '/r', '--operation', '/o.json', '--auth-file', '/a/auth.json']).options['auth-file']).toBe('/a/auth.json');
+    expect(code(() => parseExerciseCli(['inspect', '--run', '/r', '--auth-file', 'auth.json']))).toBe('auth_file_invalid');
+    expect(code(() => parseExerciseCli(['stop', '--run', '/r', '--auth-file', '/a/auth.json']))).toBe('arguments_invalid');
+    const docker = new ExerciseDocker({ driver: { submit: () => ({ ok: true, submitted: true, acknowledged: true }), observe: () => ({ ...QUIET }) } });
+    const run = exerciseRun();
+    run.journal.write('start.auth', { pathSha256: sha256Text(run.auth) });
+    const other = authFile({ type: 'oauth', access: FAKE_ACCESS, refresh: FAKE_REFRESH, expires: Date.now() + 4 * 3_600_000 });
+    // Another path, or none at all, is refused before any read or Docker call, and the run is not latched.
+    for (const [env, authFile] of [[{ IC_EXERCISE_AUTH_PATH: other }, undefined], [run.env, other], [{}, undefined]] as const) {
+      expect(await turnCommand({ run: run.runDir, operation: run.op('prompt', { text: 'x' }) }, env, {}, { docker, authFile })).toMatchObject({ exit: EXIT.failed, status: { status: 'refused', reason: 'auth_path_changed' } });
+      expect(await inspectCommand({ run: run.runDir }, env, { docker, authFile })).toMatchObject({ exit: EXIT.failed, status: { status: 'content_unavailable', reason: 'auth_path_changed' } });
+    }
+    expect(docker.calls).toEqual([]);
+    expect(run.journal.read('latch')).toBeFalsy();
+    // --auth-file takes precedence over IC_EXERCISE_AUTH_PATH, and the bound path admits the run again.
+    expect((await turnCommand({ run: run.runDir, operation: run.op('prompt', { text: 'x' }) }, { IC_EXERCISE_AUTH_PATH: other }, {}, { docker, authFile: run.auth })).exit).toBe(EXIT.ok);
+    expect((await turnCommand({ run: run.runDir, operation: run.op('prompt', { text: 'x' }) }, run.env, {}, { docker })).exit).toBe(EXIT.ok);
+  });
+
+  test('inspect of a stopped or latched run reports controller facts without any auth file or home directory', async () => {
+    const docker = new ExerciseDocker({ driver: { observe: () => ({ ...QUIET }) } });
+    const stopped = exerciseRun();
+    stopped.journal.write('start.auth', { pathSha256: sha256Text(stopped.auth) });
+    stopped.journal.write('stop.0001', { at: new Date().toISOString() });
+    expect(await inspectCommand({ run: stopped.runDir }, {}, { docker })).toMatchObject({ exit: EXIT.ok, status: { command: 'inspect', status: 'stopped' } });
+    const latched = exerciseRun();
+    latched.journal.write('start.auth', { pathSha256: sha256Text(latched.auth) });
+    latched.journal.write('latch', { code: 'host_auth_changed', detail: null, at: new Date().toISOString() });
+    expect(await inspectCommand({ run: latched.runDir }, {}, { docker })).toMatchObject({ exit: EXIT.failed, status: { command: 'inspect', status: 'content_unavailable' } });
+    expect(docker.calls).toEqual([]);
+  });
+
+  test('run.mjs reads an exported access-only file only in the paid phase, by absolute path', () => {
+    const code = (argv: string[]) => { try { parseCli(argv); return 'accepted'; } catch (e) { return (e as HarnessError).code; } };
+    const scope = ['acceptance', '--candidate-manifest', '/m', '--scenarios', 'interrupted-writer'];
+    expect(parseCli([...scope, '--auth', 'openai-access-only', '--auth-file', '/a/auth.json', ...COMMON]).authFile).toBe('/a/auth.json');
+    expect(parseCli([...scope, '--auth', 'openai-access-only', ...COMMON]).authFile).toBeNull();
+    expect(code([...scope, '--rehearsal', '--auth-file', '/a/auth.json', ...COMMON])).toBe('option_requires_paid_phase');
+    expect(code([...scope, '--auth', 'openai-access-only', '--auth-file', 'auth.json', ...COMMON])).toBe('auth_file_invalid');
+  });
+
+  // A synthetic OpenCode v2 database with the credential table's columns, written with node:sqlite.
+  function v2Database(rows: { id: string; integration: string; value: any; active: number | null; created: number }[]): string {
+    const path = join(scratch(), 'opencode.db');
+    const db = new DatabaseSync(path);
+    db.exec('CREATE TABLE credential (id TEXT PRIMARY KEY, integration_id TEXT, label TEXT NOT NULL, value TEXT NOT NULL, connector_id TEXT, method_id TEXT, active INTEGER, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL)');
+    const insert = db.prepare('INSERT INTO credential (id, integration_id, label, value, active, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?, ?)');
+    for (const r of rows) insert.run(r.id, r.integration, 'label', typeof r.value === 'string' ? r.value : JSON.stringify(r.value), r.active, r.created, r.created);
+    db.close();
+    return path;
+  }
+  const oauth = (access: string, extra: any = {}) => ({ type: 'oauth', methodID: 'chatgpt', refresh: FAKE_REFRESH, access, expires: Date.now() + 4 * 3_600_000, metadata: { accountID: FAKE_ACCOUNT }, ...extra });
+  const runExport = (args: string[]) => spawnSync('node', [join(import.meta.dir, 'export-v2-auth.mjs'), ...args], { encoding: 'utf8', env: { PATH: process.env.PATH } });
+
+  test('the v2 auth export writes the active openai access token, expiry and account only, mode 0600, and prints no secret', () => {
+    const db = v2Database([
+      { id: 'cred_old', integration: 'openai', value: oauth('stale-access-token-not-selected-000000'), active: 0, created: 3 },
+      { id: 'cred_active', integration: 'openai', value: oauth(FAKE_ACCESS), active: 1, created: 1 },
+      { id: 'cred_other', integration: 'anthropic', value: { type: 'key', key: 'other-provider-key' }, active: 1, created: 2 },
+    ]);
+    const out = join(scratch(), 'auth.json');
+    const result = runExport(['--db', db, '--out', out]);
+    expect(result.status).toBe(0);
+    const summary = JSON.parse(result.stdout.trim());
+    expect(summary).toMatchObject({ ok: true, out, hasAccountId: true });
+    for (const secret of [FAKE_ACCESS, FAKE_REFRESH, FAKE_ACCOUNT, 'other-provider-key']) expect(result.stdout + result.stderr).not.toContain(secret);
+    expect(statSync(out).mode & 0o777).toBe(0o600);
+    const text = readFileSync(out, 'utf8');
+    expect(JSON.parse(text)).toEqual({ openai: { type: 'oauth', access: FAKE_ACCESS, expires: summary.expires, accountId: FAKE_ACCOUNT } });
+    expect(text).not.toContain(FAKE_REFRESH);
+    // The run's own reader takes the exported file end to end, through the single bounded snapshot read.
+    const { credential } = credentialFromSnapshot(snapshotAuthFile(out), { now: Date.now(), requiredMs: 3_600_000 });
+    expect(credential).toEqual({ access: FAKE_ACCESS, expires: summary.expires, accountId: FAKE_ACCOUNT });
+    // Exporting again replaces the regular file.
+    expect(runExport(['--db', db, '--out', out]).status).toBe(0);
+  });
+
+  test('the v2 auth export fails with a fixed code on a missing, non-OAuth, malformed or expired credential and on an unsafe target', () => {
+    const fails = (rows: any[], out = join(scratch(), 'auth.json')) => {
+      const result = runExport(['--db', v2Database(rows), '--out', out]);
+      expect(result.stdout + result.stderr).not.toContain(FAKE_ACCESS);
+      return [result.status, JSON.parse(result.stdout.trim()).failure, existsSync(out)];
+    };
+    const row = (value: any) => [{ id: 'c', integration: 'openai', value, active: 1, created: 1 }];
+    expect(fails([])).toEqual([1, 'openai_entry_missing', false]);
+    expect(fails(row({ type: 'key', key: FAKE_ACCESS }))).toEqual([1, 'openai_entry_not_oauth', false]);
+    expect(fails(row('{not json'))).toEqual([1, 'auth_malformed', false]);
+    expect(fails(row(oauth(FAKE_ACCESS, { expires: Date.now() - 1000 })))).toEqual([1, 'credential_expired', false]);
+    expect(fails(row(oauth(FAKE_ACCESS, { access: '' })))).toEqual([1, 'access_missing', false]);
+    const dir = scratch();
+    const link = join(dir, 'link.json');
+    symlinkSync(join(dir, 'target.json'), link);
+    expect(fails(row(oauth(FAKE_ACCESS)), link)).toEqual([1, 'out_not_regular', false]);
+    expect(existsSync(join(dir, 'target.json'))).toBe(false);
+    const missing = runExport(['--db', join(scratch(), 'absent.db'), '--out', join(scratch(), 'a.json')]);
+    expect([missing.status, JSON.parse(missing.stdout.trim()).failure]).toEqual([1, 'db_unreadable']);
+    expect(runExport(['--out', 'relative.json']).status).toBe(2);
+    expect(runExport(['--help']).status).toBe(0);
+    const noOut = runExport(['--db', '/x.db']);
+    expect([noOut.status, JSON.parse(noOut.stdout.trim())]).toEqual([2, { ok: false, failure: 'arguments_invalid' }]);
+  });
+
+  test('the v2 auth export refuses an --out naming the database or one of its sidecars and leaves the database untouched', () => {
+    const db = v2Database([{ id: 'c', integration: 'openai', value: oauth(FAKE_ACCESS), active: 1, created: 1 }]);
+    const before = readFileSync(db);
+    const viaLink = join(scratch(), 'linked-dir');
+    symlinkSync(dirname(db), viaLink);
+    for (const out of [db, `${db}-wal`, `${db}-shm`, `${db}-journal`, join(viaLink, basename(db))]) {
+      const result = runExport(['--db', db, '--out', out]);
+      expect([result.status, JSON.parse(result.stdout.trim()).failure]).toEqual([1, 'out_overlaps_db']);
+      expect(result.stdout + result.stderr).not.toContain(FAKE_ACCESS);
+    }
+    expect(readFileSync(db).equals(before)).toBe(true);
+    expect(readdirSync(dirname(db)).sort()).toEqual([basename(db)]);
+  });
+
+  test('the v2 auth export resolves a linked --db before naming its sidecars, whether or not the sidecar exists', () => {
+    // A --db under a symlinked parent: the absent sidecar's real name is in the real directory.
+    const db = v2Database([{ id: 'c', integration: 'openai', value: oauth(FAKE_ACCESS), active: 1, created: 1 }]);
+    const linkedParent = join(scratch(), 'linked-parent');
+    symlinkSync(dirname(db), linkedParent);
+    const absentWal = `${db}-wal`;
+    const viaParent = runExport(['--db', join(linkedParent, basename(db)), '--out', absentWal]);
+    expect([viaParent.status, JSON.parse(viaParent.stdout.trim()).failure]).toEqual([1, 'out_overlaps_db']);
+    expect(existsSync(absentWal)).toBe(false);
+    // A --db that is itself a link to the database: SQLite opens the real file, so its existing WAL is the target.
+    const real = v2Database([{ id: 'c', integration: 'openai', value: oauth(FAKE_ACCESS), active: 1, created: 1 }]);
+    const wal = `${real}-wal`;
+    const walBytes = Buffer.from('existing write-ahead log bytes');
+    writeFileSync(wal, walBytes);
+    const fileLink = join(scratch(), 'link.db');
+    symlinkSync(real, fileLink);
+    const viaFile = runExport(['--db', fileLink, '--out', wal]);
+    expect([viaFile.status, JSON.parse(viaFile.stdout.trim()).failure]).toEqual([1, 'out_overlaps_db']);
+    expect(viaFile.stdout + viaFile.stderr).not.toContain(FAKE_ACCESS);
+    expect(readFileSync(wal).equals(walBytes)).toBe(true);
+  });
+
+  test('the v2 auth export applies .. in --db after a directory symlink, as the OS and SQLite do', () => {
+    // --db <a>/link/../opencode.db with <a>/link -> <real>/sub names <real>/opencode.db physically, not <a>/opencode.db.
+    const db = v2Database([{ id: 'c', integration: 'openai', value: oauth(FAKE_ACCESS), active: 1, created: 1 }]);
+    const real = dirname(db);
+    mkdirSync(join(real, 'sub'));
+    const a = scratch();
+    symlinkSync(join(real, 'sub'), join(a, 'link'));
+    const viaDotDot = `${join(a, 'link')}/../${basename(db)}`;
+    const before = readFileSync(db);
+    for (const out of [db, `${db}-wal`]) {
+      const result = runExport(['--db', viaDotDot, '--out', out]);
+      expect([result.status, JSON.parse(result.stdout.trim()).failure]).toEqual([1, 'out_overlaps_db']);
+      expect(result.stdout + result.stderr).not.toContain(FAKE_ACCESS);
+    }
+    expect(readFileSync(db).equals(before)).toBe(true);
+    expect(existsSync(`${db}-wal`)).toBe(false);
+    // The same --db reads the physical database for an unrelated --out.
+    const out = join(scratch(), 'auth.json');
+    expect(runExport(['--db', viaDotDot, '--out', out]).status).toBe(0);
   });
 });

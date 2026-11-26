@@ -41,13 +41,19 @@ export class HarnessError extends Error {
 const DOCKER_OVERRIDES = [
   'DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_TLS', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH', 'DOCKER_CONFIG',
   'DOCKER_API_VERSION', 'DOCKER_DEFAULT_PLATFORM', 'BUILDX_BUILDER', 'BUILDKIT_HOST', 'BUILDX_CONFIG',
-  'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'all_proxy', 'no_proxy',
 ];
+const PROXY_OVERRIDES = ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'http_proxy', 'https_proxy', 'all_proxy'];
+// A proxy exclusion list only narrows a proxy, so it is refused only when a proxy variable is also inherited. Hosts
+// such as WSL2 with Docker Desktop commonly export NO_PROXY on its own.
+const NO_PROXY_OVERRIDES = ['NO_PROXY', 'no_proxy'];
 
 /** Decides whether the Docker engine is a trusted local engine. Unresolved locality fails closed. */
 export function assessDockerBoundary({ env, endpoint, socketIsSocket, version, info, localKernel }) {
   const failures = [];
-  for (const name of DOCKER_OVERRIDES) if (env[name] !== undefined) failures.push(`inherited_override:${name}`);
+  for (const name of [...DOCKER_OVERRIDES, ...PROXY_OVERRIDES]) if (env[name] !== undefined) failures.push(`inherited_override:${name}`);
+  if (PROXY_OVERRIDES.some((name) => env[name] !== undefined)) {
+    for (const name of NO_PROXY_OVERRIDES) if (env[name] !== undefined) failures.push(`inherited_override:${name}`);
+  }
   const match = /^unix:\/\/(\/[^\s]+)$/.exec(endpoint ?? '');
   if (!match) failures.push('endpoint_not_local_unix_socket');
   if (!socketIsSocket) failures.push('endpoint_socket_missing');

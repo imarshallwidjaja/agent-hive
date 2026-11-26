@@ -778,6 +778,10 @@ export function exerciseRoutes(id, directory) {
     permissions: (sessionId) => ({ method: 'GET', path: `/api/session/${sessionId}/permission` }),
     permissionReply: (sessionId, requestId, decision) => ({ method: 'POST', path: `/api/session/${sessionId}/permission/${requestId}/reply`, body: { decision } }),
     interrupt: (sessionId) => ({ method: 'POST', path: `/api/session/${sessionId}/interrupt`, body: {} }),
+    // The caller-chosen ID becomes the inbox item's ID and then the compaction message's, so a lost acknowledgement
+    // can be resolved from either.
+    compact: ({ sessionId, messageId }) => ({ method: 'POST', path: `/api/session/${sessionId}/compact`, body: { id: messageId } }),
+    instructionEntries: (sessionId) => ({ method: 'GET', path: `/api/experimental/session/${sessionId}/instructions/entries` }),
     agents: () => ({ method: 'GET', path: `/api/agent?${v2LocationQuery(directory)}` }),
     models: () => ({ method: 'GET', path: `/api/model?${v2LocationQuery(directory)}` }),
   };

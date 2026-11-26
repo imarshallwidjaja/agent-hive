@@ -10,7 +10,7 @@
 // container's stored credential has been compared with the expectation the host sent on stdin.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, sep } from 'node:path';
 import { evidenceScanner, scanValue } from './credentials.mjs';
 import { sharedClockMs } from './guard.mjs';
@@ -230,12 +230,24 @@ export async function sessionTree(host: string, rootId: string, get: (request: J
   return { sessions, complete: true, failure: null };
 }
 
-export type Message = { id: string; role: string; agent: string | null; model: Json; error: string | null; text: string; tools: Json[] };
+export type Tokens = { input: number | null; output: number | null; reasoning: number | null; cacheRead: number | null; cacheWrite: number | null };
+export type Message = { id: string; role: string; agent: string | null; model: Json; error: string | null; text: string; tools: Json[]; tokens: Tokens | null };
+
+/**
+ * A message's token usage (both hosts store `{ input, output, reasoning, cache: { read, write } }`) in the flat names
+ * the fixture uses. A count that is not a non-negative integer is null; a message without usage has none.
+ */
+function tokenUsage(raw: Json): Tokens | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const count = (v: unknown) => (Number.isSafeInteger(v) && (v as number) >= 0 ? (v as number) : null);
+  return { input: count(raw.input), output: count(raw.output), reasoning: count(raw.reasoning), cacheRead: count(raw.cache?.read), cacheWrite: count(raw.cache?.write) };
+}
 
 /**
  * One native message in a host-neutral shape. Tool outputs stay raw here and are reduced before export. A tool's
  * `output` is its result text (v1 `output`, v2 `content` text) and `error` the host's error message for an errored call
- * (v1 `error` string, v2 `message` of the `error` object); neither stands in for the other.
+ * (v1 `error` string, v2 `message` of the `error` object); neither stands in for the other. A v2 compaction message
+ * keeps its type as its role, so an export shows where the history was compacted.
  */
 export function normalizeMessage(host: string, m: Json): Message | null {
   if (host === 'v1') {
@@ -251,6 +263,7 @@ export function normalizeMessage(host: string, m: Json): Message | null {
         id: p.callID ?? p.id ?? null, name: p.tool, status: p.state?.status ?? null, input: p.state?.input, output: p.state?.output,
         error: p.state?.status === 'error' && typeof p.state?.error === 'string' ? p.state.error : null, metadata: p.state?.metadata ?? null,
       })),
+      tokens: tokenUsage(info.tokens),
     };
   }
   if (!m || typeof m.id !== 'string' || !NATIVE_ID.test(m.id)) return null;
@@ -269,6 +282,7 @@ export function normalizeMessage(host: string, m: Json): Message | null {
         error: typeof v2ToolError?.message === 'string' ? v2ToolError.message : null, metadata: p.state?.metadata ?? null,
       };
     }),
+    tokens: tokenUsage(m.tokens),
   };
 }
 
@@ -856,7 +870,8 @@ function sameAnswers(sent: string[][], native: unknown): boolean {
 
 /**
  * Resolves an earlier submission whose acknowledgement was lost, only from native evidence that names this exact
- * operation. A prompt, and a v1 command, is found by the message ID the supervisor chose; a command's resolution also
+ * operation. A prompt, a v1 command and a v2 compaction are found by the message ID the supervisor chose (a compaction
+ * as its queued inbox item or its compaction message); a command's resolution also
  * reports the agent that message names. A v2 command takes no message ID, so nothing names it and it stays
  * unresolved. A question reply is accepted when its own tool
  * call, the only call with that ID in the completely read history of the session that asked, is a `question` call that
@@ -894,6 +909,18 @@ export async function resolveOperation(host: string, op: Json, observed: Json, g
     const answered = state?.answer && typeof state.answer === 'object' ? state.answer : null;
     const native = keys && answered && keys.length === Object.keys(answered).length && keys.every((k) => typeof k === 'string' && k in answered) ? keys.map((k) => answered[k as string]) : answered;
     return state?.status === 'answered' && sameAnswers(op.answers, native) ? { resolved: true, effect: 'accepted' } : { resolved: false };
+  }
+  if (op.kind === 'compact' && host === 'v2') {
+    if (typeof op.messageId !== 'string') return { resolved: false };
+    // The admitted request waits in the inbox under the chosen ID, then becomes the compaction message with that ID. The
+    // inbox is read first, so a request promoted between the two reads is still found in the message read.
+    const inbox = await get(routes.inbox(op.sessionId));
+    const items = succeeded(inbox) ? payload(host, inbox.body) : undefined;
+    if (Array.isArray(items) && items.some((item: Json) => item?.id === op.messageId && item?.type === 'compaction')) return { resolved: true, effect: 'accepted' };
+    const res = await get(routes.message(op.sessionId, op.messageId));
+    if (!succeeded(res)) return { resolved: false };
+    const m = normalizeMessage(host, payload(host, res.body));
+    return m && m.id === op.messageId && m.role === 'compaction' ? { resolved: true, effect: 'accepted' } : { resolved: false };
   }
   if (op.kind === 'switch' && host === 'v2' && typeof op.from === 'string' && op.from !== op.agent) {
     const res = await get(routes.session(op.sessionId));
@@ -965,6 +992,10 @@ export async function submit(input: Json, deps: DriverDeps = LIVE): Promise<Json
     }
   } else if (op.kind === 'interrupt') {
     request = routes.interrupt(op.sessionId);
+  } else if (op.kind === 'compact') {
+    if (input.host !== 'v2') return { ok: false, failure: 'operation_kind_invalid' };
+    if (!observed.quiescent) return refuse('not_quiescent');
+    request = routes.compact({ sessionId: op.sessionId, messageId: op.messageId });
   } else if (op.kind === 'command') {
     return submitCommand(input, op, observed, deps, remaining, scan, refuse);
   } else return { ok: false, failure: 'operation_kind_invalid' };
@@ -976,10 +1007,20 @@ export async function submit(input: Json, deps: DriverDeps = LIVE): Promise<Json
   // Credential-free qualification only: the request was sent and its reply is discarded, as a lost acknowledgement.
   if (input.dropAcknowledgement === true) return { ok: true, submitted: true, acknowledged: null };
   const target = observed.pending?.find((p) => p.id === op.requestId && !p.outsideTree);
+  const acknowledged = !succeeded(res) ? (res.outcome === 'response' ? false : null) : op.kind === 'compact' ? compactionAdmitted(op, res) : true;
   return release(input, {
-    ok: true, submitted: true, acknowledged: succeeded(res) ? true : res.outcome === 'response' ? false : null, status: res.status,
+    ok: true, submitted: true, acknowledged, status: res.status,
     ...(target ? { ownerSessionId: target.sessionId, toolCallId: target.toolCallId } : {}),
   }, remaining);
+}
+
+/**
+ * A successful v2 compaction answer acknowledges this operation only when its `SessionInbox.Compaction` item names the
+ * chosen message ID in this session. Any other success body leaves the operation unknown, to be resolved by that ID.
+ */
+function compactionAdmitted(op: Json, res: ApiResult): true | null {
+  const item = payload('v2', res.body);
+  return item?.id === op.messageId && item?.type === 'compaction' && item?.sessionID === op.sessionId ? true : null;
 }
 
 type CommandAcknowledgement = { acknowledged: boolean | null; status: number | null; agent?: string | null };
@@ -1059,8 +1100,8 @@ async function v2CommandAcknowledgement(op: Json, res: ApiResult, get: (request:
   return { acknowledged: succeeded(res), status: res.status, agent: word(info?.agent) };
 }
 
-/** Bounded export of the conversation, child returns, tool outcomes and observed models; tool outputs are reduced. */
-function exportConversation(observed: Json, scan: (t: string) => boolean): Json {
+/** Bounded export of the conversation, child returns, tool outcomes, observed models and per-turn token usage; tool outputs are reduced. */
+export function exportConversation(observed: Json, scan: (t: string) => boolean): Json {
   let toolRecords = 0;
   let toolsCapped = false;
   const sessions = observed.tree.sessions.map((s: Json) => {
@@ -1073,7 +1114,7 @@ function exportConversation(observed: Json, scan: (t: string) => boolean): Json 
         toolRecords++;
         tools.push(toolRecord(t, scan));
       }
-      return { id: m.id, role: m.role, agent: m.agent, model: m.model, error: m.error, text: text.text, chars: text.chars, clipped: text.clipped, tools };
+      return { id: m.id, role: m.role, agent: m.agent, model: m.model, error: m.error, tokens: m.tokens, text: text.text, chars: text.chars, clipped: text.clipped, tools };
     });
     const finalText = [...h.messages].reverse().find((m) => m.role === 'assistant' && m.text)?.text ?? '';
     const final = bounded(finalText, LIMITS.turnChars, scan);
@@ -1181,6 +1222,93 @@ export function planExport(core: Json, plugin: Json, scan: (t: string) => boolea
   };
 }
 
+export const PARITY_LIMITS = Object.freeze({ rows: 500, fileBytes: 16 * 1024 * 1024 });
+const SHA256_HEX = /^[0-9a-f]{64}$/;
+const OBSERVER_LOG = join(STATE, 'observer.jsonl');
+
+/**
+ * The observer's request-parity rows (`context` and `compaction`), newest PARITY_LIMITS.rows kept in file order, each
+ * rebuilt from its digest, count and identity fields only. The log is written by the host process the agent's tools
+ * share, so a row is a host record that tools could also have written, not proof on its own. `total` counts every parity
+ * row and `malformed` every line that is not a JSON object.
+ */
+export function parityExport(text: string): Json {
+  const count = (v: unknown) => (Number.isSafeInteger(v) && (v as number) >= 0 ? v : null);
+  const digest = (v: unknown) => (typeof v === 'string' && SHA256_HEX.test(v) ? v : null);
+  const rows: Json[] = [];
+  let malformed = 0;
+  for (const line of text.split('\n')) {
+    if (!line) continue;
+    let r: Json;
+    try { r = JSON.parse(line); } catch { malformed++; continue; }
+    if (!r || typeof r !== 'object' || Array.isArray(r)) { malformed++; continue; }
+    if (r.hook !== 'context' && r.hook !== 'compaction') continue;
+    rows.push({
+      at: count(r.at), host: r.host === 'v1' || r.host === 'v2' ? r.host : null, hook: r.hook,
+      sessionID: typeof r.sessionID === 'string' && SESSION_ID.test(r.sessionID) ? r.sessionID : null, agent: word(r.agent), kind: word(r.kind),
+      systemCount: count(r.systemCount), systemSha256: digest(r.systemSha256), toolCount: count(r.toolCount), toolKeysSha256: digest(r.toolKeysSha256),
+      toolDefsSha256: digest(r.toolDefsSha256), firstMessageHasCheckpoint: typeof r.firstMessageHasCheckpoint === 'boolean' ? r.firstMessageHasCheckpoint : null,
+    });
+  }
+  return { rows: rows.slice(-PARITY_LIMITS.rows), total: rows.length, malformed };
+}
+
+/**
+ * The parity rows of the observer log, read through one descriptor. Its directory must be a real directory and the log a
+ * regular file opened without following a link; the open does not block on a FIFO. A log that is missing, a link, not a
+ * regular file or unreadable is `absent`; one above `maxBytes`, at open or while it is read, is `oversize`.
+ */
+export function readObserverLog(logPath = OBSERVER_LOG, maxBytes = PARITY_LIMITS.fileBytes): Json {
+  const omitted = (reason: 'absent' | 'oversize') => ({ rows: [], total: 0, malformed: 0, omitted: reason });
+  try { if (!lstatSync(dirname(logPath)).isDirectory()) return omitted('absent'); } catch { return omitted('absent'); }
+  let fd: number;
+  try { fd = openSync(logPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); } catch { return omitted('absent'); }
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile()) return omitted('absent');
+    if (stat.size > maxBytes) return omitted('oversize');
+    // The file can grow after fstat: read at most one byte past the bound to tell.
+    const chunks: Buffer[] = [];
+    let total = 0;
+    while (total <= maxBytes) {
+      const chunk = Buffer.alloc(Math.min(64 * 1024, maxBytes + 1 - total));
+      const n = readSync(fd, chunk, 0, chunk.length, null);
+      if (n === 0) break;
+      chunks.push(chunk.subarray(0, n));
+      total += n;
+    }
+    if (total > maxBytes) return omitted('oversize');
+    return parityExport(Buffer.concat(chunks, total).toString('utf8'));
+  } catch {
+    return omitted('absent');
+  } finally {
+    closeSync(fd);
+  }
+}
+
+export const ENTRY_LIMITS = Object.freeze({ entries: 64, keyChars: 200, valueChars: 16 * 1024 });
+
+/**
+ * The v2 session instruction entries of every session in the tree (Hive's `hive.session` route and constraints among
+ * them), each key and JSON value scanned and bounded. v1 has no such entries. A failed or malformed read is
+ * `readable: false`, never an empty list.
+ */
+export async function instructionEntriesExport(host: string, tree: Tree, get: (request: Json) => Promise<ApiResult>, scan: (t: string) => boolean, routes = exerciseRoutes(host, PROJ)): Promise<Json> {
+  if (host !== 'v2') return { supported: false, sessions: [] };
+  const sessions: Json[] = [];
+  for (const s of tree.sessions) {
+    const res = await get(routes.instructionEntries(s.id));
+    const items = succeeded(res) ? payload(host, res.body) : undefined;
+    if (!Array.isArray(items) || !items.every((e: Json) => e && typeof e === 'object' && typeof e.key === 'string')) {
+      sessions.push({ sessionId: s.id, readable: false, entryCount: 0, entries: [] });
+      continue;
+    }
+    const entries = items.slice(0, ENTRY_LIMITS.entries).map((e: Json) => ({ key: bounded(e.key, ENTRY_LIMITS.keyChars, scan), value: boundedJson(e.value ?? null, ENTRY_LIMITS.valueChars, scan) }));
+    sessions.push({ sessionId: s.id, readable: true, entryCount: items.length, entries });
+  }
+  return { supported: true, sessions };
+}
+
 /**
  * Observation and optional export. With `resolve`, also decides one earlier unknown submission from exact native
  * evidence. Inspect never runs project commands or tests.
@@ -1203,6 +1331,8 @@ async function observe(input: Json): Promise<Json> {
   };
   if (input.resolve) out.resolution = await resolveOperation(input.host, input.resolve, observed, (r: Json) => call(r, remaining));
   if (want.conversation) out.conversation = exportConversation(observed, scan);
+  if (want.parity === true) out.parity = readObserverLog();
+  if (want.instructionEntries === true) out.instructionEntries = await instructionEntriesExport(input.host, observed.tree, (r: Json) => call(r, remaining), scan);
   if (want.plan) {
     const core = await readPlan(PROJ, want.plan.feature);
     out.plan = planExport(core, latestPluginPlanRead(observed.tree, observed.histories, want.plan.feature), scan);

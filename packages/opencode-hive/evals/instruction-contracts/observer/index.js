@@ -6,6 +6,9 @@
 // v1 (opencode-ai 1.18.30): `chat.params` receives the resolved model and the final provider options.
 // v2 (@opencode/cli 2.4.1): `model.request` names every model call; `http.request` and `experimental.ws.send` expose
 // the outbound payload for the HTTP and WebSocket transports, so a call whose payload is not observed is detectable.
+// `context` and `compaction` also record request parity: SHA-256 digests and counts of the system parts and tool
+// definitions, never their text, so a compaction request's prefix can be compared with the ordinary request's.
+import { createHash } from 'node:crypto';
 import { appendFileSync, mkdirSync } from 'node:fs';
 
 const OUT_DIR = '/work/state';
@@ -56,6 +59,40 @@ export function payloadFacts(text) {
   return { model: source.model, settings };
 }
 
+const sha256 = (value) => createHash('sha256').update(JSON.stringify(value) ?? '').digest('hex');
+const CHECKPOINT = '<conversation-checkpoint>';
+
+function messageText(message) {
+  const content = message?.content;
+  if (typeof content === 'string') return content;
+  return Array.isArray(content) ? content.filter((p) => p?.type === 'text' && typeof p.text === 'string').map((p) => p.text).join('') : '';
+}
+
+/**
+ * Prefix parity of one v2 request in digests and counts only. System parts are hashed by their text in order, tools by
+ * name and by name, description and input schema, in the order the request carries them. Null fields mean the request
+ * could not be read in that shape.
+ */
+export function requestParity(input) {
+  const out = { systemCount: null, systemSha256: null, toolCount: null, toolKeysSha256: null, toolDefsSha256: null, firstMessageHasCheckpoint: null };
+  try {
+    if (Array.isArray(input?.system)) {
+      out.systemCount = input.system.length;
+      out.systemSha256 = sha256(input.system.map((part) => (typeof part?.text === 'string' ? part.text : null)));
+    }
+    if (input?.tools && typeof input.tools === 'object' && !Array.isArray(input.tools)) {
+      const entries = Object.entries(input.tools);
+      out.toolCount = entries.length;
+      out.toolKeysSha256 = sha256(entries.map(([name]) => name));
+      out.toolDefsSha256 = sha256(entries.map(([name, def]) => [name, def?.description ?? null, def?.input ?? null]));
+    }
+    if (Array.isArray(input?.messages)) out.firstMessageHasCheckpoint = messageText(input.messages[0]).trimStart().startsWith(CHECKPOINT);
+  } catch {
+    // An unserializable request leaves the remaining fields null.
+  }
+  return out;
+}
+
 export default {
   id: 'ic-observer',
   // v1 plugin entry.
@@ -75,7 +112,8 @@ export default {
       providerID: input.model?.providerID, modelID: input.model?.id, variant: input.model?.variant ?? null,
     });
     await context.session.hook('model.request', (input) => record({ ...base(input), hook: 'model.request' }));
-    await context.session.hook('context', (input) => record({ ...base(input), hook: 'context', settings: pickSettings(input.options) }));
+    await context.session.hook('context', (input) => record({ ...base(input), hook: 'context', settings: pickSettings(input.options), ...requestParity(input) }));
+    await context.session.hook('compaction', (input) => record({ ...base(input), hook: 'compaction', settings: pickSettings(input.options), ...requestParity(input) }));
     await context.session.hook('http.request', async (input) => {
       let facts = null;
       try { facts = payloadFacts(await input.request.clone().text()); } catch { facts = null; }

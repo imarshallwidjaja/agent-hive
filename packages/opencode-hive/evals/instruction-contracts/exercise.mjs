@@ -56,7 +56,12 @@ const QUALIFICATION_BUDGET_SECONDS = 900;
 const QUALIFICATION_MOCK_MODEL = 'mock/ic-exercise-mock';
 
 export const EXIT = Object.freeze({ ok: 0, failed: 1, invalid: 2, busy: 3 });
-export const ACTIONS = ['prompt', 'command', 'reply', 'permission', 'interrupt', 'approve-plan', 'switch-primary'];
+/** Each operation action and the fields its operation.json carries besides the common ones; also the action order. */
+const OPERATION_FIELDS = Object.freeze({
+  prompt: ['text'], command: ['name', 'text'], reply: ['requestId', 'answers'], permission: ['requestId', 'decision'], interrupt: [],
+  'approve-plan': ['project', 'feature', 'revision', 'contentHash', 'permittedWork'], 'switch-primary': ['to'], compact: [],
+});
+export const ACTIONS = Object.keys(OPERATION_FIELDS);
 /** The qualification runs a prepared run owns, each in its own directory with its own ledger and lock. */
 export const QUALIFICATION_SUBRUNS = Object.freeze(['qualification', 'qualification-interrupt', 'qualification-command']);
 const SUBRUN_LOCK_WAIT_SECONDS = 5;
@@ -75,9 +80,9 @@ const USAGE = {
   overview: `Supervised OpenCode exercises. Read packages/opencode-hive/evals/instruction-contracts/EXERCISES.md first.
 
   exercise.mjs prepare --candidate-ref <40-hex commit> --host v1|v2 --input <request.json> --run-id <id> --output-root <abs dir>
-  exercise.mjs start   --run <run dir> --authorization <authorization.json> --budget-seconds <61..1800>
-  exercise.mjs turn    --run <run dir> --operation <operation.json>
-  exercise.mjs inspect --run <run dir> [--request <inspection.json>]
+  exercise.mjs start   --run <run dir> --authorization <authorization.json> --budget-seconds <61..1800> [--auth-file <abs path>]
+  exercise.mjs turn    --run <run dir> --operation <operation.json> [--auth-file <abs path>]
+  exercise.mjs inspect --run <run dir> [--request <inspection.json>] [--auth-file <abs path>]
   exercise.mjs stop    --run <run dir>
   exercise.mjs --help [prepare|start|turn|inspect|stop]
 
@@ -110,17 +115,21 @@ request.json (schema "ic-exercise-request/v1"; paths relative to the request fil
   skills           { <name>: <file> } project-owned skill text (optional)
   dependencies     [{ "command": "npm-ci", "directory": <relative dir with package-lock.json> }] (optional)
   artifacts        [relative path, or directory prefix ending in "/"] that inspect may export`,
-  start: `start --run <run dir> --authorization <authorization.json> --budget-seconds <61..1800>
+  start: `start --run <run dir> --authorization <authorization.json> --budget-seconds <61..1800> [--auth-file <abs path>]
 
 Named live run. Requires a prepared record with passing qualification. Checks that the container's guard and driver
-read one clock, then reads the host OpenCode auth file once, access-only; refuses unless its expiry covers the budget
-plus the host refresh window plus 600 s. Arms one non-extendable deadline, injects the credential, validates the actual
-model, variant and agent catalogs, creates the primary session and submits the initial prompt.
+read one clock, then reads the auth file once, access-only: --auth-file, else IC_EXERCISE_AUTH_PATH, else the host
+OpenCode v1 auth store (an OpenCode v2 host keeps credentials in opencode.db; export an access-only snapshot with
+export-v2-auth.mjs). The run is bound to that path: a live turn or inspect refuses another, or none, without latching
+(auth_path_changed); inspect of a stopped or latched run needs no auth file. Start
+refuses unless the credential's expiry covers the budget plus the host refresh window plus 600 s. Arms one
+non-extendable deadline, injects the credential, validates the actual model, variant and agent catalogs, creates the
+primary session and submits the initial prompt.
 
 authorization.json (schema "ic-exercise-authorization/v1"):
   runId, preparedSha256, host, model { ref, variant }, budgetSeconds (equal to --budget-seconds),
   allowedActions [${ACTIONS.join(', ')}], stopConditions [string], authorizedBy string`,
-  turn: `turn --run <run dir> --operation <operation.json>
+  turn: `turn --run <run dir> --operation <operation.json> [--auth-file <abs path>]
 
 One supervisor action. operation.json (schema "ic-exercise-operation/v1"):
   id          supervisor operation ID, [A-Za-z0-9._-]{1,64}, unique in the run
@@ -139,16 +148,19 @@ One supervisor action. operation.json (schema "ic-exercise-operation/v1"):
                      "permittedWork": string }  from inspect's plan read of the current revision; the primary must have
                      called hive_plan_read directly (not through Code Mode execute) with that feature named
   switch-primary:  { "to": <role allowed by request.primaryTransitions> }
+  compact:         {}  v2 only (refused on v1 as compact_unsupported_on_host): asks the host to compact the primary
+                   session's history, with a supervisor-chosen message ID; needs a quiescent tree
 A reply, or a "once" decision, on a pending interaction that inspect does not report as complete is refused unsent
 (request_incomplete); "reject" is still accepted.
 New work is refused in the final 60 s; an interrupt is admitted until 5 s before the deadline. Both cutoffs are checked
 again inside the container immediately before the request is sent. An operation whose text, answers or ID contains the
 run's token, a fragment of it or a token-shaped string is refused before anything is recorded or sent. An unknown
 outcome is never retried automatically. inspect "resolve" settles it only from native evidence that names the
-operation: the message ID of a prompt or v1 command, the exact answers of a question reply in the session that asked,
+operation: the message ID of a prompt, a v1 command or a v2 compaction (its queued inbox item or its compaction
+message), the exact answers of a question reply in the session that asked,
 the target agent of a v2 switch. A lost v2 command, permission decision or interrupt cannot be resolved (the native API
 records nothing that names it): stop the run.`,
-  inspect: `inspect --run <run dir> [--request <inspection.json>]
+  inspect: `inspect --run <run dir> [--request <inspection.json>] [--auth-file <abs path>]
 
 Bounded, scanned observation. Without --request: lifecycle, guard, pending interactions and quiescence. A pending
 interaction is released within fixed bounds and states whether it is complete; clipped or omitted text, choices, choice
@@ -164,6 +176,12 @@ inspection.json (schema "ic-exercise-inspection/v1"):
                  and sizes, at most 1000 entries, links, hardlinks, native stores and excluded trees counted not listed
                  (optional)
   diff           true: line diffs of the requested artifacts against the snapshot (optional)
+  parity         true: the observer's request-parity rows for context and compaction requests, SHA-256 digests and
+                 counts of system parts and tool definitions only, newest 500 (optional)
+  instructionEntries
+                 true: each tree session's v2 instruction entries, keys and JSON values scanned and bounded; on v1
+                 "supported": false (optional)
+A conversation export carries each turn's token usage: { input, output, reasoning, cacheRead, cacheWrite }, or null.
 Never runs project commands or tests.`,
   stop: `stop --run <run dir>
 
@@ -185,9 +203,9 @@ export function parseExerciseCli(argv) {
   }
   const options = {
     prepare: { 'candidate-ref': { type: 'string' }, host: { type: 'string' }, input: { type: 'string' }, 'run-id': { type: 'string' }, 'output-root': { type: 'string' }, 'docker-endpoint': { type: 'string' } },
-    start: { run: { type: 'string' }, authorization: { type: 'string' }, 'budget-seconds': { type: 'string' } },
-    turn: { run: { type: 'string' }, operation: { type: 'string' } },
-    inspect: { run: { type: 'string' }, request: { type: 'string' } },
+    start: { run: { type: 'string' }, authorization: { type: 'string' }, 'budget-seconds': { type: 'string' }, 'auth-file': { type: 'string' } },
+    turn: { run: { type: 'string' }, operation: { type: 'string' }, 'auth-file': { type: 'string' } },
+    inspect: { run: { type: 'string' }, request: { type: 'string' }, 'auth-file': { type: 'string' } },
     stop: { run: { type: 'string' } },
   }[command];
   if (!options) throw new HarnessError('command_unknown');
@@ -198,8 +216,9 @@ export function parseExerciseCli(argv) {
     throw new HarnessError('arguments_invalid');
   }
   for (const key of Object.keys(options)) {
-    if (values[key] === undefined && !['request', 'docker-endpoint'].includes(key)) throw new HarnessError('argument_missing', key);
+    if (values[key] === undefined && !['request', 'docker-endpoint', 'auth-file'].includes(key)) throw new HarnessError('argument_missing', key);
   }
+  if (values['auth-file'] !== undefined && !isAbsolute(values['auth-file'])) throw new HarnessError('auth_file_invalid');
   if (command === 'prepare') {
     if (!/^[0-9a-f]{40}$/.test(values['candidate-ref'])) throw new HarnessError('candidate_ref_not_full_commit');
     if (!HOST_IDS.includes(values.host)) throw new HarnessError('host_invalid');
@@ -404,12 +423,8 @@ const NATIVE_ID = /^[A-Za-z0-9_]{1,128}$/;
 
 /** Validates operation.json against the run's identities and authority. Never derives authority from model text. */
 export function validateOperation(value, { runId, sessionId, allowedActions }) {
-  const byAction = {
-    prompt: ['text'], command: ['name', 'text'], reply: ['requestId', 'answers'], permission: ['requestId', 'decision'], interrupt: [],
-    'approve-plan': ['project', 'feature', 'revision', 'contentHash', 'permittedWork'], 'switch-primary': ['to'],
-  };
-  if (!value || typeof value !== 'object' || !(value.action in byAction)) throw new HarnessError('operation_invalid', 'action');
-  strictObject(value, ['schema', 'id', 'runId', 'sessionId', 'action', ...byAction[value.action]], 'operation_invalid');
+  if (!value || typeof value !== 'object' || !Object.hasOwn(OPERATION_FIELDS, value.action)) throw new HarnessError('operation_invalid', 'action');
+  strictObject(value, ['schema', 'id', 'runId', 'sessionId', 'action', ...OPERATION_FIELDS[value.action]], 'operation_invalid');
   if (value.schema !== 'ic-exercise-operation/v1') throw new HarnessError('operation_invalid', 'schema');
   if (typeof value.id !== 'string' || !OPERATION_ID.test(value.id)) throw new HarnessError('operation_invalid', 'id');
   if (value.runId !== runId) throw new HarnessError('operation_mismatch', 'runId');
@@ -448,7 +463,7 @@ export function validateOperation(value, { runId, sessionId, allowedActions }) {
 
 /** Validates inspection.json; artifact and list paths must fall inside the request's artifact allowlist. */
 export function validateInspection(value, { runId, artifacts }) {
-  strictObject(value, ['schema', 'runId', 'resolve', 'conversation', 'plan', 'artifacts', 'list', 'diff'], 'inspection_invalid');
+  strictObject(value, ['schema', 'runId', 'resolve', 'conversation', 'plan', 'artifacts', 'list', 'diff', 'parity', 'instructionEntries'], 'inspection_invalid');
   if (value.schema !== 'ic-exercise-inspection/v1') throw new HarnessError('inspection_invalid', 'schema');
   if (value.runId !== runId) throw new HarnessError('inspection_mismatch', 'runId');
   if (value.resolve !== undefined && (typeof value.resolve !== 'string' || !OPERATION_ID.test(value.resolve))) throw new HarnessError('inspection_invalid', 'resolve');
@@ -471,7 +486,9 @@ export function validateInspection(value, { runId, artifacts }) {
       if (!allowedPath(p)) throw new HarnessError('inspection_path_not_allowed');
     }
   }
-  if (value.diff !== undefined && typeof value.diff !== 'boolean') throw new HarnessError('inspection_invalid', 'diff');
+  for (const key of ['diff', 'parity', 'instructionEntries']) {
+    if (value[key] !== undefined && typeof value[key] !== 'boolean') throw new HarnessError('inspection_invalid', key);
+  }
   return value;
 }
 
@@ -661,10 +678,24 @@ function toolRecordItem(value) {
   }
   return item;
 }
+const optCount = nullable(int);
+const tokenUsage = nullable(obj({ input: optCount, output: optCount, reasoning: optCount, cacheRead: optCount, cacheWrite: optCount }));
 const turn = textRecord(16 * 1024, {
   id: match(/^[A-Za-z0-9_.:-]{1,200}$/, 200), role: match(NAME, 200), agent: nativeName,
   model: nullable(obj({ providerID: nativeName, modelID: nativeName, variant: nativeName })), error: nullable(str(40)),
-  tools: arr(toolRecordItem, 2000),
+  tokens: opt(tokenUsage), tools: arr(toolRecordItem, 2000),
+});
+const sha256Hex = nullable(match(/^[0-9a-f]{64}$/, 64));
+const parityRow = obj({
+  at: optCount, host: nullable(oneOf(['v1', 'v2'])), hook: oneOf(['context', 'compaction']), sessionID: nullable(match(SESSION, 80)), agent: nativeName, kind: nativeName,
+  systemCount: optCount, systemSha256: sha256Hex, toolCount: optCount, toolKeysSha256: sha256Hex, toolDefsSha256: sha256Hex, firstMessageHasCheckpoint: nullable(bool),
+});
+const parityReply = obj({ rows: arr(parityRow, 500), total: int, malformed: int, omitted: opt(oneOf(['absent', 'oversize'])) });
+const instructionEntriesReply = obj({
+  supported: bool,
+  sessions: arr(obj({
+    sessionId: match(SESSION, 80), readable: bool, entryCount: int, entries: arr(obj({ key: textRecord(200), value: textRecord(16 * 1024) }), 64),
+  }), 32),
 });
 const conversation = obj({
   sessions: arr(obj({
@@ -724,7 +755,7 @@ const REPLIES = {
     tree: obj({ sessions: arr(obj({ id: match(SESSION, 80), parentId: nullable(match(SESSION, 80)), agent: nativeName }), 32), complete: bool, failure: nullable(oneOf(TREE_FAILURES)) }),
     busy: nullable(arr(match(SESSION, 80), 32)), pending, quiescent: bool, reasons, approvals: arr(approvalCall, 64),
     resolution: opt(obj({ resolved: bool, effect: opt(oneOf(EFFECTS)), agent: opt(nativeName) })), conversation: opt(conversation), plan: opt(planReport),
-    artifacts: opt(arr(artifact, 32)), list: opt(arr(listing, 32)), diff: opt(arr(diffEntry, 64)),
+    artifacts: opt(arr(artifact, 32)), list: opt(arr(listing, 32)), diff: opt(arr(diffEntry, 64)), parity: opt(parityReply), instructionEntries: opt(instructionEntriesReply),
   }),
 };
 
@@ -1074,9 +1105,18 @@ function openRun(runDir, env, budget, deps = {}) {
   const ctx = {
     runDir, journal, state, prepared, preparedSha256: state.prepared.sha256, host: prepared.host, docker, resources,
     imageId: prepared.runtime.imageId, containerId: state.session?.containerId ?? journal.read('start.container')?.value?.id ?? null,
-    authPath: env.IC_EXERCISE_AUTH_PATH ?? hostAuthPath(env), trusted: state.trusted, expected: null, scan: evidenceScanner(null), sync: null,
+    authSource: { env, authFile: deps.authFile }, authPath: null, trusted: state.trusted, expected: null, scan: evidenceScanner(null), sync: null,
   };
   return ctx;
+}
+
+/**
+ * The auth file this command reads: --auth-file, else IC_EXERCISE_AUTH_PATH, else the host store. Resolved only by a
+ * command that reads the credential, so controller facts about a stopped or latched run need no auth path at all.
+ */
+function commandAuthPath(ctx) {
+  const { env, authFile } = ctx.authSource;
+  return resolve(authFile ?? env.IC_EXERCISE_AUTH_PATH ?? hostAuthPath(env));
 }
 
 /**
@@ -1213,6 +1253,9 @@ export async function startCommand(options, env, overrides = {}, deps = {}) {
     latch(journal, 'authorization_contaminated');
     throw new ExerciseRefusal('authorization_contaminated');
   }
+  // The auth path is resolved before the intent is recorded, so a start with no resolvable path leaves the prepared run
+  // unconsumed and retryable with --auth-file; the credential itself is read only after the clock check.
+  try { ctx.authPath = commandAuthPath(ctx); } catch (error) { throw new HarnessError(error instanceof CredentialError ? error.code : 'auth_unreadable'); }
   const snapshot = snapshotOf(options.run);
   const provider = overrides.provider ?? 'openai';
   const modelRef = overrides.modelRef ?? prepared.request.model.ref;
@@ -1262,6 +1305,8 @@ export async function startCommand(options, env, overrides = {}, deps = {}) {
     if (inputContaminated(exact, auth)) throw new HarnessError('authorization_contaminated');
     if (scanValue(exact, snapshot)) throw new HarnessError('input_contaminated');
     journal.write('authorization', { ...authorization, sourceSha256: auth.sha256 });
+    // Only a digest of the path: a caller-chosen path can carry a token-shaped name.
+    journal.write('start.auth', { pathSha256: sha256Text(ctx.authPath) });
     const bound = await guardCall(ctx, ['bind'], setupBudget, { input: JSON.stringify({ runId: prepared.runId, host: ctx.host, fingerprint: fingerprintWire(snapshotAuth.fingerprint) }) });
     snapshotAuth = null;
     if (!bound?.ok || bound.boundRunId !== prepared.runId) throw new HarnessError('guard_bind_failed');
@@ -1337,7 +1382,7 @@ async function submitOperation(ctx, op, budget, auth, faults = {}) {
   // immediately before the effect.
   if (!admitsAction(op.action, auth.guardRemainingMs)) return { state: 'refused', reason: 'no_new_work_window' };
   // New work goes to a known primary. It is unknown only after a command whose native evidence showed another agent.
-  if (state.primary === null && ['prompt', 'command', 'approve-plan', 'switch-primary'].includes(op.action)) return { state: 'refused', reason: 'primary_unknown' };
+  if (state.primary === null && ['prompt', 'command', 'compact', 'approve-plan', 'switch-primary'].includes(op.action)) return { state: 'refused', reason: 'primary_unknown' };
   const session = state.session;
   const model = session.model;
   const seq = state.next('op').slice(3);
@@ -1381,6 +1426,12 @@ async function submitOperation(ctx, op, budget, auth, faults = {}) {
   } else if (op.action === 'interrupt') {
     Object.assign(intent, { kind: 'interrupt' });
     driverOp = { kind: 'interrupt', sessionId: session.sessionId };
+  } else if (op.action === 'compact') {
+    if (ctx.host !== 'v2') return { state: 'refused', reason: 'compact_unsupported_on_host' };
+    // The supervisor-chosen ID names the compaction in the inbox and in history, so a lost acknowledgement can be resolved.
+    const messageId = exerciseMessageId(Date.now(), Number(seq));
+    Object.assign(intent, { kind: 'compact', messageId });
+    driverOp = { kind: 'compact', sessionId: session.sessionId, messageId };
   } else throw new HarnessError('operation_invalid');
   // The record is a published artifact: what the supervisor wrote was scanned on import and the native identities
   // arrived through scanned replies, and the whole intent is scanned again before it is written.
@@ -1470,6 +1521,13 @@ async function liveContext(ctx, budget) {
   if (ctx.state.latch) throw new ExerciseRefusal('run_latched', ctx.state.latch.code);
   if (ctx.state.stopped.length) throw new ExerciseRefusal('run_stopped');
   if (!ctx.trusted) throw new ExerciseRefusal('run_not_credentialed');
+  // A started run reads only the auth file start read. Another path, or none, is refused before anything is read and
+  // without latching: the caller named the wrong file, and the bound one may still be intact.
+  let authPath = null;
+  try { authPath = commandAuthPath(ctx); } catch (error) { if (!(error instanceof CredentialError)) throw error; }
+  const bound = ctx.journal.read('start.auth')?.value;
+  if (authPath === null || (bound && bound.pathSha256 !== sha256Text(authPath))) throw new ExerciseRefusal('auth_path_changed');
+  ctx.authPath = authPath;
   const auth = await continuity(ctx, budget);
   if (!auth.ok) {
     latch(ctx.journal, auth.code);
@@ -1551,7 +1609,10 @@ export async function inspectCommand(options, env, deps = {}) {
   const diffBase = request?.diff ? Object.fromEntries((request.artifacts ?? []).map((p) => [p, snapshot.files.find((f) => f.path === p)?.content ?? null])) : undefined;
   const observed = await driver(ctx, 'observe', {
     sessionId: ctx.state.session.sessionId,
-    request: request ? { conversation: request.conversation, plan: request.plan, artifacts: request.artifacts, list: request.list, diff: request.diff } : {},
+    request: request ? {
+      conversation: request.conversation, plan: request.plan, artifacts: request.artifacts, list: request.list, diff: request.diff,
+      parity: request.parity, instructionEntries: request.instructionEntries,
+    } : {},
     base: diffBase,
     resolve: target ? {
       kind: target.intent.kind, sessionId: target.intent.sessionId, messageId: target.intent.messageId, requestId: target.intent.requestId, ownerSessionId: target.intent.ownerSessionId,
@@ -2309,7 +2370,8 @@ export async function main(argv, { env = process.env, stdout = process.stdout, l
     }
     if (lock.busy) { say({ command, status: 'busy', reason: 'lock_busy' }); return EXIT.busy; }
   }
-  const deps = { lock, startedAt };
+  // --auth-file takes precedence over IC_EXERCISE_AUTH_PATH; start binds the run to the path it read.
+  const deps = { lock, startedAt, authFile: options['auth-file'] };
   try {
     const result = await {
       prepare: () => prepareCommand(options, env),

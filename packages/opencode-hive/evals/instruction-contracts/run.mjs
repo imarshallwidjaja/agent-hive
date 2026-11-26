@@ -5,7 +5,7 @@
 //   node run.mjs acceptance --candidate-manifest <path> --scenarios <id,id,...> (--rehearsal | --auth openai-access-only) <common>
 //   <common> = --hosts v1,v2 --timeout-seconds 600 --run-id <id> --output-root <abs dir>
 //              [--docker-endpoint unix:///var/run/docker.sock]
-//   paid only: [--case-limit <n>] [--resume-from <run dir> --resume-decision <text> [--repurchase <host:item,...>]]
+//   paid only: [--auth-file <abs path>] [--case-limit <n>] [--resume-from <run dir> --resume-decision <text> [--repurchase <host:item,...>]]
 //
 // `acceptance` collects the named scenarios on a wired candidate without a baseline. A collected run means the cases
 // ran safely and their evidence was captured; it is not a verdict on the instructions, which a person assesses from
@@ -62,6 +62,7 @@ export function parseCli(argv) {
         'candidate-manifest': { type: 'string' },
         scenarios: { type: 'string' },
         auth: { type: 'string' },
+        'auth-file': { type: 'string' },
         rehearsal: { type: 'boolean' },
         hosts: { type: 'string' },
         'timeout-seconds': { type: 'string' },
@@ -98,6 +99,10 @@ export function parseCli(argv) {
   if (phase === 'acceptance' && !values['candidate-manifest']) throw new HarnessError('manifest_required');
   if (rehearsal && values.auth !== undefined) throw new HarnessError('ambiguous_subject', 'rehearsal_with_auth');
   if (paid && values.auth !== 'openai-access-only') throw new HarnessError('auth_mode_required');
+  // An exported access-only snapshot (export-v2-auth.mjs) replaces the host v1 auth store as the only file read.
+  const authFile = values['auth-file'];
+  if (authFile !== undefined && !paid) throw new HarnessError('option_requires_paid_phase', 'auth-file');
+  if (authFile !== undefined && !isAbsolute(authFile)) throw new HarnessError('auth_file_invalid');
   // The scope is named, finite and recorded; there is no default set. Unknown names are refused against the committed
   // scenario set before any build or credential.
   let scenarios = [];
@@ -119,7 +124,7 @@ export function parseCli(argv) {
   const repurchase = (values.repurchase ?? '').split(',').filter(Boolean);
   if (repurchase.some((key) => !/^v[12]:[a-z0-9-]+$/.test(key))) throw new HarnessError('repurchase_invalid');
   return {
-    phase, paid, rehearsal, hosts, scenarios, timeoutSeconds, runId, outputRoot, endpoint, caseLimit, repurchase,
+    phase, paid, rehearsal, hosts, scenarios, timeoutSeconds, runId, outputRoot, endpoint, caseLimit, repurchase, authFile: authFile ?? null,
     candidateRef: values['candidate-ref'], candidateManifest: values['candidate-manifest'],
     resumeFrom: values['resume-from'], resumeDecision: values['resume-decision'],
   };
@@ -1388,14 +1393,14 @@ async function runPhase(run) {
   }
 
   // ---- Paid stage. Credentials are read only from here on.
-  const authPath = hostAuthPath(run.env);
+  const authPath = options.authFile ?? hostAuthPath(run.env);
   run.auth = { path: authPath, atStart: fingerprintAuthFile(authPath) };
   const required = Math.max(...options.hosts.map((h) => requiredLifetimeMs(h, ctx.timeoutMs, LIFETIME_MARGIN_MS)));
   const { credential, remainingMs } = readAccessOnly(authPath, { now: Date.now(), requiredMs: required });
   run.auth.atAcquisition = fingerprintAuthFile(authPath);
   run.auth.unchangedByRead = sameFingerprint(run.auth.atStart, run.auth.atAcquisition);
   ctx.auth = run.auth;
-  manifest.credential = { remainingMsAtAcquisition: remainingMs };
+  manifest.credential = { remainingMsAtAcquisition: remainingMs, source: options.authFile ? 'auth_file' : 'host_store' };
   if (!run.auth.unchangedByRead) throw new HarnessError('host_auth_changed', 'acquisition');
   ctx.credential = credential;
   ctx.secretBearing = true;
