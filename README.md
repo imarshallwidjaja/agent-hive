@@ -14,7 +14,7 @@ https://github.com/user-attachments/assets/6290b435-1566-46b4-ac98-0420ed321204
 
 ## Requirements
 
-- [OpenCode](https://opencode.ai) v1, with a floor of `1.18.30`, or v2, qualified on `2.4.2`. `oc-arkive@5.0.0` is the first release with both host entries, and releases through 4.2.0 support v1 only. `oc-arkive@6.0.0` is the first release qualified on v2 `2.3.2`, and the current source is qualified on v2 `2.4.2`. The 5.x releases were qualified on v2 `2.0.26`, and 5.3.0 does not activate on 2.3.2. The v2 qualification covers 2.4.2 and is not a support claim for other v2 releases.
+- [OpenCode](https://opencode.ai) v1, with a floor of `1.18.30`, or v2, qualified on `2.4.2`. `oc-arkive@5.0.0` is the first release with both host entries, and releases through 4.2.0 support v1 only. `oc-arkive@6.0.0` is the first release qualified on v2 `2.3.2`, and `oc-arkive@7.0.0` is the first release qualified on v2 `2.4.2`. The 5.x releases were qualified on v2 `2.0.26`, and 5.3.0 does not activate on 2.3.2. The v2 qualification covers 2.4.2 and is not a support claim for other v2 releases.
 - For worktree workflows, a project whose work resolves to one or more Git repositories. Single-repo projects need no manifest. For a multi-repo root, ask Hive to inspect, discover, and update the topology instead of hand-creating `<project>/.hive/repositories.json`.
 - Optional: [VS Code](https://code.visualstudio.com/) for sidebar plan review through `vscode-arkive`.
 
@@ -22,7 +22,7 @@ https://github.com/user-attachments/assets/6290b435-1566-46b4-ac98-0420ed321204
 
 ### OpenCode v1
 
-1. Append `oc-arkive@latest` (or a pinned version such as `oc-arkive@6.0.0`) to the existing `plugin` array in your OpenCode config (`opencode.json` or `opencode.jsonc`). Keep your existing plugin entries and unrelated settings. This JSONC fragment uses placeholders:
+1. Append `oc-arkive@latest` (or a pinned version such as `oc-arkive@7.0.0`) to the existing `plugin` array in your OpenCode config (`opencode.json` or `opencode.jsonc`). Keep your existing plugin entries and unrelated settings. This JSONC fragment uses placeholders:
 
 ```jsonc
 {
@@ -41,7 +41,7 @@ For a brand-new config, a plugin array containing only `"oc-arkive@latest"` is e
 
 ### OpenCode v2
 
-Install the released package with npm into a dedicated directory (`npm install oc-arkive@6.0.0`) and point the v2 `plugins` entry at the absolute installed `node_modules/oc-arkive/dist` directory. Set `readTransport: "direct"` when `execute` is denied, give the running server's URL and password environment-variable name for history reads and continuation checks, and set `experimental.subagent_depth` to `2` so a delegated Architect can call its helpers. The [v2 setup reference](packages/opencode-hive/README.md#opencode-v2) has the complete fragment, the contributor build path, and the model-selection rules.
+Install the released package with npm into a dedicated directory (`npm install oc-arkive@7.0.0`) and point the v2 `plugins` entry at the absolute installed `node_modules/oc-arkive/dist` directory. Set `readTransport: "direct"` when `execute` is denied, give the running server's URL and password environment-variable name for history reads and continuation checks, and set `experimental.subagent_depth` to `2` so a delegated Architect can call its helpers. The [v2 setup reference](packages/opencode-hive/README.md#opencode-v2) has the complete fragment, the contributor build path, and the model-selection rules.
 
 Your v2 settings own agent selection, presentation, model and variant, limits, and tool visibility. Hive adds its role instructions to each request and checks role and child authority before every effect, so a tool your settings make visible can still be refused. Before moving a project from one host to the other, follow the [handover procedure](docs/OPERATOR-GUIDE.md#switching-opencode-hosts-and-rollback).
 
