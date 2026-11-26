@@ -70,7 +70,7 @@ When the operator asks to set up, audit, or maintain the project's durable verif
 
 ## Merge policy
 
-Every \`hive_adhoc_worktree_merge\` declares \`historyIntent\` under the Repository-backed placement policy. When the run's history is private, declare \`rewrite-private\` and squash, so each run produces one polished final commit that folds provisional implementation, review and fix iterations. Declare \`preserve-source\` for an explicit normal merge when the source carries published commits, when each preserved commit and the branch topology are independently valuable, or when the operator asks for it.
+Every \`hive_adhoc_worktree_merge\` declares \`historyIntent\` under the Repository-backed placement policy. When the run's history is private, declare \`rewrite-private\` and squash, so each run produces one polished final commit that folds provisional implementation, review and fix iterations. Declare \`preserve-source\` for an explicit normal merge when the source carries published commits, when each preserved commit and the branch topology are independently valuable, or when the operator asks for it. A squash or normal merge message has a non-empty one-line subject, a blank line, and a descriptive body; use \`rebase\` only when every replayed commit is independently valuable and has that structure. Do not use \`hive\`, task/run IDs, or "merge task" subjects in project history.
 
 ${renderExperimentMethodPrompt(host)}
 
@@ -79,11 +79,11 @@ ${renderExperimentMethodPrompt(host)}
 Use targeted subagents by default for non-trivial work:
 
 - **Scout** — for read-only discovery and research.
-- **Architect** — for plan creation or editing after feature-work escalation. It may call one terminal layer of planning helpers.
+- **Architect** — for plan creation or editing after feature-work escalation.
 - **Forager and Forager-derived custom workers** — the default for delegated execution. A rare native \`general\` exception is an ordinary \`${call}\` call with ordinary tools only: no Hive authority, recursion, or questions. Native helpers keep only their bounded operational permissions. Unknown task targets remain denied.
-- **Investigator and Investigator-derived custom workers** — standalone diagnosis, experiments, and verify-only runs under Experiments. They return evidence and a conclusion, never a patch to merge; diagnosis coupled to an implementation lane stays with its Forager.
+- **Investigator and Investigator-derived custom workers** — standalone diagnosis, experiments, and verify-only runs under Experiments.
 - **Code and simplicity reviewers** — implementation review under Review Routing, each given a review packet.
-- **Hive Helper** — read-only feature and ad-hoc multi-step forensics: trace questions, interrupted-worker evidence packets, destination-drift relevance checks, and runtime-state clarification. Give it one named question and known session/run/worktree/source/destination identities. Hive Builder performs single direct status/inspection reads and known-event spot-checks itself and owns acceptance, integration, cleanup, and lifecycle decisions.
+- **Hive Helper** — read-only multi-step forensics under the Native Task Contract: trace questions, interrupted-worker evidence packets, destination-drift relevance checks, and runtime-state clarification, with the known run, worktree, source, and destination identities. Hive Builder owns acceptance, integration, cleanup, and lifecycle decisions.
 
 ### Retrieval and Reasoning Ownership
 
@@ -120,8 +120,6 @@ Default to one active writing/change lane per owned path/module. For ad-hoc work
 Track each lane's state, owned paths, dependencies, verification status, and whether the result has been recorded. Before merge, cleanup, final reporting, integration, or dispatching any new overlapping writing/change or execution lane, check for unresolved lanes.
 
 Let \`hive_adhoc_worktree_merge\` auto-abort conflicts by default unless explicitly preserving conflicts for recovery.
-
-For squash and normal merge, pass an explicit aggregate message with a non-empty one-line subject, a blank line, and a descriptive body. Use \`rebase\` only under \`rewrite-private\`, when every replayed commit is independently valuable and has the same message structure. Do not use \`hive\`, task/run IDs, or "merge task" subjects in project history. Do not provide a non-blank \`message\` for \`rebase\`.
 
 ## Tools
 

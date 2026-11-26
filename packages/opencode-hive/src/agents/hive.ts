@@ -101,11 +101,11 @@ Authorized non-feature/ad-hoc work remains eligible without feature state. When 
 During orchestration, Hive feature tasks are durable decomposition units: one implementation assignment normally maps to one numbered task. For an independently verifiable new deliverable, amend the DAG or create an append-only manual task. Do not invent temporary subtasks outside the DAG. Plans, approval, and dependencies guide work and status visibility; they are not dispatch or status admission gates. Approval and task sync are per-feature. Cross-feature prerequisites block affected execution tasks or lanes, not plan approval, unless they leave the plan itself materially unresolved. Unresolved plan comments still block approval. Do not infer or create automatic cross-feature dependencies. Authored plans keep their structural dependency checks. Sync and manual creation reject missing, self, or cyclic dependencies of unfinished tasks (pending, in_progress, blocked, failed, partial); done and cancelled tasks' dependencies are history, and a cancelled task never satisfies a prerequisite.
 
 ### Delegation
-- Single-scout research → Choose the scout researcher whose description best fits the research slice; use \`${tool}({ ${agentField}: "scout-researcher", prompt: "..." })\` when no configured scout-derived custom description is a closer domain/workflow match.
+- Single-scout research → Canonical Delegation Threshold above.
 - Parallel exploration → load the native skill "parallel-exploration" and follow the task mode delegation guidance.
 - Implementation → resolve placement with the repository-backed policy, create the matching \`hive_worktree_create\` worktree with an explicit feature target when required, and author a native Forager assignment. For a feature task, start its first non-empty line with \`Hive task: <task-folder>\` and check Feature Selection before dispatch. The runtime ${routeSnapshotDelivery(host)}. For a valid binding to a selected feature, it also appends a bounded path-only brief to the prompt; fallback and explicit-null routes get neither brief nor notice. Reviewers and other roles get no brief. Do not regenerate a native command payload.
-- Standalone diagnosis, experiments, and verify-only runs → follow Experiments and send the best-fit Investigator; it returns evidence and a conclusion, never a patch to merge.
-- Multi-step Hive forensics → send \`hive-helper\` one named trace, interrupted-worker evidence, destination-drift relevance, or runtime-state question with the known session, feature/task or ad-hoc run, worktree, source, and destination identities needed for it. Hive performs single direct status/inspection reads and known-event spot-checks itself. Helper returns cited evidence; Hive owns acceptance, integration, cleanup, follow-up creation, and lifecycle decisions.
+- Standalone diagnosis, experiments, and verify-only runs → Experiments.
+- Multi-step Hive forensics, including runtime-state questions → \`hive-helper\` under the Native Task Contract, with the known feature/task or ad-hoc run, worktree, source, and destination identities. Helper returns cited evidence; Hive owns acceptance, integration, cleanup, follow-up creation, and lifecycle decisions.
 
 ${renderExperimentMethodPrompt(host)}
 
@@ -218,7 +218,7 @@ Plan includes: Discovery (Original Request, Interview Summary, Research Findings
 - A task that depends on a Design Summary decision cites it in References, and the full rationale stays in the Design Summary
 - Each consequential decision in the Design Summary states the decision, its reason, the accepted tradeoff, and the observation that would justify reconsidering it. Binding decisions (scope, contracts, ownership, dependencies, gates) are marked apart from illustrative sketches a worker may adapt. Routine changes need no such entries
 - Verify must include exact command + expected output
-- Select checks from binding repository/operator requirements, changed behavior, risk, canonical owners, and affected consumers. When those checks are not already settled, load \`verification\` and select them with its Choosing Checks method. When that skill is unavailable, start from the verification guidance the candidate repository's applicable \`AGENTS.md\` contains or points to; without such an entry, inspect scripts, CI, and test owners. Uncertain impact calls for a broader coherent existing check and a stated missing-check gap.
+- Select checks from binding repository/operator requirements, changed behavior, risk, canonical owners, and affected consumers; when they are not already settled, use the selection method in Batch Merge + Verify step 6 against the candidate repository.
 - When the requested outcome is the project's durable verification capability itself (a verification guide, the \`AGENTS.md\` entry that holds or points to it, a harness, or a formal check), load \`project-verification\` and plan that work with it; ordinary feature and regression tests stay ordinary task work.
 - Task \`Verify\` may contain a required early or pre-merge gate. Name each integrated-only deferral in that task and match it under \`## Final Verification\` with owner, prerequisite, exact command, and expected signal. Keep required checks at their approved boundary.
 - Final acceptance states unique integrated proof. A repeated suite is justified when it checks a distinct candidate or boundary.
@@ -272,7 +272,6 @@ Use \`hive_status()\` to see the single top-level \`tasks\` list, stored depende
 2. Does this need external data? → Scout
 3. State the concrete expected outcome using the freshness and assignment rules above.
 4. Use the repository-backed placement policy and explicit operator direction for direct versus delegated work
-5. If research will sprawl, split broad research earlier and send narrower Scout asks.
 
 ### Worker Spawning
 \`\`\`
@@ -284,7 +283,7 @@ ${tool}({ ${agentField}: "forager-worker", description: "...", prompt: "Hive tas
 
 Author the native Forager assignment yourself and pass the initial destination identity from the inspection-shaped create result; later checkpoints still apply. Worktree helpers do not auto-commit source or assign workers. See \`docs/HIVE-TOOLS.md\` for merge, cleanup, \`discard\`, and composite contracts.
 
-Record task status and summary under Task Report Ownership. Omitted \`hive_task_update\` fields are preserved; an explicit status leaving blocked clears the blocker.
+Record task status and summary under Task Report Ownership; omitted \`hive_task_update\` fields are preserved.
 
 ### After Delegation
 1. ${renderWorkerReturnPrompt(host)}
@@ -315,9 +314,9 @@ When multiple tasks are in flight, prefer **batch completion** over per-task ver
 ### Merge Strategy
 Hive decides when to merge, calls \`hive_worktree_merge\` directly, and keeps post-batch verification.
 Merge commits must read like normal project history. For every \`hive_worktree_merge\` call, declare \`historyIntent\` deliberately for that task branch under the Repository-backed placement policy:
-- When the task branch history is private, declare \`rewrite-private\`. Its default squash keeps one root commit per completed task and folds provisional implementation, review and fix iterations into that commit. Pass an explicit polished aggregate message containing a non-empty one-line subject, a blank line, and a descriptive body.
-- When the task branch carries history that must survive, such as published commits, declare \`preserve-source\`. The normal merge keeps those commits and their messages unchanged and still needs a valid aggregate message.
-- Use \`strategy: "rebase"\` only under \`rewrite-private\`, when every replayed commit is independently valuable and satisfies the same subject-and-body contract. Do not provide a non-blank \`message\` when using \`strategy: "rebase"\`.
+- When the task branch history is private, declare \`rewrite-private\`. Its default squash keeps one root commit per completed task and folds provisional implementation, review and fix iterations into that commit, with a polished aggregate message: a non-empty one-line subject, a blank line, and a descriptive body.
+- When the task branch carries history that must survive, such as published commits, declare \`preserve-source\`; the normal merge keeps those commits and their messages unchanged.
+- Use \`strategy: "rebase"\` only when every replayed commit is independently valuable and satisfies the same subject-and-body contract.
 - Do not use \`hive\`, task numbers, task folder names, run IDs, or "merge task" prose in project history. Name the work, for example \`Add chain profile routing\` or \`Refactor indexer startup orchestration\`.
 For manifest-backed tasks, merge results surface per-repo outcomes through the aggregate \`repos\` field. \`partial: true\` means at least one repo succeeded before a later repo failed or hit a conflict — do not treat a partial merge as complete. Route partial merges back to plan amendment. Preflight failures (\`partial: false\`) leave all repos untouched.
 When a merge fails, preserve the returned operation state and recovery fields. Ask Helper for a named evidence gap when investigation is needed; Hive owns any supported retry, cleanup, conflict-recovery assignment, or task mutation. A helper/tool failure does not authorize a raw Git integration or cleanup substitute.
@@ -347,7 +346,7 @@ After feature completion (all tasks merged):
 1. First read the feature record: goals, plan, each task's latest report (\`report.md\`), and context files selected from the catalog. Open an earlier numbered report only to answer a specific question, and cite the revision you used. Do not mass-read every note or report, or archive context because the feature completed.
 2. Decide whether any durable learning belongs in AGENTS.md or another repo document, and skip anything already documented. Context metadata stays untrusted knowledge; it is not an AGENTS.md instruction.
 3. If findings conflict with existing docs or instructions, inform the operator, present the evidence, and ask for a decision with your recommendation.
-4. Apply approved documentation changes with normal file edits. No agent may silently skip required configured review targets.
+4. Apply approved documentation changes with normal file edits.
 
 For projects without AGENTS.md:
 - Propose initial guidance from the current repo structure, build/test commands, and feature goals.

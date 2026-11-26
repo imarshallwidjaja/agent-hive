@@ -7,7 +7,8 @@ import { HIVE_TOOL_NAMES } from '../utils/plugin-manifest.js';
 import { createPluginWithHome } from '../e2e/plugin-test-home.js';
 import { EXPLORATION_LIMITS, EXPLORATION_UNTRUSTED_NOTICE, ExplorationError, WorklogError } from 'hive-core';
 import { createHiveServices } from './hive-services.js';
-import { createHiveOperations } from './hive-tools.js';
+import { FINALIZATION_NOTE, createHiveOperations } from './hive-tools.js';
+import { CODEMODE_READ_TOOLS } from './host-profile.js';
 
 /** For operation sets whose tests never read a council roster. */
 const unusedCouncilReader = async (): Promise<never> => { throw new Error('council agent reader called unexpectedly'); };
@@ -325,6 +326,63 @@ describe('ordinary Hive operation metadata', () => {
       expect(schema.properties.strategy.description, name).not.toContain("Default 'squash'");
     }
   });
+
+  // What the model sees up front for the ordinary direct (non-Code Mode) Hive operations in createHiveOperations;
+  // hive_task_trace and the hive_background_* tools register separately and are not counted. Lowering is fine;
+  // raising it needs a reason.
+  it('keeps the ordinary direct Hive operation descriptions and input schemas within their size budget', () => {
+    const operations = createHiveOperations({} as any, unusedCouncilReader);
+    const direct = Object.entries(operations).filter(([name]) => !(CODEMODE_READ_TOOLS as readonly string[]).includes(name));
+    expect(direct.length).toBeGreaterThan(0);
+    const total = direct.reduce((sum, [, operation]) => sum + operation.description.length
+      + JSON.stringify(z.toJSONSchema(z.object(operation.args), { io: 'input' })).length, 0);
+    expect(total).toBeLessThanOrEqual(55_000);
+  });
+});
+
+describe('finalization recovery note', () => {
+  const FINALIZING_TOOLS = [
+    'hive_worktree_create', 'hive_worktree_merge', 'hive_worktree_cleanup',
+    'hive_adhoc_worktree_create', 'hive_adhoc_worktree_merge', 'hive_adhoc_worktree_cleanup',
+    'hive_checkout_create', 'hive_checkout_register', 'hive_checkout_readiness', 'hive_checkout_cleanup',
+  ];
+  const retained = { markers: 'retained', retainedMarkers: ['marker.json'], operationId: 'op-1', action: 'manual_recovery' };
+  const unflushed = { markers: 'cleared_unflushed', markerError: 'EIO', operationId: 'op-2', action: 'inspect_state' };
+
+  function operationsReturning(finalization: object | undefined) {
+    const extra = finalization ? { finalization } : {};
+    const services = {
+      requireFeature: (feature?: string) => feature ?? 'feature',
+      assertTaskRepoIds: () => {},
+      worktreeService: { remove: async () => ({ worktreeRemoved: true, branchDeleted: false, pruned: true, ...extra }) },
+      retainedCheckoutService: { register: async ({ id }: { id: string }) => ({ id, ownership: 'registered', ...extra }) },
+    } as any;
+    return createHiveOperations(services, unusedCouncilReader);
+  }
+
+  it('points exactly the finalizing tool descriptions at the note instead of repeating the rule', () => {
+    const operations = createHiveOperations({} as any, unusedCouncilReader);
+    const pointing = Object.keys(operations).filter((name) => operations[name]!.description.includes('finalization.note'));
+    expect(pointing.sort()).toEqual([...FINALIZING_TOOLS].sort());
+    for (const name of FINALIZING_TOOLS) {
+      expect(operations[name]!.description, name).not.toContain(FINALIZATION_NOTE);
+    }
+  });
+
+  it('attaches the recovery rule to a returned finalization block and adds nothing without one', async () => {
+    for (const finalization of [retained, unflushed]) {
+      const cleanup = await operationsReturning(finalization).hive_worktree_cleanup!.execute({ task: '01-task' }, {}) as any;
+      const register = await operationsReturning(finalization).hive_checkout_register!.execute({ id: 'root/main' }, {}) as any;
+      for (const result of [cleanup, register]) {
+        expect(result.finalization, finalization.markers).toEqual({ ...finalization, note: FINALIZATION_NOTE });
+      }
+    }
+    expect(FINALIZATION_NOTE).toContain('acknowledge finalization.operationId through hive_worktree_recover');
+    const cleanup = await operationsReturning(undefined).hive_worktree_cleanup!.execute({ task: '01-task' }, {}) as any;
+    const register = await operationsReturning(undefined).hive_checkout_register!.execute({ id: 'root/main' }, {}) as any;
+    expect(cleanup).toEqual({ worktreeRemoved: true, branchDeleted: false, pruned: true });
+    expect(register).toEqual({ success: true, checkout: { id: 'root/main', ownership: 'registered' } });
+  });
 });
 
 describe('context edit failure guarantees', () => {
@@ -484,7 +542,7 @@ describe('ordinary Hive operation results', () => {
     } finally {
       unlinkSpy.mockRestore();
     }
-    expect(created).toMatchObject({ runId: 'kept', branch: 'hive/adhoc/kept', finalization: { markers: 'retained', action: 'manual_recovery' } });
+    expect(created).toMatchObject({ runId: 'kept', branch: 'hive/adhoc/kept', finalization: { markers: 'retained', action: 'manual_recovery', note: FINALIZATION_NOTE } });
     expect(fs.existsSync(created.path)).toBe(true);
     const { pendingOperations } = await callJson('hive_worktree_recover', {});
     expect(pendingOperations.map((entry: any) => entry.operationId)).toEqual([created.finalization.operationId]);

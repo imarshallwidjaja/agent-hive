@@ -67,6 +67,23 @@ function tableRow(section: string, label: string): string {
   return section.split('\n').find((line) => line.startsWith(`| ${label} |`)) ?? '';
 }
 
+// Each ceiling sits about 1% above the composed v2 prompt (role body plus the shared Hive system prompt) of a primary
+// whose restated rules were removed, and below its composed size before that removal (hive-master 117,295,
+// swarm-orchestrator 104,048, hive-builder 76,828), so a rule stated once cannot quietly gain a second copy. Lowering
+// a ceiling is fine; raising one needs a stated reason.
+describe('role prompt size ratchet', () => {
+  it('keeps each deduplicated primary prompt within its composed character ceiling on OpenCode v2', () => {
+    const v2 = createHostProfile('opencode-v2');
+    const system = renderHiveSystemPrompt(v2);
+    const ceilings: Array<[string, string, number]> = [
+      ['hive-master', renderQueenBeePrompt(v2), 116_900],
+      ['swarm-orchestrator', renderSwarmBeePrompt(v2), 103_600],
+      ['hive-builder', renderHiveBuilderPrompt(v2), 76_750],
+    ];
+    for (const [name, body, ceiling] of ceilings) expect(body.length + system.length, name).toBeLessThanOrEqual(ceiling);
+  });
+});
+
 describe('Engineering judgment prompt reach', () => {
   const includedPrompts = [
     ['Hive', QUEEN_BEE_PROMPT],
@@ -1404,6 +1421,10 @@ describe('Fresh-session delegation contract', () => {
       expect(prompt, name).toContain('spot-check decisive cited refs with `hive_task_trace_content` before acting');
       expect(prompt, name).toContain('rather than routing traces to Scout');
     }
+    // The Native Task Contract owns the read split; recovery and drift guidance in the same prompt point at it.
+    for (const [name, prompt] of [['Hive', QUEEN_BEE_PROMPT], ['Swarm', SWARM_BEE_PROMPT], ['Hive Builder', HIVE_BUILDER_PROMPT]] as const) {
+      expect(countOccurrences(prompt, 'one worktree inspect, or one `hive_task_trace_content` spot-check'), name).toBe(1);
+    }
     expect(ARCHITECT_BEE_PROMPT).toContain('Whether primary or task-spawned, Architect routes multi-step trace/evidence questions to `hive-helper`');
     expect(ARCHITECT_BEE_PROMPT).toContain('Helper remains read-only and terminal');
     expect(SCOUT_BEE_PROMPT).not.toContain('hive_task_trace');
@@ -1799,12 +1820,10 @@ describe('Task report reliability', () => {
       'Treat an idle runtime after a host restart and an `evidence_only` recovery snapshot as records of what survived. Neither proves that the old writer or its subprocesses stopped',
       'give Helper any replay hint or known child ID, or ask it to look for a `child_session_id` on that call in a `hive_task_trace` of the parent session, which appears only when the stored call recorded the child',
       'which appears only when the stored call recorded the child; a missing child ID does not establish termination',
-      'Route a named trace/lifecycle question with known native session/call identities to `hive-helper`',
-      'Spot-check decisive cited event refs with `hive_task_trace_content` before deciding',
+      'Split the reads as the Native Task Contract does',
+      'route a named trace/lifecycle question with known native session/call identities to `hive-helper`',
       'Helper gathers evidence; the primary decides termination',
       'one named question for an interrupted-worker evidence packet',
-      'The primary performs single direct reads itself',
-      'one `hive_status`, one worktree inspect, or one `hive_task_trace_content` spot-check of a known event ref',
       'when it needs multi-step forensics, including paging a trace',
       'Helper handles the multi-step packet',
       'Inspect before any cleanup and preserve the failure evidence',
