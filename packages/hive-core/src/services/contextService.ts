@@ -262,17 +262,11 @@ interface PendingMarker {
   startingIndexDigest: string;
 }
 
-const DEFAULT_CONTEXT_CLASSIFICATION = {
-  role: 'durable',
-  includeInExecution: true,
-  includeInNetwork: true,
-} satisfies Pick<ContextFile, 'role' | 'includeInExecution' | 'includeInNetwork'>;
-
 const SPECIAL_CONTEXTS = {
-  draft: { role: 'scratchpad', includeInExecution: false, includeInNetwork: false },
-  'execution-decisions': { role: 'operational', includeInExecution: false, includeInNetwork: false },
-  overview: { role: 'operational', includeInExecution: false, includeInNetwork: false },
-} as const satisfies Record<string, Pick<ContextFile, 'role' | 'includeInExecution' | 'includeInNetwork'>>;
+  draft: 'scratchpad',
+  'execution-decisions': 'operational',
+  overview: 'operational',
+} as const satisfies Record<string, ContextRole>;
 
 function sha256(content: Buffer | string): string {
   return createHash('sha256').update(content).digest('hex');
@@ -549,8 +543,8 @@ export class ContextService {
     const kindSource = diagnostic && control.classificationState !== 'trusted' && !indexed
       ? undefined
       : this.kindSource(name, indexed);
-    const classification = diagnostic && kind === undefined && !this.isSpecialName(name)
-      ? { role: 'operational' as const, includeInExecution: false, includeInNetwork: false }
+    const role: ContextRole = diagnostic && kind === undefined && !this.isSpecialName(name)
+      ? 'operational'
       : this.classifyContextName(name, kind);
     const metadata = parseContextMetadata(streamed.header);
     const metadataFields = this.metadataFields(metadata, resolved.scope.type);
@@ -567,7 +561,7 @@ export class ContextService {
       kind,
       kindSource,
       task: indexed?.task,
-      ...classification,
+      role,
       ...metadataFields,
     };
     let end = streamed.end;
@@ -1039,7 +1033,7 @@ export class ContextService {
         kind,
         kindSource: this.kindSource(name, indexed),
         task: indexed?.task,
-        ...this.classifyContextName(name, kind),
+        role: this.classifyContextName(name, kind),
         ...this.metadataFields(metadata, resolved.scope.type),
         statFingerprint: this.statFingerprint(stat),
         headerFingerprint: sha256(header),
@@ -1113,8 +1107,6 @@ export class ContextService {
       ...(file.kind ? { kind: file.kind } : {}),
       ...(file.kindSource ? { kindSource: file.kindSource } : {}),
       role: file.role,
-      includeInExecution: file.includeInExecution,
-      includeInNetwork: file.includeInNetwork,
       ...(file.bytes !== undefined ? { bytes: file.bytes } : {}),
     };
   }
@@ -1307,7 +1299,7 @@ export class ContextService {
   }
 
   private mutationResult(resolved: ResolvedScope, name: string, content: string, updatedAt: string, kind: ContextKind | undefined, task: string | undefined, revision: number, filePath: string, hash: string, metadata: ReturnType<typeof parseContextMetadata>): ContextMutationResult {
-    return { revision, path: filePath, file: { name, chars: content.length, bytes: Buffer.byteLength(content), contentHash: hash, updatedAt, kind, ...(kind ? { kindSource: 'index' as const } : {}), task, ...this.classifyContextName(name, kind), ...this.metadataFields(metadata, resolved.scope.type) } };
+    return { revision, path: filePath, file: { name, chars: content.length, bytes: Buffer.byteLength(content), contentHash: hash, updatedAt, kind, ...(kind ? { kindSource: 'index' as const } : {}), task, role: this.classifyContextName(name, kind), ...this.metadataFields(metadata, resolved.scope.type) } };
   }
 
   private metadataFields(metadata: ReturnType<typeof parseContextMetadata>, scopeType: 'feature' | 'project'): Pick<ContextFile, 'description' | 'readWhen' | 'owner' | 'reviewAfter' | 'warnings'> {
@@ -1474,10 +1466,9 @@ export class ContextService {
     return indexed ? 'index' : 'legacy_default';
   }
 
-  private classifyContextName(name: string, kind?: ContextKind): Pick<ContextFile, 'role' | 'includeInExecution' | 'includeInNetwork'> {
-    if (SPECIAL_CONTEXTS[name as keyof typeof SPECIAL_CONTEXTS]) return SPECIAL_CONTEXTS[name as keyof typeof SPECIAL_CONTEXTS];
-    if (kind === 'evidence') return { role: 'evidence', includeInExecution: false, includeInNetwork: false };
-    return DEFAULT_CONTEXT_CLASSIFICATION;
+  private classifyContextName(name: string, kind?: ContextKind): ContextRole {
+    if (Object.hasOwn(SPECIAL_CONTEXTS, name)) return SPECIAL_CONTEXTS[name as keyof typeof SPECIAL_CONTEXTS];
+    return kind === 'evidence' ? 'evidence' : 'durable';
   }
 
   private isSpecialName(name: string): boolean { return Object.hasOwn(SPECIAL_CONTEXTS, name); }

@@ -188,8 +188,6 @@ describe('ContextService reserved overview context', () => {
       kind: undefined,
       kindSource: undefined,
       role: 'operational',
-      includeInExecution: false,
-      includeInNetwork: false,
     });
   });
 
@@ -215,7 +213,7 @@ describe('ContextService reserved overview context', () => {
       if (snapshot.status !== 'ready') throw new Error('Expected snapshot');
       expect(snapshot.summary.durable.chars).toBe(durable('é😀').length);
       expect(snapshot.summary.files.find(file => file.name === 'notes')?.bytes).toBe(Buffer.byteLength(durable('é😀')));
-      expect(snapshot.summary.files.find(file => file.name === 'proof')?.includeInExecution).toBe(false);
+      expect(snapshot.summary.files.find(file => file.name === 'proof')?.role).toBe('evidence');
       expect(writerOpens).toBe(0);
     } finally { open.mockRestore(); fs.chmodSync(contextPath, 0o755); }
     // A pre-native lock file may belong to a live host, so it reads as busy.
@@ -288,24 +286,6 @@ describe('ContextService reserved overview context', () => {
     }
   });
 
-  it('classifies overview as reserved operational context', () => {
-    const featureName = 'reserved-overview';
-    setupFeature(featureName);
-
-    seedLegacy(featureName, 'overview', 'Human-facing summary');
-    seedLegacy(featureName, 'decisions', 'Technical decisions');
-
-    expect(service.list(featureName).map((file) => [
-      file.name,
-      file.role,
-      file.includeInExecution,
-      file.includeInNetwork,
-    ])).toEqual([
-      ['decisions', 'durable', true, true],
-      ['overview', 'operational', false, false],
-    ]);
-  });
-
   it('preserves reserved handling for overview, draft, and execution decisions', () => {
     const featureName = 'classified-context';
     setupFeature(featureName);
@@ -318,13 +298,11 @@ describe('ContextService reserved overview context', () => {
     expect(service.list(featureName).map(file => [
       file.name,
       file.role,
-      file.includeInExecution,
-      file.includeInNetwork,
     ])).toEqual([
-      ['draft', 'scratchpad', false, false],
-      ['execution-decisions', 'operational', false, false],
-      ['learnings', 'durable', true, true],
-      ['overview', 'operational', false, false],
+      ['draft', 'scratchpad'],
+      ['execution-decisions', 'operational'],
+      ['learnings', 'durable'],
+      ['overview', 'operational'],
     ]);
   });
 
@@ -489,7 +467,7 @@ describe('ContextService managed context', () => {
       '---\ndescription: Evidence\nread_when: Explicitly requested.\nkind: durable\n---\n\nraw',
       { kind: 'evidence' },
     );
-    expect(evidence.file).toMatchObject({ kind: 'evidence', includeInExecution: false });
+    expect(evidence.file).toMatchObject({ kind: 'evidence', role: 'evidence' });
   });
 
   it('requires the actual named-read hash for existing-content mutations', () => {
@@ -549,7 +527,7 @@ describe('ContextService managed context', () => {
     expect(() => service.readSummary('interrupted')).toThrow('reconcile');
     expect(() => service.create('interrupted', 'other', durable('blocked'))).toThrow('reconcile');
     const diagnostic = service.readContent('interrupted', 'late', { diagnosticMode: 'primary-management' });
-    expect(diagnostic?.file).toMatchObject({ content: interrupted, role: 'operational', includeInExecution: false });
+    expect(diagnostic?.file).toMatchObject({ content: interrupted, role: 'operational' });
     expect(service.readRecoverySummary('interrupted', { diagnosticMode: 'primary-management' })).toMatchObject({
       code: 'context_reconciliation_required', revision: created.revision,
       control: { markerPresent: true, indexPresent: true },

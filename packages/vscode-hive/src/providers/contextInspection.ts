@@ -40,10 +40,7 @@ export function contextTooltip(file: ContextFileMeta, project = false): string {
     lines.push(`Review after: ${file.reviewAfter}${project && file.reviewAfter <= today ? ' (overdue)' : ''}`);
   }
   lines.push(`Updated: ${file.updatedAt}`);
-  lines.push(`Automatic execution inclusion: ${file.includeInExecution ? 'Yes' : 'No'}`);
-  lines.push(`Automatic network inclusion: ${file.includeInNetwork ? 'Yes' : 'No'}`);
   for (const warning of file.warnings ?? []) lines.push(`Warning: ${warning}`);
-  lines.push('Exclusion from automatic injection is not a privacy guarantee; explicit reads remain available.');
   return lines.join('\n');
 }
 

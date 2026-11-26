@@ -277,8 +277,6 @@ export interface ContextFile {
   kindSource?: ContextKindSource;
   task?: string;
   role: ContextRole;
-  includeInExecution: boolean;
-  includeInNetwork: boolean;
   bytes?: number;
   contentHash?: string;
   description?: string;

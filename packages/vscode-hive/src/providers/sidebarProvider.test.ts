@@ -407,7 +407,7 @@ describe('HiveSidebarProvider', () => {
     expect(files.map(file => file.label).sort()).toEqual(['draft.md', 'evidence.md', 'notes.md']);
     expect(files.find(file => file.label === 'evidence.md')?.description).toBe('Evidence · 5 bytes');
     expect(files.find(file => file.label === 'draft.md')?.description).toBe('Scratchpad · 7 bytes');
-    expect(files.find(file => file.label === 'evidence.md')?.tooltip).toContain('Automatic execution inclusion: No');
+    expect(files.find(file => file.label === 'evidence.md')?.tooltip).toContain('Kind: evidence');
 
     // Exact character totals exist only after the explicit management scan.
     fs.appendFileSync(path.join(contextPath, 'notes.md'), 'x');
