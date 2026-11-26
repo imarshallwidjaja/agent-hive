@@ -177,11 +177,16 @@ interface WorklogBriefRead {
   checkpointsSinceBriefing: number;
   facts: WorklogFactsSummary;
   changedSinceBriefing: boolean | null;
-  recent: { entries: WorklogEntry[]; nextCursor: string | null };
+  recent: { entries: WorklogReadEntry[]; nextCursor: string | null };
 }
+
+// Brief and history entries: the stored entry without its briefing text.
+type WorklogReadEntry = Omit<WorklogEntry, 'briefing'> & { briefingUpdated?: true };
 ```
 
 The brief view is what a person or a resuming primary reads first. `checkpointsSinceBriefing` counts entries after the one that set the briefing (all entries when there is no briefing). `changedSinceBriefing` is `true` or `false` only when both the stored and the current facts fingerprints are known; it is `null` for session logs, when no briefing exists, or when facts were unavailable at either time.
+
+Read entries omit briefing text. The brief view's `briefing` field is the only place a read returns briefing text, so the current briefing appears once per response; an entry that set a briefing carries `briefingUpdated: true` instead. Earlier briefings stay in `worklog.json` and are not returned by any read view. `record` results still return the full stored entry, briefing included.
 
 `recent` holds the newest checkpoints, three by default or `limit` when given. Unlike the other views, the brief shortens `recent` to fit the byte budget instead of failing, because the briefing and facts matter more. `recent.nextCursor` continues in the history view.
 
@@ -195,7 +200,7 @@ interface WorklogHistoryRead {
   exists: boolean;
   anchorRevision: number;
   currentRevision: number;
-  entries: WorklogEntry[];   // complete entries, newest first
+  entries: WorklogReadEntry[];   // newest first, without briefing text
   complete: boolean;
   nextCursor: string | null;
 }
@@ -310,7 +315,7 @@ A log that cannot be read appears in `errors` with its location and reason, and 
 | `checkpoint.detail` | 8 KiB UTF-8 |
 | `checkpoint.references` | 16 items; each `path` or `url` 1 KiB, `label` 256 bytes |
 | `checkpoint.corrects` | 8 unique positive IDs; each target may be corrected at most 64 times |
-| Whole entry, serialized as returned by reads | 48 KiB |
+| Whole stored entry, serialized as `record` returns it | 48 KiB |
 | `author.sessionId`, ref `sessionId` | 256 bytes |
 | `author.agent` | 128 bytes |
 

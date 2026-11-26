@@ -252,6 +252,7 @@ export type {
   WorklogListError,
   WorklogListOptions,
   WorklogListResult,
+  WorklogReadEntry,
   WorklogReadOptions,
   WorklogReadResult,
   WorklogReadView,

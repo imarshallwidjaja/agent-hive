@@ -2,6 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import {
   getContextPath,
+  getFeaturePath,
   getPlanPath,
   getTaskHandoffPath,
   getTaskSpecPath,
@@ -38,7 +39,7 @@ export const TASK_BRIEF_BLOCK = /(?:\n\n)?<!-- hive-task-brief:start -->\n## Hiv
 export type TaskBriefSources = {
   projectRoot: string;
   taskService: Pick<TaskService, 'listStatusEntries' | 'getSpecFreshness' | 'getPlanSyncStatus'>;
-  contextService: Pick<ContextService, 'readSummary'>;
+  contextService: Pick<ContextService, 'readSummary' | 'hasDocument'>;
 };
 
 /** Keeps variable content on one line and unable to open or close a Hive block. */
@@ -124,16 +125,20 @@ function composeBoundLines(sources: TaskBriefSources, featureName: string, tasks
   } catch {
     planSync = { state: 'unknown', hint: 'Plan sync status could not be calculated.' };
   }
+  const featureDir = getFeaturePath(projectRoot, featureName);
+  // Every path after the Feature dir line is relative to it, so the shared prefix travels once.
+  const relative = (target: string): string => inline(path.relative(featureDir, target).split(path.sep).join('/'));
   const planPath = getPlanPath(projectRoot, featureName);
   const handoffPath = getTaskHandoffPath(projectRoot, featureName, folder);
   const decisionsPath = path.join(getContextPath(projectRoot, featureName), 'execution-decisions.md');
 
   const coreWithTitle = (title: string): string[] => [
     'Dispatch-time pointers from Hive state. Read what applies before editing; the assignment governs; report conflicts.',
+    `Feature dir: ${inline(featureDir)} (the paths below are relative to it)`,
     `Task: ${inline(folder)} - ${title} (${inline(task.status)})`,
-    `Spec: ${inline(getTaskSpecPath(projectRoot, featureName, folder))} - specStale: ${freshness?.specStale ?? null} (${inline(freshness?.specStaleReason ?? 'freshness_unavailable')})`,
+    `Spec: ${relative(getTaskSpecPath(projectRoot, featureName, folder))} - specStale: ${freshness?.specStale ?? null} (${inline(freshness?.specStaleReason ?? 'freshness_unavailable')})`,
     ...(fs.existsSync(planPath)
-      ? [`Plan: ${inline(planPath)}${freshness?.planSection ? ` lines ${freshness.planSection.startLine}-${freshness.planSection.endLine}` : ''}`]
+      ? [`Plan: ${relative(planPath)}${freshness?.planSection ? ` lines ${freshness.planSection.startLine}-${freshness.planSection.endLine}` : ''}`]
       : []),
   ];
   const fullTitle = inline(task.planTitle || folder);
@@ -151,13 +156,13 @@ function composeBoundLines(sources: TaskBriefSources, featureName: string, tasks
     ...(freshness?.unownedHeadingLines?.length
       ? [`Unowned plan headings after this task's section at lines ${freshness.unownedHeadingLines.join(', ')}: read them; they may be binding amendments.`]
       : []),
-    ...(fs.existsSync(handoffPath) ? [`Handoff: ${inline(handoffPath)}`] : []),
+    ...(fs.existsSync(handoffPath) ? [`Handoff: ${relative(handoffPath)}`] : []),
   ];
   const dependencies = task.dependsOn.map((dependency) => {
     const known = tasks.get(dependency);
     const dependencyHandoff = known ? getTaskHandoffPath(projectRoot, featureName, dependency) : undefined;
     const status = known && 'integrity' in known ? known.integrity.reason : known?.status ?? 'unknown';
-    return `- ${inline(dependency)} (${inline(status)})${dependencyHandoff && fs.existsSync(dependencyHandoff) ? ` handoff: ${inline(dependencyHandoff)}` : ''}`;
+    return `- ${inline(dependency)} (${inline(status)})${dependencyHandoff && fs.existsSync(dependencyHandoff) ? ` handoff: ${relative(dependencyHandoff)}` : ''}`;
   });
   let durableCount = 'unknown';
   try {
@@ -167,7 +172,7 @@ function composeBoundLines(sources: TaskBriefSources, featureName: string, tasks
   }
   const after = [
     `Feature context: ${durableCount} durable catalog entries; read with hive_context_read({ feature: "${inline(featureName)}", view: "catalog" }).`,
-    ...(fs.existsSync(decisionsPath) ? [`Execution decisions: ${inline(decisionsPath)}`] : []),
+    ...(contextService.hasDocument(featureName, 'execution-decisions') ? [`Execution decisions: ${relative(decisionsPath)}`] : []),
   ];
 
   const withDependencies = (kept: number): string[] => dependencies.length === 0

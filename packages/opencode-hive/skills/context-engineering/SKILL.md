@@ -70,7 +70,7 @@ New assignments contain no supporting bodies or catalog snapshots. For bound fea
 
 After compaction, recover by catalog selection and named reads. Keep exact IDs. Do not treat compacted coverage names as evidence. Never replay historical prompt text as a new assignment.
 
-Catalogs are live at the current project root; do not follow a stored former root as catalog truth. Session-store layout and ownership, including that a feature-local `sessions.json` is a projection and never alternate recovery truth, are runtime facts owned by `hive-config`. Plugin restart does not continue old live workers. Finish or abandon them first.
+Catalogs are live at the current project root; do not follow a stored former root as catalog truth. Session-store layout and ownership, including that a feature-local `sessions.json` is a legacy projection and never alternate recovery truth, are runtime facts owned by `hive-config`. Plugin restart does not continue old live workers. Finish or abandon them first.
 
 ## Reviews and direct requirements
 

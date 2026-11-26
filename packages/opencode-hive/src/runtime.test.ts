@@ -2029,7 +2029,7 @@ describe('coordinated runtime hard cut', () => {
     const handoff = JSON.parse(await loaded.tool!.hive_task_update.execute({ task: '01-setup', handoff: 'Build reads the amendment.' }, caller));
     expect(handoff.status).toBe('pending');
     expect(handoff.handoffPath).toEndWith(path.join('tasks', '01-setup', 'handoff.md'));
-    await expect(loaded.tool!.hive_task_update.execute({ task: '01-setup', handoff: 'x'.repeat(2049) }, caller)).rejects.toThrow('Task handoff is 2049 UTF-8 bytes; the limit is 2048.');
+    await expect(loaded.tool!.hive_task_update.execute({ task: '01-setup', handoff: 'x'.repeat(4097) }, caller)).rejects.toThrow('Task handoff is 4097 UTF-8 bytes; the limit is 4096.');
     const tasksPath = path.join(path.dirname(written.path), 'tasks');
     fs.mkdirSync(path.join(tasksPath, '02-build', 'handoff.md'));
     const failed = JSON.parse(await loaded.tool!.hive_task_update.execute({ task: '02-build', handoff: 'next' }, caller));
@@ -2069,6 +2069,13 @@ describe('coordinated runtime hard cut', () => {
     expect(full.tasks[1]).toMatchObject({ folder: '02-build', name: 'build', status: 'done', origin: 'plan', dependsOn: ['01-setup'] });
     expect(full.tasks[0]).toEqual(edges.tasks[0]);
     expect({ runnable: full.runnable, blocked: full.blocked }).toEqual({ runnable: edges.runnable, blocked: edges.blocked });
+
+    // A cancelled row is slimmed the same way and keeps its historical edges under detail: 'full'.
+    await loaded.tool!.hive_task_update.execute({ task: '02-build', status: 'cancelled' }, caller);
+    const cancelled = JSON.parse(await loaded.tool!.hive_status.execute({}, caller));
+    expect(cancelled.tasks[1]).toEqual({ folder: '02-build', status: 'cancelled', hasHandoff: false, specStale: true, specStaleReason: 'differs_from_plan' });
+    const cancelledFull = JSON.parse(await loaded.tool!.hive_status.execute({ detail: 'full' }, caller));
+    expect(cancelledFull.tasks[1]).toMatchObject({ folder: '02-build', name: 'build', status: 'cancelled', dependsOn: ['01-setup'] });
 
     const blocker = { reason: 'Operator decision needed.', options: ['Keep', 'Replace'], recommendation: 'Keep' };
     await loaded.tool!.hive_task_update.execute({ task: '01-setup', status: 'blocked', blocker }, caller);

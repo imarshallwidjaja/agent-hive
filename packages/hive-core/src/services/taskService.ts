@@ -63,7 +63,7 @@ import {
 export const TASK_STATUS_SCHEMA_VERSION = 1;
 
 /** Upper bound for a successor handoff, in UTF-8 bytes. */
-export const TASK_HANDOFF_MAX_BYTES = 2048;
+export const TASK_HANDOFF_MAX_BYTES = 4096;
 
 export interface TaskUpdateInput extends Partial<Pick<TaskStatus, 'status' | 'summary' | 'aggregateBranchDiff' | 'baseCommit'>> {
   blocker?: TaskStatus['blocker'] | null;

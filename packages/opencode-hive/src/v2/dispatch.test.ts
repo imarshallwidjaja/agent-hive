@@ -207,12 +207,10 @@ async function dispatchedChild(context: Awaited<ReturnType<typeof setup>>, optio
 
 const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, stdio: 'pipe' });
 
-/** The task or run a child's Hive binding names. */
 /** The flattened session constraints a child's stored binding holds, or undefined when it holds none. */
-const boundConstraintText = (services: HiveServices, child: string): string | undefined => {
-  const stored = services.sessionService.getGlobal(child);
-  return stored ? services.sessionService.standingConstraintRegister(stored).constraints || undefined : undefined;
-};
+const boundConstraintText = (services: HiveServices, child: string): string | undefined =>
+  services.sessionService.readStandingConstraints(child).constraints || undefined;
+/** The task or run a child's Hive binding names. */
 const association = (services: HiveServices, child: string) => {
   const bound = services.sessionService.getGlobal(child);
   return { taskFolder: bound?.taskFolder, adHocRunId: bound?.adHocRunId };

@@ -39,11 +39,6 @@ interface ParsedHeading extends PlanHeadingOutline {
   start: number;
 }
 
-interface PlanTaskHeading {
-  taskNumber: number;
-  title: string;
-}
-
 export interface PlanApprovalResult {
   success: true;
   feature: string;
@@ -249,21 +244,25 @@ function findSection(content: string, headingPath: string[]): { heading: ParsedH
   return matches[0];
 }
 
-function findTasksSection(content: string): { heading: ParsedHeading; end: number } {
-  const headings = parseHeadings(content);
+/** The `## Tasks` section among already parsed headings, or null when the plan has none. Multiple Tasks sections throw. */
+function findTasksSectionIn(content: string, headings: ParsedHeading[]): { heading: ParsedHeading; end: number } | null {
   const matches = headings
     .map((heading, index) => ({ heading, end: findSectionEnd(content, headings, index) }))
     .filter(candidate => candidate.heading.level === 2 && candidate.heading.title.toLowerCase() === 'tasks');
-
-  if (matches.length === 0) {
-    throw new Error('Plan section not found: Tasks');
-  }
 
   if (matches.length > 1) {
     throw new Error('Plan contains multiple Tasks sections');
   }
 
-  return matches[0];
+  return matches[0] ?? null;
+}
+
+function findTasksSection(content: string): { heading: ParsedHeading; end: number } {
+  const section = findTasksSectionIn(content, parseHeadings(content));
+  if (!section) {
+    throw new Error('Plan section not found: Tasks');
+  }
+  return section;
 }
 
 function getFirstNonBlankLine(content: string): string | null {
@@ -299,12 +298,20 @@ function assertClosedFences(content: string): void {
 }
 
 function assertNoDuplicateTaskNumbers(content: string): void {
+  const headings = parseHeadings(content);
+  const tasksSection = findTasksSectionIn(content, headings);
+  if (!tasksSection) return;
+
   const seen = new Set<number>();
-  for (const task of extractTaskList(content)) {
-    if (seen.has(task.taskNumber)) {
-      throw new Error(`Plan contains duplicate task number: ${task.taskNumber}`);
+  for (const heading of headings) {
+    if (heading.level !== 3 || heading.start < tasksSection.heading.start || heading.start >= tasksSection.end) continue;
+    const match = heading.title.match(/^(\d+)\.\s+(.+?)\s*$/);
+    if (!match) continue;
+    const taskNumber = Number(match[1]);
+    if (seen.has(taskNumber)) {
+      throw new Error(`Plan contains duplicate task number: ${taskNumber}`);
     }
-    seen.add(task.taskNumber);
+    seen.add(taskNumber);
   }
 }
 
@@ -370,45 +377,15 @@ function normalizePatchBlock(content: string, start: number, end: number, block:
   return normalized;
 }
 
-/** The `## Tasks` section, or null when the plan has none yet. Multiple Tasks sections still throw. */
-function findOptionalTasksSection(content: string): ReturnType<typeof findTasksSection> | null {
-  try {
-    return findTasksSection(content);
-  } catch (error) {
-    if (error instanceof Error && /not found/i.test(error.message)) return null;
-    throw error;
-  }
-}
-
-function extractTaskList(content: string): PlanTaskHeading[] {
-  const tasksSection = findOptionalTasksSection(content);
-  if (!tasksSection) return [];
-
-  const taskList: PlanTaskHeading[] = [];
-  const taskPattern = /^(\d+)\.\s+(.+?)\s*$/;
-  const taskHeadings = parseHeadings(content)
-    .filter(heading => heading.level === 3 && heading.start >= tasksSection.heading.start && heading.start < tasksSection.end);
-
-  for (const heading of taskHeadings) {
-    const match = heading.title.match(taskPattern);
-    if (!match) continue;
-    taskList.push({
-      taskNumber: Number(match[1]),
-      title: normalizeHeadingTitle(match[2]),
-    });
-  }
-
-  return taskList;
-}
-
 /** Plan headings for navigation; task subsections (level 4 and deeper inside `## Tasks`) are left to the full read. */
 function buildOutline(content: string): { headings: PlanHeadingOutline[] } {
-  const tasksSection = findOptionalTasksSection(content);
+  const headings = parseHeadings(content);
+  const tasksSection = findTasksSectionIn(content, headings);
   const insideTasks = (heading: ParsedHeading) => tasksSection !== null
     && heading.start > tasksSection.heading.start
     && heading.start < tasksSection.end;
   return {
-    headings: parseHeadings(content)
+    headings: headings
       .filter(heading => heading.level < 4 || !insideTasks(heading))
       .map(({ level, title, line }) => ({ level, title, line })),
   };

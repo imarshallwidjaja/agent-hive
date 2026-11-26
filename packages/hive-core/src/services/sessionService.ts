@@ -30,8 +30,6 @@ export type { ConstraintRegister as StandingConstraintRegister };
  * ad-hoc run association is one assignment, so binding one clears the other.
  */
 const CLEARABLE_SESSION_FIELDS = new Set<keyof SessionInfo>([
-  'standingConstraints',
-  'standingConstraintEntries',
   'taskFolder',
   'adHocRunId',
 ]);
@@ -165,6 +163,13 @@ export class SessionService {
     try {
       const data = this.readOrResetGlobalSessions(globalPath);
       const session = mutator(data);
+      // Entries are the one stored form; drop flattened text an older writer left beside them on any row. A
+      // string-only legacy row keeps its text until a constraint write migrates it.
+      for (const row of data.sessions) {
+        if (row && typeof row === 'object' && row.standingConstraintEntries !== undefined && row.standingConstraints !== undefined) {
+          delete row.standingConstraints;
+        }
+      }
       writeJsonAtomic(globalPath, data);
       return session;
     } finally {
@@ -253,8 +258,6 @@ export class SessionService {
   ): ConstraintRegister {
     session.standingConstraintEntries = register.entries.map((entry) => ({ ...entry }));
     session.standingConstraintsRevision = register.revision;
-    // Entries are the one stored form; drop the flattened text an older writer may have left beside them.
-    delete session.standingConstraints;
     session.lastActiveAt = new Date().toISOString();
     return this.standingConstraintRegister(session);
   }

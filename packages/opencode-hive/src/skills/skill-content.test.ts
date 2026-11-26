@@ -2868,7 +2868,7 @@ describe('skill content', () => {
     expect(template).toContain('Error notices are not empty/current catalogs');
     // Session-store layout is a runtime fact owned by hive-config; context selection only points there.
     expect(template).toContain('are runtime facts owned by `hive-config`');
-    expect(template).toContain('a feature-local `sessions.json` is a projection and never alternate recovery truth');
+    expect(template).toContain('a feature-local `sessions.json` is a legacy projection and never alternate recovery truth');
     expect(template).not.toContain('`.hive/sessions.json`');
     const layout = readSkillReference('hive-config', 'runtime-layout.md');
     expect(layout).toContain('legacy feature-local projection, not canonical');

@@ -1,9 +1,9 @@
 import * as vscode from 'vscode';
 import type {
   WorklogBriefRead,
-  WorklogEntry,
   WorklogFactRow,
   WorklogFactsSummary,
+  WorklogReadEntry,
   WorklogRef,
   WorklogReference,
 } from 'hive-core';
@@ -36,7 +36,7 @@ interface RenderedLink {
 
 /** Older pages of one history document. Pages stay below the anchor, so appends never shift what is shown. */
 interface HistoryState {
-  entries: WorklogEntry[];
+  entries: WorklogReadEntry[];
   anchor: number;
   nextCursor: string | null;
   notice?: string;
@@ -392,14 +392,14 @@ export class WorklogDocuments implements vscode.TextDocumentContentProvider, vsc
     writer.line();
   }
 
-  private writeEntry(writer: DocumentWriter, entry: WorklogEntry, full: boolean): void {
+  private writeEntry(writer: DocumentWriter, entry: WorklogReadEntry, full: boolean): void {
     writer.line(`  #${entry.id} · ${formatTimestamp(entry.recordedAt)} (${describeAge(entry.recordedAt, this.now())}) · ${describeAuthor(entry.author)}`);
     writer.block(entry.checkpoint.summary, '    ');
     if (full && entry.checkpoint.detail) {
       writer.line();
       writer.block(entry.checkpoint.detail, '      ');
     }
-    if (entry.briefing) writer.line('    This checkpoint set a briefing.');
+    if (entry.briefingUpdated) writer.line('    This checkpoint set a briefing.');
     if (entry.checkpoint.corrects?.length) writer.line(`    Corrects #${entry.checkpoint.corrects.join(', #')}`);
     if (entry.correctedBy?.length) writer.line(`    Corrected by #${entry.correctedBy.join(', #')}`);
     const references = entry.checkpoint.references ?? [];

@@ -38,8 +38,8 @@ export const WORKLOG_CORRECTIONS_MAX = 8;
 /** Later corrections that may name one entry, which bounds its derived `correctedBy` list. */
 export const WORKLOG_CORRECTED_BY_MAX = 64;
 /**
- * Serialized size of one entry as returned by reads. With the correction cap it leaves headroom for the
- * envelope and cursor, so every stored entry fits a page at `WORKLOG_MAX_RESPONSE_BYTES`.
+ * Serialized size of one stored entry, as `record` returns it. Read views return a smaller projection without
+ * the briefing text, so with the correction cap every stored entry fits a page at `WORKLOG_MAX_RESPONSE_BYTES`.
  */
 export const WORKLOG_ENTRY_MAX_BYTES = 48 * 1024;
 export const WORKLOG_OPERATION_ID_MAX_BYTES = 128;
@@ -121,6 +121,12 @@ export interface WorklogEntry {
   /** Later entries, up to the read's anchor revision, that list this entry in `corrects`. Read views only. */
   correctedBy?: number[];
 }
+
+/**
+ * An entry as brief and history reads return it. The briefing text is omitted: the brief view's `briefing`
+ * field carries the current text, and `briefingUpdated` marks an entry that set a briefing.
+ */
+export type WorklogReadEntry = Omit<WorklogEntry, 'briefing'> & { briefingUpdated?: true };
 
 export interface WorklogRecordResult {
   ref: WorklogRef;
@@ -230,7 +236,7 @@ export interface WorklogBriefRead extends WorklogReadEnvelope {
   /** Whether recorded facts differ from those stored with the briefing; null when either side is unknown. */
   changedSinceBriefing: boolean | null;
   /** Newest-first page; `nextCursor` continues in the history view. Truncated by budget rather than failing. */
-  recent: { entries: WorklogEntry[]; nextCursor: string | null };
+  recent: { entries: WorklogReadEntry[]; nextCursor: string | null };
 }
 
 export interface WorklogHistoryRead extends WorklogReadEnvelope {
@@ -238,7 +244,7 @@ export interface WorklogHistoryRead extends WorklogReadEnvelope {
   /** Revision the pagination is anchored at; later appends are not shown by this cursor chain. */
   anchorRevision: number;
   currentRevision: number;
-  entries: WorklogEntry[];
+  entries: WorklogReadEntry[];
   complete: boolean;
   nextCursor: string | null;
 }
@@ -904,9 +910,15 @@ function readDocument(filePath: string, expected: WorklogRef | null): WorklogDoc
   return parseDocument(raw, expected);
 }
 
-function publicEntry(entry: StoredEntry, correctedBy?: number[]): WorklogEntry {
+function publicEntry(entry: StoredEntry): WorklogEntry {
   const { requestHash: _requestHash, ...rest } = entry;
-  return correctedBy && correctedBy.length > 0 ? { ...rest, correctedBy } : { ...rest };
+  return rest;
+}
+
+function readEntry(entry: StoredEntry, correctedBy?: number[]): WorklogReadEntry {
+  const { briefing, ...rest } = publicEntry(entry);
+  const projected: WorklogReadEntry = briefing ? { ...rest, briefingUpdated: true } : rest;
+  return correctedBy && correctedBy.length > 0 ? { ...projected, correctedBy } : projected;
 }
 
 // ============================================================================
@@ -1289,7 +1301,7 @@ export class WorklogService {
     const correctedBy = doc ? this.correctionsUpTo(doc, revision) : new Map<number, number[]>();
     return fillPage(
       Math.min(limit, revision),
-      (index) => publicEntry(doc!.entries[revision - 1 - index]!, correctedBy.get(revision - index)),
+      (index) => readEntry(doc!.entries[revision - 1 - index]!, correctedBy.get(revision - index)),
       (entries, taken): WorklogBriefRead => ({
         view: 'brief',
         ref,
@@ -1338,7 +1350,7 @@ export class WorklogService {
     const correctedBy = doc ? this.correctionsUpTo(doc, anchor) : new Map<number, number[]>();
     return fillPage(
       Math.min(limit, next),
-      (index) => publicEntry(doc!.entries[next - 1 - index]!, correctedBy.get(next - index)),
+      (index) => readEntry(doc!.entries[next - 1 - index]!, correctedBy.get(next - index)),
       (entries, taken): WorklogHistoryRead => {
         const nextCursor = doc && next - taken >= 1
           ? encodeCursor({ v: 1, view: 'history', key, logId: doc.logId, anchor, next: next - taken })

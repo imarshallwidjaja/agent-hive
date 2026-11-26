@@ -10,9 +10,10 @@ afterEach(() => {
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 
-function createProject(feature: string, plan: string) {
-  const root = fs.realpathSync(fs.mkdtempSync(`/tmp/hive-task-brief-${process.pid}-`));
-  roots.push(root);
+function createProject(feature: string, plan: string, projectSubdir = '') {
+  const tempRoot = fs.realpathSync(fs.mkdtempSync(`/tmp/hive-task-brief-${process.pid}-`));
+  roots.push(tempRoot);
+  const root = path.join(tempRoot, projectSubdir);
   fs.mkdirSync(path.join(root, '.hive'), { recursive: true });
   const taskService = new TaskService(root);
   new FeatureService(root).create(feature);
@@ -33,12 +34,12 @@ const stubSources = (overrides: Partial<TaskBriefSources> = {}): TaskBriefSource
     getSpecFreshness: () => [],
     getPlanSyncStatus: () => ({ state: 'current' as const }),
   },
-  contextService: { readSummary: () => ({ durable: { fileCount: 0 } }) as any },
+  contextService: { readSummary: () => ({ durable: { fileCount: 0 } }) as any, hasDocument: () => false },
   ...overrides,
 });
 
 describe('task dispatch brief', () => {
-  it('renders every bound line with absolute paths under an indexed feature directory', () => {
+  it('renders every bound line with paths relative to an indexed feature directory', () => {
     const { featureDir, taskService, sources } = createProject('10_x', PLAN);
     expect(path.basename(featureDir)).toBe('01_10_x');
     taskService.update('10_x', '01-setup', { status: 'done', handoff: 'Setup notes.' });
@@ -51,31 +52,54 @@ describe('task dispatch brief', () => {
     expect(block.endsWith('\n<!-- hive-task-brief:end -->')).toBe(true);
     expect(briefLines(block)).toEqual([
       'Dispatch-time pointers from Hive state. Read what applies before editing; the assignment governs; report conflicts.',
+      `Feature dir: ${featureDir} (the paths below are relative to it)`,
       'Task: 02-build - Build (pending)',
-      `Spec: ${featureDir}/tasks/02-build/spec.md - specStale: false (matches_plan)`,
-      `Plan: ${featureDir}/plan.md lines 9-13`,
-      `Handoff: ${featureDir}/tasks/02-build/handoff.md`,
+      'Spec: tasks/02-build/spec.md - specStale: false (matches_plan)',
+      'Plan: plan.md lines 9-13',
+      'Handoff: tasks/02-build/handoff.md',
       'Dependencies:',
-      `- 01-setup (done) handoff: ${featureDir}/tasks/01-setup/handoff.md`,
+      '- 01-setup (done) handoff: tasks/01-setup/handoff.md',
       'Feature context: 0 durable catalog entries; read with hive_context_read({ feature: "10_x", view: "catalog" }).',
-      `Execution decisions: ${featureDir}/context/execution-decisions.md`,
+      'Execution decisions: context/execution-decisions.md',
     ]);
     expect(block).not.toContain('Setup notes.');
     expect(block).not.toContain('Build.');
   });
 
+  it('names execution decisions only for a regular file the context reader would accept', () => {
+    const { root, featureDir, sources } = createProject('decisions', PLAN);
+    const contextDir = path.join(featureDir, 'context');
+    const decisions = path.join(contextDir, 'execution-decisions.md');
+    const hasDecisionsLine = (): boolean => briefLines(composeTaskBrief(sources, 'decisions', 'Hive task: 01-setup'))
+      .includes('Execution decisions: context/execution-decisions.md');
+    fs.mkdirSync(contextDir, { recursive: true });
+
+    fs.mkdirSync(decisions);
+    expect(hasDecisionsLine()).toBe(false);
+    fs.rmdirSync(decisions);
+
+    const outside = path.join(root, 'outside-decisions.md');
+    fs.writeFileSync(outside, '# Decisions\n');
+    fs.symlinkSync(outside, decisions);
+    expect(hasDecisionsLine()).toBe(false);
+    fs.unlinkSync(decisions);
+
+    fs.writeFileSync(decisions, '# Decisions\n');
+    expect(hasDecisionsLine()).toBe(true);
+  });
+
   it('reports stale specs, unowned heading lines, and no dependencies', () => {
     const { featureDir, sources } = createProject('stale', PLAN);
     fs.writeFileSync(path.join(featureDir, 'plan.md'), PLAN.replace('Setup.', 'Setup again.'));
-    expect(briefLines(composeTaskBrief(sources, 'stale', 'Hive task: 01-setup')).slice(1, 4)).toEqual([
+    expect(briefLines(composeTaskBrief(sources, 'stale', 'Hive task: 01-setup')).slice(2, 5)).toEqual([
       'Task: 01-setup - Setup (pending)',
-      `Spec: ${featureDir}/tasks/01-setup/spec.md - specStale: true (differs_from_plan)`,
-      `Plan: ${featureDir}/plan.md lines 5-7`,
+      'Spec: tasks/01-setup/spec.md - specStale: true (differs_from_plan)',
+      'Plan: plan.md lines 5-7',
     ]);
 
     fs.writeFileSync(path.join(featureDir, 'plan.md'), PLAN.replace('### 2. Build', '### Setup amendment\n\nAmend.\n\n### 2. Build'));
     const lines = briefLines(composeTaskBrief(sources, 'stale', 'Hive task: 01-setup'));
-    expect(lines).toContain(`Spec: ${featureDir}/tasks/01-setup/spec.md - specStale: null (unowned_heading_after_task_section)`);
+    expect(lines).toContain('Spec: tasks/01-setup/spec.md - specStale: null (unowned_heading_after_task_section)');
     expect(lines).toContain("Unowned plan headings after this task's section at lines 9: read them; they may be binding amendments.");
     expect(lines).toContain('Dependencies: none');
     expect(lines.some((line) => line.startsWith('Handoff:'))).toBe(false);
@@ -110,7 +134,7 @@ describe('task dispatch brief', () => {
   it('drops trailing dependency lines to stay within the byte cap without cutting paths', () => {
     const titles = Array.from({ length: 30 }, (_, index) => `Dependency number ${index + 1} with a deliberately long descriptive title`);
     const plan = `# Plan\n\n## Tasks\n\n${titles.map((title, index) => `### ${index + 1}. ${title}\n\nDepends on: none\n\nWork.\n`).join('\n')}\n### 31. Final\n\nDepends on: ${titles.map((_, index) => index + 1).join(', ')}\n\nFinish.\n`;
-    const { featureDir, sources, taskService } = createProject('budget', plan);
+    const { sources, taskService } = createProject('budget', plan);
     const dependencies = taskService.list('budget').map((task) => task.folder).filter((folder) => folder !== '31-final');
     for (const folder of dependencies) taskService.update('budget', folder, { handoff: 'notes' });
 
@@ -120,9 +144,39 @@ describe('task dispatch brief', () => {
     const kept = lines.filter((line) => /^- \d\d-/.test(line));
     expect(kept.length).toBeGreaterThan(0);
     expect(kept.length).toBeLessThan(dependencies.length);
-    expect(kept).toEqual(dependencies.slice(0, kept.length).map((folder) => `- ${folder} (pending) handoff: ${featureDir}/tasks/${folder}/handoff.md`));
+    expect(kept).toEqual(dependencies.slice(0, kept.length).map((folder) => `- ${folder} (pending) handoff: tasks/${folder}/handoff.md`));
     expect(lines).toContain(`- (+${dependencies.length - kept.length} more; see hive_status)`);
     expect(lines.at(-1)).toStartWith('Feature context: ');
+  });
+
+  it('keeps every dependency handoff of a deep project because the feature directory prefix travels once', () => {
+    const titles = [
+      'Inventory release verification gates',
+      'Collapse duplicate artifact checksum checks',
+      'Verify packed tarball dependency isolation',
+      'Simplify the VSIX bundle verification step',
+      'Consolidate release workflow rehearsal checks',
+      'Retire obsolete release documentation probes',
+      'Align release notes validation with tag checks',
+    ];
+    const plan = `# Plan\n\n## Tasks\n\n${titles.map((title, index) => `### ${index + 1}. ${title}\n\nDepends on: none\n\nWork.\n`).join('\n')}\n### 8. Final release verification pass\n\nDepends on: ${titles.map((_, index) => index + 1).join(', ')}\n\nFinish.\n`;
+    const { featureDir, sources, taskService } = createProject('release-verification-simplification', plan, 'home/ivan/work/ENVestigator');
+    expect(featureDir).toEndWith('/home/ivan/work/ENVestigator/.hive/features/01_release-verification-simplification');
+    const folders = taskService.list('release-verification-simplification').map((task) => task.folder);
+    const dependencies = folders.slice(0, -1);
+    for (const folder of folders) taskService.update('release-verification-simplification', folder, { handoff: 'notes' });
+    fs.mkdirSync(path.join(featureDir, 'context'), { recursive: true });
+    fs.writeFileSync(path.join(featureDir, 'context', 'execution-decisions.md'), '# Decisions\n');
+
+    const block = composeTaskBrief(sources, 'release-verification-simplification', `Hive task: ${folders.at(-1)}`);
+    expect(Buffer.byteLength(block, 'utf8')).toBeLessThanOrEqual(TASK_BRIEF_MAX_BYTES);
+    const lines = briefLines(block);
+    expect(lines.filter((line) => line.startsWith('- ')).length).toBe(dependencies.length);
+    expect(lines).toContain(`Feature dir: ${featureDir} (the paths below are relative to it)`);
+    expect(lines.filter((line) => line.startsWith('- '))).toEqual(dependencies.map((folder) => `- ${folder} (pending) handoff: tasks/${folder}/handoff.md`));
+    expect(lines).toContain(`Handoff: tasks/${folders.at(-1)}/handoff.md`);
+    expect(lines.at(-1)).toBe('Execution decisions: context/execution-decisions.md');
+    expect(block.split(featureDir)).toHaveLength(2);
   });
 
   it('falls back to the core locators when the dependency section cannot fit', () => {
@@ -139,13 +193,14 @@ describe('task dispatch brief', () => {
     const lines = briefLines(block);
     expect(lines.some((line) => line.startsWith('Dependencies'))).toBe(false);
     expect(lines.some((line) => line.startsWith('Feature context:'))).toBe(false);
-    expect(lines).toContain(`Spec: /project/.hive/features/${featureName}/tasks/01-task/spec.md - specStale: null (freshness_unavailable)`);
+    expect(lines).toContain(`Feature dir: /project/.hive/features/${featureName} (the paths below are relative to it)`);
+    expect(lines).toContain('Spec: tasks/01-task/spec.md - specStale: null (freshness_unavailable)');
   });
 
   it('names a noncurrent plan sync state before the handoff and drops it before the core locators', () => {
     const { featureDir, sources } = createProject('drifted', PLAN);
     fs.writeFileSync(path.join(featureDir, 'plan.md'), `${PLAN}\nShared contract changed.\n`);
-    expect(briefLines(composeTaskBrief(sources, 'drifted', 'Hive task: 01-setup'))[4])
+    expect(briefLines(composeTaskBrief(sources, 'drifted', 'Hive task: 01-setup'))[5])
       .toBe('Plan sync changed: Plan changed since task sync. Check affected tasks and shared contracts; review/approve and resync as needed before dispatch.');
 
     const featureName = `near${'x'.repeat(1200)}`;
@@ -159,7 +214,8 @@ describe('task dispatch brief', () => {
     const block = composeTaskBrief(crowded, featureName, 'Hive task: 01-task');
     expect(Buffer.byteLength(block, 'utf8')).toBeLessThanOrEqual(TASK_BRIEF_MAX_BYTES);
     expect(briefLines(block).some((line) => line.startsWith('Plan sync'))).toBe(false);
-    expect(briefLines(block)).toContain(`Spec: /project/.hive/features/${featureName}/tasks/01-task/spec.md - specStale: null (freshness_unavailable)`);
+    expect(briefLines(block)).toContain(`Feature dir: /project/.hive/features/${featureName} (the paths below are relative to it)`);
+    expect(briefLines(block)).toContain('Spec: tasks/01-task/spec.md - specStale: null (freshness_unavailable)');
   });
 
   it('renders a legacy status without dependsOn as no dependencies', () => {
@@ -186,7 +242,7 @@ describe('task dispatch brief', () => {
     const { featureDir, sources } = createProject('plan-gone', PLAN);
     fs.rmSync(path.join(featureDir, 'plan.md'));
     const lines = briefLines(composeTaskBrief(sources, 'plan-gone', 'Hive task: 01-setup'));
-    expect(lines).toContain(`Spec: ${featureDir}/tasks/01-setup/spec.md - specStale: null (plan_missing)`);
+    expect(lines).toContain('Spec: tasks/01-setup/spec.md - specStale: null (plan_missing)');
     expect(lines.some((line) => line.startsWith('Plan:'))).toBe(false);
   });
 
@@ -203,15 +259,15 @@ describe('task dispatch brief', () => {
 
   it('shortens a long multibyte plan title so the locators still fit', () => {
     const title = '界'.repeat(700);
-    const { featureDir, sources, taskService } = createProject('multi', `# Plan\n\n## Tasks\n\n### 1. ${title}\n\nWork.\n`);
+    const { sources, taskService } = createProject('multi', `# Plan\n\n## Tasks\n\n### 1. ${title}\n\nWork.\n`);
     const [task] = taskService.list('multi') as any[];
     const block = composeTaskBrief(sources, 'multi', `Hive task: ${task.folder}`);
     expect(Buffer.byteLength(block, 'utf8')).toBeLessThanOrEqual(TASK_BRIEF_MAX_BYTES);
     const lines = briefLines(block);
-    expect(lines[1]).toStartWith(`Task: ${task.folder} - `);
-    expect(lines[1]).toEndWith('... (pending)');
-    expect(lines).toContain(`Spec: ${featureDir}/tasks/${task.folder}/spec.md - specStale: false (matches_plan)`);
-    expect(lines).toContain(`Plan: ${featureDir}/plan.md lines 5-7`);
+    expect(lines[2]).toStartWith(`Task: ${task.folder} - `);
+    expect(lines[2]).toEndWith('... (pending)');
+    expect(lines).toContain(`Spec: tasks/${task.folder}/spec.md - specStale: false (matches_plan)`);
+    expect(lines).toContain('Plan: plan.md lines 5-7');
   });
 
   it('collapses an over-budget block to the fixed unavailable line', () => {

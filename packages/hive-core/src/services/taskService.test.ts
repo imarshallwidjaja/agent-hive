@@ -937,8 +937,8 @@ describe("TaskService", () => {
       setupTask(featureName, "01-test-task", { summary: "Original" });
       const taskPath = path.join(TEST_DIR, ".hive", "features", featureName, "tasks", "01-test-task");
       const statusBefore = fs.readFileSync(path.join(taskPath, "status.json"), "utf8");
-      // 1025 two-byte characters: under 2048 UTF-16 units, over 2048 UTF-8 bytes.
-      const oversize = "\u00e9".repeat(1025);
+      // 2048 two-byte characters plus one ASCII byte: 2049 UTF-16 units, 4097 UTF-8 bytes.
+      const oversize = `${"\u00e9".repeat(2048)}a`;
       const assertRejectedWithoutWrites = () => {
         expect(fs.existsSync(path.join(taskPath, "handoff.md"))).toBe(false);
         expect(fs.existsSync(path.join(taskPath, "reports"))).toBe(false);
@@ -948,13 +948,16 @@ describe("TaskService", () => {
       expect(() => service.update(featureName, "01-test-task", { handoff: "   \n" })).toThrow("Task handoff cannot be blank");
       assertRejectedWithoutWrites();
       expect(() => service.update(featureName, "01-test-task", { status: "done", report: "report", handoff: oversize })).toThrow(
-        "Task handoff is 2050 UTF-8 bytes; the limit is 2048. Shorten it; handoffs are not truncated.",
+        "Task handoff is 4097 UTF-8 bytes; the limit is 4096. Shorten it; handoffs are not truncated.",
       );
       assertRejectedWithoutWrites();
       expect(() => service.update(featureName, "01-test-task", { handoff: "" })).toThrow("Task handoff cannot be blank");
       assertRejectedWithoutWrites();
 
-      expect(service.update(featureName, "01-test-task", { handoff: "a".repeat(2048) }).handoffPath).toBe(path.join(taskPath, "handoff.md"));
+      // Exactly 4096 UTF-8 bytes in two-byte characters is accepted and stored whole.
+      const atLimit = "\u00e9".repeat(2048);
+      expect(service.update(featureName, "01-test-task", { handoff: atLimit }).handoffPath).toBe(path.join(taskPath, "handoff.md"));
+      expect(fs.readFileSync(path.join(taskPath, "handoff.md"), "utf8")).toBe(atLimit);
       fs.rmSync(path.join(taskPath, "handoff.md"));
     });
 

@@ -298,6 +298,7 @@ describe('WorklogService', () => {
       service.record(FEATURE, checkpoint('op-1'), PRIMARY);
       const result = service.record(FEATURE, checkpoint('op-2', 'Reconciled', { briefing: 'Where things stand.', expectedRevision: 1 }), OTHER_PRIMARY);
       expect(result).toMatchObject({ committedRevision: 2, briefingUpdated: true });
+      expect(result.entry.briefing).toMatchObject({ text: 'Where things stand.' });
       service.record(FEATURE, checkpoint('op-3'), PRIMARY);
 
       const brief = service.read(FEATURE);
@@ -306,6 +307,16 @@ describe('WorklogService', () => {
       const stored = JSON.parse(fs.readFileSync(path.join(featurePath, 'worklog.json'), 'utf8'));
       expect(stored.briefingEntryId).toBe(2);
       expect(stored).not.toHaveProperty('briefing');
+      expect(stored.entries[1].briefing).toMatchObject({ text: 'Where things stand.' });
+
+      // Read views carry the briefing text once, in `briefing`; entries only mark that they set one.
+      const history = service.read(FEATURE, { view: 'history' });
+      for (const entries of [brief.recent.entries, history.entries]) {
+        expect(entries.map((entry) => entry.id)).toEqual([3, 2, 1]);
+        expect(entries.map((entry) => entry.briefingUpdated)).toEqual([undefined, true, undefined]);
+        expect(entries.every((entry) => !('briefing' in entry))).toBe(true);
+      }
+      expect(JSON.stringify(brief).split('Where things stand.')).toHaveLength(2);
     });
 
     it('replays a lost-response retry before the revision check and rejects a changed payload', () => {

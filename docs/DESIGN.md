@@ -166,7 +166,7 @@ Contains task context for the executing agent:
 ### Reports
 `hive_task_update` stores an optional report string as numbered history plus `report.md`. Omissions are preserved. An explicit status leaving blocked clears the blocker. Report authorship, primary closure, and partial-write recovery are described in [Tasks and reports](OPERATOR-GUIDE.md#tasks-and-reports).
 
-An optional nonblank `handoff` of at most 2048 UTF-8 bytes replaces the task's `handoff.md` without changing status. A later remediation can replace it; omitted handoffs remain intact. The primary promotes accepted forward obligations into a named successor's plan section before that task runs.
+An optional nonblank `handoff` of at most 4096 UTF-8 bytes replaces the task's `handoff.md` without changing status. A later remediation can replace it; omitted handoffs remain intact. The primary promotes accepted forward obligations into a named successor's plan section before that task runs.
 
 Blocked task status preserves blocker JSON in `status.json`. `hive_status` returns task summaries and dependency-blocked entries; inspect the persisted task record for the operator-decision blocker. After the decision, `hive_task_update` with an explicit status leaving blocked clears it. Put the decision in the next worker prompt.
 

@@ -116,6 +116,12 @@ describe('SessionService', () => {
       expect(cleared.standingConstraintEntries).toEqual([]);
       expect(cleared.agent).toBe('hive-master');
       expect(service.readStandingConstraints('sess-constraints-clear').constraints).toBe('');
+
+      service.addStandingConstraint('sess-constraints-clear', 'Again.');
+      const clearedEntries = service.trackGlobal('sess-constraints-clear', { standingConstraintEntries: undefined });
+      expect(clearedEntries.standingConstraintEntries).toEqual([]);
+      expect(clearedEntries).not.toHaveProperty('standingConstraints');
+      expect(service.readStandingConstraints('sess-constraints-clear').constraints).toBe('');
     });
 
     it('rejects malformed constraint patches without changing the registry', () => {
@@ -260,6 +266,53 @@ describe('SessionService', () => {
       expect(stored).not.toHaveProperty('standingConstraints');
       expect(stored.standingConstraintEntries).toEqual(added.entries);
       expect(added.constraints).toBe('Kept\n\nSecond');
+    });
+
+    it('drops stale flattened text from mixed rows on any index write and keeps string-only rows until migrated', () => {
+      const globalPath = getGlobalSessionsPath(PROJECT_ROOT);
+      fs.mkdirSync(path.dirname(globalPath), { recursive: true });
+      fs.writeFileSync(globalPath, JSON.stringify({
+        sessions: [
+          {
+            sessionId: 'sess-mixed',
+            standingConstraintEntries: [{ id: 'legacy', text: 'Kept' }],
+            standingConstraintsRevision: 1,
+            standingConstraints: 'Kept',
+            startedAt: 's',
+            lastActiveAt: 's',
+          },
+          { sessionId: 'sess-string-only', standingConstraints: 'Legacy rule.', startedAt: 's', lastActiveAt: 's' },
+        ],
+      }));
+
+      // The write targets the string-only row; the cleanup still reaches the untouched mixed sibling.
+      service.setFeatureRoute('sess-string-only', null);
+
+      const [mixed, stringOnly] = JSON.parse(fs.readFileSync(globalPath, 'utf8')).sessions;
+      expect(mixed).not.toHaveProperty('standingConstraints');
+      expect(mixed.standingConstraintEntries).toEqual([{ id: 'legacy', text: 'Kept' }]);
+      expect(mixed.standingConstraintsRevision).toBe(1);
+      expect(mixed.lastActiveAt).toBe('s');
+      expect(stringOnly.featureName).toBeNull();
+      expect(stringOnly.standingConstraints).toBe('Legacy rule.');
+      expect(stringOnly).not.toHaveProperty('standingConstraintEntries');
+      expect(service.readStandingConstraints('sess-string-only').constraints).toBe('Legacy rule.');
+    });
+
+    it('updates a healthy row beside an unrelated null entry without throwing or touching the null entry', () => {
+      const globalPath = getGlobalSessionsPath(PROJECT_ROOT);
+      fs.mkdirSync(path.dirname(globalPath), { recursive: true });
+      fs.writeFileSync(globalPath, JSON.stringify({
+        sessions: [{ sessionId: 'sess-healthy', startedAt: 's', lastActiveAt: 's' }, null],
+      }));
+
+      const updated = service.setFeatureRoute('sess-healthy', null);
+
+      expect(updated.featureName).toBeNull();
+      const stored = JSON.parse(fs.readFileSync(globalPath, 'utf8')).sessions;
+      expect(stored).toHaveLength(2);
+      expect(stored[0]).toMatchObject({ sessionId: 'sess-healthy', featureName: null });
+      expect(stored[1]).toBeNull();
     });
 
     it('rejects disagreeing structured and flattened constraint patches before writing', () => {

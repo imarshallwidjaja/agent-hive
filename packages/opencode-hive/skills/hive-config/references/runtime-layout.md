@@ -37,7 +37,7 @@ Everything below is relative to the project root, the directory that holds `.hiv
 │               ├── spec.md       generated worker spec
 │               ├── report.md     latest successful report write
 │               ├── reports/<N>.md numbered report history; N is write order, not author
-│               └── handoff.md    latest successor note, at most 2048 UTF-8 bytes
+│               └── handoff.md    latest successor note, at most 4096 UTF-8 bytes
 ├── .worktrees/                Hive-managed Git worktrees (see below)
 ├── .locks/                    lock anchors: <sha256>.lock, one per locked file or worktree resource
 │   └── operations/            pending markers of worktree operations that began mutating
