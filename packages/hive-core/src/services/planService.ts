@@ -19,7 +19,6 @@ import type {
   PlanReadOptions,
   PlanReadOutlineResult,
   PlanReadResult,
-  PlanTaskOutline,
   PlanUnownedTaskHeading,
   PlanWriteResult,
 } from '../types.js';
@@ -36,7 +35,13 @@ import { FeatureService, FeatureWriteUncertainError, type FeaturePublication } f
 import { ReviewService } from './reviewService.js';
 
 interface ParsedHeading extends PlanHeadingOutline {
+  path: string[];
   start: number;
+}
+
+interface PlanTaskHeading {
+  taskNumber: number;
+  title: string;
 }
 
 export interface PlanApprovalResult {
@@ -164,12 +169,14 @@ function parseHeadings(content: string): ParsedHeading[] {
   const headings: ParsedHeading[] = [];
   const stack: string[] = [];
   let offset = 0;
+  let lineNumber = 0;
   let fence: FenceState | null = null;
   const nestedFences: FenceState[] = [];
 
   for (const lineWithEnding of content.matchAll(/.*(?:\r?\n|$)/g)) {
     const rawLine = lineWithEnding[0];
     if (rawLine.length === 0) break;
+    lineNumber += 1;
 
     const line = rawLine.replace(/\r?\n$/, '');
     const transition = getFenceTransition(line, fence, nestedFences);
@@ -202,6 +209,7 @@ function parseHeadings(content: string): ParsedHeading[] {
     headings.push({
       level,
       title,
+      line: lineNumber,
       path: [...stack],
       start: offset,
     });
@@ -362,19 +370,21 @@ function normalizePatchBlock(content: string, start: number, end: number, block:
   return normalized;
 }
 
-function extractTaskList(content: string): PlanTaskOutline[] {
-  let tasksSection: ReturnType<typeof findTasksSection>;
+/** The `## Tasks` section, or null when the plan has none yet. Multiple Tasks sections still throw. */
+function findOptionalTasksSection(content: string): ReturnType<typeof findTasksSection> | null {
   try {
-    tasksSection = findTasksSection(content);
+    return findTasksSection(content);
   } catch (error) {
-    if (error instanceof Error && /not found/i.test(error.message)) {
-      return [];
-    }
-
+    if (error instanceof Error && /not found/i.test(error.message)) return null;
     throw error;
   }
+}
 
-  const taskList: PlanTaskOutline[] = [];
+function extractTaskList(content: string): PlanTaskHeading[] {
+  const tasksSection = findOptionalTasksSection(content);
+  if (!tasksSection) return [];
+
+  const taskList: PlanTaskHeading[] = [];
   const taskPattern = /^(\d+)\.\s+(.+?)\s*$/;
   const taskHeadings = parseHeadings(content)
     .filter(heading => heading.level === 3 && heading.start >= tasksSection.heading.start && heading.start < tasksSection.end);
@@ -391,10 +401,16 @@ function extractTaskList(content: string): PlanTaskOutline[] {
   return taskList;
 }
 
-function buildOutline(content: string): { headings: PlanHeadingOutline[]; taskList: PlanTaskOutline[] } {
+/** Plan headings for navigation; task subsections (level 4 and deeper inside `## Tasks`) are left to the full read. */
+function buildOutline(content: string): { headings: PlanHeadingOutline[] } {
+  const tasksSection = findOptionalTasksSection(content);
+  const insideTasks = (heading: ParsedHeading) => tasksSection !== null
+    && heading.start > tasksSection.heading.start
+    && heading.start < tasksSection.end;
   return {
-    headings: parseHeadings(content).map(({ level, title, path }) => ({ level, title, path })),
-    taskList: extractTaskList(content),
+    headings: parseHeadings(content)
+      .filter(heading => heading.level < 4 || !insideTasks(heading))
+      .map(({ level, title, line }) => ({ level, title, line })),
   };
 }
 

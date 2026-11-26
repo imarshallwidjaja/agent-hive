@@ -849,9 +849,9 @@ describe('v2 execution guards', () => {
       expect(bytes(page.content), String(budget)).toBeLessThanOrEqual(budget);
       expect(page.content).toBe(JSON.stringify(page.output));
     }
-    // Other tools keep the indented presentation.
+    // Every other JSON tool uses the same compact presentation.
     const status = await run('hive_repositories_status', {});
-    expect(status.content).toBe(JSON.stringify(status.output, null, 2));
+    expect(status.content).toBe(JSON.stringify(status.output));
   });
 
   it('denies a primary-only call when the session cannot be read, rather than guessing it is a primary', async () => {

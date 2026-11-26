@@ -127,12 +127,8 @@ export type PlanReadMode = 'full' | 'outline';
 export interface PlanHeadingOutline {
   level: number;
   title: string;
-  path: string[];
-}
-
-export interface PlanTaskOutline {
-  taskNumber: number;
-  title: string;
+  /** 1-based line number in plan.md. */
+  line: number;
 }
 
 /** A level-3 heading inside `## Tasks` that is not a numbered `### N. Title` task. */
@@ -164,8 +160,8 @@ export interface PlanReadOutlineResult {
   comments: ReviewThread[];
   revision: string;
   contentHash: string;
+  /** Plan headings, without level-4 and deeper headings inside `## Tasks`. */
   headings: PlanHeadingOutline[];
-  taskList: PlanTaskOutline[];
 }
 
 export interface PlanReadOptions {

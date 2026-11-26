@@ -315,6 +315,21 @@ export class ContextService {
     return readText(filePath);
   }
 
+  /**
+   * Whether the scope holds a document a read would accept: a regular `<name>.md` reached from the project root through
+   * no symlink. Metadata only: it reads neither the index nor the content, and a missing, linked, non-regular or
+   * unresolvable document is false rather than an error.
+   */
+  hasDocument(scope: string | ContextScope, fileName: string): boolean {
+    try {
+      const resolved = this.resolveScope(scope);
+      this.assertNamespaceSafe(resolved.contextPath);
+      return fs.lstatSync(this.contentPath(resolved, this.normalizeName(fileName))).isFile();
+    } catch {
+      return false;
+    }
+  }
+
   list(scope: string | ContextScope): ContextFile[] {
     const resolved = this.resolveScope(scope);
     const before = this.observe(resolved);

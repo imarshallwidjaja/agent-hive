@@ -474,19 +474,58 @@ describe('PlanService', () => {
     }
   });
 
-  it('read outline returns headings and task list without full content', () => {
+  it('read outline returns headings with line numbers and omits task subsections, without full content', () => {
     const featureName = 'read-outline';
     setupFeature(featureName);
-    writePatchablePlan(service, featureName);
+    service.write(featureName, [
+      '# Plan', // 1
+      '',
+      '## Design Summary', // 3
+      '',
+      '#### Design Detail', // 5
+      '',
+      '## Tasks', // 7
+      '',
+      '### 1. First Task', // 9
+      '',
+      '#### Acceptance', // 11
+      '',
+      '##### Edge Cases', // 13
+      '',
+      '### 2. Second Task', // 15
+      '',
+      '## Final Verification', // 17
+      '',
+      '#### Commands', // 19
+      '',
+    ].join('\n'));
 
     const outline = service.read(featureName, { mode: 'outline' });
 
     expect('content' in outline!).toBe(false);
+    expect('taskList' in outline!).toBe(false);
     expect(outline?.revision).toMatch(/^[a-f0-9]{64}$/);
-    expect(outline?.headings.map(heading => heading.title)).toContain('Design Summary');
-    expect(outline?.taskList).toEqual([
-      { taskNumber: 1, title: 'First Task' },
-      { taskNumber: 2, title: 'Second Task' },
+    expect(outline?.headings).toEqual([
+      { level: 1, title: 'Plan', line: 1 },
+      { level: 2, title: 'Design Summary', line: 3 },
+      { level: 4, title: 'Design Detail', line: 5 },
+      { level: 2, title: 'Tasks', line: 7 },
+      { level: 3, title: '1. First Task', line: 9 },
+      { level: 3, title: '2. Second Task', line: 15 },
+      { level: 2, title: 'Final Verification', line: 17 },
+      { level: 4, title: 'Commands', line: 19 },
+    ]);
+  });
+
+  it('read outline lists every heading of a plan without a Tasks section', () => {
+    const featureName = 'outline-no-tasks';
+    setupFeature(featureName);
+    service.write(featureName, '# Plan\n\n## Discovery\n\n#### Notes\n');
+
+    expect(service.read(featureName, { mode: 'outline' })?.headings).toEqual([
+      { level: 1, title: 'Plan', line: 1 },
+      { level: 2, title: 'Discovery', line: 3 },
+      { level: 4, title: 'Notes', line: 5 },
     ]);
   });
 
@@ -1273,10 +1312,6 @@ Do the second task.
       '1. First Task',
       '2. Second Task',
     ]);
-    expect(outline.taskList).toEqual([
-      { taskNumber: 1, title: 'First Task' },
-      { taskNumber: 2, title: 'Second Task' },
-    ]);
   });
 
   it('outline does not close an active fence on an inner fence line with an info string', () => {
@@ -1313,7 +1348,6 @@ Do the first task.
       'Tasks',
       '1. First Task',
     ]);
-    expect(outline.taskList).toEqual([{ taskNumber: 1, title: 'First Task' }]);
   });
 
   it('outline clears inner fence state when the outer fence closes', () => {

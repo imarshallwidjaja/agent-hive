@@ -56,36 +56,33 @@ import { z, type ArgInput, type ArgShape } from './schema.js';
 
 const MAX_SNAPSHOT_REPOSITORIES = 32;
 
-/** The serialization every v1 result uses, and the one the named context read measures its `maxBytes` budget against. */
-export const json = (value: unknown): string => JSON.stringify(value, null, 2);
-
 /**
  * One ordinary Hive operation. `execute` returns a structured result; `output` says how a host presents it:
- * `json` serializes the result, `text` passes the returned string through unchanged. A `compact` JSON operation is
- * serialized without indentation, for results whose size budget the service measures on `JSON.stringify(result)`.
+ * `json` serializes the result, `text` passes the returned string through unchanged.
  */
 export type HiveOperation = {
   description: string;
   args: ArgShape;
   output: 'json' | 'text';
-  compact?: true;
   execute: (input: any, invocation: HiveInvocation) => unknown;
 };
 
-/** The JSON text of a `json` operation's result, shared by every host so one operation has one presentation. */
-export function serializeHiveJson(operation: HiveOperation, result: unknown): string {
-  return operation.compact ? JSON.stringify(result) : json(result);
+/**
+ * The JSON text of a `json` operation's result, shared by every host so one operation has one presentation. It is
+ * compact (no indentation), the same serialization every service and named read measures its byte budget against.
+ */
+export function serializeHiveJson(result: unknown): string {
+  return JSON.stringify(result);
 }
 
 export function presentHiveResult(operation: HiveOperation, result: unknown): string {
-  return operation.output === 'text' ? result as string : serializeHiveJson(operation, result);
+  return operation.output === 'text' ? result as string : serializeHiveJson(result);
 }
 
 function operation<Shape extends ArgShape>(definition: {
   description: string;
   args: Shape;
   output?: 'text';
-  compact?: true;
   /** A worktree or checkout mutation whose result may carry `finalization`: adds the pointer and the result note. */
   finalizes?: true;
   execute: (input: ArgInput<Shape>, invocation: HiveInvocation) => unknown;
@@ -95,7 +92,6 @@ function operation<Shape extends ArgShape>(definition: {
     description: finalizes ? `${definition.description} ${FINALIZATION_POINTER}` : definition.description,
     args: definition.args,
     output: definition.output ?? 'json',
-    ...(definition.compact ? { compact: true as const } : {}),
     execute: finalizes ? async (input, invocation) => withFinalizationNote(await execute(input, invocation)) : execute,
   };
 }
@@ -401,7 +397,7 @@ function createNamedContextReader(services: HiveServices) {
       // Keep file, and so its content, last: the guard fields and cursor appear before a long body.
       const { file, ...guard } = result;
       const output = { ...guard, ...(nextCursor ? { nextCursor } : {}), file };
-      const excess = Buffer.byteLength(json(output), 'utf8') - budget;
+      const excess = Buffer.byteLength(serializeHiveJson(output), 'utf8') - budget;
       if (excess <= 0) return output;
       chunkBudget -= excess;
       if (chunkBudget < 256) throw new ContextMutationError('context_response_too_large', 'The named-read response envelope exceeds maxBytes.');
@@ -1027,13 +1023,11 @@ export function createHiveOperations(services: HiveServices, readCouncilAgents: 
       },
     }),
     hive_worklog_list: operation({
-      compact: true,
       description: `List Worklogs newest first, read from their storage files: every feature log (completed and archived features included) and every session log of both hosts. Writes nothing. Pass a summary's ref to hive_worklog_read. An unreadable log is listed in errors beside the readable ones. A cursor goes stale when any log is added, removed or appended; restart the list. ${WORKLOG_UNTRUSTED}`,
       args: { kind: z.enum(['feature', 'session']).optional().describe('Only feature logs or only session logs; omitted, both.'), ...worklogPagingArgs },
       execute: ({ kind, limit, cursor, maxBytes }) => worklogCall(undefined, () => worklogService.list({ kind, limit, cursor, maxBytes })),
     }),
     hive_worklog_read: operation({
-      compact: true,
       description: `Read one Worklog; writes nothing. Without ref it reads the feature selected for this session with hive_feature_select, else this session's own log when no feature or null is selected. It never falls back to a detected or sole live feature, and a selected feature that does not resolve fails instead of reading another log. The result names the resolved ref: copy it into hive_worklog_record. A log that does not exist yet reads as exists: false with revision 0. Views: 'brief' (default) gives the current briefing, checkpoints since it, a facts summary with changedSinceBriefing and the newest checkpoints; 'history' pages every checkpoint newest first, anchored so later appends do not shift pages; 'facts' pages recorded task rows. An account you synthesize from history and facts does not update the saved briefing. ${WORKLOG_UNTRUSTED} A failure returns success: false with reason and details.`,
       args: {
         ref: worklogRefSchema.optional().describe('The log to read. Omitted, the selected feature or this session\'s own log.'),
@@ -1046,7 +1040,6 @@ export function createHiveOperations(services: HiveServices, readCouncilAgents: 
       },
     }),
     hive_worklog_record: operation({
-      compact: true,
       description: `Append one checkpoint to a Worklog, optionally replacing its briefing in the same commit. Primary sessions only; the host stamps the author. Pass the ref from your preceding hive_worklog_read. A session log accepts only its own session. Record at meaningful milestones, not per tool call. Retries: after a lost, unknown or failed result, including io_error with details.publication: 'uncertain', resend the identical request with the same operationId (replayed: true if it landed); a new operationId would append a second checkpoint. operation_conflict: that operationId was used for a different request. stale_revision: read again, reconcile the briefing, and record with a new operationId. A failure returns success: false with reason and details; only an uncertain write may have written. ${WORKLOG_UNTRUSTED}`,
       args: {
         ref: worklogRefSchema.describe('The log to write, copied from hive_worklog_read.'),
@@ -1068,7 +1061,6 @@ export function createHiveOperations(services: HiveServices, readCouncilAgents: 
       },
     }),
     hive_explore_read: operation({
-      compact: true,
       description: `Read exploration frontiers; writes nothing. An exploration tracks one investigation (debugging, auditing, research): its goal, a keyed frontier of targets to settle, and keyed observations. Without id, lists active explorations, newest update first, within ${EXPLORATION_LIMITS.briefMaxBytes} bytes ({ explorations, totalActive, truncated, errors }); an unreadable file is listed in errors. With id, view 'brief' (default) returns metadata, counts, scopeMapped (the frontier has items), stagnantRevisions (revisions since the last observation change or settled frontier item), gaps (open, then blocked items) and observations (confirmed first), each { items, total }, within ${EXPLORATION_LIMITS.briefMaxBytes} bytes; 'full' returns every frontier item and observation with evidence and refs. A closed exploration stays readable by id. ${EXPLORATION_UNTRUSTED_NOTICE} A failure returns success: false with reason, error (the message) and details when there are any.`,
       args: {
         id: z.string().optional().describe("Exploration ID: 1 to 64 lowercase letters, digits, '.', '_' or '-', starting with a letter or digit. Omitted, lists active explorations."),
@@ -1077,7 +1069,6 @@ export function createHiveOperations(services: HiveServices, readCouncilAgents: 
       execute: ({ id, view }) => explorationCall(() => explorationService.read({ id, view })),
     }),
     hive_explore_update: operation({
-      compact: true,
       description: `Create or update one exploration frontier. Primary sessions only; the host stamps the author. Frontier items and observations are upserted by key; nothing is deleted (mark an item dropped). status 'concluded' or 'abandoned' closes it for good; continue in a new exploration with priorExplorationId. Retries: after a lost or failed result, resend the identical request with the same operationId (replayed: true if it committed, even after closure). operation_conflict: that operationId was used for a different request. stale_revision: read again, reconcile, and update with a new operationId. exploration_full: an active exploration would pass ${EXPLORATION_LIMITS.activeMaxDocBytes} bytes (room up to ${EXPLORATION_LIMITS.maxDocBytes} is kept so a plain close fits); condense, or conclude and continue anew. Returns the brief view plus replayed, committedRevision and currentRevision; a failure returns success: false with reason, error and details. Refusals publish no revision; an io_error may have published. ${EXPLORATION_UNTRUSTED_NOTICE}`,
       args: {
         id: z.string().describe("Exploration ID: a descriptive slug of 1 to 64 lowercase letters, digits, '.', '_' or '-', starting alphanumeric."),
@@ -1116,9 +1107,12 @@ export function createHiveOperations(services: HiveServices, readCouncilAgents: 
       },
     }),
     hive_status: operation({
-      description: 'Get feature metadata, one top-level task list with integrity entries/blockers/freshness/handoffs, dependency readiness, and worktree state. Integrity entries are never runnable.',
-      args: { feature: z.string().optional() },
-      execute: async ({ feature }, invocation) => {
+      description: 'Get feature metadata, one top-level task list with integrity entries/blockers/freshness/handoffs, dependency readiness, and worktree state. Integrity entries are never runnable. Done and cancelled rows carry only folder, status, hasHandoff and freshness unless detail is full.',
+      args: {
+        feature: z.string().optional(),
+        detail: z.enum(['full']).optional().describe('full: return every field on done and cancelled task rows too.'),
+      },
+      execute: async ({ feature, detail }, invocation) => {
         const selected = requireFeature(feature, invocation);
         const tasks = taskService.listStatusEntries(selected);
         const { worktrees, errors: worktreeErrors } = await worktreeService.list(selected);
@@ -1148,6 +1142,12 @@ export function createHiveOperations(services: HiveServices, readCouncilAgents: 
           };
         });
         const graph = computeRunnableAndBlocked(projectedTasks.filter(task => task.status !== null));
+        // Readiness is computed above from every field; only the presentation of finished rows is narrowed.
+        const presentedTasks = detail === 'full' ? projectedTasks : projectedTasks.map(task => (
+          task.status === 'done' || task.status === 'cancelled'
+            ? { folder: task.folder, status: task.status, hasHandoff: task.hasHandoff, specStale: task.specStale, specStaleReason: task.specStaleReason }
+            : task
+        ));
         const hasPlan = fs.existsSync(getPlanPath(projectRoot, selected));
         return {
           // status is the feature lifecycle; planApproved is whether an approval covers the current plan.md, null when unknown.
@@ -1155,11 +1155,12 @@ export function createHiveOperations(services: HiveServices, readCouncilAgents: 
             name: info.name,
             status: info.status,
             hasPlan,
+            hasExecutionDecisions: contextService.hasDocument(selected, 'execution-decisions'),
             planApproved: planApprovalError !== undefined ? null : plan?.status === 'approved',
             ...(planApprovalError !== undefined ? { planApprovalError } : {}),
             commentCount: planService.getComments(selected).length,
           } : null,
-          tasks: projectedTasks,
+          tasks: presentedTasks,
           runnable: graph.runnable,
           blocked: graph.blocked,
           planSync: planSyncOf(selected),

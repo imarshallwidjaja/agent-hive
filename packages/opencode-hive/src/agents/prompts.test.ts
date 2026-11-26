@@ -2742,6 +2742,7 @@ describe('Multi-repo planning guidance', () => {
     expect(QUEEN_BEE_PROMPT).toContain('Use `writing-plans` to select the repository and retained target');
     expect(QUEEN_BEE_PROMPT).toContain("automatically replace and cancel it only when no work has started and no existing task depends on it; the replacement mirrors incoming `dependsOn` and supplies corrected `repos` via `hive_task_create(...)`");
     expect(QUEEN_BEE_PROMPT).toContain('If work started or reverse dependents exist, retain the incorrect task as blocked with a structured blocker and escalate; do not rewrite dependencies');
+    expect(QUEEN_BEE_PROMPT).toContain("Find reverse dependents with `hive_status({ detail: 'full' })`, because default done and cancelled rows omit `dependsOn`.");
   });
 
   it('teaches hive hybrid planners to discover and update repository manifests before writing repo-scoped tasks', () => {
@@ -2988,6 +2989,7 @@ describe('Swarm (Orchestrator) prompt', () => {
       expect(SWARM_BEE_PROMPT).toContain('every task MUST declare its **Repos** metadata before task sync or worktree creation');
       expect(SWARM_BEE_PROMPT).toContain("automatically replace and cancel it only when no work has started and no existing task depends on it; the replacement mirrors incoming `dependsOn` and supplies corrected `repos` via `hive_task_create(...)`");
       expect(SWARM_BEE_PROMPT).toContain('If work started or reverse dependents exist, retain the incorrect task as blocked with a structured blocker and escalate; do not rewrite dependencies');
+      expect(SWARM_BEE_PROMPT).toContain("Find reverse dependents with `hive_status({ detail: 'full' })`, because default done and cancelled rows omit `dependsOn`.");
     });
 
     it('conditions context consolidation and stale-state checks on observable pressure and task state', () => {

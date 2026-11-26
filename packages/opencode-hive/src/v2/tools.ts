@@ -92,7 +92,7 @@ export function toToolInfo(name: string, operation: HiveOperation, readTransport
     Effect.map((result) => {
       if (operation.output === 'text') return { content: String(result) };
       // The v1 presentation is the JSON text; the structured output is that same JSON, so both hosts agree.
-      const text = serializeHiveJson(operation, result) ?? 'null';
+      const text = serializeHiveJson(result) ?? 'null';
       return { output: JSON.parse(text) as z.core.util.JSONType, content: text };
     }),
   );

@@ -15,7 +15,7 @@ import type { HiveCommandContext } from './commands/types.js';
 import { createTaskTraceTools, injectTaskTraceHint, isDirectChildSession, TASK_TRACE_SUMMARIZER_AGENT, TASK_TRACE_SUMMARIZER_PROMPT } from './task-trace.js';
 import { childAssociation, childRouteRecord, composeDispatchPrompt, resolveAssignment } from './task-brief.js';
 import { createHiveServices, type AssignmentMarker, type RouteSnapshot } from './runtime/hive-services.js';
-import { createHiveOperations, presentHiveResult } from './runtime/hive-tools.js';
+import { createHiveOperations, presentHiveResult, serializeHiveJson } from './runtime/hive-tools.js';
 import { z } from './runtime/schema.js';
 import { buildRoleCatalog, createCommandContext as createSharedCommandContext } from './runtime/role-catalog.js';
 import type { HostCheckedHiveAgent } from './runtime/role-catalog.js';
@@ -136,7 +136,7 @@ const plugin: Plugin = async (ctx) => {
   const unsupportedOnHost = () => tool({
     description: 'Unsupported on OpenCode v1: native task() calls block until the child returns, so there is no live background child to inspect or stop. It always returns success: false with reason unsupported_on_host.',
     args: { sessionID: z.string().optional().describe('Ignored on OpenCode v1.') },
-    execute: async () => JSON.stringify({ success: false, reason: 'unsupported_on_host', error: 'OpenCode v1 uses blocking task() calls; live background subagent tools require OpenCode v2.' }, null, 2),
+    execute: async () => serializeHiveJson({ success: false, reason: 'unsupported_on_host', error: 'OpenCode v1 uses blocking task() calls; live background subagent tools require OpenCode v2.' }),
   });
   const backgroundTools = { hive_background_status: unsupportedOnHost(), hive_background_cancel: unsupportedOnHost() };
   const tools: Record<string, any> = {

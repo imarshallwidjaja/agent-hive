@@ -130,7 +130,7 @@ const ORDINARY_OPERATION_SIGNATURES = [
   'hive_explore_read(id?:string, view?:brief|full)',
   'hive_explore_update(id:string, expectedRevision:number, operationId?:string, goal?:string, subject?:string, priorExplorationId?:string, status?:concluded|abandoned, conclusion?:string, reason?:string, frontier?:{key:string, target:string, state:open|covered|blocked|dropped, question?:string, evidence?:string, reason?:string, refs?:string[]}[], observations?:{key:string, summary:string, status:confirmed|hypothesis|refuted, refs?:string[], supersedes?:string}[])',
   'hive_councils_list(name?:string)',
-  'hive_status(feature?:string)',
+  'hive_status(feature?:string, detail?:full)',
   'hive_git_snapshot(directory?:string, repositoryIds?:string[], baseRef?:string, targetRef?:string, range?:string, paths?:string[], maxFiles?:number, maxPatchBytes?:number)',
 ];
 
@@ -271,6 +271,7 @@ const DESCRIBED_FIELDS: Record<string, string[]> = {
   hive_explore_read: ['id', 'view'],
   hive_git_snapshot: ['directory', 'repositoryIds', 'baseRef', 'targetRef', 'range', 'paths', 'maxFiles', 'maxPatchBytes'],
   hive_councils_list: ['name'],
+  hive_status: ['detail'],
   hive_explore_update: ['id', 'expectedRevision', 'operationId', 'goal', 'subject', 'priorExplorationId', 'status', 'conclusion', 'reason', 'frontier', 'observations'],
   ...Object.fromEntries(['hive_worktree_merge', 'hive_adhoc_worktree_merge'].map((name) => [name, [
     'historyIntent', 'strategy', 'message', 'preserveConflicts', 'cleanup', 'sourceCommit', 'sourceCommits', 'expectedTarget', 'expectedTargets',
@@ -418,10 +419,10 @@ describe('ordinary Hive operation metadata retention and naming', () => {
 });
 
 describe('ordinary Hive operation results', () => {
-  it('presents structured results as two-space JSON and the manual task folder name as plain text', async () => {
+  it('presents structured results as compact JSON and the manual task folder name as plain text', async () => {
     const { call } = await createRuntime();
     const created = await call('hive_feature_create', { name: 'contract-feature', ticket: 'T-1' });
-    expect(created).toBe(JSON.stringify(JSON.parse(created), null, 2));
+    expect(created).toBe(JSON.stringify(JSON.parse(created)));
     expect(JSON.parse(created)).toMatchObject({ name: 'contract-feature', status: 'planning', ticket: 'T-1' });
     await call('hive_plan_write', { feature: 'contract-feature', content: '# Plan\n\n## Tasks\n\n### 1. First\nDo it.\n' });
     expect(await call('hive_task_create', { feature: 'contract-feature', name: 'manual' })).toBe('01-manual');

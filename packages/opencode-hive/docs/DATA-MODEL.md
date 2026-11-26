@@ -250,13 +250,13 @@ Feature statuses (FeatureStatusType):
 
 ## hive_status Output
 
-`hive_status({ feature? })` returns feature information, task summaries, dependency readiness, and feature-task worktrees. It does not include live subagent children, ad-hoc runs, managed context, report bodies, or an overview projection.
+`hive_status({ feature?, detail? })` returns feature information, task summaries, dependency readiness, and feature-task worktrees. It does not include live subagent children, ad-hoc runs, managed context, report bodies, or an overview projection.
 
 ### Top-Level Objects
 
-- `feature`: `{ name, status, hasPlan, planApproved, commentCount }`, or `null` for an unknown feature or missing `feature.json`. `status` is the feature lifecycle; `planApproved` is whether an approval covers the current `plan.md`, which an archived feature can have and an approved feature loses when its plan is edited outside the plan tools. `planApproved` is `null`, with `planApprovalError` added, when the `APPROVED` marker or the plan cannot be read. This is a summary, not the full `feature.json` (which also stores `ticket`, `createdAt`, and optional lifecycle timestamps).
+- `feature`: `{ name, status, hasPlan, hasExecutionDecisions, planApproved, commentCount }`, or `null` for an unknown feature or missing `feature.json`. `status` is the feature lifecycle; `planApproved` is whether an approval covers the current `plan.md`, which an archived feature can have and an approved feature loses when its plan is edited outside the plan tools. `planApproved` is `null`, with `planApprovalError` added, when the `APPROVED` marker or the plan cannot be read. `hasExecutionDecisions` is whether `context/execution-decisions.md` exists. This is a summary, not the full `feature.json` (which also stores `ticket`, `createdAt`, and optional lifecycle timestamps).
 - `tasks`: the sole task list from `TaskService.listStatusEntries`, including every retained task folder.
-- `runnable`: pending task folders whose stored dependencies are all `done`.
+- `runnable`: pending task folders whose stored dependencies are all `done`. Readiness is computed from every task's full record, whatever `detail` is.
 - `blocked`: pending task folders mapped to their unmet stored dependencies.
 - `worktrees`: healthy feature-task workspace state from `WorktreeService.list`.
 - `worktreeErrors` (optional): invalid workspace or namespace entries as `{ path, reason }`; one bad entry does not prevent other worktrees or task summaries from being read.
@@ -268,7 +268,7 @@ With `feature: null`, the other summaries may be empty.
 
 ### Task List Fields
 
-Each entry with readable task status includes:
+By default a `done` or `cancelled` entry carries only `folder`, `status`, `hasHandoff`, `specStale`, and `specStaleReason`; `detail: 'full'` returns every field below on those entries too. Every other entry with readable task status includes:
 - `folder` (string)
 - `name` (string)
 - `status` (string)

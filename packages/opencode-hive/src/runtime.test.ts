@@ -154,7 +154,10 @@ describe('coordinated runtime hard cut', () => {
     const { root, hooks } = createRuntime();
     const loaded = await hooks;
     for (const name of ['hive_background_status', 'hive_background_cancel']) {
-      expect(JSON.parse(await loaded.tool![name].execute({ sessionID: 'child-1' }, context('parent')))).toEqual({
+      const text = await loaded.tool![name].execute({ sessionID: 'child-1' }, context('parent'));
+      // The refusal uses the same compact JSON presentation as every other Hive tool.
+      expect(text).toBe(JSON.stringify(JSON.parse(text)));
+      expect(JSON.parse(text)).toEqual({
         success: false, reason: 'unsupported_on_host', error: 'OpenCode v1 uses blocking task() calls; live background subagent tools require OpenCode v2.',
       });
     }
@@ -1620,7 +1623,12 @@ describe('coordinated runtime hard cut', () => {
     const caller = context('context-reader');
     const content = `---\ndescription: Large test context\nread_when: Read during continuation tests.\nowner: test\nreview_after: 2099-01-01\n---\n\n${'x'.repeat(10_000)}`;
     await loaded.tool!.hive_context_write.execute({ scope: 'project', name: 'large', content }, caller);
-    const first = JSON.parse(await loaded.tool!.hive_context_read.execute({ scope: 'project', name: 'large', maxBytes: 4_096 }, caller));
+    const firstText = await loaded.tool!.hive_context_read.execute({ scope: 'project', name: 'large', maxBytes: 4_096 }, caller);
+    // maxBytes is measured on the compact text the host receives, so a partial chunk fills the budget without passing it.
+    expect(firstText).toBe(JSON.stringify(JSON.parse(firstText)));
+    expect(Buffer.byteLength(firstText, 'utf8')).toBeLessThanOrEqual(4_096);
+    expect(Buffer.byteLength(firstText, 'utf8')).toBeGreaterThan(4_096 - 16);
+    const first = JSON.parse(firstText);
     expect(first.complete).toBe(false);
     expect(first.nextCursor).toBeString();
     const second = JSON.parse(await loaded.tool!.hive_context_read.execute({ scope: 'project', name: 'large', cursor: first.nextCursor, maxBytes: 4_096 }, caller));
@@ -1977,7 +1985,7 @@ describe('coordinated runtime hard cut', () => {
       fs.chmodSync(markerPath, 0o644);
     }
     const restored = JSON.parse(await loaded.tool!.hive_status.execute({}, caller));
-    expect(restored.feature).toEqual({ name: 'approval-unreadable', status: 'approved', hasPlan: true, planApproved: true, commentCount: 0 });
+    expect(restored.feature).toEqual({ name: 'approval-unreadable', status: 'approved', hasPlan: true, hasExecutionDecisions: false, planApproved: true, commentCount: 0 });
   });
 
   it('reports one task list with heading integrity, blockers, spec freshness, and successor handoffs', async () => {
@@ -2005,6 +2013,15 @@ describe('coordinated runtime hard cut', () => {
       expectedRevision: read.revision,
       operations: [{ type: 'replace_section', headingPath: ['Tasks'], content: '## Tasks\n\n### 1. Setup\n\nSetup.\n\n#### Amendment\n\nAmend.\n\n### 2. Build\n\nBuild.\n' }],
     }, caller);
+    // The outline lists task headings with their lines and leaves the task's #### subsection to the full read.
+    const outline = JSON.parse(await loaded.tool!.hive_plan_read.execute({ mode: 'outline' }, caller));
+    expect(outline.headings).toEqual([
+      { level: 1, title: 'Plan', line: 1 },
+      { level: 2, title: 'Tasks', line: 3 },
+      { level: 3, title: '1. Setup', line: 5 },
+      { level: 3, title: '2. Build', line: 13 },
+    ]);
+    expect(Object.keys(outline).sort()).toEqual(['comments', 'contentHash', 'headings', 'planSync', 'revision', 'status']);
     await loaded.tool!.hive_plan_approve.execute({}, caller);
     expect(JSON.parse(await loaded.tool!.hive_tasks_sync.execute({}, caller)).created).toEqual(['01-setup', '02-build']);
     expect(JSON.parse(await loaded.tool!.hive_status.execute({}, caller)).feature).toMatchObject({ status: 'approved', planApproved: true });
@@ -2029,7 +2046,7 @@ describe('coordinated runtime hard cut', () => {
       { folder: '02-build', dependsOn: ['01-setup'], specStale: true, specStaleReason: 'differs_from_plan', hasHandoff: false },
     ]);
     // The lifecycle status stays approved, but the approval no longer covers the plan edited outside the plan tools.
-    expect(status.feature).toEqual({ name: 'task-state', status: 'approved', hasPlan: true, planApproved: false, commentCount: 0 });
+    expect(status.feature).toEqual({ name: 'task-state', status: 'approved', hasPlan: true, hasExecutionDecisions: false, planApproved: false, commentCount: 0 });
     expect(status).not.toHaveProperty('specFreshnessError');
     expect(status.runnable).toEqual(['01-setup']);
     expect(status.blocked).toEqual({ '02-build': ['01-setup'] });
@@ -2039,15 +2056,19 @@ describe('coordinated runtime hard cut', () => {
     const setupStatusPath = path.join(tasksPath, '01-setup', 'status.json');
     const { dependsOn: _omitted, ...legacySetup } = JSON.parse(fs.readFileSync(setupStatusPath, 'utf8'));
     fs.writeFileSync(setupStatusPath, JSON.stringify(legacySetup));
+    await loaded.tool!.hive_context_write.execute({ name: 'execution-decisions', content: '# Decisions\n\nKeep the setup task first.\n' }, caller);
+    // By default a finished row carries only its folder, status, handoff and freshness; an unfinished row keeps every field.
     const edges = JSON.parse(await loaded.tool!.hive_status.execute({}, caller));
-    const dependencyView = (entries: any[]) => entries.map(({ folder, status, dependsOn }) => ({ folder, status, dependsOn }));
-    expect(dependencyView(edges.tasks)).toEqual([
-      { folder: '01-setup', status: 'pending', dependsOn: [] },
-      { folder: '02-build', status: 'done', dependsOn: ['01-setup'] },
-    ]);
+    expect(edges.tasks[0]).toMatchObject({ folder: '01-setup', name: 'setup', status: 'pending', dependsOn: [] });
+    expect(edges.tasks[1]).toEqual({ folder: '02-build', status: 'done', hasHandoff: false, specStale: true, specStaleReason: 'differs_from_plan' });
+    expect(edges.feature).toMatchObject({ hasExecutionDecisions: true });
     expect(edges.feature).not.toHaveProperty('tasks');
     expect(edges.runnable).toEqual(['01-setup']);
     expect(edges.blocked).toEqual({});
+    const full = JSON.parse(await loaded.tool!.hive_status.execute({ detail: 'full' }, caller));
+    expect(full.tasks[1]).toMatchObject({ folder: '02-build', name: 'build', status: 'done', origin: 'plan', dependsOn: ['01-setup'] });
+    expect(full.tasks[0]).toEqual(edges.tasks[0]);
+    expect({ runnable: full.runnable, blocked: full.blocked }).toEqual({ runnable: edges.runnable, blocked: edges.blocked });
 
     const blocker = { reason: 'Operator decision needed.', options: ['Keep', 'Replace'], recommendation: 'Keep' };
     await loaded.tool!.hive_task_update.execute({ task: '01-setup', status: 'blocked', blocker }, caller);
@@ -2064,9 +2085,47 @@ describe('coordinated runtime hard cut', () => {
     expect(degraded.specFreshnessError).toMatch(/EISDIR/);
     expect(projected(degraded.tasks)).toEqual([
       { folder: '01-setup', dependsOn: [], specStale: null, specStaleReason: 'freshness_unavailable', hasHandoff: true },
-      { folder: '02-build', dependsOn: ['01-setup'], specStale: null, specStaleReason: 'freshness_unavailable', hasHandoff: false },
+      { folder: '02-build', specStale: null, specStaleReason: 'freshness_unavailable', hasHandoff: false },
     ]);
     expect(degraded.feature).not.toHaveProperty('tasks');
+  });
+
+  it('reports execution decisions only for a regular context file, never a directory or symlink', async () => {
+    const { hooks } = createRuntime();
+    const loaded = await hooks;
+    const caller = context('decisions');
+    await loaded.tool!.hive_feature_create.execute({ name: 'decisions' }, caller);
+    const written = JSON.parse(await loaded.tool!.hive_plan_write.execute({ feature: 'decisions', content: '# Plan\n' }, caller));
+    const contextDir = path.join(path.dirname(written.path), 'context');
+    const decisions = path.join(contextDir, 'execution-decisions.md');
+    const has = async () => JSON.parse(await loaded.tool!.hive_status.execute({ feature: 'decisions' }, caller)).feature.hasExecutionDecisions;
+
+    expect(await has()).toBe(false);
+    fs.mkdirSync(decisions, { recursive: true });
+    expect(await has()).toBe(false);
+    fs.rmdirSync(decisions);
+    const outside = path.join(path.dirname(written.path), 'outside.md');
+    fs.writeFileSync(outside, '# Decisions\n');
+    fs.symlinkSync(outside, decisions);
+    expect(await has()).toBe(false);
+    fs.unlinkSync(decisions);
+    fs.writeFileSync(decisions, '# Decisions\n');
+    expect(await has()).toBe(true);
+    // A symlinked context directory is refused by ContextService, so its file does not count either.
+    const realContext = path.join(path.dirname(written.path), 'real-context');
+    fs.renameSync(contextDir, realContext);
+    fs.symlinkSync(realContext, contextDir);
+    expect(await has()).toBe(false);
+    fs.unlinkSync(contextDir);
+    fs.renameSync(realContext, contextDir);
+    expect(await has()).toBe(true);
+    // So is a linked ancestor between the project root and the context directory, while status stays readable.
+    const featuresDir = path.dirname(path.dirname(written.path));
+    const realFeatures = `${featuresDir}-real`;
+    fs.renameSync(featuresDir, realFeatures);
+    fs.symlinkSync(realFeatures, featuresDir);
+    const linked = JSON.parse(await loaded.tool!.hive_status.execute({ feature: 'decisions' }, caller));
+    expect(linked.feature).toMatchObject({ name: 'decisions', hasPlan: true, hasExecutionDecisions: false });
   });
 
   it('appends a task brief after the unchanged route snapshot only for bound Forager dispatches', async () => {
