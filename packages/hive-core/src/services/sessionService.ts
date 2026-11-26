@@ -1,10 +1,9 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { ensureDir, fileExists, readJson, writeJson, acquireLockSync, writeJsonAtomic, syncFile, syncDirectory, resolveExistingFeaturePath } from '../utils/paths.js';
+import { ensureDir, fileExists, readJson, acquireLockSync, writeJsonAtomic, syncFile, syncDirectory, resolveExistingFeaturePath } from '../utils/paths.js';
 import {
   assertNativeObservationOwner,
   DEFAULT_NATIVE_OBSERVATION_OWNER,
-  getNativeFeatureSessionsPath,
   getNativeSessionsPath,
 } from '../native-observations.js';
 import type { NativeObservationOwner } from '../native-observations.js';
@@ -25,19 +24,12 @@ export const LEGACY_STANDING_CONSTRAINT_ID = LEGACY_CONSTRAINT_ID;
 export { ConstraintRegisterError as StandingConstraintError };
 export type { ConstraintRegister as StandingConstraintRegister };
 
-export class SessionContinuityError extends Error {
-  constructor(readonly reason: 'missing_origin' | 'invalid_origin', message: string) {
-    super(`assignment_recovery_error: ${message}`);
-  }
-}
-
 /**
  * Fields whose absence is meaningful state: an explicit `undefined` in a patch
  * clears them instead of being ignored as "not supplied". A child's task and
  * ad-hoc run association is one assignment, so binding one clears the other.
  */
 const CLEARABLE_SESSION_FIELDS = new Set<keyof SessionInfo>([
-  'directiveRecoveryState',
   'standingConstraints',
   'standingConstraintEntries',
   'taskFolder',
@@ -49,7 +41,7 @@ export class SessionService {
 
   /**
    * `projectRoot` is the real project root; it keys feature resolution and visibility. `owner` selects which
-   * native host's session index and feature projections this service reads and writes.
+   * native host's session index this service reads and writes.
    */
   constructor(private projectRoot: string, owner: NativeObservationOwner = DEFAULT_NATIVE_OBSERVATION_OWNER) {
     this.owner = assertNativeObservationOwner(owner);
@@ -61,10 +53,6 @@ export class SessionService {
     }
 
     const { sessionId: _sessionId, ...rest } = patch;
-    if (target.duplicatedFromSessionId !== undefined && rest.duplicatedFromSessionId !== undefined
-      && target.duplicatedFromSessionId !== rest.duplicatedFromSessionId) {
-      throw new Error('assignment_recovery_error: immutable duplicate source cannot change');
-    }
     const applyFields = (session: SessionInfo): void => {
       for (const [key, value] of Object.entries(rest) as Array<[keyof Omit<SessionInfo, 'sessionId'>, SessionInfo[keyof Omit<SessionInfo, 'sessionId'>]]>) {
         if (value !== undefined || CLEARABLE_SESSION_FIELDS.has(key)) {
@@ -125,23 +113,8 @@ export class SessionService {
     return register;
   }
 
-  private getSessionsPath(featureName: string): string {
-    return getNativeFeatureSessionsPath(this.projectRoot, featureName, this.owner);
-  }
-
   private getGlobalSessionsPath(): string {
     return getNativeSessionsPath(this.projectRoot, this.owner);
-  }
-
-  private getSessions(featureName: string): SessionsJson {
-    const sessionsPath = this.getSessionsPath(featureName);
-    return readJson<SessionsJson>(sessionsPath) || { sessions: [] };
-  }
-
-  private saveSessions(featureName: string, data: SessionsJson): void {
-    const sessionsPath = this.getSessionsPath(featureName);
-    ensureDir(path.dirname(sessionsPath));
-    writeJson(sessionsPath, data);
   }
 
   private getGlobalSessions(): SessionsJson {
@@ -184,12 +157,6 @@ export class SessionService {
     return empty;
   }
 
-  private saveGlobalSessions(data: SessionsJson): void {
-    const globalPath = this.getGlobalSessionsPath();
-    ensureDir(path.dirname(globalPath));
-    writeJson(globalPath, data);
-  }
-
   private updateGlobalSessions<T>(mutator: (data: SessionsJson) => T): T {
     const globalPath = this.getGlobalSessionsPath();
     ensureDir(path.dirname(globalPath));
@@ -230,21 +197,6 @@ export class SessionService {
     });
   }
 
-  bindFeature(sessionId: string, featureName: string, patch?: Partial<SessionInfo>): SessionInfo {
-    const session = this.setFeatureRoute(sessionId, featureName, patch);
-
-    const featureData = this.getSessions(featureName);
-    let featureSession = featureData.sessions.find(s => s.sessionId === sessionId);
-    if (featureSession) {
-      Object.assign(featureSession, session);
-    } else {
-      featureData.sessions.push({ ...session });
-    }
-    this.saveSessions(featureName, featureData);
-
-    return session;
-  }
-
   setFeatureRoute(sessionId: string, featureName: string | null, patch?: Partial<SessionInfo>): SessionInfo {
     if (featureName !== null) resolveExistingFeaturePath(this.projectRoot, featureName);
     return this.updateGlobalSessions((data) => {
@@ -253,57 +205,6 @@ export class SessionService {
       session.featureName = featureName;
       session.lastActiveAt = new Date().toISOString();
       return session;
-    });
-  }
-
-  clearFeatureRoute(sessionId: string): SessionInfo {
-    return this.updateGlobalSessions((data) => {
-      const session = this.getOrCreateGlobalSession(data, sessionId);
-      delete session.featureName;
-      session.lastActiveAt = new Date().toISOString();
-      return session;
-    });
-  }
-
-  snapshotChildSession(
-    parentSessionId: string,
-    childSessionId: string,
-    patch?: Partial<SessionInfo>,
-  ): SessionInfo {
-    return this.updateGlobalSessions((data) => {
-      const parent = data.sessions.find((candidate) => candidate.sessionId === parentSessionId);
-      if (!parent) throw new SessionContinuityError('missing_origin', 'missing child snapshot parent');
-      if (parentSessionId === childSessionId) {
-        throw new SessionContinuityError('invalid_origin', 'child snapshot parent and child must differ');
-      }
-      const {
-        sessionId: _sessionId,
-        parentSessionId: _parentSessionId,
-        featureName: _featureName,
-        standingConstraints: _standingConstraints,
-        standingConstraintEntries: _standingConstraintEntries,
-        standingConstraintsRevision: _standingConstraintsRevision,
-        ...metadata
-      } = patch ?? {};
-      let child = data.sessions.find((candidate) => candidate.sessionId === childSessionId);
-      if (child) {
-        if (child.parentSessionId !== parentSessionId) {
-          throw new SessionContinuityError('invalid_origin', 'existing child snapshot parent cannot change');
-        }
-        const retry = { ...child };
-        this.applySessionPatch(retry, metadata);
-        if (Object.keys(metadata).some((key) => retry[key as keyof SessionInfo] !== child![key as keyof SessionInfo])) {
-          throw new SessionContinuityError('invalid_origin', 'existing child snapshot metadata cannot change');
-        }
-      } else {
-        child = this.getOrCreateGlobalSession(data, childSessionId);
-        this.applySessionPatch(child, metadata);
-        child.parentSessionId = parentSessionId;
-      }
-      if (Object.prototype.hasOwnProperty.call(parent, 'featureName')) child.featureName = parent.featureName;
-      else delete child.featureName;
-      this.persistStandingConstraintRegister(child, this.standingConstraintRegister(parent));
-      return { ...child, standingConstraintEntries: child.standingConstraintEntries?.map((entry) => ({ ...entry })) };
     });
   }
 
@@ -352,7 +253,8 @@ export class SessionService {
   ): ConstraintRegister {
     session.standingConstraintEntries = register.entries.map((entry) => ({ ...entry }));
     session.standingConstraintsRevision = register.revision;
-    session.standingConstraints = register.constraints || undefined;
+    // Entries are the one stored form; drop the flattened text an older writer may have left beside them.
+    delete session.standingConstraints;
     session.lastActiveAt = new Date().toISOString();
     return this.standingConstraintRegister(session);
   }
@@ -400,114 +302,5 @@ export class SessionService {
       const current = this.standingConstraintRegister(session);
       return this.persistStandingConstraintRegister(session, clearConstraints(current, expectedRevision));
     });
-  }
-
-  track(featureName: string, sessionId: string, taskFolder?: string): SessionInfo {
-    const data = this.getSessions(featureName);
-    const now = new Date().toISOString();
-
-    let session = data.sessions.find(s => s.sessionId === sessionId);
-    if (session) {
-      session.lastActiveAt = now;
-      if (taskFolder) session.taskFolder = taskFolder;
-    } else {
-      session = {
-        sessionId,
-        taskFolder,
-        startedAt: now,
-        lastActiveAt: now,
-      };
-      data.sessions.push(session);
-    }
-
-    if (!data.master) {
-      data.master = sessionId;
-    }
-
-    this.saveSessions(featureName, data);
-    return session;
-  }
-
-  setMaster(featureName: string, sessionId: string): void {
-    const data = this.getSessions(featureName);
-    data.master = sessionId;
-    this.saveSessions(featureName, data);
-  }
-
-  getMaster(featureName: string): string | undefined {
-    return this.getSessions(featureName).master;
-  }
-
-  list(featureName: string): SessionInfo[] {
-    return this.getSessions(featureName).sessions;
-  }
-
-  get(featureName: string, sessionId: string): SessionInfo | undefined {
-    return this.getSessions(featureName).sessions.find(s => s.sessionId === sessionId);
-  }
-
-  getByTask(featureName: string, taskFolder: string): SessionInfo | undefined {
-    return this.getSessions(featureName).sessions.find(s => s.taskFolder === taskFolder);
-  }
-
-  remove(featureName: string, sessionId: string): boolean {
-    const data = this.getSessions(featureName);
-    const index = data.sessions.findIndex(s => s.sessionId === sessionId);
-    if (index === -1) return false;
-
-    data.sessions.splice(index, 1);
-    if (data.master === sessionId) {
-      data.master = data.sessions[0]?.sessionId;
-    }
-    this.saveSessions(featureName, data);
-    return true;
-  }
-
-  findFeatureBySession(sessionId: string): string | null {
-    return this.getGlobal(sessionId)?.featureName || null;
-  }
-
-  fork(featureName: string, fromSessionId?: string): SessionInfo {
-    const data = this.getSessions(featureName);
-    const now = new Date().toISOString();
-    
-    const sourceSession = fromSessionId 
-      ? data.sessions.find(s => s.sessionId === fromSessionId)
-      : data.sessions.find(s => s.sessionId === data.master);
-    const sourceConstraints = sourceSession ? this.standingConstraintRegister(sourceSession) : undefined;
-
-    const newSessionId = `ses_fork_${Date.now()}`;
-    const newSession: SessionInfo = {
-      sessionId: newSessionId,
-      taskFolder: sourceSession?.taskFolder,
-      ...(sourceSession && Object.prototype.hasOwnProperty.call(sourceSession, 'featureName')
-        ? { featureName: sourceSession.featureName }
-        : {}),
-      standingConstraints: sourceConstraints?.constraints || undefined,
-      standingConstraintEntries: sourceConstraints?.entries.map((entry) => ({ ...entry })),
-      standingConstraintsRevision: sourceConstraints?.revision,
-      startedAt: now,
-      lastActiveAt: now,
-    };
-
-    data.sessions.push(newSession);
-    this.saveSessions(featureName, data);
-    return newSession;
-  }
-
-  fresh(featureName: string, title?: string): SessionInfo {
-    const data = this.getSessions(featureName);
-    const now = new Date().toISOString();
-
-    const newSessionId = `ses_${title ? title.replace(/\s+/g, '_').toLowerCase() : Date.now()}`;
-    const newSession: SessionInfo = {
-      sessionId: newSessionId,
-      startedAt: now,
-      lastActiveAt: now,
-    };
-
-    data.sessions.push(newSession);
-    this.saveSessions(featureName, data);
-    return newSession;
   }
 }

@@ -2871,7 +2871,7 @@ describe('skill content', () => {
     expect(template).toContain('a feature-local `sessions.json` is a projection and never alternate recovery truth');
     expect(template).not.toContain('`.hive/sessions.json`');
     const layout = readSkillReference('hive-config', 'runtime-layout.md');
-    expect(layout).toContain('feature-local navigation projection, not canonical');
+    expect(layout).toContain('legacy feature-local projection, not canonical');
     expect(layout).toContain('It holds canonical session bindings');
     expect(template).toContain('Never replay historical prompt text as a new assignment');
     expect(template).toContain('Plugin restart does not continue old live workers');

@@ -2,6 +2,8 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import {
+  CONSTRAINTS_MAX_CHARS,
+  CONSTRAINTS_WARNING_CHARS,
   ContextMutationError,
   DEFAULT_COUNCIL_CONFIG,
   EXPLORATION_LIMITS,
@@ -36,6 +38,7 @@ import {
   readCompositeWorkspaceManifest,
   resolveExistingFeaturePath,
   type AdhocMergeOptions,
+  type ConstraintRegister,
   type ExplorationUpdateInput,
   type MergeOptions,
   type PlanApprovalResult,
@@ -466,6 +469,17 @@ export function createHiveOperations(services: HiveServices, readCouncilAgents: 
     }
   };
 
+  // Tool results carry the entries only; the flattened text stays internal to prompt rendering.
+  const constraintsResult = ({ entries, revision, constraintsChars }: ConstraintRegister) => ({
+    entries,
+    revision,
+    constraintsChars,
+    maxChars: CONSTRAINTS_MAX_CHARS,
+    ...(constraintsChars >= CONSTRAINTS_WARNING_CHARS
+      ? { warning: `Constraints use ${constraintsChars} of ${CONSTRAINTS_MAX_CHARS} characters. Primary: remove entries that applied only to finished tasks or phases with hive_constraints_edit({ remove: true }) and record each removal in the Worklog unless a standing constraint opts out of it; ask the operator when unsure.` }
+      : {}),
+  });
+
   return {
     hive_feature_create: operation({
       description: 'Create a new feature',
@@ -477,7 +491,8 @@ export function createHiveOperations(services: HiveServices, readCouncilAgents: 
       args: { feature: z.string().nullable() },
       execute: ({ feature }, invocation) => {
         if (!invocation.sessionID) throw new Error('Session identity is required');
-        return sessionService.setFeatureRoute(invocation.sessionID, feature);
+        const { sessionId, featureName, startedAt, lastActiveAt, standingConstraintsRevision } = sessionService.setFeatureRoute(invocation.sessionID, feature);
+        return { sessionId, featureName, startedAt, lastActiveAt, standingConstraintsRevision: standingConstraintsRevision ?? 0 };
       },
     }),
     hive_feature_complete: operation({
@@ -982,14 +997,14 @@ export function createHiveOperations(services: HiveServices, readCouncilAgents: 
     hive_constraints_read: operation({
       description: 'Read session or feature constraints.',
       args: { scope: z.enum(['session', 'feature']).optional(), feature: z.string().optional() },
-      execute: (input, invocation) => readConstraints(constraintTarget(input, invocation)),
+      execute: (input, invocation) => constraintsResult(readConstraints(constraintTarget(input, invocation))),
     }),
     hive_constraints_add: operation({
       description: 'Add a session or feature constraint.',
       args: { constraints: z.string(), scope: z.enum(['session', 'feature']).optional(), feature: z.string().optional() },
       execute: ({ constraints, ...input }, invocation) => {
         const target = constraintTarget(input, invocation);
-        return target.scope === 'session' ? sessionService.addStandingConstraint(target.sessionID, constraints) : featureConstraintService.add(target.feature, constraints);
+        return constraintsResult(target.scope === 'session' ? sessionService.addStandingConstraint(target.sessionID, constraints) : featureConstraintService.add(target.feature, constraints));
       },
     }),
     hive_constraints_edit: operation({
@@ -1000,7 +1015,7 @@ export function createHiveOperations(services: HiveServices, readCouncilAgents: 
         if (constraints !== undefined && !constraints.trim()) throw new Error('constraints must be nonblank');
         const target = constraintTarget(input, invocation);
         const replacement = remove === true ? null : constraints!;
-        return target.scope === 'session' ? sessionService.editStandingConstraint(target.sessionID, id, expectedRevision, replacement) : featureConstraintService.edit(target.feature, id, expectedRevision, replacement);
+        return constraintsResult(target.scope === 'session' ? sessionService.editStandingConstraint(target.sessionID, id, expectedRevision, replacement) : featureConstraintService.edit(target.feature, id, expectedRevision, replacement));
       },
     }),
     hive_constraints_clear: operation({
@@ -1008,7 +1023,7 @@ export function createHiveOperations(services: HiveServices, readCouncilAgents: 
       args: { expectedRevision: z.number(), scope: z.enum(['session', 'feature']).optional(), feature: z.string().optional() },
       execute: ({ expectedRevision, ...input }, invocation) => {
         const target = constraintTarget(input, invocation);
-        return target.scope === 'session' ? sessionService.clearStandingConstraints(target.sessionID, expectedRevision) : featureConstraintService.clear(target.feature, expectedRevision);
+        return constraintsResult(target.scope === 'session' ? sessionService.clearStandingConstraints(target.sessionID, expectedRevision) : featureConstraintService.clear(target.feature, expectedRevision));
       },
     }),
     hive_worklog_list: operation({

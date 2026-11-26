@@ -44,7 +44,7 @@ To hand over one project sequentially:
 6. Reapply session-only directives and explicitly select the feature in the new native session. Native conversations, live workers, selected session routes and session constraints do not migrate.
 7. Inspect shared task/context state in the new host and launch fresh children. Keep the old host's observations as historical evidence.
 
-V1 native session bindings stay in `.hive/sessions.json`; v2 uses `.hive/runtime/opencode-v2/sessions.json`. Feature projections use the corresponding owner's path inside the resolved feature directory. Equal session IDs in two owners are separate records. VS Code shows the owner with each session row. Never copy, merge or rename a native store to transfer a conversation.
+V1 native session bindings stay in `.hive/sessions.json`; v2 uses `.hive/runtime/opencode-v2/sessions.json`. Equal session IDs in two owners are separate records. VS Code shows the owner with each session row. Never copy, merge or rename a native store to transfer a conversation.
 
 For rollback, quiesce v2 using the same procedure, restore the v1 plugin/config entry and start the v1 host with its retained independent native home and its own `agent_hive.json`. Shared domain files remain usable; v2 observations remain in their own store. Restore session directives explicitly and use fresh sessions.
 

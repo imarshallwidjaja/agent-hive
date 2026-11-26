@@ -1921,7 +1921,7 @@ const CONTROL_MARK = 'mmc';
 const ERROR_HEAD_CAP = 200;
 const OWNER_SESSIONS = join(PROJ, '.hive', 'runtime', 'opencode-v2', 'sessions.json');
 // The route fields of a child's Hive binding; timestamps and counters are left out so a refused call can be compared by digest.
-const ROUTE_FIELDS = ['parentSessionId', 'agent', 'baseAgent', 'sessionKind', 'featureName', 'taskFolder', 'projectRoot', 'adHocRunId', 'standingConstraints', 'standingConstraintEntries', 'standingConstraintsRevision', 'directivePrompt'];
+const ROUTE_FIELDS = ['parentSessionId', 'agent', 'baseAgent', 'sessionKind', 'featureName', 'taskFolder', 'projectRoot', 'adHocRunId', 'standingConstraintEntries', 'standingConstraintsRevision'];
 
 /** A model reference as a probe model ID and variant: `other` for anything outside the probe's mock models, null when the host reported none. */
 export function modelView(ref: Json, models: Json): Json {

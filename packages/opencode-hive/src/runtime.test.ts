@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import plugin from './index.js';
-import { CUSTOM_AGENT_BASES, PlanService, SessionService, TaskService } from 'hive-core';
+import { CONSTRAINTS_MAX_CHARS, CONSTRAINTS_WARNING_CHARS, CUSTOM_AGENT_BASES, PlanService, SessionService, TaskService } from 'hive-core';
 import { HIVE_TOOL_NAMES } from './utils/plugin-manifest.js';
 import { createPluginWithHome } from './e2e/plugin-test-home.js';
 import { createHiveServices } from './runtime/hive-services.js';
@@ -284,7 +284,7 @@ describe('coordinated runtime hard cut', () => {
     sessions.set('child-a', { id: 'child-a', parentID: 'parent' });
     await loaded.event!({ event: { type: 'message.part.updated', properties: { part: { type: 'tool', tool: 'task', sessionID: 'parent', callID: 'call-a', metadata: { sessionId: 'child-a' }, state: { input: output.args } } } } } as any);
     expect(new SessionService(root).getGlobal('child-a')?.featureName).toBe('feature-a');
-    expect(new SessionService(root).getGlobal('child-a')?.standingConstraints).toBe(`${sessionSkillRequirement} Quoted marker: ${routeStartMarker}`);
+    expect(new SessionService(root).readStandingConstraints('child-a').constraints).toBe(`${sessionSkillRequirement} Quoted marker: ${routeStartMarker}`);
     expect(new SessionService(root).getGlobal('parent')?.featureName).toBe('feature-b');
   });
 
@@ -1120,7 +1120,7 @@ describe('coordinated runtime hard cut', () => {
     expect(new SessionService(root).getGlobal('child-after')).toMatchObject({
       parentSessionId: 'parent-after',
       featureName: 'feature-after',
-      standingConstraints: 'Captured once.',
+      standingConstraintEntries: [expect.objectContaining({ text: 'Captured once.' })],
       standingConstraintsRevision: 1,
     });
   });
@@ -1141,6 +1141,47 @@ describe('coordinated runtime hard cut', () => {
     await loaded.tool!.hive_feature_select.execute({ feature: null }, parent);
     await loaded['tool.execute.after']!({ tool: 'task', sessionID: 'parent-resume', callID: 'call-2', args: second.args } as any, { metadata: { sessionId: 'same-child' } } as any);
     expect(new SessionService(root).getGlobal('same-child')?.featureName).toBe('resume-b');
+  });
+
+  it('returns constraint registers as entries with their cap, and warns once the register reaches the pruning size', async () => {
+    const { hooks } = createRuntime();
+    const loaded = await hooks;
+    const caller = context('constraint-results');
+    const added = JSON.parse(await loaded.tool!.hive_constraints_add.execute({ constraints: 'Short rule.' }, caller));
+    expect(added).toEqual({ entries: [expect.objectContaining({ text: 'Short rule.' })], revision: 1, constraintsChars: 11, maxChars: CONSTRAINTS_MAX_CHARS });
+
+    const long = 'L'.repeat(CONSTRAINTS_WARNING_CHARS - 'Short rule.\n\n'.length - 1);
+    const below = JSON.parse(await loaded.tool!.hive_constraints_add.execute({ constraints: long }, caller));
+    expect(below.constraintsChars).toBe(CONSTRAINTS_WARNING_CHARS - 1);
+    expect(below).not.toHaveProperty('warning');
+
+    const read = JSON.parse(await loaded.tool!.hive_constraints_read.execute({}, caller));
+    const reached = JSON.parse(await loaded.tool!.hive_constraints_edit.execute({ id: read.entries[1].id, expectedRevision: read.revision, constraints: `${long}L` }, caller));
+    expect(reached.constraintsChars).toBe(CONSTRAINTS_WARNING_CHARS);
+    expect(reached.warning).toContain('Primary: remove entries that applied only to finished tasks or phases with hive_constraints_edit({ remove: true })');
+    expect(reached.warning).toContain('unless a standing constraint opts out of it');
+    expect(reached).not.toHaveProperty('constraints');
+
+    const readAtWarning = JSON.parse(await loaded.tool!.hive_constraints_read.execute({}, caller));
+    expect(Object.keys(readAtWarning).sort()).toEqual(['constraintsChars', 'entries', 'maxChars', 'revision', 'warning']);
+    expect(readAtWarning).toMatchObject({ constraintsChars: CONSTRAINTS_WARNING_CHARS, maxChars: 16_000, revision: reached.revision, warning: reached.warning });
+
+    const cleared = JSON.parse(await loaded.tool!.hive_constraints_clear.execute({ expectedRevision: reached.revision }, caller));
+    expect(cleared).toEqual({ entries: [], revision: reached.revision + 1, constraintsChars: 0, maxChars: CONSTRAINTS_MAX_CHARS });
+  });
+
+  it('returns only route-binding metadata from feature selection', async () => {
+    const { hooks } = createRuntime();
+    const loaded = await hooks;
+    const caller = context('select-result');
+    await loaded.tool!.hive_feature_create.execute({ name: 'selected' }, caller);
+    const fresh = JSON.parse(await loaded.tool!.hive_feature_select.execute({ feature: 'selected' }, context('select-fresh')));
+    expect(Object.keys(fresh).sort()).toEqual(['featureName', 'lastActiveAt', 'sessionId', 'standingConstraintsRevision', 'startedAt']);
+    expect(fresh).toMatchObject({ sessionId: 'select-fresh', featureName: 'selected', standingConstraintsRevision: 0 });
+    await loaded.tool!.hive_constraints_add.execute({ constraints: 'Keep this private to the register.' }, caller);
+    const selected = JSON.parse(await loaded.tool!.hive_feature_select.execute({ feature: 'selected' }, caller));
+    expect(Object.keys(selected).sort()).toEqual(['featureName', 'lastActiveAt', 'sessionId', 'standingConstraintsRevision', 'startedAt']);
+    expect(selected).toMatchObject({ sessionId: 'select-result', featureName: 'selected', standingConstraintsRevision: 1 });
   });
 
   it('rejects invalid feature routes and strict constraint argument combinations', async () => {

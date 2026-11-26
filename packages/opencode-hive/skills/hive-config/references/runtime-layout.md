@@ -28,8 +28,7 @@ Everything below is relative to the project root, the directory that holds `.hiv
 │       ├── comments/plan.json plan review threads (`comments.json` is a legacy fallback)
 │       ├── constraints.json   feature-scoped operator constraints
 │       ├── worklog.json       shared feature Worklog: append-only checkpoints and current briefing
-│       ├── sessions.json      feature-local navigation projection, not canonical
-│       ├── runtime/opencode-v2/sessions.json  the same projection for the OpenCode v2 owner
+│       ├── sessions.json      legacy feature-local projection, not canonical; current hosts neither write nor read it
 │       ├── context/           feature-scope managed context (index.json + <name>.md)
 │       ├── archive/context/   archived feature context
 │       └── tasks/
@@ -112,7 +111,7 @@ The session index is `.hive/sessions.json`.
 <!-- hive-host opencode-v2 -->
 The session index is `.hive/runtime/opencode-v2/sessions.json`.
 <!-- /hive-host -->
-It holds canonical session bindings: selected feature route (`featureName`, where explicit `null` means featureless), parent session, task folder, and session constraints with a `standingConstraintsRevision`. Feature constraints live in the feature's `constraints.json`. The session index is not a trace source.
+It holds canonical session bindings: selected feature route (`featureName`, where explicit `null` means featureless), parent session, task folder, and session constraints as `standingConstraintEntries` with a `standingConstraintsRevision`. A record from an earlier version may hold only a flattened `standingConstraints` string, which reads as one `legacy` entry; the next constraint write replaces it with entries. Feature constraints live in the feature's `constraints.json`. The session index is not a trace source.
 
 If the session index is not valid JSON, the first read or update of it copies the bytes to a `sessions.json.corrupt-<timestamp>` sibling in the same directory and writes `{ "sessions": [] }`; an update then writes its own change on top. That discards every saved route and standing constraint. Triggers include:
 

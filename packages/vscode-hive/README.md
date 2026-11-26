@@ -86,7 +86,7 @@ References are shown as recorded text and are never opened; copy one to follow i
 
 Run **Hive: Inspect Session Standing Constraints** from the command palette and explicitly choose a session. The picker lists only sessions with constraints from the project's authoritative session registry, with agent, feature, kind, activity and ID for disambiguation. It reads the OpenCode v1 and OpenCode v2 registries separately, so the same session ID can appear once per host and each entry opens from its own host's registry; an unreadable registry is reported without hiding the other. It does not infer an active session or use feature-local mirrors.
 
-The read-only text document shows the selected identity and scope, stable entry IDs, verbatim constraint text, revision, and usage against 8,000 characters. It omits directive prompts, paths, and recovery metadata. Existing documents refresh on `.hive` changes or **Hive: Refresh**. Manage constraints through OpenCode; the inspector has no editing controls.
+The read-only text document shows the selected identity and scope, stable entry IDs, verbatim constraint text, revision, and usage against 16,000 characters. It omits directive prompts, paths, and recovery metadata. Existing documents refresh on `.hive` changes or **Hive: Refresh**. Manage constraints through OpenCode; the inspector has no editing controls.
 
 ### Inline Review
 Add comments on a feature's `plan.md` and `context/overview.md`. **Done Review** prompts for feedback and copies the review summary to the clipboard for the next planning step; it does not approve the plan in Hive.

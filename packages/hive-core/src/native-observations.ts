@@ -1,5 +1,5 @@
 import * as path from 'path';
-import { getFeaturePath, getHivePath } from './utils/paths.js';
+import { getHivePath } from './utils/paths.js';
 
 /**
  * The native hosts whose session observations Hive stores. Each owner has its own store so that equal session
@@ -44,9 +44,4 @@ function ownerDirectory(base: string, owner: NativeObservationOwner): string {
 /** Canonical session index: global truth for routes, constraints and child snapshots. */
 export function getNativeSessionsPath(projectRoot: string, owner: NativeObservationOwner): string {
   return path.join(ownerDirectory(getHivePath(projectRoot), owner), 'sessions.json');
-}
-
-/** Feature-local navigation projection. It never replaces the canonical index and resolves the feature directory through `getFeaturePath`. */
-export function getNativeFeatureSessionsPath(projectRoot: string, featureName: string, owner: NativeObservationOwner): string {
-  return path.join(ownerDirectory(getFeaturePath(projectRoot, featureName), owner), 'sessions.json');
 }

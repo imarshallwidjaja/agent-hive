@@ -24,8 +24,7 @@
         ├── comments/plan.json   # Plan review threads
         ├── constraints.json     # Optional feature-scoped operator directives
         ├── worklog.json         # Optional shared feature Worklog
-        ├── sessions.json        # Optional feature-local navigation projection (OpenCode v1 owner)
-        ├── runtime/opencode-v2/sessions.json # Optional projection for the OpenCode v2 owner
+        ├── sessions.json        # Legacy feature-local projection; current hosts neither write nor read it
         ├── context/             # Persistent knowledge files
         │   ├── index.json       # Schema-v1 operational index
         │   ├── .managed-mutation-pending.json # Present only during publication/recovery
@@ -341,7 +340,7 @@ Manual-task specs derive their sections from structured metadata and may include
 
 ## Session Metadata
 
-Canonical session bindings and session-scoped constraint entries live in the owner's project session index: `.hive/sessions.json` for OpenCode v1, `.hive/runtime/opencode-v2/sessions.json` for OpenCode v2. A missing v2 index starts empty and never imports v1 sessions; no v1 file is moved, copied or deleted. Feature-local `sessions.json` files (`runtime/opencode-v2/sessions.json` inside the feature directory for v2) are projections for navigation and cannot replace missing canonical provenance. A selected feature route is stored as `featureName`; explicit `null` means featureless, while an absent field leaves route fallback available. Feature-scoped constraints live separately in `.hive/features/{feature-directory}/constraints.json` as `{ "entries": [{ "id": "constraint-...", "text": "..." }], "revision": 1 }`.
+Canonical session bindings and session-scoped constraint entries live in the owner's project session index: `.hive/sessions.json` for OpenCode v1, `.hive/runtime/opencode-v2/sessions.json` for OpenCode v2. A missing v2 index starts empty and never imports v1 sessions; no v1 file is moved, copied or deleted. Earlier versions could write a feature-local `sessions.json` projection (`runtime/opencode-v2/sessions.json` inside the feature directory for v2). Current hosts neither write nor read one, and a leftover file cannot replace missing canonical provenance. A selected feature route is stored as `featureName`; explicit `null` means featureless, while an absent field leaves route fallback available. Feature-scoped constraints live separately in `.hive/features/{feature-directory}/constraints.json` as `{ "entries": [{ "id": "constraint-...", "text": "..." }], "revision": 1 }`.
 
 A child session's entry in the project session index looks like this:
 
@@ -356,7 +355,6 @@ A child session's entry in the project session index looks like this:
       "projectRoot": "/trusted/project",
       "startedAt": "2025-01-05T09:00:00Z",
       "lastActiveAt": "2025-01-05T10:30:00Z",
-      "standingConstraints": "Australian English.\n\nNo emojis.",
       "standingConstraintEntries": [
         { "id": "constraint-...", "text": "Australian English." },
         { "id": "constraint-...", "text": "No emojis." }
@@ -367,7 +365,7 @@ A child session's entry in the project session index looks like this:
 }
 ```
 
-`standingConstraintEntries` holds independently addressable verbatim directives. `standingConstraintsRevision` provides optimistic concurrency for targeted edits and explicit whole-register clears. `standingConstraints` is the rendered aggregate injected into delegated task and worker prompts, capped at 8000 UTF-16 code units. String-only records written by earlier versions are read as one deterministic `legacy` entry and migrate on the next mutation.
+`standingConstraintEntries` holds independently addressable verbatim directives and is the only stored form. `standingConstraintsRevision` provides optimistic concurrency for targeted edits and explicit whole-register clears. Hive joins the entries with blank lines when it renders them into delegated task and worker prompts; the joined text is capped at 16,000 UTF-16 code units, and constraint tool results warn from 8,000. Records written by earlier versions may hold a flattened `standingConstraints` string. A string-only record is read as one deterministic `legacy` entry, and the next write of any constraint field stores entries only and deletes the string.
 
 When an owner's session index (`.hive/sessions.json` for v1) exists but does not parse as JSON (including an empty or all-NUL file), the next session read or update reads it again while holding `sessions.json.lock` and, if it is still invalid, copies it unchanged to a new sibling `sessions.json.corrupt-<UTC timestamp>` file before replacing it with `{ "sessions": [] }`. A warning names both paths. Saved session routes and session constraints start fresh; feature-scoped constraints are separate files and are unaffected. Other read errors, such as permissions or a directory at that path, are reported without a reset. A damaged index resets only its own owner's store.
 

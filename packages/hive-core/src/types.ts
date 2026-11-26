@@ -294,8 +294,6 @@ export interface ContextFile {
 
 export type SessionKind = 'primary' | 'subagent' | 'task-worker' | 'unknown';
 
-export type DirectiveRecoveryState = 'available' | 'consumed' | 'escalated';
-
 export interface StandingConstraintEntry {
   id: string;
   text: string;
@@ -304,7 +302,6 @@ export interface StandingConstraintEntry {
 export interface SessionInfo {
   sessionId: string;
   parentSessionId?: string;
-  duplicatedFromSessionId?: string;
   featureName?: string | null;
   taskFolder?: string;
   projectRoot?: string;
@@ -312,19 +309,15 @@ export interface SessionInfo {
   agent?: string;
   baseAgent?: string;
   sessionKind?: SessionKind;
-  directivePrompt?: string;
+  /** Flattened register text from older records; read only when `standingConstraintEntries` is absent and never written. */
   standingConstraints?: string;
   standingConstraintEntries?: StandingConstraintEntry[];
   standingConstraintsRevision?: number;
-  directiveRecoveryState?: DirectiveRecoveryState;
-  replayDirectivePending?: boolean;
   startedAt: string;
   lastActiveAt: string;
-  messageCount?: number;
 }
 
 export interface SessionsJson {
-  master?: string;
   sessions: SessionInfo[];
 }
 

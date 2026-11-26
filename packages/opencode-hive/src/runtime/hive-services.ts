@@ -212,7 +212,7 @@ export function createHiveServices(options: { projectRoot: string; detectedFeatu
       return undefined;
     }
   };
-  const readConstraints = (target: ConstraintTarget): ConstraintRegister => target.scope === 'session'
+  const readConstraints = (target: ConstraintTarget) => target.scope === 'session'
     ? sessionService.readStandingConstraints(target.sessionID)
     : featureConstraintService.read(target.feature);
   const assertTaskRepoIds = (feature: string, task: string, repoIds?: string[]): void => {

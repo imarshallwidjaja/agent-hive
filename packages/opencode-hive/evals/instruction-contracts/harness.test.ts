@@ -2187,14 +2187,14 @@ describe('managed-model control probe', () => {
     });
 
     test('a binding is compared by route digest, which ignores activity counters and moves with the route', () => {
-      const entry = { sessionId: 'ses_c', parentSessionId: 'ses_p', agent: 'code-reviewer', featureName: null, startedAt: 'a', lastActiveAt: 'b', messageCount: 1 };
+      const entry = { sessionId: 'ses_c', parentSessionId: 'ses_p', agent: 'code-reviewer', featureName: null, startedAt: 'a', lastActiveAt: 'b' };
       const store = { sessions: [entry, { sessionId: 'ses_d', parentSessionId: 'ses_p' }, { sessionId: 'ses_e', parentSessionId: 'ses_q' }] };
       const first = bindingFacts(store, 'ses_c', 'ses_p');
       expect(first).toMatchObject({ bound: true, parentOk: true, agent: 'code-reviewer' });
-      expect(bindingFacts({ sessions: [{ ...entry, lastActiveAt: 'later', messageCount: 9 }] }, 'ses_c', 'ses_p').digest).toBe(first.digest);
+      expect(bindingFacts({ sessions: [{ ...entry, lastActiveAt: 'later' }] }, 'ses_c', 'ses_p').digest).toBe(first.digest);
       expect(bindingFacts({ sessions: [{ ...entry, agent: 'scout-researcher' }] }, 'ses_c', 'ses_p').digest).not.toBe(first.digest);
       // The captured standing-constraint entries are part of the route a refused call must not rebind.
-      const constrained = { ...entry, standingConstraintEntries: [{ id: 'c1', text: 'a' }], standingConstraints: 'a', standingConstraintsRevision: 1 };
+      const constrained = { ...entry, standingConstraintEntries: [{ id: 'c1', text: 'a' }], standingConstraintsRevision: 1 };
       const constrainedDigest = bindingFacts({ sessions: [constrained] }, 'ses_c', 'ses_p').digest;
       expect(constrainedDigest).not.toBe(first.digest);
       expect(bindingFacts({ sessions: [{ ...constrained, standingConstraintEntries: [{ id: 'c1', text: 'b' }] }] }, 'ses_c', 'ses_p').digest).not.toBe(constrainedDigest);

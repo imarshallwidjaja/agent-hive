@@ -289,7 +289,6 @@ export function childRouteRecord(snapshot: RouteSnapshot, parentSessionId: strin
     agent,
     standingConstraintEntries: snapshot.sessionConstraints.entries,
     standingConstraintsRevision: snapshot.sessionConstraints.revision,
-    standingConstraints: snapshot.sessionConstraints.constraints || undefined,
   };
 }
 

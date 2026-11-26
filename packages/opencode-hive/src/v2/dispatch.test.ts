@@ -158,7 +158,7 @@ function fakeHost(services: HiveServices, options: { directory?: string; pauseBe
         text: input.sessionID ? input.prompt : ['You are a subagent spawned by another session.', input.prompt].join('\n'),
         boundParent: bound?.parentSessionId,
         boundFeature: bound?.featureName,
-        boundConstraints: bound?.standingConstraints,
+        boundConstraints: boundConstraintText(services, child),
         boundAgent: bound?.agent,
         instructions: entries.get(child)?.get(HIVE_SESSION_INSTRUCTION_KEY) as string | undefined,
       });
@@ -208,6 +208,11 @@ async function dispatchedChild(context: Awaited<ReturnType<typeof setup>>, optio
 const git = (cwd: string, ...args: string[]) => execFileSync('git', args, { cwd, stdio: 'pipe' });
 
 /** The task or run a child's Hive binding names. */
+/** The flattened session constraints a child's stored binding holds, or undefined when it holds none. */
+const boundConstraintText = (services: HiveServices, child: string): string | undefined => {
+  const stored = services.sessionService.getGlobal(child);
+  return stored ? services.sessionService.standingConstraintRegister(stored).constraints || undefined : undefined;
+};
 const association = (services: HiveServices, child: string) => {
   const bound = services.sessionService.getGlobal(child);
   return { taskFolder: bound?.taskFolder, adHocRunId: bound?.adHocRunId };
@@ -508,7 +513,8 @@ describe('v2 native dispatch', () => {
     services.sessionService.setFeatureRoute('parent', 'alpha');
     services.sessionService.addStandingConstraint('parent', 'New rule.');
     expect(Exit.isSuccess(await continued('Continue.', 'call-constraints'))).toBe(true);
-    expect(services.sessionService.getGlobal(child)).toMatchObject({ featureName: 'alpha', taskFolder: '01-build', standingConstraints: 'New rule.' });
+    expect(services.sessionService.getGlobal(child)).toMatchObject({ featureName: 'alpha', taskFolder: '01-build' });
+    expect(boundConstraintText(services, child)).toBe('New rule.');
 
     // A binding for another project is refused.
     services.sessionService.trackGlobal(child, { projectRoot: '/elsewhere' });
@@ -555,7 +561,7 @@ describe('v2 native dispatch', () => {
       expect(failureMessage(await host.call('parent', { agent: 'forager-worker', prompt: 'Continue.', sessionID: tasked }, 'call-new-route'))).toContain(`Hive could not bind child session ${tasked} to its dispatch route (EACCES`);
       expect(failureMessage(await host.call('parent', { agent: 'forager-worker', prompt: 'Hive task: 01-build' }, 'call-new'))).toContain('Hive could not bind child session child-2 to its dispatch route (EACCES');
       expect(host.admissions).toHaveLength(before);
-      expect(services.sessionService.getGlobal(tasked)?.standingConstraints).toBeUndefined();
+      expect(boundConstraintText(services, tasked)).toBeUndefined();
     } finally {
       warn.mockRestore();
       services.sessionService.trackGlobal = track;
@@ -605,14 +611,14 @@ describe('v2 native dispatch', () => {
     expect(host.admissions).toHaveLength(1);
     expect(host.activityState.reads).toBe(0);
     expect(services.sessionService.getGlobal('child-1')).toMatchObject({ parentSessionId: 'parent', featureName: 'alpha' });
-    expect(services.sessionService.getGlobal('child-1')?.standingConstraints).toBe('Only alpha.');
+    expect(boundConstraintText(services, 'child-1')).toBe('Only alpha.');
 
     // Once the earlier call has returned and the host reports the child idle, a continuation takes the new constraints.
     release();
     expect(Exit.isSuccess(await first)).toBe(true);
     expect(Exit.isSuccess(await host.call('parent', { agent: 'forager-worker', prompt: 'Switch.', sessionID: 'child-1' }, 'call-3'))).toBe(true);
     expect(services.sessionService.getGlobal('child-1')).toMatchObject({ featureName: 'alpha', taskFolder: '01-build' });
-    expect(services.sessionService.getGlobal('child-1')?.standingConstraints).toContain('Now beta.');
+    expect(boundConstraintText(services, 'child-1')).toContain('Now beta.');
   });
 
   it('refuses every continuation of an active child, conflicting or compatible, before the host switches or steers it', async () => {
@@ -775,7 +781,7 @@ describe('v2 native dispatch', () => {
     const unknown = await host.call('parent', { agent: 'forager-worker', prompt: 'Switch.', sessionID: child }, 'call-switch');
     expect(failureMessage(unknown)).toBe(failureMessage(same));
     expect(host.nativeInputs).toHaveLength(1);
-    expect(services.sessionService.getGlobal(child)?.standingConstraints).toBeUndefined();
+    expect(boundConstraintText(services, child)).toBeUndefined();
   });
 
   it('reserves an incompatible preflight before an old idle snapshot can be overtaken by a returned background call', async () => {
@@ -813,7 +819,7 @@ describe('v2 native dispatch', () => {
     expect(Exit.isSuccess(await incompatible)).toBe(true);
     expect(host.nativeInputs).toHaveLength(2);
     expect(host.switches).toEqual([]);
-    expect(services.sessionService.getGlobal(child)?.standingConstraints).toBe('Changed.');
+    expect(boundConstraintText(services, child)).toBe('Changed.');
   });
 
   it('does not treat a matching pending reservation as qualified compatibility and releases it after interruption', async () => {

@@ -29,7 +29,6 @@ import type { FeatureResolutionFailure } from "./paths";
 import { isNativeLockHeld, resolveLockAnchor, windowsBackend } from "./nativeLock";
 import {
   NATIVE_OBSERVATION_OWNERS,
-  getNativeFeatureSessionsPath,
   getNativeSessionsPath,
   isNativeObservationOwner,
 } from "../native-observations";
@@ -838,7 +837,6 @@ describe("native observation paths", () => {
       expect(isNativeObservationOwner(value)).toBe(false);
     }
     expect(() => getNativeSessionsPath(root, "../escape" as never)).toThrow("Unknown native observation owner");
-    expect(() => getNativeFeatureSessionsPath(root, "feature", "x" as never)).toThrow("Unknown native observation owner");
   });
 
   it("keeps the long-standing v1 locations", () => {
@@ -847,15 +845,5 @@ describe("native observation paths", () => {
 
   it("nests v2 stores under their own runtime directory", () => {
     expect(getNativeSessionsPath(root, "opencode-v2")).toBe(path.join(root, ".hive", "runtime", "opencode-v2", "sessions.json"));
-  });
-
-  it("derives feature projections from the resolved feature directory, including indexed prefixes", () => {
-    const projectRoot = path.join(TEST_DIR, "native-paths");
-    fs.mkdirSync(path.join(projectRoot, ".hive", "features", "07_indexed"), { recursive: true });
-    const featurePath = getFeaturePath(projectRoot, "indexed");
-    expect(featurePath).toBe(path.join(projectRoot, ".hive", "features", "07_indexed"));
-    expect(getNativeFeatureSessionsPath(projectRoot, "indexed", "opencode-v1")).toBe(path.join(featurePath, "sessions.json"));
-    expect(getNativeFeatureSessionsPath(projectRoot, "indexed", "opencode-v2")).toBe(path.join(featurePath, "runtime", "opencode-v2", "sessions.json"));
-    fs.rmSync(projectRoot, { recursive: true, force: true });
   });
 });

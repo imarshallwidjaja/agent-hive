@@ -741,7 +741,7 @@ describe('HiveSidebarProvider', () => {
     const content = provider.provideTextDocumentContent(uri);
     expect(content).toContain('legacy');
     expect(content).toContain('Revision: 4');
-    expect(content).toContain('15/8000');
+    expect(content).toContain('Usage: 15/16000 characters');
     expect(content).not.toContain('SECRET');
     expect(content).not.toContain('available');
     expect(content).not.toContain('command:');

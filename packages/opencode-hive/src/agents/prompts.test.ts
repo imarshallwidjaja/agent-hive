@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { readFileSync } from 'fs';
 import * as path from 'path';
-import { assertRequiredContextMetadata, parseContextMetadata } from 'hive-core';
+import { CONSTRAINTS_MAX_CHARS, CONSTRAINTS_WARNING_CHARS, assertRequiredContextMetadata, parseContextMetadata } from 'hive-core';
 import { QUEEN_BEE_PROMPT } from './hive';
 import { ARCHITECT_BEE_PROMPT } from './architect';
 import { SWARM_BEE_PROMPT } from './swarm';
@@ -1035,9 +1035,21 @@ describe('Worker assignment contract', () => {
   });
 
   it('shares the standing-constraint authoring rules instead of restating them per primary', () => {
-    for (const [name, prompt] of orchestrators) expect(countOccurrences(prompt, PRIMARY_CONSTRAINT_AUTHORING_PROMPT), name).toBe(1);
+    for (const [name, prompt] of [...orchestrators, ['Architect', ARCHITECT_BEE_PROMPT]] as const) {
+      expect(countOccurrences(prompt, PRIMARY_CONSTRAINT_AUTHORING_PROMPT), name).toBe(1);
+      expect(countOccurrences(prompt, 'Only primaries can add, edit, or clear'), name).toBe(1);
+    }
+    expect(ARCHITECT_BEE_PROMPT).toContain('When task-spawned, constraint mutations are denied: return the verbatim registration or change request to the parent');
     expect(PRIMARY_CONSTRAINT_AUTHORING_PROMPT).toContain('Only primaries can add, edit, or clear');
     expect(PRIMARY_CONSTRAINT_AUTHORING_PROMPT).toContain('call `hive_constraints_read` first, then `hive_constraints_edit` with the stable ID and revision');
+  });
+
+  it('states the register cap, the pruning warning, and primary-led pruning of finished entries', () => {
+    expect(PRIMARY_CONSTRAINT_AUTHORING_PROMPT).toContain(`at most ${CONSTRAINTS_MAX_CHARS.toLocaleString('en-US')} characters`);
+    expect(PRIMARY_CONSTRAINT_AUTHORING_PROMPT).toContain(`carry a \`warning\` from ${CONSTRAINTS_WARNING_CHARS.toLocaleString('en-US')}`);
+    expect(PRIMARY_CONSTRAINT_AUTHORING_PROMPT).toContain('remove entries that applied only to finished work with `hive_constraints_edit({ remove: true })` and record each removal in the Worklog unless a standing constraint opts out of it');
+    expect(PRIMARY_CONSTRAINT_AUTHORING_PROMPT).toContain("ask the operator only when an entry's applicability is uncertain");
+    expect(PRIMARY_CONSTRAINT_AUTHORING_PROMPT).toContain('one directive per entry');
   });
 });
 

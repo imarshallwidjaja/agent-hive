@@ -28,7 +28,6 @@ PROBLEM  -> CONTEXT  -> EXECUTION -> REPORT
 │       ├── comments/overview.json <- Overview review threads (when present)
 │       ├── constraints.json <- Feature standing constraints (when present)
 │       ├── worklog.json  <- Shared feature Worklog (when written)
-│       ├── runtime/opencode-v2/sessions.json <- OpenCode v2 feature-local session projection (when written)
 │       └── tasks/        <- Individual task folders
 │           └── {task}/
 │               ├── status.json      <- Task state and declared repo IDs
@@ -106,11 +105,11 @@ The runtime stores session identity, feature routes, and session constraints in 
 
 - `chat.message` writes `agent` and `projectRoot`; the session service also records `sessionId`, `startedAt`, and `lastActiveAt`.
 - `hive_feature_select` writes the `featureName` route in that index, including explicit null.
-- Native child binding writes `parentSessionId`, `projectRoot`, `agent` when provided, `featureName` when selected, and `standingConstraints`, `standingConstraintEntries`, and `standingConstraintsRevision` from the captured session constraints. Constraint tools also update the session constraint register.
+- Native child binding writes `parentSessionId`, `projectRoot`, `agent` when provided, `featureName` when selected, and `standingConstraintEntries` and `standingConstraintsRevision` from the captured session constraints. Constraint tools also update the session constraint register. Entries are the only stored form: a write deletes the flattened `standingConstraints` string that earlier versions kept beside them, and a string-only record from an earlier version still reads as one `legacy` entry.
 
-`SessionService.bindFeature` can write a feature-local `sessions.json` projection, but no current runtime path calls it. The project session index governs route selection and child dispatch.
+The project session index governs route selection and child dispatch. Earlier versions could write a feature-local `sessions.json` projection; current hosts neither write nor read one.
 
-Each native host owns its own session store. OpenCode v1 uses `.hive/sessions.json`; OpenCode v2 writes the same shape to `.hive/runtime/opencode-v2/sessions.json` and, for projections, `runtime/opencode-v2/sessions.json` inside the resolved feature directory. A missing v2 store starts empty and never imports v1 records. The VS Code viewer reads every owner's store and keeps the owner with each row.
+Each native host owns its own session store. OpenCode v1 uses `.hive/sessions.json`; OpenCode v2 writes the same shape to `.hive/runtime/opencode-v2/sessions.json`. A missing v2 store starts empty and never imports v1 records. The VS Code viewer reads every owner's store and keeps the owner with each row.
 
 `classifySession` recognizes `primary`, `subagent`, `task-worker`, and `unknown`, but the runtime calls `createVariantHook` without a session service. It does not persist `sessionKind` or `baseAgent`. A dispatch can associate its child with `taskFolder` or `adHocRunId` from an explicit first-line marker. On a fresh call a missing, empty, or unresolvable marker binds no task or run; a continuation without a marker keeps the child's stored task or run, and on v2 a continuation whose marker cannot be resolved or names another task or run is refused. The association does not gate fresh dispatch. On v1 it gates no continuation either: an omitted-marker continuation keeps the association unless the effective feature changed, including a move to or from a featureless route, which clears it. On v2, continuation admission checks the stored binding against the follow-up's route and marker. Session timestamps do not establish liveness.
 

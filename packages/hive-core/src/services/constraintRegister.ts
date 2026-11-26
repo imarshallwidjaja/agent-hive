@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import type { StandingConstraintEntry } from '../types.js';
 
-export const CONSTRAINTS_MAX_CHARS = 8000;
+export const CONSTRAINTS_MAX_CHARS = 16_000;
+/** Register size at which tool results ask the primary to prune finished entries; writes still succeed. */
+export const CONSTRAINTS_WARNING_CHARS = 8_000;
 export const LEGACY_CONSTRAINT_ID = 'legacy';
 
 export interface ConstraintRegister {

@@ -3,6 +3,7 @@ export type { FeaturePublication, FeatureWriteFailures } from './featureService.
 export { FeatureConstraintService } from './featureConstraintService.js';
 export {
   CONSTRAINTS_MAX_CHARS,
+  CONSTRAINTS_WARNING_CHARS,
   ConstraintRegisterError,
 } from './constraintRegister.js';
 export type { ConstraintRegister } from './constraintRegister.js';
@@ -156,7 +157,7 @@ export type {
   ContextRecoverySummary,
 } from './contextService.js';
 export { ReviewService } from './reviewService.js';
-export { SessionService, SessionContinuityError, STANDING_CONSTRAINTS_MAX_CHARS } from './sessionService.js';
+export { SessionService, STANDING_CONSTRAINTS_MAX_CHARS } from './sessionService.js';
 export { ConfigService } from './configService.js';
 export type { LegacyRepositoryTopology } from './configService.js';
 export { RepositoryService } from './repositoryService.js';

@@ -297,14 +297,13 @@ describe('dispatch prompt composition shared by both hosts', () => {
     expect(composeDispatchPrompt({ sources, snapshot: snapshot(), prompt: undefined, foragerDispatch: true, includeRouteFooter: false }).startsWith('<!-- hive-task-brief:start -->')).toBe(true);
   });
 
-  it('binds a child to the captured route, keeping an explicit null route and omitting an empty constraint register', () => {
+  it('binds a child to the captured route and register, keeping an explicit null route and storing no flattened constraint text', () => {
     expect(childRouteRecord(snapshot({ featureName: null }), 'parent', 'forager-worker')).toEqual({
       parentSessionId: 'parent', projectRoot: '/project', featureName: null, agent: 'forager-worker',
-      standingConstraintEntries: [], standingConstraintsRevision: 2, standingConstraints: 'Blocking only.',
+      standingConstraintEntries: [], standingConstraintsRevision: 2,
     });
     const unrouted = childRouteRecord(snapshot({ hasFeatureRoute: false, sessionConstraints: { entries: [], revision: 0, constraints: '' } }), 'parent');
     expect(unrouted.featureName).toBeUndefined();
-    expect(unrouted.standingConstraints).toBeUndefined();
   });
 
   it('resolves the first line to no marker, an invalid marker, or the task or run Hive knows, and associates only a resolved one', async () => {

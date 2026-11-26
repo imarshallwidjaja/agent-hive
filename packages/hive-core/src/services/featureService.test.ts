@@ -5,7 +5,7 @@ import { FeatureService, FeatureWriteUncertainError } from './featureService';
 import { FeatureResolutionError } from '../utils/paths.js';
 import { resolveLockAnchor } from '../utils/nativeLock.js';
 import { FeatureConstraintService } from './featureConstraintService.js';
-import { ConstraintRegisterError } from './constraintRegister.js';
+import { CONSTRAINTS_MAX_CHARS, ConstraintRegisterError } from './constraintRegister.js';
 
 const TEST_DIR = `/tmp/hive-core-featureservice-test-${process.pid}`;
 
@@ -708,7 +708,7 @@ describe('FeatureConstraintService', () => {
     setupFeature('constraints');
     expect(() => service.add('constraints', '  ')).toThrow();
     service.add('constraints', 'A');
-    expect(() => service.add('constraints', 'B'.repeat(8000))).toThrow();
+    expect(() => service.add('constraints', 'B'.repeat(CONSTRAINTS_MAX_CHARS))).toThrow(/character cap/);
     expect(service.read('constraints')).toMatchObject({ revision: 1, constraints: 'A' });
     expect(() => service.read('missing')).toThrow("Feature 'missing' not found");
 
