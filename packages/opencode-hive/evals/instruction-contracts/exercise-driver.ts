@@ -1286,7 +1286,7 @@ export function readObserverLog(logPath = OBSERVER_LOG, maxBytes = PARITY_LIMITS
   }
 }
 
-export const ENTRY_LIMITS = Object.freeze({ entries: 64, keyChars: 200, valueChars: 16 * 1024 });
+export const ENTRY_LIMITS = Object.freeze({ entries: 64, keyChars: 200, valueChars: 48 * 1024 });
 
 /**
  * The v2 session instruction entries of every session in the tree (Hive's `hive.session` route and constraints among

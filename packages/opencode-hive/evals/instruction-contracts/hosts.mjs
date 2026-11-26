@@ -776,7 +776,13 @@ export function exerciseRoutes(id, directory) {
     form: (sessionId, formId) => ({ method: 'GET', path: `/api/session/${sessionId}/form/${formId}` }),
     formReply: (sessionId, formId, answer) => ({ method: 'POST', path: `/api/session/${sessionId}/form/${formId}/reply`, body: { answer } }),
     permissions: (sessionId) => ({ method: 'GET', path: `/api/session/${sessionId}/permission` }),
-    permissionReply: (sessionId, requestId, decision) => ({ method: 'POST', path: `/api/session/${sessionId}/permission/${requestId}/reply`, body: { decision } }),
+    // A rejection carries a message: stock v2.4.1 turns a bare rejection into a shutdown interruption of the asking
+    // session that never delivers its background result (see exercise-qualification.ts).
+    permissionReply: (sessionId, requestId, decision) => ({
+      method: 'POST',
+      path: `/api/session/${sessionId}/permission/${requestId}/reply`,
+      body: decision === 'reject' ? { decision, message: 'Permission rejected by supervisor.' } : { decision },
+    }),
     interrupt: (sessionId) => ({ method: 'POST', path: `/api/session/${sessionId}/interrupt`, body: {} }),
     // The caller-chosen ID becomes the inbox item's ID and then the compaction message's, so a lost acknowledgement
     // can be resolved from either.

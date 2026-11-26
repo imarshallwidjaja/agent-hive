@@ -4457,6 +4457,8 @@ describe('supervised exercise native adapters', () => {
     const v2 = exerciseRoutes('v2', '/work/proj');
     expect(v2.prompt({ sessionId: 'ses_a', messageId: id, text: 'hi' })).toEqual({ method: 'POST', path: '/api/session/ses_a/prompt', body: { id, text: 'hi' } });
     expect(v2.permissionReply('ses_c', 'per_1', 'once').body).toEqual({ decision: 'once' });
+    // A bare v2.4.1 rejection is a shutdown interruption that never delivers the child's result; a message avoids it.
+    expect(v2.permissionReply('ses_c', 'per_1', 'reject')).toEqual({ method: 'POST', path: '/api/session/ses_c/permission/per_1/reply', body: { decision: 'reject', message: 'Permission rejected by supervisor.' } });
     expect(exerciseRoutes('v1', '/work/proj').permissionReply('ses_c', 'per_1', 'reject').body).toEqual({ reply: 'reject' });
     expect(v2.formReply('ses_a', 'frm_1', { q0: 'alpha' })).toEqual({ method: 'POST', path: '/api/session/ses_a/form/frm_1/reply', body: { answer: { q0: 'alpha' } } });
   });
@@ -7043,14 +7045,35 @@ describe('OpenCode v2 compaction, telemetry and access-only auth export', () => 
     const tree = { sessions: [{ id: 'ses_a', parentId: null, agent: null }, { id: 'ses_b', parentId: 'ses_a', agent: null }], complete: true, failure: null };
     const route = (id: string) => `/api/experimental/session/${id}/instructions/entries`;
     const long = 'x'.repeat(ENTRY_LIMITS.valueChars + 10);
-    const table = { [route('ses_a')]: api({ data: [{ key: 'hive.session', value: { route: 'r' } }, { key: 'big', value: long }] }), [route('ses_b')]: api(null, 500) };
+    // A rendered `hive.session` entry carrying both standing-constraint registers near their 16,000-unit cap. Its
+    // JSON text grows past the joined registers through escaped newlines and quotes, and still fits the 48 KiB bound.
+    const directive = 'Review the result with "best-fit" reviewers.\n';
+    const register = directive.repeat(Math.floor(16_000 / directive.length));
+    const fullSession = [
+      '## Hive route',
+      'Route (JSON): {"projectRoot":"/workspace/project","featureRoute":{"selected":true,"feature":"alpha"}}',
+      'Ad-hoc run: followup-sessions-harness',
+      '',
+      '## Standing Constraints',
+      `Session constraints (revision 2):\n${register}`,
+      `Feature constraints:\n${register}`,
+      'The parent session captured this route and these constraints when it dispatched or last continued this session. If directives conflict, report the conflict; runtime routing does not decide it.',
+    ].join('\n');
+    const fullSessionText = JSON.stringify(fullSession);
+    expect(fullSessionText.length).toBeGreaterThan(2 * 16_000);
+    expect(fullSessionText.length).toBeLessThanOrEqual(ENTRY_LIMITS.valueChars);
+    const table = { [route('ses_a')]: api({ data: [{ key: 'hive.session', value: { route: 'r' } }, { key: 'big', value: long }, { key: 'hive.session', value: fullSession }] }), [route('ses_b')]: api(null, 500) };
     const out = await instructionEntriesExport('v2', tree, routeGet(table), scan);
     expect(out.supported).toBe(true);
-    expect(out.sessions[0]).toMatchObject({ sessionId: 'ses_a', readable: true, entryCount: 2 });
+    expect(out.sessions[0]).toMatchObject({ sessionId: 'ses_a', readable: true, entryCount: 3 });
     expect(out.sessions[0].entries[0]).toEqual({ key: { text: 'hive.session', chars: 12, clipped: false }, value: { text: '{"route":"r"}', chars: 13, clipped: false } });
-    expect(out.sessions[0].entries[1].value).toMatchObject({ clipped: true, chars: long.length + 2 });
+    expect(out.sessions[0].entries[1].value).toEqual({ text: `"${long}"`.slice(0, 48 * 1024), clipped: true, chars: long.length + 2 });
+    expect(out.sessions[0].entries[2].value).toEqual({ text: fullSessionText, chars: fullSessionText.length, clipped: false });
     expect(out.sessions[1]).toEqual({ sessionId: 'ses_b', readable: false, entryCount: 0, entries: [] });
     expect(parseDriverReply('observe', { ...QUIET, instructionEntries: out })!.instructionEntries).toEqual(out);
+    const overCap = 'y'.repeat(48 * 1024 + 1);
+    const oversizedReply = { ...out, sessions: [{ ...out.sessions[0], entries: [{ ...out.sessions[0].entries[0], value: { text: overCap, chars: overCap.length, clipped: false } }] }] };
+    expect(parseDriverReply('observe', { ...QUIET, instructionEntries: oversizedReply })).toBeNull();
     expect(await instructionEntriesExport('v1', tree, routeGet(table), scan)).toEqual({ supported: false, sessions: [] });
     const leaked = { [route('ses_a')]: api({ data: [{ key: 'k', value: { note: `prefix ${FAKE_ACCESS}` } }] }), [route('ses_b')]: api({ data: [] }) };
     await expect(instructionEntriesExport('v2', tree, routeGet(leaked), scan)).rejects.toThrow('evidence_contaminated');

@@ -299,20 +299,29 @@ describe('SessionService', () => {
       expect(service.readStandingConstraints('sess-string-only').constraints).toBe('Legacy rule.');
     });
 
-    it('updates a healthy row beside an unrelated null entry without throwing or touching the null entry', () => {
+    it('reads and updates a healthy row stored after non-session entries, keeping those entries on disk untouched', () => {
       const globalPath = getGlobalSessionsPath(PROJECT_ROOT);
       fs.mkdirSync(path.dirname(globalPath), { recursive: true });
-      fs.writeFileSync(globalPath, JSON.stringify({
-        sessions: [{ sessionId: 'sess-healthy', startedAt: 's', lastActiveAt: 's' }, null],
-      }));
+      const healthy = { sessionId: 'sess-healthy', startedAt: 's', lastActiveAt: 's', standingConstraintEntries: [{ id: 'constraint-00000000-0000-4000-8000-000000000001', text: 'Keep it.' }], standingConstraintsRevision: 1 };
+      // A row without a sessionId is not a session, even when it carries both constraint forms the cleanup would trim.
+      const notASession = { standingConstraints: 'Stale text.', standingConstraintEntries: [] };
+      fs.writeFileSync(globalPath, JSON.stringify({ sessions: [null, notASession, healthy] }));
 
-      const updated = service.setFeatureRoute('sess-healthy', null);
+      expect(service.getGlobal('sess-healthy')).toMatchObject({ sessionId: 'sess-healthy' });
+      expect(service.peekGlobal('sess-healthy')).toMatchObject({ sessionId: 'sess-healthy' });
+      expect(service.getGlobal('missing')).toBeUndefined();
+      expect(service.peekGlobal('missing')).toBeUndefined();
+      expect(service.readStandingConstraints('sess-healthy').constraints).toBe('Keep it.');
+      expect(service.listGlobal()).toEqual([healthy]);
 
-      expect(updated.featureName).toBeNull();
+      expect(service.trackGlobal('sess-healthy', { agent: 'hive-master' }).agent).toBe('hive-master');
+      expect(service.setFeatureRoute('sess-healthy', null).featureName).toBeNull();
+
       const stored = JSON.parse(fs.readFileSync(globalPath, 'utf8')).sessions;
-      expect(stored).toHaveLength(2);
-      expect(stored[0]).toMatchObject({ sessionId: 'sess-healthy', featureName: null });
-      expect(stored[1]).toBeNull();
+      expect(stored).toHaveLength(3);
+      expect(stored[0]).toBeNull();
+      expect(stored[1]).toEqual(notASession);
+      expect(stored[2]).toMatchObject({ sessionId: 'sess-healthy', agent: 'hive-master', featureName: null });
     });
 
     it('rejects disagreeing structured and flattened constraint patches before writing', () => {
@@ -445,12 +454,16 @@ describe('SessionService', () => {
       ['all-NUL', Buffer.alloc(4096)],
       ['malformed', Buffer.from('{"sessions": [{"sessionId": "cut')],
       ['empty', Buffer.alloc(0)],
+      ['literal null', Buffer.from('null')],
+      ['empty object', Buffer.from('{}')],
+      ['object sessions', Buffer.from('{"sessions": {}}')],
     ] as const;
 
     for (const [name, bytes] of fixtures) {
       for (const [operation, run] of [
         ['read', (s: SessionService) => expect(s.getGlobal('after-reset')).toBeUndefined()],
         ['update', (s: SessionService) => expect(s.trackGlobal('after-reset', { agent: 'hive-master' }).agent).toBe('hive-master')],
+        ['route', (s: SessionService) => expect(s.setFeatureRoute('after-reset', null).featureName).toBeNull()],
       ] as const) {
         it(`preserves ${name} bytes, resets the index, and continues a ${operation}`, () => {
           writeIndex(bytes);
@@ -461,7 +474,7 @@ describe('SessionService', () => {
           expect(extra).toEqual([]);
           expect(fs.readFileSync(backup!)).toEqual(bytes);
           expect(JSON.parse(fs.readFileSync(globalPath(), 'utf8')).sessions.map((s: { sessionId: string }) => s.sessionId))
-            .toEqual(operation === 'update' ? ['after-reset'] : []);
+            .toEqual(operation === 'read' ? [] : ['after-reset']);
           expect(warn).toHaveBeenCalledTimes(1);
           const message = String(warn.mock.calls[0]![0]);
           expect(message).toContain(globalPath());
@@ -611,18 +624,21 @@ describe('SessionService', () => {
       expect(warn).not.toHaveBeenCalled();
     });
 
-    it('peekGlobal reads without writing and leaves a corrupt or malformed index untouched', () => {
+    it('peekGlobal and peekListGlobal read without writing and leave a corrupt or malformed index untouched', () => {
       expect(service.peekGlobal('absent')).toBeUndefined();
+      expect(service.peekListGlobal()).toEqual([]);
       expect(fs.existsSync(path.join(PROJECT_ROOT, '.hive'))).toBe(false);
 
       service.trackGlobal('known', { agent: 'hive-master' });
       expect(service.peekGlobal('known')).toMatchObject({ sessionId: 'known', agent: 'hive-master' });
+      expect(service.peekListGlobal().map((s) => s.sessionId)).toEqual(['known']);
 
       // A literal JSON null is a malformed index, not an absent one.
-      for (const bytes of [Buffer.from('{"sessions": [{"sessionId": "cut'), Buffer.from('{"sessions": {}}'), Buffer.from('null')]) {
+      for (const bytes of [Buffer.from('{"sessions": [{"sessionId": "cut'), Buffer.from('{"sessions": {}}'), Buffer.from('{}'), Buffer.from('null')]) {
         writeIndex(bytes);
         const before = fs.statSync(globalPath()).mtimeMs;
         expect(() => service.peekGlobal('known')).toThrow('left unchanged for explicit recovery');
+        expect(() => service.peekListGlobal()).toThrow('left unchanged for explicit recovery');
         expect(fs.readFileSync(globalPath())).toEqual(bytes);
         expect(fs.statSync(globalPath()).mtimeMs).toBe(before);
       }

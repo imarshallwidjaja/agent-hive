@@ -873,6 +873,62 @@ describe('HiveSidebarProvider', () => {
     provider.dispose();
   });
 
+  for (const [name, bytes] of [['an empty object', '{}'], ['broken JSON', '{"sessions": [{"sessionId": "cut']] as const) {
+    it(`reports a malformed owner store holding ${name} and leaves it byte-identical with no backup`, async () => {
+      const { SessionConstraintsProvider } = await import('./sessionConstraintsProvider.js');
+      const provider = new SessionConstraintsProvider(testRoot);
+      new hiveCore.SessionService(testRoot, 'opencode-v1').trackGlobal('healthy', { agent: 'hive', standingConstraints: 'still visible' });
+      const v2Path = hiveCore.getNativeSessionsPath(testRoot, 'opencode-v2');
+      fs.mkdirSync(path.dirname(v2Path), { recursive: true });
+      fs.writeFileSync(v2Path, bytes);
+
+      ui.picks.push((items: any[]) => items[0]);
+      await provider.inspect();
+      const content = provider.provideTextDocumentContent(ui.shown[0].uri);
+      provider.refresh();
+
+      expect(fs.readFileSync(v2Path, 'utf8')).toBe(bytes);
+      expect(fs.readdirSync(path.dirname(v2Path)).filter(entry => entry.includes('.corrupt-'))).toEqual([]);
+      expect(ui.warnings.at(-1)).toContain('Could not read session constraints for OpenCode v2');
+      expect(ui.pickItems.map((item: any) => item.sessionId)).toEqual(['healthy']);
+      expect(content).toContain('still visible');
+      provider.dispose();
+    });
+  }
+
+  it('reports a selected store that turns malformed during or after selection and leaves it as found', async () => {
+    const { SessionConstraintsProvider } = await import('./sessionConstraintsProvider.js');
+    const provider = new SessionConstraintsProvider(testRoot);
+    const service = new hiveCore.SessionService(testRoot, 'opencode-v1');
+    const v1Path = hiveCore.getNativeSessionsPath(testRoot, 'opencode-v1');
+    const backups = () => fs.readdirSync(path.dirname(v1Path)).filter(entry => entry.includes('.corrupt-'));
+    service.trackGlobal('healthy', { agent: 'hive', standingConstraints: 'still visible' });
+    const healthy = fs.readFileSync(v1Path, 'utf8');
+
+    // The store breaks after the picker was populated but before the selection is re-read.
+    ui.picks.push((items: any[]) => {
+      fs.writeFileSync(v1Path, '{}');
+      return items[0];
+    });
+    await provider.inspect();
+    expect(fs.readFileSync(v1Path, 'utf8')).toBe('{}');
+    expect(backups()).toEqual([]);
+    expect(ui.errors.at(-1)).toContain('Could not inspect standing constraints');
+    expect(ui.shown).toHaveLength(0);
+
+    // The store breaks after the document was opened, before it is rendered again.
+    fs.writeFileSync(v1Path, healthy);
+    ui.picks.push((items: any[]) => items[0]);
+    await provider.inspect();
+    const uri = ui.shown[0].uri;
+    expect(provider.provideTextDocumentContent(uri)).toContain('still visible');
+    fs.writeFileSync(v1Path, '{}');
+    expect(provider.provideTextDocumentContent(uri)).toBe('Standing constraints could not be read. Refresh or reopen the inspector.');
+    expect(fs.readFileSync(v1Path, 'utf8')).toBe('{}');
+    expect(backups()).toEqual([]);
+    provider.dispose();
+  });
+
   it('reports a failure instead of an empty project when no owner store is readable', async () => {
     const { SessionConstraintsProvider } = await import('./sessionConstraintsProvider.js');
     const provider = new SessionConstraintsProvider(testRoot);

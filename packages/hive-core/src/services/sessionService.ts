@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { ensureDir, fileExists, readJson, acquireLockSync, writeJsonAtomic, syncFile, syncDirectory, resolveExistingFeaturePath } from '../utils/paths.js';
+import { ensureDir, acquireLockSync, writeJsonAtomic, syncFile, syncDirectory, resolveExistingFeaturePath } from '../utils/paths.js';
 import {
   assertNativeObservationOwner,
   DEFAULT_NATIVE_OBSERVATION_OWNER,
@@ -33,6 +33,44 @@ const CLEARABLE_SESSION_FIELDS = new Set<keyof SessionInfo>([
   'taskFolder',
   'adHocRunId',
 ]);
+
+/** A row of the session index that holds a session; other array elements are preserved on disk but never read. */
+function isSessionRecord(value: unknown): value is SessionInfo {
+  return typeof value === 'object'
+    && value !== null
+    && !Array.isArray(value)
+    && typeof (value as SessionInfo).sessionId === 'string';
+}
+
+type SessionIndexRead =
+  | { kind: 'absent' }
+  | { kind: 'corrupt'; error: Error }
+  | { kind: 'valid'; data: SessionsJson };
+
+/**
+ * Classifies the session index file. A present file is corrupt when it is not JSON or its root is not an object
+ * with a `sessions` array. Filesystem errors other than a missing file propagate unchanged.
+ */
+function readSessionIndex(indexPath: string): SessionIndexRead {
+  let content: string;
+  try {
+    content = fs.readFileSync(indexPath, 'utf-8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { kind: 'absent' };
+    throw error;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
+    return { kind: 'corrupt', error };
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed) || !Array.isArray((parsed as SessionsJson).sessions)) {
+    return { kind: 'corrupt', error: new Error('the index root is not an object with a sessions array') };
+  }
+  return { kind: 'valid', data: parsed as SessionsJson };
+}
 
 export class SessionService {
   readonly owner: NativeObservationOwner;
@@ -117,11 +155,9 @@ export class SessionService {
 
   private getGlobalSessions(): SessionsJson {
     const globalPath = this.getGlobalSessionsPath();
-    try {
-      return readJson<SessionsJson>(globalPath) || { sessions: [] };
-    } catch (error) {
-      if (!(error instanceof SyntaxError)) throw error;
-    }
+    const index = readSessionIndex(globalPath);
+    if (index.kind === 'valid') return index.data;
+    if (index.kind === 'absent') return { sessions: [] };
     // Another writer may have replaced the index since the unlocked read, so recovery re-reads under the lock.
     const release = acquireLockSync(globalPath);
     try {
@@ -132,17 +168,17 @@ export class SessionService {
   }
 
   /**
-   * Reads the global index while the caller holds its lock. Unparseable bytes
-   * are copied to a new sibling `sessions.json.corrupt-<timestamp>` file before
-   * an empty index replaces them, which discards every saved session route and
-   * standing constraint. I/O errors propagate without a reset.
+   * Reads the global index while the caller holds its lock. A present index
+   * that is not JSON, or whose root is not an object with a `sessions` array,
+   * is copied to a new sibling `sessions.json.corrupt-<timestamp>` file before
+   * an empty index replaces it, which discards every saved session route and
+   * standing constraint. An absent index is empty and writes nothing. I/O
+   * errors propagate without a reset.
    */
   private readOrResetGlobalSessions(globalPath: string): SessionsJson {
-    try {
-      return readJson<SessionsJson>(globalPath) || { sessions: [] };
-    } catch (error) {
-      if (!(error instanceof SyntaxError)) throw error;
-    }
+    const index = readSessionIndex(globalPath);
+    if (index.kind === 'valid') return index.data;
+    if (index.kind === 'absent') return { sessions: [] };
     const backupPath = `${globalPath}.corrupt-${new Date().toISOString().replace(/[:.]/g, '-')}`;
     fs.copyFileSync(globalPath, backupPath, fs.constants.COPYFILE_EXCL);
     syncFile(backupPath);
@@ -150,7 +186,7 @@ export class SessionService {
     const empty: SessionsJson = { sessions: [] };
     writeJsonAtomic(globalPath, empty);
     console.warn(
-      `[hive:sessions] ${globalPath} was not valid JSON. Preserved it as ${backupPath} and started an empty index; saved session routes and standing constraints were reset.`,
+      `[hive:sessions] ${globalPath} was not valid JSON with a sessions array. Preserved it as ${backupPath} and started an empty index; saved session routes and standing constraints were reset.`,
     );
     return empty;
   }
@@ -164,9 +200,10 @@ export class SessionService {
       const data = this.readOrResetGlobalSessions(globalPath);
       const session = mutator(data);
       // Entries are the one stored form; drop flattened text an older writer left beside them on any row. A
-      // string-only legacy row keeps its text until a constraint write migrates it.
+      // string-only legacy row keeps its text until a constraint write migrates it. Rows that are not session
+      // records stay on disk untouched.
       for (const row of data.sessions) {
-        if (row && typeof row === 'object' && row.standingConstraintEntries !== undefined && row.standingConstraints !== undefined) {
+        if (isSessionRecord(row) && row.standingConstraintEntries !== undefined && row.standingConstraints !== undefined) {
           delete row.standingConstraints;
         }
       }
@@ -182,22 +219,9 @@ export class SessionService {
       resolveExistingFeaturePath(this.projectRoot, patch.featureName);
     }
     return this.updateGlobalSessions((data) => {
-      const now = new Date().toISOString();
-
-      let session = data.sessions.find(s => s.sessionId === sessionId);
-      if (session) {
-        session.lastActiveAt = now;
-        this.applySessionPatch(session, patch);
-      } else {
-        session = {
-          sessionId,
-          startedAt: now,
-          lastActiveAt: now,
-        };
-        this.applySessionPatch(session, patch);
-        data.sessions.push(session);
-      }
-
+      const session = this.getOrCreateGlobalSession(data, sessionId);
+      session.lastActiveAt = new Date().toISOString();
+      this.applySessionPatch(session, patch);
       return session;
     });
   }
@@ -214,12 +238,11 @@ export class SessionService {
   }
 
   listGlobal(): SessionInfo[] {
-    return this.getGlobalSessions().sessions;
+    return this.getGlobalSessions().sessions.filter(isSessionRecord);
   }
 
   getGlobal(sessionId: string): SessionInfo | undefined {
-    const data = this.getGlobalSessions();
-    return data.sessions.find(s => s.sessionId === sessionId);
+    return this.getGlobalSessions().sessions.find((s) => isSessionRecord(s) && s.sessionId === sessionId);
   }
 
   /**
@@ -227,19 +250,18 @@ export class SessionService {
    * untouched: no backup, reset, lock, or directory creation.
    */
   peekGlobal(sessionId: string): SessionInfo | undefined {
+    return this.peekListGlobal().find((s) => s.sessionId === sessionId);
+  }
+
+  /** Strictly read-only listing with the same fail-closed rule as `peekGlobal`; an absent index lists nothing. */
+  peekListGlobal(): SessionInfo[] {
     const globalPath = this.getGlobalSessionsPath();
-    if (!fileExists(globalPath)) return undefined;
-    let data: SessionsJson | null;
-    try {
-      data = readJson<SessionsJson>(globalPath);
-    } catch (error) {
-      throw new Error(`Session index ${globalPath} is unreadable; it was left unchanged for explicit recovery.`, { cause: error });
+    const index = readSessionIndex(globalPath);
+    if (index.kind === 'absent') return [];
+    if (index.kind === 'corrupt') {
+      throw new Error(`Session index ${globalPath} is unreadable; it was left unchanged for explicit recovery.`, { cause: index.error });
     }
-    // `readJson` also returns null for a file holding the literal `null`, which is a malformed index.
-    if (typeof data !== 'object' || data === null || !Array.isArray(data.sessions)) {
-      throw new Error(`Session index ${globalPath} has no sessions array; it was left unchanged for explicit recovery.`);
-    }
-    return data.sessions.find((session) => session?.sessionId === sessionId);
+    return index.data.sessions.filter(isSessionRecord);
   }
 
   /** The standing-constraint register a session record holds; an absent session holds none. */
@@ -263,7 +285,7 @@ export class SessionService {
   }
 
   private getOrCreateGlobalSession(data: SessionsJson, sessionId: string): SessionInfo {
-    let session = data.sessions.find((candidate) => candidate.sessionId === sessionId);
+    let session = data.sessions.find((s) => isSessionRecord(s) && s.sessionId === sessionId);
     if (!session) {
       const now = new Date().toISOString();
       session = { sessionId, startedAt: now, lastActiveAt: now };

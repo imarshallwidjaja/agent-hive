@@ -113,7 +113,7 @@ The session index is `.hive/runtime/opencode-v2/sessions.json`.
 <!-- /hive-host -->
 It holds canonical session bindings: selected feature route (`featureName`, where explicit `null` means featureless), parent session, task folder, and session constraints as `standingConstraintEntries` with a `standingConstraintsRevision`. A record from an earlier version may hold only a flattened `standingConstraints` string, which reads as one `legacy` entry; the next constraint write replaces it with entries. Feature constraints live in the feature's `constraints.json`. The session index is not a trace source.
 
-If the session index is not valid JSON, the first read or update of it copies the bytes to a `sessions.json.corrupt-<timestamp>` sibling in the same directory and writes `{ "sessions": [] }`; an update then writes its own change on top. That discards every saved route and standing constraint. Triggers include:
+If the session index is not valid JSON, or its root is not an object with a `sessions` array (for example a literal `null` or `{}`), the first recovery-capable read or update of it copies the bytes to a `sessions.json.corrupt-<timestamp>` sibling in the same directory and writes `{ "sessions": [] }`; an update then writes its own change on top. That discards every saved route and standing constraint. Triggers include:
 
 <!-- hive-host opencode-v1 -->
 - The host's `chat.message` hook, which records the session whenever a message carries an agent. The file is left holding only that one session.
@@ -124,7 +124,9 @@ If the session index is not valid JSON, the first read or update of it copies th
 - Route resolution in any feature-scoped tool called without an explicit `feature`, such as `hive_status()`, as well as feature selection, constraint tools, and native `subagent()` dispatch, which captures the route.
 <!-- /hive-host -->
 
-So read the session index directly, with a shell or file read, before any session-resolving call. If it does not parse, or a `sessions.json.corrupt-*` sibling exists in its directory, report both paths to the primary or operator, who decides how to restore it. An empty or one-session index next to a `corrupt-*` copy is reset damage, not intentional state. Until the operator decides, avoid session-resolving calls; when you need a feature-scoped read, pass `feature` explicitly.
+Read-only inspection never resets the index. `peekGlobal` and `peekListGlobal`, which the VS Code standing-constraints inspector and some runtime binding checks use, report a malformed index as unreadable and leave it unchanged, without a lock or backup.
+
+So read the session index directly, with a shell or file read, before any session-resolving call. If it does not parse, or its root is not an object with a `sessions` array (such as `{}` or `null`), or a `sessions.json.corrupt-*` sibling exists in its directory, report the index path (and the backup path if a `sessions.json.corrupt-*` sibling exists) to the primary or operator, who decides how to restore it. An empty or one-session index next to a `corrupt-*` copy is reset damage, not intentional state. Until the operator decides, avoid session-resolving calls; when you need a feature-scoped read, pass `feature` explicitly.
 
 ## Live subagent children
 

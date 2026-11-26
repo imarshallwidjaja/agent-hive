@@ -3466,7 +3466,8 @@ describe('host sections in packaged skills', () => {
     for (const host of HOSTS) {
       const text = layout(host);
       expect(text).toContain('So read the session index directly, with a shell or file read, before any session-resolving call.');
-      expect(text).toContain('report both paths to the primary or operator, who decides how to restore it');
+      expect(text).toContain('report the index path (and the backup path if a `sessions.json.corrupt-*` sibling exists) to the primary or operator, who decides how to restore it');
+      expect(text).toContain('Read-only inspection never resets the index.');
       expect(text).toContain('avoid session-resolving calls; when you need a feature-scoped read, pass `feature` explicitly');
     }
     const overview = rendered('hive-config/SKILL.md', V2);

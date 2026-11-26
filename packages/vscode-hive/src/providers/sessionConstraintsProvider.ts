@@ -22,13 +22,14 @@ export class SessionConstraintsProvider implements vscode.TextDocumentContentPro
 
   async inspect(): Promise<void> {
     try {
-      // Each owner's index is read separately so an unreadable one is reported without hiding the others.
+      // Each owner's index is read separately so an unreadable one is reported without hiding the others. The
+      // inspector only peeks: a malformed index is reported and left as found, never backed up or reset.
       const sessions: Array<{ owner: NativeObservationOwner; session: SessionInfo }> = [];
       const unreadable: string[] = [];
       for (const [owner, service] of this.services) {
         try {
-          for (const session of service.listGlobal()) {
-            if (service.readStandingConstraints(session.sessionId).entries.length > 0) sessions.push({ owner, session });
+          for (const session of service.peekListGlobal()) {
+            if (service.standingConstraintRegister(session).entries.length > 0) sessions.push({ owner, session });
           }
         } catch (error) {
           unreadable.push(`${getNativeObservationOwnerLabel(owner)} (${error instanceof Error ? error.message : String(error)})`);
@@ -50,7 +51,8 @@ export class SessionConstraintsProvider implements vscode.TextDocumentContentPro
       })), { title: 'Inspect Session Standing Constraints', placeHolder: 'Choose a session explicitly', matchOnDescription: true, matchOnDetail: true });
       if (!selected) return;
       const service = this.services.get(selected.owner);
-      if (!service?.getGlobal(selected.sessionId) || !service.readStandingConstraints(selected.sessionId).entries.length) {
+      const current = service?.peekGlobal(selected.sessionId);
+      if (!service || !current || !service.standingConstraintRegister(current).entries.length) {
         vscode.window.showInformationMessage('Hive: The selected session or its standing constraints no longer exist.');
         return;
       }
@@ -68,9 +70,9 @@ export class SessionConstraintsProvider implements vscode.TextDocumentContentPro
     if (!selection) return 'No session selected. Use Inspect Session Standing Constraints.';
     try {
       const service = this.services.get(selection.owner);
-      const session = service?.getGlobal(selection.sessionId);
+      const session = service?.peekGlobal(selection.sessionId);
       if (!service || !session) return 'The selected session no longer exists.';
-      const register = service.readStandingConstraints(selection.sessionId);
+      const register = service.standingConstraintRegister(session);
       return [
         'Session Standing Constraints (read-only)',
         `Session ID: ${session.sessionId}`,

@@ -694,7 +694,7 @@ const parityReply = obj({ rows: arr(parityRow, 500), total: int, malformed: int,
 const instructionEntriesReply = obj({
   supported: bool,
   sessions: arr(obj({
-    sessionId: match(SESSION, 80), readable: bool, entryCount: int, entries: arr(obj({ key: textRecord(200), value: textRecord(16 * 1024) }), 64),
+    sessionId: match(SESSION, 80), readable: bool, entryCount: int, entries: arr(obj({ key: textRecord(200), value: textRecord(48 * 1024) }), 64),
   }), 32),
 });
 const conversation = obj({
